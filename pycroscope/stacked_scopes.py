@@ -1479,8 +1479,8 @@ class StackedScopes:
     ) -> tuple[Value, Optional[Scope], VarnameOrigin]:
         """Like :meth:`get`, but also returns the scope object the name was found in.
 
-        Returns a (:class:`pycroscope.value.Value`, :class:`Scope`, origin) tuple. The :class:`Scope`
-        is ``None`` if the name was not found.
+        Returns a (:class:`pycroscope.value.Value`, :class:`Scope`, origin) tuple. The
+        :class:`Scope` is ``None`` if the name was not found.
 
         """
         return self.scopes[-1].get(varname, node, state)

@@ -2,7 +2,7 @@ from pathlib import Path
 
 from setuptools import setup
 
-version = "0.13.1"
+version = "0.1.0"
 package_data = ["test.toml", "stubs/*/*.pyi"]
 
 
@@ -10,13 +10,13 @@ if __name__ == "__main__":
     setup(
         name="pycroscope",
         version=version,
-        author="Quora, Inc.",
-        author_email="jelle@quora.com",
+        author="Jelle Zijlstra",
+        author_email="jelle.zijlstra@gmail.com",
         description="A static analyzer for Python",
         entry_points={"console_scripts": ["pycroscope=pycroscope.__main__:main"]},
         long_description=Path("README.md").read_text(),
         long_description_content_type="text/markdown",
-        url="https://github.com/quora/pycroscope",
+        url="https://github.com/JelleZijlstra/pycroscope",
         license="Apache Software License",
         classifiers=[
             "License :: OSI Approved :: Apache Software License",
@@ -27,7 +27,7 @@ if __name__ == "__main__":
             "Programming Language :: Python :: 3.12",
             "Programming Language :: Python :: 3.13",
         ],
-        keywords="quora static analysis",
+        keywords="type checker static analysis",
         packages=["pycroscope"],
         install_requires=[
             "asynq",
