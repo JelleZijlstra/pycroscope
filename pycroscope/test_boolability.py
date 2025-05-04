@@ -14,6 +14,8 @@ from .value import (
     KnownValue,
     KVPair,
     SequenceValue,
+    TypeAlias,
+    TypeAliasValue,
     TypedDictEntry,
     TypedDictValue,
     TypedValue,
@@ -130,6 +132,16 @@ def test_get_boolability() -> None:
         KnownValue(False) | KnownValue("")
     )
     assert Boolability.boolable == get_boolability(NO_RETURN_VALUE)
+
+    # TypeAliasValue
+    alias = TypeAliasValue(
+        "alias", __name__, TypeAlias(lambda: TypedValue(int), lambda: ())
+    )
+    assert get_boolability(alias) == Boolability.boolable
+    alias = TypeAliasValue(
+        "alias", __name__, TypeAlias(lambda: KnownValue(True), lambda: ())
+    )
+    assert get_boolability(alias) == Boolability.value_always_true
 
 
 class TestAssert(TestNameCheckVisitorBase):
