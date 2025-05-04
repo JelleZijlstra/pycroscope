@@ -1,5 +1,5 @@
-pyanalyze.ast_annotator
+pycroscope.ast_annotator
 =======================
 
-.. automodule:: pyanalyze.ast_annotator
+.. automodule:: pycroscope.ast_annotator
    :members:

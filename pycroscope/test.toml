@@ -1,0 +1,23 @@
+[tool.pycroscope]
+classes_checked_for_asynq = ["pycroscope.tests.CheckedForAsynq"]
+methods_not_checked_for_asynq = ["not_checked"]
+variable_name_values = ["pycroscope.tests.uid_vnv", "pycroscope.tests.qid_vnv"]
+constructor_hooks = ["pycroscope.test_config.get_constructor"]
+known_signatures = ["pycroscope.test_config.get_known_signatures"]
+unwrap_class = ["pycroscope.test_config.unwrap_class"]
+stub_path = ["./stubs"]
+functions_safe_to_call = [
+    "pycroscope.tests.make_simple_sequence",
+    "pycroscope.value.make_coro_type",
+]
+class_attribute_transformers = [
+    "pycroscope.test_config.transform_class_attribute"
+]
+known_attribute_hook = [
+    "pycroscope.test_config.known_attribute_hook"
+]
+disallowed_imports = [
+    "getopt",
+    "email.quoprimime",
+    "xml",
+]

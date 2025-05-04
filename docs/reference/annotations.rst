@@ -1,5 +1,5 @@
-pyanalyze.annotations
+pycroscope.annotations
 =====================
 
-.. automodule:: pyanalyze.annotations
+.. automodule:: pycroscope.annotations
    :members:

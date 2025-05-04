@@ -1,5 +1,5 @@
-pyanalyze.signature
+pycroscope.signature
 ===================
 
-.. automodule:: pyanalyze.signature
+.. automodule:: pycroscope.signature
    :members:

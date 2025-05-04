@@ -18,8 +18,8 @@ exclude = '''
 requires = ["setuptools>=42", "wheel"]
 build-backend = "setuptools.build_meta"
 
-[tool.pyanalyze]
-paths = ["pyanalyze"]
+[tool.pycroscope]
+paths = ["pycroscope"]
 import_paths = ["."]
 enforce_no_unused = true
 
@@ -34,12 +34,12 @@ suggested_return_type = true
 incompatible_override = true
 missing_generic_parameters = true
 
-[[tool.pyanalyze.overrides]]
-module = "pyanalyze.typevar"
+[[tool.pycroscope.overrides]]
+module = "pycroscope.typevar"
 implicit_any = true
 
-[[tool.pyanalyze.overrides]]
-module = "pyanalyze.yield_checker"
+[[tool.pycroscope.overrides]]
+module = "pycroscope.yield_checker"
 implicit_any = true
 
 [tool.ruff]
@@ -73,9 +73,9 @@ ignore = [
 ]
 
 [tool.ruff.lint.per-file-ignores]
-"pyanalyze/test_*.py" = [
+"pycroscope/test_*.py" = [
   "UP",  # Want to test old-style code
 ]
-"pyanalyze/annotations.py" = [
+"pycroscope/annotations.py" = [
   "UP006",  # Need to refer to typing.Type
 ]

@@ -1,5 +1,5 @@
-pyanalyze.runtime
+pycroscope.runtime
 =================
 
-.. automodule:: pyanalyze.runtime
+.. automodule:: pycroscope.runtime
    :members:

@@ -8,15 +8,15 @@ package_data = ["test.toml", "stubs/*/*.pyi"]
 
 if __name__ == "__main__":
     setup(
-        name="pyanalyze",
+        name="pycroscope",
         version=version,
         author="Quora, Inc.",
         author_email="jelle@quora.com",
         description="A static analyzer for Python",
-        entry_points={"console_scripts": ["pyanalyze=pyanalyze.__main__:main"]},
+        entry_points={"console_scripts": ["pycroscope=pycroscope.__main__:main"]},
         long_description=Path("README.md").read_text(),
         long_description_content_type="text/markdown",
-        url="https://github.com/quora/pyanalyze",
+        url="https://github.com/quora/pycroscope",
         license="Apache Software License",
         classifiers=[
             "License :: OSI Approved :: Apache Software License",
@@ -28,7 +28,7 @@ if __name__ == "__main__":
             "Programming Language :: Python :: 3.13",
         ],
         keywords="quora static analysis",
-        packages=["pyanalyze"],
+        packages=["pycroscope"],
         install_requires=[
             "asynq",
             "qcore>=0.5.1",
@@ -47,8 +47,8 @@ if __name__ == "__main__":
                 "annotated-types",
             ]
         },
-        # These are useful for unit tests of pyanalyze extensions
+        # These are useful for unit tests of pycroscope extensions
         # outside the package.
-        package_data={"pyanalyze": package_data},
+        package_data={"pycroscope": package_data},
         python_requires=">=3.9",
     )

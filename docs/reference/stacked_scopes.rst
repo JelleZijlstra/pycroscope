@@ -1,5 +1,5 @@
-pyanalyze.stacked_scopes
+pycroscope.stacked_scopes
 ========================
 
-.. automodule:: pyanalyze.stacked_scopes
+.. automodule:: pycroscope.stacked_scopes
    :members:

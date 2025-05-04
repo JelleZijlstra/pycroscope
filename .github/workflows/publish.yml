@@ -52,7 +52,7 @@ jobs:
     runs-on: ubuntu-latest
     environment:
       name: publish
-      url: https://pypi.org/p/pyanalyze
+      url: https://pypi.org/p/pycroscope
     permissions:
       id-token: write
     steps:

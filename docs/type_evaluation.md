@@ -498,7 +498,7 @@ What should `open()` return if the type of the `mode`
 argument is `Any`? With the equivalent code expressed
 using overloads, existing type checkers do not agree:
 pyright picks the first overload that matches and returns
-`int`, since `Any` is compatible with `None`; mypy and pyanalyze
+`int`, since `Any` is compatible with `None`; mypy and pycroscope
 see that multiple overloads might match and return `Any`.
 There are good reasons for both choices,
 as discussed [here](https://github.com/microsoft/pyright/issues/2521#issuecomment-956823577)
@@ -754,9 +754,9 @@ Usage could look like this:
 ## Status
 
 A partial implementation of this feature is available
-in pyanalyze:
+in pycroscope:
 
-    from pyanalyze.extensions import evaluated, is_provided
+    from pycroscope.extensions import evaluated, is_provided
 
     @evaluated
     def simple_evaluated(x: int, y: str = ""):

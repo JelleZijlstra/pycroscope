@@ -93,17 +93,17 @@
 - Show an error on calls to `typing.Any` (#688)
 - Add command-line option `-c`/`--code` to typecheck code from
   the command line (#685)
-- Add a `pyanalyze.extensions.EnumName` predicate and infer it
+- Add a `pycroscope.extensions.EnumName` predicate and infer it
   as the value for the `.name` attribute on enums. Also fix
   type inference for enum "properties" on Python 3.11 and up. (#682)
-- Allow `pyanalyze.runtime.is_compatible` to be used to narrow
+- Allow `pycroscope.runtime.is_compatible` to be used to narrow
   types (#681, #687)
 - Fix usage of `assert_type()` with `Any` and with unions of
   `Annotated` objects (#680)
 - Support inferring `MinLen` and `MaxLen` annotations based
   on `len()` checks (#680)
 - Expose a convenience API for runtime type checking in the
-  `pyanalyze.runtime` module (#674)
+  `pycroscope.runtime` module (#674)
 - Support for annotations from the `annotated-types` library (#673)
 - Detect undefined attributes on Pydantic models (#670)
 - Remove duplicate "attribute_is_never_set" error for classes
@@ -415,11 +415,11 @@ Full changelog:
   - Refactor related code
 - Add check for incompatible overrides in child classes
   (#371)
-- Add `pyanalyze.extensions.NoReturnGuard` (#370)
+- Add `pycroscope.extensions.NoReturnGuard` (#370)
 - Infer call signatures for `Type[X]` (#369)
 - Support configuration in a `pyproject.toml` file (#368)
 - Require `typeshed_client` 2.0 (#361)
-- Add JSON output for integrating pyanalyze's output with other
+- Add JSON output for integrating pycroscope's output with other
   tools (#360)
 - Add check that suggests parameter and return types for untyped
   functions, using the new `suggested_parameter_type` and
@@ -459,7 +459,7 @@ Full changelog:
 - Support literals over negative numbers in stubs
   and stringified annotations (#326)
 - Improved overload matching algorithm (#321) (#324)
-- Support runtime overloaded functions with `pyanalyze.extensions.overload` (#318)
+- Support runtime overloaded functions with `pycroscope.extensions.overload` (#318)
 - Internal support for overloaded functions (#316)
 - Support `TypeVar` bounds and constraints (#315)
 - Improve error messages involving concrete dictionary and sequence values (#312)
@@ -474,7 +474,7 @@ Full changelog:
 - Support Protocols for runtime types that are also defined in stubs (#297) (#307)
 - Better detect signatures of methods in stub files (#304)
 - Improve handling of positional-only arguments in stub files (#303)
-- Fix bug where pyanalyze incorrectly inferred that an attribute always exists (#302)
+- Fix bug where pycroscope incorrectly inferred that an attribute always exists (#302)
 - Fix compatibility of signatures with extra parameters (#301)
 - Enhance `reveal_type()` output for `UnboundMethodValue` (#300)
 - Fix handling of `async for` (#298)
@@ -483,7 +483,7 @@ Full changelog:
 - Require `typing_inspect>=0.7.0` (#290)
 - Improve type checking of `raise` statements (#289)
 - Support `Final` with arguments and `ClassVar` without arguments (#284)
-- Add `pyanalyze.extensions.NoAny` (#283)
+- Add `pycroscope.extensions.NoAny` (#283)
 - Overhaul documentation (#282)
 - Type check calls with `*args` or `**kwargs` (#275)
 - Infer more precise types for comprehensions over known iterables (#279)
@@ -511,7 +511,7 @@ Full changelog:
 - Fix bug affecting type compatibility between literals and generics
 - Improve type narrowing on the `in`/`not in` operator
 - Improve type checking for format strings
-- Add the `pyanalyze.value.AnyValue` class, replacing `pyanalyze.value.UNRESOLVED_VALUE`
+- Add the `pycroscope.value.AnyValue` class, replacing `pycroscope.value.UNRESOLVED_VALUE`
 - Improve formatting for `Union` types in errors
 - Fix bug affecting type compatibility between types and literals
 - Support `total=False` in `TypedDict`
@@ -523,8 +523,8 @@ Full changelog:
 - Add support for constraints on the type of `self`, including if it has a union type
 - Detect undefined `enum.Enum` members
 - Improve handling of `Annotated`
-- Add `pyanalyze.extensions.CustomCheck`
-- Add `pyanalyze.extensions.ExternalType`
+- Add `pycroscope.extensions.CustomCheck`
+- Add `pycroscope.extensions.ExternalType`
 - If you have code dealing with `Value` objects, note that there are several changes:
   - The `UnresolvedValue` class was renamed to `AnyValue`.
   - `value is UNRESOLVED_VALUE` will no longer be reliable. Use `isinstance(value, AnyValue)` instead.
@@ -543,7 +543,7 @@ Full changelog:
 ## Version 0.3.0 (August 1, 2021)
 
 - Type check calls on Unions properly
-- Add `pyanalyze` executable
+- Add `pycroscope` executable
 - Add `--enable-all` and `--disable-all` flags
   (contributed by C.A.M. Gerlach)
 - Bug fixes
@@ -554,8 +554,8 @@ Full changelog:
 - Improve unused object finder
 - Add support for `TypeVar`
 - Add support for `Callable`
-- Add `pyanalyze.extensions`
-- Add `pyanalyze.ast_annotator`
+- Add `pycroscope.extensions`
+- Add `pycroscope.ast_annotator`
 - Numerous other bug fixes and improvements
 
 ## Version 0.1.0 (May 29, 2020)
