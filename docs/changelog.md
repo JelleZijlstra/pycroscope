@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Fix use of aliases created through the `type` statement in boolean conditions
+
 ## Version 0.1.0 (May 3, 2025)
 
 First release under the pycroscope name.
