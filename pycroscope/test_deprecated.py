@@ -4,6 +4,7 @@ from .test_node_visitor import assert_passes, skip_before
 
 
 class TestStub(TestNameCheckVisitorBase):
+    @skip_before((3, 10))  # line number changed, don't care enough about 3.9
     @assert_passes()
     def test(self):
         def capybara():
@@ -11,7 +12,9 @@ class TestStub(TestNameCheckVisitorBase):
             from _pycroscope_tests.deprecated import DeprecatedCapybara  # E: deprecated
 
             print("these imports")
-            from _pycroscope_tests.deprecated import deprecated_function  # E: deprecated
+            from _pycroscope_tests.deprecated import (
+                deprecated_function,  # E: deprecated
+            )
 
             print("separate")
             from _pycroscope_tests.deprecated import deprecated_overload
