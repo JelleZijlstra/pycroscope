@@ -6,6 +6,8 @@ it imports the modules it type checks, enabling pycroscope to understand many dy
 checkers will reject. This property also makes it possible to extend pycroscope with plugins that interact directly
 with your code.
 
+Pycroscope is a friendly fork of [pyanalyze](https://github.com/quora/pyanalyze).
+
 ## Usage
 
 You can install pycroscope with:

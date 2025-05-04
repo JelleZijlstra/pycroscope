@@ -1,16 +1,27 @@
 # Frequently asked questions
 
+## Why is it named pycroscope?
+
+It's like putting your Python code under a microscope and seeing everything that's
+happening.
+
 ## Why another typechecker?
 
-Pycroscope started at Quora as an internal tool somewhere between a linter and a type
+Pycroscope is a fork of [pyanalyze](https://github.com/quora/pyanalyze), a type
+checker developed at Quora. It started as an internal tool somewhere between a linter and a type
 checker, but it proved very useful in dealing with [asynq](https://github.com/quora/asynq),
 our asynchronous programming framework. This framework uses generators in an unusual way
-and pycroscope made it possible to detect several tricky mistakes in asynq code statically.
+and pyanalyze made it possible to detect several tricky mistakes in asynq code statically.
 
-For us, asynq support remains important, but pycroscope's architecture has also allowed us
-to perform numerous other static checks to make our codebase safer. For example, we use
-pycroscope to help keep our codebase safe against SQL injections, to enforce that names of
+For Quora, asynq support remained important, but pyanalyze's architecture has also allowed us
+to perform numerous other static checks to make its codebase safer. For example, they use
+pycroscope to help keep the codebase safe against SQL injections, to enforce that names of
 A/B tests are valid, and to enforce that UI strings are translated correctly.
+
+I (Jelle Zijlstra) was the primary author of pyanalyze, but I left Quora in 2025.
+I continued using the project in some personal projects, and I think the ideas are worth
+developing further, so I created a fork called pycroscope so I can continue to develop
+the type checker under my own account.
 
 ## What makes pycroscope different?
 
@@ -90,11 +101,14 @@ For context, pytype was started in March 2015 and mypy in 2012. PEP 484 was acce
 
 The initial version was closely tied to
 Quora's internal code structure, but in June 2017 it was split off into its own internal
-package, now named pycroscope. By then, it had strong support for `asynq` and supported
-customization through implementation functions. After Quora moved to Python 3, pycroscope
+package, now named pyanalyze. By then, it had strong support for `asynq` and supported
+customization through implementation functions. After Quora moved to Python 3, pyanalyze
 gained support for parsing type annotations and
 its typing support moved closer to the standard type system.
 
 The first public release was in May 2020. Since then, work has focused on providing full
 support for the Python type system, including `Annotated`, `Callable`, `TypeVar`, and
 `TypeGuard`.
+
+After I left Quora in 2025, I created pycroscope in May 2025 as a fork under my
+own account.
