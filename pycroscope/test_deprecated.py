@@ -11,7 +11,9 @@ class TestStub(TestNameCheckVisitorBase):
             from _pycroscope_tests.deprecated import DeprecatedCapybara  # E: deprecated
 
             print("these imports")
-            from _pycroscope_tests.deprecated import deprecated_function  # E: deprecated
+            from _pycroscope_tests.deprecated import (
+                deprecated_function,  # E: deprecated
+            )
 
             print("separate")
             from _pycroscope_tests.deprecated import deprecated_overload
