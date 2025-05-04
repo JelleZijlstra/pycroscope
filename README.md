@@ -132,10 +132,9 @@ Pycroscope supports all versions of Python that have not reached end-of-life. Be
 
 ## Contributing
 
-We welcome your contributions. See [CONTRIBUTING.md](https://github.com/quora/pycroscope/blob/master/CONTRIBUTING.md)
+We welcome your contributions. See [CONTRIBUTING.md](https://github.com/JelleZijlstra/pycroscope/blob/master/CONTRIBUTING.md)
 for how to get started.
 
 ## Documentation
 
-Documentation is available at [ReadTheDocs](https://pycroscope.readthedocs.io/en/latest/)
-or on [GitHub](https://github.com/quora/pycroscope/tree/master/docs).
+Documentation is available on [GitHub](https://github.com/JelleZijlstra/pycroscope/tree/master/docs).

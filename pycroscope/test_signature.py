@@ -737,7 +737,8 @@ class TestCalls(TestNameCheckVisitorBase):
         def capybara():
             assert_is_value(A(), TypedValue(A))
             assert_is_value(
-                pycroscope.tests.WhatIsMyName(), TypedValue(pycroscope.tests.WhatIsMyName)
+                pycroscope.tests.WhatIsMyName(),
+                TypedValue(pycroscope.tests.WhatIsMyName),
             )
 
     @assert_passes()

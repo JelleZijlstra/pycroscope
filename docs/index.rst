@@ -4,7 +4,7 @@
    contain the root `toctree` directive.
 
 pycroscope: A semi-static typechecker
-====================================
+=====================================
 
 .. toctree::
    :maxdepth: 2
