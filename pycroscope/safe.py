@@ -194,3 +194,14 @@ def is_dataclass_type(cls: type) -> bool:
         return "__dataclass_fields__" in cls.__dict__
     except Exception:
         return False
+
+
+def safe_str(obj: object) -> str:
+    """Like str(), but catches exceptions."""
+    try:
+        return str(obj)
+    except Exception as e:
+        try:
+            return f"<error in str(): {e!r}>"
+        except Exception:
+            return "<error in str() and in error message>"

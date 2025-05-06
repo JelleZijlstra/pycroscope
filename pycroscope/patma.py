@@ -12,10 +12,9 @@ from collections.abc import Container, Sequence
 from dataclasses import dataclass, replace
 from typing import Any, Callable, Optional, TypeVar, Union
 
-import qcore
-
 import pycroscope
 
+from .analysis_lib import override
 from .annotations import type_from_value
 from .error_code import ErrorCode
 from .extensions import CustomCheck
@@ -241,7 +240,7 @@ class PatmaVisitor(ast.NodeVisitor):
         if isinstance(unpacked, CanAssignError):
             unpacked = itertools.repeat(AnyValue(AnySource.generic_argument))
         for pat, subject in zip(node.patterns, unpacked):
-            with qcore.override(self.visitor, "match_subject", Composite(subject)):
+            with override(self.visitor, "match_subject", Composite(subject)):
                 constraints.append(self.visit(pat))
         return AndConstraint.make(constraints)
 
@@ -281,7 +280,7 @@ class PatmaVisitor(ast.NodeVisitor):
                     ErrorCode.impossible_pattern,
                 )
                 value = AnyValue(AnySource.error)
-            with qcore.override(self.visitor, "match_subject", Composite(value)):
+            with override(self.visitor, "match_subject", Composite(value)):
                 constraints.append(self.visit(pattern))
         if node.rest is not None:
             new_kv_pairs = []
@@ -369,7 +368,7 @@ class PatmaVisitor(ast.NodeVisitor):
                         subject_composite, name, subpattern
                     )
                     subsubject = Composite(attr, new_varname)
-            with qcore.override(self.visitor, "match_subject", subsubject):
+            with override(self.visitor, "match_subject", subsubject):
                 constraints.append(self.visit(subpattern))
 
         return AndConstraint.make(constraints)

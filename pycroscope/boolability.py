@@ -10,8 +10,7 @@ a particular type is usable as a boolean.
 
 import enum
 
-import asynq
-
+from pycroscope.maybe_asynq import asynq
 from pycroscope.safe import safe_getattr, safe_hasattr
 
 from .value import (
@@ -67,7 +66,9 @@ _FALSE_BOOLABILITIES = {
     Boolability.value_always_false_mutable,
 }
 # doesn't exist if asynq is not compiled
-_ASYNQ_BOOL = getattr(asynq.FutureBase, "__bool__", object())
+_ASYNQ_BOOL = (
+    getattr(asynq.FutureBase, "__bool__", object()) if asynq is not None else object()
+)
 
 
 def get_boolability(value: Value) -> Boolability:

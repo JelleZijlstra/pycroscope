@@ -13,9 +13,9 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Any, Callable, Optional, Union
 
-import qcore
 from typing_extensions import Literal
 
+from .analysis_lib import Sentinel
 from .predicates import IsAssignablePredicate
 from .stacked_scopes import (
     Constraint,
@@ -40,10 +40,10 @@ from .value import (
     unite_values,
 )
 
-ARGS = qcore.MarkerObject("*args")
-KWARGS = qcore.MarkerObject("**kwargs")
-DEFAULT = qcore.MarkerObject("default")
-UNKNOWN = qcore.MarkerObject("unknown")
+ARGS = Sentinel("*args")
+KWARGS = Sentinel("**kwargs")
+DEFAULT = Sentinel("default")
+UNKNOWN = Sentinel("unknown")
 
 # How a bound argument was filled: int for a positional arg,
 # str for a keyword arg, DEFAULT for a parameter filled from the

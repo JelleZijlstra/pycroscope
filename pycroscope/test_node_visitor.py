@@ -476,3 +476,25 @@ def skip_if(condition: bool):
             return fn
 
     return decorator
+
+
+def skip_if_not_installed(module_name: str):
+    """Decorator to skip a test if the module is not installed.
+
+    Example usage:
+
+        @skip_if_not_installed("numpy")
+        def test_numpy():
+            import numpy as np
+            np.array([1, 2, 3])
+    """
+
+    def decorator(fn):
+        try:
+            __import__(module_name)
+        except ImportError:
+            return _dummy_function
+        else:
+            return fn
+
+    return decorator

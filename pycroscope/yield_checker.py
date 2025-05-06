@@ -19,12 +19,11 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
 
 import asynq
-import qcore
 from ast_decompiler import decompile
 
 import pycroscope
 
-from .analysis_lib import get_indentation, get_line_range_for_node
+from .analysis_lib import get_indentation, get_line_range_for_node, override
 from .asynq_checker import AsyncFunctionKind
 from .error_code import ErrorCode
 from .functions import FunctionNode
@@ -170,7 +169,7 @@ class YieldChecker:
     alerted_nodes: set[FunctionNode] = field(default_factory=set)
 
     def set_function_node(self, node: FunctionNode) -> AbstractContextManager[None]:
-        return qcore.override(self, "current_function_node", node)
+        return override(self, "current_function_node", node)
 
     @contextlib.contextmanager
     def check_yield(
@@ -182,7 +181,7 @@ class YieldChecker:
             self._check_for_duplicate_yields(node, self.visitor.current_statement)
 
         in_non_async_yield = self.visitor.async_kind == AsyncFunctionKind.non_async
-        with qcore.override(self, "in_non_async_yield", in_non_async_yield):
+        with override(self, "in_non_async_yield", in_non_async_yield):
             yield
 
         if self.visitor.async_kind == AsyncFunctionKind.normal:
@@ -201,7 +200,7 @@ class YieldChecker:
     def check_yield_result_assignment(
         self, in_yield: bool
     ) -> AbstractContextManager[None]:
-        return qcore.override(self, "in_yield_result_assignment", in_yield)
+        return override(self, "in_yield_result_assignment", in_yield)
 
     def record_assignment(self, name: str) -> None:
         if self.in_yield_result_assignment:

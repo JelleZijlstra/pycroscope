@@ -20,20 +20,19 @@ from types import FunctionType, MethodType, ModuleType
 from typing import Any, Callable, Generic, Optional, TypeVar, Union
 from unittest import mock
 
-import asynq
-import qcore
 import typing_extensions
 from typing_extensions import is_typeddict
 
 import pycroscope
 
 from . import implementation
-from .analysis_lib import is_positional_only_arg_name
+from .analysis_lib import is_positional_only_arg_name, override
 from .annotations import Context, RuntimeEvaluator, type_from_runtime
 from .extensions import CustomCheck, TypeGuard, get_type_evaluations
 from .extensions import get_overloads as pycroscope_get_overloads
 from .find_unused import used
 from .functions import translate_vararg_type
+from .maybe_asynq import asynq, qcore
 from .options import Options, PyObjectSequenceOption
 from .safe import (
     all_of_type,
@@ -124,9 +123,7 @@ def with_implementation(fn: object, implementation_fn: Impl) -> Iterator[None]:
 
     """
     if fn in ArgSpecCache.DEFAULT_ARGSPECS:
-        with qcore.override(
-            ArgSpecCache.DEFAULT_ARGSPECS[fn], "impl", implementation_fn
-        ):
+        with override(ArgSpecCache.DEFAULT_ARGSPECS[fn], "impl", implementation_fn):
             yield
     else:
         checker = pycroscope.checker.Checker()
@@ -143,12 +140,14 @@ def with_implementation(fn: object, implementation_fn: Impl) -> Iterator[None]:
             )
         known_argspecs = dict(ArgSpecCache.DEFAULT_ARGSPECS)
         known_argspecs[fn] = argspec
-        with qcore.override(ArgSpecCache, "DEFAULT_ARGSPECS", known_argspecs):
+        with override(ArgSpecCache, "DEFAULT_ARGSPECS", known_argspecs):
             yield
 
 
 def is_dot_asynq_function(obj: Any) -> bool:
     """Returns whether obj is the .asynq member on an async function."""
+    if asynq is None:
+        return False
     try:
         self_obj = obj.__self__
     except AttributeError:
@@ -157,7 +156,7 @@ def is_dot_asynq_function(obj: Any) -> bool:
     except Exception:
         # The object has a buggy __getattr__ that threw an error. Just ignore it.
         return False
-    if qcore.inspection.is_classmethod(obj):
+    if qcore is not None and qcore.inspection.is_classmethod(obj):
         return False
     if obj is self_obj:
         return False
@@ -229,11 +228,12 @@ class ClassesSafeToInstantiate(PyObjectSequenceOption[type]):
         Extension,
         KVPair,
         TypedDictEntry,
-        asynq.ConstFuture,
         range,
         tuple,
         *[obj for obj in TYPING_OBJECTS_SAFE_TO_CALL if safe_isinstance(obj, type)],
     ]
+    if asynq is not None:
+        default_value.append(asynq.ConstFuture)
 
 
 class FunctionsSafeToCall(PyObjectSequenceOption[object]):
@@ -244,10 +244,11 @@ class FunctionsSafeToCall(PyObjectSequenceOption[object]):
     name = "functions_safe_to_call"
     default_value = [
         sorted,
-        asynq.asynq,
         collections.namedtuple,
         *[obj for obj in TYPING_OBJECTS_SAFE_TO_CALL if not safe_isinstance(obj, type)],
     ]
+    if asynq is not None:
+        default_value.append(asynq.asynq)
 
 
 _HookReturn = Union[None, ConcreteSignature, inspect.Signature, Callable[..., Any]]

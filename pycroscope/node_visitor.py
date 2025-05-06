@@ -28,12 +28,12 @@ from types import ModuleType
 from typing import Any, Optional, Union
 
 import codemod
-import qcore
 from ast_decompiler import decompile
 from typing_extensions import NotRequired, Protocol, TypedDict
 
 from . import analysis_lib, error_code
-from .safe import safe_getattr, safe_isinstance
+from .analysis_lib import override
+from .safe import safe_getattr, safe_isinstance, safe_str
 
 Error = dict[str, Any]
 ErrorCodeContainer = Union[error_code.ErrorRegistry, type[Enum]]
@@ -208,6 +208,10 @@ class BaseNodeVisitor(ast.NodeVisitor):
         self.add_ignores = add_ignores
         self.caught_errors = None
         self.is_code_only = is_code_only
+        self.lines = [line + "\n" for line in self.contents.splitlines()]
+        self._has_file_level_ignore_cache: dict[
+            tuple[Optional[ErrorCodeInstance], str], bool
+        ] = {}
 
     def check(self) -> list[Failure]:
         """Runs the class's checks on a tree."""
@@ -220,9 +224,9 @@ class BaseNodeVisitor(ast.NodeVisitor):
         if not apply_changes:
             return self.check()
         changes = collections.defaultdict(list)
-        with qcore.override(self.__class__, "_changes_for_fixer", changes):
+        with override(self.__class__, "_changes_for_fixer", changes):
             result = self.check()
-        lines = [line + "\n" for line in self.contents.splitlines()]
+        lines = self.lines
         if self.filename in changes:
             lines = self._apply_changes_to_lines(changes[self.filename], lines)
         return result, "".join(lines)
@@ -230,17 +234,25 @@ class BaseNodeVisitor(ast.NodeVisitor):
     def log(self, level: int, label: str, value: object) -> None:
         if level < self._logging_level:
             return
-        self.logger.log(level, f"{qcore.safe_str(label)}: {qcore.safe_str(value)}")
+        self.logger.log(level, f"{safe_str(label)}: {safe_str(value)}")
 
-    @qcore.caching.cached_per_instance()
     def _lines(self) -> list[str]:
-        return [line + "\n" for line in self.contents.splitlines()]
+        return self.lines
 
-    @qcore.caching.cached_per_instance()
     def has_file_level_ignore(
         self,
         error_code: Optional[ErrorCodeInstance] = None,
         ignore_comment: str = IGNORE_COMMENT,
+    ) -> bool:
+        key = (error_code, ignore_comment)
+        if key not in self._has_file_level_ignore_cache:
+            self._has_file_level_ignore_cache[key] = self._has_file_level_ignore(
+                error_code, ignore_comment
+            )
+        return self._has_file_level_ignore_cache[key]
+
+    def _has_file_level_ignore(
+        self, error_code: Optional[ErrorCodeInstance], ignore_comment: str
     ) -> bool:
         # if the IGNORE_COMMENT occurs before any non-comment line, all errors in the file are
         # ignored
@@ -467,7 +479,7 @@ class BaseNodeVisitor(ast.NodeVisitor):
         cls, kwargs: Mapping[str, Any], autofix: bool = False
     ) -> bool:
         changes = collections.defaultdict(list)
-        with qcore.override(cls, "_changes_for_fixer", changes):
+        with override(cls, "_changes_for_fixer", changes):
             try:
                 had_failure = bool(cls._run(**kwargs))
             except VisitorError:
@@ -498,7 +510,7 @@ class BaseNodeVisitor(ast.NodeVisitor):
                     offset += len(additions or []) - len(linenos)
             if patches:
                 # poor man's version of https://github.com/facebook/codemod/pull/113
-                with qcore.override(builtins, "print", _flushing_print):
+                with override(builtins, "print", _flushing_print):
                     codemod.run_interactive(_Query(patches))
         return had_failure
 
@@ -543,7 +555,7 @@ class BaseNodeVisitor(ast.NodeVisitor):
     @contextmanager
     def catch_errors(self) -> Iterator[list[Error]]:
         caught_errors = []
-        with qcore.override(self, "caught_errors", caught_errors):
+        with override(self, "caught_errors", caught_errors):
             yield caught_errors
 
     def show_caught_errors(self, errors: Iterable[Error]) -> None:
@@ -1114,7 +1126,7 @@ class ReplacingNodeVisitor(BaseNodeVisitor):
         """Save the node if it is a statement."""
         # This code is also inlined in NameCheckVisitor (a subclass of this class) for speed.
         if isinstance(node, ast.stmt):
-            with qcore.override(self, "current_statement", node):
+            with override(self, "current_statement", node):
                 return super().visit(node)
         else:
             return super().visit(node)

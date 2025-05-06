@@ -2,7 +2,7 @@
 from typing import Dict, Union
 
 from .test_name_check_visitor import TestNameCheckVisitorBase
-from .test_node_visitor import assert_passes, only_before
+from .test_node_visitor import assert_passes, only_before, skip_if_not_installed
 from .value import (
     AnnotatedValue,
     AnySource,
@@ -18,6 +18,7 @@ _global_dict: Dict[Union[int, str], float] = {}
 
 
 class TestAttributes(TestNameCheckVisitorBase):
+    @skip_if_not_installed("attr")
     @assert_passes()
     def test_attrs(self):
         import attr
@@ -330,6 +331,7 @@ class TestAttributes(TestNameCheckVisitorBase):
         def capybara():
             assert_is_value(has_prop.does_it_really, AnyValue(AnySource.inference))
 
+    @skip_if_not_installed("qcore")
     @assert_passes()
     def test_cached_per_instance(self):
         from qcore.caching import cached_per_instance

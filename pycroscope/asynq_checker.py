@@ -13,8 +13,8 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
 
 import asynq
-import qcore
 
+from .analysis_lib import override
 from .error_code import ErrorCode
 from .functions import AsyncFunctionKind
 from .options import Options, PyObjectSequenceOption, StringSequenceOption
@@ -72,14 +72,14 @@ class AsynqChecker:
         # within nested functions is attributed to the outer function. However, for async inner
         # functions, check batching within the function separately.
         with (
-            qcore.override(self, "current_async_kind", async_kind),
-            qcore.override(self, "is_classmethod", is_classmethod),
+            override(self, "current_async_kind", async_kind),
+            override(self, "is_classmethod", is_classmethod),
         ):
             if (
                 self.current_func_name is None
                 or async_kind != AsyncFunctionKind.non_async
             ):
-                with qcore.override(self, "current_func_name", name):
+                with override(self, "current_func_name", name):
                     yield
             else:
                 yield

@@ -14,11 +14,10 @@ from dataclasses import dataclass, field
 from types import ModuleType, TracebackType
 from typing import Optional, TypeVar
 
-import qcore
-
 import pycroscope
 
 from . import extensions
+from .analysis_lib import override
 from .safe import safe_in
 
 T = TypeVar("T")
@@ -195,7 +194,7 @@ class UnusedObjectFinder:
                 yield UnusedObject(module, attr, value, "unused")
 
     def _has_import_star_usage(self, module: ModuleType, attr: str) -> _UsageKind:
-        with qcore.override(self, "recursive_stack", set()):
+        with override(self, "recursive_stack", set()):
             return self._has_import_star_usage_inner(module, attr)
 
     def _has_import_star_usage_inner(self, module: ModuleType, attr: str) -> _UsageKind:
