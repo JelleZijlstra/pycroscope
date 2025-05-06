@@ -10,6 +10,7 @@ import sys
 import textwrap
 from collections import defaultdict
 
+import pytest
 from ast_decompiler import decompile
 
 from .node_visitor import (
@@ -416,9 +417,9 @@ def assert_code_equal(expected, actual):
         assert False, message
 
 
-# Helpers for excluding tests depending on Python version
+# Helpers for excluding tests conditionally
 def _dummy_function(*args, **kwargs):
-    return
+    pytest.skip()
 
 
 def only_before(version):

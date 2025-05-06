@@ -2,7 +2,7 @@
 from .error_code import ErrorCode
 from .implementation import assert_is_value
 from .test_name_check_visitor import TestNameCheckVisitorBase
-from .test_node_visitor import assert_passes, skip_before
+from .test_node_visitor import assert_passes, skip_before, skip_if_not_installed
 from .tests import make_simple_sequence
 from .value import (
     AnnotatedValue,
@@ -886,6 +886,7 @@ class TestCallable(TestNameCheckVisitorBase):
         def capybara() -> None:
             f(func)  # E: incompatible_argument
 
+    @skip_if_not_installed("asynq")
     @assert_passes()
     def test_asynq_callable(self):
         from typing import Optional
@@ -920,6 +921,7 @@ class TestCallable(TestNameCheckVisitorBase):
                 yield func2.asynq(1)
             yield bare_asynq_callable.asynq(func_example)
 
+    @skip_if_not_installed("asynq")
     @assert_passes(settings={ErrorCode.impure_async_call: False})
     def test_amap(self):
         from typing import Iterable, List, TypeVar

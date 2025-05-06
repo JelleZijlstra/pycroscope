@@ -18,7 +18,6 @@ from contextlib import AbstractContextManager
 from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
 
-import asynq
 from ast_decompiler import decompile
 
 import pycroscope
@@ -27,6 +26,7 @@ from .analysis_lib import get_indentation, get_line_range_for_node, override
 from .asynq_checker import AsyncFunctionKind
 from .error_code import ErrorCode
 from .functions import FunctionNode
+from .maybe_asynq import asynq
 from .node_visitor import Replacement
 from .stacked_scopes import VisitorState
 from .value import UNINITIALIZED_VALUE, KnownValue, UnboundMethodValue, Value
@@ -603,6 +603,8 @@ class YieldChecker:
         return varname
 
     def is_async_fn(self, obj: Any) -> bool:
+        if asynq is None:
+            return False
         if hasattr(obj, "__self__"):
             if isinstance(
                 obj.__self__, asynq.decorators.AsyncDecorator

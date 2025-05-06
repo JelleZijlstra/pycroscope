@@ -38,6 +38,7 @@ from .safe import (
     all_of_type,
     get_fully_qualified_name,
     hasattr_static,
+    is_bound_classmethod,
     is_newtype,
     is_typing_name,
     safe_equals,
@@ -156,7 +157,7 @@ def is_dot_asynq_function(obj: Any) -> bool:
     except Exception:
         # The object has a buggy __getattr__ that threw an error. Just ignore it.
         return False
-    if qcore is not None and qcore.inspection.is_classmethod(obj):
+    if is_bound_classmethod(obj):
         return False
     if obj is self_obj:
         return False

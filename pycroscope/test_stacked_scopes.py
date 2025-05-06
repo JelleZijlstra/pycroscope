@@ -659,6 +659,7 @@ class TestUnusedVariableComprehension(TestNameCheckVisitorBase):
 
 
 class TestUnusedVariableUnpacking(TestNameCheckVisitorBase):
+    @skip_if_not_installed("asynq")
     @assert_passes()
     def test_unused_in_yield(self):
         from asynq import asynq, result
@@ -672,6 +673,7 @@ class TestUnusedVariableUnpacking(TestNameCheckVisitorBase):
             a, b = yield kerodon.asynq(1), kerodon.asynq(2)  # E: unused_variable
             result(a)
 
+    @skip_if_not_installed("asynq")
     @assert_passes()
     def test_async_returns_pair(self):
         from asynq import asynq, result

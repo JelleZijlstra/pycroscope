@@ -25,11 +25,11 @@ from typing import (
     Union,
 )
 
-import asynq
 from typing_extensions import Literal, Protocol, Self, assert_never
 
 from .analysis_lib import Sentinel
 from .error_code import Error, ErrorCode
+from .maybe_asynq import asynq
 from .node_visitor import Replacement
 from .options import IntegerOption
 from .predicates import IsAssignablePredicate
@@ -1795,6 +1795,8 @@ class Signature:
     def get_asynq_value(self) -> "Signature":
         """Return the :class:`Signature` for the `.asynq` attribute of an
         :class:`pycroscope.extensions.AsynqCallable`."""
+        if asynq is None:
+            raise RuntimeError("asynq is not installed")
         if not self.is_asynq:
             raise TypeError("get_asynq_value() is only supported for AsynqCallable")
         return_value = AsyncTaskIncompleteValue(asynq.AsyncTask, self.return_value)

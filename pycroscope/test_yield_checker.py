@@ -4,12 +4,12 @@ import ast
 import pytest
 
 from .maybe_asynq import asynq
+
+if asynq is None:
+    pytest.skip("asynq not available", allow_module_level=True)
 from .test_name_check_visitor import TestNameCheckVisitorBase
 from .test_node_visitor import assert_passes
 from .yield_checker import VarnameGenerator, _camel_case_to_snake_case
-
-if asynq is None:
-    pytest.skip("asynq not available")
 
 
 class TestUnnecessaryYield(TestNameCheckVisitorBase):

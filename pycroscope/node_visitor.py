@@ -226,7 +226,7 @@ class BaseNodeVisitor(ast.NodeVisitor):
         changes = collections.defaultdict(list)
         with override(self.__class__, "_changes_for_fixer", changes):
             result = self.check()
-        lines = self.lines
+        lines = [line + "\n" for line in self.contents.splitlines()]
         if self.filename in changes:
             lines = self._apply_changes_to_lines(changes[self.filename], lines)
         return result, "".join(lines)

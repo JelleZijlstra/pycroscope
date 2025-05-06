@@ -12,11 +12,10 @@ from collections.abc import Iterator
 from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
 
-import asynq
-
 from .analysis_lib import override
 from .error_code import ErrorCode
 from .functions import AsyncFunctionKind
+from .maybe_asynq import asynq
 from .options import Options, PyObjectSequenceOption, StringSequenceOption
 from .safe import safe_getattr, safe_hasattr
 from .value import AnnotatedValue, KnownValue, TypedValue, UnboundMethodValue, Value
@@ -178,6 +177,8 @@ def is_impure_async_fn(value: Value) -> bool:
     This can be used to detect places where async functions are called synchronously.
 
     """
+    if asynq is None:
+        return False
     if isinstance(value, KnownValue):
         return asynq.is_async_fn(value.val) and not asynq.is_pure_async_fn(value.val)
     elif isinstance(value, UnboundMethodValue):

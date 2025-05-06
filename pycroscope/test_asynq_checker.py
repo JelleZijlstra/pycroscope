@@ -1,15 +1,17 @@
 # static analysis: ignore
+import pytest
+
+from .maybe_asynq import asynq
+
+if asynq is None:
+    pytest.skip("asynq not available", allow_module_level=True)
+
 from .asynq_checker import (
     _stringify_async_fn,
     get_pure_async_equivalent,
     is_impure_async_fn,
 )
-from .maybe_asynq import asynq
-from .stacked_scopes import Composite
-from .test_name_check_visitor import TestNameCheckVisitorBase
-from .test_node_visitor import assert_passes
-from .tests import (
-    ASYNQ_METHOD_NAME,
+from .asynq_tests import (
     PropertyObject,
     Subclass,
     async_fn,
@@ -17,10 +19,11 @@ from .tests import (
     l0cached_async_fn,
     proxied_fn,
 )
+from .stacked_scopes import Composite
+from .test_name_check_visitor import TestNameCheckVisitorBase
+from .test_node_visitor import assert_passes
+from .tests import ASYNQ_METHOD_NAME
 from .value import KnownValue, TypedValue, UnboundMethodValue
-
-if asynq is None:
-    pytest.skip("asynq not available")
 
 
 class TestImpureAsyncCalls(TestNameCheckVisitorBase):

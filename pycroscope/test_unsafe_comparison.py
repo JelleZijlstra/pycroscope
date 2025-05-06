@@ -1,6 +1,6 @@
 # static analysis: ignore
 from .test_name_check_visitor import TestNameCheckVisitorBase
-from .test_node_visitor import assert_passes
+from .test_node_visitor import assert_passes, skip_if_not_installed
 
 
 class TestUnsafeOverlap(TestNameCheckVisitorBase):
@@ -62,6 +62,7 @@ class TestUnsafeOverlap(TestNameCheckVisitorBase):
         def capybara(x: int):
             assert x == ANY
 
+    @skip_if_not_installed("asynq")
     @assert_passes()
     def test_asynq(self):
         from asynq import AsyncTask, asynq

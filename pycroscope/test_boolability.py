@@ -1,10 +1,10 @@
 # static analysis: ignore
-from asynq.futures import FutureBase
 
 from .boolability import Boolability, get_boolability
+from .maybe_asynq import asynq
 from .stacked_scopes import Composite
 from .test_name_check_visitor import TestNameCheckVisitorBase
-from .test_node_visitor import assert_passes
+from .test_node_visitor import assert_passes, skip_if
 from .value import (
     NO_RETURN_VALUE,
     AnnotatedValue,
@@ -33,8 +33,20 @@ class HasLen:
         return 42
 
 
-def test_get_boolability() -> None:
+@skip_if(asynq is None)
+def test_get_boolability_async() -> None:
+    from asynq.futures import FutureBase
+
     future = TypedValue(FutureBase)
+
+    assert Boolability.erroring_bool == get_boolability(future)
+    assert Boolability.erroring_bool == get_boolability(
+        AnnotatedValue(future, [KnownValue(1)])
+    )
+    assert Boolability.erroring_bool == get_boolability(future | KnownValue(1))
+
+
+def test_get_boolability() -> None:
     assert Boolability.boolable == get_boolability(AnyValue(AnySource.unannotated))
     assert Boolability.type_always_true == get_boolability(
         UnboundMethodValue("method", Composite(TypedValue(int)))
@@ -102,16 +114,11 @@ def test_get_boolability() -> None:
 
     # TypedValue
     assert Boolability.boolable == get_boolability(TypedValue(HasLen))
-    assert Boolability.erroring_bool == get_boolability(future)
     assert Boolability.boolable == get_boolability(TypedValue(object))
     assert Boolability.boolable == get_boolability(TypedValue(int))
     assert Boolability.boolable == get_boolability(TypedValue(object))
 
     # MultiValuedValue and AnnotatedValue
-    assert Boolability.erroring_bool == get_boolability(
-        AnnotatedValue(future, [KnownValue(1)])
-    )
-    assert Boolability.erroring_bool == get_boolability(future | KnownValue(1))
     assert Boolability.boolable == get_boolability(TypedValue(int) | TypedValue(str))
     assert Boolability.boolable == get_boolability(TypedValue(int) | KnownValue(""))
     assert Boolability.boolable == get_boolability(KnownValue(True) | KnownValue(False))
