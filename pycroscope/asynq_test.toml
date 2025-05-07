@@ -1,2 +1,2 @@
 [tool.pycroscope]
-classes_checked_for_asynq = ["pycroscope.tests.CheckedForAsynq"]
+classes_checked_for_asynq = ["pycroscope.asynq_tests.CheckedForAsynq"]
