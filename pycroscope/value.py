@@ -20,6 +20,7 @@ these subclasses and some related utilities.
 """
 
 import collections.abc
+import contextlib
 import enum
 import sys
 import textwrap
@@ -31,7 +32,6 @@ from itertools import chain
 from types import FunctionType, ModuleType
 from typing import Any, Callable, Optional, TypeVar, Union
 
-import qcore
 from typing_extensions import ParamSpec, Protocol, assert_never
 
 import pycroscope
@@ -276,7 +276,7 @@ class CanAssignContext(Protocol):
         left: "pycroscope.type_object.TypeObject",
         right: "pycroscope.type_object.TypeObject",
     ) -> AbstractContextManager[None]:
-        return qcore.empty_context
+        return contextlib.nullcontext()
 
     def has_used_any_match(self) -> bool:
         """Whether Any was used to secure a match."""
@@ -288,11 +288,11 @@ class CanAssignContext(Protocol):
     def reset_any_used(self) -> AbstractContextManager[None]:
         """Context that resets the value used by :meth:`has_used_any_match` and
         :meth:`record_any_match`."""
-        return qcore.empty_context
+        return contextlib.nullcontext()
 
     def set_exclude_any(self) -> AbstractContextManager[None]:
         """Within this context, `Any` is compatible only with itself."""
-        return qcore.empty_context
+        return contextlib.nullcontext()
 
     def should_exclude_any(self) -> bool:
         """Whether Any should be compatible only with itself."""

@@ -25,17 +25,15 @@ from typing import (
     Union,
 )
 
-import asynq
-import qcore
-from qcore.helpers import safe_str
 from typing_extensions import Literal, Protocol, Self, assert_never
 
-from pycroscope.predicates import IsAssignablePredicate
-
+from .analysis_lib import Sentinel
 from .error_code import Error, ErrorCode
+from .maybe_asynq import asynq
 from .node_visitor import Replacement
 from .options import IntegerOption
-from .safe import safe_getattr
+from .predicates import IsAssignablePredicate
+from .safe import safe_getattr, safe_str
 from .stacked_scopes import (
     NULL_CONSTRAINT,
     AbstractConstraint,
@@ -113,7 +111,7 @@ if TYPE_CHECKING:
 
 EMPTY = inspect.Parameter.empty
 UNANNOTATED = AnyValue(AnySource.unannotated)
-ELLIPSIS = qcore.MarkerObject("ellipsis")
+ELLIPSIS = Sentinel("ellipsis")
 ELLIPSIS_COMPOSITE = Composite(AnyValue(AnySource.ellipsis_callable))
 
 # TODO turn on
@@ -1797,6 +1795,8 @@ class Signature:
     def get_asynq_value(self) -> "Signature":
         """Return the :class:`Signature` for the `.asynq` attribute of an
         :class:`pycroscope.extensions.AsynqCallable`."""
+        if asynq is None:
+            raise RuntimeError("asynq is not installed")
         if not self.is_asynq:
             raise TypeError("get_asynq_value() is only supported for AsynqCallable")
         return_value = AsyncTaskIncompleteValue(asynq.AsyncTask, self.return_value)

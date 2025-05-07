@@ -33,7 +33,6 @@ from contextlib import AbstractContextManager
 from dataclasses import InitVar, dataclass, field
 from typing import TYPE_CHECKING, Any, NewType, Optional, TypeVar, Union, cast
 
-import qcore
 import typing_extensions
 from typing_extensions import (
     Literal,
@@ -47,6 +46,7 @@ from typing_extensions import (
 from pycroscope.annotated_types import get_annotated_types_extension
 
 from . import type_evaluation
+from .analysis_lib import object_from_string, override
 from .error_code import Error, ErrorCode
 from .extensions import (
     AsynqCallable,
@@ -133,7 +133,7 @@ class Context:
 
     def suppress_undefined_names(self) -> AbstractContextManager[None]:
         """Temporarily suppress errors about undefined names."""
-        return qcore.override(self, "should_suppress_undefined_names", True)
+        return override(self, "should_suppress_undefined_names", True)
 
     def is_being_evaluted(self, obj: object) -> bool:
         return id(obj) in self._being_evaluated
@@ -531,7 +531,7 @@ def _type_from_runtime(
         return CallableValue(sig)
     elif isinstance(val, ExternalType):
         try:
-            typ = qcore.helpers.object_from_string(val.type_path)
+            typ = object_from_string(val.type_path)
         except Exception:
             ctx.show_error(f"Cannot resolve type {val.type_path!r}")
             return AnyValue(AnySource.error)

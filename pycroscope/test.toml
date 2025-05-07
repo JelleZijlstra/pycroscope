@@ -1,5 +1,5 @@
 [tool.pycroscope]
-classes_checked_for_asynq = ["pycroscope.tests.CheckedForAsynq"]
+#classes_checked_for_asynq = ["pycroscope.tests.CheckedForAsynq"]
 methods_not_checked_for_asynq = ["not_checked"]
 variable_name_values = ["pycroscope.tests.uid_vnv", "pycroscope.tests.qid_vnv"]
 constructor_hooks = ["pycroscope.test_config.get_constructor"]

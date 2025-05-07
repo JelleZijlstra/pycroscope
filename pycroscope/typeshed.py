@@ -19,7 +19,6 @@ from enum import EnumMeta
 from types import GeneratorType, MethodDescriptorType, ModuleType
 from typing import Any, Generic, Optional, TypeVar, Union
 
-import qcore
 import typeshed_client
 from typing_extensions import Protocol
 
@@ -160,6 +159,9 @@ class TypeshedFinder:
     )
     _active_infos: list[typeshed_client.resolver.ResolvedName] = field(
         default_factory=list, repr=False, init=False
+    )
+    _info_cache: dict[str, typeshed_client.resolver.ResolvedName] = field(
+        default_factory=dict, repr=False, init=False
     )
 
     @classmethod
@@ -837,9 +839,10 @@ class TypeshedFinder:
             self.log("Ignoring unrecognized info", (fq_name, info))
             return None
 
-    @qcore.caching.cached_per_instance()
     def _get_info_for_name(self, fq_name: str) -> typeshed_client.resolver.ResolvedName:
-        return self.resolver.get_fully_qualified_name(fq_name)
+        if fq_name not in self._info_cache:
+            self._info_cache[fq_name] = self.resolver.get_fully_qualified_name(fq_name)
+        return self._info_cache[fq_name]
 
     def _get_signature_from_func_def(
         self,

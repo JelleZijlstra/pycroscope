@@ -15,10 +15,10 @@ from dataclasses import dataclass, replace
 from itertools import zip_longest
 from typing import Optional, TypeVar, Union
 
-import asynq
 from typing_extensions import Protocol
 
 from .error_code import ErrorCode
+from .maybe_asynq import asynq
 from .node_visitor import ErrorContext
 from .options import Options, PyObjectSequenceOption
 from .signature import ParameterKind, Signature, SigParameter
@@ -186,21 +186,23 @@ class Context(ErrorContext, CanAssignContext, Protocol):
 class AsynqDecorators(PyObjectSequenceOption[object]):
     """Decorators that are equivalent to asynq.asynq."""
 
-    default_value = [asynq.asynq]
+    default_value = [asynq.asynq] if asynq is not None else []
     name = "asynq_decorators"
 
 
 class AsyncProxyDecorators(PyObjectSequenceOption[object]):
     """Decorators that are equivalent to asynq.async_proxy."""
 
-    default_value = [asynq.async_proxy]
+    default_value = [asynq.async_proxy] if asynq is not None else []
     name = "async_proxy_decorators"
 
 
-_safe_decorators = [asynq.asynq, classmethod, staticmethod]
+_safe_decorators = [classmethod, staticmethod]
 if sys.version_info < (3, 11):
     # static analysis: ignore[undefined_attribute]
     _safe_decorators.append(asyncio.coroutine)
+if asynq is not None:
+    _safe_decorators.append(asynq.asynq)
 
 
 class SafeDecoratorsForNestedFunctions(PyObjectSequenceOption[object]):
@@ -438,7 +440,11 @@ def compute_value_of_function(
     val = CallableValue(sig, types.FunctionType)
     for unapplied, decorator, node in reversed(info.decorators):
         # Special case asynq.asynq until we can create the type automatically
-        if unapplied == KnownValue(asynq.asynq) and isinstance(val, CallableValue):
+        if (
+            asynq is not None
+            and unapplied == KnownValue(asynq.asynq)
+            and isinstance(val, CallableValue)
+        ):
             sig = replace(val.signature, is_asynq=True)
             val = CallableValue(sig, val.typ)
             continue

@@ -1,14 +1,19 @@
 # static analysis: ignore
+import pytest
+
+from .maybe_asynq import asynq
+
+if asynq is None:
+    pytest.skip("asynq not available", allow_module_level=True)
+
+from pathlib import Path
+
 from .asynq_checker import (
     _stringify_async_fn,
     get_pure_async_equivalent,
     is_impure_async_fn,
 )
-from .stacked_scopes import Composite
-from .test_name_check_visitor import TestNameCheckVisitorBase
-from .test_node_visitor import assert_passes
-from .tests import (
-    ASYNQ_METHOD_NAME,
+from .asynq_tests import (
     PropertyObject,
     Subclass,
     async_fn,
@@ -16,15 +21,30 @@ from .tests import (
     l0cached_async_fn,
     proxied_fn,
 )
+from .stacked_scopes import Composite
+from .test_name_check_visitor import (
+    ConfiguredNameCheckVisitor,
+    TestNameCheckVisitorBase,
+)
+from .test_node_visitor import assert_passes
+from .tests import ASYNQ_METHOD_NAME
 from .value import KnownValue, TypedValue, UnboundMethodValue
 
 
-class TestImpureAsyncCalls(TestNameCheckVisitorBase):
+class AsynqVisitor(ConfiguredNameCheckVisitor):
+    config_filename = str(Path(__file__).parent / "asynq_test.toml")
+
+
+class TestAsynqBase(TestNameCheckVisitorBase):
+    visitor_cls = AsynqVisitor
+
+
+class TestImpureAsyncCalls(TestAsynqBase):
     @assert_passes()
     def test_async_classmethod(self):
         from asynq import asynq, result
 
-        from pycroscope.tests import CheckedForAsynq, PropertyObject
+        from pycroscope.asynq_tests import CheckedForAsynq, PropertyObject
 
         class HostQuestion(CheckedForAsynq):
             def init(self, qid):
@@ -62,7 +82,7 @@ class TestImpureAsyncCalls(TestNameCheckVisitorBase):
     def test_async_staticmethod(self):
         from asynq import asynq, result
 
-        from pycroscope.tests import CheckedForAsynq, PropertyObject
+        from pycroscope.asynq_tests import CheckedForAsynq, PropertyObject
 
         class CapybaraLink(CheckedForAsynq):
             def init(self, uid):
@@ -75,7 +95,7 @@ class TestImpureAsyncCalls(TestNameCheckVisitorBase):
 
     @assert_passes()
     def test_impure_async_staticmethod(self):
-        from pycroscope.tests import CheckedForAsynq, PropertyObject
+        from pycroscope.asynq_tests import CheckedForAsynq, PropertyObject
 
         class CapybaraLink(CheckedForAsynq):
             def init(self, uid):
@@ -89,7 +109,7 @@ class TestImpureAsyncCalls(TestNameCheckVisitorBase):
     def test_async_property_access(self):
         from asynq import asynq, result
 
-        from pycroscope.tests import PropertyObject
+        from pycroscope.asynq_tests import PropertyObject
 
         @asynq()
         def get_capybara(qid):
@@ -116,7 +136,7 @@ class TestImpureAsyncCalls(TestNameCheckVisitorBase):
     def test_get_async(self):
         self.assert_is_changed(
             """
-from pycroscope.tests import ClassWithAsync
+from pycroscope.asynq_tests import ClassWithAsync
 from asynq import asynq
 
 @asynq()
@@ -124,7 +144,7 @@ def capybara():
     return ClassWithAsync().get()
 """,
             """
-from pycroscope.tests import ClassWithAsync
+from pycroscope.asynq_tests import ClassWithAsync
 from asynq import asynq
 
 @asynq()
@@ -137,7 +157,7 @@ def capybara():
     def test_pure_async_call(self):
         from asynq import asynq, result
 
-        from pycroscope.tests import CheckedForAsynq, async_fn
+        from pycroscope.asynq_tests import CheckedForAsynq, async_fn
 
         class Capybara(CheckedForAsynq):
             def init(self, qid):
@@ -150,7 +170,7 @@ def capybara():
 
     @assert_passes()
     def test_impure_async_call(self):
-        from pycroscope.tests import CheckedForAsynq, async_fn
+        from pycroscope.asynq_tests import CheckedForAsynq, async_fn
 
         class Capybara(CheckedForAsynq):
             def init(self, aid):
@@ -162,7 +182,7 @@ def capybara():
 
     @assert_passes()
     def test_impure_cached_call(self):
-        from pycroscope.tests import CheckedForAsynq, cached_fn
+        from pycroscope.asynq_tests import CheckedForAsynq, cached_fn
 
         class Capybara(CheckedForAsynq):
             def init(self, uid):
@@ -176,7 +196,7 @@ def capybara():
     def test_impure_async_call_in_component(self):
         from asynq import asynq
 
-        from pycroscope.tests import CheckedForAsynq, cached_fn
+        from pycroscope.asynq_tests import CheckedForAsynq, cached_fn
 
         class Capybara(CheckedForAsynq):
             def init(self, uid):
@@ -191,7 +211,7 @@ def capybara():
     def test_impure_async_call_to_method(self):
         from asynq import asynq
 
-        from pycroscope.tests import CheckedForAsynq
+        from pycroscope.asynq_tests import CheckedForAsynq
 
         class Capybara(CheckedForAsynq):
             @asynq()
@@ -208,7 +228,7 @@ def capybara():
     def test_pure_async_for_attributes(self):
         from asynq import asynq, result
 
-        from pycroscope.tests import CheckedForAsynq, PropertyObject
+        from pycroscope.asynq_tests import CheckedForAsynq, PropertyObject
 
         class Capybara(CheckedForAsynq):
             def init(self, qid):
@@ -221,7 +241,7 @@ def capybara():
 
     @assert_passes()
     def test_untyped_attribute_accesses(self):
-        from pycroscope.tests import CheckedForAsynq, PropertyObject
+        from pycroscope.asynq_tests import CheckedForAsynq, PropertyObject
 
         class Capybara(CheckedForAsynq):
             def init(self, qid):
@@ -236,7 +256,7 @@ def capybara():
 
     @assert_passes()
     def test_access_in_classmethod(self):
-        from pycroscope.tests import CheckedForAsynq, PropertyObject
+        from pycroscope.asynq_tests import CheckedForAsynq, PropertyObject
 
         class Capybara(CheckedForAsynq):
             def init(self, qid):
@@ -251,7 +271,7 @@ def capybara():
 
     @assert_passes()
     def test_access_in_property(self):
-        from pycroscope.tests import CheckedForAsynq, PropertyObject
+        from pycroscope.asynq_tests import CheckedForAsynq, PropertyObject
 
         class LinkImageNonLive(CheckedForAsynq):
             embed_object = property(lambda self: PropertyObject(self.lid).prop)
@@ -261,7 +281,7 @@ def capybara():
 
     @assert_passes()
     def test_no_error_in_classmethod(self):
-        from pycroscope.tests import CheckedForAsynq, cached_fn
+        from pycroscope.asynq_tests import CheckedForAsynq, cached_fn
 
         class Capybara(CheckedForAsynq):
             @classmethod
@@ -283,7 +303,7 @@ def capybara():
     def test_function(self):
         from asynq import asynq
 
-        from pycroscope.tests import async_fn
+        from pycroscope.asynq_tests import async_fn
 
         @asynq()
         def capybara(aid):
@@ -293,7 +313,7 @@ def capybara():
     def test_method(self):
         from asynq import asynq
 
-        from pycroscope.tests import PropertyObject
+        from pycroscope.asynq_tests import PropertyObject
 
         @asynq()
         def capybara(aid):
@@ -304,19 +324,19 @@ def capybara():
     def test_classmethod(self):
         from asynq import asynq
 
-        from pycroscope.tests import PropertyObject
+        from pycroscope.asynq_tests import PropertyObject
 
         @asynq()
         def capybara(aid):
             return PropertyObject.async_classmethod(aid)  # E: impure_async_call
 
 
-class TestAsyncMethods(TestNameCheckVisitorBase):
+class TestAsyncMethods(TestAsynqBase):
     @assert_passes()
     def test_basic(self):
         from asynq import asynq, result
 
-        from pycroscope.tests import CheckedForAsynq, PropertyObject
+        from pycroscope.asynq_tests import CheckedForAsynq, PropertyObject
 
         class Capybara(CheckedForAsynq):
             def init(self, poid):
@@ -330,7 +350,7 @@ class TestAsyncMethods(TestNameCheckVisitorBase):
 
     @assert_passes()
     def test_impure_method_call(self):
-        from pycroscope.tests import CheckedForAsynq, PropertyObject
+        from pycroscope.asynq_tests import CheckedForAsynq, PropertyObject
 
         class Capybara(CheckedForAsynq):
             def init(self, poid):
@@ -369,7 +389,7 @@ class TestAsyncMethods(TestNameCheckVisitorBase):
 
 def test_stringify_async_fn():
     def check(expected, val):
-        assert "pycroscope.tests." + expected == _stringify_async_fn(val)
+        assert "pycroscope.asynq_tests." + expected == _stringify_async_fn(val)
 
     check("async_fn", KnownValue(async_fn))
     check("async_fn." + ASYNQ_METHOD_NAME, KnownValue(async_fn.asynq))
@@ -406,9 +426,12 @@ def test_stringify_async_fn():
     check(
         "Subclass.async_method", KnownValue(super(Subclass, Subclass(1)).async_method)
     )
-    assert "super(pycroscope.tests.Subclass, self).async_method" == _stringify_async_fn(
-        UnboundMethodValue(
-            "async_method", Composite(TypedValue(super(Subclass, Subclass)))
+    assert (
+        "super(pycroscope.asynq_tests.Subclass, self).async_method"
+        == _stringify_async_fn(
+            UnboundMethodValue(
+                "async_method", Composite(TypedValue(super(Subclass, Subclass)))
+            )
         )
     )
 
@@ -452,7 +475,7 @@ def test_get_pure_async_equivalent():
         assert expected == get_pure_async_equivalent(KnownValue(fn))
 
     assert (
-        "pycroscope.tests.PropertyObject.async_method.asynq"
+        "pycroscope.asynq_tests.PropertyObject.async_method.asynq"
         == get_pure_async_equivalent(
             UnboundMethodValue("async_method", Composite(TypedValue(PropertyObject)))
         )

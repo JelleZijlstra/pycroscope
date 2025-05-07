@@ -3,10 +3,10 @@ import functools
 from dataclasses import dataclass
 from typing import List, NewType, TypeVar
 
-from asynq import asynq
+import pytest
 
-from .arg_spec import is_dot_asynq_function
 from .checker import Checker
+from .maybe_asynq import asynq
 from .signature import BoundMethodSignature, ParameterKind, Signature, SigParameter
 from .stacked_scopes import Composite
 from .test_name_check_visitor import (
@@ -14,7 +14,6 @@ from .test_name_check_visitor import (
     TestNameCheckVisitorBase,
 )
 from .test_node_visitor import assert_passes
-from .tests import l0cached_async_fn
 from .value import (
     AnySource,
     AnyValue,
@@ -45,37 +44,8 @@ class ClassWithCall(object):
     def normal_staticmethod(arg):
         pass
 
-    @asynq()
-    def async_method(self, x):
-        pass
-
-    @asynq()
-    @staticmethod
-    def async_staticmethod(y):
-        pass
-
-    @asynq()
-    @classmethod
-    def async_classmethod(cls, z):
-        pass
-
-    @asynq(pure=True)
-    @classmethod
-    def pure_async_classmethod(cls, ac):
-        pass
-
-    @classmethod
-    @asynq()
-    def classmethod_before_async(cls, ac):
-        pass
-
 
 def function(capybara, hutia=3, *tucotucos, **proechimys):
-    pass
-
-
-@asynq()
-def async_function(x, y):
     pass
 
 
@@ -141,94 +111,6 @@ def test_get_argspec():
         ) == asc.get_argspec(function)
 
         assert Signature.make(
-            [SigParameter("x"), SigParameter("y")],
-            callable=async_function.fn,
-            is_asynq=True,
-        ) == asc.get_argspec(async_function)
-
-        assert Signature.make(
-            [SigParameter("x"), SigParameter("y")],
-            callable=async_function.fn,
-            is_asynq=True,
-        ) == asc.get_argspec(async_function.asynq)
-
-        instance = ClassWithCall(1)
-
-        assert BoundMethodSignature(
-            Signature.make(
-                [SigParameter("self"), SigParameter("x")],
-                callable=instance.async_method.decorator.fn,
-                is_asynq=True,
-            ),
-            Composite(KnownValue(instance)),
-        ) == asc.get_argspec(instance.async_method)
-
-        assert BoundMethodSignature(
-            Signature.make(
-                [SigParameter("self"), SigParameter("x")],
-                callable=instance.async_method.decorator.fn,
-                is_asynq=True,
-            ),
-            Composite(KnownValue(instance)),
-        ) == asc.get_argspec(instance.async_method.asynq)
-
-        assert Signature.make(
-            [SigParameter("y")],
-            callable=ClassWithCall.async_staticmethod.fn,
-            is_asynq=True,
-        ) == asc.get_argspec(ClassWithCall.async_staticmethod)
-
-        assert Signature.make(
-            [SigParameter("y")],
-            callable=ClassWithCall.async_staticmethod.fn,
-            is_asynq=True,
-        ) == asc.get_argspec(ClassWithCall.async_staticmethod.asynq)
-
-        assert BoundMethodSignature(
-            Signature.make(
-                [SigParameter("cls"), SigParameter("z")],
-                callable=ClassWithCall.async_classmethod.decorator.fn,
-                is_asynq=True,
-            ),
-            Composite(KnownValue(ClassWithCall)),
-        ) == asc.get_argspec(ClassWithCall.async_classmethod)
-
-        assert BoundMethodSignature(
-            Signature.make(
-                [SigParameter("cls"), SigParameter("z")],
-                callable=ClassWithCall.async_classmethod.decorator.fn,
-                is_asynq=True,
-            ),
-            Composite(KnownValue(ClassWithCall)),
-        ) == asc.get_argspec(ClassWithCall.async_classmethod.asynq)
-
-        assert BoundMethodSignature(
-            Signature.make(
-                [SigParameter("cls"), SigParameter("ac")],
-                callable=ClassWithCall.pure_async_classmethod.decorator.fn,
-            ),
-            Composite(KnownValue(ClassWithCall)),
-        ) == asc.get_argspec(ClassWithCall.pure_async_classmethod)
-
-        # This behaves differently in 3.9 through 3.12 than in earlier and later
-        # versions. The behavior change was made in
-        # https://github.com/python/cpython/issues/63272
-        # and undone in https://github.com/python/cpython/issues/89519
-        if hasattr(ClassWithCall.classmethod_before_async, "decorator"):
-            callable = ClassWithCall.classmethod_before_async.decorator.fn
-        else:
-            callable = ClassWithCall.classmethod_before_async.__func__.fn
-
-        assert BoundMethodSignature(
-            Signature.make(
-                [SigParameter("cls"), SigParameter("ac")],
-                callable=callable,
-                is_asynq=True,
-            ),
-            Composite(KnownValue(ClassWithCall)),
-        ) == asc.get_argspec(ClassWithCall.classmethod_before_async)
-
-        assert Signature.make(
             [
                 SigParameter("args", annotation=TypedValue(int)),
                 SigParameter("kwargs", annotation=TypedValue(str)),
@@ -261,6 +143,106 @@ def test_get_argspec():
             NewTypeValue(NT),
             callable=NT,
         ) == asc.get_argspec(NT)
+
+
+def test_get_argspec_asynq():
+    if asynq is None:
+        pytest.skip("asynq is not available")
+    from pycroscope.asynq_tests import ClassWithCallAsynq, async_function
+
+    checker = Checker()
+
+    # test everything twice because calling qcore.get_original_fn has side effects
+    for _ in range(2):
+        asc = checker.arg_spec_cache
+
+        assert Signature.make(
+            [SigParameter("x"), SigParameter("y")],
+            callable=async_function.fn,
+            is_asynq=True,
+        ) == asc.get_argspec(async_function)
+
+        assert Signature.make(
+            [SigParameter("x"), SigParameter("y")],
+            callable=async_function.fn,
+            is_asynq=True,
+        ) == asc.get_argspec(async_function.asynq)
+
+        instance = ClassWithCallAsynq(1)
+
+        assert BoundMethodSignature(
+            Signature.make(
+                [SigParameter("self"), SigParameter("x")],
+                callable=instance.async_method.decorator.fn,
+                is_asynq=True,
+            ),
+            Composite(KnownValue(instance)),
+        ) == asc.get_argspec(instance.async_method)
+
+        assert BoundMethodSignature(
+            Signature.make(
+                [SigParameter("self"), SigParameter("x")],
+                callable=instance.async_method.decorator.fn,
+                is_asynq=True,
+            ),
+            Composite(KnownValue(instance)),
+        ) == asc.get_argspec(instance.async_method.asynq)
+
+        assert Signature.make(
+            [SigParameter("y")],
+            callable=ClassWithCallAsynq.async_staticmethod.fn,
+            is_asynq=True,
+        ) == asc.get_argspec(ClassWithCallAsynq.async_staticmethod)
+
+        assert Signature.make(
+            [SigParameter("y")],
+            callable=ClassWithCallAsynq.async_staticmethod.fn,
+            is_asynq=True,
+        ) == asc.get_argspec(ClassWithCallAsynq.async_staticmethod.asynq)
+
+        assert BoundMethodSignature(
+            Signature.make(
+                [SigParameter("cls"), SigParameter("z")],
+                callable=ClassWithCallAsynq.async_classmethod.decorator.fn,
+                is_asynq=True,
+            ),
+            Composite(KnownValue(ClassWithCallAsynq)),
+        ) == asc.get_argspec(ClassWithCallAsynq.async_classmethod)
+
+        assert BoundMethodSignature(
+            Signature.make(
+                [SigParameter("cls"), SigParameter("z")],
+                callable=ClassWithCallAsynq.async_classmethod.decorator.fn,
+                is_asynq=True,
+            ),
+            Composite(KnownValue(ClassWithCallAsynq)),
+        ) == asc.get_argspec(ClassWithCallAsynq.async_classmethod.asynq)
+
+        assert BoundMethodSignature(
+            Signature.make(
+                [SigParameter("cls"), SigParameter("ac")],
+                callable=ClassWithCallAsynq.pure_async_classmethod.decorator.fn,
+            ),
+            Composite(KnownValue(ClassWithCallAsynq)),
+        ) == asc.get_argspec(ClassWithCallAsynq.pure_async_classmethod)
+
+        # This behaves differently in 3.9 through 3.12 than in earlier and later
+        # versions. The behavior change was made in
+        # https://github.com/python/cpython/issues/63272
+        # and undone in https://github.com/python/cpython/issues/89519
+        if hasattr(ClassWithCallAsynq.classmethod_before_async, "decorator"):
+            callable = ClassWithCallAsynq.classmethod_before_async.decorator.fn
+        else:
+            callable = ClassWithCallAsynq.classmethod_before_async.__func__.fn
+
+        assert BoundMethodSignature(
+            Signature.make(
+                [SigParameter("cls"), SigParameter("ac")],
+                callable=callable,
+                is_asynq=True,
+            ),
+            Composite(KnownValue(ClassWithCallAsynq)),
+        ) == asc.get_argspec(ClassWithCallAsynq.classmethod_before_async)
 
 
 def test_positional_only():
@@ -298,14 +280,6 @@ def test_positional_only():
         ],
         callable=Y.X.f,
     )
-
-
-def test_is_dot_asynq_function():
-    assert not is_dot_asynq_function(async_function)
-    assert is_dot_asynq_function(async_function.asynq)
-    assert not is_dot_asynq_function(l0cached_async_fn)
-    assert is_dot_asynq_function(l0cached_async_fn.asynq)
-    assert not is_dot_asynq_function(l0cached_async_fn.dirty)
 
 
 class TestClassInstantiation(TestNameCheckVisitorBase):

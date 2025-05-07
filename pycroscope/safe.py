@@ -6,6 +6,7 @@
 
 import inspect
 import sys
+import types
 import typing
 from collections.abc import Container, Sequence
 from typing import Any, NewType, Optional, TypeVar, Union
@@ -73,7 +74,9 @@ def safe_issubclass(cls: type, class_or_tuple: Union[type, tuple[type, ...]]) ->
         return False
 
 
-def safe_isinstance(obj: object, class_or_tuple: Union[type, tuple[type, ...]]) -> bool:
+def safe_isinstance(
+    obj: object, class_or_tuple: Union[type[T], tuple[type[T], ...]]
+) -> typing_extensions.TypeIs[T]:
     """Safe version of ``isinstance()``.
 
     ``isinstance(a, b)`` can throw an error in the following circumstances:
@@ -194,3 +197,21 @@ def is_dataclass_type(cls: type) -> bool:
         return "__dataclass_fields__" in cls.__dict__
     except Exception:
         return False
+
+
+def is_bound_classmethod(obj: object) -> bool:
+    """Returns whether the object is a bound classmethod."""
+    return safe_isinstance(obj, types.MethodType) and safe_isinstance(
+        obj.__self__, type
+    )
+
+
+def safe_str(obj: object) -> str:
+    """Like str(), but catches exceptions."""
+    try:
+        return str(obj)
+    except Exception as e:
+        try:
+            return f"<error in str(): {e!r}>"
+        except Exception:
+            return "<error in str() and in error message>"

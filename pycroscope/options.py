@@ -14,9 +14,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, ClassVar, Generic, Optional, TypeVar
 
-import qcore
 import tomli
 
+from .analysis_lib import object_from_string
 from .error_code import Error, ErrorCode
 from .find_unused import used
 from .safe import safe_in
@@ -241,7 +241,7 @@ class PyObjectSequenceOption(ConcatenatedOption[T]):
         final = []
         for elt in data:
             try:
-                obj = qcore.object_from_string(elt)
+                obj = object_from_string(elt)
             except Exception:
                 raise InvalidConfigOption.from_parser(cls, "path to Python object", elt)
             used(obj)
@@ -258,7 +258,7 @@ class PyObjectSequenceOption(ConcatenatedOption[T]):
         parser.add_argument(
             f"--{cls.name.replace('_', '-')}",
             action="append",
-            type=qcore.object_from_string,
+            type=object_from_string,
             help=cls.__doc__,
             default=argparse.SUPPRESS,
         )

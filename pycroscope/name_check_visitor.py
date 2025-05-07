@@ -19,9 +19,9 @@ import itertools
 import logging
 import operator
 import os
-import os.path
 import pickle
 import sys
+import time
 import traceback
 import types
 import typing
@@ -36,14 +36,17 @@ from types import GenericAlias
 from typing import Annotated, Any, Callable, ClassVar, Optional, TypeVar, Union
 from unittest.mock import ANY
 
-import asynq
-import qcore
 import typeshed_client
-from qcore.testing import Anything
 from typing_extensions import Protocol, get_args, get_origin
 
 from . import attributes, format_strings, importer, node_visitor, type_evaluation
-from .analysis_lib import get_attribute_path
+from .analysis_lib import (
+    get_attribute_path,
+    get_subclasses_recursively,
+    is_cython_class,
+    object_from_string,
+    override,
+)
 from .annotated_types import Ge, Gt, Le, Lt
 from .annotations import (
     SyntheticEvaluator,
@@ -83,6 +86,7 @@ from .functions import (
     compute_parameters,
     compute_value_of_function,
 )
+from .maybe_asynq import asynq, qcore
 from .options import (
     BooleanOption,
     ConcatenatedOption,
@@ -314,9 +318,11 @@ AST_TO_REVERSE = {
     for node_cls, (op, _, _) in COMPARATOR_TO_OPERATOR.items()
 }
 
-SAFE_DECORATORS_FOR_ARGSPEC_TO_RETVAL = [KnownValue(asynq.asynq), KnownValue(property)]
+SAFE_DECORATORS_FOR_ARGSPEC_TO_RETVAL = [KnownValue(property)]
 if sys.version_info < (3, 11):
     SAFE_DECORATORS_FOR_ARGSPEC_TO_RETVAL.append(KnownValue(asyncio.coroutine))
+if asynq is not None:
+    SAFE_DECORATORS_FOR_ARGSPEC_TO_RETVAL.append(KnownValue(asynq.asynq))
 
 
 class CustomContextManager(Protocol[T, U]):
@@ -565,11 +571,13 @@ class IgnoredUnusedClassAttributes(ConcatenatedOption[tuple[type, set[str]]]):
                 )
             typ, attrs = elt
             try:
-                obj = qcore.object_from_string(typ)
+                obj = object_from_string(typ)
             except Exception:
                 raise InvalidConfigOption.from_parser(
                     cls, "path to Python object", typ
                 ) from None
+            if not isinstance(obj, type):
+                raise InvalidConfigOption.from_parser(cls, "type", obj)
             if not isinstance(attrs, (list, tuple)):
                 raise InvalidConfigOption.from_parser(
                     cls, "sequence of attributes", attrs
@@ -610,7 +618,9 @@ def should_check_for_duplicate_values(cls: object, options: Options) -> bool:
 
 
 def _anything_to_any(obj: object) -> Optional[Value]:
-    if obj is Anything or obj is ANY:
+    if obj is ANY:
+        return AnyValue(AnySource.explicit)
+    if qcore is not None and obj is qcore.testing.Anything:
         return AnyValue(AnySource.explicit)
     return None
 
@@ -838,7 +848,7 @@ class ClassAttributeChecker:
             for base_cls in typ.__bases__:
                 all_attrs_read[base_cls] |= attr_names_read
             if isinstance(typ, type):
-                for child_cls in qcore.inspection.get_subclass_tree(typ):
+                for child_cls in get_subclasses_recursively(typ):
                     all_attrs_read[child_cls] |= attr_names_read
 
         for serialized, attrs_read in self.attributes_read.items():
@@ -939,7 +949,7 @@ class ClassAttributeChecker:
             return
 
         # if it's on a child class it's also ok
-        for child_cls in qcore.inspection.get_subclass_tree(typ):
+        for child_cls in get_subclasses_recursively(typ):
             # also check the child classes' base classes, because mixins sometimes use attributes
             # defined on other parents of their child classes
             for base_cls in get_mro(child_cls):
@@ -992,7 +1002,7 @@ class ClassAttributeChecker:
         result = (
             self.serialize_type(base_cls) not in self.classes_examined
             and base_cls.__module__ not in self.modules_examined
-            and not qcore.inspection.is_cython_class(base_cls)
+            and not is_cython_class(base_cls)
         )
         if not result:
             self.unexamined_base_classes.add(base_cls)
@@ -1130,7 +1140,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         )
         self.checker = checker
 
-        # State (to use in with qcore.override)
+        # State (to use in with override())
         self.state = VisitorState.collect_names
         # value currently being assigned
         self.being_assigned = AnyValue(AnySource.inference)
@@ -1236,11 +1246,11 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     def reset_any_used(self) -> AbstractContextManager[None]:
         """Context that resets the value used by :meth:`has_used_any_match` and
         :meth:`record_any_match`."""
-        return qcore.override(self, "_has_used_any_match", False)
+        return override(self, "_has_used_any_match", False)
 
     def set_exclude_any(self) -> AbstractContextManager[None]:
         """Within this context, `Any` is compatible only with itself."""
-        return qcore.override(self, "_should_exclude_any", True)
+        return override(self, "_should_exclude_any", True)
 
     def should_exclude_any(self) -> bool:
         """Whether Any should be compatible only with itself."""
@@ -1313,7 +1323,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
 
     def check(self, ignore_missing_module: bool = False) -> list[node_visitor.Failure]:
         """Run the visitor on this module."""
-        start_time = qcore.utime()
+        start_time = time.time()
         try:
             if self.is_compiled:
                 # skip compiled (Cythonized) files because pycroscope will misinterpret the
@@ -1324,9 +1334,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             if self.module is None and not ignore_missing_module:
                 # If we could not import the module, other checks frequently fail.
                 return self.all_failures
-            with qcore.override(self, "state", VisitorState.collect_names):
+            with override(self, "state", VisitorState.collect_names):
                 self.visit(self.tree)
-            with qcore.override(self, "state", VisitorState.check_names):
+            with override(self, "state", VisitorState.check_names):
                 self.visit(self.tree)
             # This doesn't deal correctly with errors from the attribute checker. Therefore,
             # leaving this check disabled by default for now.
@@ -1351,10 +1361,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         # Recover memory used for the AST. We keep the visitor object around later in order
         # to show ClassAttributeChecker errors, but those don't need the full AST.
         self.tree = None
-        self._lines.__cached_per_instance_cache__.clear()
         self._argspec_to_retval.clear()
-        end_time = qcore.utime()
-        message = f"{self.filename} took {(end_time - start_time) / qcore.SECOND:.2f} s"
+        end_time = time.time()
+        message = f"{self.filename} took {end_time - start_time:.2f} s"
         self.logger.log(logging.INFO, message)
         return self.all_failures
 
@@ -1368,7 +1377,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         try:
             # This part inlines ReplacingNodeVisitor.visit
             if node_type in self._statement_types:
-                # inline qcore.override here
+                # inline override here
                 old_statement = self.current_statement
                 try:
                     self.current_statement = node
@@ -1417,7 +1426,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 self.visit(value)
 
     def _fill_method_cache(self) -> None:
-        for typ in qcore.inspection.get_subclass_tree(ast.AST):
+        for typ in get_subclasses_recursively(ast.AST):
             method = "visit_" + typ.__name__
             visitor = getattr(self, method, self.generic_visit)
             self._method_cache[typ] = visitor
@@ -1753,9 +1762,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         else:
             current_enum_members = None
         with (
-            qcore.override(self, "current_class", current_class),
-            qcore.override(self.asynq_checker, "current_class", current_class),
-            qcore.override(self, "current_enum_members", current_enum_members),
+            override(self, "current_class", current_class),
+            override(self.asynq_checker, "current_class", current_class),
+            override(self, "current_enum_members", current_enum_members),
         ):
             yield
 
@@ -1767,7 +1776,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 ScopeType.annotation_scope, scope_node=node, scope_object=class_obj
             )
         else:
-            ctx = qcore.empty_context
+            ctx = contextlib.nullcontext()
         with ctx:
             if sys.version_info >= (3, 12) and node.type_params:
                 self.visit_type_param_values(node.type_params)
@@ -1919,7 +1928,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 scope_object=potential_function,
             )
         else:
-            ctx = qcore.empty_context
+            ctx = contextlib.nullcontext()
         with ctx:
             if (
                 sys.version_info >= (3, 12)
@@ -2010,14 +2019,12 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     async_kind=info.async_kind,
                     is_classmethod=info.is_classmethod,
                 ),
-                qcore.override(self, "yield_checker", YieldChecker(self)),
-                qcore.override(
-                    self, "is_async_def", isinstance(node, ast.AsyncFunctionDef)
-                ),
-                qcore.override(self, "current_function_name", node.name),
-                qcore.override(self, "current_function", potential_function),
-                qcore.override(self, "expected_return_value", expected_return),
-                qcore.override(self, "current_function_info", info),
+                override(self, "yield_checker", YieldChecker(self)),
+                override(self, "is_async_def", isinstance(node, ast.AsyncFunctionDef)),
+                override(self, "current_function_name", node.name),
+                override(self, "current_function", potential_function),
+                override(self, "expected_return_value", expected_return),
+                override(self, "current_function_info", info),
             ):
                 result = self._visit_function_body(info)
 
@@ -2227,7 +2234,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     def visit_Lambda(self, node: ast.Lambda) -> Value:
         with self.asynq_checker.set_func_name("<lambda>"):
             with self.compute_function_info(node) as info:
-                with qcore.override(self, "current_function_info", info):
+                with override(self, "current_function_info", info):
                     result = self._visit_function_body(info)
             return compute_value_of_function(info, self, result=result.return_value)
 
@@ -2236,9 +2243,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         node = function_info.node
 
         class_ctx = (
-            qcore.empty_context
+            contextlib.nullcontext()
             if not self.scopes.is_nested_function()
-            else qcore.override(self, "current_class", None)
+            else override(self, "current_class", None)
         )
         with class_ctx:
             self._check_method_first_arg(node, function_info=function_info)
@@ -2285,9 +2292,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         # is called, which is strictly speaking wrong but should be fine in practice.
         with (
             self.scopes.add_scope(ScopeType.function_scope, scope_node=node),
-            qcore.override(self, "is_generator", False),
-            qcore.override(self, "async_kind", function_info.async_kind),
-            qcore.override(self, "_name_node_to_statement", {}),
+            override(self, "is_generator", False),
+            override(self, "async_kind", function_info.async_kind),
+            override(self, "_name_node_to_statement", {}),
         ):
             scope = self.scopes.current_scope()
             assert isinstance(scope, FunctionScope)
@@ -2309,8 +2316,8 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 )
 
             with (
-                qcore.override(self, "state", VisitorState.collect_names),
-                qcore.override(self, "return_values", []),
+                override(self, "state", VisitorState.collect_names),
+                override(self, "return_values", []),
                 self.yield_checker.set_function_node(node),
             ):
                 if isinstance(node, ast.Lambda):
@@ -2326,9 +2333,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             self.yield_checker.reset_yield_checks()
 
             with (
-                qcore.override(self, "current_class", None),
-                qcore.override(self, "state", VisitorState.check_names),
-                qcore.override(self, "return_values", []),
+                override(self, "current_class", None),
+                override(self, "state", VisitorState.check_names),
+                override(self, "return_values", []),
                 self.yield_checker.set_function_node(node),
             ):
                 if isinstance(node, ast.Lambda):
@@ -2482,14 +2489,14 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     def value_of_annotation(
         self, node: ast.expr, *, allow_unpack: bool = False
     ) -> Value:
-        with qcore.override(self, "state", VisitorState.collect_names):
+        with override(self, "state", VisitorState.collect_names):
             annotated_type = self._visit_annotation(node)
         return self._value_of_annotation_type(
             annotated_type, node, allow_unpack=allow_unpack
         )
 
     def _visit_annotation(self, node: ast.AST) -> Value:
-        with qcore.override(self, "in_annotation", True):
+        with override(self, "in_annotation", True):
             val = self.visit(node)
             self.check_for_missing_generic_params(node, val)
             return val
@@ -2941,8 +2948,8 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     *iterable_type,
                     limit=self.options.get_value_for(UnionSimplificationLimit),
                 )
-        with qcore.override(self, "in_comprehension_body", True):
-            with qcore.override(self, "being_assigned", iterable_type):
+        with override(self, "in_comprehension_body", True):
+            with override(self, "being_assigned", iterable_type):
                 self.visit(node.target)
             for cond in node.ifs:
                 _, constraint = self.constraint_from_condition(cond)
@@ -2966,18 +2973,18 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             # but that is unlikely to be an issue in practice.
             with (
                 self.scopes.add_scope(ScopeType.function_scope, scope_node=node),
-                qcore.override(self, "_name_node_to_statement", {}),
+                override(self, "_name_node_to_statement", {}),
             ):
                 return self._visit_comprehension_inner(node, typ, iterable_type)
 
         with (
             self.scopes.add_scope(ScopeType.function_scope, scope_node=node),
-            qcore.override(self, "_name_node_to_statement", {}),
+            override(self, "_name_node_to_statement", {}),
         ):
             scope = self.scopes.current_scope()
             assert isinstance(scope, FunctionScope)
             for state in (VisitorState.collect_names, VisitorState.check_names):
-                with qcore.override(self, "state", state):
+                with override(self, "state", state):
                     ret = self._visit_comprehension_inner(node, typ, iterable_type)
             stmt = self.node_context.nearest_enclosing(ast.stmt)
             assert isinstance(stmt, ast.stmt)
@@ -3007,7 +3014,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     try:
                         for val in iterable_type:
                             self.visit_comprehension(generator, iterable_type=val)
-                            with qcore.override(self, "in_comprehension_body", True):
+                            with override(self, "in_comprehension_body", True):
                                 # PEP 572 mandates that the key be evaluated first.
                                 key = self.visit(node.key)
                                 value = self.visit(node.value)
@@ -3021,7 +3028,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     try:
                         for val in iterable_type:
                             self.visit_comprehension(generator, iterable_type=val)
-                            with qcore.override(self, "in_comprehension_body", True):
+                            with override(self, "in_comprehension_body", True):
                                 elts.append((False, self.visit(node.elt)))
                     finally:
                         self.node_context.contexts.pop()
@@ -3045,7 +3052,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 self.node_context.contexts.pop()
 
         if isinstance(node, ast.DictComp):
-            with qcore.override(self, "in_comprehension_body", True):
+            with override(self, "in_comprehension_body", True):
                 key_value = self.visit(node.key)
                 value_value = self.visit(node.value)
 
@@ -3062,7 +3069,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 dict, [KVPair(key_value, value_value, is_many=True)]
             )
 
-        with qcore.override(self, "in_comprehension_body", True):
+        with override(self, "in_comprehension_body", True):
             member_value = self.visit(node.elt)
 
             if typ is set:
@@ -3300,7 +3307,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                             "Two starred expressions in assignment",
                             error_code=ErrorCode.unexpected_node,
                         )
-                        with qcore.override(
+                        with override(
                             self, "being_assigned", AnyValue(AnySource.error)
                         ):
                             return self.generic_visit(node)
@@ -3324,11 +3331,11 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     ErrorCode.bad_unpack,
                     detail=str(being_assigned),
                 )
-                with qcore.override(self, "being_assigned", AnyValue(AnySource.error)):
+                with override(self, "being_assigned", AnyValue(AnySource.error)):
                     return self.generic_visit(node)
 
             for target, value in zip(node.elts, being_assigned):
-                with qcore.override(self, "being_assigned", value):
+                with override(self, "being_assigned", value):
                     self.visit(target)
             return None
         else:
@@ -3991,7 +3998,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
 
             ctx = self.yield_checker.check_yield(node, self.current_statement)
         else:
-            ctx = qcore.empty_context
+            ctx = contextlib.nullcontext()
         with ctx:
             if node.value is not None:
                 value = self.visit(node.value)
@@ -4023,6 +4030,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         return self.current_function_info.get_generator_send_type(self)
 
     def _unwrap_yield_result(self, node: ast.AST, value: Value) -> Value:
+        assert asynq is not None
         if isinstance(value, AsyncTaskIncompleteValue):
             return value.value
         elif isinstance(value, TypedValue) and (
@@ -4223,7 +4231,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             )
         with self.scopes.subscope() as body_scope:
             with self.scopes.loop_scope():
-                with qcore.override(self, "being_assigned", iterated_value):
+                with override(self, "being_assigned", iterated_value):
                     # assume that node.target is not affected by variable assignments in the body
                     # one could write some contortion like
                     # for (a if a[0] == 1 else b)[0] in range(2):
@@ -4239,7 +4247,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         # phase
         if self.state == VisitorState.collect_names:
             with self.scopes.subscope():
-                with qcore.override(self, "being_assigned", iterated_value):
+                with override(self, "being_assigned", iterated_value):
                     self.visit(node.target)
                 self._generic_visit_list(node.body)
 
@@ -4394,7 +4402,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 # assume it does not suppress exceptions.
                 can_suppress = False
         if node.optional_vars is not None:
-            with qcore.override(self, "being_assigned", assigned):
+            with override(self, "being_assigned", assigned):
                 self.visit(node.optional_vars)
         return can_suppress
 
@@ -4644,11 +4652,11 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
 
     def composite_from_walrus(self, node: ast.NamedExpr) -> Composite:
         rhs = self.visit(node.value)
-        with qcore.override(self, "being_assigned", rhs):
+        with override(self, "being_assigned", rhs):
             if self.in_comprehension_body:
                 ctx = self.scopes.ignore_topmost_scope()
             else:
-                ctx = qcore.empty_context
+                ctx = contextlib.nullcontext()
             with ctx:
                 return self.composite_from_node(node.target)
 
@@ -4657,7 +4665,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         value = self.visit(node.value)
 
         with (
-            qcore.override(self, "being_assigned", value),
+            override(self, "being_assigned", value),
             self.yield_checker.check_yield_result_assignment(is_yield),
         ):
             # syntax like 'x = y = 0' results in multiple targets
@@ -4729,9 +4737,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             value = None
 
         with (
-            qcore.override(self, "being_assigned", value),
+            override(self, "being_assigned", value),
             self.yield_checker.check_yield_result_assignment(is_yield),
-            qcore.override(self, "ann_assign_type", (expected_type, is_final)),
+            override(self, "ann_assign_type", (expected_type, is_final)),
         ):
             self.visit(node.target)
 
@@ -4749,7 +4757,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         )
 
         with (
-            qcore.override(self, "being_assigned", value),
+            override(self, "being_assigned", value),
             self.yield_checker.check_yield_result_assignment(is_yield),
         ):
             # syntax like 'x = y = 0' results in multiple targets
@@ -5121,7 +5129,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 Composite(subval, callee_composite.varname, callee_composite.node)
                 for subval in val.vals
             ]
-            with qcore.override(self, "in_union_decomposition", True):
+            with override(self, "in_union_decomposition", True):
                 values_and_exists = [
                     self._check_dunder_call_no_mvv(
                         node, composite, method_name, args, allow_call
@@ -5329,9 +5337,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         elif isinstance(root_value, KnownValue):
             # super calls on mixin classes may use attributes that are defined only on child classes
             if isinstance(root_value.val, super):
-                subclasses = qcore.inspection.get_subclass_tree(
-                    root_value.val.__thisclass__
-                )
+                subclasses = get_subclasses_recursively(root_value.val.__thisclass__)
                 if any(
                     hasattr(cls, attr)
                     for cls in subclasses
@@ -5497,7 +5503,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         allow_call: bool = False,
     ) -> Value:
         if isinstance(callee, MultiValuedValue):
-            with qcore.override(self, "in_union_decomposition", True):
+            with override(self, "in_union_decomposition", True):
                 values = [
                     self._check_call_no_mvv(
                         node, val, args, keywords, allow_call=allow_call
@@ -5613,13 +5619,16 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         ) and callee_wrapped.secondary_attr_name in ("async", "asynq"):
             async_fn = callee_wrapped.get_method()
             return AsyncTaskIncompleteValue(_get_task_cls(async_fn), return_value)
-        elif isinstance(callee_wrapped, UnboundMethodValue) and asynq.is_pure_async_fn(
-            callee_wrapped.get_method()
+        elif (
+            asynq is not None
+            and isinstance(callee_wrapped, UnboundMethodValue)
+            and asynq.is_pure_async_fn(callee_wrapped.get_method())
         ):
             return return_value
         else:
             if (
-                isinstance(return_value, AnyValue)
+                asynq is not None
+                and isinstance(return_value, AnyValue)
                 and isinstance(callee_wrapped, KnownValue)
                 and asynq.is_pure_async_fn(callee_wrapped.val)
             ):
@@ -5652,7 +5661,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         def visit_Match(self, node: ast.Match) -> None:
             subject = self.composite_from_node(node.subject)
             patma_visitor = PatmaVisitor(self)
-            with qcore.override(self, "match_subject", subject):
+            with override(self, "match_subject", subject):
                 constraints_to_apply = []
                 subscopes = []
                 for case in node.cases:
@@ -5865,7 +5874,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 ts_finder=checker.ts_finder,
             )
         else:
-            inner_attribute_checker_obj = qcore.empty_context
+            inner_attribute_checker_obj = contextlib.nullcontext()
         if unused_finder is None:
             unused_finder = UnusedObjectFinder(
                 checker.options,
@@ -5974,8 +5983,9 @@ def build_stacked_scopes(
     return StackedScopes(module_vars, module, simplification_limit=simplification_limit)
 
 
-def _get_task_cls(fn: object) -> "type[asynq.FutureBase[Any]]":
+def _get_task_cls(fn: object) -> type[Any]:
     """Returns the task class for an async function."""
+    assert asynq is not None
 
     if hasattr(fn, "task_cls"):
         cls = fn.task_cls
@@ -6038,6 +6048,8 @@ def _has_annotation_for_attr(typ: type, attr: str) -> bool:
 
 
 def _is_asynq_future(value: Value) -> bool:
+    if asynq is None:
+        return False
     return value.is_type(asynq.FutureBase) or value.is_type(asynq.AsyncTask)
 
 

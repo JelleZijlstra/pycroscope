@@ -2,7 +2,7 @@
 from typing import Dict, Union
 
 from .test_name_check_visitor import TestNameCheckVisitorBase
-from .test_node_visitor import assert_passes, only_before
+from .test_node_visitor import assert_passes, only_before, skip_if_not_installed
 from .value import (
     AnnotatedValue,
     AnySource,
@@ -18,6 +18,7 @@ _global_dict: Dict[Union[int, str], float] = {}
 
 
 class TestAttributes(TestNameCheckVisitorBase):
+    @skip_if_not_installed("attr")
     @assert_passes()
     def test_attrs(self):
         import attr
@@ -166,8 +167,6 @@ class TestAttributes(TestNameCheckVisitorBase):
         from dataclasses import dataclass
         from typing import NamedTuple
 
-        from pydantic import BaseModel
-
         @dataclass
         class DC:
             a: int
@@ -175,16 +174,24 @@ class TestAttributes(TestNameCheckVisitorBase):
         class NT(NamedTuple):
             a: int
 
-        class BM(BaseModel):
-            a: int
-
-        def capybara(dc: DC, nt: NT, bm: BM) -> None:
+        def capybara(dc: DC, nt: NT) -> None:
             assert_is_value(dc.a, TypedValue(int))
             assert_is_value(nt.a, TypedValue(int))
-            assert_is_value(bm.a, TypedValue(int))
 
             dc.b  # E: undefined_attribute
             nt.b  # E: undefined_attribute
+
+    @skip_if_not_installed("pydantic")
+    @assert_passes()
+    def test_only_known_attributes_pydantic(self):
+        from pydantic import BaseModel
+
+        class BM(BaseModel):
+            a: int
+
+        def capybara(bm: BM) -> None:
+            assert_is_value(bm.a, TypedValue(int))
+
             bm.b  # E: undefined_attribute
 
     @assert_passes()
@@ -330,6 +337,7 @@ class TestAttributes(TestNameCheckVisitorBase):
         def capybara():
             assert_is_value(has_prop.does_it_really, AnyValue(AnySource.inference))
 
+    @skip_if_not_installed("qcore")
     @assert_passes()
     def test_cached_per_instance(self):
         from qcore.caching import cached_per_instance

@@ -5,6 +5,7 @@ Commonly useful components for static analysis tools.
 """
 
 import ast
+import importlib
 import linecache
 import os
 import secrets
@@ -13,7 +14,9 @@ import types
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Optional, Union
+from typing import Any, Callable, Optional, TypeVar, Union
+
+T = TypeVar("T")
 
 
 def _all_files(
@@ -155,3 +158,75 @@ def get_attribute_path(node: ast.AST) -> Optional[list[str]]:
         return root_value
     else:
         return None
+
+
+class override:
+    """Temporarily overrides an attribute of an object."""
+
+    def __init__(self, obj: Any, attr: str, value: Any) -> None:
+        self.obj = obj
+        self.attr = attr
+        self.value = value
+
+    def __enter__(self) -> None:
+        self.old_value = getattr(self.obj, self.attr)
+        setattr(self.obj, self.attr, self.value)
+
+    def __exit__(
+        self,
+        exc_type: Optional[type],
+        exc_value: Optional[BaseException],
+        traceback: Optional[types.TracebackType],
+    ) -> None:
+        setattr(self.obj, self.attr, self.old_value)
+
+
+def object_from_string(object_reference: str) -> object:
+    if ":" in object_reference:
+        module_name, object_name = object_reference.split(":")
+        mod = importlib.import_module(module_name)
+        obj = mod
+        for part in object_name.split("."):
+            obj = getattr(obj, part)
+        return obj
+    else:
+        parts = object_reference.split(".")
+        for i in range(len(parts) - 1, 0, -1):
+            module_path = parts[:i]
+            object_name = parts[i:]
+            try:
+                mod = importlib.import_module(".".join(module_path))
+            except ImportError:
+                if i == 1:
+                    raise
+            else:
+                obj = mod
+                try:
+                    for part in object_name:
+                        obj = getattr(obj, part)
+                except AttributeError:
+                    if i == 1:
+                        raise
+                    else:
+                        continue
+                return obj
+        raise ValueError(f"Could not find object {object_reference}")
+
+
+def get_subclasses_recursively(cls: type[T]) -> set[type[T]]:
+    """Returns all subclasses of a class recursively."""
+    direct_subclasses = set(type.__subclasses__(cls))
+    all_subclasses = set(direct_subclasses)
+    for subclass in direct_subclasses:
+        all_subclasses.update(get_subclasses_recursively(subclass))
+    return all_subclasses
+
+
+def is_cython_class(cls: type[object]) -> bool:
+    """Returns whether a class is a Cython extension class."""
+    return "__pyx_vtable__" in cls.__dict__
+
+
+@dataclass(frozen=True)
+class Sentinel:
+    name: str

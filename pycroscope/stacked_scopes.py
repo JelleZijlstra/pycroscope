@@ -32,8 +32,7 @@ from itertools import chain
 from types import ModuleType
 from typing import Any, Callable, NamedTuple, Optional, TypeVar, Union
 
-import qcore
-
+from .analysis_lib import Sentinel, override
 from .boolability import get_boolability
 from .extensions import reveal_type
 from .safe import safe_equals, safe_issubclass
@@ -62,7 +61,7 @@ T = TypeVar("T")
 
 LEAVES_SCOPE = "%LEAVES_SCOPE"
 LEAVES_LOOP = "%LEAVES_LOOP"
-_UNINITIALIZED = qcore.MarkerObject("uninitialized")
+_UNINITIALIZED = Sentinel("uninitialized")
 
 
 class VisitorState(enum.Enum):
@@ -1241,9 +1240,7 @@ class FunctionScope(Scope):
                 if key != LEAVES_SCOPE
             },
         )
-        with qcore.override(
-            self, "name_to_current_definition_nodes", new_name_to_nodes
-        ):
+        with override(self, "name_to_current_definition_nodes", new_name_to_nodes):
             yield new_name_to_nodes
 
     @contextlib.contextmanager
@@ -1251,7 +1248,7 @@ class FunctionScope(Scope):
         loop_scopes = []
         with self.subscope() as main_scope:
             loop_scopes.append(main_scope)
-            with qcore.override(self, "current_loop_scopes", loop_scopes):
+            with override(self, "current_loop_scopes", loop_scopes):
                 yield loop_scopes
         self.combine_subscopes(
             [

@@ -13,13 +13,11 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Callable, ClassVar, Optional, Union
 
-import asynq
-import qcore
-
 from .annotated_types import EnumName
 from .annotations import Context, type_from_annotations, type_from_runtime
+from .maybe_asynq import asynq
 from .options import Options, PyObjectSequenceOption
-from .safe import safe_isinstance, safe_issubclass
+from .safe import is_bound_classmethod, safe_isinstance, safe_issubclass
 from .signature import MaybeSignature
 from .stacked_scopes import Composite
 from .value import (
@@ -246,17 +244,24 @@ def _unwrap_value_from_subclass(result: Value, ctx: AttrContext) -> Value:
         return result
     cls_val = result.val
     if (
-        qcore.inspection.is_classmethod(cls_val)
-        or inspect.ismethod(cls_val)
-        or inspect.isfunction(cls_val)
-        or isinstance(cls_val, (MethodDescriptorType, SlotWrapperType))
+        isinstance(
+            cls_val,
+            (
+                types.FunctionType,
+                types.MethodType,
+                MethodDescriptorType,
+                SlotWrapperType,
+                classmethod,
+                staticmethod,
+            ),
+        )
         or (
             # non-static method
             _static_hasattr(cls_val, "decorator")
             and _static_hasattr(cls_val, "instance")
             and not isinstance(cls_val.instance, type)
         )
-        or asynq.is_async_fn(cls_val)
+        or (asynq is not None and asynq.is_async_fn(cls_val))
     ):
         # static or class method
         return KnownValue(cls_val)
@@ -343,10 +348,8 @@ def _unwrap_value_from_typed(result: Value, typ: type, ctx: AttrContext) -> Valu
     cls_val = result.val
     if isinstance(cls_val, property):
         return ctx.get_property_type_from_argspec(cls_val)
-    elif qcore.inspection.is_classmethod(cls_val):
+    elif is_bound_classmethod(cls_val):
         return result
-    elif inspect.ismethod(cls_val):
-        return UnboundMethodValue(ctx.attr, ctx.root_composite, typevars=typevars)
     elif inspect.isfunction(cls_val):
         # either a staticmethod or an unbound method
         try:
@@ -364,7 +367,7 @@ def _unwrap_value_from_typed(result: Value, typ: type, ctx: AttrContext) -> Valu
             return result
         else:
             return UnboundMethodValue(ctx.attr, ctx.root_composite, typevars=typevars)
-    elif isinstance(cls_val, (MethodDescriptorType, SlotWrapperType)):
+    elif isinstance(cls_val, (types.MethodType, MethodDescriptorType, SlotWrapperType)):
         # built-in method; e.g. scope_lib.tests.SimpleDatabox.get
         return UnboundMethodValue(ctx.attr, ctx.root_composite, typevars=typevars)
     elif (
@@ -374,7 +377,7 @@ def _unwrap_value_from_typed(result: Value, typ: type, ctx: AttrContext) -> Valu
     ):
         # non-static method
         return UnboundMethodValue(ctx.attr, ctx.root_composite, typevars=typevars)
-    elif asynq.is_async_fn(cls_val):
+    elif asynq is not None and asynq.is_async_fn(cls_val):
         # static or class method
         return result
     elif _static_hasattr(cls_val, "func_code"):

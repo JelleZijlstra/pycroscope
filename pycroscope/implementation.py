@@ -8,17 +8,18 @@ from collections.abc import Iterable, Sequence
 from itertools import product
 from typing import Callable, NewType, Optional, TypeVar, Union, cast
 
-import qcore
 import typing_extensions
 
 import pycroscope
 
 from . import runtime
+from .analysis_lib import Sentinel
 from .annotated_types import MaxLen, MinLen
 from .annotations import type_from_value
 from .error_code import ErrorCode
 from .extensions import assert_type, reveal_locals, reveal_type
 from .format_strings import parse_format_string
+from .maybe_asynq import qcore
 from .predicates import IsAssignablePredicate
 from .safe import hasattr_static, is_union, safe_isinstance, safe_issubclass
 from .signature import (
@@ -78,7 +79,7 @@ from .value import (
     unpack_values,
 )
 
-_NO_ARG_SENTINEL = KnownValue(qcore.MarkerObject("no argument given"))
+_NO_ARG_SENTINEL = KnownValue(Sentinel("no argument given"))
 
 
 def clean_up_implementation_fn_return(
@@ -2081,39 +2082,6 @@ def get_default_argspecs() -> dict[object, Signature]:
             callable=assert_type,
             impl=_assert_type_impl,
         ),
-        Signature.make(
-            [
-                SigParameter("expected"),
-                SigParameter("actual"),
-                SigParameter("message", default=KnownValue(None)),
-                SigParameter("extra", default=KnownValue(None)),
-            ],
-            callable=qcore.asserts.assert_is,
-            impl=_assert_is_impl,
-            return_annotation=KnownValue(None),
-        ),
-        Signature.make(
-            [
-                SigParameter("expected"),
-                SigParameter("actual"),
-                SigParameter("message", default=KnownValue(None)),
-                SigParameter("extra", default=KnownValue(None)),
-            ],
-            callable=qcore.asserts.assert_is_not,
-            impl=_assert_is_not_impl,
-            return_annotation=KnownValue(None),
-        ),
-        Signature.make(
-            [
-                SigParameter("value"),
-                SigParameter("types"),
-                SigParameter("message", default=KnownValue(None)),
-                SigParameter("extra", default=KnownValue(None)),
-            ],
-            callable=qcore.asserts.assert_is_instance,
-            impl=_assert_is_instance_impl,
-            return_annotation=KnownValue(None),
-        ),
         # Need to override this because the type for the tp parameter in typeshed is too strict
         Signature.make(
             [SigParameter("name", annotation=TypedValue(str)), SigParameter(name="tp")],
@@ -2165,6 +2133,42 @@ def get_default_argspecs() -> dict[object, Signature]:
             ),
         ),
     ]
+    if qcore is not None:
+        signatures += [
+            Signature.make(
+                [
+                    SigParameter("expected"),
+                    SigParameter("actual"),
+                    SigParameter("message", default=KnownValue(None)),
+                    SigParameter("extra", default=KnownValue(None)),
+                ],
+                callable=qcore.asserts.assert_is,
+                impl=_assert_is_impl,
+                return_annotation=KnownValue(None),
+            ),
+            Signature.make(
+                [
+                    SigParameter("expected"),
+                    SigParameter("actual"),
+                    SigParameter("message", default=KnownValue(None)),
+                    SigParameter("extra", default=KnownValue(None)),
+                ],
+                callable=qcore.asserts.assert_is_not,
+                impl=_assert_is_not_impl,
+                return_annotation=KnownValue(None),
+            ),
+            Signature.make(
+                [
+                    SigParameter("value"),
+                    SigParameter("types"),
+                    SigParameter("message", default=KnownValue(None)),
+                    SigParameter("extra", default=KnownValue(None)),
+                ],
+                callable=qcore.asserts.assert_is_instance,
+                impl=_assert_is_instance_impl,
+                return_annotation=KnownValue(None),
+            ),
+        ]
     for mod in typing, typing_extensions:
         try:
             reveal_type_func = getattr(mod, "reveal_type")

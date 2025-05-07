@@ -7,7 +7,7 @@ TypeVar solver.
 from collections.abc import Iterable, Sequence
 from typing import Union
 
-import qcore
+from pycroscope.analysis_lib import Sentinel
 
 from .safe import all_of_type, is_instance_of_typing_name
 from .value import (
@@ -27,8 +27,8 @@ from .value import (
     unite_values,
 )
 
-BOTTOM = qcore.MarkerObject("<bottom>")
-TOP = qcore.MarkerObject("<top>")
+BOTTOM = Sentinel("<bottom>")
+TOP = Sentinel("<top>")
 
 
 def resolve_bounds_map(

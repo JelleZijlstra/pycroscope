@@ -12,11 +12,10 @@ from collections.abc import Iterator
 from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
 
-import asynq
-import qcore
-
+from .analysis_lib import override
 from .error_code import ErrorCode
 from .functions import AsyncFunctionKind
+from .maybe_asynq import asynq
 from .options import Options, PyObjectSequenceOption, StringSequenceOption
 from .safe import safe_getattr, safe_hasattr
 from .value import AnnotatedValue, KnownValue, TypedValue, UnboundMethodValue, Value
@@ -72,14 +71,14 @@ class AsynqChecker:
         # within nested functions is attributed to the outer function. However, for async inner
         # functions, check batching within the function separately.
         with (
-            qcore.override(self, "current_async_kind", async_kind),
-            qcore.override(self, "is_classmethod", is_classmethod),
+            override(self, "current_async_kind", async_kind),
+            override(self, "is_classmethod", is_classmethod),
         ):
             if (
                 self.current_func_name is None
                 or async_kind != AsyncFunctionKind.non_async
             ):
-                with qcore.override(self, "current_func_name", name):
+                with override(self, "current_func_name", name):
                     yield
             else:
                 yield
@@ -178,6 +177,8 @@ def is_impure_async_fn(value: Value) -> bool:
     This can be used to detect places where async functions are called synchronously.
 
     """
+    if asynq is None:
+        return False
     if isinstance(value, KnownValue):
         return asynq.is_async_fn(value.val) and not asynq.is_pure_async_fn(value.val)
     elif isinstance(value, UnboundMethodValue):

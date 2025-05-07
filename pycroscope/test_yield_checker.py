@@ -1,6 +1,12 @@
 # static analysis: ignore
 import ast
 
+import pytest
+
+from .maybe_asynq import asynq
+
+if asynq is None:
+    pytest.skip("asynq not available", allow_module_level=True)
 from .test_name_check_visitor import TestNameCheckVisitorBase
 from .test_node_visitor import assert_passes
 from .yield_checker import VarnameGenerator, _camel_case_to_snake_case
@@ -37,7 +43,7 @@ class TestUnnecessaryYield(TestNameCheckVisitorBase):
     def test_attribute(self):
         self.assert_is_changed(
             """
-            from pycroscope.tests import async_fn
+            from pycroscope.asynq_tests import async_fn
             from asynq import asynq
 
             class Capybara(object):
@@ -47,7 +53,7 @@ class TestUnnecessaryYield(TestNameCheckVisitorBase):
                     self.var2 = yield async_fn.asynq(2)
             """,
             """
-            from pycroscope.tests import async_fn
+            from pycroscope.asynq_tests import async_fn
             from asynq import asynq
 
             class Capybara(object):
@@ -61,7 +67,7 @@ class TestUnnecessaryYield(TestNameCheckVisitorBase):
     def test_if(self):
         from asynq import asynq, result
 
-        from pycroscope.tests import PropertyObject
+        from pycroscope.asynq_tests import PropertyObject
 
         @asynq()
         def capybara(qid, include_deleted):
@@ -76,7 +82,7 @@ class TestUnnecessaryYield(TestNameCheckVisitorBase):
         from asynq import asynq, result
         from asynq.tools import afilter
 
-        from pycroscope.tests import PropertyObject, async_fn
+        from pycroscope.asynq_tests import PropertyObject, async_fn
 
         @asynq()
         def capybara(qids, t):
@@ -92,7 +98,7 @@ class TestUnnecessaryYield(TestNameCheckVisitorBase):
     def test_usage_in_nested_function(self):
         from asynq import asynq, result
 
-        from pycroscope.tests import async_fn, cached_fn
+        from pycroscope.asynq_tests import async_fn, cached_fn
 
         @asynq()
         def capybara(oid):
@@ -180,7 +186,7 @@ class TestBatchingYields(TestNameCheckVisitorBase):
         # also tests that it only fixes one error and stops
         self.assert_is_changed(
             """
-            from pycroscope.tests import async_fn
+            from pycroscope.asynq_tests import async_fn
             from asynq import asynq, result
             @asynq()
             def f():
@@ -193,7 +199,7 @@ class TestBatchingYields(TestNameCheckVisitorBase):
                 result(val1 + val2 + val3)
             """,
             """
-            from pycroscope.tests import async_fn
+            from pycroscope.asynq_tests import async_fn
             from asynq import asynq, result
             @asynq()
             def f():
@@ -210,7 +216,7 @@ class TestBatchingYields(TestNameCheckVisitorBase):
         # also tests multiple line assign statement
         self.assert_is_changed(
             """
-            from pycroscope.tests import async_fn
+            from pycroscope.asynq_tests import async_fn
             from asynq import asynq, result
             @asynq()
             def f():
@@ -228,7 +234,7 @@ class TestBatchingYields(TestNameCheckVisitorBase):
                 result(val1 + val2 + val4)
             """,
             """
-            from pycroscope.tests import async_fn
+            from pycroscope.asynq_tests import async_fn
             from asynq import asynq, result
             @asynq()
             def f():
@@ -245,7 +251,7 @@ class TestBatchingYields(TestNameCheckVisitorBase):
         self.assert_is_changed(
             """
             from asynq import asynq
-            from pycroscope.tests import async_fn
+            from pycroscope.asynq_tests import async_fn
 
             @asynq()
             def capybara(oid, oid2):
@@ -254,7 +260,7 @@ class TestBatchingYields(TestNameCheckVisitorBase):
             """,
             """
             from asynq import asynq
-            from pycroscope.tests import async_fn
+            from pycroscope.asynq_tests import async_fn
 
             @asynq()
             def capybara(oid, oid2):
@@ -266,7 +272,7 @@ class TestBatchingYields(TestNameCheckVisitorBase):
         # when multiple values are yielded to one target
         self.assert_is_changed(
             """
-            from pycroscope.tests import async_fn
+            from pycroscope.asynq_tests import async_fn
             from asynq import asynq, result
             @asynq()
             def f():
@@ -278,7 +284,7 @@ class TestBatchingYields(TestNameCheckVisitorBase):
                 result(val1[1] + val3 + val4)
             """,
             """
-            from pycroscope.tests import async_fn
+            from pycroscope.asynq_tests import async_fn
             from asynq import asynq, result
             @asynq()
             def f():
@@ -293,7 +299,7 @@ class TestBatchingYields(TestNameCheckVisitorBase):
         # same as above but List instead of Tuple
         self.assert_is_changed(
             """
-            from pycroscope.tests import async_fn
+            from pycroscope.asynq_tests import async_fn
             from asynq import asynq, result
             @asynq()
             def f():
@@ -305,7 +311,7 @@ class TestBatchingYields(TestNameCheckVisitorBase):
                 result(val1[1] + val3 + val4)
             """,
             """
-            from pycroscope.tests import async_fn
+            from pycroscope.asynq_tests import async_fn
             from asynq import asynq, result
             @asynq()
             def f():
@@ -320,7 +326,7 @@ class TestBatchingYields(TestNameCheckVisitorBase):
         # when target is a Tuple and value is a List
         self.assert_is_changed(
             """
-            from pycroscope.tests import async_fn
+            from pycroscope.asynq_tests import async_fn
             from asynq import asynq, result
             @asynq()
             def f():
@@ -332,7 +338,7 @@ class TestBatchingYields(TestNameCheckVisitorBase):
                 result(val1 + val2 + val3 + val4)
             """,
             """
-            from pycroscope.tests import async_fn
+            from pycroscope.asynq_tests import async_fn
             from asynq import asynq, result
             @asynq()
             def f():
@@ -347,7 +353,7 @@ class TestBatchingYields(TestNameCheckVisitorBase):
         # when one value is unwrapped to a target tuple
         self.assert_is_changed(
             """
-            from pycroscope.tests import async_fn
+            from pycroscope.asynq_tests import async_fn
             from asynq import asynq, result
             @asynq()
             def f():
@@ -359,7 +365,7 @@ class TestBatchingYields(TestNameCheckVisitorBase):
                 result(val1 + val2 + val3 + val4)
             """,
             """
-            from pycroscope.tests import async_fn
+            from pycroscope.asynq_tests import async_fn
             from asynq import asynq, result
             @asynq()
             def f():
@@ -375,7 +381,7 @@ class TestBatchingYields(TestNameCheckVisitorBase):
     def test_assign_and_non_assign(self):
         self.assert_is_changed(
             """
-            from pycroscope.tests import async_fn
+            from pycroscope.asynq_tests import async_fn
             from asynq import asynq, result
             @asynq()
             def f():
@@ -387,7 +393,7 @@ class TestBatchingYields(TestNameCheckVisitorBase):
                 result(val1 + val4)
             """,
             """
-            from pycroscope.tests import async_fn
+            from pycroscope.asynq_tests import async_fn
             from asynq import asynq, result
             @asynq()
             def f():
@@ -404,7 +410,7 @@ class TestBatchingYields(TestNameCheckVisitorBase):
     def test_non_assign_and_assign(self):
         self.assert_is_changed(
             """
-            from pycroscope.tests import async_fn
+            from pycroscope.asynq_tests import async_fn
             from asynq import asynq, result
             @asynq()
             def f():
@@ -414,7 +420,7 @@ class TestBatchingYields(TestNameCheckVisitorBase):
                 result(val3 + val4)
             """,
             """
-            from pycroscope.tests import async_fn
+            from pycroscope.asynq_tests import async_fn
             from asynq import asynq, result
             @asynq()
             def f():
@@ -429,7 +435,7 @@ class TestBatchingYields(TestNameCheckVisitorBase):
     def test_both_non_assign(self):
         self.assert_is_changed(
             """
-            from pycroscope.tests import async_fn
+            from pycroscope.asynq_tests import async_fn
             from asynq import asynq, result
             @asynq()
             def f():
@@ -439,7 +445,7 @@ class TestBatchingYields(TestNameCheckVisitorBase):
                 result(val3)
             """,
             """
-            from pycroscope.tests import async_fn
+            from pycroscope.asynq_tests import async_fn
             from asynq import asynq, result
             @asynq()
             def f():
@@ -456,7 +462,7 @@ class TestBatchingYields(TestNameCheckVisitorBase):
     def test_in_except_handler(self):
         from asynq import asynq, result
 
-        from pycroscope.tests import async_fn
+        from pycroscope.asynq_tests import async_fn
 
         @asynq()
         def capybara():
@@ -473,7 +479,7 @@ class TestBatchingYields(TestNameCheckVisitorBase):
 
         # if the result value isn't assigned, we assume it's a side-effecting operation that can't
         # be batched
-        from pycroscope.tests import async_fn
+        from pycroscope.asynq_tests import async_fn
 
         @asynq()
         def f():
@@ -489,7 +495,7 @@ class TestBatchingYields(TestNameCheckVisitorBase):
 
         # if the result value isn't assigned, we assume it's a side-effecting operation that can't
         # be batched
-        from pycroscope.tests import async_fn
+        from pycroscope.asynq_tests import async_fn
 
         @asynq()
         def f():
@@ -501,7 +507,7 @@ class TestBatchingYields(TestNameCheckVisitorBase):
     def test_combine_in_try(self):
         from asynq import asynq
 
-        from pycroscope.tests import async_fn
+        from pycroscope.asynq_tests import async_fn
 
         @asynq()
         def capybara():
@@ -637,7 +643,7 @@ class TestMissingAsync(TestNameCheckVisitorBase):
 
     @assert_passes()
     def test_coverage(self):
-        from pycroscope.tests import async_fn
+        from pycroscope.asynq_tests import async_fn
 
         func = async_fn.asynq
 
@@ -652,7 +658,7 @@ class TestDuplicateYield(TestNameCheckVisitorBase):
     def test_duplicate(self):
         from asynq import asynq
 
-        from pycroscope.tests import async_fn
+        from pycroscope.asynq_tests import async_fn
 
         @asynq()
         def dupe_none():
@@ -705,7 +711,7 @@ class TestDuplicateYield(TestNameCheckVisitorBase):
         self.assert_is_changed(
             """
             from asynq import asynq
-            from pycroscope.tests import async_fn
+            from pycroscope.asynq_tests import async_fn
 
             @asynq()
             def capybara(oid):
@@ -713,7 +719,7 @@ class TestDuplicateYield(TestNameCheckVisitorBase):
             """,
             """
             from asynq import asynq
-            from pycroscope.tests import async_fn
+            from pycroscope.asynq_tests import async_fn
 
             @asynq()
             def capybara(oid):
@@ -724,7 +730,7 @@ class TestDuplicateYield(TestNameCheckVisitorBase):
         self.assert_is_changed(
             """
             from asynq import asynq
-            from pycroscope.tests import async_fn
+            from pycroscope.asynq_tests import async_fn
 
             @asynq()
             def capybara(oid):
@@ -732,7 +738,7 @@ class TestDuplicateYield(TestNameCheckVisitorBase):
             """,
             """
             from asynq import asynq
-            from pycroscope.tests import async_fn
+            from pycroscope.asynq_tests import async_fn
 
             @asynq()
             def capybara(oid):
@@ -743,7 +749,7 @@ class TestDuplicateYield(TestNameCheckVisitorBase):
         self.assert_is_changed(
             """
             from asynq import asynq
-            from pycroscope.tests import async_fn
+            from pycroscope.asynq_tests import async_fn
 
             @asynq()
             def capybara(oid):
@@ -751,7 +757,7 @@ class TestDuplicateYield(TestNameCheckVisitorBase):
             """,
             """
             from asynq import asynq
-            from pycroscope.tests import async_fn
+            from pycroscope.asynq_tests import async_fn
 
             @asynq()
             def capybara(oid):

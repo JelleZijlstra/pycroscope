@@ -13,8 +13,7 @@ from contextlib import AbstractContextManager, contextmanager
 from dataclasses import InitVar, dataclass, field
 from typing import Callable, Optional, Union
 
-import qcore
-
+from .analysis_lib import override
 from .arg_spec import ArgSpecCache, GenericBases
 from .attributes import AttrContext, get_attribute
 from .node_visitor import Failure
@@ -266,11 +265,11 @@ class Checker:
     def reset_any_used(self) -> AbstractContextManager[None]:
         """Context that resets the value used by :meth:`has_used_any_match` and
         :meth:`record_any_match`."""
-        return qcore.override(self, "_has_used_any_match", False)
+        return override(self, "_has_used_any_match", False)
 
     def set_exclude_any(self) -> AbstractContextManager[None]:
         """Within this context, `Any` is compatible only with itself."""
-        return qcore.override(self, "_should_exclude_any", True)
+        return override(self, "_should_exclude_any", True)
 
     def should_exclude_any(self) -> bool:
         """Whether Any should be compatible only with itself."""

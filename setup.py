@@ -3,7 +3,7 @@ from pathlib import Path
 from setuptools import setup
 
 version = "0.1.0"
-package_data = ["test.toml", "stubs/*/*.pyi"]
+package_data = ["test.toml", "asynq_test.toml", "stubs/*/*.pyi"]
 
 
 if __name__ == "__main__":
@@ -30,8 +30,6 @@ if __name__ == "__main__":
         keywords="type checker static analysis",
         packages=["pycroscope"],
         install_requires=[
-            "asynq",
-            "qcore>=0.5.1",
             "ast_decompiler>=0.4.0",
             "typeshed_client>=2.1.0",
             "typing_extensions>=4.12.0",
@@ -45,7 +43,8 @@ if __name__ == "__main__":
                 "attrs",
                 "pydantic",
                 "annotated-types",
-            ]
+            ],
+            "asynq": ["asynq", "qcore>=0.5.1"],
         },
         # These are useful for unit tests of pycroscope extensions
         # outside the package.

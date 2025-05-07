@@ -1,7 +1,7 @@
 # static analysis: ignore
 from .implementation import assert_is_value
 from .test_name_check_visitor import TestNameCheckVisitorBase
-from .test_node_visitor import assert_passes
+from .test_node_visitor import assert_passes, skip_if_not_installed
 from .value import AnySource, AnyValue, KnownValue, TypedValue
 
 
@@ -50,8 +50,6 @@ class TestGeneratorReturn(TestNameCheckVisitorBase):
     def test_sync(self):
         from typing import Generator, Iterable
 
-        from asynq import ConstFuture, asynq
-
         def gen() -> int:  # E: generator_return
             yield 1
 
@@ -65,6 +63,11 @@ class TestGeneratorReturn(TestNameCheckVisitorBase):
         def caller2() -> Generator[int, None, None]:
             x = yield from [1, 2]
             print(x)
+
+    @skip_if_not_installed("asynq")
+    @assert_passes()
+    def test_asynq(self):
+        from asynq import ConstFuture, asynq
 
         @asynq()
         def asynq_gen() -> int:

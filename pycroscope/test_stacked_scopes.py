@@ -4,7 +4,7 @@ from .name_check_visitor import build_stacked_scopes
 from .options import Options
 from .stacked_scopes import ScopeType, uniq_chain
 from .test_name_check_visitor import TestNameCheckVisitorBase
-from .test_node_visitor import assert_passes, skip_before
+from .test_node_visitor import assert_passes, skip_before, skip_if_not_installed
 from .value import (
     NO_RETURN_VALUE,
     UNINITIALIZED_VALUE,
@@ -659,6 +659,7 @@ class TestUnusedVariableComprehension(TestNameCheckVisitorBase):
 
 
 class TestUnusedVariableUnpacking(TestNameCheckVisitorBase):
+    @skip_if_not_installed("asynq")
     @assert_passes()
     def test_unused_in_yield(self):
         from asynq import asynq, result
@@ -672,6 +673,7 @@ class TestUnusedVariableUnpacking(TestNameCheckVisitorBase):
             a, b = yield kerodon.asynq(1), kerodon.asynq(2)  # E: unused_variable
             result(a)
 
+    @skip_if_not_installed("asynq")
     @assert_passes()
     def test_async_returns_pair(self):
         from asynq import asynq, result
@@ -1079,6 +1081,7 @@ class TestConstraints(TestNameCheckVisitorBase):
                 lst = [a for _ in iterable]
                 assert_is_value(lst, SequenceValue(list, [(True, TypedValue(B))]))
 
+    @skip_if_not_installed("qcore")
     @assert_passes()
     def test_qcore_asserts(self):
         from qcore.asserts import assert_is_instance

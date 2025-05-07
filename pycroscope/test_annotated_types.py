@@ -1,9 +1,10 @@
 # static analysis: ignore
 from .test_name_check_visitor import TestNameCheckVisitorBase
-from .test_node_visitor import assert_passes
+from .test_node_visitor import assert_passes, skip_if_not_installed
 
 
 class TestAnnotatedTypesAnnotations(TestNameCheckVisitorBase):
+    @skip_if_not_installed("annotated_types")
     @assert_passes()
     def test_gt(self):
         from typing import Any
@@ -34,6 +35,7 @@ class TestAnnotatedTypesAnnotations(TestNameCheckVisitorBase):
             takes_gt_5(6)
             takes_gt_5("not an int")  # E: incompatible_argument
 
+    @skip_if_not_installed("annotated_types")
     @assert_passes()
     def test_ge(self):
         from typing import Any
@@ -65,6 +67,7 @@ class TestAnnotatedTypesAnnotations(TestNameCheckVisitorBase):
             takes_ge_5(5)
             takes_ge_5(6)
 
+    @skip_if_not_installed("annotated_types")
     @assert_passes()
     def test_lt(self):
         from typing import Any
@@ -94,6 +97,7 @@ class TestAnnotatedTypesAnnotations(TestNameCheckVisitorBase):
             takes_lt_5(4)
             takes_lt_5(5)  # E: incompatible_argument
 
+    @skip_if_not_installed("annotated_types")
     @assert_passes()
     def test_le(self):
         from typing import Any
@@ -125,6 +129,7 @@ class TestAnnotatedTypesAnnotations(TestNameCheckVisitorBase):
             takes_le_5(5)
             takes_le_5(6)  # E: incompatible_argument
 
+    @skip_if_not_installed("annotated_types")
     @assert_passes()
     def test_multiple_of(self):
         from annotated_types import MultipleOf
@@ -149,6 +154,7 @@ class TestAnnotatedTypesAnnotations(TestNameCheckVisitorBase):
             takes_multiple_of_10(10)
             takes_multiple_of_10(50)
 
+    @skip_if_not_installed("annotated_types")
     @assert_passes()
     def test_min_max_len(self):
         from annotated_types import Len, MaxLen, MinLen
@@ -208,6 +214,7 @@ class TestAnnotatedTypesAnnotations(TestNameCheckVisitorBase):
             takes_3_to_5(exactly_5)
             takes_3_to_5(td)  # E: incompatible_argument
 
+    @skip_if_not_installed("annotated_types")
     @assert_passes()
     def test_timezone(self):
         from datetime import datetime, timedelta, timezone
@@ -244,6 +251,7 @@ class TestAnnotatedTypesAnnotations(TestNameCheckVisitorBase):
             takes_utc(utc_dt)
             takes_utc(non_utc_aware_dt)  # E: incompatible_argument
 
+    @skip_if_not_installed("annotated_types")
     @assert_passes()
     def test_predicate(self):
         from annotated_types import Predicate
@@ -263,6 +271,7 @@ class TestAnnotatedTypesAnnotations(TestNameCheckVisitorBase):
 
 
 class TestInferAnnotations(TestNameCheckVisitorBase):
+    @skip_if_not_installed("annotated_types")
     @assert_passes()
     def test_infer_gt(self):
         from annotated_types import Gt
@@ -285,6 +294,7 @@ class TestInferAnnotations(TestNameCheckVisitorBase):
             if i > 6:
                 takes_gt_5(i)
 
+    @skip_if_not_installed("annotated_types")
     @assert_passes()
     def test_len(self):
         from annotated_types import Len, MaxLen, MinLen
