@@ -6,6 +6,8 @@ from .maybe_asynq import asynq
 if asynq is None:
     pytest.skip("asynq not available", allow_module_level=True)
 
+from pathlib import Path
+
 from .asynq_checker import (
     _stringify_async_fn,
     get_pure_async_equivalent,
@@ -20,13 +22,24 @@ from .asynq_tests import (
     proxied_fn,
 )
 from .stacked_scopes import Composite
-from .test_name_check_visitor import TestNameCheckVisitorBase
+from .test_name_check_visitor import (
+    ConfiguredNameCheckVisitor,
+    TestNameCheckVisitorBase,
+)
 from .test_node_visitor import assert_passes
 from .tests import ASYNQ_METHOD_NAME
 from .value import KnownValue, TypedValue, UnboundMethodValue
 
 
-class TestImpureAsyncCalls(TestNameCheckVisitorBase):
+class AsynqVisitor(ConfiguredNameCheckVisitor):
+    config_filename = str(Path(__file__).parent / "asynq_test.toml")
+
+
+class TestAsynqBase(TestNameCheckVisitorBase):
+    visitor_cls = AsynqVisitor
+
+
+class TestImpureAsyncCalls(TestAsynqBase):
     @assert_passes()
     def test_async_classmethod(self):
         from asynq import asynq, result
@@ -318,7 +331,7 @@ def capybara():
             return PropertyObject.async_classmethod(aid)  # E: impure_async_call
 
 
-class TestAsyncMethods(TestNameCheckVisitorBase):
+class TestAsyncMethods(TestAsynqBase):
     @assert_passes()
     def test_basic(self):
         from asynq import asynq, result

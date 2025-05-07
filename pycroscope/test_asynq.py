@@ -6,6 +6,7 @@ from .maybe_asynq import asynq
 if asynq is None:
     pytest.skip("asynq not available", allow_module_level=True)
 
+from . import asynq_tests, maybe_asynq
 from .arg_spec import is_dot_asynq_function
 from .asynq_tests import (
     PropertyObject,
@@ -14,6 +15,7 @@ from .asynq_tests import (
     l0cached_async_fn,
     proxied_fn,
 )
+from .find_unused import used
 from .implementation import assert_is_value
 from .name_check_visitor import _get_task_cls
 from .test_name_check_visitor import TestNameCheckVisitorBase
@@ -28,6 +30,9 @@ from .value import (
     KVPair,
     TypedValue,
 )
+
+used(maybe_asynq)
+used(asynq_tests)
 
 
 class TestBadAsyncYield(TestNameCheckVisitorBase):

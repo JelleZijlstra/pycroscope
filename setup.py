@@ -3,7 +3,7 @@ from pathlib import Path
 from setuptools import setup
 
 version = "0.1.0"
-package_data = ["test.toml", "stubs/*/*.pyi"]
+package_data = ["test.toml", "asynq_test.toml", "stubs/*/*.pyi"]
 
 
 if __name__ == "__main__":
