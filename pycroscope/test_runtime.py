@@ -3,7 +3,7 @@ from typing import List
 
 from .runtime import get_assignability_error, is_assignable
 from .test_name_check_visitor import TestNameCheckVisitorBase
-from .test_node_visitor import assert_passes
+from .test_node_visitor import assert_passes, skip_if_not_installed
 
 
 def test_is_assignable() -> None:
@@ -26,6 +26,7 @@ def test_get_assignability_error() -> None:
 
 
 class TestRuntimeTypeGuard(TestNameCheckVisitorBase):
+    @skip_if_not_installed("annotated_types")
     @assert_passes()
     def test_runtime(self):
         from annotated_types import Predicate

@@ -1,3 +1,4 @@
+# static analysis: ignore
 """
 
 Helpers for tests involving asynq.

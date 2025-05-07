@@ -167,8 +167,6 @@ class TestAttributes(TestNameCheckVisitorBase):
         from dataclasses import dataclass
         from typing import NamedTuple
 
-        from pydantic import BaseModel
-
         @dataclass
         class DC:
             a: int
@@ -176,16 +174,24 @@ class TestAttributes(TestNameCheckVisitorBase):
         class NT(NamedTuple):
             a: int
 
-        class BM(BaseModel):
-            a: int
-
-        def capybara(dc: DC, nt: NT, bm: BM) -> None:
+        def capybara(dc: DC, nt: NT) -> None:
             assert_is_value(dc.a, TypedValue(int))
             assert_is_value(nt.a, TypedValue(int))
-            assert_is_value(bm.a, TypedValue(int))
 
             dc.b  # E: undefined_attribute
             nt.b  # E: undefined_attribute
+
+    @skip_if_not_installed("pydantic")
+    @assert_passes()
+    def test_only_known_attributes_pydantic(self):
+        from pydantic import BaseModel
+
+        class BM(BaseModel):
+            a: int
+
+        def capybara(bm: BM) -> None:
+            assert_is_value(bm.a, TypedValue(int))
+
             bm.b  # E: undefined_attribute
 
     @assert_passes()

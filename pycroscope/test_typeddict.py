@@ -1,7 +1,7 @@
 # static analysis: ignore
 from .implementation import assert_is_value
 from .test_name_check_visitor import TestNameCheckVisitorBase
-from .test_node_visitor import assert_passes
+from .test_node_visitor import assert_passes, skip_if_not_installed
 from .value import AnySource, AnyValue, TypedDictEntry, TypedDictValue, TypedValue
 
 
@@ -195,23 +195,11 @@ class TestTypedDict(TestNameCheckVisitorBase):
 
     @assert_passes()
     def test_basic(self):
-        from mypy_extensions import TypedDict as METypedDict
         from typing_extensions import TypedDict as TETypedDict
 
-        T = METypedDict("T", {"a": int, "b": str})
         T2 = TETypedDict("T2", {"a": int, "b": str})
 
-        def capybara(x: T, y: T2):
-            assert_is_value(
-                x,
-                TypedDictValue(
-                    {
-                        "a": TypedDictEntry(TypedValue(int)),
-                        "b": TypedDictEntry(TypedValue(str)),
-                    }
-                ),
-            )
-            assert_is_value(x["a"], TypedValue(int))
+        def capybara(y: T2):
             assert_is_value(
                 y,
                 TypedDictValue(
@@ -223,9 +211,28 @@ class TestTypedDict(TestNameCheckVisitorBase):
             )
             assert_is_value(y["a"], TypedValue(int))
 
+    @skip_if_not_installed("mypy_extensions")
+    @assert_passes()
+    def test_mypy_extensions(self):
+        from mypy_extensions import TypedDict as METypedDict
+
+        T = METypedDict("T", {"a": int, "b": str})
+
+        def capybara(x: T):
+            assert_is_value(
+                x,
+                TypedDictValue(
+                    {
+                        "a": TypedDictEntry(TypedValue(int)),
+                        "b": TypedDictEntry(TypedValue(str)),
+                    }
+                ),
+            )
+            assert_is_value(x["a"], TypedValue(int))
+
     @assert_passes()
     def test_unknown_key_unresolved(self):
-        from mypy_extensions import TypedDict
+        from typing_extensions import TypedDict
 
         T = TypedDict("T", {"a": int, "b": str})
 
@@ -235,7 +242,7 @@ class TestTypedDict(TestNameCheckVisitorBase):
 
     @assert_passes()
     def test_invalid_key(self):
-        from mypy_extensions import TypedDict
+        from typing_extensions import TypedDict
 
         T = TypedDict("T", {"a": int, "b": str})
 

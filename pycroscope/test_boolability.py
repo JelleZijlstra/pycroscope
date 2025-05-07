@@ -4,7 +4,7 @@ from .boolability import Boolability, get_boolability
 from .maybe_asynq import asynq
 from .stacked_scopes import Composite
 from .test_name_check_visitor import TestNameCheckVisitorBase
-from .test_node_visitor import assert_passes, skip_if
+from .test_node_visitor import assert_passes, skip_if, skip_if_not_installed
 from .value import (
     NO_RETURN_VALUE,
     AnnotatedValue,
@@ -211,6 +211,7 @@ class TestConditionAlwaysTrue(TestNameCheckVisitorBase):
             obj or True  # E: type_always_true
             not obj  # E: type_always_true
 
+    @skip_if_not_installed("asynq")
     @assert_passes()
     def test_async_yield_or(self):
         from asynq import asynq

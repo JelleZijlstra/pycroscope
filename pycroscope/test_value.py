@@ -102,7 +102,7 @@ def test_unbound_method_value() -> None:
         val
     )
     assert "get_prop_with_get" == val.attr_name
-    assert TypedValue(tests.PropertyObject) == val.composite.value
+    assert TypedValue(PropertyObject) == val.composite.value
     assert None is val.secondary_attr_name
     assert PropertyObject.get_prop_with_get == val.get_method()
     assert val.is_type(object)
