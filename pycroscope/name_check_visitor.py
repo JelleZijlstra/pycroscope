@@ -576,6 +576,8 @@ class IgnoredUnusedClassAttributes(ConcatenatedOption[tuple[type, set[str]]]):
                 raise InvalidConfigOption.from_parser(
                     cls, "path to Python object", typ
                 ) from None
+            if not isinstance(obj, type):
+                raise InvalidConfigOption.from_parser(cls, "type", obj)
             if not isinstance(attrs, (list, tuple)):
                 raise InvalidConfigOption.from_parser(
                     cls, "sequence of attributes", attrs
@@ -1359,7 +1361,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         # Recover memory used for the AST. We keep the visitor object around later in order
         # to show ClassAttributeChecker errors, but those don't need the full AST.
         self.tree = None
-        self.lines.clear()
         self._argspec_to_retval.clear()
         end_time = time.time()
         message = f"{self.filename} took {end_time - start_time:.2f} s"
@@ -5982,7 +5983,7 @@ def build_stacked_scopes(
     return StackedScopes(module_vars, module, simplification_limit=simplification_limit)
 
 
-def _get_task_cls(fn: object) -> "type[asynq.FutureBase[Any]]":
+def _get_task_cls(fn: object) -> type[Any]:
     """Returns the task class for an async function."""
     assert asynq is not None
 

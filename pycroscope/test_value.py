@@ -10,6 +10,8 @@ from unittest import mock
 
 from typing_extensions import Protocol, runtime_checkable
 
+from pycroscope.test_node_visitor import skip_if_not_installed
+
 from . import tests, value
 from .checker import Checker
 from .name_check_visitor import NameCheckVisitor
@@ -90,30 +92,36 @@ def test_known_value() -> None:
     assert_cannot_assign(KnownValue(nan), KnownValue(0.0))
 
 
+@skip_if_not_installed("asynq")
 def test_unbound_method_value() -> None:
-    po_composite = Composite(value.TypedValue(tests.PropertyObject))
+    from pycroscope.asynq_tests import PropertyObject
+
+    po_composite = Composite(value.TypedValue(PropertyObject))
     val = value.UnboundMethodValue("get_prop_with_get", po_composite)
-    assert "<method get_prop_with_get on pycroscope.tests.PropertyObject>" == str(val)
+    assert "<method get_prop_with_get on pycroscope.asynq_tests.PropertyObject>" == str(
+        val
+    )
     assert "get_prop_with_get" == val.attr_name
     assert TypedValue(tests.PropertyObject) == val.composite.value
     assert None is val.secondary_attr_name
-    assert tests.PropertyObject.get_prop_with_get == val.get_method()
+    assert PropertyObject.get_prop_with_get == val.get_method()
     assert val.is_type(object)
     assert not val.is_type(str)
 
     val = value.UnboundMethodValue(
         "get_prop_with_get", po_composite, secondary_attr_name="asynq"
     )
-    assert "<method get_prop_with_get.asynq on pycroscope.tests.PropertyObject>" == str(
-        val
+    assert (
+        "<method get_prop_with_get.asynq on pycroscope.asynq_tests.PropertyObject>"
+        == str(val)
     )
     assert "get_prop_with_get" == val.attr_name
-    assert TypedValue(tests.PropertyObject) == val.composite.value
+    assert TypedValue(PropertyObject) == val.composite.value
     assert "asynq" == val.secondary_attr_name
     method = val.get_method()
     assert method is not None
     assert method.__name__ in tests.ASYNQ_METHOD_NAMES
-    assert tests.PropertyObject.get_prop_with_get == method.__self__
+    assert PropertyObject.get_prop_with_get == method.__self__
     assert val.is_type(object)
     assert not val.is_type(str)
 

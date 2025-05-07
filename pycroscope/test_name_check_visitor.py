@@ -1187,7 +1187,7 @@ class TestUnboundMethodValue(TestNameCheckVisitorBase):
             assert_is_value(
                 PropertyObject(oid).decorated_method,
                 UnboundMethodValue(
-                    "async_method", Composite(TypedValue(PropertyObject))
+                    "decorated_method", Composite(TypedValue(PropertyObject))
                 ),
             )
             assert_is_value(

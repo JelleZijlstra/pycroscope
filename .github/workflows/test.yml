@@ -50,3 +50,16 @@ jobs:
         run: tox -e ${{ matrix.toxenv }} --notest
       - name: test
         run: tox -e ${{ matrix.toxenv }}
+
+  test-no-deps:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: 3.13
+      - name: install
+        run: pip install . pytest
+      - name: test-no-deps
+        run: pytest pycroscope
