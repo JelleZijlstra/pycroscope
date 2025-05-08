@@ -101,3 +101,38 @@ class TestTypeAliasType(TestNameCheckVisitorBase):
                 f("x")  # E: incompatible_argument
         """
         )
+
+    @skip_before((3, 12))
+    def test_312_literal(self):
+        self.assert_passes(
+            """
+            from typing import assert_type, Literal
+
+            type MyType = Literal[1, 2, 3]
+
+            def capybara(x: MyType):
+                assert_type(x + 1, int)
+
+            def pacarana(x: MyType):
+                capybara(x)
+        """
+        )
+
+    @skip_before((3, 12))
+    def test_312_iteration(self):
+        self.assert_passes(
+            """
+            from typing import assert_type, Literal
+
+            type MyType = tuple[int, str, float]
+
+            def capybara(t: MyType):
+                x, y, z = t
+                assert_type(x, int)
+                assert_type(y, str)
+                assert_type(z, float)
+
+            def pacarana(x: MyType):
+                capybara(x)
+        """
+        )

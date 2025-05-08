@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Fix treatment of aliases created through the `type` statement in union
+  assignability and in iteration
+- Make `asynq` and `qcore` optional dependencies
 - Fix use of aliases created through the `type` statement in boolean conditions
 
 ## Version 0.1.0 (May 3, 2025)
