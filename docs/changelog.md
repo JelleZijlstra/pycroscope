@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Add support for a concise output format (`--output-format concise`)
 - Fix treatment of aliases created through the `type` statement in union
   assignability and in iteration
 - Make `asynq` and `qcore` optional dependencies
