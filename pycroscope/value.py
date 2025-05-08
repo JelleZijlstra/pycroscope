@@ -534,6 +534,14 @@ class TypeAliasValue(Value):
             return None
         return self.get_value().can_overlap(other, ctx, mode)
 
+    def __str__(self) -> str:
+        text = f"{self.module}.{self.name}"
+        if self.type_arguments:
+            text += f"[{', '.join(map(str, self.type_arguments))}]"
+        if self.alias.evaluated_value is not None:
+            text += f" = {self.alias.evaluated_value}"
+        return text
+
 
 @dataclass(frozen=True)
 class UninitializedValue(Value):
@@ -1990,6 +1998,8 @@ class MultiValuedValue(Value):
         )
 
     def can_assign(self, other: Value, ctx: CanAssignContext) -> CanAssign:
+        if isinstance(other, TypeAliasValue):
+            other = other.get_value()
         if isinstance(other, TypeVarValue):
             other = other.get_fallback_value()
         if is_union(other):
@@ -3145,6 +3155,8 @@ def unpack_values(
     unpacking like ``a, b, *c, d = ...``.
 
     """
+    if isinstance(value, TypeAliasValue):
+        value = value.get_value()
     if isinstance(value, MultiValuedValue):
         subvals = [
             unpack_values(val, ctx, target_length, post_starred_length)
@@ -3321,6 +3333,8 @@ def replace_known_sequence_value(value: Value) -> Value:
         return replace_known_sequence_value(value.value)
     if isinstance(value, TypeVarValue):
         return replace_known_sequence_value(value.get_fallback_value())
+    if isinstance(value, TypeAliasValue):
+        return replace_known_sequence_value(value.get_value())
     if isinstance(value, KnownValue):
         if isinstance(value.val, (list, tuple, set)):
             return SequenceValue(
