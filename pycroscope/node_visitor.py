@@ -29,7 +29,7 @@ from typing import Any, Optional, Union
 
 import codemod
 from ast_decompiler import decompile
-from typing_extensions import NotRequired, Protocol, TypedDict
+from typing_extensions import Literal, NotRequired, Protocol, TypedDict
 
 from . import analysis_lib, error_code
 from .analysis_lib import override
@@ -135,6 +135,7 @@ class Failure(TypedDict):
     col_offset: NotRequired[int]
     context: NotRequired[str]
     message: NotRequired[str]
+    concise_message: NotRequired[str]
     extra_metadata: NotRequired[dict[str, Any]]
 
 
@@ -152,6 +153,9 @@ class ErrorContext(Protocol):
         extra_metadata: Optional[dict[str, Any]] = None,
     ) -> Optional[Failure]:
         raise NotImplementedError
+
+
+OutputFormat = Literal["concise", "detailed"]
 
 
 class BaseNodeVisitor(ast.NodeVisitor):
@@ -182,6 +186,7 @@ class BaseNodeVisitor(ast.NodeVisitor):
         collect_failures: bool = False,
         add_ignores: bool = False,
         is_code_only: bool = False,
+        output_format: OutputFormat = "detailed",
     ) -> None:
         """Constructor.
 
@@ -206,6 +211,7 @@ class BaseNodeVisitor(ast.NodeVisitor):
         self.used_ignores = set()
         self.seen_errors = set()  # of (node, error_code) pairs
         self.add_ignores = add_ignores
+        self.output_format = output_format
         self.caught_errors = None
         self.is_code_only = is_code_only
         self.lines = [line + "\n" for line in self.contents.splitlines()]
@@ -660,6 +666,19 @@ class BaseNodeVisitor(ast.NodeVisitor):
             message += f"\n In {self.filename}"
         if col_offset is not None:
             error["col_offset"] = col_offset
+
+        concise_message = self.filename
+        if lineno is not None:
+            concise_message += f":{lineno}"
+        if col_offset is not None:
+            concise_message += f":{col_offset}"
+        concise_message += f": {e}"
+        if error_code is not None:
+            concise_message += f" [{error_code.name}]"
+        if detail is not None:
+            concise_message += f"\n{detail}"
+        concise_message = concise_message.rstrip() + "\n"
+
         lines = self._lines()
 
         if obey_ignore and lineno is not None:
@@ -717,9 +736,13 @@ class BaseNodeVisitor(ast.NodeVisitor):
             self._changes_for_fixer[self.filename].append(replacement)
 
         error["message"] = message
+        error["concise_message"] = concise_message
         if save:
             self.all_failures.append(error)
-        sys.stderr.write(message)
+        if self.output_format == "detailed":
+            sys.stderr.write(message)
+        else:
+            sys.stderr.write(concise_message)
         sys.stderr.flush()
         if self.fail_after_first:
             raise VisitorError(message, error_code)
@@ -906,6 +929,13 @@ class BaseNodeVisitor(ast.NodeVisitor):
             help="Check files in parallel",
             action="store_true",
             default=False,
+        )
+        parser.add_argument(
+            "--output-format",
+            choices=["concise", "detailed"],
+            default="detailed",
+            help="Output format for errors",
+            action="store",
         )
         parser.add_argument(
             "--markdown-output",

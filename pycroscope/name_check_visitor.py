@@ -1127,6 +1127,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         add_ignores: bool = False,
         checker: Checker,
         is_code_only: bool = False,
+        output_format: node_visitor.OutputFormat = "detailed",
     ) -> None:
         super().__init__(
             filename,
@@ -1137,6 +1138,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             verbosity=verbosity,
             add_ignores=add_ignores,
             is_code_only=is_code_only,
+            output_format=output_format,
         )
         self.checker = checker
 
