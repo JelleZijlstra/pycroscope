@@ -215,10 +215,13 @@ def object_from_string(object_reference: str) -> object:
 
 def get_subclasses_recursively(cls: type[T]) -> set[type[T]]:
     """Returns all subclasses of a class recursively."""
-    direct_subclasses = set(type.__subclasses__(cls))
-    all_subclasses = set(direct_subclasses)
-    for subclass in direct_subclasses:
-        all_subclasses.update(get_subclasses_recursively(subclass))
+    all_subclasses = set()
+    for subcls in type.__subclasses__(cls):
+        try:
+            all_subclasses.add(subcls)
+        except TypeError:
+            pass  # Ignore unhashable classes
+        all_subclasses.update(get_subclasses_recursively(subcls))
     return all_subclasses
 
 

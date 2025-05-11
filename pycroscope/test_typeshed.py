@@ -3,6 +3,7 @@ import collections
 import collections.abc
 import contextlib
 import io
+import sys
 import tempfile
 import textwrap
 import time
@@ -708,7 +709,9 @@ class TestGetGenericBases:
                 collections.abc.Collection: [AnyValue(AnySource.generic_argument)],
                 collections.abc.Sequence: [AnyValue(AnySource.generic_argument)],
                 urllib.parse.ParseResult: [],
-                urllib.parse._ParseResultBase: [],
+                urllib.parse._ParseResultBase: (
+                    [TypedValue(str)] if sys.version_info >= (3, 14) else []
+                ),
                 tuple: [AnyValue(AnySource.generic_argument)],
                 urllib.parse._ResultMixinStr: [],
                 urllib.parse._NetlocResultMixinBase: [TypedValue(str)],
