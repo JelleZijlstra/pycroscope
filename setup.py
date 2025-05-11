@@ -41,7 +41,7 @@ if __name__ == "__main__":
                 "pytest",
                 "mypy_extensions",
                 "attrs",
-                "pydantic",
+                "pydantic; python_version < '3.14'",  # TODO currently fails to build on 3.14
                 "annotated-types",
             ],
             "asynq": ["asynq", "qcore>=0.5.1"],
