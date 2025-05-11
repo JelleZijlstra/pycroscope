@@ -15,44 +15,24 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - name: py39
-            python: "3.9"
-            toxenv: py39
-          - name: py310
-            python: "3.10"
-            toxenv: py310
-          - name: py311
-            python: "3.11"
-            toxenv: py311
-          - name: py312
-            python: "3.12"
-            toxenv: py312
-          - name: py313
-            python: "3.13"
-            toxenv: py313
-          - name: py314
-            python: "3.14-dev"
-            toxenv: py314
-          - name: black
-            python: "3.12"
-            toxenv: black
-          - name: ruff
-            python: "3.12"
-            toxenv: ruff
+        python-version:
+          - "3.9"
+          - "3.10"
+          - "3.11"
+          - "3.12"
+          - "3.13"
+          - "3.14-dev"
 
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: ${{ matrix.python }}
+          python-version: ${{ matrix.python-version }}
           allow-prereleases: true
-      - name: install tox
-        run: pip install --upgrade setuptools tox==4.25.0
-      - name: setup tox environment
-        run: tox -e ${{ matrix.toxenv }} --notest
+      - name: install dependencies
+        run: pip install .[tests,asynq] pytest
       - name: test
-        run: tox -e ${{ matrix.toxenv }}
+        run: pytest pycroscope
 
   test-no-deps:
     runs-on: ubuntu-latest
