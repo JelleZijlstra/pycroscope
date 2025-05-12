@@ -410,7 +410,9 @@ class Checker:
 EXCLUDED_PROTOCOL_MEMBERS = {
     "__abstractmethods__",
     "__annotate__",
+    "__annotate_func__",
     "__annotations__",
+    "__annotations_cache__",
     "__dict__",
     "__doc__",
     "__init__",

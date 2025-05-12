@@ -2004,3 +2004,26 @@ class TestIfTypeChecking(TestNameCheckVisitorBase):
 
             assert_type(u.x, Any)
             assert_type(u.y, Any)
+
+
+class TestProtocol(TestNameCheckVisitorBase):
+    @assert_passes()
+    def test_conditional_annotations(self):
+        from types import SimpleNamespace
+        from typing import Protocol
+
+        class ProtocolA(Protocol):
+            a: int
+
+            if len("x") > 0:
+                b: str
+            else:
+                c: float
+
+        obj = SimpleNamespace(a=1, b="x")
+
+        def capybara(x: ProtocolA) -> None:
+            pass
+
+        def caller() -> None:
+            capybara(obj)
