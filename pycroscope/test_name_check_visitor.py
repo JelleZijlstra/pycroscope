@@ -902,7 +902,7 @@ class TestNewType(TestNameCheckVisitorBase):
         def capybara(uid: Uid):
             assert_type(uid, Uid)
             assert_type(uid + 1, int)
-            assert_type(uid.bit_count(), int)
+            assert_type(uid.bit_length(), int)
             assert_type(want_int(uid), int)
 
     @assert_passes()
