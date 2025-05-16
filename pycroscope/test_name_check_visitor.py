@@ -867,7 +867,6 @@ class TestVariableNameValue(TestNameCheckVisitorBase):
             return 42
 
         def test(self, uid: Uid):
-            assert_is_value(uid, NewTypeValue(Uid))
             assert_is_value(name_ends_with_uid, KnownValue(name_ends_with_uid))
             uid = some_func()
             assert_is_value(uid, VariableNameValue(["uid"]))
@@ -877,6 +876,47 @@ class TestVariableNameValue(TestNameCheckVisitorBase):
             d = {"uid": self}
             assert_is_value(d["uid"], VariableNameValue(["uid"]))
             assert_is_value(self.uid, VariableNameValue(["uid"]))
+
+
+class TestNewType(TestNameCheckVisitorBase):
+    @assert_passes()
+    def test_basic(self):
+        from typing import NewType
+
+        Uid = NewType("Uid", int)
+
+        def capybara(uid: Uid):
+            assert_is_value(uid, NewTypeValue("Uid", TypedValue(int), Uid))
+
+    @assert_passes()
+    def test_operation(self):
+        from typing import NewType
+
+        from typing_extensions import assert_type
+
+        Uid = NewType("Uid", int)
+
+        def want_int(x: int) -> int:
+            return x
+
+        def capybara(uid: Uid):
+            assert_type(uid, Uid)
+            assert_type(uid + 1, int)
+            assert_type(uid.bit_count(), int)
+            assert_type(want_int(uid), int)
+
+    @assert_passes()
+    def test_variadic_tuple(self):
+        from typing import NewType
+
+        from typing_extensions import assert_type
+
+        NT = NewType("NT", tuple[int, ...])
+
+        def capybara(nt: NT, x: tuple[int, ...]):
+            assert_type(nt, NT)
+            assert_type(nt * 2, tuple[int, ...])
+            assert_type(nt[0], int)
 
 
 class TestImports(TestNameCheckVisitorBase):

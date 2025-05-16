@@ -535,13 +535,13 @@ class Capybara(enum.IntEnum):
 
 def test_new_type_value() -> None:
     nt1 = NewType("nt1", int)
-    nt1_val = value.NewTypeValue(nt1)
+    nt1_val = value.NewTypeValue("nt1", TypedValue(int), nt1)
     nt2 = NewType("nt2", int)
-    nt2_val = value.NewTypeValue(nt2)
+    nt2_val = value.NewTypeValue("nt2", TypedValue(int), nt2)
     assert_can_assign(nt1_val, nt1_val)
     assert_cannot_assign(nt1_val, nt2_val)
     # This should eventually return False
-    assert_can_assign(nt1_val, TypedValue(int))
+    assert_cannot_assign(nt1_val, TypedValue(int))
     assert_can_assign(TypedValue(int), nt1_val)
     assert_cannot_assign(nt1_val, TypedValue(Capybara))
     assert_cannot_assign(nt1_val, KnownValue(Capybara.hydrochaeris))

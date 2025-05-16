@@ -42,6 +42,7 @@ from .value import (
     KnownValue,
     KnownValueWithTypeVars,
     MultiValuedValue,
+    NewTypeValue,
     SubclassValue,
     TypeAlias,
     TypedValue,
@@ -284,7 +285,7 @@ class Checker:
         ] = lambda _: None,
         get_call_attribute: Optional[Callable[[Value], Value]] = None,
     ) -> MaybeSignature:
-        if isinstance(value, AnnotatedValue):
+        if isinstance(value, (AnnotatedValue, NewTypeValue)):
             value = value.value
         if isinstance(value, TypeVarValue):
             value = value.get_fallback_value()

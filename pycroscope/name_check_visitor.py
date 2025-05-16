@@ -183,6 +183,7 @@ from .value import (
     KnownValue,
     KVPair,
     MultiValuedValue,
+    NewTypeValue,
     NoReturnConstraintExtension,
     OverlapMode,
     ReferencingValue,
@@ -5124,7 +5125,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         allow_call: bool = False,
     ) -> tuple[Value, bool]:
         val = callee_composite.value
-        if isinstance(val, AnnotatedValue):
+        if isinstance(val, (AnnotatedValue, NewTypeValue)):
             val = val.value
         if isinstance(val, MultiValuedValue):
             composites = [

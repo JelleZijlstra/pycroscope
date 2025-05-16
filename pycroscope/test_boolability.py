@@ -1,5 +1,7 @@
 # static analysis: ignore
 
+from unittest.mock import ANY
+
 from .boolability import Boolability, get_boolability
 from .maybe_asynq import asynq
 from .stacked_scopes import Composite
@@ -13,6 +15,7 @@ from .value import (
     DictIncompleteValue,
     KnownValue,
     KVPair,
+    NewTypeValue,
     SequenceValue,
     TypeAlias,
     TypeAliasValue,
@@ -149,6 +152,19 @@ def test_get_boolability() -> None:
         "alias", __name__, TypeAlias(lambda: KnownValue(True), lambda: ())
     )
     assert get_boolability(alias) == Boolability.value_always_true
+
+    assert (
+        get_boolability(NewTypeValue("NT1", KnownValue(True), ANY))
+        == Boolability.value_always_true
+    )
+    assert (
+        get_boolability(NewTypeValue("NT2", KnownValue(False), ANY))
+        == Boolability.value_always_false
+    )
+    assert (
+        get_boolability(NewTypeValue("NT3", TypedValue(int), ANY))
+        == Boolability.boolable
+    )
 
 
 class TestAssert(TestNameCheckVisitorBase):

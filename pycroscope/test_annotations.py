@@ -119,10 +119,31 @@ class TestAnnotations(TestNameCheckVisitorBase):
 
         X = NewType("X", int)
         Y = NewType("Y", Tuple[str, ...])
+        Z = NewType("Z", tuple[str, ...])
+        A = NewType("A", tuple[int, str])
+        B = NewType("B", list[int])
 
-        def capybara(x: X, y: Y) -> None:
-            assert_is_value(x, NewTypeValue(X))
-            print(y)  # just asserting that this doesn't cause errors
+        def capybara(x: X, y: Y, z: Z, a: A, b: B) -> None:
+            assert_is_value(x, NewTypeValue("X", TypedValue(int), X))
+            assert_is_value(
+                y, NewTypeValue("Y", GenericValue(tuple, [TypedValue(str)]), Y)
+            )
+            assert_is_value(
+                z, NewTypeValue("Z", GenericValue(tuple, [TypedValue(str)]), Z)
+            )
+            assert_is_value(
+                a,
+                NewTypeValue(
+                    "A",
+                    SequenceValue(
+                        tuple, [(False, TypedValue(int)), (False, TypedValue(str))]
+                    ),
+                    A,
+                ),
+            )
+            assert_is_value(
+                b, NewTypeValue("B", GenericValue(list, [TypedValue(int)]), B)
+            )
 
     @assert_passes()
     def test_literal(self):

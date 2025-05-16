@@ -20,6 +20,7 @@ from .value import (
     DictIncompleteValue,
     KnownValue,
     MultiValuedValue,
+    NewTypeValue,
     SequenceValue,
     SubclassValue,
     TypeAliasValue,
@@ -179,6 +180,8 @@ def _get_boolability_no_mvv(value: Value) -> Boolability:
         return _get_type_boolability(value.typ)
     elif isinstance(value, TypeAliasValue):
         return get_boolability(value.get_value())
+    elif isinstance(value, NewTypeValue):
+        return get_boolability(value.value)
     else:
         assert False, f"unhandled value {value!r}"
 
