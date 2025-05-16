@@ -888,7 +888,7 @@ class TypeshedFinder:
         else:
             return_value = self._parse_type(node.returns, mod)
         # ignore self type for class and static methods
-        if node.decorator_list:
+        if is_classmethod or is_staticmethod:
             objclass = None
         args = node.args
         arguments: list[SigParameter] = []
