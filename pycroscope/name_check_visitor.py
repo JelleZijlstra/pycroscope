@@ -3897,10 +3897,8 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             #     1 + df
             # because this would return "int" (which is what int.__add__ returns),
             # and "df" might be an object that implements __radd__.
-            # Instead, we return Any if that's the right_result. This handles
-            # the case above but might return the wrong result in some other rare
-            # cases.
-            if isinstance(right_result, AnyValue):
+            # Instead, we return Any if right is Any.
+            if isinstance(right, AnyValue):
                 return AnyValue(AnySource.from_another)
             return left_result
 

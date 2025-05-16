@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Fix bug where certain binary operations were incorrectly inferred as Any
+- Fix bug with generic self types on overloaded methods in stubs
 - Add support for NewTypes over any type, instead of just simple types
 - Add support for a concise output format (`--output-format concise`)
 - Fix treatment of aliases created through the `type` statement in union

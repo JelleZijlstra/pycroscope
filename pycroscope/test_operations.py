@@ -45,6 +45,30 @@ class TestBinOps(TestNameCheckVisitorBase):
         def pacarana():
             assert_type(Capybara() + "x", bool)
 
+    @assert_passes()
+    def test_tuple_add(self):
+        from typing import Union
+
+        from typing_extensions import Literal, assert_type
+
+        def f(
+            x: tuple[int, ...], y: tuple[Literal[1], ...], z: tuple[str, ...]
+        ) -> None:
+            assert_type(x + y, tuple[int, ...])
+            assert_type(y + x, tuple[int, ...])
+            assert_type(x + z, tuple[Union[int, str], ...])
+            assert_type(z + x, tuple[Union[int, str], ...])
+
+    @assert_passes()
+    def test_set_or(self):
+        from typing import Union
+
+        from typing_extensions import Literal, assert_type
+
+        def capybara(x: set[int], y: set[Literal[1]]) -> None:
+            assert_type(x | y, set[Union[int, Literal[1]]])
+            assert_type(y | x, set[Union[int, Literal[1]]])
+
 
 class TestBoolOp(TestNameCheckVisitorBase):
     @assert_passes()
