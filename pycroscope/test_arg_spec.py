@@ -140,7 +140,7 @@ def test_get_argspec():
                     "x", ParameterKind.POSITIONAL_ONLY, annotation=TypedValue(int)
                 )
             ],
-            NewTypeValue(NT),
+            NewTypeValue("NT", TypedValue(int), NT),
             callable=NT,
         ) == asc.get_argspec(NT)
 

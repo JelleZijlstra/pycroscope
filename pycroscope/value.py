@@ -99,7 +99,9 @@ class Value:
         This is the primary mechanism used for checking type compatibility.
 
         """
-        if isinstance(other, AnyValue) and not ctx.should_exclude_any():
+        if isinstance(other, NewTypeValue):
+            return self.can_assign(other.value, ctx)
+        elif isinstance(other, AnyValue) and not ctx.should_exclude_any():
             ctx.record_any_used()
             return {}
         elif isinstance(other, MultiValuedValue):
@@ -733,7 +735,7 @@ class UnboundMethodValue(Value):
         """Return the runtime callable for this ``UnboundMethodValue``, or
         None if it cannot be found."""
         root = self.composite.value
-        if isinstance(root, AnnotatedValue):
+        if isinstance(root, (AnnotatedValue, NewTypeValue)):
             root = root.value
         if isinstance(root, KnownValue):
             typ = root.val
@@ -975,8 +977,8 @@ class TypedValue(Value):
         return stringify_object(self.typ) + suffix
 
 
-@dataclass(unsafe_hash=True, init=False)
-class NewTypeValue(TypedValue):
+@dataclass(unsafe_hash=True)
+class NewTypeValue(Value):
     """A wrapper around an underlying type.
 
     Corresponds to ``typing.NewType``.
@@ -988,26 +990,23 @@ class NewTypeValue(TypedValue):
 
     name: str
     """Name of the ``NewType``."""
+    value: Value
+    """The underlying value of the ``NewType``."""
     newtype: Any
     """Underlying ``NewType`` object."""
-
-    def __init__(self, newtype: Any) -> None:
-        super().__init__(newtype.__supertype__)
-        self.name = newtype.__name__
-        self.newtype = newtype
 
     def can_assign(self, other: Value, ctx: CanAssignContext) -> CanAssign:
         if isinstance(other, NewTypeValue):
             if self.newtype is other.newtype:
                 return {}
             return CanAssignError(f"NewTypes {self} and {other} are not compatible")
-        # Allow e.g. int for a NewType over int, but not a subtype of int such as an
-        # IntEnum
         elif isinstance(other, TypedValue):
-            if self.typ is not other.typ:
-                return CanAssignError(f"Cannot assign {other} to {self}")
+            return CanAssignError(f"Cannot assign {other} to {self}")
+        # As a special case, allow literals of the right type.
         elif isinstance(other, KnownValue):
-            if self.typ is not type(other.val):
+            if not (
+                isinstance(self.value, TypedValue) and self.value.typ is type(other.val)
+            ):
                 return CanAssignError(f"Cannot assign {other} to {self}")
         return super().can_assign(other, ctx)
 
@@ -1020,8 +1019,11 @@ class NewTypeValue(TypedValue):
             return CanAssignError(f"NewTypes {self} and {other} cannot overlap")
         return super().can_overlap(other, ctx, mode)
 
+    def get_type_value(self) -> Value:
+        return self.value.get_type_value()
+
     def __str__(self) -> str:
-        return f"NewType({self.name!r}, {stringify_object(self.typ)})"
+        return f"NewType({self.name!r}, {self.value})"
 
 
 @dataclass(unsafe_hash=True, init=False)
@@ -3329,7 +3331,7 @@ def replace_known_sequence_value(value: Value) -> Value:
       SequenceValue or DictIncompleteValue.
 
     """
-    if isinstance(value, AnnotatedValue):
+    if isinstance(value, (AnnotatedValue, NewTypeValue)):
         return replace_known_sequence_value(value.value)
     if isinstance(value, TypeVarValue):
         return replace_known_sequence_value(value.get_fallback_value())

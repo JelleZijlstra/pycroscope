@@ -807,17 +807,14 @@ class ArgSpecCache:
 
         if is_newtype(obj):
             assert hasattr(obj, "__supertype__")
+            supertype = type_from_runtime(obj.__supertype__, ctx=self.default_context)
             return Signature.make(
                 [
                     SigParameter(
-                        "x",
-                        ParameterKind.POSITIONAL_ONLY,
-                        annotation=type_from_runtime(
-                            obj.__supertype__, ctx=self.default_context
-                        ),
+                        "x", ParameterKind.POSITIONAL_ONLY, annotation=supertype
                     )
                 ],
-                NewTypeValue(obj),
+                NewTypeValue(obj.__name__, supertype, obj),
                 callable=obj,
             )
 

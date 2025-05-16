@@ -118,10 +118,8 @@ class TestTypeshedClient(TestNameCheckVisitorBase):
             sig = tsf.get_argspec_for_fully_qualified_name("newt.f", runtime_f)
             newtype = next(iter(tsf._assignment_cache.values()))
             assert isinstance(newtype, KnownValue)
-            ntv = NewTypeValue(newtype.val)
-            assert "NT" == ntv.name
-            assert int == ntv.typ
-            assert (
+            ntv = NewTypeValue("NT", TypedValue(int), newtype.val)
+            assert sig == (
                 Signature.make(
                     [
                         SigParameter("x", annotation=ntv),
@@ -130,7 +128,6 @@ class TestTypeshedClient(TestNameCheckVisitorBase):
                     KnownValue(None),
                     callable=runtime_f,
                 )
-                == sig
             )
 
     @assert_passes()

@@ -33,6 +33,7 @@ from .value import (
     KnownValue,
     KnownValueWithTypeVars,
     MultiValuedValue,
+    NewTypeValue,
     SubclassValue,
     SyntheticModuleValue,
     TypeAliasValue,
@@ -102,6 +103,8 @@ def get_root_value(val: Value) -> Value:
         return get_root_value(val.get_value())
     elif isinstance(val, TypeVarValue):
         return get_root_value(val.get_fallback_value())
+    elif isinstance(val, NewTypeValue):
+        return get_root_value(val.value)
     else:
         return val
 

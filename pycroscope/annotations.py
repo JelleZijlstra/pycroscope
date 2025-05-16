@@ -479,16 +479,8 @@ def _type_from_runtime(
     elif is_typing_name(val, "LiteralString"):
         return TypedValue(str, literal_only=True)
     elif hasattr(val, "__supertype__"):
-        if isinstance(val.__supertype__, type):
-            # NewType
-            return NewTypeValue(val)
-        super_origin = get_origin(val.__supertype__)
-        if super_origin is tuple or is_typing_name(super_origin, "Tuple"):
-            # TODO figure out how to make NewTypes over tuples work
-            return AnyValue(AnySource.inference)
-        else:
-            ctx.show_error(f"Invalid NewType {val}")
-            return AnyValue(AnySource.error)
+        supertype = _type_from_runtime(val.__supertype__, ctx)
+        return NewTypeValue(val.__name__, supertype, val)
     elif is_typing_name(type(val), "TypeVar"):
         tv = cast(TypeVar, val)
         return make_type_var_value(tv, ctx)
