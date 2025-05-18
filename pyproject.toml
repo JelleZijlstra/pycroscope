@@ -36,7 +36,7 @@ tests = [
   "pytest",
   "mypy_extensions",
   "attrs",
-  "pydantic; python_version < '3.14'",
+  "pydantic; python_version < '3.14'", # TODO currently fails to build on 3.14
   "annotated-types"
 ]
 asynq = ["asynq", "qcore>=0.5.1"]
@@ -51,6 +51,8 @@ pycroscope = "pycroscope.__main__:main"
 packages = ["pycroscope"]
 
 [tool.setuptools.package-data]
+# These are useful for unit tests of pycroscope extensions
+# outside the package.
 pycroscope = ["test.toml", "asynq_test.toml", "stubs/*/*.pyi"]
 
 [tool.black]
