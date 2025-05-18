@@ -768,35 +768,6 @@ class TypedValue(Value):
             self._type_object = ctx.make_type_object(self.typ)
         return self._type_object
 
-    def can_assign(self, other: Value, ctx: CanAssignContext) -> CanAssign:
-        self_tobj = self.get_type_object(ctx)
-        if self_tobj.is_thrift_enum:
-            # Special case: Thrift enums. These are conceptually like
-            # enums, but they are ints at runtime.
-            return self.can_assign_thrift_enum(other, ctx)
-        elif isinstance(other, KnownValue):
-            can_assign = self_tobj.can_assign(self, other, ctx)
-            if isinstance(can_assign, CanAssignError):
-                if self_tobj.is_instance(other.val):
-                    return {}
-            return can_assign
-        elif isinstance(other, TypedValue):
-            if self.literal_only and not other.literal_only:
-                return CanAssignError(f"{other} is not a literal")
-            return self_tobj.can_assign(self, other, ctx)
-        elif isinstance(other, SubclassValue):
-            if isinstance(other.typ, TypedValue):
-                return self_tobj.can_assign(self, other, ctx)
-            elif isinstance(other.typ, (TypeVarValue, AnyValue)):
-                return {}
-        elif isinstance(other, UnboundMethodValue):
-            if self_tobj.can_be_unbound_method():
-                return {}
-        elif isinstance(other, (CallValue, TypeVarValue)):
-            if self.typ is object:
-                return {}
-        return super().can_assign(other, ctx)
-
     def can_assign_thrift_enum(self, other: Value, ctx: CanAssignContext) -> CanAssign:
         if isinstance(other, AnyValue) and not ctx.should_exclude_any():
             ctx.record_any_used()
@@ -940,21 +911,6 @@ class NewTypeValue(Value):
     newtype: Any
     """Underlying ``NewType`` object."""
 
-    def can_assign(self, other: Value, ctx: CanAssignContext) -> CanAssign:
-        if isinstance(other, NewTypeValue):
-            if self.newtype is other.newtype:
-                return {}
-            return CanAssignError(f"NewTypes {self} and {other} are not compatible")
-        elif isinstance(other, TypedValue):
-            return CanAssignError(f"Cannot assign {other} to {self}")
-        # As a special case, allow literals of the right type.
-        elif isinstance(other, KnownValue):
-            if not (
-                isinstance(self.value, TypedValue) and self.value.typ is type(other.val)
-            ):
-                return CanAssignError(f"Cannot assign {other} to {self}")
-        return super().can_assign(other, ctx)
-
     def can_overlap(
         self, other: Value, ctx: CanAssignContext, mode: OverlapMode
     ) -> Optional[CanAssignError]:
@@ -997,29 +953,6 @@ class GenericValue(TypedValue):
         args_str = ", ".join(str(arg) for arg in args)
         return f"{stringify_object(self.typ)}[{args_str}]"
 
-    def can_assign(self, other: Value, ctx: CanAssignContext) -> CanAssign:
-        original_other = other
-        other = replace_known_sequence_value(other)
-        if isinstance(other, KnownValue):
-            other = TypedValue(type(other.val))
-        if isinstance(other, TypedValue) and not isinstance(other.typ, super):
-            generic_args = other.get_generic_args_for_type(self.typ, ctx)
-            # If we don't think it's a generic base, try super;
-            # runtime isinstance() may disagree.
-            if generic_args is None or len(self.args) != len(generic_args):
-                return super().can_assign(original_other, ctx)
-            bounds_maps = []
-            for i, (my_arg, their_arg) in enumerate(zip(self.args, generic_args)):
-                can_assign = my_arg.can_assign(their_arg, ctx)
-                if isinstance(can_assign, CanAssignError):
-                    return self.maybe_specify_error(i, other, can_assign, ctx)
-                bounds_maps.append(can_assign)
-            if not bounds_maps:
-                return CanAssignError(f"Cannot assign {other} to {self}")
-            return unify_bounds_maps(bounds_maps)
-
-        return super().can_assign(original_other, ctx)
-
     def can_overlap(
         self, other: Value, ctx: CanAssignContext, mode: OverlapMode
     ) -> Optional[CanAssignError]:
@@ -1034,61 +967,6 @@ class GenericValue(TypedValue):
                     )
             return None
         return super().can_overlap(other, ctx, mode)
-
-    def maybe_specify_error(
-        self, i: int, other: Value, error: CanAssignError, ctx: CanAssignContext
-    ) -> CanAssignError:
-        expected = self.get_arg(i)
-        if isinstance(other, DictIncompleteValue) and self.typ in {
-            dict,
-            collections.abc.Mapping,
-            collections.abc.MutableMapping,
-        }:
-            if i == 0:
-                for pair in reversed(other.kv_pairs):
-                    can_assign = expected.can_assign(pair.key, ctx)
-                    if isinstance(can_assign, CanAssignError):
-                        return CanAssignError(
-                            f"In key of key-value pair {pair}", [can_assign]
-                        )
-            elif i == 1:
-                for pair in reversed(other.kv_pairs):
-                    can_assign = expected.can_assign(pair.value, ctx)
-                    if isinstance(can_assign, CanAssignError):
-                        return CanAssignError(
-                            f"In value of key-value pair {pair}", [can_assign]
-                        )
-        elif isinstance(other, TypedDictValue) and self.typ in {
-            dict,
-            collections.abc.Mapping,
-            collections.abc.MutableMapping,
-        }:
-            if i == 0:
-                for key in other.items:
-                    can_assign = expected.can_assign(KnownValue(key), ctx)
-                    if isinstance(can_assign, CanAssignError):
-                        return CanAssignError(f"In TypedDict key {key!r}", [can_assign])
-            elif i == 1:
-                for key, entry in other.items.items():
-                    can_assign = expected.can_assign(entry.typ, ctx)
-                    if isinstance(can_assign, CanAssignError):
-                        return CanAssignError(f"In TypedDict key {key!r}", [can_assign])
-        elif isinstance(other, SequenceValue) and self.typ in {
-            list,
-            set,
-            tuple,
-            collections.abc.Iterable,
-            collections.abc.Sequence,
-            collections.abc.MutableSequence,
-            collections.abc.Container,
-            collections.abc.Collection,
-        }:
-            for i, (_, key) in enumerate(other.members):
-                can_assign = expected.can_assign(key, ctx)
-                if isinstance(can_assign, CanAssignError):
-                    return CanAssignError(f"In element {i}", [can_assign])
-
-        return CanAssignError(f"In generic argument {i} to {self}", [error])
 
     def get_arg(self, index: int) -> Value:
         try:
@@ -1168,50 +1046,6 @@ class SequenceValue(GenericValue):
         except TypeError:
             # Probably an unhashable object in a set.
             return SequenceValue(typ, members)
-
-    def can_assign(self, other: Value, ctx: CanAssignContext) -> CanAssign:
-        other = replace_known_sequence_value(other)
-        if isinstance(other, SequenceValue):
-            can_assign = self.get_type_object(ctx).can_assign(self, other, ctx)
-            if isinstance(can_assign, CanAssignError):
-                return CanAssignError(
-                    f"Cannot assign {stringify_object(other.typ)} to"
-                    f" {stringify_object(self.typ)}"
-                )
-            my_len = len(self.members)
-            their_len = len(other.members)
-            if my_len != their_len:
-                type_str = stringify_object(self.typ)
-                return CanAssignError(
-                    f"Cannot assign {type_str} of length {their_len} to {type_str} of"
-                    f" length {my_len}"
-                )
-            if my_len == 0:
-                return {}  # they're both empty
-            bounds_maps = [can_assign]
-            for i, (
-                (my_is_many, my_member),
-                (their_is_many, their_member),
-            ) in enumerate(zip(self.members, other.members)):
-                if my_is_many != their_is_many:
-                    if my_is_many:
-                        return CanAssignError(
-                            f"Member {i} is an unpacked type, but a single element is"
-                            " provided"
-                        )
-                    else:
-                        return CanAssignError(
-                            f"Member {i} is a single element, but an unpacked type is"
-                            " provided"
-                        )
-                can_assign = my_member.can_assign(their_member, ctx)
-                if isinstance(can_assign, CanAssignError):
-                    return CanAssignError(
-                        f"Types for member {i} are incompatible", [can_assign]
-                    )
-                bounds_maps.append(can_assign)
-            return unify_bounds_maps(bounds_maps)
-        return super().can_assign(other, ctx)
 
     def substitute_typevars(self, typevars: TypeVarMap) -> Value:
         return SequenceValue(
@@ -1419,170 +1253,6 @@ class TypedDictValue(GenericValue):
     def all_keys_required(self) -> bool:
         return all(entry.required for entry in self.items.values())
 
-    def can_assign(self, other: Value, ctx: CanAssignContext) -> CanAssign:
-        if isinstance(other, DictIncompleteValue):
-            bounds_maps = []
-            for key, entry in self.items.items():
-                their_value = other.get_value(KnownValue(key), ctx)
-                if their_value is UNINITIALIZED_VALUE:
-                    if entry.required:
-                        return CanAssignError(f"Key {key} is missing in {other}")
-                    else:
-                        continue
-                can_assign = entry.typ.can_assign(their_value, ctx)
-                if isinstance(can_assign, CanAssignError):
-                    return CanAssignError(
-                        f"Types for key {key} are incompatible", children=[can_assign]
-                    )
-                bounds_maps.append(can_assign)
-            for pair in other.kv_pairs:
-                for key_type in flatten_values(pair.key, unwrap_annotated=True):
-                    if isinstance(key_type, KnownValue):
-                        if not isinstance(key_type.val, str):
-                            return CanAssignError(f"Key {pair.key} is not a string")
-                        if key_type.val not in self.items:
-                            if self.extra_keys is NO_RETURN_VALUE:
-                                return CanAssignError(
-                                    f"Key {key_type.val!r} is not allowed in closed"
-                                    f" TypedDict {self}"
-                                )
-                            elif self.extra_keys is not None:
-                                can_assign = self.extra_keys.can_assign(pair.value, ctx)
-                                if isinstance(can_assign, CanAssignError):
-                                    return CanAssignError(
-                                        f"Type for extra key {pair.key} is"
-                                        " incompatible",
-                                        children=[can_assign],
-                                    )
-                                bounds_maps.append(can_assign)
-                    else:
-                        can_assign = TypedValue(str).can_assign(key_type, ctx)
-                        if isinstance(can_assign, CanAssignError):
-                            return CanAssignError(
-                                f"Type for key {pair.key} is not a string",
-                                children=[can_assign],
-                            )
-                        if self.extra_keys is NO_RETURN_VALUE:
-                            return CanAssignError(
-                                f"Key {pair.key} is not allowed in closed TypedDict"
-                                f" {self}"
-                            )
-                        elif self.extra_keys is not None:
-                            can_assign = self.extra_keys.can_assign(pair.value, ctx)
-                            if isinstance(can_assign, CanAssignError):
-                                return CanAssignError(
-                                    f"Type for extra key {pair.key} is incompatible",
-                                    children=[can_assign],
-                                )
-                            bounds_maps.append(can_assign)
-            return unify_bounds_maps(bounds_maps)
-        elif isinstance(other, TypedDictValue):
-            bounds_maps = []
-            for key, entry in self.items.items():
-                if key not in other.items:
-                    if entry.required:
-                        return CanAssignError(
-                            f"Required key {key} is missing in {other}"
-                        )
-                    if not entry.readonly:
-                        # "other" may be a subclass of its TypedDict type that sets a different key
-                        return CanAssignError(
-                            f"Mutable key {key} is missing in {other}"
-                        )
-                    extra_keys_type = other.extra_keys or TypedValue(object)
-                    can_assign = entry.typ.can_assign(extra_keys_type, ctx)
-                    if isinstance(can_assign, CanAssignError):
-                        return CanAssignError(
-                            f"Type for key {key} is incompatible with extra keys type"
-                            f" {extra_keys_type}",
-                            children=[can_assign],
-                        )
-                else:
-                    their_entry = other.items[key]
-                    if entry.required and not their_entry.required:
-                        return CanAssignError(
-                            f"Required key {key} is non-required in {other}"
-                        )
-                    if (
-                        not entry.required
-                        and not entry.readonly
-                        and their_entry.required
-                    ):
-                        # This means we may del the key, but the other TypedDict does not
-                        # allow it
-                        return CanAssignError(
-                            f"Mutable key {key} is required in {other}"
-                        )
-                    if not entry.readonly and their_entry.readonly:
-                        return CanAssignError(
-                            f"Mutable key {key} is readonly in {other}"
-                        )
-
-                    can_assign = entry.typ.can_assign(their_entry.typ, ctx)
-                    if isinstance(can_assign, CanAssignError):
-                        return CanAssignError(
-                            f"Types for key {key} are incompatible",
-                            children=[can_assign],
-                        )
-                    bounds_maps.append(can_assign)
-                    if not entry.readonly:
-                        can_assign = their_entry.typ.can_assign(entry.typ, ctx)
-                        if isinstance(can_assign, CanAssignError):
-                            return CanAssignError(
-                                f"Types for mutable key {key} are incompatible",
-                                children=[can_assign],
-                            )
-                        bounds_maps.append(can_assign)
-            if not self.extra_keys_readonly and other.extra_keys_readonly:
-                return CanAssignError(f"Extra keys are readonly in {other}")
-            if self.extra_keys is not None:
-                their_extra_keys = other.extra_keys or TypedValue(object)
-                can_assign = self.extra_keys.can_assign(their_extra_keys, ctx)
-                if isinstance(can_assign, CanAssignError):
-                    return CanAssignError(
-                        "Types for extra keys are incompatible", children=[can_assign]
-                    )
-                bounds_maps.append(can_assign)
-                if not self.extra_keys_readonly:
-                    can_assign = their_extra_keys.can_assign(self.extra_keys, ctx)
-                    if isinstance(can_assign, CanAssignError):
-                        return CanAssignError(
-                            "Types for mutable extra keys are incompatible",
-                            children=[can_assign],
-                        )
-                    bounds_maps.append(can_assign)
-            return unify_bounds_maps(bounds_maps)
-        elif isinstance(other, KnownValue) and isinstance(other.val, dict):
-            bounds_maps = []
-            for key, entry in self.items.items():
-                if key not in other.val:
-                    if entry.required:
-                        return CanAssignError(f"Key {key} is missing in {other}")
-                else:
-                    can_assign = entry.typ.can_assign(KnownValue(other.val[key]), ctx)
-                    if isinstance(can_assign, CanAssignError):
-                        return CanAssignError(
-                            f"Types for key {key} are incompatible",
-                            children=[can_assign],
-                        )
-                    bounds_maps.append(can_assign)
-            for key, value in other.val.items():
-                if key not in self.items:
-                    if self.extra_keys is NO_RETURN_VALUE:
-                        return CanAssignError(
-                            f"Key {key} is not allowed in closed TypedDict {self}"
-                        )
-                    elif self.extra_keys is not None:
-                        can_assign = self.extra_keys.can_assign(KnownValue(value), ctx)
-                        if isinstance(can_assign, CanAssignError):
-                            return CanAssignError(
-                                f"Type for extra key {key} is incompatible",
-                                children=[can_assign],
-                            )
-                        bounds_maps.append(can_assign)
-            return unify_bounds_maps(bounds_maps)
-        return super().can_assign(other, ctx)
-
     def can_overlap(
         self, other: Value, ctx: CanAssignContext, mode: OverlapMode
     ) -> Optional[CanAssignError]:
@@ -1718,28 +1388,6 @@ class CallableValue(TypedValue):
         sig = self.signature.get_asynq_value()
         return CallableValue(sig, self.typ)
 
-    def can_assign(self, other: Value, ctx: CanAssignContext) -> CanAssign:
-        if isinstance(other, CallValue):
-            return pycroscope.signature.check_call_preprocessed(
-                self.signature, other.args, ctx
-            )
-        if not isinstance(other, (MultiValuedValue, AnyValue, AnnotatedValue)):
-            signature = ctx.signature_from_value(other)
-            if signature is None:
-                return CanAssignError(f"{other} is not a callable type")
-            if isinstance(signature, pycroscope.signature.BoundMethodSignature):
-                signature = signature.get_signature(ctx=ctx)
-            if isinstance(
-                signature,
-                (
-                    pycroscope.signature.Signature,
-                    pycroscope.signature.OverloadedSignature,
-                ),
-            ):
-                return self.signature.can_assign(signature, ctx)
-
-        return super().can_assign(other, ctx)
-
     def can_overlap(
         self, other: Value, ctx: CanAssignContext, mode: OverlapMode
     ) -> Optional[CanAssignError]:
@@ -1816,35 +1464,6 @@ class SubclassValue(Value):
         if isinstance(self.typ, TypedValue) and isinstance(self.typ.typ, type):
             return safe_issubclass(self.typ.typ, typ)
         return False
-
-    def can_assign(self, other: Value, ctx: CanAssignContext) -> CanAssign:
-        if isinstance(other, SubclassValue):
-            return self.typ.can_assign(other.typ, ctx)
-        elif isinstance(other, KnownValue):
-            if isinstance(other.val, type):
-                if isinstance(self.typ, TypedValue):
-                    self_tobj = self.typ.get_type_object(ctx)
-                    return self_tobj.can_assign(self, TypedValue(other.val), ctx)
-                elif isinstance(self.typ, TypeVarValue):
-                    return {
-                        self.typ.typevar: [
-                            LowerBound(self.typ.typevar, TypedValue(other.val))
-                        ]
-                    }
-        elif isinstance(other, TypedValue):
-            if other.typ is type:
-                return {}
-            # metaclass
-            tobj = other.get_type_object(ctx)
-            if tobj.is_assignable_to_type(type) and (
-                (
-                    isinstance(self.typ, TypedValue)
-                    and tobj.is_metatype_of(self.typ.get_type_object(ctx))
-                )
-                or isinstance(self.typ, TypeVarValue)
-            ):
-                return {}
-        return super().can_assign(other, ctx)
 
     def can_overlap(
         self, other: Value, ctx: CanAssignContext, mode: OverlapMode
@@ -1946,52 +1565,6 @@ class MultiValuedValue(Value):
         return MultiValuedValue(
             [val.substitute_typevars(typevars) for val in self.vals]
         )
-
-    def can_assign(self, other: Value, ctx: CanAssignContext) -> CanAssign:
-        if isinstance(other, TypeAliasValue):
-            other = other.get_value()
-        if isinstance(other, TypeVarValue):
-            other = other.get_fallback_value()
-        if is_union(other):
-            if other is NO_RETURN_VALUE:
-                return {}
-            bounds_maps = []
-            for val in flatten_values(other):
-                can_assign = self.can_assign(val, ctx)
-                if isinstance(can_assign, CanAssignError):
-                    # Adding an additional layer here isn't helpful
-                    return can_assign
-                bounds_maps.append(can_assign)
-            if not bounds_maps:
-                return CanAssignError(f"Cannot assign {other} to {self}")
-            return unify_bounds_maps(bounds_maps)
-        elif isinstance(other, AnyValue) and not ctx.should_exclude_any():
-            ctx.record_any_used()
-            return {}
-        else:
-            my_vals = self.vals
-            if isinstance(other, KnownValue) and self._known_subvals is not None:
-                known_values, my_vals = self._known_subvals
-                try:
-                    is_present = (other.val, type(other.val)) in known_values
-                except TypeError:
-                    pass  # not hashable
-                else:
-                    if is_present:
-                        return {}
-
-            bounds_maps = []
-            errors = []
-            for val in my_vals:
-                can_assign = val.can_assign(other, ctx)
-                # Ignore any branches that don't match
-                if isinstance(can_assign, CanAssignError):
-                    errors.append(can_assign)
-                else:
-                    bounds_maps.append(can_assign)
-            if not bounds_maps:
-                return CanAssignError("Cannot assign to Union", errors)
-            return intersect_bounds_maps(bounds_maps)
 
     def can_overlap(
         self, other: Value, ctx: CanAssignContext, mode: OverlapMode
@@ -2148,15 +1721,6 @@ class TypeVarValue(Value):
             yield IsOneOf(self.typevar, self.constraints)
         else:
             yield UpperBound(self.typevar, TypedValue(object))
-
-    def can_assign(self, other: Value, ctx: CanAssignContext) -> CanAssign:
-        if self == other:
-            return {}
-        if isinstance(other, TypeVarValue):
-            bounds = [*self.get_inherent_bounds(), *other.get_inherent_bounds()]
-        else:
-            bounds = [LowerBound(self.typevar, other), *self.get_inherent_bounds()]
-        return self.make_bounds_map(bounds, other, ctx)
 
     def can_overlap(
         self, other: Value, ctx: CanAssignContext, mode: OverlapMode
@@ -2562,18 +2126,6 @@ class AnnotatedValue(Value):
         metadata = tuple(val.substitute_typevars(typevars) for val in self.metadata)
         return AnnotatedValue(self.value.substitute_typevars(typevars), metadata)
 
-    def can_assign(self, other: Value, ctx: CanAssignContext) -> CanAssign:
-        can_assign = self.value.can_assign(other, ctx)
-        if isinstance(can_assign, CanAssignError):
-            return can_assign
-        bounds_maps = [can_assign]
-        for ext in self.get_metadata_of_type(Extension):
-            custom_can_assign = ext.can_assign(other, ctx)
-            if isinstance(custom_can_assign, CanAssignError):
-                return custom_can_assign
-            bounds_maps.append(custom_can_assign)
-        return unify_bounds_maps(bounds_maps)
-
     def can_be_assigned(self, other: Value, ctx: CanAssignContext) -> CanAssign:
         can_assign = other.can_assign(self.value, ctx)
         if isinstance(can_assign, CanAssignError):
@@ -2658,13 +2210,6 @@ class VariableNameValue(AnyValue):
         object.__setattr__(self, "varnames", tuple(varnames))
 
     varnames: tuple[str, ...]
-
-    def can_assign(self, other: Value, ctx: CanAssignContext) -> CanAssign:
-        if not isinstance(other, VariableNameValue):
-            return {}
-        if other == self:
-            return {}
-        return CanAssignError(f"Types {self} and {other} are different")
 
     def can_overlap(
         self, other: Value, ctx: CanAssignContext, mode: OverlapMode

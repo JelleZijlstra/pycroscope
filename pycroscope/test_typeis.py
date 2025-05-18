@@ -718,7 +718,7 @@ class TestTypeIs(TestNameCheckVisitorBase):
         def func(names: Tuple[str, ...]):
             assert_type(names, Tuple[str, ...])
             if is_two_element_tuple(names):
-                assert_type(names, Tuple[str, ...])  # TODO: bad type narrowing
+                assert_type(names, tuple[str, str])
 
     @assert_passes()
     def testTypeIsErroneousDefinitionFails(self):
