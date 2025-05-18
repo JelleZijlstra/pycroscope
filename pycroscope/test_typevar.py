@@ -49,6 +49,18 @@ class TestTypeVar(TestNameCheckVisitorBase):
             assert_is_value(gen.get_another(), TypedValue(int))
 
     @assert_passes()
+    def test_identity(self):
+        from typing import TypeVar
+
+        T = TypeVar("T")
+
+        def id(obj: T) -> T:
+            return obj
+
+        def capybara(unannotated) -> None:
+            assert_is_value(id(unannotated), AnyValue(AnySource.unannotated))
+
+    @assert_passes()
     def test_union_math(self):
         from typing import Optional, TypeVar
 

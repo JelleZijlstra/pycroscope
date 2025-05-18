@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Fix edge case in `TypeIs` type narrowing with tuple types
+- Rewrite the implementation of assignability to be more in line with the typing
+  specification
+- Fix handling of `ClassVar` annotations in stubs
+- Fix operations on `ParamSpecArgs` and `ParamSpecKwargs` values
+- Fix incorrect assignability relation between `TypedDict` types and
+  `dict[Any, Any]`; the spec requires that these be considered incompatible
 - Fix bug where certain binary operations were incorrectly inferred as Any
 - Fix bug with generic self types on overloaded methods in stubs
 - Add support for NewTypes over any type, instead of just simple types

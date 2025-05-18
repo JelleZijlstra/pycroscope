@@ -16,7 +16,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Optional, TypeVar, Union
 
+from typing_extensions import ParamSpec
+
+from pycroscope.find_unused import used
+
 T = TypeVar("T")
+P = ParamSpec("P")
 
 
 def _all_files(
@@ -233,3 +238,27 @@ def is_cython_class(cls: type[object]) -> bool:
 @dataclass(frozen=True)
 class Sentinel:
     name: str
+
+
+@used
+def trace(func: Callable[P, T]) -> Callable[P, T]:
+    """Decorator to trace function calls."""
+
+    def wrapper(*args: P.args, **kwargs: P.kwargs) -> T:
+        result = func(*args, **kwargs)
+        pieces = [func.__name__, "("]
+        for i, arg in enumerate(args):
+            if i > 0:
+                pieces.append(", ")
+            pieces.append(str(arg))
+        for i, (k, v) in enumerate(kwargs.items()):
+            if i > 0 or args:
+                pieces.append(", ")
+            pieces.append(f"{k}={v}")
+        pieces.append(")")
+        pieces.append(" -> ")
+        pieces.append(str(result))
+        print("".join(pieces))
+        return result
+
+    return wrapper

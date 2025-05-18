@@ -28,6 +28,7 @@ from .value import (
     TypedValue,
     UnboundMethodValue,
     Value,
+    replace_fallback,
     replace_known_sequence_value,
 )
 
@@ -100,6 +101,7 @@ def get_boolability(value: Value) -> Boolability:
 def _get_boolability_no_mvv(value: Value) -> Boolability:
     if isinstance(value, AnnotatedValue):
         value = value.value
+    value = replace_fallback(value)
     value = replace_known_sequence_value(value)
     if isinstance(value, AnyValue):
         return Boolability.boolable

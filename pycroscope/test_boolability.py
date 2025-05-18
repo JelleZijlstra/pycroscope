@@ -2,6 +2,8 @@
 
 from unittest.mock import ANY
 
+from typing_extensions import ParamSpec
+
 from .boolability import Boolability, get_boolability
 from .maybe_asynq import asynq
 from .stacked_scopes import Composite
@@ -16,6 +18,8 @@ from .value import (
     KnownValue,
     KVPair,
     NewTypeValue,
+    ParamSpecArgsValue,
+    ParamSpecKwargsValue,
     SequenceValue,
     TypeAlias,
     TypeAliasValue,
@@ -120,6 +124,11 @@ def test_get_boolability() -> None:
     assert Boolability.boolable == get_boolability(TypedValue(object))
     assert Boolability.boolable == get_boolability(TypedValue(int))
     assert Boolability.boolable == get_boolability(TypedValue(object))
+
+    # ParamSpec args and kwargs
+    P = ParamSpec("P")
+    assert get_boolability(ParamSpecArgsValue(P)) == Boolability.boolable
+    assert get_boolability(ParamSpecKwargsValue(P)) == Boolability.boolable
 
     # MultiValuedValue and AnnotatedValue
     assert Boolability.boolable == get_boolability(TypedValue(int) | TypedValue(str))

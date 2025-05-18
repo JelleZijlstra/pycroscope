@@ -15,6 +15,8 @@ from typing import Any, Callable, Optional, Union
 
 from typing_extensions import Literal
 
+from pycroscope.relations import is_assignable_with_reason, is_subtype_with_reason
+
 from .analysis_lib import Sentinel
 from .predicates import IsAssignablePredicate
 from .stacked_scopes import (
@@ -794,10 +796,9 @@ def can_assign_maybe_exclude_any(
     left: Value, right: Value, ctx: CanAssignContext, exclude_any: bool
 ) -> CanAssign:
     if exclude_any:
-        with ctx.set_exclude_any():
-            return left.can_assign(right, ctx)
+        return is_subtype_with_reason(left, right, ctx)
     else:
-        return left.can_assign(right, ctx)
+        return is_assignable_with_reason(left, right, ctx)
 
 
 def unite_varmaps(varmaps: Sequence[VarMap]) -> Optional[VarMap]:

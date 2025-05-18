@@ -510,7 +510,7 @@ class ArgSpecCache:
             and seen_paramspec_args.param_spec is typ.param_spec
         ):
             kind = ParameterKind.PARAM_SPEC
-            typ = TypeVarValue(typ.param_spec)
+            typ = TypeVarValue(typ.param_spec, is_paramspec=True)
         return (
             SigParameter(parameter.name, kind, default=default, annotation=typ),
             make_everything_pos_only,

@@ -121,9 +121,9 @@ class TypeObject:
                 return {}
             return CanAssignError(f"Cannot assign to super object {self}")
         if not self.is_protocol:
+            if self.typ is object:
+                return {}
             if other.is_protocol:
-                if self.typ is object:
-                    return {}
                 return CanAssignError(
                     f"Cannot assign protocol {other_val} to non-protocol {self}"
                 )

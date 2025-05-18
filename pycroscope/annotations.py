@@ -44,6 +44,7 @@ from typing_extensions import (
 )
 
 from pycroscope.annotated_types import get_annotated_types_extension
+from pycroscope.relations import HashableProtoValue
 
 from . import type_evaluation
 from .analysis_lib import object_from_string, override
@@ -103,7 +104,6 @@ from .value import (
     TypeVarValue,
     UnpackedValue,
     Value,
-    _HashableValue,
     annotate_value,
     unite_values,
 )
@@ -559,7 +559,14 @@ def make_type_var_value(tv: TypeVarLike, ctx: Context) -> TypeVarValue:
         default = _type_from_runtime(tv.__default__, ctx)
     else:
         default = None
-    return TypeVarValue(tv, bound=bound, constraints=constraints, default=default)
+    is_paramspec = is_instance_of_typing_name(tv, "ParamSpec")
+    return TypeVarValue(
+        tv,
+        bound=bound,
+        constraints=constraints,
+        default=default,
+        is_paramspec=is_paramspec,
+    )
 
 
 def _callable_args_from_runtime(
@@ -855,6 +862,11 @@ def _type_from_subscripted_value(
         return AnyValue(AnySource.error)
     elif isinstance(root, type):
         return GenericValue(root, [_type_from_value(elt, ctx) for elt in members])
+    elif is_typing_name(root, "ClassVar"):
+        if len(members) != 1:
+            ctx.show_error("ClassVar[] requires a single argument")
+            return AnyValue(AnySource.error)
+        return _type_from_value(members[0], ctx)
     else:
         origin = get_origin(root)
         if isinstance(origin, type):
@@ -1272,7 +1284,7 @@ def _maybe_typed_value(val: Union[type, str]) -> Value:
     if val is type(None):
         return KnownValue(None)
     elif val is Hashable:
-        return _HashableValue(val)
+        return HashableProtoValue
     elif val is Callable or is_typing_name(val, "Callable"):
         return CallableValue(ANY_SIGNATURE)
     return TypedValue(val)

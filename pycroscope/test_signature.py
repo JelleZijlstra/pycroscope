@@ -1,8 +1,16 @@
 # static analysis: ignore
 from collections.abc import Sequence
 
+from pycroscope.relations import Relation
+
 from .implementation import assert_is_value
-from .signature import ELLIPSIS_PARAM, ConcreteSignature, OverloadedSignature, Signature
+from .signature import (
+    ELLIPSIS_PARAM,
+    ConcreteSignature,
+    OverloadedSignature,
+    Signature,
+    signatures_have_relation,
+)
 from .signature import ParameterKind as K
 from .signature import SigParameter as P
 from .test_name_check_visitor import TestNameCheckVisitorBase
@@ -50,12 +58,18 @@ def test_stringify() -> None:
 class TestCanAssign:
     def can(self, left: ConcreteSignature, right: ConcreteSignature) -> None:
         tv_map = left.can_assign(right, CTX)
-        assert isinstance(
-            tv_map, dict
+        assert not isinstance(
+            tv_map, CanAssignError
+        ), f"cannot assign {right} to {left} due to {tv_map}"
+        tv_map = signatures_have_relation(left, right, Relation.ASSIGNABLE, CTX)
+        assert not isinstance(
+            tv_map, CanAssignError
         ), f"cannot assign {right} to {left} due to {tv_map}"
 
     def cannot(self, left: ConcreteSignature, right: ConcreteSignature) -> None:
         tv_map = left.can_assign(right, CTX)
+        assert isinstance(tv_map, CanAssignError), f"can assign {right} to {left}"
+        tv_map = signatures_have_relation(left, right, Relation.ASSIGNABLE, CTX)
         assert isinstance(tv_map, CanAssignError), f"can assign {right} to {left}"
 
     def test_return_value(self) -> None:
