@@ -476,10 +476,12 @@ def _has_relation(
                 and left.typ is right.typ
                 and (
                     type(right) is TypedValue
-                    or type(right) is GenericValue
-                    and all(
-                        is_equivalent(arg, AnyValue(AnySource.inference), ctx)
-                        for arg in right.args
+                    or (
+                        isinstance(right, GenericValue)
+                        and all(
+                            is_equivalent(arg, AnyValue(AnySource.inference), ctx)
+                            for arg in right.args
+                        )
                     )
                 )
             ):
