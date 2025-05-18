@@ -248,7 +248,7 @@ def _has_relation(
                 return custom_can_assign
             bounds_maps.append(custom_can_assign)
         return unify_bounds_maps(bounds_maps)
-    if isinstance(right, AnnotatedValue):
+    if isinstance(right, AnnotatedValue) and not isinstance(left, MultiValuedValue):
         right_inner = _gradualize(right.value)
         can_assign = _has_relation(left, right_inner, relation, ctx)
         if isinstance(can_assign, CanAssignError):
@@ -332,7 +332,7 @@ def _has_relation(
                 return can_assign
             bounds_maps.append(can_assign)
         return unify_bounds_maps(bounds_maps)
-    assert not isinstance(right, TypeVarValue)
+    assert not isinstance(right, (TypeVarValue, AnnotatedValue))
 
     # SyntheticModuleValue
     if isinstance(left, SyntheticModuleValue):

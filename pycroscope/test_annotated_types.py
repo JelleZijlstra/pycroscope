@@ -1,6 +1,16 @@
 # static analysis: ignore
+
+from pycroscope.value import AnySource, AnyValue, CustomCheckExtension
+
+from .annotated_types import Gt
 from .test_name_check_visitor import TestNameCheckVisitorBase
 from .test_node_visitor import assert_passes, skip_if_not_installed
+from .test_value import (
+    AnnotatedValue,
+    TypedValue,
+    assert_can_assign,
+    assert_cannot_assign,
+)
 
 
 class TestAnnotatedTypesAnnotations(TestNameCheckVisitorBase):
@@ -331,3 +341,19 @@ class TestInferAnnotations(TestNameCheckVisitorBase):
                 takes_max_len_5(s)
                 takes_min_len_5(s)  # E: incompatible_argument
                 takes_len_5(s)  # E: incompatible_argument
+
+
+def test_assignability() -> None:
+    gt5 = AnnotatedValue(TypedValue(int), [CustomCheckExtension(Gt(5))])
+    assert_can_assign(gt5, gt5)
+
+    gt6 = AnnotatedValue(TypedValue(int), [CustomCheckExtension(Gt(6))])
+    assert_can_assign(gt5, gt6)
+    assert_cannot_assign(gt6, gt5)
+    assert_can_assign(TypedValue(int), gt5)
+    assert_cannot_assign(gt5, TypedValue(int))
+
+    union = AnnotatedValue(
+        AnyValue(AnySource.from_another), [CustomCheckExtension(Gt(0))]
+    ) | AnnotatedValue(TypedValue(int), [CustomCheckExtension(Gt(0))])
+    assert_can_assign(union, union)
