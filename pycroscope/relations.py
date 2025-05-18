@@ -355,6 +355,7 @@ def _has_relation(
             return pycroscope.signature.check_call_preprocessed(
                 left.signature, right.args, ctx
             )
+        return CanAssignError(f"{right} is not {relation.description} {left}")
 
     # ParamSpecArgs and Kwargs
     if isinstance(left, ParamSpecArgsValue):
@@ -394,16 +395,12 @@ def _has_relation(
 
     # UnboundMethodValue
     if isinstance(left, UnboundMethodValue):
-        if isinstance(right, UnboundMethodValue):
-            if left == right:
-                return {}
-            else:
-                return CanAssignError(f"{right} is not {relation.description} {left}")
-        else:
-            sig = left.get_signature(ctx)
-            if sig is not None:
-                return _has_relation(CallableValue(sig), right, relation, ctx)
-            return CanAssignError(f"{right} is not {relation.description} {left}")
+        if isinstance(right, UnboundMethodValue) and left == right:
+            return {}
+        sig = left.get_signature(ctx)
+        if sig is not None:
+            return _has_relation(CallableValue(sig), right, relation, ctx)
+        return CanAssignError(f"{right} is not {relation.description} {left}")
     if isinstance(right, UnboundMethodValue):
         sig = right.get_signature(ctx)
         if sig is None:

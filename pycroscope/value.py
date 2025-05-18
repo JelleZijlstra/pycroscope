@@ -706,12 +706,6 @@ class UnboundMethodValue(Value):
     def get_type_value(self) -> Value:
         return KnownValue(type(self.get_method()))
 
-    def can_assign(self, other: Value, ctx: CanAssignContext) -> CanAssign:
-        signature = self.get_signature(ctx)
-        if signature is None:
-            return {}
-        return CallableValue(signature).can_assign(other, ctx)
-
     def can_overlap(
         self, other: Value, ctx: CanAssignContext, mode: OverlapMode
     ) -> Optional[CanAssignError]:
