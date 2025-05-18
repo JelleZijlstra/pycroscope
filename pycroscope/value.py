@@ -1714,8 +1714,11 @@ class TypeVarValue(Value):
             yield UpperBound(self.typevar, self.bound)
         elif self.constraints:
             yield IsOneOf(self.typevar, self.constraints)
-        else:
-            yield UpperBound(self.typevar, TypedValue(object))
+        # TODO: Consider adding this, but it leads to worse type inference
+        # in some cases (inferring object where we should infer Any). Examples
+        # in the taxonomy repo.
+        # else:
+        #     yield UpperBound(self.typevar, TypedValue(object))
 
     def can_overlap(
         self, other: Value, ctx: CanAssignContext, mode: OverlapMode
