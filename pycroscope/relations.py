@@ -15,6 +15,7 @@ from typing import Union
 from typing_extensions import Literal, TypeAlias, assert_never
 
 import pycroscope
+from pycroscope.find_unused import used
 from pycroscope.safe import safe_equals, safe_isinstance
 from pycroscope.typevar import resolve_bounds_map
 from pycroscope.value import (
@@ -100,12 +101,14 @@ class NotAGradualType(Exception):
     """Raised when a value is not a gradual type."""
 
 
+@used
 def is_equivalent(left: Value, right: Value, ctx: CanAssignContext) -> bool:
     """Return whether ``left`` and ``right`` are equivalent types."""
     result = has_relation(left, right, Relation.EQUIVALENT, ctx)
     return not isinstance(result, CanAssignError)
 
 
+@used
 def is_equivalent_with_reason(
     left: Value, right: Value, ctx: CanAssignContext
 ) -> CanAssign:
@@ -113,12 +116,14 @@ def is_equivalent_with_reason(
     return has_relation(left, right, Relation.EQUIVALENT, ctx)
 
 
+@used
 def is_consistent(left: Value, right: Value, ctx: CanAssignContext) -> bool:
     """Return whether ``left`` and ``right`` are consistent types."""
     result = has_relation(left, right, Relation.CONSISTENT, ctx)
     return not isinstance(result, CanAssignError)
 
 
+@used
 def is_consistent_with_reason(
     left: Value, right: Value, ctx: CanAssignContext
 ) -> CanAssign:
@@ -126,12 +131,14 @@ def is_consistent_with_reason(
     return has_relation(left, right, Relation.CONSISTENT, ctx)
 
 
+@used
 def is_assignable(left: Value, right: Value, ctx: CanAssignContext) -> bool:
     """Return whether ``right`` is assignable to ``left``."""
     result = has_relation(left, right, Relation.ASSIGNABLE, ctx)
     return not isinstance(result, CanAssignError)
 
 
+@used
 def is_assignable_with_reason(
     left: Value, right: Value, ctx: CanAssignContext
 ) -> CanAssign:
@@ -139,6 +146,7 @@ def is_assignable_with_reason(
     return has_relation(left, right, Relation.ASSIGNABLE, ctx)
 
 
+@used
 def is_subtype(left: Value, right: Value, ctx: CanAssignContext) -> bool:
     """Return whether ``right`` is a subtype of ``left``."""
     result = has_relation(left, right, Relation.SUBTYPE, ctx)
@@ -147,6 +155,7 @@ def is_subtype(left: Value, right: Value, ctx: CanAssignContext) -> bool:
     return True
 
 
+@used
 def is_subtype_with_reason(
     left: Value, right: Value, ctx: CanAssignContext
 ) -> CanAssign:
@@ -538,7 +547,6 @@ def _has_relation(
         raise NotImplementedError
 
     assert_never(left)
-    assert_never(right)
 
 
 def _has_relation_thrift_enum(
