@@ -1,3 +1,58 @@
+[build-system]
+requires = ["setuptools>=42", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pycroscope"
+version = "0.1.0"
+description = "A static analyzer for Python"
+readme = {file = "README.md", content-type = "text/markdown"}
+authors = [
+  { name = "Jelle Zijlstra", email = "jelle.zijlstra@gmail.com" }
+]
+license = {text = "Apache Software License"}
+requires-python = ">=3.9"
+keywords = ["type checker", "static analysis"]
+classifiers = [
+  "License :: OSI Approved :: Apache Software License",
+  "Programming Language :: Python",
+  "Programming Language :: Python :: 3.9",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+]
+
+dependencies = [
+  "ast_decompiler>=0.4.0",
+  "typeshed_client>=2.1.0",
+  "typing_extensions>=4.12.0",
+  "codemod",
+  "tomli>=1.1.0"
+]
+
+[project.optional-dependencies]
+tests = [
+  "pytest",
+  "mypy_extensions",
+  "attrs",
+  "pydantic; python_version < '3.14'",
+  "annotated-types"
+]
+asynq = ["asynq", "qcore>=0.5.1"]
+
+[project.urls]
+Homepage = "https://github.com/JelleZijlstra/pycroscope"
+
+[project.scripts]
+pycroscope = "pycroscope.__main__:main"
+
+[tool.setuptools]
+packages = ["pycroscope"]
+
+[tool.setuptools.package-data]
+pycroscope = ["test.toml", "asynq_test.toml", "stubs/*/*.pyi"]
+
 [tool.black]
 target-version = ['py39']
 include = '\.pyi?$'
@@ -13,10 +68,6 @@ exclude = '''
   | \.venv
 )/
 '''
-
-[build-system]
-requires = ["setuptools>=42", "wheel"]
-build-backend = "setuptools.build_meta"
 
 [tool.pycroscope]
 paths = ["pycroscope"]
