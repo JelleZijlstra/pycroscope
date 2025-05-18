@@ -485,11 +485,6 @@ class TypeAliasValue(Value):
     def get_type_value(self) -> Value:
         return self.get_value().get_type_value()
 
-    def can_be_assigned(self, other: Value, ctx: CanAssignContext) -> CanAssign:
-        if isinstance(other, TypeAliasValue) and self.alias is other.alias:
-            return {}
-        return other.can_assign(self.get_value(), ctx)
-
     def can_overlap(
         self, other: Value, ctx: CanAssignContext, mode: OverlapMode
     ) -> Optional[CanAssignError]:
@@ -1727,15 +1722,6 @@ class TypeVarValue(Value):
     ) -> Optional[CanAssignError]:
         return self.get_fallback_value().can_overlap(other, ctx, mode)
 
-    def can_be_assigned(self, left: Value, ctx: CanAssignContext) -> CanAssign:
-        if left == self:
-            return {}
-        if isinstance(left, TypeVarValue):
-            bounds = [*self.get_inherent_bounds(), *left.get_inherent_bounds()]
-        else:
-            bounds = [UpperBound(self.typevar, left), *self.get_inherent_bounds()]
-        return self.make_bounds_map(bounds, left, ctx)
-
     def make_bounds_map(
         self, bounds: Sequence[Bound], other: Value, ctx: CanAssignContext
     ) -> CanAssign:
@@ -2125,18 +2111,6 @@ class AnnotatedValue(Value):
     def substitute_typevars(self, typevars: TypeVarMap) -> Value:
         metadata = tuple(val.substitute_typevars(typevars) for val in self.metadata)
         return AnnotatedValue(self.value.substitute_typevars(typevars), metadata)
-
-    def can_be_assigned(self, other: Value, ctx: CanAssignContext) -> CanAssign:
-        can_assign = other.can_assign(self.value, ctx)
-        if isinstance(can_assign, CanAssignError):
-            return can_assign
-        bounds_maps = [can_assign]
-        for ext in self.get_metadata_of_type(Extension):
-            custom_can_assign = ext.can_be_assigned(other, ctx)
-            if isinstance(custom_can_assign, CanAssignError):
-                return custom_can_assign
-            bounds_maps.append(custom_can_assign)
-        return unify_bounds_maps(bounds_maps)
 
     def can_overlap(
         self, other: Value, ctx: CanAssignContext, mode: OverlapMode
