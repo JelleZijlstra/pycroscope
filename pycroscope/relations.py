@@ -317,14 +317,13 @@ def _has_relation(
 
     # TypeVarValue
     if isinstance(left, TypeVarValue):
+        if left == right:
+            return {}
         if isinstance(right, TypeVarValue):
-            if left.typevar is right.typevar:
-                return {}
-            else:
-                return CanAssignError(f"{right} is not {relation.description} {left}")
+            bounds = [*left.get_inherent_bounds(), *right.get_inherent_bounds()]
         else:
             bounds = [LowerBound(left.typevar, right), *left.get_inherent_bounds()]
-            return left.make_bounds_map(bounds, right, ctx)
+        return left.make_bounds_map(bounds, right, ctx)
     if isinstance(right, TypeVarValue):
         bounds = [UpperBound(right.typevar, left), *right.get_inherent_bounds()]
         return right.make_bounds_map(bounds, left, ctx)
