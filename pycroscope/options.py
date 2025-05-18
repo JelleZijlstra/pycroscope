@@ -207,7 +207,7 @@ class PathSequenceOption(ConfigOption[Sequence[Path]]):
     @classmethod
     def parse(
         cls: "type[PathSequenceOption]", data: object, source_path: Path
-    ) -> Sequence[str]:
+    ) -> Sequence[Path]:
         if isinstance(data, (list, tuple)) and all(
             isinstance(elt, str) for elt in data
         ):
@@ -425,10 +425,14 @@ def _parse_config_section(
                 raise InvalidConfigOption(f"Invalid configuration option {key!r}")
             if isinstance(value, bool) and key in all_error_codes and value is True:
                 enabled_error_codes.add(key)
-            yield option_cls(option_cls.parse(value, path), module_path)
+            yield option_cls(
+                option_cls.parse(value, path), module_path, priority=priority
+            )
 
     if disable_all_default_error_codes:
         error_codes_to_disable = all_error_codes - enabled_error_codes
         for error_code in error_codes_to_disable:
             option_cls = ConfigOption.registry[error_code]
-            yield option_cls(option_cls.parse(False, path), module_path)
+            yield option_cls(
+                option_cls.parse(False, path), module_path, priority=priority
+            )
