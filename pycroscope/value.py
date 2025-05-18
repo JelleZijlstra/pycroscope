@@ -397,11 +397,6 @@ class AnyValue(Value):
             return "Any"
         return f"Any[{self.source.name}]"
 
-    def can_assign(self, other: Value, ctx: CanAssignContext) -> CanAssign:
-        if isinstance(other, (AnnotatedValue, MultiValuedValue)):
-            return super().can_assign(other, ctx)
-        return {}  # Always allowed
-
     def can_overlap(
         self, other: Value, ctx: CanAssignContext, mode: OverlapMode
     ) -> Optional[CanAssignError]:
@@ -429,9 +424,6 @@ class VoidValue(Value):
 
     def __str__(self) -> str:
         return "(void)"
-
-    def can_assign(self, other: Value, ctx: CanAssignContext) -> CanAssign:
-        return CanAssignError("Cannot assign to void")
 
 
 VOID = VoidValue()
@@ -492,11 +484,6 @@ class TypeAliasValue(Value):
 
     def get_type_value(self) -> Value:
         return self.get_value().get_type_value()
-
-    def can_assign(self, other: Value, ctx: CanAssignContext) -> CanAssign:
-        if isinstance(other, TypeAliasValue) and self.alias is other.alias:
-            return {}
-        return self.get_value().can_assign(other, ctx)
 
     def can_be_assigned(self, other: Value, ctx: CanAssignContext) -> CanAssign:
         if isinstance(other, TypeAliasValue) and self.alias is other.alias:
@@ -562,19 +549,6 @@ class KnownValue(Value):
 
     def get_type_value(self) -> Value:
         return KnownValue(type(self.val))
-
-    def can_assign(self, other: Value, ctx: CanAssignContext) -> CanAssign:
-        # Make Literal[function] equivalent to a Callable type
-        if isinstance(self.val, FunctionType):
-            signature = ctx.get_signature(self.val)
-            if signature is not None:
-                return CallableValue(signature).can_assign(other, ctx)
-        if isinstance(other, KnownValue):
-            if self.val is other.val:
-                return {}
-            if safe_equals(self.val, other.val) and type(self.val) is type(other.val):
-                return {}
-        return super().can_assign(other, ctx)
 
     def can_overlap(
         self, other: Value, ctx: CanAssignContext, mode: OverlapMode
