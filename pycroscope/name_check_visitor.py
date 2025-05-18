@@ -184,7 +184,6 @@ from .value import (
     KnownValue,
     KVPair,
     MultiValuedValue,
-    NewTypeValue,
     NoReturnConstraintExtension,
     OverlapMode,
     ReferencingValue,
@@ -210,6 +209,7 @@ from .value import (
     is_union,
     kv_pairs_from_mapping,
     make_coro_type,
+    replace_fallback,
     replace_known_sequence_value,
     set_self,
     stringify_object,
@@ -1703,12 +1703,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     error_node, f"Undefined name: {node.id}", ErrorCode.undefined_name
                 )
             return AnyValue(AnySource.error), origin
-        if isinstance(value, MultiValuedValue):
-            subvals = value.vals
-        elif isinstance(value, AnnotatedValue) and isinstance(
-            (value.value), MultiValuedValue
-        ):
-            subvals = value.value.vals
+        value_for_subvals = replace_fallback(value)
+        if isinstance(value_for_subvals, MultiValuedValue):
+            subvals = value_for_subvals.vals
         else:
             subvals = None
 
@@ -2028,10 +2025,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             and not info.is_evaluated
             and not info.is_abstractmethod
             and node.returns is not None
-            and info.return_annotation != KnownNone
-            and not (
-                isinstance(info.return_annotation, AnnotatedValue)
-                and info.return_annotation.value == KnownNone
+            and (
+                info.return_annotation is None
+                or replace_fallback(info.return_annotation) != KnownNone
             )
         ):
             if info.return_annotation is NO_RETURN_VALUE:
@@ -2609,6 +2605,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 )
                 return True
             return self.check_deprecation(node, value.value)
+        value = replace_fallback(value)
         if isinstance(value, UnboundMethodValue):
             method = value.get_method()
             if method is None:
@@ -3530,8 +3527,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
 
         lhs_constraint = extract_constraints(lhs)
         rhs_constraint = extract_constraints(rhs)
-        if isinstance(rhs, AnnotatedValue):
-            rhs = rhs.value
+        rhs = replace_fallback(rhs)
         definite_value = None
         if isinstance(lhs, AnnotatedValue):
             if (
@@ -3548,7 +3544,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             ):
                 op_func, _, _ = COMPARATOR_TO_OPERATOR[type(op)]
                 definite_value = op_func(sys.version_info, rhs.val)
-            lhs = lhs.value
+        lhs = replace_fallback(lhs)
         if isinstance(lhs_constraint, PredicateProvider) and isinstance(
             rhs, KnownValue
         ):
@@ -4021,6 +4017,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
 
     def _unwrap_yield_result(self, node: ast.AST, value: Value) -> Value:
         assert asynq is not None
+        value = replace_fallback(value)
         if isinstance(value, AsyncTaskIncompleteValue):
             return value.value
         elif isinstance(value, TypedValue) and (
@@ -4069,8 +4066,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             return KnownValue(values)
         elif isinstance(value, AnyValue):
             return AnyValue(AnySource.from_another)
-        elif isinstance(value, AnnotatedValue):
-            return self._unwrap_yield_result(node, value.value)
         elif isinstance(value, MultiValuedValue):
             return unite_values(
                 *[self._unwrap_yield_result(node, val) for val in value.vals]
@@ -5111,9 +5106,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         args: Iterable[Composite],
         allow_call: bool = False,
     ) -> tuple[Value, bool]:
-        val = callee_composite.value
-        if isinstance(val, (AnnotatedValue, NewTypeValue)):
-            val = val.value
+        val = replace_fallback(callee_composite.value)
         if isinstance(val, MultiValuedValue):
             composites = [
                 Composite(subval, callee_composite.varname, callee_composite.node)
@@ -5319,8 +5312,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         # We don't throw an error in many
         # cases where we're not quite sure whether an attribute
         # will exist.
-        if isinstance(root_value, AnnotatedValue):
-            root_value = root_value.value
+        root_value = replace_fallback(root_value)
         if isinstance(root_value, UnboundMethodValue):
             if self._should_ignore_val(node):
                 return AnyValue(AnySource.error)

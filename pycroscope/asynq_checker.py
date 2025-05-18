@@ -18,7 +18,7 @@ from .functions import AsyncFunctionKind
 from .maybe_asynq import asynq
 from .options import Options, PyObjectSequenceOption, StringSequenceOption
 from .safe import safe_getattr, safe_hasattr
-from .value import AnnotatedValue, KnownValue, TypedValue, UnboundMethodValue, Value
+from .value import KnownValue, TypedValue, UnboundMethodValue, Value, replace_fallback
 
 
 class ClassesCheckedForAsynq(PyObjectSequenceOption[type]):
@@ -203,6 +203,7 @@ def get_pure_async_equivalent(value: Value) -> str:
 
 
 def _stringify_async_fn(value: Value) -> str:
+    value = replace_fallback(value)
     if isinstance(value, KnownValue):
         return _stringify_obj(value.val)
     elif isinstance(value, UnboundMethodValue):
@@ -213,8 +214,6 @@ def _stringify_async_fn(value: Value) -> str:
         return ret
     elif isinstance(value, TypedValue):
         return _stringify_obj(value.typ)
-    elif isinstance(value, AnnotatedValue):
-        return _stringify_async_fn(value.value)
     else:
         return str(value)
 

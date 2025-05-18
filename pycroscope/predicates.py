@@ -13,7 +13,6 @@ from typing import Optional
 from .safe import safe_issubclass
 from .value import (
     NO_RETURN_VALUE,
-    AnnotatedValue,
     AnyValue,
     CanAssignContext,
     KnownValue,
@@ -23,18 +22,20 @@ from .value import (
     TypeVarValue,
     Value,
     is_overlapping,
+    replace_fallback,
     unannotate,
     unite_values,
 )
 
 
 def is_universally_assignable(value: Value, target_value: Value) -> bool:
+    if isinstance(value, TypeVarValue):
+        return True
+    value = replace_fallback(value)
     if value is NO_RETURN_VALUE or isinstance(value, AnyValue):
         return True
     elif value == TypedValue(type) and isinstance(target_value, SubclassValue):
         return True
-    elif isinstance(value, AnnotatedValue):
-        return is_universally_assignable(value.value, target_value)
     elif isinstance(value, MultiValuedValue):
         return all(
             is_universally_assignable(subval, target_value) for subval in value.vals

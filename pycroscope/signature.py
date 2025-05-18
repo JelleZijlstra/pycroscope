@@ -99,6 +99,7 @@ from .value import (
     extract_typevars,
     flatten_values,
     get_tv_map,
+    replace_fallback,
     replace_known_sequence_value,
     stringify_object,
     unannotate,
@@ -1975,10 +1976,7 @@ def _preprocess_kwargs_kv_pairs(
     covered_keys: set[Value] = set()
     for pair in reversed(items):
         if not pair.is_many:
-            if isinstance(pair.key, AnnotatedValue):
-                key = pair.key.value
-            else:
-                key = pair.key
+            key = replace_fallback(pair.key)
             if isinstance(key, KnownValue):
                 if isinstance(key.val, str):
                     if key in covered_keys:
@@ -2443,8 +2441,7 @@ def check_call_preprocessed(
 
 
 def _extract_known_value(val: Value) -> Optional[KnownValue]:
-    if isinstance(val, AnnotatedValue):
-        val = val.value
+    val = replace_fallback(val)
     if isinstance(val, KnownValue):
         return val
     return None

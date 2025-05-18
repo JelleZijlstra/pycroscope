@@ -15,15 +15,12 @@ from pycroscope.safe import safe_getattr, safe_hasattr
 
 from .value import (
     KNOWN_MUTABLE_TYPES,
-    AnnotatedValue,
     AnyValue,
     DictIncompleteValue,
     KnownValue,
     MultiValuedValue,
-    NewTypeValue,
     SequenceValue,
     SubclassValue,
-    TypeAliasValue,
     TypedDictValue,
     TypedValue,
     UnboundMethodValue,
@@ -99,8 +96,6 @@ def get_boolability(value: Value) -> Boolability:
 
 
 def _get_boolability_no_mvv(value: Value) -> Boolability:
-    if isinstance(value, AnnotatedValue):
-        value = value.value
     value = replace_fallback(value)
     value = replace_known_sequence_value(value)
     if isinstance(value, AnyValue):
@@ -180,10 +175,6 @@ def _get_boolability_no_mvv(value: Value) -> Boolability:
         if isinstance(value.typ, str):
             return Boolability.boolable  # TODO deal with synthetic types
         return _get_type_boolability(value.typ)
-    elif isinstance(value, TypeAliasValue):
-        return get_boolability(value.get_value())
-    elif isinstance(value, NewTypeValue):
-        return get_boolability(value.value)
     else:
         assert False, f"unhandled value {value!r}"
 

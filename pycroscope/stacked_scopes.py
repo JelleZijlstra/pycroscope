@@ -52,6 +52,7 @@ from .value import (
     Value,
     annotate_value,
     flatten_values,
+    replace_fallback,
     unite_and_simplify,
     unite_values,
 )
@@ -326,7 +327,7 @@ class Constraint(AbstractConstraint):
         The value may not be a MultiValuedValue.
 
         """
-        inner_value = value.value if isinstance(value, AnnotatedValue) else value
+        inner_value = replace_fallback(value)
         if inner_value is UNINITIALIZED_VALUE:
             # If a constraint applies to a value, it must have been initialized,
             # or at least we must have already tried to read it and gotten a

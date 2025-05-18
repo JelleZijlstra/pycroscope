@@ -17,7 +17,6 @@ from typing_extensions import Literal, Protocol
 
 from .error_code import ErrorCode
 from .value import (
-    AnnotatedValue,
     CanAssignContext,
     DictIncompleteValue,
     KnownValue,
@@ -25,6 +24,7 @@ from .value import (
     TypedValue,
     Value,
     flatten_values,
+    replace_fallback,
     replace_known_sequence_value,
 )
 
@@ -356,8 +356,7 @@ class PercentFormatString:
         self, args: Value, ctx: CanAssignContext
     ) -> Iterable[str]:
         if TypedValue(tuple).is_assignable(args, ctx):
-            if isinstance(args, AnnotatedValue):
-                args = args.value
+            args = replace_fallback(args)
             args = replace_known_sequence_value(args)
             if isinstance(args, SequenceValue):
                 all_args = args.get_member_sequence()

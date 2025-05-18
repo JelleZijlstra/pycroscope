@@ -21,7 +21,6 @@ from pycroscope.signature import (
 from .safe import safe_in, safe_isinstance, safe_issubclass
 from .value import (
     UNINITIALIZED_VALUE,
-    AnnotatedValue,
     AnySource,
     AnyValue,
     BoundsMap,
@@ -32,6 +31,7 @@ from .value import (
     SubclassValue,
     TypedValue,
     Value,
+    replace_fallback,
     stringify_object,
     unify_bounds_maps,
 )
@@ -264,8 +264,7 @@ class TypeObject:
 
 
 def _should_use_permissive_dunder_hash(val: Value) -> bool:
-    if isinstance(val, AnnotatedValue):
-        val = val.value
+    val = replace_fallback(val)
     if isinstance(val, SubclassValue):
         return True
     elif isinstance(val, KnownValue) and safe_isinstance(val.val, type):
