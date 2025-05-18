@@ -10,7 +10,7 @@ https://typing.python.org/en/latest/spec/concepts.html#summary-of-type-relations
 import collections.abc
 import enum
 from types import FunctionType
-from typing import Union
+from typing import Optional, Protocol, Union
 
 from typing_extensions import Literal, TypeAlias, assert_never
 
@@ -50,7 +50,9 @@ from pycroscope.value import (
     UnboundMethodValue,
     UpperBound,
     Value,
+    VariableNameValue,
     flatten_values,
+    intersect_bounds_maps,
     stringify_object,
     typify_literal,
     unify_bounds_maps,
@@ -208,6 +210,18 @@ def _has_relation(
     relation: Literal[Relation.SUBTYPE, Relation.ASSIGNABLE],
     ctx: CanAssignContext,
 ) -> CanAssign:
+    # TypeVarValue
+    if isinstance(left, TypeVarValue):
+        if left == right:
+            return {}
+        if isinstance(right, TypeVarValue):
+            bounds = [*left.get_inherent_bounds(), *right.get_inherent_bounds()]
+        else:
+            bounds = [LowerBound(left.typevar, right), *left.get_inherent_bounds()]
+        return left.make_bounds_map(bounds, right, ctx)
+    if isinstance(right, TypeVarValue) and not isinstance(left, MultiValuedValue):
+        bounds = [UpperBound(right.typevar, left), *right.get_inherent_bounds()]
+        return right.make_bounds_map(bounds, left, ctx)
 
     # TypeAliasValue
     if isinstance(left, TypeAliasValue):
@@ -221,10 +235,7 @@ def _has_relation(
     if isinstance(left, AnnotatedValue):
         left_inner = _gradualize(left.value)
         can_assign = _has_relation(left_inner, right, relation, ctx)
-        if (
-            isinstance(can_assign, CanAssignError)
-            or relation is not Relation.ASSIGNABLE
-        ):
+        if isinstance(can_assign, CanAssignError):
             return can_assign
         bounds_maps = [can_assign]
         for ext in left.get_metadata_of_type(Extension):
@@ -236,10 +247,7 @@ def _has_relation(
     if isinstance(right, AnnotatedValue):
         right_inner = _gradualize(right.value)
         can_assign = _has_relation(left, right_inner, relation, ctx)
-        if (
-            isinstance(can_assign, CanAssignError)
-            or relation is not Relation.ASSIGNABLE
-        ):
+        if isinstance(can_assign, CanAssignError):
             return can_assign
         bounds_maps = [can_assign]
         for ext in right.get_metadata_of_type(Extension):
@@ -251,6 +259,12 @@ def _has_relation(
 
     # AnyValue
     if isinstance(left, AnyValue):
+        if (
+            isinstance(left, VariableNameValue)
+            and isinstance(right, VariableNameValue)
+            and left != right
+        ):
+            return CanAssignError(f"Types {left} and {right} are different")
         if isinstance(right, AnyValue):
             # Any is a subtype etc. of itself
             return {}
@@ -302,7 +316,7 @@ def _has_relation(
                 return CanAssignError(
                     f"{right} is not {relation.description} {left}", children=errors
                 )
-            return unify_bounds_maps(bounds_maps)
+            return intersect_bounds_maps(bounds_maps)
     if isinstance(right, MultiValuedValue):
         # right is a subtype if all the members are subtypes of left
         bounds_maps = []
@@ -314,19 +328,7 @@ def _has_relation(
                 return can_assign
             bounds_maps.append(can_assign)
         return unify_bounds_maps(bounds_maps)
-
-    # TypeVarValue
-    if isinstance(left, TypeVarValue):
-        if left == right:
-            return {}
-        if isinstance(right, TypeVarValue):
-            bounds = [*left.get_inherent_bounds(), *right.get_inherent_bounds()]
-        else:
-            bounds = [LowerBound(left.typevar, right), *left.get_inherent_bounds()]
-        return left.make_bounds_map(bounds, right, ctx)
-    if isinstance(right, TypeVarValue):
-        bounds = [UpperBound(right.typevar, left), *right.get_inherent_bounds()]
-        return right.make_bounds_map(bounds, left, ctx)
+    assert not isinstance(right, TypeVarValue)
 
     # SyntheticModuleValue
     if isinstance(left, SyntheticModuleValue):
@@ -351,7 +353,7 @@ def _has_relation(
         else:
             return CanAssignError(f"{right} is not {relation.description} {left}")
     if isinstance(right, ParamSpecArgsValue):
-        return CanAssignError(f"{right} is not {relation.description} {left}")
+        return has_relation(left, right.get_fallback(), relation, ctx)
     if isinstance(left, ParamSpecKwargsValue):
         if (
             isinstance(right, ParamSpecKwargsValue)
@@ -361,7 +363,7 @@ def _has_relation(
         else:
             return CanAssignError(f"{right} is not {relation.description} {left}")
     if isinstance(right, ParamSpecKwargsValue):
-        return CanAssignError(f"{right} is not {relation.description} {left}")
+        return has_relation(left, right.get_fallback(), relation, ctx)
 
     # NewTypeValue
     if isinstance(left, NewTypeValue):
@@ -393,6 +395,24 @@ def _has_relation(
         if sig is None:
             return CanAssignError(f"{right} is not {relation.description} {left}")
         return _has_relation(left, CallableValue(sig), relation, ctx)
+
+    if left is HashableProtoValue:
+        # Protocol doesn't deal well with type.__hash__ at the moment, so to make
+        # sure types are recognized as hashable, we use this custom object.
+        if isinstance(right, SubclassValue):
+            return {}
+        elif isinstance(right, TypedValue) and right.typ is type:
+            return {}
+        # And that means we also get to use this more direct check for KnownValue
+        elif isinstance(right, KnownValue):
+            try:
+                hash(right.val)
+            except Exception as e:
+                return CanAssignError(
+                    f"{right.val!r} is not hashable", children=[CanAssignError(repr(e))]
+                )
+            else:
+                return {}
 
     # SubclassValue
     if isinstance(left, SubclassValue):
@@ -465,15 +485,19 @@ def _has_relation(
             return CanAssignError(f"{right} is not {relation.description} {left}")
         else:
             assert_never(right)
+
+    if isinstance(left, CallableValue):
+        signature = ctx.signature_from_value(right)
+        if isinstance(signature, pycroscope.signature.BoundMethodSignature):
+            signature = signature.get_signature(ctx=ctx)
+        if signature is None:
+            return CanAssignError(f"{right} is not a callable type")
+        return pycroscope.signature.signatures_have_relation(
+            left.signature, signature, relation, ctx
+        )
+
     if isinstance(right, KnownValue):
         right = typify_literal(right)
-        if isinstance(right, KnownValue):
-            left_tobj = left.get_type_object(ctx)
-            can_assign = left_tobj.can_assign(left, right, ctx)
-            if isinstance(can_assign, CanAssignError):
-                if left_tobj.is_instance(right.val):
-                    return {}
-            return can_assign
 
     # TypedValue
     if isinstance(left, SequenceValue):
@@ -509,15 +533,6 @@ def _has_relation(
         else:
             return CanAssignError(f"{right} is not {relation.description} {left}")
 
-    if isinstance(left, CallableValue):
-        signature = ctx.signature_from_value(right)
-        if isinstance(signature, pycroscope.signature.BoundMethodSignature):
-            signature = signature.get_signature(ctx=ctx)
-        if signature is None:
-            return CanAssignError(f"{right} is not a callable type")
-        return pycroscope.signature.signatures_have_relation(
-            left.signature, signature, relation, ctx
-        )
     if isinstance(left, GenericValue):
         if isinstance(right, TypedValue) and not isinstance(right.typ, super):
             generic_args = right.get_generic_args_for_type(left.typ, ctx)
@@ -544,9 +559,14 @@ def _has_relation(
             if left.literal_only and not right.literal_only:
                 return CanAssignError(f"{right} is not a literal")
             return left_tobj.can_assign(left, right, ctx)
+        elif isinstance(right, KnownValue):
+            can_assign = left_tobj.can_assign(left, right, ctx)
+            if isinstance(can_assign, CanAssignError):
+                if left_tobj.is_instance(right.val):
+                    return {}
+            return can_assign
         else:
             assert_never(right)
-        raise NotImplementedError
 
     assert_never(left)
 
@@ -731,7 +751,7 @@ def _has_relation_typeddict(
             else:
                 relation_to_use = _map_relation(relation)
 
-            can_assign = has_relation(their_entry.typ, entry.typ, relation_to_use, ctx)
+            can_assign = has_relation(entry.typ, their_entry.typ, relation_to_use, ctx)
             if isinstance(can_assign, CanAssignError):
                 return CanAssignError(
                     f"Types for key {key} are incompatible", children=[can_assign]
@@ -842,3 +862,34 @@ def is_iterable(
     if isinstance(tv_map, CanAssignError):
         return tv_map
     return tv_map.get(T, AnyValue(AnySource.generic_argument))
+
+
+class HashableProto(Protocol):
+    def __hash__(self) -> int:
+        raise NotImplementedError
+
+
+HashableProtoValue = TypedValue(HashableProto)
+
+
+def check_hashability(value: Value, ctx: CanAssignContext) -> Optional[CanAssignError]:
+    """Check whether a value is hashable.
+
+    Return None if it is hashable, otherwise a CanAssignError.
+
+    """
+    can_assign = is_assignable_with_reason(HashableProtoValue, value, ctx)
+    HashableProtoValue.can_assign(value, ctx)
+    if isinstance(can_assign, CanAssignError):
+        return can_assign
+    return None
+
+
+def can_assign_and_used_any(
+    param_typ: Value, var_value: Value, ctx: CanAssignContext
+) -> tuple[CanAssign, bool]:
+    subtype_result = is_subtype_with_reason(param_typ, var_value, ctx)
+    if not isinstance(subtype_result, CanAssignError):
+        return subtype_result, False
+    assignability_result = is_assignable_with_reason(param_typ, var_value, ctx)
+    return assignability_result, True

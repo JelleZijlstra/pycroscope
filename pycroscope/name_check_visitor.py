@@ -101,6 +101,7 @@ from .options import (
 from .patma import PatmaVisitor
 from .predicates import EqualsPredicate, InPredicate
 from .reexport import ImplicitReexportTracker
+from .relations import check_hashability
 from .safe import (
     all_of_type,
     is_dataclass_type,
@@ -201,7 +202,6 @@ from .value import (
     UnboundMethodValue,
     Value,
     annotate_value,
-    check_hashability,
     concrete_values_from_iterable,
     flatten_values,
     get_tv_map,
@@ -1071,7 +1071,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     """Path (relative to this class's file) to a pyproject.toml config file."""
 
     _argspec_to_retval: dict[int, tuple[Value, MaybeSignature]]
-    _has_used_any_match: bool
     _method_cache: dict[type[ast.AST], Callable[[Any], Optional[Value]]]
     _name_node_to_statement: Optional[dict[ast.AST, Optional[ast.AST]]]
     _should_exclude_any: bool
@@ -1217,7 +1216,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         self._argspec_to_retval = {}
         self._method_cache = {}
         self._statement_types = set()
-        self._has_used_any_match = False
         self._should_exclude_any = False
         self._fill_method_cache()
 
@@ -1238,18 +1236,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     ) -> AbstractContextManager[None]:
         return self.checker.assume_compatibility(left, right)
 
-    def has_used_any_match(self) -> bool:
-        """Whether Any was used to secure a match."""
-        return self._has_used_any_match
-
     def record_any_used(self) -> None:
         """Record that Any was used to secure a match."""
-        self._has_used_any_match = True
-
-    def reset_any_used(self) -> AbstractContextManager[None]:
-        """Context that resets the value used by :meth:`has_used_any_match` and
-        :meth:`record_any_match`."""
-        return override(self, "_has_used_any_match", False)
+        pass
 
     def set_exclude_any(self) -> AbstractContextManager[None]:
         """Within this context, `Any` is compatible only with itself."""

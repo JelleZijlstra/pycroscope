@@ -99,35 +99,9 @@ class Value:
         This is the primary mechanism used for checking type compatibility.
 
         """
-        if isinstance(other, NewTypeValue):
-            return self.can_assign(other.value, ctx)
-        elif isinstance(other, AnyValue) and not ctx.should_exclude_any():
-            ctx.record_any_used()
-            return {}
-        elif isinstance(other, MultiValuedValue):
-            # The bottom type is assignable to every other type.
-            if other is NO_RETURN_VALUE:
-                return {}
-            bounds_maps = []
-            for val in other.vals:
-                can_assign = self.can_assign(val, ctx)
-                if isinstance(can_assign, CanAssignError):
-                    # Adding an additional layer here isn't helpful
-                    return can_assign
-                bounds_maps.append(can_assign)
-            return unify_bounds_maps(bounds_maps)
-        elif isinstance(other, (AnnotatedValue, TypeVarValue, TypeAliasValue)):
-            return other.can_be_assigned(self, ctx)
-        elif (
-            isinstance(other, UnboundMethodValue)
-            and other.secondary_attr_name is not None
-        ):
-            # Allow any UnboundMethodValue with a secondary attr; it might not be
-            # a method.
-            return {}
-        elif self == other:
-            return {}
-        return CanAssignError(f"Cannot assign {other} to {self}")
+        return pycroscope.relations.has_relation(
+            self, other, pycroscope.relations.Relation.ASSIGNABLE, ctx
+        )
 
     def can_overlap(
         self, other: "Value", ctx: "CanAssignContext", mode: OverlapMode
@@ -189,6 +163,15 @@ class Value:
         """Returns the type of this value, or None if it is not known.
 
         This method should be avoided.
+
+        """
+        return None
+
+    def get_fallback(self) -> Optional["Value"]:
+        """Returns a fallback value for this value, or None if it is not known.
+
+        Implement this on Value subclasses for which most processing can be done
+        on a different type.
 
         """
         return None
@@ -280,17 +263,8 @@ class CanAssignContext(Protocol):
     ) -> AbstractContextManager[None]:
         return contextlib.nullcontext()
 
-    def has_used_any_match(self) -> bool:
-        """Whether Any was used to secure a match."""
-        return False
-
     def record_any_used(self) -> None:
         """Record that Any was used to secure a match."""
-
-    def reset_any_used(self) -> AbstractContextManager[None]:
-        """Context that resets the value used by :meth:`has_used_any_match` and
-        :meth:`record_any_match`."""
-        return contextlib.nullcontext()
 
     def set_exclude_any(self) -> AbstractContextManager[None]:
         """Within this context, `Any` is compatible only with itself."""
@@ -734,7 +708,7 @@ class UnboundMethodValue(Value):
     def get_method(self) -> Optional[Any]:
         """Return the runtime callable for this ``UnboundMethodValue``, or
         None if it cannot be found."""
-        root = self.composite.value
+        root = replace_fallback(self.composite.value)
         if isinstance(root, (AnnotatedValue, NewTypeValue)):
             root = root.value
         if isinstance(root, KnownValue):
@@ -1024,6 +998,9 @@ class NewTypeValue(Value):
 
     def get_type_value(self) -> Value:
         return self.value.get_type_value()
+
+    def get_fallback(self) -> Value:
+        return self.value
 
     def __str__(self) -> str:
         return f"NewType({self.name!r}, {self.value})"
@@ -2269,6 +2246,9 @@ class ParamSpecArgsValue(Value):
     def __str__(self) -> str:
         return f"{self.param_spec}.args"
 
+    def get_fallback(self) -> Value:
+        return GenericValue(tuple, [TypedValue(object)])
+
 
 @dataclass(frozen=True)
 class ParamSpecKwargsValue(Value):
@@ -2276,6 +2256,9 @@ class ParamSpecKwargsValue(Value):
 
     def __str__(self) -> str:
         return f"{self.param_spec}.kwargs"
+
+    def get_fallback(self) -> Value:
+        return GenericValue(dict, [TypedValue(str), TypedValue(object)])
 
 
 class Extension:
@@ -3106,47 +3089,6 @@ def kv_pairs_from_mapping(
         return [KVPair(key_type, value_type, is_many=True)]
 
 
-class HashableProto(Protocol):
-    def __hash__(self) -> int:
-        raise NotImplementedError
-
-
-class _HashableValue(TypedValue):
-    def can_assign(self, other: Value, ctx: CanAssignContext) -> CanAssign:
-        # Protocol doesn't deal well with type.__hash__ at the moment, so to make
-        # sure types are recognized as hashable, we use this custom object.
-        if isinstance(other, SubclassValue):
-            return {}
-        elif isinstance(other, TypedValue) and other.typ is type:
-            return {}
-        # And that means we also get to use this more direct check for KnownValue
-        elif isinstance(other, KnownValue):
-            try:
-                hash(other.val)
-            except Exception as e:
-                return CanAssignError(
-                    f"{other.val!r} is not hashable", children=[CanAssignError(repr(e))]
-                )
-            else:
-                return {}
-        return super().can_assign(other, ctx)
-
-
-HashableProtoValue = _HashableValue(HashableProto)
-
-
-def check_hashability(value: Value, ctx: CanAssignContext) -> Optional[CanAssignError]:
-    """Check whether a value is hashable.
-
-    Return None if it is hashable, otherwise a CanAssignError.
-
-    """
-    can_assign = HashableProtoValue.can_assign(value, ctx)
-    if isinstance(can_assign, CanAssignError):
-        return can_assign
-    return None
-
-
 def unpack_values(
     value: Value,
     ctx: CanAssignContext,
@@ -3385,15 +3327,6 @@ def stringify_object(obj: Any) -> str:
         return repr(obj)
 
 
-def can_assign_and_used_any(
-    param_typ: Value, var_value: Value, ctx: CanAssignContext
-) -> tuple[CanAssign, bool]:
-    with ctx.reset_any_used():
-        tv_map = param_typ.can_assign(var_value, ctx)
-        used_any = ctx.has_used_any_match()
-    return tv_map, used_any
-
-
 def _deliteral(value: Value) -> Value:
     value = unannotate(value)
     if isinstance(value, KnownValue):
@@ -3418,3 +3351,12 @@ def make_coro_type(return_type: Value) -> GenericValue:
         collections.abc.Coroutine,
         [AnyValue(AnySource.inference), AnyValue(AnySource.inference), return_type],
     )
+
+
+def replace_fallback(val: Value) -> Value:
+    while True:
+        fallback = val.get_fallback()
+        if fallback is None:
+            break
+        val = fallback
+    return val

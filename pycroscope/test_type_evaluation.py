@@ -338,11 +338,16 @@ class TestTypeEvaluation(TestNameCheckVisitorBase):
         def identity2(x: T1) -> T1:
             pass
 
+        def no_evaluated(x: T1) -> T1:
+            return x
+
         def capybara(unannotated):
             assert_is_value(identity(1), KnownValue(1))
             assert_is_value(identity(unannotated), AnyValue(AnySource.unannotated))
             assert_is_value(identity2(1), KnownValue(1))
             assert_is_value(identity2(unannotated), AnyValue(AnySource.unannotated))
+            assert_is_value(no_evaluated(1), KnownValue(1))
+            assert_is_value(no_evaluated(unannotated), AnyValue(AnySource.unannotated))
 
 
 class TestBoolOp(TestNameCheckVisitorBase):

@@ -93,7 +93,6 @@ class Checker:
     vnv_map: dict[str, VariableNameValue] = field(default_factory=dict)
     type_alias_cache: dict[object, TypeAlias] = field(default_factory=dict)
     _should_exclude_any: bool = False
-    _has_used_any_match: bool = False
 
     def __post_init__(self, raw_options: Optional[Options]) -> None:
         if raw_options is None:
@@ -255,18 +254,9 @@ class Checker:
             message += f", signature is {sig!s}"
         return message
 
-    def has_used_any_match(self) -> bool:
-        """Whether Any was used to secure a match."""
-        return self._has_used_any_match
-
     def record_any_used(self) -> None:
         """Record that Any was used to secure a match."""
-        self._has_used_any_match = True
-
-    def reset_any_used(self) -> AbstractContextManager[None]:
-        """Context that resets the value used by :meth:`has_used_any_match` and
-        :meth:`record_any_match`."""
-        return override(self, "_has_used_any_match", False)
+        pass
 
     def set_exclude_any(self) -> AbstractContextManager[None]:
         """Within this context, `Any` is compatible only with itself."""
@@ -460,7 +450,7 @@ def _extract_protocol_members(typ: type) -> set[str]:
 
 @dataclass
 class CheckerAttrContext(AttrContext):
-    checker: Checker
+    checker: Checker = field(repr=False)
 
     def resolve_name_from_typeshed(self, module: str, name: str) -> Value:
         return self.checker.ts_finder.resolve_name(module, name)

@@ -9,7 +9,7 @@ import inspect
 import sys
 import types
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Callable, ClassVar, Optional, Union
 
@@ -42,6 +42,7 @@ from .value import (
     UnboundMethodValue,
     Value,
     annotate_value,
+    replace_fallback,
     set_self,
 )
 
@@ -55,7 +56,7 @@ NoneType = type(None)
 class AttrContext:
     root_composite: Composite
     attr: str
-    options: Options
+    options: Options = field(repr=False)
     skip_mro: bool
     skip_unwrap: bool
     prefer_typeshed: bool
@@ -97,6 +98,7 @@ class AttrContext:
 
 
 def get_root_value(val: Value) -> Value:
+    val = replace_fallback(val)
     if isinstance(val, AnnotatedValue):
         return get_root_value(val.value)
     elif isinstance(val, TypeAliasValue):

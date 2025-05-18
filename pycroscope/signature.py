@@ -28,7 +28,6 @@ from typing import (
 from typing_extensions import Literal, Protocol, Self, assert_never
 
 from pycroscope import relations
-from pycroscope.relations import Relation, has_relation
 
 from .analysis_lib import Sentinel
 from .error_code import Error, ErrorCode
@@ -36,6 +35,7 @@ from .maybe_asynq import asynq
 from .node_visitor import Replacement
 from .options import IntegerOption
 from .predicates import IsAssignablePredicate
+from .relations import Relation, can_assign_and_used_any, has_relation
 from .safe import safe_getattr, safe_str
 from .stacked_scopes import (
     NULL_CONSTRAINT,
@@ -95,7 +95,6 @@ from .value import (
     TypeVarValue,
     Value,
     annotate_value,
-    can_assign_and_used_any,
     concrete_values_from_iterable,
     extract_typevars,
     flatten_values,
@@ -644,9 +643,27 @@ class Signature:
                 param_typ = param.annotation.substitute_typevars(typevar_map)
             else:
                 param_typ = param.annotation
-            bounds_map, used_any = can_assign_and_used_any(
-                param_typ, composite.value, ctx.can_assign_ctx
-            )
+            if isinstance(composite.value, CallValue):
+                if isinstance(param_typ, TypeVarValue) and param_typ.is_paramspec:
+                    bounds_map = {
+                        param_typ.typevar: [
+                            LowerBound(param_typ.typevar, composite.value),
+                            *param_typ.get_inherent_bounds(),
+                        ]
+                    }
+                else:
+                    sig = ctx.can_assign_ctx.signature_from_value(param_typ)
+                    if isinstance(sig, (Signature, OverloadedSignature)):
+                        bounds_map = check_call_preprocessed(
+                            sig, composite.value.args, ctx.can_assign_ctx
+                        )
+                    else:
+                        bounds_map = {}
+                used_any = isinstance(param_typ, AnyValue)
+            else:
+                bounds_map, used_any = can_assign_and_used_any(
+                    param_typ, composite.value, ctx.can_assign_ctx
+                )
             if composite.value is param.default:
                 used_any = False
             if isinstance(bounds_map, CanAssignError):
@@ -1745,7 +1762,7 @@ def preprocess_args(
                     ctx.on_error(
                         "Only a single ParamSpec.args can be passed", node=arg.node
                     )
-                param_spec = TypeVarValue(arg.value.param_spec)
+                param_spec = TypeVarValue(arg.value.param_spec, is_paramspec=True)
                 param_spec_star_arg = arg
                 continue
             concrete_values = concrete_values_from_iterable(

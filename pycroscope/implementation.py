@@ -21,6 +21,7 @@ from .extensions import assert_type, reveal_locals, reveal_type
 from .format_strings import parse_format_string
 from .maybe_asynq import qcore
 from .predicates import IsAssignablePredicate
+from .relations import check_hashability
 from .safe import hasattr_static, is_union, safe_isinstance, safe_issubclass
 from .signature import (
     ANY_SIGNATURE,
@@ -69,7 +70,6 @@ from .value import (
     Value,
     annotate_value,
     assert_is_value,
-    check_hashability,
     concrete_values_from_iterable,
     dump_value,
     flatten_values,

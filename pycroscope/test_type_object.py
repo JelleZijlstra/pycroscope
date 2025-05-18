@@ -348,25 +348,23 @@ class TestHashable(TestNameCheckVisitorBase):
             def __hash__(self) -> int:
                 return 42
 
-        def capybara(t1: Type[int], t2: type):
+        def capybara(t1: Type[int], t2: type, x: list[int]):
             want_hash(t1)
             want_hash(t2)
             want_hash(int)
             want_hash(A)
             want_hash(B)
 
-            want_myhash(t1)
-            want_myhash(t2)
-            want_myhash(int)
-            want_myhash(A)
-            want_myhash(B)
-
             {t1: 0}
             {t2: 0}
             {int: 0}
             {A: 0}
 
+            want_hash(x)  # E: incompatible_argument
+            want_hash([x])  # E: incompatible_argument
             want_hash([])  # E: incompatible_argument
+            want_myhash(x)  # E: incompatible_argument
+            want_myhash([x])  # E: incompatible_argument
             want_myhash([])  # E: incompatible_argument
 
 

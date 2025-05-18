@@ -109,12 +109,12 @@ class TestExtraKeys(TestNameCheckVisitorBase):
             want_td(td)
             want_td(td2)  # E: incompatible_argument
             want_td(td3)  # E: incompatible_argument
-            want_td(anydict)
+            want_td(anydict)  # E: incompatible_argument
 
             want_td4(td)
             want_td4(td2)
             want_td4(td3)  # E: incompatible_argument
-            want_td4(anydict)
+            want_td4(anydict)  # E: incompatible_argument
 
     @assert_passes()
     def test_iteration(self):
@@ -328,13 +328,13 @@ class TestReadOnly(TestNameCheckVisitorBase):
             want_td(td2)  # E: incompatible_argument
             want_td(td3)  # E: incompatible_argument
             want_td(td4)  # E: incompatible_argument
-            want_td(anydict)
+            want_td(anydict)  # E: incompatible_argument
 
             want_td2(td)
             want_td2(td2)
             want_td2(td3)
             want_td2(td4)  # E: incompatible_argument
-            want_td2(anydict)
+            want_td2(anydict)  # E: incompatible_argument
 
 
 class TestClosed(TestNameCheckVisitorBase):
