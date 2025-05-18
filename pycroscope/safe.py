@@ -42,7 +42,7 @@ def safe_hasattr(item: object, member: str) -> bool:
 
 
 def safe_getattr(value: object, attr: str, default: object) -> Any:
-    """Whether this value has the given attribute, ignoring exceptions."""
+    """Return ``getattr(value, attr)`` or ``default`` if access raises an exception."""
     try:
         return getattr(value, attr)
     except Exception:
