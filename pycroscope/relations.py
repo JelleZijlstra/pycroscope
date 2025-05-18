@@ -385,6 +385,9 @@ def _has_relation(
             else:
                 return CanAssignError(f"{right} is not {relation.description} {left}")
         else:
+            sig = left.get_signature(ctx)
+            if sig is not None:
+                return _has_relation(CallableValue(sig), right, relation, ctx)
             return CanAssignError(f"{right} is not {relation.description} {left}")
     if isinstance(right, UnboundMethodValue):
         sig = right.get_signature(ctx)
