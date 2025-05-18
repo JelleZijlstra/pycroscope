@@ -17,7 +17,6 @@ from typing import Optional, TypeVar
 import pycroscope
 
 from . import extensions
-from .analysis_lib import override
 from .safe import safe_in
 
 T = TypeVar("T")
@@ -194,8 +193,12 @@ class UnusedObjectFinder:
                 yield UnusedObject(module, attr, value, "unused")
 
     def _has_import_star_usage(self, module: ModuleType, attr: str) -> _UsageKind:
-        with override(self, "recursive_stack", set()):
+        old_recursive_stack = self.recursive_stack
+        self.recursive_stack = set()
+        try:
             return self._has_import_star_usage_inner(module, attr)
+        finally:
+            self.recursive_stack = old_recursive_stack
 
     def _has_import_star_usage_inner(self, module: ModuleType, attr: str) -> _UsageKind:
         if module in self.recursive_stack:
