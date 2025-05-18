@@ -2804,6 +2804,18 @@ def signatures_have_relation(
     relation: Literal[Relation.ASSIGNABLE, Relation.SUBTYPE],
     ctx: CanAssignContext,
 ) -> CanAssign:
+    if isinstance(left, OverloadedSignature):
+        # A signature can be assigned if it can be assigned to all the component signatures.
+        bounds_maps = []
+        for sig in left.signatures:
+            can_assign = signatures_have_relation(sig, right, relation, ctx)
+            if isinstance(can_assign, CanAssignError):
+                return CanAssignError(
+                    f"{right} is not {relation.description} overload {sig}",
+                    [can_assign],
+                )
+            bounds_maps.append(can_assign)
+        return unify_bounds_maps(bounds_maps)
     if isinstance(right, OverloadedSignature):
         # An overloaded signature can be assigned if any of the component signatures
         # can be assigned. Strictly, an overloaded signature could satisfy a non-overloaded
@@ -2819,8 +2831,6 @@ def signatures_have_relation(
             else:
                 return can_assign
         return CanAssignError("overloaded function is incompatible", errors)
-    if isinstance(left, OverloadedSignature):
-        raise NotImplementedError  # TODO
 
     # Callable[..., Any] is compatible with an asynq callable too.
     if (
