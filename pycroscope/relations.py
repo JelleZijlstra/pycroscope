@@ -77,21 +77,21 @@ class Relation(enum.Enum):
 
 
 # Subclasses of Value that represent real types in the type system.
-GradualType: TypeAlias = (
-    AnyValue
-    | TypeAliasValue
-    | KnownValue
-    | SyntheticModuleValue
-    | UnboundMethodValue
-    | NewTypeValue
-    | TypedValue
-    | SubclassValue
-    | MultiValuedValue
-    | TypeVarValue
-    | ParamSpecArgsValue
-    | ParamSpecKwargsValue
-    | AnnotatedValue
-)
+GradualType: TypeAlias = Union[
+    AnyValue,
+    TypeAliasValue,
+    KnownValue,
+    SyntheticModuleValue,
+    UnboundMethodValue,
+    NewTypeValue,
+    TypedValue,
+    SubclassValue,
+    MultiValuedValue,
+    TypeVarValue,
+    ParamSpecArgsValue,
+    ParamSpecKwargsValue,
+    AnnotatedValue,
+]
 
 GRADUAL_TYPE = GradualType.__args__
 
