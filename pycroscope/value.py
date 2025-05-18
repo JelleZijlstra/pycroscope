@@ -850,6 +850,9 @@ class TypedValue(Value):
         elif isinstance(other, UnboundMethodValue):
             if self_tobj.can_be_unbound_method():
                 return {}
+        elif isinstance(other, (CallValue, TypeVarValue)):
+            if self.typ is object:
+                return {}
         return super().can_assign(other, ctx)
 
     def can_assign_thrift_enum(self, other: Value, ctx: CanAssignContext) -> CanAssign:
@@ -2148,7 +2151,7 @@ class LowerBound(Bound):
     value: Value
 
     def __str__(self) -> str:
-        return f"{self.value} <= {self.typevar}"
+        return f"{self.typevar} >= {self.value}"
 
 
 @dataclass(frozen=True)
@@ -2159,7 +2162,7 @@ class UpperBound(Bound):
     value: Value
 
     def __str__(self) -> str:
-        return f"{self.value} >= {self.typevar}"
+        return f"{self.typevar} <= {self.value}"
 
 
 @dataclass(frozen=True)
