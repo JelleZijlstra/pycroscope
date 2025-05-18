@@ -10,6 +10,7 @@ from unittest import mock
 
 from typing_extensions import Protocol, runtime_checkable
 
+from pycroscope.relations import Relation, has_relation
 from pycroscope.test_node_visitor import skip_if_not_installed
 
 from . import tests, value
@@ -42,14 +43,20 @@ _checker = Checker()
 CTX = NameCheckVisitor("", "", ast.parse(""), checker=_checker)
 
 
-def assert_cannot_assign(left: Value, right: Value) -> None:
-    tv_map = left.can_assign(right, CTX)
+def assert_cannot_assign(
+    left: Value, right: Value, *, relation_only: bool = False
+) -> None:
+    if not relation_only:
+        tv_map = left.can_assign(right, CTX)
+        assert isinstance(tv_map, CanAssignError)
+
+    tv_map = has_relation(left, right, Relation.ASSIGNABLE, CTX)
     assert isinstance(tv_map, CanAssignError)
-    print(tv_map.display())
 
 
 def assert_can_assign(left: Value, right: Value, typevar_map: TypeVarMap = {}) -> None:
-    assert typevar_map == left.can_assign(right, CTX)
+    assert left.can_assign(right, CTX) == typevar_map
+    assert has_relation(left, right, Relation.ASSIGNABLE, CTX) == typevar_map
 
 
 def test_any_value() -> None:
@@ -242,7 +249,12 @@ def test_sequence_value() -> None:
         tuple, [(False, TypedValue(int)), (False, TypedValue(str))]
     )
     assert_can_assign(val, TypedValue(tuple))
-    assert_can_assign(val, GenericValue(tuple, [TypedValue(int) | TypedValue(str)]))
+    assert_can_assign(GenericValue(tuple, [TypedValue(int) | TypedValue(str)]), val)
+    assert_cannot_assign(
+        val,
+        GenericValue(tuple, [TypedValue(int) | TypedValue(str)]),
+        relation_only=True,
+    )
     assert_cannot_assign(val, GenericValue(tuple, [TypedValue(int) | TypedValue(list)]))
 
     assert_can_assign(val, val)
@@ -390,7 +402,7 @@ def test_typeddict_value() -> None:
     ]
 
     assert_can_assign(val, AnyValue(AnySource.marker))
-    assert_can_assign(val, TypedValue(dict))
+    assert_cannot_assign(val, TypedValue(dict), relation_only=True)
     assert_cannot_assign(val, TypedValue(str))
 
     # KnownValue of dict

@@ -27,6 +27,9 @@ from typing import (
 
 from typing_extensions import Literal, Protocol, Self, assert_never
 
+from pycroscope import relations
+from pycroscope.relations import Relation, has_relation
+
 from .analysis_lib import Sentinel
 from .error_code import Error, ErrorCode
 from .maybe_asynq import asynq
@@ -2793,3 +2796,379 @@ def _extract_known_value(val: Value) -> Optional[KnownValue]:
     if isinstance(val, KnownValue):
         return val
     return None
+
+
+def signatures_have_relation(
+    left: ConcreteSignature,
+    right: ConcreteSignature,
+    relation: Literal[Relation.ASSIGNABLE, Relation.SUBTYPE],
+    ctx: CanAssignContext,
+) -> CanAssign:
+    if isinstance(right, OverloadedSignature):
+        # An overloaded signature can be assigned if any of the component signatures
+        # can be assigned. Strictly, an overloaded signature could satisfy a non-overloaded
+        # signature through a combination of overloads, but we make no attempt to support
+        # that.
+        errors = []
+        for sig in right.signatures:
+            can_assign = signatures_have_relation(left, sig, relation, ctx)
+            if isinstance(can_assign, CanAssignError):
+                errors.append(
+                    CanAssignError(f"overload {sig} is incompatible", [can_assign])
+                )
+            else:
+                return can_assign
+        return CanAssignError("overloaded function is incompatible", errors)
+    if isinstance(left, OverloadedSignature):
+        raise NotImplementedError  # TODO
+
+    # Callable[..., Any] is compatible with an asynq callable too.
+    if (
+        left.is_asynq
+        and not right.is_asynq
+        and not any(
+            param.kind is ParameterKind.ELLIPSIS for param in right.parameters.values()
+        )
+    ):
+        return CanAssignError("callable is not asynq")
+
+    their_return = right.return_value
+    my_return = left.return_value
+    return_tv_map = has_relation(my_return, their_return, relation, ctx)
+    if isinstance(return_tv_map, CanAssignError):
+        return CanAssignError("return annotation is not compatible", [return_tv_map])
+    tv_maps = [return_tv_map]
+    their_params = list(right.parameters.values())
+    their_args = right.get_param_of_kind(ParameterKind.VAR_POSITIONAL)
+    if their_args is not None:
+        their_args_index = their_params.index(their_args)
+        args_annotation = their_args.get_annotation()
+    else:
+        their_args_index = -1
+        args_annotation = None
+    their_kwargs = right.get_param_of_kind(ParameterKind.VAR_KEYWORD)
+    if their_kwargs is not None:
+        kwargs_annotation = their_kwargs.get_annotation()
+    else:
+        kwargs_annotation = None
+    their_ellipsis = right.get_param_of_kind(ParameterKind.ELLIPSIS)
+    if their_ellipsis is not None:
+        args_annotation = kwargs_annotation = AnyValue(AnySource.ellipsis_callable)
+    consumed_positional = set()
+    consumed_required_pos_only = set()
+    consumed_keyword = set()
+    consumed_paramspec = False
+    for i, my_param in enumerate(left.parameters.values()):
+        my_annotation = my_param.get_annotation()
+        if my_param.kind is ParameterKind.POSITIONAL_ONLY:
+            if i < len(their_params) and their_params[i].kind in (
+                ParameterKind.POSITIONAL_ONLY,
+                ParameterKind.POSITIONAL_OR_KEYWORD,
+            ):
+                if my_param.default is not None and their_params[i].default is None:
+                    return CanAssignError(
+                        f"positional-only param {my_param.name!r} has no default"
+                    )
+
+                their_annotation = their_params[i].get_annotation()
+                tv_map = has_relation(their_annotation, my_annotation, relation, ctx)
+                if isinstance(tv_map, CanAssignError):
+                    return CanAssignError(
+                        "type of positional-only parameter"
+                        f" {my_param.name!r} is incompatible",
+                        [tv_map],
+                    )
+                tv_maps.append(tv_map)
+                consumed_positional.add(their_params[i].name)
+                if their_params[i].default is None:
+                    consumed_required_pos_only.add(their_params[i].name)
+            elif args_annotation is not None:
+                new_tv_maps = has_relation_var_positional(
+                    my_param, args_annotation, relation, i - their_args_index, ctx
+                )
+                if isinstance(new_tv_maps, CanAssignError):
+                    return new_tv_maps
+                tv_maps += new_tv_maps
+            else:
+                return CanAssignError(f"positional-only parameter {i} is not accepted")
+        elif my_param.kind is ParameterKind.POSITIONAL_OR_KEYWORD:
+            if (
+                i < len(their_params)
+                and their_params[i].kind is ParameterKind.POSITIONAL_OR_KEYWORD
+            ):
+                if my_param.name != their_params[i].name:
+                    return CanAssignError(
+                        f"param name {their_params[i].name!r} does not match"
+                        f" {my_param.name!r}"
+                    )
+                if my_param.default is not None and their_params[i].default is None:
+                    return CanAssignError(f"param {my_param.name!r} has no default")
+                their_annotation = their_params[i].get_annotation()
+                tv_map = has_relation(their_annotation, my_annotation, relation, ctx)
+                if isinstance(tv_map, CanAssignError):
+                    return CanAssignError(
+                        f"type of parameter {my_param.name!r} is incompatible", [tv_map]
+                    )
+                tv_maps.append(tv_map)
+                consumed_positional.add(their_params[i].name)
+                consumed_keyword.add(their_params[i].name)
+            elif (
+                i < len(their_params)
+                and their_params[i].kind is ParameterKind.POSITIONAL_ONLY
+            ):
+                return CanAssignError(
+                    f"parameter {my_param.name!r} is not accepted as a keyword"
+                    " argument"
+                )
+            elif args_annotation is not None and kwargs_annotation is not None:
+                new_tv_maps = has_relation_var_positional(
+                    my_param, args_annotation, relation, i - their_args_index, ctx
+                )
+                if isinstance(new_tv_maps, CanAssignError):
+                    return new_tv_maps
+                tv_maps += new_tv_maps
+                new_tv_maps = has_relation_var_keyword(
+                    my_param, kwargs_annotation, relation, ctx
+                )
+                if isinstance(new_tv_maps, CanAssignError):
+                    return new_tv_maps
+                tv_maps += new_tv_maps
+            else:
+                return CanAssignError(f"parameter {my_param.name!r} is not accepted")
+        elif my_param.kind is ParameterKind.KEYWORD_ONLY:
+            their_param = right.parameters.get(my_param.name)
+            if their_param is not None and their_param.kind in (
+                ParameterKind.POSITIONAL_OR_KEYWORD,
+                ParameterKind.KEYWORD_ONLY,
+            ):
+                if my_param.default is not None and their_param.default is None:
+                    return CanAssignError(
+                        f"keyword-only param {my_param.name!r} has no default"
+                    )
+                their_annotation = their_param.get_annotation()
+                tv_map = has_relation(their_annotation, my_annotation, relation, ctx)
+                if isinstance(tv_map, CanAssignError):
+                    return CanAssignError(
+                        f"type of parameter {my_param.name!r} is incompatible", [tv_map]
+                    )
+                tv_maps.append(tv_map)
+                consumed_keyword.add(their_param.name)
+            elif kwargs_annotation is not None:
+                new_tv_maps = has_relation_var_keyword(
+                    my_param, kwargs_annotation, relation, ctx
+                )
+                if isinstance(new_tv_maps, CanAssignError):
+                    return new_tv_maps
+                tv_maps += new_tv_maps
+            else:
+                return CanAssignError(f"parameter {my_param.name!r} is not accepted")
+        elif my_param.kind is ParameterKind.VAR_POSITIONAL:
+            if args_annotation is None:
+                return CanAssignError("*args are not accepted")
+            tv_map = has_relation(args_annotation, my_annotation, relation, ctx)
+            if isinstance(tv_map, CanAssignError):
+                return CanAssignError("type of *args is incompatible", [tv_map])
+            tv_maps.append(tv_map)
+            extra_positional = [
+                param
+                for param in their_params
+                if param.name not in consumed_positional
+                and param.kind
+                in (ParameterKind.POSITIONAL_ONLY, ParameterKind.POSITIONAL_OR_KEYWORD)
+            ]
+            for extra_param in extra_positional:
+                tv_map = has_relation(
+                    extra_param.get_annotation(), my_annotation, relation, ctx
+                )
+                if isinstance(tv_map, CanAssignError):
+                    return CanAssignError(
+                        f"type of param {extra_param.name!r} is incompatible"
+                        " with *args type",
+                        [tv_map],
+                    )
+                tv_maps.append(tv_map)
+        elif my_param.kind is ParameterKind.VAR_KEYWORD:
+            if kwargs_annotation is None:
+                return CanAssignError("**kwargs are not accepted")
+            tv_map = has_relation(kwargs_annotation, my_annotation, relation, ctx)
+            if isinstance(tv_map, CanAssignError):
+                return CanAssignError("type of **kwargs is incompatible", [tv_map])
+            tv_maps.append(tv_map)
+            extra_keyword = [
+                param
+                for param in their_params
+                if param.name not in consumed_keyword
+                and param.kind
+                in (ParameterKind.KEYWORD_ONLY, ParameterKind.POSITIONAL_OR_KEYWORD)
+                and param.name not in consumed_required_pos_only
+            ]
+            for extra_param in extra_keyword:
+                tv_map = has_relation(
+                    extra_param.get_annotation(), my_annotation, relation, ctx
+                )
+                if isinstance(tv_map, CanAssignError):
+                    return CanAssignError(
+                        f"type of param {extra_param.name!r} is incompatible"
+                        " with **kwargs type",
+                        [tv_map],
+                    )
+                tv_maps.append(tv_map)
+        elif my_param.kind is ParameterKind.PARAM_SPEC:
+            remaining = [
+                param
+                for param in right.parameters.values()
+                if param.name not in consumed_positional
+                and param.name not in consumed_keyword
+            ]
+            new_sig = Signature.make(remaining)
+            assert isinstance(my_annotation, TypeVarValue)
+            tv_maps.append(
+                {
+                    my_annotation.typevar: [
+                        LowerBound(my_annotation.typevar, CallableValue(new_sig))
+                    ]
+                }
+            )
+            consumed_paramspec = True
+        elif my_param.kind is ParameterKind.ELLIPSIS:
+            if relation is Relation.ASSIGNABLE or their_ellipsis is None:
+                consumed_paramspec = True
+            if relation is Relation.SUBTYPE:
+                return CanAssignError(
+                    f"{left} accepts arbitrary arguments but {right} does not"
+                )
+            else:
+                assert_never(relation)
+        else:
+            assert_never(my_param.kind)
+
+    if not consumed_paramspec:
+        for param in their_params:
+            if (
+                param.kind is ParameterKind.VAR_POSITIONAL
+                or param.kind is ParameterKind.VAR_KEYWORD
+            ):
+                continue  # ok if they have extra *args or **kwargs
+            elif param.default is not None:
+                continue
+            elif param.kind is ParameterKind.POSITIONAL_ONLY:
+                if param.name not in consumed_positional:
+                    return CanAssignError(
+                        f"takes extra positional-only parameter {param.name!r}"
+                    )
+            elif param.kind is ParameterKind.POSITIONAL_OR_KEYWORD:
+                if (
+                    param.name not in consumed_positional
+                    and param.name not in consumed_keyword
+                ):
+                    return CanAssignError(f"takes extra parameter {param.name!r}")
+            elif param.kind is ParameterKind.KEYWORD_ONLY:
+                if param.name not in consumed_keyword:
+                    return CanAssignError(f"takes extra parameter {param.name!r}")
+            elif param.kind is ParameterKind.PARAM_SPEC:
+                return CanAssignError(f"takes extra ParamSpec {param!r}")
+            elif param.kind is ParameterKind.ELLIPSIS:
+                if relation is Relation.SUBTYPE:
+                    return CanAssignError(
+                        f"{left} does not accepts arbitrary arguments but {right} does"
+                    )
+                elif relation is Relation.ASSIGNABLE:
+                    continue
+                else:
+                    assert_never(relation)
+            else:
+                assert_never(param.kind)
+
+    return unify_bounds_maps(tv_maps)
+
+
+def has_relation_var_positional(
+    my_param: SigParameter,
+    args_annotation: Value,
+    relation: Literal[Relation.ASSIGNABLE, Relation.SUBTYPE],
+    idx: int,
+    ctx: CanAssignContext,
+) -> Union[list[BoundsMap], CanAssignError]:
+    my_annotation = my_param.get_annotation()
+    if isinstance(args_annotation, SequenceValue):
+        members = args_annotation.get_member_sequence()
+        if members is not None:
+            length = len(members)
+            if idx >= length:
+                return CanAssignError(
+                    f"parameter {my_param.name!r} is not accepted;"
+                    f" {args_annotation} only accepts {length} values"
+                )
+            their_annotation = members[idx]
+            can_assign = has_relation(their_annotation, my_annotation, relation, ctx)
+            if isinstance(can_assign, CanAssignError):
+                return CanAssignError(
+                    f"type of parameter {my_param.name!r} is incompatible:"
+                    f" *args[{idx}] type is incompatible",
+                    [can_assign],
+                )
+            return [can_assign]
+
+    iterable_arg = relations.is_iterable(args_annotation, relation, ctx)
+    if isinstance(iterable_arg, CanAssignError):
+        return CanAssignError(
+            f"{args_annotation} is not an iterable type", [iterable_arg]
+        )
+    bounds_map = has_relation(iterable_arg, my_annotation, relation, ctx)
+    if isinstance(bounds_map, CanAssignError):
+        return CanAssignError(
+            f"type of parameter {my_param.name!r} is incompatible: "
+            "*args type is incompatible",
+            [bounds_map],
+        )
+    return [bounds_map]
+
+
+def has_relation_var_keyword(
+    my_param: SigParameter,
+    kwargs_annotation: Value,
+    relation: Literal[Relation.ASSIGNABLE, Relation.SUBTYPE],
+    ctx: CanAssignContext,
+) -> Union[list[BoundsMap], CanAssignError]:
+    my_annotation = my_param.get_annotation()
+    bounds_maps = []
+    if isinstance(kwargs_annotation, TypedDictValue):
+        if my_param.name not in kwargs_annotation.items:
+            return CanAssignError(
+                f"parameter {my_param.name!r} is not accepted by {kwargs_annotation}"
+            )
+        their_annotation = kwargs_annotation.items[my_param.name].typ
+        can_assign = has_relation(their_annotation, my_annotation, relation, ctx)
+        if isinstance(can_assign, CanAssignError):
+            return CanAssignError(
+                f"type of parameter {my_param.name!r} is incompatible:"
+                f" *kwargs[{my_param.name!r}] type is incompatible",
+                [can_assign],
+            )
+        bounds_maps.append(can_assign)
+    else:
+        mapping_tv_map = relations.get_tv_map(
+            MappingValue, kwargs_annotation, relation, ctx
+        )
+        if isinstance(mapping_tv_map, CanAssignError):
+            return CanAssignError(
+                f"{kwargs_annotation} is not a mapping type", [mapping_tv_map]
+            )
+        key_arg = mapping_tv_map.get(K, AnyValue(AnySource.generic_argument))
+        can_assign = has_relation(key_arg, KnownValue(my_param.name), relation, ctx)
+        if isinstance(can_assign, CanAssignError):
+            return CanAssignError(
+                f"parameter {my_param.name!r} is not accepted by **kwargs type",
+                [can_assign],
+            )
+        bounds_maps.append(can_assign)
+        value_arg = mapping_tv_map.get(V, AnyValue(AnySource.generic_argument))
+        can_assign = has_relation(value_arg, my_annotation, relation, ctx)
+        if isinstance(can_assign, CanAssignError):
+            return CanAssignError(
+                f"type of parameter {my_param.name!r} is incompatible: **kwargs"
+                " type is incompatible",
+                [can_assign],
+            )
+        bounds_maps.append(can_assign)
+    return bounds_maps

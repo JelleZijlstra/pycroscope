@@ -2196,8 +2196,10 @@ class TypeVarValue(Value):
     def get_inherent_bounds(self) -> Iterator[Bound]:
         if self.bound is not None:
             yield UpperBound(self.typevar, self.bound)
-        if self.constraints:
+        elif self.constraints:
             yield IsOneOf(self.typevar, self.constraints)
+        else:
+            yield UpperBound(self.typevar, TypedValue(object))
 
     def can_assign(self, other: Value, ctx: CanAssignContext) -> CanAssign:
         if self == other:
@@ -3338,16 +3340,22 @@ def replace_known_sequence_value(value: Value) -> Value:
     if isinstance(value, TypeAliasValue):
         return replace_known_sequence_value(value.get_value())
     if isinstance(value, KnownValue):
-        if isinstance(value.val, (list, tuple, set)):
-            return SequenceValue(
-                type(value.val), [(False, KnownValue(elt)) for elt in value.val]
-            )
-        elif isinstance(value.val, dict):
-            return DictIncompleteValue(
-                type(value.val),
-                [KVPair(KnownValue(k), KnownValue(v)) for k, v in value.val.items()],
-            )
+        return typify_literal(value)
     return value
+
+
+def typify_literal(value: KnownValue) -> Union[KnownValue, TypedValue]:
+    if isinstance(value.val, (list, tuple, set)):
+        return SequenceValue(
+            type(value.val), [(False, KnownValue(elt)) for elt in value.val]
+        )
+    elif isinstance(value.val, dict):
+        return DictIncompleteValue(
+            type(value.val),
+            [KVPair(KnownValue(k), KnownValue(v)) for k, v in value.val.items()],
+        )
+    else:
+        return value
 
 
 def extract_typevars(value: Value) -> Iterable[TypeVarLike]:
