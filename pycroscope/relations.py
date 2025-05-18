@@ -368,7 +368,7 @@ def _has_relation(
         else:
             return CanAssignError(f"{right} is not {relation.description} {left}")
     if isinstance(right, ParamSpecArgsValue):
-        return has_relation(left, right.get_fallback(), relation, ctx)
+        return has_relation(left, right.get_fallback_value(), relation, ctx)
     if isinstance(left, ParamSpecKwargsValue):
         if (
             isinstance(right, ParamSpecKwargsValue)
@@ -378,7 +378,7 @@ def _has_relation(
         else:
             return CanAssignError(f"{right} is not {relation.description} {left}")
     if isinstance(right, ParamSpecKwargsValue):
-        return has_relation(left, right.get_fallback(), relation, ctx)
+        return has_relation(left, right.get_fallback_value(), relation, ctx)
 
     # NewTypeValue
     if isinstance(left, NewTypeValue):

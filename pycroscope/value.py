@@ -167,7 +167,7 @@ class Value:
         """
         return None
 
-    def get_fallback(self) -> Optional["Value"]:
+    def get_fallback_value(self) -> Optional["Value"]:
         """Returns a fallback value for this value, or None if it is not known.
 
         Implement this on Value subclasses for which most processing can be done
@@ -450,6 +450,9 @@ class TypeAlias:
             self.type_params = self.evaluate_type_params()
         return self.type_params
 
+    def get_fallback_value(self) -> Value:
+        return self.get_value()
+
 
 @dataclass(frozen=True)
 class TypeAliasValue(Value):
@@ -678,8 +681,6 @@ class UnboundMethodValue(Value):
         """Return the runtime callable for this ``UnboundMethodValue``, or
         None if it cannot be found."""
         root = replace_fallback(self.composite.value)
-        if isinstance(root, (AnnotatedValue, NewTypeValue)):
-            root = root.value
         if isinstance(root, KnownValue):
             typ = root.val
         else:
@@ -918,7 +919,7 @@ class NewTypeValue(Value):
     def get_type_value(self) -> Value:
         return self.value.get_type_value()
 
-    def get_fallback(self) -> Value:
+    def get_fallback_value(self) -> Value:
         return self.value
 
     def __str__(self) -> str:
@@ -1165,10 +1166,7 @@ class DictIncompleteValue(GenericValue):
         covered_keys: set[Value] = set()
         for pair in reversed(self.kv_pairs):
             if not pair.is_many:
-                if isinstance(pair.key, AnnotatedValue):
-                    my_key = pair.key.value
-                else:
-                    my_key = pair.key
+                my_key = replace_fallback(pair.key)
                 if isinstance(my_key, KnownValue):
                     if my_key == key and pair.is_required:
                         return unite_values(*possible_values, pair.value)
@@ -1739,7 +1737,7 @@ class TypeVarValue(Value):
             return self.bound
         elif self.constraints:
             return unite_values(*self.constraints)
-        return AnyValue(AnySource.inference)
+        return AnyValue(AnySource.inference)  # TODO: should be object
 
     def get_type_value(self) -> Value:
         return self.get_fallback_value().get_type_value()
@@ -1767,7 +1765,7 @@ class ParamSpecArgsValue(Value):
     def __str__(self) -> str:
         return f"{self.param_spec}.args"
 
-    def get_fallback(self) -> Value:
+    def get_fallback_value(self) -> Value:
         return GenericValue(tuple, [TypedValue(object)])
 
 
@@ -1778,7 +1776,7 @@ class ParamSpecKwargsValue(Value):
     def __str__(self) -> str:
         return f"{self.param_spec}.kwargs"
 
-    def get_fallback(self) -> Value:
+    def get_fallback_value(self) -> Value:
         return GenericValue(dict, [TypedValue(str), TypedValue(object)])
 
 
@@ -2147,6 +2145,9 @@ class AnnotatedValue(Value):
 
     def simplify(self) -> Value:
         return AnnotatedValue(self.value.simplify(), self.metadata)
+
+    def get_fallback_value(self) -> Value:
+        return self.value
 
 
 @dataclass(frozen=True)
@@ -2845,7 +2846,7 @@ def make_coro_type(return_type: Value) -> GenericValue:
 
 def replace_fallback(val: Value) -> Value:
     while True:
-        fallback = val.get_fallback()
+        fallback = val.get_fallback_value()
         if fallback is None:
             break
         val = fallback

@@ -74,6 +74,7 @@ from .value import (
     dump_value,
     flatten_values,
     kv_pairs_from_mapping,
+    replace_fallback,
     replace_known_sequence_value,
     unite_values,
     unpack_values,
@@ -210,12 +211,10 @@ def _assert_is_instance_impl(ctx: CallContext) -> ImplReturn:
 
 
 def _record_attr_set(val: Value, name: str, ctx: CallContext) -> None:
+    val = replace_fallback(val)
     if isinstance(val, MultiValuedValue):
         for subval in val.vals:
             _record_attr_set(subval, name, ctx)
-        return
-    elif isinstance(val, AnnotatedValue):
-        _record_attr_set(val.value, name, ctx)
         return
     elif isinstance(val, TypedValue):
         typ = val.typ
@@ -621,9 +620,7 @@ def _dict_setitem_impl(ctx: CallContext) -> ImplReturn:
 
 def _dict_getitem_impl(ctx: CallContext) -> ImplReturn:
     def inner(key: Value) -> Value:
-        self_value = ctx.vars["self"]
-        if isinstance(self_value, AnnotatedValue):
-            self_value = self_value.value
+        self_value = replace_fallback(ctx.vars["self"])
         if not _check_dict_key_hashability(key, ctx, "k"):
             return AnyValue(AnySource.error)
         if isinstance(self_value, KnownValue):
@@ -699,9 +696,7 @@ def _dict_get_impl(ctx: CallContext) -> ImplReturn:
     default = ctx.vars["default"]
 
     def inner(key: Value) -> Value:
-        self_value = ctx.vars["self"]
-        if isinstance(self_value, AnnotatedValue):
-            self_value = self_value.value
+        self_value = replace_fallback(ctx.vars["self"])
         if not _check_dict_key_hashability(key, ctx, "k"):
             return AnyValue(AnySource.error)
         if isinstance(self_value, KnownValue):
@@ -1307,14 +1302,6 @@ def _set_add_impl(ctx: CallContext) -> ImplReturn:
     return ImplReturn(KnownValue(None))
 
 
-def _remove_annotated(val: Value) -> Value:
-    if isinstance(val, AnnotatedValue):
-        return _remove_annotated(val.value)
-    elif isinstance(val, MultiValuedValue):
-        return unite_values(*[_remove_annotated(subval) for subval in val.vals])
-    return val
-
-
 def _assert_is_value_impl(ctx: CallContext) -> Value:
     if not ctx.visitor._is_checking():
         return KnownValue(None)
@@ -1328,8 +1315,8 @@ def _assert_is_value_impl(ctx: CallContext) -> Value:
             arg="value",
         )
     else:
-        if _remove_annotated(ctx.vars["skip_annotated"]) == KnownValue(True):
-            obj = _remove_annotated(obj)
+        if replace_fallback(ctx.vars["skip_annotated"]) == KnownValue(True):
+            obj = _recursive_unanotate(obj)
         if obj != expected_value.val:
             ctx.show_error(
                 f"Bad value inference: expected {expected_value.val}, got {obj}",

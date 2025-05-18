@@ -52,7 +52,6 @@ from .signature import (
 from .stacked_scopes import Composite, uniq_chain
 from .value import (
     UNINITIALIZED_VALUE,
-    AnnotatedValue,
     AnySource,
     AnyValue,
     CallableValue,
@@ -71,6 +70,7 @@ from .value import (
     annotate_value,
     extract_typevars,
     make_coro_type,
+    replace_fallback,
     unannotate_value,
 )
 
@@ -731,8 +731,7 @@ class TypeshedFinder:
 
     def _sig_from_value(self, val: Value) -> Optional[ConcreteSignature]:
         val, extensions = unannotate_value(val, DeprecatedExtension)
-        if isinstance(val, AnnotatedValue):
-            val = val.value
+        val = replace_fallback(val)
         if not isinstance(val, CallableValue):
             return None
         sig = val.signature

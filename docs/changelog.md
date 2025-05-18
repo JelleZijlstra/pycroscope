@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Correctly handle type aliases and other types with fallbacks in more places
 - Fix edge case in `TypeIs` type narrowing with tuple types
 - Rewrite the implementation of assignability to be more in line with the typing
   specification

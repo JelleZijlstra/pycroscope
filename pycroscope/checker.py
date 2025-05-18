@@ -36,13 +36,11 @@ from .type_object import TypeObject, get_mro
 from .typeshed import TypeshedFinder
 from .value import (
     UNINITIALIZED_VALUE,
-    AnnotatedValue,
     AnyValue,
     CallableValue,
     KnownValue,
     KnownValueWithTypeVars,
     MultiValuedValue,
-    NewTypeValue,
     SubclassValue,
     TypeAlias,
     TypedValue,
@@ -52,6 +50,7 @@ from .value import (
     VariableNameValue,
     flatten_values,
     is_union,
+    replace_fallback,
     unite_values,
 )
 
@@ -275,10 +274,7 @@ class Checker:
         ] = lambda _: None,
         get_call_attribute: Optional[Callable[[Value], Value]] = None,
     ) -> MaybeSignature:
-        if isinstance(value, (AnnotatedValue, NewTypeValue)):
-            value = value.value
-        if isinstance(value, TypeVarValue):
-            value = value.get_fallback_value()
+        value = replace_fallback(value)
         if isinstance(value, KnownValue):
             argspec = self.arg_spec_cache.get_argspec(value.val)
             if argspec is None:
