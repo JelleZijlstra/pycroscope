@@ -1,8 +1,8 @@
 from collections.abc import Container
 from dataclasses import dataclass
-from typing import Literal, Optional, Union, assert_never
+from typing import Literal, Optional, Union
 
-from typing_extensions import Self
+from typing_extensions import Self, assert_never
 
 import pycroscope
 from pycroscope.extensions import ExternalType
