@@ -1691,7 +1691,7 @@ class IsOneOf(Bound):
 
 @dataclass(frozen=True)
 class TypeVarValue(Value):
-    """Value representing a ``typing.TypeVar`` or ``typing.ParamSpec``.
+    """Value representing a ``typing.TypeVar``.
 
     Currently, variance is ignored.
 
@@ -1701,7 +1701,6 @@ class TypeVarValue(Value):
     bound: Optional[Value] = None
     default: Optional[Value] = None  # unsupported
     constraints: Sequence[Value] = ()
-    is_paramspec: bool = False
     is_typevartuple: bool = False  # unsupported
 
     def substitute_typevars(self, typevars: TypeVarMap) -> Value:
@@ -2216,16 +2215,6 @@ class VariableNameValue(AnyValue):
                 shortened_varname = parts[-1]
             return varname_map.get(shortened_varname)
         return None
-
-
-@dataclass(frozen=True)
-class CallValue(Value):
-    """Represents the arguments to a call."""
-
-    args: "pycroscope.signature.ActualArguments"
-
-    def __hash__(self) -> int:
-        return id(self)
 
 
 def is_union(val: Value) -> bool:

@@ -44,6 +44,7 @@ from typing_extensions import (
 )
 
 from pycroscope.annotated_types import get_annotated_types_extension
+from pycroscope.input_sig import InputSigValue, ParamSpecSig
 from pycroscope.relations import HashableProtoValue
 
 from . import type_evaluation
@@ -485,7 +486,7 @@ def _type_from_runtime(
         tv = cast(TypeVar, val)
         return make_type_var_value(tv, ctx)
     elif is_instance_of_typing_name(val, "ParamSpec"):
-        return TypeVarValue(val, is_paramspec=True)
+        return InputSigValue(ParamSpecSig(val))
     elif is_typing_name(val, "Final") or is_typing_name(val, "ClassVar"):
         return AnyValue(AnySource.incomplete_annotation)
     elif is_instance_of_typing_name(val, "_ForwardRef") or is_instance_of_typing_name(
@@ -559,14 +560,7 @@ def make_type_var_value(tv: TypeVarLike, ctx: Context) -> TypeVarValue:
         default = _type_from_runtime(tv.__default__, ctx)
     else:
         default = None
-    is_paramspec = is_instance_of_typing_name(tv, "ParamSpec")
-    return TypeVarValue(
-        tv,
-        bound=bound,
-        constraints=constraints,
-        default=default,
-        is_paramspec=is_paramspec,
-    )
+    return TypeVarValue(tv, bound=bound, constraints=constraints, default=default)
 
 
 def _callable_args_from_runtime(
@@ -582,7 +576,7 @@ def _callable_args_from_runtime(
             elif is_typing_name(get_origin(arg), "Concatenate"):
                 return _args_from_concatenate(arg, ctx)
             elif is_instance_of_typing_name(arg, "ParamSpec"):
-                param_spec = TypeVarValue(arg, is_paramspec=True)
+                param_spec = InputSigValue(ParamSpecSig(arg))
                 param = SigParameter(
                     "__P", kind=ParameterKind.PARAM_SPEC, annotation=param_spec
                 )
@@ -593,7 +587,7 @@ def _callable_args_from_runtime(
                 f"@{i}",
                 kind=(
                     ParameterKind.PARAM_SPEC
-                    if isinstance(typ, TypeVarValue) and typ.is_paramspec
+                    if isinstance(typ, InputSigValue)
                     else ParameterKind.POSITIONAL_ONLY
                 ),
                 annotation=typ,
@@ -602,7 +596,7 @@ def _callable_args_from_runtime(
         ]
         return params
     elif is_instance_of_typing_name(arg_types, "ParamSpec"):
-        param_spec = TypeVarValue(arg_types, is_paramspec=True)
+        param_spec = InputSigValue(ParamSpecSig(arg_types))
         param = SigParameter(
             "__P", kind=ParameterKind.PARAM_SPEC, annotation=param_spec
         )
@@ -1121,7 +1115,7 @@ class _Visitor(ast.NodeVisitor):
                 self.ctx.show_error(f"Unrecognized ParamSpec kwarg {name}", node=node)
                 return None
             tv = ParamSpec(name_val.val)
-            return TypeVarValue(tv, is_paramspec=True)
+            return InputSigValue(ParamSpecSig(tv))
         elif is_typing_name(func.val, "deprecated") or func.val is deprecated:
             if node.keywords:
                 self.ctx.show_error(
@@ -1340,13 +1334,13 @@ def _make_callable_from_value(
     elif isinstance(args, KnownValue) and is_instance_of_typing_name(
         args.val, "ParamSpec"
     ):
-        annotation = TypeVarValue(args.val, is_paramspec=True)
+        annotation = InputSigValue(ParamSpecSig(args.val))
         params = [
             SigParameter("__P", kind=ParameterKind.PARAM_SPEC, annotation=annotation)
         ]
         sig = Signature.make(params, return_annotation, is_asynq=is_asynq)
         return CallableValue(sig)
-    elif isinstance(args, TypeVarValue) and args.is_paramspec:
+    elif isinstance(args, InputSigValue):
         params = [SigParameter("__P", kind=ParameterKind.PARAM_SPEC, annotation=args)]
         sig = Signature.make(params, return_annotation, is_asynq=is_asynq)
         return CallableValue(sig)

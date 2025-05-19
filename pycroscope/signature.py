@@ -11,7 +11,7 @@ import collections.abc
 import enum
 import inspect
 import itertools
-from collections.abc import Container, Iterable, Sequence
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field, replace
 from types import FunctionType, MethodType
 from typing import (
@@ -31,6 +31,15 @@ from pycroscope import relations
 
 from .analysis_lib import Sentinel
 from .error_code import Error, ErrorCode
+from .input_sig import (
+    ActualArguments,
+    AnySig,
+    FullSignature,
+    InputSigValue,
+    ParamSpecSig,
+    assert_input_sig,
+    input_sigs_have_relation,
+)
 from .maybe_asynq import asynq
 from .node_visitor import Replacement
 from .options import IntegerOption
@@ -64,8 +73,6 @@ from .value import (
     AnyValue,
     AsyncTaskIncompleteValue,
     BoundsMap,
-    CallableValue,
-    CallValue,
     CanAssign,
     CanAssignContext,
     CanAssignError,
@@ -152,7 +159,7 @@ Argument = tuple[
         str,
         PossibleArg,
         Literal[ARGS, KWARGS, ELLIPSIS],
-        TypeVarValue,
+        ParamSpecSig,
         PosOrKeyword,
     ],
 ]
@@ -226,29 +233,6 @@ class _VisitorBasedContext:
         self.visitor.show_error(
             node, message, code, detail=detail, replacement=replacement
         )
-
-
-@dataclass
-class ActualArguments:
-    """Represents the actual arguments to a call.
-
-    Before creating this class, we decompose ``*args`` and ``**kwargs`` arguments
-    of known composition into additional positional and keyword arguments, and we
-    merge multiple ``*args`` or ``**kwargs``.
-
-    Creating the ``ActualArguments`` for a call is independent of the signature
-    of the callee.
-
-    """
-
-    positionals: list[tuple[bool, Composite]]
-    star_args: Optional[Value]  # represents the type of the elements of *args
-    keywords: dict[str, tuple[bool, Composite]]
-    star_kwargs: Optional[Value]  # represents the type of the elements of **kwargs
-    kwargs_required: bool
-    pos_or_keyword_params: Container[Union[int, str]]
-    ellipsis: bool = False
-    param_spec: Optional[TypeVarValue] = None
 
 
 class CallReturn(NamedTuple):
@@ -500,7 +484,9 @@ class SigParameter:
         if self.kind is ParameterKind.ELLIPSIS:
             return val, ELLIPSIS
         elif self.kind is ParameterKind.PARAM_SPEC:
-            assert isinstance(self.annotation, TypeVarValue)
+            assert isinstance(self.annotation, InputSigValue) and isinstance(
+                self.annotation.input_sig, ParamSpecSig
+            )
             return val, self.annotation
         elif self.kind is ParameterKind.VAR_KEYWORD:
             return val, KWARGS
@@ -644,23 +630,23 @@ class Signature:
                 param_typ = param.annotation.substitute_typevars(typevar_map)
             else:
                 param_typ = param.annotation
-            if isinstance(composite.value, CallValue):
-                if isinstance(param_typ, TypeVarValue) and param_typ.is_paramspec:
-                    bounds_map = {
-                        param_typ.typevar: [
-                            LowerBound(param_typ.typevar, composite.value),
-                            *param_typ.get_inherent_bounds(),
-                        ]
-                    }
+
+            if isinstance(composite.value, InputSigValue):
+                assert isinstance(param_typ, InputSigValue)
+                left = composite.value.input_sig
+                right = param_typ.input_sig
+                result1 = input_sigs_have_relation(
+                    left, right, Relation.SUBTYPE, ctx.can_assign_ctx
+                )
+                if isinstance(result1, CanAssignError):
+                    result2 = input_sigs_have_relation(
+                        left, right, Relation.ASSIGNABLE, ctx.can_assign_ctx
+                    )
+                    bounds_map = result2
+                    used_any = True
                 else:
-                    sig = ctx.can_assign_ctx.signature_from_value(param_typ)
-                    if isinstance(sig, (Signature, OverloadedSignature)):
-                        bounds_map = check_call_preprocessed(
-                            sig, composite.value.args, ctx.can_assign_ctx
-                        )
-                    else:
-                        bounds_map = {}
-                used_any = isinstance(param_typ, AnyValue)
+                    bounds_map = result1
+                    used_any = False
             else:
                 bounds_map, used_any = can_assign_and_used_any(
                     param_typ, composite.value, ctx.can_assign_ctx
@@ -1087,11 +1073,8 @@ class Signature:
                 ):
                     star_kwargs_consumed = True
                     star_args_consumed = True
-                    composite = Composite(
-                        TypeVarValue(
-                            actual_args.star_kwargs.param_spec, is_paramspec=True
-                        )
-                    )
+                    sig = ParamSpecSig(actual_args.star_kwargs.param_spec)
+                    composite = Composite(InputSigValue(sig))
                     bound_args[param.name] = KWARGS, composite
                 else:
                     new_actuals = ActualArguments(
@@ -1114,7 +1097,7 @@ class Signature:
                     )
                     star_args_consumed = True
                     star_kwargs_consumed = True
-                    val = CallValue(new_actuals)
+                    val = InputSigValue(new_actuals)
                     bound_args[param.name] = UNKNOWN, Composite(val)
             else:
                 assert False, f"unhandled param {param.kind}"
@@ -1492,28 +1475,31 @@ class Signature:
         params = []
         for name, param in self.parameters.items():
             if param.kind is ParameterKind.PARAM_SPEC:
-                assert isinstance(param.annotation, TypeVarValue)
-                tv = param.annotation.typevar
+                input_sig = assert_input_sig(param.annotation)
+                assert isinstance(input_sig, ParamSpecSig)
+                tv = input_sig.param_spec
                 if tv in typevars:
-                    new_val = typevars[tv].substitute_typevars(typevars)
-                    if isinstance(new_val, TypeVarValue):
-                        assert new_val.is_paramspec, new_val
+                    replacement = assert_input_sig(typevars[tv])
+                    new_val = replacement.substitute_typevars(typevars)
+                    if isinstance(new_val, ParamSpecSig):
                         new_param = SigParameter(
-                            param.name, param.kind, annotation=new_val
+                            param.name, param.kind, annotation=InputSigValue(new_val)
                         )
                         params.append((name, new_param))
-                    elif isinstance(new_val, AnyValue):
+                    elif isinstance(new_val, AnySig):
                         new_param = SigParameter(param.name, ParameterKind.ELLIPSIS)
                         params.append((param.name, new_param))
-                    elif isinstance(new_val, CallValue):
+                    elif isinstance(new_val, ActualArguments):
                         new_param = SigParameter(
-                            param.name, ParameterKind.PARAM_SPEC, annotation=new_val
+                            param.name,
+                            ParameterKind.PARAM_SPEC,
+                            annotation=InputSigValue(new_val),
                         )
                         params.append((param.name, new_param))
+                    elif isinstance(new_val, FullSignature):
+                        params += list(new_val.sig.parameters.items())
                     else:
-                        assert isinstance(new_val, CallableValue), new_val
-                        assert isinstance(new_val.signature, Signature), new_val
-                        params += list(new_val.signature.parameters.items())
+                        assert_never(new_val)
                 else:
                     params.append((name, param))
             else:
@@ -1763,7 +1749,7 @@ def preprocess_args(
                     ctx.on_error(
                         "Only a single ParamSpec.args can be passed", node=arg.node
                     )
-                param_spec = TypeVarValue(arg.value.param_spec, is_paramspec=True)
+                param_spec = arg.value.param_spec
                 param_spec_star_arg = arg
                 continue
             concrete_values = concrete_values_from_iterable(
@@ -1794,7 +1780,7 @@ def preprocess_args(
                         "ParamSpec.kwargs cannot be passed without ParamSpec.args",
                         node=arg.node,
                     )
-                elif param_spec.typevar is not arg.value.param_spec:
+                elif param_spec is not arg.value.param_spec:
                     ctx.on_error(
                         "ParamSpec.args and ParamSpec.kwargs must use the same ParamSpec",
                         node=arg.node,
@@ -1911,7 +1897,7 @@ def preprocess_args(
             pok_indices.add(len(more_processed_args))
             more_processed_kwargs[label.name] = (label.is_required, arg)
             more_processed_args.append((label.is_required, arg))
-        elif isinstance(label, TypeVarValue):
+        elif isinstance(label, ParamSpecSig):
             if param_spec is not None:
                 ctx.on_error("Multiple ParamSpecs passed")
                 continue
@@ -2680,11 +2666,15 @@ def signatures_have_relation(
                 and param.name not in consumed_keyword
             ]
             new_sig = Signature.make(remaining)
-            assert isinstance(my_annotation, TypeVarValue)
+            my_annotation = assert_input_sig(my_annotation)
+            assert isinstance(my_annotation, ParamSpecSig)
             tv_maps.append(
                 {
-                    my_annotation.typevar: [
-                        LowerBound(my_annotation.typevar, CallableValue(new_sig))
+                    my_annotation.param_spec: [
+                        LowerBound(
+                            my_annotation.param_spec,
+                            InputSigValue(FullSignature(new_sig)),
+                        )
                     ]
                 }
             )

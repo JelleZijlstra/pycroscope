@@ -39,6 +39,8 @@ from unittest.mock import ANY
 import typeshed_client
 from typing_extensions import Protocol, get_args, get_origin
 
+from pycroscope.input_sig import InputSigValue, ParamSpecSig
+
 from . import attributes, format_strings, importer, node_visitor, type_evaluation
 from .analysis_lib import (
     get_attribute_path,
@@ -4831,7 +4833,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
 
         def visit_ParamSpec(self, node: ast.ParamSpec) -> Value:
             ps = typing.ParamSpec(node.name)
-            typevar = TypeVarValue(ps, is_paramspec=True)
+            typevar = InputSigValue(ParamSpecSig(ps))
             self._set_name_in_scope(node.name, node, typevar)
             return typevar
 
