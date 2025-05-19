@@ -1,11 +1,13 @@
+import sys
+import typing
 from collections.abc import Container
 from dataclasses import dataclass
 from typing import Literal, Optional, Union
 
+import typing_extensions
 from typing_extensions import Self, assert_never
 
 import pycroscope
-from pycroscope.extensions import ExternalType
 from pycroscope.relations import Relation
 from pycroscope.stacked_scopes import Composite
 from pycroscope.value import (
@@ -19,9 +21,10 @@ from pycroscope.value import (
     Value,
 )
 
-ParamSpecLike = Union[
-    ExternalType["typing.ParamSpec"], ExternalType["typing_extensions.ParamSpec"]
-]
+if sys.version_info >= (3, 10):
+    ParamSpecLike = Union[typing_extensions.ParamSpec, typing.ParamSpec]
+else:
+    ParamSpecLike = typing_extensions.ParamSpec
 
 
 @dataclass(frozen=True)
