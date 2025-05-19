@@ -9,6 +9,7 @@ from pycroscope.extensions import ExternalType
 from pycroscope.relations import Relation
 from pycroscope.stacked_scopes import Composite
 from pycroscope.value import (
+    AnyValue,
     CanAssign,
     CanAssignContext,
     CanAssignError,
@@ -79,8 +80,11 @@ class FullSignature:
     def substitute_typevars(self, typevars: TypeVarMap) -> "FullSignature":
         return FullSignature(sig=self.sig.substitute_typevars(typevars))
 
+    def __str__(self) -> str:
+        return str(self.sig)
 
-InputSig = Union[ActualArguments, ParamSpecSig, AnySig]
+
+InputSig = Union[ActualArguments, ParamSpecSig, AnySig, FullSignature]
 
 
 @dataclass(frozen=True)
@@ -92,12 +96,17 @@ class InputSigValue(Value):
     def substitute_typevars(self, typevars: TypeVarMap) -> Value:
         return InputSigValue(self.input_sig.substitute_typevars(typevars))
 
+    def __str__(self) -> str:
+        return str(self.input_sig)
+
 
 def assert_input_sig(value: Value) -> InputSig:
     """Assert that the value is an InputSig."""
     if isinstance(value, InputSigValue):
         return value.input_sig
-    raise TypeError(f"Expected InputSig, got {type(value)}")
+    elif isinstance(value, AnyValue):
+        return ELLIPSIS
+    raise TypeError(f"Expected InputSig, got {value!r}")
 
 
 def input_sigs_have_relation(
@@ -111,7 +120,7 @@ def input_sigs_have_relation(
             return CanAssignError("Cannot be assigned to")
         return {}
     elif isinstance(left, ParamSpecSig):
-        return {left.param_spec: [LowerBound(left.param_spec, right)]}
+        return {left.param_spec: [LowerBound(left.param_spec, InputSigValue(right))]}
     elif isinstance(left, ActualArguments):
         return CanAssignError("Cannot be assigned to")
     elif isinstance(left, FullSignature):
@@ -120,14 +129,14 @@ def input_sigs_have_relation(
                 return CanAssignError("Cannot be assigned")
             return {}
         elif isinstance(right, ParamSpecSig):
-            return {right.param_spec: [UpperBound(right.param_spec, left)]}
+            return {
+                right.param_spec: [UpperBound(right.param_spec, InputSigValue(left))]
+            }
         elif isinstance(right, ActualArguments):
-            return pycroscope.signature.check_call_preprocessed(
-                left.sig, right, ctx.can_assign_ctx
-            )
+            return pycroscope.signature.check_call_preprocessed(left.sig, right, ctx)
         elif isinstance(right, FullSignature):
             return pycroscope.signature.signatures_have_relation(
-                left.sig, right.sig, relation, ctx.can_assign_ctx
+                left.sig, right.sig, relation, ctx
             )
         else:
             assert_never(right)

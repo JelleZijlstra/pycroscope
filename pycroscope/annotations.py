@@ -706,6 +706,8 @@ def _type_from_value(
     elif isinstance(value, TypedValue) and isinstance(value.typ, str):
         # Synthetic type
         return value
+    elif isinstance(value, InputSigValue):
+        return value
     else:
         ctx.show_error(f"Unrecognized annotation {value}")
         return AnyValue(AnySource.error)

@@ -1859,7 +1859,7 @@ class TestParamSpec(TestNameCheckVisitorBase):
 
         def capybara() -> None:
             assert_type(apply(sample, 1), str)
-            apply(sample, "x")  # E: incompatible_call
+            apply(sample, "x")  # E: incompatible_argument
 
     @assert_passes()
     def test_apply_bound_method(self):
@@ -1879,7 +1879,7 @@ class TestParamSpec(TestNameCheckVisitorBase):
 
         def capybara(x: X) -> None:
             assert_type(apply(x.sample, 1), str)
-            apply(x.sample, "x")  # E: incompatible_call
+            apply(x.sample, "x")  # E: incompatible_argument
 
     @assert_passes()
     def test_apply_any(self):

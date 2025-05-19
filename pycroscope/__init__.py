@@ -21,6 +21,7 @@ from . import (
     find_unused,
     functions,
     implementation,
+    input_sig,
     name_check_visitor,
     node_visitor,
     options,
@@ -71,3 +72,4 @@ used(predicates)
 used(typevar)
 used(annotated_types)
 used(runtime)
+used(input_sig)

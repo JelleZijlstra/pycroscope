@@ -487,7 +487,7 @@ class SigParameter:
             assert isinstance(self.annotation, InputSigValue) and isinstance(
                 self.annotation.input_sig, ParamSpecSig
             )
-            return val, self.annotation
+            return val, self.annotation.input_sig
         elif self.kind is ParameterKind.VAR_KEYWORD:
             return val, KWARGS
         elif self.kind is ParameterKind.VAR_POSITIONAL:
@@ -633,8 +633,8 @@ class Signature:
 
             if isinstance(composite.value, InputSigValue):
                 assert isinstance(param_typ, InputSigValue)
-                left = composite.value.input_sig
-                right = param_typ.input_sig
+                right = composite.value.input_sig
+                left = param_typ.input_sig
                 result1 = input_sigs_have_relation(
                     left, right, Relation.SUBTYPE, ctx.can_assign_ctx
                 )
@@ -1059,7 +1059,9 @@ class Signature:
                 bound_args[param.name] = UNKNOWN, Composite(val)
             elif param.kind is ParameterKind.PARAM_SPEC:
                 if actual_args.param_spec is not None:
-                    bound_args[param.name] = KWARGS, Composite(actual_args.param_spec)
+                    bound_args[param.name] = KWARGS, Composite(
+                        InputSigValue(actual_args.param_spec)
+                    )
                     param_spec_consumed = True
                 elif (
                     actual_args.star_args is not None
@@ -1476,32 +1478,36 @@ class Signature:
         for name, param in self.parameters.items():
             if param.kind is ParameterKind.PARAM_SPEC:
                 input_sig = assert_input_sig(param.annotation)
-                assert isinstance(input_sig, ParamSpecSig)
-                tv = input_sig.param_spec
-                if tv in typevars:
-                    replacement = assert_input_sig(typevars[tv])
-                    new_val = replacement.substitute_typevars(typevars)
-                    if isinstance(new_val, ParamSpecSig):
-                        new_param = SigParameter(
-                            param.name, param.kind, annotation=InputSigValue(new_val)
-                        )
-                        params.append((name, new_param))
-                    elif isinstance(new_val, AnySig):
-                        new_param = SigParameter(param.name, ParameterKind.ELLIPSIS)
-                        params.append((param.name, new_param))
-                    elif isinstance(new_val, ActualArguments):
-                        new_param = SigParameter(
-                            param.name,
-                            ParameterKind.PARAM_SPEC,
-                            annotation=InputSigValue(new_val),
-                        )
-                        params.append((param.name, new_param))
-                    elif isinstance(new_val, FullSignature):
-                        params += list(new_val.sig.parameters.items())
+                if isinstance(input_sig, ParamSpecSig):
+                    tv = input_sig.param_spec
+                    if tv in typevars:
+                        replacement = assert_input_sig(typevars[tv])
+                        new_val = replacement.substitute_typevars(typevars)
+                        if isinstance(new_val, ParamSpecSig):
+                            new_param = SigParameter(
+                                param.name,
+                                param.kind,
+                                annotation=InputSigValue(new_val),
+                            )
+                            params.append((name, new_param))
+                        elif isinstance(new_val, AnySig):
+                            new_param = SigParameter(param.name, ParameterKind.ELLIPSIS)
+                            params.append((param.name, new_param))
+                        elif isinstance(new_val, ActualArguments):
+                            new_param = SigParameter(
+                                param.name,
+                                ParameterKind.PARAM_SPEC,
+                                annotation=InputSigValue(new_val),
+                            )
+                            params.append((param.name, new_param))
+                        elif isinstance(new_val, FullSignature):
+                            params += list(new_val.sig.parameters.items())
+                        else:
+                            assert_never(new_val)
                     else:
-                        assert_never(new_val)
+                        params.append((name, param))
                 else:
-                    params.append((name, param))
+                    params.append((name, param.substitute_typevars(typevars)))
             else:
                 params.append((name, param.substitute_typevars(typevars)))
         params_dict = dict(params)
@@ -2667,7 +2673,7 @@ def signatures_have_relation(
             ]
             new_sig = Signature.make(remaining)
             my_annotation = assert_input_sig(my_annotation)
-            assert isinstance(my_annotation, ParamSpecSig)
+            assert isinstance(my_annotation, ParamSpecSig), repr(my_annotation)
             tv_maps.append(
                 {
                     my_annotation.param_spec: [
