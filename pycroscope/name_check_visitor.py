@@ -1238,6 +1238,16 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     ) -> AbstractContextManager[None]:
         return self.checker.assume_compatibility(left, right)
 
+    def can_aliases_assume_compatibility(
+        self, left: TypeAliasValue, right: TypeAliasValue
+    ) -> bool:
+        return self.checker.can_aliases_assume_compatibility(left, right)
+
+    def aliases_assume_compatibility(
+        self, left: TypeAliasValue, right: TypeAliasValue
+    ) -> AbstractContextManager[None]:
+        return self.checker.aliases_assume_compatibility(left, right)
+
     def record_any_used(self) -> None:
         """Record that Any was used to secure a match."""
         pass
