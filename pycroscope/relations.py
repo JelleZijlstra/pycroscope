@@ -225,8 +225,14 @@ def _has_relation(
 
     # TypeAliasValue
     if isinstance(left, TypeAliasValue):
-        if isinstance(right, TypeAliasValue) and left.alias is right.alias:
-            return {}
+        if isinstance(right, TypeAliasValue):
+            if left.alias is right.alias or ctx.can_aliases_assume_compatibility(
+                left, right
+            ):
+                return {}
+            with ctx.aliases_assume_compatibility(left, right):
+                left_inner = _gradualize(left.get_value())
+                return _has_relation(left_inner, right, relation, ctx)
         left_inner = _gradualize(left.get_value())
         return _has_relation(left_inner, right, relation, ctx)
     if isinstance(right, TypeAliasValue):

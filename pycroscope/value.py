@@ -263,6 +263,16 @@ class CanAssignContext(Protocol):
     ) -> AbstractContextManager[None]:
         return contextlib.nullcontext()
 
+    def can_aliases_assume_compatibility(
+        self, left: "TypeAliasValue", right: "TypeAliasValue"
+    ) -> bool:
+        return False
+
+    def aliases_assume_compatibility(
+        self, left: "TypeAliasValue", right: "TypeAliasValue"
+    ) -> AbstractContextManager[None]:
+        return contextlib.nullcontext()
+
     def record_any_used(self) -> None:
         """Record that Any was used to secure a match."""
 
@@ -496,12 +506,21 @@ class TypeAliasValue(Value):
         return self.get_value().can_overlap(other, ctx, mode)
 
     def __str__(self) -> str:
-        text = f"{self.module}.{self.name}"
-        if self.type_arguments:
-            text += f"[{', '.join(map(str, self.type_arguments))}]"
-        if self.alias.evaluated_value is not None:
-            text += f" = {self.alias.evaluated_value}"
-        return text
+        is_in_set = self in _being_printed
+        _being_printed.add(self)
+        try:
+            text = f"{self.module}.{self.name}"
+            if self.type_arguments:
+                text += f"[{', '.join(map(str, self.type_arguments))}]"
+            if self.alias.evaluated_value is not None and not is_in_set:
+                text += f" = {self.alias.evaluated_value}"
+            return text
+        finally:
+            if not is_in_set:
+                _being_printed.remove(self)
+
+
+_being_printed: set[TypeAliasValue] = set()
 
 
 @dataclass(frozen=True)

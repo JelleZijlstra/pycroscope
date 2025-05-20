@@ -43,6 +43,7 @@ from .value import (
     MultiValuedValue,
     SubclassValue,
     TypeAlias,
+    TypeAliasValue,
     TypedValue,
     TypeVarValue,
     UnboundMethodValue,
@@ -88,6 +89,9 @@ class Checker:
     )
     assumed_compatibilities: list[tuple[TypeObject, TypeObject]] = field(
         default_factory=list
+    )
+    alias_assumed_compatibilities: set[tuple[TypeAliasValue, TypeAliasValue]] = field(
+        default_factory=set
     )
     vnv_map: dict[str, VariableNameValue] = field(default_factory=dict)
     type_alias_cache: dict[object, TypeAlias] = field(default_factory=dict)
@@ -238,6 +242,22 @@ class Checker:
         finally:
             new_pair = self.assumed_compatibilities.pop()
             assert pair == new_pair
+
+    def can_aliases_assume_compatibility(
+        self, left: "TypeAliasValue", right: "TypeAliasValue"
+    ) -> bool:
+        return (left, right) in self.alias_assumed_compatibilities
+
+    @contextmanager
+    def aliases_assume_compatibility(
+        self, left: "TypeAliasValue", right: "TypeAliasValue"
+    ) -> Iterator[None]:
+        pair = (left, right)
+        self.alias_assumed_compatibilities.add(pair)
+        try:
+            yield
+        finally:
+            self.alias_assumed_compatibilities.discard(pair)
 
     def display_value(self, value: Value) -> str:
         message = f"'{value!s}'"

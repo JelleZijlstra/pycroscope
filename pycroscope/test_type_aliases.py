@@ -16,7 +16,24 @@ class TestRecursion(TestNameCheckVisitorBase):
         def capybara():
             f([])
             f([1, 2, 3])
-            f([[{1}]])  # TODO this should throw an error
+            f([[{1}]])  # E: incompatible_argument
+
+    @assert_passes()
+    def test_simple(self):
+        from typing import Union
+
+        Alias = Union[list["Alias"], int]
+
+        x: Alias = 1
+
+        def f(y: Alias):
+            pass
+
+        def capybara():
+            f(x)
+            f([x])
+            f([1, 2, 3])
+            f([[{1}]])  # E: incompatible_argument
 
 
 class TestTypeAliasType(TestNameCheckVisitorBase):

@@ -130,28 +130,33 @@ class Context:
 
     should_suppress_undefined_names: bool = field(default=False, init=False)
     """While this is True, no errors are shown for undefined names."""
-    _being_evaluated: set[int] = field(default_factory=set, init=False)
+    _being_evaluated: dict[int, Value] = field(default_factory=dict, init=False)
 
     def suppress_undefined_names(self) -> AbstractContextManager[None]:
         """Temporarily suppress errors about undefined names."""
         return override(self, "should_suppress_undefined_names", True)
 
-    def is_being_evaluted(self, obj: object) -> bool:
-        return id(obj) in self._being_evaluated
+    def is_being_evaluted(self, obj: object) -> Optional[Value]:
+        return self._being_evaluated.get(id(obj))
 
     @contextlib.contextmanager
-    def add_evaluation(self, obj: object) -> Generator[None, None, None]:
+    def add_evaluation(
+        self, obj: object, name: str, module: str, evaluator: Callable[[], Value]
+    ) -> Generator[None, None, None]:
         """Temporarily add an object to the set of objects being evaluated.
 
         This is used to prevent infinite recursion when evaluating forward references.
 
         """
         obj_id = id(obj)
-        self._being_evaluated.add(obj_id)
+        value = TypeAliasValue(
+            name, module, self.get_type_alias(name, evaluator, lambda: [])
+        )
+        self._being_evaluated[obj_id] = value
         try:
             yield
         finally:
-            self._being_evaluated.remove(obj_id)
+            del self._being_evaluated[obj_id]
 
     def show_error(
         self,
@@ -404,9 +409,14 @@ def _type_from_runtime(
     val: Any, ctx: Context, *, is_typeddict: bool = False, allow_unpack: bool = False
 ) -> Value:
     if isinstance(val, str):
-        return _eval_forward_ref(
-            val, ctx, is_typeddict=is_typeddict, allow_unpack=allow_unpack
-        )
+        if (result := ctx.is_being_evaluted(val)) is not None:
+            return result
+        final_value = AnyValue(AnySource.inference)
+        with ctx.add_evaluation(val, val, "<unknown>", lambda: final_value):
+            final_value = _eval_forward_ref(
+                val, ctx, is_typeddict=is_typeddict, allow_unpack=allow_unpack
+            )
+        return final_value
     elif is_instance_of_typing_name(val, "ParamSpecArgs"):
         return ParamSpecArgsValue(get_origin(val))
     elif is_instance_of_typing_name(val, "ParamSpecKwargs"):
@@ -492,15 +502,19 @@ def _type_from_runtime(
     elif is_instance_of_typing_name(val, "_ForwardRef") or is_instance_of_typing_name(
         val, "ForwardRef"
     ):
-        if ctx.is_being_evaluted(val):
-            return AnyValue(AnySource.inference)
-        with ctx.add_evaluation(val):
+        if (result := ctx.is_being_evaluted(val)) is not None:
+            return result
+        final_value = AnyValue(AnySource.inference)
+        with ctx.add_evaluation(
+            val, val.__forward_arg__, val.__forward_module__, lambda: final_value
+        ):
             # This is necessary because the forward ref may be defined in a different file, in
             # which case we don't know which names are valid in it.
             with ctx.suppress_undefined_names():
-                return _eval_forward_ref(
+                final_value = _eval_forward_ref(
                     val.__forward_arg__, ctx, is_typeddict=is_typeddict
                 )
+        return final_value
     elif is_instance_of_typing_name(val, "TypeAliasType"):
         alias = ctx.get_type_alias(
             val,
