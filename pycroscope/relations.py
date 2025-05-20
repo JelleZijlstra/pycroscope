@@ -25,7 +25,6 @@ from pycroscope.value import (
     AnySource,
     AnyValue,
     CallableValue,
-    CallValue,
     CanAssign,
     CanAssignContext,
     CanAssignError,
@@ -95,7 +94,6 @@ GradualType: TypeAlias = Union[
     ParamSpecArgsValue,
     ParamSpecKwargsValue,
     AnnotatedValue,
-    CallValue,  # TODO remove this
 ]
 
 GRADUAL_TYPE = GradualType.__args__
@@ -344,17 +342,6 @@ def _has_relation(
         else:
             return CanAssignError(f"{right} is not {relation.description} {left}")
     if isinstance(right, SyntheticModuleValue):
-        return CanAssignError(f"{right} is not {relation.description} {left}")
-
-    if isinstance(left, CallValue):
-        return CanAssignError(f"{right} is not {relation.description} {left}")
-    if isinstance(right, CallValue):
-        if isinstance(left, TypedValue) and left.typ is object:
-            return {}
-        if isinstance(left, CallableValue):
-            return pycroscope.signature.check_call_preprocessed(
-                left.signature, right.args, ctx
-            )
         return CanAssignError(f"{right} is not {relation.description} {left}")
 
     # ParamSpecArgs and Kwargs

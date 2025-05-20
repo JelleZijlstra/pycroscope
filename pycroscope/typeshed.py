@@ -94,6 +94,8 @@ class _AnnotationContext(Context):
         error_code: Error = ErrorCode.invalid_annotation,
         node: Optional[ast.AST] = None,
     ) -> None:
+        # TODO: Make this error, at least in tests, so we know about missing support
+        # print(f"Error in annotation: {message}")
         self.finder.log(message, ())
 
     def get_name(self, node: ast.Name) -> Value:

@@ -24,6 +24,7 @@ import typing_extensions
 from typing_extensions import is_typeddict
 
 import pycroscope
+from pycroscope.input_sig import InputSigValue, ParamSpecSig
 
 from . import implementation
 from .analysis_lib import is_positional_only_arg_name, override
@@ -510,7 +511,7 @@ class ArgSpecCache:
             and seen_paramspec_args.param_spec is typ.param_spec
         ):
             kind = ParameterKind.PARAM_SPEC
-            typ = TypeVarValue(typ.param_spec, is_paramspec=True)
+            typ = InputSigValue(ParamSpecSig(typ.param_spec))
         return (
             SigParameter(parameter.name, kind, default=default, annotation=typ),
             make_everything_pos_only,
