@@ -1,6 +1,6 @@
 import sys
 import typing
-from collections.abc import Container
+from collections.abc import Container, Sequence
 from dataclasses import dataclass
 from typing import Literal, Optional, Union
 
@@ -12,6 +12,7 @@ from pycroscope.relations import Relation
 from pycroscope.stacked_scopes import Composite
 from pycroscope.value import (
     AnyValue,
+    Bound,
     CanAssign,
     CanAssignContext,
     CanAssignError,
@@ -145,3 +146,34 @@ def input_sigs_have_relation(
             assert_never(right)
     else:
         assert_never(left)
+
+
+def solve_paramspec(
+    bounds: Sequence[Bound], ctx: CanAssignContext
+) -> Union[Value, CanAssignError]:
+    if not bounds:
+        return CanAssignError("Unsupported ParamSpec")
+    bound = bounds[0]
+    if not isinstance(bound, LowerBound):
+        return CanAssignError("Unsupported ParamSpec")
+    solution = assert_input_sig(bound.value)
+    for i, bound in enumerate(bounds):
+        if i == 0:
+            continue
+        if isinstance(bound, LowerBound):
+            value = assert_input_sig(bound.value)
+            can_assign = input_sigs_have_relation(
+                solution, value, Relation.ASSIGNABLE, ctx
+            )
+            if isinstance(can_assign, CanAssignError):
+                return can_assign
+        elif isinstance(bound, UpperBound):
+            value = assert_input_sig(bound.value)
+            can_assign = input_sigs_have_relation(
+                value, solution, Relation.ASSIGNABLE, ctx
+            )
+            if isinstance(can_assign, CanAssignError):
+                return can_assign
+        else:
+            return CanAssignError("Unsupported ParamSpec bound")
+    return InputSigValue(solution)

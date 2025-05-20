@@ -7,8 +7,9 @@ TypeVar solver.
 from collections.abc import Iterable, Sequence
 from typing import Union
 
-from pycroscope.analysis_lib import Sentinel
+import pycroscope
 
+from .analysis_lib import Sentinel
 from .safe import all_of_type, is_instance_of_typing_name
 from .value import (
     AnySource,
@@ -43,7 +44,7 @@ def resolve_bounds_map(
         bounds = tuple(dict.fromkeys(bounds))
         if is_instance_of_typing_name(tv, "ParamSpec"):
             # For ParamSpec, we use a simpler approach
-            solution = solve_paramspec(bounds, ctx)
+            solution = pycroscope.input_sig.solve_paramspec(bounds, ctx)
         else:
             solution = solve(bounds, ctx)
         if isinstance(solution, CanAssignError):
@@ -51,31 +52,6 @@ def resolve_bounds_map(
             solution = AnyValue(AnySource.error)
         tv_map[tv] = solution
     return tv_map, errors
-
-
-def solve_paramspec(
-    bounds: Sequence[Bound], ctx: CanAssignContext
-) -> Union[Value, CanAssignError]:
-    if not bounds:
-        return CanAssignError("Unsupported ParamSpec")
-    bound = bounds[0]
-    if not isinstance(bound, LowerBound):
-        return CanAssignError("Unsupported ParamSpec")
-    solution = bound.value
-    for i, bound in enumerate(bounds):
-        if i == 0:
-            continue
-        if isinstance(bound, LowerBound):
-            can_assign = solution.can_assign(bound.value, ctx)
-            if isinstance(can_assign, CanAssignError):
-                return can_assign
-        elif isinstance(bound, UpperBound):
-            can_assign = bound.value.can_assign(solution, ctx)
-            if isinstance(can_assign, CanAssignError):
-                return can_assign
-        else:
-            return CanAssignError("Unsupported ParamSpec bound")
-    return solution
 
 
 def solve(
