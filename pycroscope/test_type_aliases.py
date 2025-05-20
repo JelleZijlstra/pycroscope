@@ -20,7 +20,9 @@ class TestRecursion(TestNameCheckVisitorBase):
 
     @assert_passes()
     def test_simple(self):
-        Alias = list["Alias"] | int
+        from typing import Union
+
+        Alias = Union[list["Alias"], int]
 
         x: Alias = 1
 

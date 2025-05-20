@@ -413,12 +413,9 @@ def _type_from_runtime(
             return result
         final_value = AnyValue(AnySource.inference)
         with ctx.add_evaluation(val, val, "<unknown>", lambda: final_value):
-            # This is necessary because the forward ref may be defined in a different file, in
-            # which case we don't know which names are valid in it.
-            with ctx.suppress_undefined_names():
-                final_value = _eval_forward_ref(
-                    val, ctx, is_typeddict=is_typeddict, allow_unpack=allow_unpack
-                )
+            final_value = _eval_forward_ref(
+                val, ctx, is_typeddict=is_typeddict, allow_unpack=allow_unpack
+            )
         return final_value
     elif is_instance_of_typing_name(val, "ParamSpecArgs"):
         return ParamSpecArgsValue(get_origin(val))
