@@ -19,13 +19,14 @@ these subclasses and some related utilities.
 
 """
 
+import ast
 import collections.abc
 import contextlib
 import enum
 import sys
 import textwrap
 from collections import deque
-from collections.abc import Iterable, Iterator, Mapping, Sequence
+from collections.abc import Container, Iterable, Iterator, Mapping, Sequence
 from contextlib import AbstractContextManager
 from dataclasses import InitVar, dataclass, field
 from itertools import chain
@@ -2175,13 +2176,17 @@ class UnpackedValue(Value):
     value: Value
 
     def get_elements(self) -> Optional[Sequence[tuple[bool, Value]]]:
-        if isinstance(self.value, SequenceValue) and self.value.typ is tuple:
-            return self.value.members
-        elif isinstance(self.value, GenericValue) and self.value.typ is tuple:
-            return [(True, self.value.args[0])]
-        elif isinstance(self.value, TypedValue) and self.value.typ is tuple:
-            return [(True, AnyValue(AnySource.generic_argument))]
-        return None
+        return unpack_value(self.value)
+
+
+def unpack_value(value: Value) -> Optional[Sequence[tuple[bool, Value]]]:
+    if isinstance(value, SequenceValue) and value.typ is tuple:
+        return value.members
+    elif isinstance(value, GenericValue) and value.typ is tuple:
+        return [(True, value.args[0])]
+    elif isinstance(value, TypedValue) and value.typ is tuple:
+        return [(True, AnyValue(AnySource.generic_argument))]
+    return None
 
 
 @dataclass(frozen=True)
@@ -2859,3 +2864,87 @@ def replace_fallback(val: Value) -> Value:
             break
         val = fallback
     return val
+
+
+class Qualifier(enum.Enum):
+    ClassVar = "ClassVar"
+    Final = "Final"
+    Unpack = "Unpack"
+    ReadOnly = "ReadOnly"
+    Required = "Required"
+    NotRequired = "NotRequired"
+    InitVar = "InitVar"
+    TypeAlias = "TypeAlias"
+
+
+@dataclass(frozen=True)
+class AnnotationExpr:
+    ctx: "pycroscope.annotations.Context"
+    value: Value | None
+    qualifiers: Sequence[tuple[Qualifier, Optional[ast.AST]]] = field(
+        default_factory=list
+    )
+    metadata: Sequence[Union[Value, Extension]] = field(default_factory=list)
+
+    def add_qualifier(
+        self, qualifier: Qualifier, node: Optional[ast.AST]
+    ) -> "AnnotationExpr":
+        return AnnotationExpr(
+            self.ctx,
+            self.value,
+            qualifiers=[*self.qualifiers, (qualifier, node)],
+            metadata=self.metadata,
+        )
+
+    def add_metadata(
+        self, metadata: Sequence[Union[Value, Extension]]
+    ) -> "AnnotationExpr":
+        return AnnotationExpr(
+            self.ctx,
+            self.value,
+            qualifiers=self.qualifiers,
+            metadata=[*self.metadata, *metadata],
+        )
+
+    def to_value(self, *, allow_qualifiers: bool = False) -> Value:
+        if self.value is None:
+            innermost, node = self.qualifiers[-1]
+            self.ctx.show_error(f"Invalid bare {innermost.name} annotation", node=node)
+            return AnyValue(AnySource.error)
+        if not allow_qualifiers:
+            for qualifier, node in self.qualifiers:
+                self.ctx.show_error(
+                    f"Unexpected {qualifier.name} annotation", node=node
+                )
+        if self.metadata:
+            return annotate_value(self.value, self.metadata)
+        return self.value
+
+    def unqualify(
+        self, allowed_qualifiers: Container[Qualifier] = frozenset()
+    ) -> tuple[Value, set[Qualifier]]:
+        value, qualifiers = self.maybe_unqualify(allowed_qualifiers)
+        if value is None:
+            innermost, node = self.qualifiers[-1]
+            self.ctx.show_error(f"Invalid bare {innermost.name} annotation", node=node)
+            return AnyValue(AnySource.error), set()
+        return value, qualifiers
+
+    def maybe_unqualify(
+        self, allowed_qualifiers: Container[Qualifier] = frozenset()
+    ) -> tuple[Optional[Value], set[Qualifier]]:
+        qualifiers = set()
+        for qualifier, node in self.qualifiers:
+            if qualifier in allowed_qualifiers:
+                qualifiers.add(qualifier)
+            else:
+                self.ctx.show_error(
+                    f"Unexpected {qualifier.name} annotation", node=node
+                )
+        if self.value is None:
+            return None, qualifiers
+        if self.metadata:
+            value = annotate_value(self.value, self.metadata)
+        else:
+            value = self.value
+        return value, qualifiers

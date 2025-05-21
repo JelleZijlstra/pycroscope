@@ -51,7 +51,10 @@ from .analysis_lib import (
 )
 from .annotated_types import Ge, Gt, Le, Lt
 from .annotations import (
+    AnnotationExpr,
+    Qualifier,
     SyntheticEvaluator,
+    annotation_expr_from_value,
     is_context_manager_type,
     is_instance_of_typing_name,
     is_typing_name,
@@ -2486,14 +2489,15 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     replacement=replacement,
                 )
 
-    def value_of_annotation(
-        self, node: ast.expr, *, allow_unpack: bool = False
-    ) -> Value:
+    def value_of_annotation(self, node: ast.expr) -> Value:
+        expr = self.expr_of_annotation(node)
+        val, _ = expr.unqualify()
+        return val
+
+    def expr_of_annotation(self, node: ast.expr) -> AnnotationExpr:
         with override(self, "state", VisitorState.collect_names):
             annotated_type = self._visit_annotation(node)
-        return self._value_of_annotation_type(
-            annotated_type, node, allow_unpack=allow_unpack
-        )
+        return self._expr_of_annotation_type(annotated_type, node)
 
     def _visit_annotation(self, node: ast.AST) -> Value:
         with override(self, "in_annotation", True):
@@ -2526,22 +2530,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             error_code=ErrorCode.missing_generic_parameters,
         )
 
-    def _value_of_annotation_type(
-        self,
-        val: Value,
-        node: ast.AST,
-        *,
-        is_typeddict: bool = False,
-        allow_unpack: bool = False,
-    ) -> Value:
+    def _expr_of_annotation_type(self, val: Value, node: ast.AST) -> AnnotationExpr:
         """Given a value encountered in a type annotation, return a type."""
-        return type_from_value(
-            val,
-            visitor=self,
-            node=node,
-            is_typeddict=is_typeddict,
-            allow_unpack=allow_unpack,
-        )
+        return annotation_expr_from_value(val, visitor=self, node=node)
 
     def _check_method_first_arg(
         self, node: FunctionNode, function_info: FunctionInfo
@@ -4697,19 +4688,13 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
 
     def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
         annotation = self._visit_annotation(node.annotation)
-        if isinstance(annotation, KnownValue) and is_typing_name(
-            annotation.val, "Final"
-        ):
-            is_final = True
-            expected_type = None
-        else:
-            expected_type = self._value_of_annotation_type(
-                annotation,
-                node.annotation,
-                is_typeddict=self.is_in_typeddict_definition(),
-            )
-            # TODO: Also extract Final from more complex annotations
-            is_final = False
+        expr = self._expr_of_annotation_type(annotation, node.annotation)
+        expected_type, qualifiers = expr.maybe_unqualify(
+            {Qualifier.Final, Qualifier.ClassVar, Qualifier.TypeAlias}
+        )
+
+        # TODO: handle TypeAlias and ClassVar
+        is_final = Qualifier.Final in qualifiers
 
         if node.value is not None:
             is_yield = isinstance(node.value, ast.Yield)

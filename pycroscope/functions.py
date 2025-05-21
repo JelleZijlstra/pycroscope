@@ -24,6 +24,7 @@ from .options import Options, PyObjectSequenceOption
 from .signature import ParameterKind, Signature, SigParameter
 from .stacked_scopes import Composite
 from .value import (
+    AnnotationExpr,
     AnySource,
     AnyValue,
     CallableValue,
@@ -33,10 +34,10 @@ from .value import (
     KnownValue,
     ParamSpecArgsValue,
     ParamSpecKwargsValue,
+    Qualifier,
     SubclassValue,
     TypedValue,
     TypeVarValue,
-    UnpackedValue,
     Value,
     get_tv_map,
     is_async_iterable,
@@ -164,12 +165,10 @@ class FunctionResult:
 class Context(ErrorContext, CanAssignContext, Protocol):
     options: Options
 
-    def visit_expression(self, __node: ast.AST) -> Value:
+    def visit_expression(self, node: ast.AST, /) -> Value:
         raise NotImplementedError
 
-    def value_of_annotation(
-        self, __node: ast.expr, *, allow_unpack: bool = False
-    ) -> Value:
+    def expr_of_annotation(self, node: ast.expr, /) -> AnnotationExpr:
         raise NotImplementedError
 
     def check_call(
@@ -256,6 +255,7 @@ def compute_parameters(
     tv_index = 1
 
     seen_paramspec_args: Optional[tuple[ast.arg, ParamSpecArgsValue]] = None
+    value: Union[Value, AnnotationExpr]
     for idx, (param, default) in enumerate(zip_longest(args, defaults)):
         assert param is not None, "must have more args than defaults"
         (kind, arg) = param
@@ -266,16 +266,14 @@ def compute_parameters(
             and not isinstance(node, ast.Lambda)
         )
         if arg.annotation is not None:
-            value = ctx.value_of_annotation(
-                arg.annotation, allow_unpack=kind.allow_unpack()
-            )
-            if default is not None:
-                tv_map = value.can_assign(default, ctx)
+            value = ctx.expr_of_annotation(arg.annotation)
+            if default is not None and value.value is not None:
+                tv_map = value.value.can_assign(default, ctx)
                 if isinstance(tv_map, CanAssignError):
                     ctx.show_error(
                         arg,
                         f"Default value for argument {arg.arg} incompatible"
-                        f" with declared type {value}",
+                        f" with declared type {value.value}",
                         error_code=ErrorCode.incompatible_default,
                         detail=tv_map.display(),
                     )
@@ -347,15 +345,21 @@ def compute_parameters(
 
 def translate_vararg_type(
     kind: ParameterKind,
-    typ: Value,
+    typ: Union[AnnotationExpr, Value],
     can_assign_ctx: CanAssignContext,
     *,
     error_ctx: Optional[ErrorContext] = None,
     node: Optional[ast.AST] = None,
 ) -> Value:
+    if isinstance(typ, AnnotationExpr):
+        inner_typ, qualifiers = typ.unqualify({Qualifier.Unpack})
+        has_unpack = Qualifier.Unpack in qualifiers
+    else:
+        inner_typ = typ
+        has_unpack = False
     if kind is ParameterKind.VAR_POSITIONAL:
-        if isinstance(typ, UnpackedValue):
-            if not TypedValue(tuple).is_assignable(typ.value, can_assign_ctx):
+        if has_unpack:
+            if not TypedValue(tuple).is_assignable(inner_typ, can_assign_ctx):
                 if error_ctx is not None and node is not None:
                     error_ctx.show_error(
                         node,
@@ -363,14 +367,14 @@ def translate_vararg_type(
                         error_code=ErrorCode.invalid_annotation,
                     )
                 return AnyValue(AnySource.error)
-            return typ.value
-        elif isinstance(typ, ParamSpecArgsValue):
-            return typ
+            return inner_typ
+        elif isinstance(inner_typ, ParamSpecArgsValue):
+            return inner_typ
         else:
-            return GenericValue(tuple, [typ])
+            return GenericValue(tuple, [inner_typ])
     elif kind is ParameterKind.VAR_KEYWORD:
-        if isinstance(typ, UnpackedValue):
-            if not TypedValue(dict).is_assignable(typ.value, can_assign_ctx):
+        if has_unpack:
+            if not TypedValue(dict).is_assignable(inner_typ, can_assign_ctx):
                 if error_ctx is not None and node is not None:
                     error_ctx.show_error(
                         node,
@@ -378,12 +382,20 @@ def translate_vararg_type(
                         error_code=ErrorCode.invalid_annotation,
                     )
                 return AnyValue(AnySource.error)
-            return typ.value
-        elif isinstance(typ, ParamSpecKwargsValue):
-            return typ
+            return inner_typ
+        elif isinstance(inner_typ, ParamSpecKwargsValue):
+            return inner_typ
         else:
-            return GenericValue(dict, [TypedValue(str), typ])
-    return typ
+            return GenericValue(dict, [TypedValue(str), inner_typ])
+    elif has_unpack:
+        if error_ctx is not None and node is not None:
+            error_ctx.show_error(
+                node,
+                "Unpack[] can only be used on *args or **kwargs",
+                error_code=ErrorCode.invalid_annotation,
+            )
+        return AnyValue(AnySource.error)
+    return inner_typ
 
 
 @dataclass

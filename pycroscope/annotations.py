@@ -75,6 +75,7 @@ from .signature import (
 from .value import (
     NO_RETURN_VALUE,
     AnnotatedValue,
+    AnnotationExpr,
     AnySource,
     AnyValue,
     CallableValue,
@@ -91,6 +92,7 @@ from .value import (
     ParameterTypeGuardExtension,
     ParamSpecArgsValue,
     ParamSpecKwargsValue,
+    Qualifier,
     SelfTVV,
     SequenceValue,
     SubclassValue,
@@ -103,10 +105,10 @@ from .value import (
     TypeIsExtension,
     TypeVarLike,
     TypeVarValue,
-    UnpackedValue,
     Value,
     annotate_value,
     unite_values,
+    unpack_value,
 )
 
 if TYPE_CHECKING:
@@ -287,6 +289,18 @@ def type_from_ast(
     return _type_from_ast(ast_node, ctx)
 
 
+def annotation_expr_from_ast(
+    ast_node: ast.AST,
+    visitor: Optional["NameCheckVisitor"] = None,
+    ctx: Optional[Context] = None,
+) -> AnnotationExpr:
+    """Given an AST node representing an annotation, return a
+    :class:`AnnotationExpr`."""
+    if ctx is None:
+        ctx = _DefaultContext(visitor, ast_node)
+    return _type_from_ast(ast_node, ctx)
+
+
 def type_from_annotations(
     annotations: Mapping[str, object],
     key: str,
@@ -306,14 +320,29 @@ def type_from_annotations(
     return None
 
 
+def annotation_expr_from_annotations(
+    annotations: Mapping[str, object],
+    key: str,
+    *,
+    globals: Optional[Mapping[str, object]] = None,
+    ctx: Optional[Context] = None,
+) -> Optional[AnnotationExpr]:
+    try:
+        annotation = annotations[key]
+    except Exception:
+        # Malformed __annotations__
+        return None
+    else:
+        maybe_val = annotation_expr_from_runtime(annotation, globals=globals, ctx=ctx)
+        return maybe_val
+
+
 def type_from_runtime(
     val: object,
     visitor: Optional["NameCheckVisitor"] = None,
     node: Optional[ast.AST] = None,
     globals: Optional[Mapping[str, object]] = None,
     ctx: Optional[Context] = None,
-    *,
-    allow_unpack: bool = False,
 ) -> Value:
     """Given a runtime annotation object, return a
     :class:`Value <pycroscope.value.Value>`.
@@ -333,13 +362,24 @@ def type_from_runtime(
 
     :param ctx: :class:`Context` to use for evaluation.
 
-    :param allow_unpack: Whether to allow `Unpack` types.
-
     """
 
     if ctx is None:
         ctx = _DefaultContext(visitor, node, globals)
-    return _type_from_runtime(val, ctx, allow_unpack=allow_unpack)
+    return _type_from_runtime(val, ctx)
+
+
+def annotation_expr_from_runtime(
+    val: object,
+    *,
+    visitor: Optional["NameCheckVisitor"] = None,
+    node: Optional[ast.AST] = None,
+    globals: Optional[Mapping[str, object]] = None,
+    ctx: Optional[Context] = None,
+) -> AnnotationExpr:
+    if ctx is None:
+        ctx = _DefaultContext(visitor, node, globals)
+    return _annotation_expr_from_runtime(val, ctx)
 
 
 def type_from_value(
@@ -347,9 +387,6 @@ def type_from_value(
     visitor: Optional["NameCheckVisitor"] = None,
     node: Optional[ast.AST] = None,
     ctx: Optional[Context] = None,
-    *,
-    is_typeddict: bool = False,
-    allow_unpack: bool = False,
 ) -> Value:
     """Given a :class:`Value <pycroscope.value.Value` representing an annotation,
     return a :class:`Value <pycroscope.value.Value>` representing the type.
@@ -370,15 +407,22 @@ def type_from_value(
 
     :param ctx: :class:`Context` to use for evaluation.
 
-    :param is_typeddict: Whether we are at the top level of a `TypedDict`
-                         definition.
-
     """
     if ctx is None:
         ctx = _DefaultContext(visitor, node)
-    return _type_from_value(
-        value, ctx, is_typeddict=is_typeddict, allow_unpack=allow_unpack
-    )
+    return _type_from_value(value, ctx)
+
+
+def annotation_expr_from_value(
+    value: Value,
+    *,
+    visitor: Optional["NameCheckVisitor"] = None,
+    node: Optional[ast.AST] = None,
+    ctx: Optional[Context] = None,
+) -> AnnotationExpr:
+    if ctx is None:
+        ctx = _DefaultContext(visitor, node)
+    return _annotation_expr_from_value(value, ctx)
 
 
 def value_from_ast(
@@ -392,30 +436,65 @@ def value_from_ast(
     return val
 
 
-def _type_from_ast(
-    node: ast.AST,
-    ctx: Context,
-    *,
-    is_typeddict: bool = False,
-    allow_unpack: bool = False,
-) -> Value:
+def _type_from_ast(node: ast.AST, ctx: Context) -> Value:
     val = value_from_ast(node, ctx)
-    return _type_from_value(
-        val, ctx, is_typeddict=is_typeddict, allow_unpack=allow_unpack
-    )
+    return _type_from_value(val, ctx)
 
 
-def _type_from_runtime(
-    val: Any, ctx: Context, *, is_typeddict: bool = False, allow_unpack: bool = False
-) -> Value:
+def _annotation_expr_from_ast(node: ast.AST, ctx: Context) -> AnnotationExpr:
+    val = value_from_ast(node, ctx)
+    return _annotation_expr_from_value(val, ctx)
+
+
+def _annotation_expr_from_runtime(val: object, ctx: Context) -> AnnotationExpr:
+    if isinstance(val, str):
+        if (result := ctx.is_being_evaluted(val)) is not None:
+            return AnnotationExpr(ctx, result)
+        final_value = AnyValue(AnySource.inference)
+        with ctx.add_evaluation(val, val, "<unknown>", lambda: final_value):
+            final_expr = _eval_forward_ref(val, ctx)
+            final_value = final_expr.to_value(ctx, allow_qualifiers=True)
+        return final_expr
+    elif is_typing_name(val, "Final"):
+        return AnnotationExpr(ctx, None, [(Qualifier.Final, None)])
+    elif is_typing_name(val, "ClassVar"):
+        return AnnotationExpr(ctx, None, [(Qualifier.Final, None)])
+    elif is_typing_name(val, "TypeAlias"):
+        return AnnotationExpr(ctx, None, [(Qualifier.TypeAlias, None)])
+    elif isinstance(val, InitVar):
+        return AnnotationExpr(
+            ctx, _type_from_runtime(val.type, ctx), [(Qualifier.InitVar, None)]
+        )
+    elif is_instance_of_typing_name(val, "_ForwardRef") or is_instance_of_typing_name(
+        val, "ForwardRef"
+    ):
+        if (result := ctx.is_being_evaluted(val)) is not None:
+            return AnnotationExpr(ctx, result)
+        final_value = AnyValue(AnySource.inference)
+        with ctx.add_evaluation(
+            val, val.__forward_arg__, val.__forward_module__, lambda: final_value
+        ):
+            # This is necessary because the forward ref may be defined in a different file, in
+            # which case we don't know which names are valid in it.
+            with ctx.suppress_undefined_names():
+                final_expr = _eval_forward_ref(val.__forward_arg__, ctx)
+                final_value = final_expr.to_value(ctx, allow_qualifiers=True)
+        return final_expr
+    else:
+        origin = get_origin(val)
+        if origin is not None:
+            args = get_args(val)
+            return _annotation_expr_of_origin_args(origin, args, val, ctx)
+        return AnnotationExpr(ctx, _type_from_runtime(val, ctx))
+
+
+def _type_from_runtime(val: Any, ctx: Context) -> Value:
     if isinstance(val, str):
         if (result := ctx.is_being_evaluted(val)) is not None:
             return result
         final_value = AnyValue(AnySource.inference)
         with ctx.add_evaluation(val, val, "<unknown>", lambda: final_value):
-            final_value = _eval_forward_ref(
-                val, ctx, is_typeddict=is_typeddict, allow_unpack=allow_unpack
-            )
+            final_value = _eval_forward_ref(val, ctx).to_value(ctx)
         return final_value
     elif is_instance_of_typing_name(val, "ParamSpecArgs"):
         return ParamSpecArgsValue(get_origin(val))
@@ -424,9 +503,7 @@ def _type_from_runtime(
     origin = get_origin(val)
     if origin is not None:
         args = get_args(val)
-        return _value_of_origin_args(
-            origin, args, val, ctx, allow_unpack=allow_unpack, is_typeddict=is_typeddict
-        )
+        return _value_of_origin_args(origin, args, val, ctx)
     # Can't use is_typeddict() here because we still want to support
     # mypy_extensions.TypedDict
     elif is_instance_of_typing_name(val, "_TypedDictMeta"):
@@ -436,16 +513,14 @@ def _type_from_runtime(
         extra_keys = None
         # Deprecated
         if hasattr(val, "__extra_keys__"):
-            extra_keys = _type_from_runtime(val.__extra_keys__, ctx, is_typeddict=True)
+            extra_keys = _annotation_expr_from_runtime(val.__extra_keys__, ctx)
         # typing_extensions 4.12
         # static analysis: ignore[value_always_true]
         if isinstance(val, typing_extensions._TypedDictMeta) and not hasattr(
             typing_extensions, "TypeForm"
         ):
             if hasattr(val, "__closed__") and val.__closed__:
-                extra_keys = _type_from_runtime(
-                    val.__extra_items__, ctx, is_typeddict=True
-                )
+                extra_keys = _annotation_expr_from_runtime(val.__extra_items__, ctx)
         else:
             # Newer typing-extensions
             if hasattr(val, "__closed__") and val.__closed__:
@@ -453,16 +528,13 @@ def _type_from_runtime(
             elif hasattr(val, "__extra_items__") and not is_typing_name(
                 val.__extra_items__, "NoExtraItems"
             ):
-                extra_keys = _type_from_runtime(
-                    val.__extra_items__, ctx, is_typeddict=True
-                )
-        extra_readonly = False
-        while isinstance(extra_keys, TypeQualifierValue):
-            if extra_keys.qualifier == "ReadOnly":
-                extra_readonly = True
-            else:
-                ctx.show_error(f"{extra_keys.qualifier} not allowed on extra_keys")
-            extra_keys = extra_keys.value
+                extra_keys = _annotation_expr_from_runtime(val.__extra_items__, ctx)
+        if extra_keys is None:
+            extra_keys_val = None
+            extra_readonly = False
+        else:
+            extra_keys_val, qualifiers = extra_keys.unqualify(ctx, {Qualifier.ReadOnly})
+            extra_readonly = Qualifier.ReadOnly in qualifiers
         return TypedDictValue(
             {
                 key: _get_typeddict_value(
@@ -470,11 +542,9 @@ def _type_from_runtime(
                 )
                 for key, value in val.__annotations__.items()
             },
-            extra_keys=extra_keys,
+            extra_keys=extra_keys_val,
             extra_keys_readonly=extra_readonly,
         )
-    elif isinstance(val, InitVar):
-        return type_from_runtime(val.type)
     elif val is AsynqCallable:
         return CallableValue(Signature.make([ELLIPSIS_PARAM], is_asynq=True))
     elif is_typing_name(val, "Any"):
@@ -497,8 +567,6 @@ def _type_from_runtime(
         return make_type_var_value(tv, ctx)
     elif is_instance_of_typing_name(val, "ParamSpec"):
         return InputSigValue(ParamSpecSig(val))
-    elif is_typing_name(val, "Final") or is_typing_name(val, "ClassVar"):
-        return AnyValue(AnySource.incomplete_annotation)
     elif is_instance_of_typing_name(val, "_ForwardRef") or is_instance_of_typing_name(
         val, "ForwardRef"
     ):
@@ -511,9 +579,7 @@ def _type_from_runtime(
             # This is necessary because the forward ref may be defined in a different file, in
             # which case we don't know which names are valid in it.
             with ctx.suppress_undefined_names():
-                final_value = _eval_forward_ref(
-                    val.__forward_arg__, ctx, is_typeddict=is_typeddict
-                )
+                final_value = _eval_forward_ref(val.__forward_arg__, ctx)
         return final_value
     elif is_instance_of_typing_name(val, "TypeAliasType"):
         alias = ctx.get_type_alias(
@@ -543,8 +609,6 @@ def _type_from_runtime(
             ctx.show_error(f"Cannot resolve type {val.type_path!r}")
             return AnyValue(AnySource.error)
         return _type_from_runtime(typ, ctx)
-    elif is_typing_name(val, "TypeAlias"):
-        return AnyValue(AnySource.incomplete_annotation)
     elif is_typing_name(val, "TypedDict"):
         return KnownValue(TypedDict)
     elif is_typing_name(val, "NamedTuple"):
@@ -647,7 +711,10 @@ def _get_typeddict_value(
     total: bool,
     readonly_keys: Optional[Container[str]],
 ) -> TypedDictEntry:
-    val = _type_from_runtime(value, ctx, is_typeddict=True)
+    ann_expr = _annotation_expr_from_runtime(value, ctx)
+    val, qualifiers = ann_expr.unqualify(
+        ctx, {Qualifier.ReadOnly, Qualifier.Required, Qualifier.NotRequired}
+    )
     if required_keys is None:
         required = total
     else:
@@ -656,63 +723,47 @@ def _get_typeddict_value(
         readonly = False
     else:
         readonly = key in readonly_keys
-    while isinstance(val, TypeQualifierValue):
-        if val.qualifier == "ReadOnly":
-            readonly = True
-        elif val.qualifier == "Required":
-            required = True
-        elif val.qualifier == "NotRequired":
-            required = False
-        val = val.value
+    if Qualifier.ReadOnly in qualifiers:
+        readonly = True
+    if Qualifier.Required in qualifiers:
+        required = True
+    if Qualifier.NotRequired in qualifiers:
+        required = False
     return TypedDictEntry(required=required, readonly=readonly, typ=val)
 
 
-def _eval_forward_ref(
-    val: str, ctx: Context, *, is_typeddict: bool = False, allow_unpack: bool = False
-) -> Value:
+def _eval_forward_ref(val: str, ctx: Context) -> AnnotationExpr:
     try:
         tree = ast.parse(val, mode="eval")
     except SyntaxError:
         ctx.show_error(f"Syntax error in type annotation: {val}")
-        return AnyValue(AnySource.error)
+        return AnnotationExpr(ctx, AnyValue(AnySource.error))
     else:
-        return _type_from_ast(
-            tree.body, ctx, is_typeddict=is_typeddict, allow_unpack=allow_unpack
-        )
+        return _annotation_expr_from_ast(tree.body, ctx)
 
 
-def _type_from_value(
-    value: Value,
-    ctx: Context,
-    *,
-    is_typeddict: bool = False,
-    allow_unpack: bool = False,
-) -> Value:
+def _annotation_expr_from_value(value: Value, ctx: Context) -> AnnotationExpr:
     if isinstance(value, KnownValue):
-        return _type_from_runtime(
-            value.val, ctx, is_typeddict=is_typeddict, allow_unpack=allow_unpack
+        return _annotation_expr_from_runtime(value.val, ctx)
+    elif isinstance(value, _SubscriptedValue):
+        return _annotation_expr_from_subscripted_value(
+            value.root, value.root_node, value.members, ctx
         )
+    else:
+        return AnnotationExpr(ctx, _type_from_value(value, ctx))
+
+
+def _type_from_value(value: Value, ctx: Context) -> Value:
+    if isinstance(value, KnownValue):
+        return _type_from_runtime(value.val, ctx)
     elif isinstance(value, (TypeVarValue, TypeAliasValue)):
         return value
     elif isinstance(value, MultiValuedValue):
-        return unite_values(
-            *[
-                _type_from_value(
-                    val, ctx, is_typeddict=is_typeddict, allow_unpack=allow_unpack
-                )
-                for val in value.vals
-            ]
-        )
+        return unite_values(*[_type_from_value(val, ctx) for val in value.vals])
     elif isinstance(value, AnnotatedValue):
         return _type_from_value(value.value, ctx)
     elif isinstance(value, _SubscriptedValue):
-        return _type_from_subscripted_value(
-            value.root,
-            value.members,
-            ctx,
-            is_typeddict=is_typeddict,
-            allow_unpack=allow_unpack,
-        )
+        return _type_from_subscripted_value(value.root, value.members, ctx)
     elif isinstance(value, AnyValue):
         return value
     elif isinstance(value, SubclassValue) and value.exactly:
@@ -727,13 +778,37 @@ def _type_from_value(
         return AnyValue(AnySource.error)
 
 
+def _annotation_expr_from_subscripted_value(
+    root: Optional[Value], root_node: ast.AST, members: Sequence[Value], ctx: Context
+) -> AnnotationExpr:
+    if not isinstance(root, KnownValue):
+        val = _type_from_subscripted_value(root, members, ctx)
+        return AnnotationExpr(ctx, val)
+    root = root.val
+    if is_typing_name(root, "Annotated"):
+        origin, *metadata = members
+        origin_expr = _annotation_expr_from_value(origin, ctx)
+        return origin_expr.add_metadata(metadata)
+    for qualifier in (
+        Qualifier.Required,
+        Qualifier.NotRequired,
+        Qualifier.ReadOnly,
+        Qualifier.ClassVar,
+        Qualifier.InitVar,
+        Qualifier.Unpack,
+    ):
+        if is_typing_name(root, qualifier.name):
+            if len(members) != 1:
+                ctx.show_error(f"{qualifier.name}[] requires a single argument")
+                return AnnotationExpr(ctx, AnyValue(AnySource.error))
+            inner = _annotation_expr_from_value(members[0], ctx)
+            return inner.add_qualifier(qualifier, root_node)
+    val = _type_from_subscripted_value(root, members, ctx)
+    return AnnotationExpr(ctx, val)
+
+
 def _type_from_subscripted_value(
-    root: Optional[Value],
-    members: Sequence[Value],
-    ctx: Context,
-    *,
-    is_typeddict: bool = False,
-    allow_unpack: bool = False,
+    root: Optional[Value], members: Sequence[Value], ctx: Context
 ) -> Value:
     if isinstance(root, GenericValue):
         if len(root.args) == len(members):
@@ -746,13 +821,7 @@ def _type_from_subscripted_value(
     elif isinstance(root, MultiValuedValue):
         return unite_values(
             *[
-                _type_from_subscripted_value(
-                    subval,
-                    members,
-                    ctx,
-                    is_typeddict=is_typeddict,
-                    allow_unpack=allow_unpack,
-                )
+                _type_from_subscripted_value(subval, members, ctx)
                 for subval in root.vals
             ]
         )
@@ -787,11 +856,8 @@ def _type_from_subscripted_value(
         elif len(members) == 1 and members[0] == KnownValue(()):
             return SequenceValue(tuple, [])
         else:
-            return _make_sequence_value(
-                tuple,
-                [_type_from_value(arg, ctx, allow_unpack=True) for arg in members],
-                ctx,
-            )
+            exprs = [_annotation_expr_from_value(arg, ctx) for arg in members]
+            return _make_sequence_value(tuple, exprs, ctx)
     elif root is typing.Optional:
         if len(members) != 1:
             ctx.show_error("Optional[] takes only one argument")
@@ -821,43 +887,17 @@ def _type_from_subscripted_value(
             TypedValue(bool), [TypeIsExtension(_type_from_value(members[0], ctx))]
         )
     elif is_typing_name(root, "Required"):
-        if not is_typeddict:
-            ctx.show_error("Required[] used in unsupported context")
-            return AnyValue(AnySource.error)
-        if len(members) != 1:
-            ctx.show_error("Required[] requires a single argument")
-            return AnyValue(AnySource.error)
-        return TypeQualifierValue(
-            "Required", _type_from_value(members[0], ctx, is_typeddict=True)
-        )
+        ctx.show_error("Required[] used in unsupported context")
+        return AnyValue(AnySource.error)
     elif is_typing_name(root, "NotRequired"):
-        if not is_typeddict:
-            ctx.show_error("NotRequired[] used in unsupported context")
-            return AnyValue(AnySource.error)
-        if len(members) != 1:
-            ctx.show_error("NotRequired[] requires a single argument")
-            return AnyValue(AnySource.error)
-        return TypeQualifierValue(
-            "NotRequired", _type_from_value(members[0], ctx, is_typeddict=True)
-        )
+        ctx.show_error("NotRequired[] used in unsupported context")
+        return AnyValue(AnySource.error)
     elif is_typing_name(root, "ReadOnly"):
-        if not is_typeddict:
-            ctx.show_error("ReadOnly[] used in unsupported context")
-            return AnyValue(AnySource.error)
-        if len(members) != 1:
-            ctx.show_error("ReadOnly[] requires a single argument")
-            return AnyValue(AnySource.error)
-        return TypeQualifierValue(
-            "ReadOnly", _type_from_value(members[0], ctx, is_typeddict=True)
-        )
+        ctx.show_error("ReadOnly[] used in unsupported context")
+        return AnyValue(AnySource.error)
     elif is_typing_name(root, "Unpack"):
-        if not allow_unpack:
-            ctx.show_error("Unpack[] used in unsupported context")
-            return AnyValue(AnySource.error)
-        if len(members) != 1:
-            ctx.show_error("Unpack requires a single argument")
-            return AnyValue(AnySource.error)
-        return UnpackedValue(_type_from_value(members[0], ctx))
+        ctx.show_error("Unpack[] used in unsupported context")
+        return AnyValue(AnySource.error)
     elif root is Callable or root is typing.Callable:
         if len(members) == 2:
             args, return_value = members
@@ -873,10 +913,8 @@ def _type_from_subscripted_value(
     elif isinstance(root, type):
         return GenericValue(root, [_type_from_value(elt, ctx) for elt in members])
     elif is_typing_name(root, "ClassVar"):
-        if len(members) != 1:
-            ctx.show_error("ClassVar[] requires a single argument")
-            return AnyValue(AnySource.error)
-        return _type_from_value(members[0], ctx)
+        ctx.show_error("ClassVar[] used in unsupported context")
+        return AnyValue(AnySource.error)
     else:
         origin = get_origin(root)
         if isinstance(origin, type):
@@ -962,6 +1000,7 @@ class _DefaultContext(Context):
 @dataclass(frozen=True)
 class _SubscriptedValue(Value):
     root: Optional[Value]
+    root_node: ast.AST
     members: tuple[Value, ...]
 
 
@@ -998,7 +1037,7 @@ class _Visitor(ast.NodeVisitor):
             members = tuple(members)
         else:
             members = (index,)
-        return _SubscriptedValue(value, members)
+        return _SubscriptedValue(value, node.value, members)
 
     def visit_Attribute(self, node: ast.Attribute) -> Optional[Value]:
         root_value = self.visit(node.value)
@@ -1039,7 +1078,7 @@ class _Visitor(ast.NodeVisitor):
     def visit_BinOp(self, node: ast.BinOp) -> Optional[Value]:
         if isinstance(node.op, ast.BitOr):
             return _SubscriptedValue(
-                KnownValue(Union), (self.visit(node.left), self.visit(node.right))
+                KnownValue(Union), node, (self.visit(node.left), self.visit(node.right))
             )
         else:
             return None
@@ -1152,14 +1191,34 @@ def _is_tuple(typ: object) -> bool:
     return typ is tuple or is_typing_name(typ, "Tuple")
 
 
+def _annotation_expr_of_origin_args(
+    origin: object, args: Sequence[object], val: object, ctx: Context
+) -> AnnotationExpr:
+    if is_typing_name(origin, "Annotated"):
+        origin, *metadata = args
+        inner = _annotation_expr_from_runtime(origin, ctx)
+        meta = [KnownValue(data) for data in metadata]
+        return inner.add_metadata(meta)
+    for qualifier in (
+        Qualifier.Required,
+        Qualifier.NotRequired,
+        Qualifier.ReadOnly,
+        Qualifier.ClassVar,
+        Qualifier.Final,
+        Qualifier.Unpack,
+    ):
+        if is_typing_name(origin, qualifier.name):
+            if len(args) != 1:
+                ctx.show_error(f"{qualifier.name}[] requires a single argument")
+                return AnnotationExpr(ctx, AnyValue(AnySource.error))
+            inner = _annotation_expr_from_runtime(args[0], ctx)
+            return inner.add_qualifier(qualifier, None)
+    val = _value_of_origin_args(origin, args, val, ctx)
+    return AnnotationExpr(ctx, val)
+
+
 def _value_of_origin_args(
-    origin: object,
-    args: Sequence[object],
-    val: object,
-    ctx: Context,
-    *,
-    is_typeddict: bool = False,
-    allow_unpack: bool = False,
+    origin: object, args: Sequence[object], val: object, ctx: Context
 ) -> Value:
     if origin is type or origin is type:
         if not args:
@@ -1173,10 +1232,8 @@ def _value_of_origin_args(
         elif len(args) == 1 and args[0] == ():
             return SequenceValue(tuple, [])
         else:
-            args_vals = [
-                _type_from_runtime(arg, ctx, allow_unpack=True) for arg in args
-            ]
-            return _make_sequence_value(tuple, args_vals, ctx)
+            exprs = [_annotation_expr_from_runtime(arg, ctx) for arg in args]
+            return _make_sequence_value(tuple, exprs, ctx)
     elif is_union(origin):
         return unite_values(*[_type_from_runtime(arg, ctx) for arg in args])
     elif origin is Callable or is_typing_name(origin, "Callable"):
@@ -1191,9 +1248,7 @@ def _value_of_origin_args(
     elif is_typing_name(origin, "Annotated"):
         origin, *metadata = args
         return _make_annotated(
-            _type_from_runtime(
-                origin, ctx, is_typeddict=is_typeddict, allow_unpack=allow_unpack
-            ),
+            _type_from_runtime(origin, ctx),
             [KnownValue(data) for data in metadata],
             ctx,
         )
@@ -1223,55 +1278,6 @@ def _value_of_origin_args(
         return AnnotatedValue(
             TypedValue(bool), [TypeIsExtension(_type_from_runtime(args[0], ctx))]
         )
-    elif is_typing_name(origin, "Final"):
-        if len(args) != 1:
-            ctx.show_error("Final requires a single argument")
-            return AnyValue(AnySource.error)
-        # TODO(#160): properly support Final
-        return _type_from_runtime(args[0], ctx)
-    elif is_typing_name(origin, "ClassVar"):
-        if len(args) != 1:
-            ctx.show_error("ClassVar requires a single argument")
-            return AnyValue(AnySource.error)
-        return _type_from_runtime(args[0], ctx)
-    elif is_typing_name(origin, "Required"):
-        if not is_typeddict:
-            ctx.show_error("Required[] used in unsupported context")
-            return AnyValue(AnySource.error)
-        if len(args) != 1:
-            ctx.show_error("Required[] requires a single argument")
-            return AnyValue(AnySource.error)
-        return TypeQualifierValue(
-            "Required", _type_from_runtime(args[0], ctx, is_typeddict=True)
-        )
-    elif is_typing_name(origin, "NotRequired"):
-        if not is_typeddict:
-            ctx.show_error("NotRequired[] used in unsupported context")
-            return AnyValue(AnySource.error)
-        if len(args) != 1:
-            ctx.show_error("NotRequired[] requires a single argument")
-            return AnyValue(AnySource.error)
-        return TypeQualifierValue(
-            "NotRequired", _type_from_runtime(args[0], ctx, is_typeddict=True)
-        )
-    elif is_typing_name(origin, "ReadOnly"):
-        if not is_typeddict:
-            ctx.show_error("ReadOnly[] used in unsupported context")
-            return AnyValue(AnySource.error)
-        if len(args) != 1:
-            ctx.show_error("ReadOnly[] requires a single argument")
-            return AnyValue(AnySource.error)
-        return TypeQualifierValue(
-            "ReadOnly", _type_from_runtime(args[0], ctx, is_typeddict=True)
-        )
-    elif is_typing_name(origin, "Unpack"):
-        if not allow_unpack:
-            ctx.show_error("Invalid usage of Unpack")
-            return AnyValue(AnySource.error)
-        if len(args) != 1:
-            ctx.show_error("Unpack requires a single argument")
-            return AnyValue(AnySource.error)
-        return UnpackedValue(_type_from_runtime(args[0], ctx))
     elif is_instance_of_typing_name(origin, "TypeAliasType"):
         args_vals = [_type_from_runtime(val, ctx) for val in args]
         alias_object = cast(Any, origin)
@@ -1301,12 +1307,13 @@ def _maybe_typed_value(val: Union[type, str]) -> Value:
 
 
 def _make_sequence_value(
-    typ: type, members: Sequence[Value], ctx: Context
+    typ: type, members: Sequence[AnnotationExpr], ctx: Context
 ) -> SequenceValue:
     pairs = []
-    for val in members:
-        if isinstance(val, UnpackedValue):
-            elements = val.get_elements()
+    for expr in members:
+        val, qualifiers = expr.unqualify(ctx, {Qualifier.Unpack})
+        if Qualifier.Unpack in qualifiers:
+            elements = unpack_value(val)
             if elements is None:
                 ctx.show_error(f"Invalid usage of Unpack with {val}")
                 elements = [(True, AnyValue(AnySource.error))]
