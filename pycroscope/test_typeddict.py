@@ -361,8 +361,8 @@ class TestReadOnly(TestNameCheckVisitorBase):
             year: Annotated[NotRequired[ReadOnly[int]], ""]  # OK
 
         m2: Movie2 = {"title": "", "year": 1991}
-        m2["title"] = ""  # E
-        m2["year"] = 1992  # E
+        m2["title"] = ""  # E: readonly_typeddict
+        m2["year"] = 1992  # E: readonly_typeddict
 
 
 class TestClosed(TestNameCheckVisitorBase):

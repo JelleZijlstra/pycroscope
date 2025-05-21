@@ -34,14 +34,7 @@ from dataclasses import InitVar, dataclass, field
 from typing import TYPE_CHECKING, Any, NewType, Optional, TypeVar, Union, cast
 
 import typing_extensions
-from typing_extensions import (
-    Literal,
-    NoDefault,
-    ParamSpec,
-    TypedDict,
-    get_args,
-    get_origin,
-)
+from typing_extensions import NoDefault, ParamSpec, TypedDict, get_args, get_origin
 
 from pycroscope.annotated_types import get_annotated_types_extension
 from pycroscope.input_sig import InputSigValue, ParamSpecSig
@@ -524,7 +517,7 @@ def _type_from_runtime(val: Any, ctx: Context) -> Value:
         else:
             # Newer typing-extensions
             if hasattr(val, "__closed__") and val.__closed__:
-                extra_keys = NO_RETURN_VALUE
+                extra_keys = AnnotationExpr(ctx, NO_RETURN_VALUE)
             elif hasattr(val, "__extra_items__") and not is_typing_name(
                 val.__extra_items__, "NoExtraItems"
             ):
@@ -533,7 +526,7 @@ def _type_from_runtime(val: Any, ctx: Context) -> Value:
             extra_keys_val = None
             extra_readonly = False
         else:
-            extra_keys_val, qualifiers = extra_keys.unqualify(ctx, {Qualifier.ReadOnly})
+            extra_keys_val, qualifiers = extra_keys.unqualify({Qualifier.ReadOnly})
             extra_readonly = Qualifier.ReadOnly in qualifiers
         return TypedDictValue(
             {
@@ -713,7 +706,7 @@ def _get_typeddict_value(
 ) -> TypedDictEntry:
     ann_expr = _annotation_expr_from_runtime(value, ctx)
     val, qualifiers = ann_expr.unqualify(
-        ctx, {Qualifier.ReadOnly, Qualifier.Required, Qualifier.NotRequired}
+        {Qualifier.ReadOnly, Qualifier.Required, Qualifier.NotRequired}
     )
     if required_keys is None:
         required = total
@@ -1002,12 +995,6 @@ class _SubscriptedValue(Value):
     root: Optional[Value]
     root_node: ast.AST
     members: tuple[Value, ...]
-
-
-@dataclass(frozen=True)
-class TypeQualifierValue(Value):
-    qualifier: Literal["Required", "NotRequired", "ReadOnly"]
-    value: Value
 
 
 @dataclass(frozen=True)
@@ -1311,7 +1298,7 @@ def _make_sequence_value(
 ) -> SequenceValue:
     pairs = []
     for expr in members:
-        val, qualifiers = expr.unqualify(ctx, {Qualifier.Unpack})
+        val, qualifiers = expr.unqualify({Qualifier.Unpack})
         if Qualifier.Unpack in qualifiers:
             elements = unpack_value(val)
             if elements is None:

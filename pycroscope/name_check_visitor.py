@@ -37,7 +37,7 @@ from typing import Annotated, Any, Callable, ClassVar, Optional, TypeVar, Union
 from unittest.mock import ANY
 
 import typeshed_client
-from typing_extensions import Protocol, get_args, get_origin
+from typing_extensions import Protocol, get_args, get_origin, is_typeddict
 
 from pycroscope.input_sig import InputSigValue, ParamSpecSig
 
@@ -4689,9 +4689,11 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
         annotation = self._visit_annotation(node.annotation)
         expr = self._expr_of_annotation_type(annotation, node.annotation)
-        expected_type, qualifiers = expr.maybe_unqualify(
-            {Qualifier.Final, Qualifier.ClassVar, Qualifier.TypeAlias}
-        )
+        if self.current_class is not None and is_typeddict(self.current_class):
+            qualifiers = {Qualifier.Required, Qualifier.NotRequired, Qualifier.ReadOnly}
+        else:
+            qualifiers = {Qualifier.Final, Qualifier.ClassVar, Qualifier.TypeAlias}
+        expected_type, qualifiers = expr.maybe_unqualify(qualifiers)
 
         # TODO: handle TypeAlias and ClassVar
         is_final = Qualifier.Final in qualifiers

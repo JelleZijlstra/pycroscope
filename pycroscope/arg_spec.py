@@ -28,7 +28,12 @@ from pycroscope.input_sig import InputSigValue, ParamSpecSig
 
 from . import implementation
 from .analysis_lib import is_positional_only_arg_name, override
-from .annotations import Context, RuntimeEvaluator, type_from_runtime
+from .annotations import (
+    Context,
+    RuntimeEvaluator,
+    annotation_expr_from_runtime,
+    type_from_runtime,
+)
 from .extensions import CustomCheck, TypeGuard, get_type_evaluations
 from .extensions import get_overloads as pycroscope_get_overloads
 from .find_unused import used
@@ -528,10 +533,8 @@ class ArgSpecCache:
         if parameter.annotation is not inspect.Parameter.empty:
             kind = ParameterKind(parameter.kind)
             ctx = AnnotationsContext(self, func_globals)
-            typ = type_from_runtime(
-                parameter.annotation, ctx=ctx, allow_unpack=kind.allow_unpack()
-            )
-            return translate_vararg_type(kind, typ, self.ctx)
+            expr = annotation_expr_from_runtime(parameter.annotation, ctx=ctx)
+            return translate_vararg_type(kind, expr, self.ctx)
         # If this is the self argument of a method, try to infer the self type.
         elif index == 0 and parameter.kind in (
             inspect.Parameter.POSITIONAL_ONLY,

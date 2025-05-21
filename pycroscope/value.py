@@ -2169,16 +2169,6 @@ class AnnotatedValue(Value):
         return self.value
 
 
-@dataclass(frozen=True)
-class UnpackedValue(Value):
-    """Represents the result of PEP 646's Unpack operator."""
-
-    value: Value
-
-    def get_elements(self) -> Optional[Sequence[tuple[bool, Value]]]:
-        return unpack_value(self.value)
-
-
 def unpack_value(value: Value) -> Optional[Sequence[tuple[bool, Value]]]:
     if isinstance(value, SequenceValue) and value.typ is tuple:
         return value.members
