@@ -40,6 +40,7 @@ class TestRuntimeTypeGuard(TestNameCheckVisitorBase):
             assert s.islower()
 
         def capybara(s: str) -> None:
+            want_lowercase(1)  # E: incompatible_argument
             want_lowercase(s)  # E: incompatible_argument
             if is_assignable(s, IsLower):
                 want_lowercase(s)

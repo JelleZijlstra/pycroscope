@@ -37,7 +37,7 @@ from typing import Annotated, Any, Callable, ClassVar, Optional, TypeVar, Union
 from unittest.mock import ANY
 
 import typeshed_client
-from typing_extensions import Protocol, get_args, get_origin
+from typing_extensions import Protocol, get_args, get_origin, is_typeddict
 
 from pycroscope.input_sig import InputSigValue, ParamSpecSig
 
@@ -51,11 +51,14 @@ from .analysis_lib import (
 )
 from .annotated_types import Ge, Gt, Le, Lt
 from .annotations import (
+    AnnotationExpr,
+    Qualifier,
     SyntheticEvaluator,
+    annotation_expr_from_annotations,
+    annotation_expr_from_value,
     is_context_manager_type,
     is_instance_of_typing_name,
     is_typing_name,
-    type_from_annotations,
     type_from_value,
 )
 from .arg_spec import ArgSpecCache, IgnoredCallees, UnwrapClass, is_dot_asynq_function
@@ -2486,14 +2489,15 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     replacement=replacement,
                 )
 
-    def value_of_annotation(
-        self, node: ast.expr, *, allow_unpack: bool = False
-    ) -> Value:
+    def value_of_annotation(self, node: ast.expr) -> Value:
+        expr = self.expr_of_annotation(node)
+        val, _ = expr.unqualify()
+        return val
+
+    def expr_of_annotation(self, node: ast.expr) -> AnnotationExpr:
         with override(self, "state", VisitorState.collect_names):
             annotated_type = self._visit_annotation(node)
-        return self._value_of_annotation_type(
-            annotated_type, node, allow_unpack=allow_unpack
-        )
+        return self._expr_of_annotation_type(annotated_type, node)
 
     def _visit_annotation(self, node: ast.AST) -> Value:
         with override(self, "in_annotation", True):
@@ -2526,22 +2530,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             error_code=ErrorCode.missing_generic_parameters,
         )
 
-    def _value_of_annotation_type(
-        self,
-        val: Value,
-        node: ast.AST,
-        *,
-        is_typeddict: bool = False,
-        allow_unpack: bool = False,
-    ) -> Value:
+    def _expr_of_annotation_type(self, val: Value, node: ast.AST) -> AnnotationExpr:
         """Given a value encountered in a type annotation, return a type."""
-        return type_from_value(
-            val,
-            visitor=self,
-            node=node,
-            is_typeddict=is_typeddict,
-            allow_unpack=allow_unpack,
-        )
+        return annotation_expr_from_value(val, visitor=self, node=node)
 
     def _check_method_first_arg(
         self, node: FunctionNode, function_info: FunctionInfo
@@ -4697,19 +4688,21 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
 
     def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
         annotation = self._visit_annotation(node.annotation)
-        if isinstance(annotation, KnownValue) and is_typing_name(
-            annotation.val, "Final"
-        ):
-            is_final = True
-            expected_type = None
+        expr = self._expr_of_annotation_type(annotation, node.annotation)
+        if self.current_class is not None and is_typeddict(self.current_class):
+            qualifiers = {Qualifier.Required, Qualifier.NotRequired, Qualifier.ReadOnly}
         else:
-            expected_type = self._value_of_annotation_type(
-                annotation,
-                node.annotation,
-                is_typeddict=self.is_in_typeddict_definition(),
-            )
-            # TODO: Also extract Final from more complex annotations
-            is_final = False
+            # TODO: validate these qualifiers more
+            qualifiers = {
+                Qualifier.Final,
+                Qualifier.ClassVar,
+                Qualifier.TypeAlias,
+                Qualifier.InitVar,
+            }
+        expected_type, qualifiers = expr.maybe_unqualify(qualifiers)
+
+        # TODO: handle TypeAlias and ClassVar
+        is_final = Qualifier.Final in qualifiers
 
         if node.value is not None:
             is_yield = isinstance(node.value, ast.Yield)
@@ -5965,7 +5958,13 @@ def build_stacked_scopes(
         module_vars = {}
         annotations = getattr(module, "__annotations__", {})
         for key, value in module.__dict__.items():
-            val = type_from_annotations(annotations, key, globals=module.__dict__)
+            expr = annotation_expr_from_annotations(
+                annotations, key, globals=module.__dict__
+            )
+            if expr is not None:
+                val, _ = expr.maybe_unqualify({Qualifier.TypeAlias, Qualifier.Final})
+            else:
+                val = None
             if val is None:
                 for transformer in options.get_value_for(TransformGlobals):
                     maybe_val = transformer(value)

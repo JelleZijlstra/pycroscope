@@ -336,6 +336,38 @@ class TestReadOnly(TestNameCheckVisitorBase):
             want_td2(td4)  # E: incompatible_argument
             want_td2(anydict)  # E: incompatible_argument
 
+    @assert_passes()
+    def test_annotated_plus_qualifier(self):
+        from typing_extensions import Annotated, ReadOnly, TypedDict, assert_type
+
+        class TD(TypedDict):
+            a: Annotated[ReadOnly[int], ""]
+
+        td: TD = {"a": 1}  # OK
+        td2: TD = {"a": "x"}  # E: incompatible_assignment
+
+        def capybara(td: TD) -> None:
+            assert_type(td["a"], int)
+            td["a"] = 1  # E: readonly_typeddict
+
+    @assert_passes()
+    def test_annotated_plus_multiple_qualifiers(self):
+        from typing_extensions import (
+            Annotated,
+            NotRequired,
+            ReadOnly,
+            Required,
+            TypedDict,
+        )
+
+        class Movie2(TypedDict):
+            title: Required[ReadOnly[str]]  # OK
+            year: Annotated[NotRequired[ReadOnly[int]], ""]  # OK
+
+        m2: Movie2 = {"title": "", "year": 1991}
+        m2["title"] = ""  # E: readonly_typeddict
+        m2["year"] = 1992  # E: readonly_typeddict
+
 
 class TestClosed(TestNameCheckVisitorBase):
     @assert_passes()

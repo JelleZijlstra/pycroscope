@@ -30,9 +30,8 @@ from .annotations import (
     Context,
     DecoratorValue,
     SyntheticEvaluator,
-    TypeQualifierValue,
+    annotation_expr_from_value,
     make_type_var_value,
-    type_from_value,
     value_from_ast,
 )
 from .error_code import Error, ErrorCode
@@ -52,6 +51,7 @@ from .signature import (
 from .stacked_scopes import Composite, uniq_chain
 from .value import (
     UNINITIALIZED_VALUE,
+    AnnotationExpr,
     AnySource,
     AnyValue,
     CallableValue,
@@ -60,6 +60,7 @@ from .value import (
     Extension,
     GenericValue,
     KnownValue,
+    Qualifier,
     SubclassValue,
     SyntheticModuleValue,
     TypedDictEntry,
@@ -385,6 +386,8 @@ class TypeshedFinder:
             info = self._get_info_for_name(fq_name)
             mod, _ = fq_name.rsplit(".", maxsplit=1)
             val = self._get_attribute_from_info(info, mod, attr, on_class=on_class)
+            if isinstance(val, AnnotationExpr):
+                val, _ = val.unqualify()
             self._attribute_cache[key] = val
             return val
 
@@ -466,8 +469,7 @@ class TypeshedFinder:
         attr: str,
         *,
         on_class: bool,
-        is_typeddict: bool = False,
-    ) -> Value:
+    ) -> Union[Value, AnnotationExpr]:
         if info is None:
             return UNINITIALIZED_VALUE
         elif isinstance(info, typeshed_client.ImportedInfo):
@@ -482,7 +484,6 @@ class TypeshedFinder:
                         return self._get_value_from_child_info(
                             child_info.ast,
                             mod,
-                            is_typeddict=is_typeddict,
                             on_class=on_class,
                             parent_name=info.ast.name,
                         )
@@ -505,12 +506,11 @@ class TypeshedFinder:
         ],
         mod: str,
         *,
-        is_typeddict: bool,
         on_class: bool,
         parent_name: str,
-    ) -> Value:
+    ) -> Union[Value, AnnotationExpr]:
         if isinstance(node, ast.AnnAssign):
-            return self._parse_type(node.annotation, mod, is_typeddict=is_typeddict)
+            return self._parse_annotation(node.annotation, mod)
         elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             is_property = False
             for decorator_node in node.decorator_list:
@@ -542,12 +542,10 @@ class TypeshedFinder:
             sigs = []
             for subnode in node.definitions:
                 val = self._get_value_from_child_info(
-                    subnode,
-                    mod,
-                    is_typeddict=is_typeddict,
-                    on_class=on_class,
-                    parent_name=parent_name,
+                    subnode, mod, on_class=on_class, parent_name=parent_name
                 )
+                if isinstance(val, AnnotationExpr):
+                    val, _ = val.unqualify()
                 sig = self._sig_from_value(val)
                 if not isinstance(sig, Signature):
                     return AnyValue(AnySource.inference)
@@ -988,11 +986,9 @@ class TypeshedFinder:
         *,
         objclass: Optional[type] = None,
     ) -> SigParameter:
-        typ = AnyValue(AnySource.unannotated)
+        typ: Union[Value, AnnotationExpr] = AnyValue(AnySource.unannotated)
         if arg.annotation is not None:
-            typ = self._parse_type(
-                arg.annotation, module, allow_unpack=kind.allow_unpack()
-            )
+            typ = self._parse_annotation(arg.annotation, module)
         elif objclass is not None:
             bases = self.get_bases(objclass)
             if bases is None:
@@ -1036,22 +1032,18 @@ class TypeshedFinder:
         ctx = _AnnotationContext(finder=self, module=module)
         return value_from_ast(node, ctx=ctx)
 
-    def _parse_type(
-        self,
-        node: ast.AST,
-        module: str,
-        *,
-        is_typeddict: bool = False,
-        allow_unpack: bool = False,
-    ) -> Value:
+    def _parse_annotation(self, node: ast.AST, module: str) -> AnnotationExpr:
         val = self._parse_expr(node, module)
         ctx = _AnnotationContext(finder=self, module=module)
-        typ = type_from_value(
-            val, ctx=ctx, is_typeddict=is_typeddict, allow_unpack=allow_unpack
-        )
-        if self.verbose and isinstance(typ, AnyValue):
+        expr = annotation_expr_from_value(val, ctx=ctx)
+        return expr
+
+    def _parse_type(self, node: ast.AST, module: str) -> Value:
+        expr = self._parse_annotation(node, module)
+        val, _ = expr.unqualify()
+        if self.verbose and isinstance(val, AnyValue):
             self.log("Got Any", (ast.dump(node), module))
-        return typ
+        return val
 
     def _parse_call_assignment(
         self, info: typeshed_client.NameInfo, module: str
@@ -1124,9 +1116,7 @@ class TypeshedFinder:
                         total = val.val
         attrs = self._get_all_attributes_from_info(info, module)
         fields = [
-            self._get_attribute_from_info(
-                info, module, attr, on_class=True, is_typeddict=True
-            )
+            self._get_attribute_from_info(info, module, attr, on_class=True)
             for attr in attrs
         ]
         items = {}
@@ -1141,17 +1131,21 @@ class TypeshedFinder:
         )
         return TypedDictValue(items)
 
-    def _make_td_value(self, field: Value, total: bool) -> TypedDictEntry:
+    def _make_td_value(
+        self, field: Union[Value, AnnotationExpr], total: bool
+    ) -> TypedDictEntry:
         readonly = False
         required = total
-        while isinstance(field, TypeQualifierValue):
-            if field.qualifier == "ReadOnly":
+        if isinstance(field, AnnotationExpr):
+            field, qualifiers = field.unqualify(
+                {Qualifier.Required, Qualifier.ReadOnly, Qualifier.NotRequired}
+            )
+            if Qualifier.ReadOnly in qualifiers:
                 readonly = True
-            elif field.qualifier == "Required":
+            if Qualifier.Required in qualifiers:
                 required = True
-            elif field.qualifier == "NotRequired":
+            if Qualifier.NotRequired in qualifiers:
                 required = False
-            field = field.value
         return TypedDictEntry(readonly=readonly, required=required, typ=field)
 
     def _value_from_info(
@@ -1199,8 +1193,9 @@ class TypeshedFinder:
                 if isinstance(info.ast, ast.ClassDef):
                     return self.make_synthetic_type(module, info)
                 elif isinstance(info.ast, ast.AnnAssign):
-                    val = self._parse_type(info.ast.annotation, module)
-                    if val != AnyValue(AnySource.incomplete_annotation):
+                    expr = self._parse_annotation(info.ast.annotation, module)
+                    val, qualifiers = expr.maybe_unqualify({Qualifier.TypeAlias})
+                    if val is not None and Qualifier.TypeAlias not in qualifiers:
                         return val
                     if info.ast.value:
                         return self._parse_expr(info.ast.value, module)
