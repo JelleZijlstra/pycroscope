@@ -352,9 +352,13 @@ class TestReadOnly(TestNameCheckVisitorBase):
 
     @assert_passes()
     def test_annotated_plus_multiple_qualifiers(self):
-        from typing import Annotated, NotRequired, Required, TypedDict
-
-        from typing_extensions import ReadOnly
+        from typing_extensions import (
+            Annotated,
+            NotRequired,
+            ReadOnly,
+            Required,
+            TypedDict,
+        )
 
         class Movie2(TypedDict):
             title: Required[ReadOnly[str]]  # OK
