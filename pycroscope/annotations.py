@@ -282,6 +282,7 @@ def type_from_ast(
     return _type_from_ast(ast_node, ctx)
 
 
+@used  # part of an API
 def annotation_expr_from_ast(
     ast_node: ast.AST,
     visitor: Optional["NameCheckVisitor"] = None,
@@ -291,7 +292,7 @@ def annotation_expr_from_ast(
     :class:`AnnotationExpr`."""
     if ctx is None:
         ctx = _DefaultContext(visitor, ast_node)
-    return _type_from_ast(ast_node, ctx)
+    return _annotation_expr_from_ast(ast_node, ctx)
 
 
 def type_from_annotations(
@@ -313,6 +314,7 @@ def type_from_annotations(
     return None
 
 
+@used  # part of an API
 def annotation_expr_from_annotations(
     annotations: Mapping[str, object],
     key: str,
@@ -446,7 +448,7 @@ def _annotation_expr_from_runtime(val: object, ctx: Context) -> AnnotationExpr:
         final_value = AnyValue(AnySource.inference)
         with ctx.add_evaluation(val, val, "<unknown>", lambda: final_value):
             final_expr = _eval_forward_ref(val, ctx)
-            final_value = final_expr.to_value(ctx, allow_qualifiers=True)
+            final_value = final_expr.to_value(allow_qualifiers=True)
         return final_expr
     elif is_typing_name(val, "Final"):
         return AnnotationExpr(ctx, None, [(Qualifier.Final, None)])
@@ -465,13 +467,18 @@ def _annotation_expr_from_runtime(val: object, ctx: Context) -> AnnotationExpr:
             return AnnotationExpr(ctx, result)
         final_value = AnyValue(AnySource.inference)
         with ctx.add_evaluation(
-            val, val.__forward_arg__, val.__forward_module__, lambda: final_value
+            # static analysis: ignore[undefined_attribute]
+            val,
+            val.__forward_arg__,
+            val.__forward_module__,
+            lambda: final_value,
         ):
             # This is necessary because the forward ref may be defined in a different file, in
             # which case we don't know which names are valid in it.
             with ctx.suppress_undefined_names():
+                # static analysis: ignore[undefined_attribute]
                 final_expr = _eval_forward_ref(val.__forward_arg__, ctx)
-                final_value = final_expr.to_value(ctx, allow_qualifiers=True)
+                final_value = final_expr.to_value(allow_qualifiers=True)
         return final_expr
     else:
         origin = get_origin(val)
@@ -487,7 +494,7 @@ def _type_from_runtime(val: Any, ctx: Context) -> Value:
             return result
         final_value = AnyValue(AnySource.inference)
         with ctx.add_evaluation(val, val, "<unknown>", lambda: final_value):
-            final_value = _eval_forward_ref(val, ctx).to_value(ctx)
+            final_value = _eval_forward_ref(val, ctx).to_value()
         return final_value
     elif is_instance_of_typing_name(val, "ParamSpecArgs"):
         return ParamSpecArgsValue(get_origin(val))
@@ -572,7 +579,7 @@ def _type_from_runtime(val: Any, ctx: Context) -> Value:
             # This is necessary because the forward ref may be defined in a different file, in
             # which case we don't know which names are valid in it.
             with ctx.suppress_undefined_names():
-                final_value = _eval_forward_ref(val.__forward_arg__, ctx)
+                final_value = _eval_forward_ref(val.__forward_arg__, ctx).to_value()
         return final_value
     elif is_instance_of_typing_name(val, "TypeAliasType"):
         alias = ctx.get_type_alias(
@@ -777,8 +784,8 @@ def _annotation_expr_from_subscripted_value(
     if not isinstance(root, KnownValue):
         val = _type_from_subscripted_value(root, members, ctx)
         return AnnotationExpr(ctx, val)
-    root = root.val
-    if is_typing_name(root, "Annotated"):
+    root_val = root.val
+    if is_typing_name(root_val, "Annotated"):
         origin, *metadata = members
         origin_expr = _annotation_expr_from_value(origin, ctx)
         return origin_expr.add_metadata(metadata)
@@ -790,7 +797,7 @@ def _annotation_expr_from_subscripted_value(
         Qualifier.InitVar,
         Qualifier.Unpack,
     ):
-        if is_typing_name(root, qualifier.name):
+        if is_typing_name(root_val, qualifier.name):
             if len(members) != 1:
                 ctx.show_error(f"{qualifier.name}[] requires a single argument")
                 return AnnotationExpr(ctx, AnyValue(AnySource.error))
@@ -830,9 +837,12 @@ def _type_from_subscripted_value(
     if isinstance(root, TypedValue) and isinstance(root.typ, str):
         return GenericValue(root.typ, [_type_from_value(elt, ctx) for elt in members])
 
+    assert isinstance(root, Value)
     if not isinstance(root, KnownValue):
         if root != AnyValue(AnySource.error):
-            ctx.show_error(f"Cannot resolve subscripted annotation: {root}")
+            ctx.show_error(
+                f"Cannot resolve subscripted annotation: {root, type(root), repr(root)}"
+            )
         return AnyValue(AnySource.error)
     root = root.val
     if root is typing.Union:
@@ -1222,7 +1232,9 @@ def _value_of_origin_args(
             exprs = [_annotation_expr_from_runtime(arg, ctx) for arg in args]
             return _make_sequence_value(tuple, exprs, ctx)
     elif is_union(origin):
-        return unite_values(*[_type_from_runtime(arg, ctx) for arg in args])
+        vals = [_type_from_runtime(arg, ctx) for arg in args]
+        assert all(isinstance(val, Value) for val in vals), args
+        return unite_values(*vals)
     elif origin is Callable or is_typing_name(origin, "Callable"):
         if len(args) == 0:
             return CallableValue(ANY_SIGNATURE)

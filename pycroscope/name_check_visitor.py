@@ -4692,7 +4692,13 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         if self.current_class is not None and is_typeddict(self.current_class):
             qualifiers = {Qualifier.Required, Qualifier.NotRequired, Qualifier.ReadOnly}
         else:
-            qualifiers = {Qualifier.Final, Qualifier.ClassVar, Qualifier.TypeAlias}
+            # TODO: validate these qualifiers more
+            qualifiers = {
+                Qualifier.Final,
+                Qualifier.ClassVar,
+                Qualifier.TypeAlias,
+                Qualifier.InitVar,
+            }
         expected_type, qualifiers = expr.maybe_unqualify(qualifiers)
 
         # TODO: handle TypeAlias and ClassVar

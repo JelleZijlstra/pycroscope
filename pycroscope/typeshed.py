@@ -1193,8 +1193,9 @@ class TypeshedFinder:
                 if isinstance(info.ast, ast.ClassDef):
                     return self.make_synthetic_type(module, info)
                 elif isinstance(info.ast, ast.AnnAssign):
-                    val = self._parse_type(info.ast.annotation, module)
-                    if val != AnyValue(AnySource.incomplete_annotation):
+                    expr = self._parse_annotation(info.ast.annotation, module)
+                    val, qualifiers = expr.maybe_unqualify({Qualifier.TypeAlias})
+                    if val is not None and Qualifier.TypeAlias not in qualifiers:
                         return val
                     if info.ast.value:
                         return self._parse_expr(info.ast.value, module)
