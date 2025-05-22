@@ -101,7 +101,6 @@ from .value import (
     Value,
     annotate_value,
     unite_values,
-    unpack_value,
 )
 
 if TYPE_CHECKING:
@@ -842,9 +841,7 @@ def _type_from_subscripted_value(
     assert isinstance(root, Value)
     if not isinstance(root, KnownValue):
         if root != AnyValue(AnySource.error):
-            ctx.show_error(
-                f"Cannot resolve subscripted annotation: {root, type(root), repr(root)}"
-            )
+            ctx.show_error(f"Cannot resolve subscripted annotation: {root}")
         return AnyValue(AnySource.error)
     root = root.val
     if root is typing.Union:
@@ -1316,7 +1313,7 @@ def _make_sequence_value(
     for expr in members:
         val, qualifiers = expr.unqualify({Qualifier.Unpack})
         if Qualifier.Unpack in qualifiers:
-            elements = unpack_value(val)
+            elements = _unpack_value(val)
             if elements is None:
                 ctx.show_error(f"Invalid usage of Unpack with {val}")
                 elements = [(True, AnyValue(AnySource.error))]
@@ -1324,6 +1321,16 @@ def _make_sequence_value(
         else:
             pairs.append((False, val))
     return SequenceValue(typ, pairs)
+
+
+def _unpack_value(value: Value) -> Optional[Sequence[tuple[bool, Value]]]:
+    if isinstance(value, SequenceValue) and value.typ is tuple:
+        return value.members
+    elif isinstance(value, GenericValue) and value.typ is tuple:
+        return [(True, value.args[0])]
+    elif isinstance(value, TypedValue) and value.typ is tuple:
+        return [(True, AnyValue(AnySource.generic_argument))]
+    return None
 
 
 def _make_callable_from_value(

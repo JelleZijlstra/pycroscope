@@ -1542,8 +1542,6 @@ class MultiValuedValue(Value):
     )
 
     def __post_init__(self, raw_vals: Iterable[Value]) -> None:
-        for val in raw_vals:
-            assert isinstance(val, Value), f"Invalid value in union: {val}"
         object.__setattr__(
             self,
             "vals",
