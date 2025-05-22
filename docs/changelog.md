@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Improve parsing of annotation expressions as distinct from type expressions.
+  Fixes crash on certain combinations of type qualifiers.
 - Improve support for recursive type aliases
 - Correctly handle type aliases and other types with fallbacks in more places
 - Fix edge case in `TypeIs` type narrowing with tuple types
