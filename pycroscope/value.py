@@ -2169,16 +2169,6 @@ class AnnotatedValue(Value):
         return self.value
 
 
-def unpack_value(value: Value) -> Optional[Sequence[tuple[bool, Value]]]:
-    if isinstance(value, SequenceValue) and value.typ is tuple:
-        return value.members
-    elif isinstance(value, GenericValue) and value.typ is tuple:
-        return [(True, value.args[0])]
-    elif isinstance(value, TypedValue) and value.typ is tuple:
-        return [(True, AnyValue(AnySource.generic_argument))]
-    return None
-
-
 @dataclass(frozen=True)
 class VariableNameValue(AnyValue):
     """Value that is stored in a variable associated with a particular kind of value.
@@ -2870,7 +2860,7 @@ class Qualifier(enum.Enum):
 @dataclass(frozen=True)
 class AnnotationExpr:
     ctx: "pycroscope.annotations.Context"
-    _value: Value | None
+    _value: Optional[Value]
     qualifiers: Sequence[tuple[Qualifier, Optional[ast.AST]]] = field(
         default_factory=list
     )

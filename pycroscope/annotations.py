@@ -281,6 +281,7 @@ def type_from_ast(
     return _type_from_ast(ast_node, ctx)
 
 
+@used  # part of an API
 def annotation_expr_from_ast(
     ast_node: ast.AST,
     visitor: Optional["NameCheckVisitor"] = None,
