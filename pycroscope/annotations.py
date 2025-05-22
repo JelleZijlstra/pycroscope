@@ -282,7 +282,6 @@ def type_from_ast(
     return _type_from_ast(ast_node, ctx)
 
 
-@used  # part of an API
 def annotation_expr_from_ast(
     ast_node: ast.AST,
     visitor: Optional["NameCheckVisitor"] = None,
@@ -295,6 +294,7 @@ def annotation_expr_from_ast(
     return _annotation_expr_from_ast(ast_node, ctx)
 
 
+@used  # part of an API
 def type_from_annotations(
     annotations: Mapping[str, object],
     key: str,
@@ -448,7 +448,7 @@ def _annotation_expr_from_runtime(val: object, ctx: Context) -> AnnotationExpr:
         final_value = AnyValue(AnySource.inference)
         with ctx.add_evaluation(val, val, "<unknown>", lambda: final_value):
             final_expr = _eval_forward_ref(val, ctx)
-            final_value = final_expr.to_value(allow_qualifiers=True)
+            final_value = final_expr.to_value(allow_qualifiers=True, allow_empty=True)
         return final_expr
     elif is_typing_name(val, "Final"):
         return AnnotationExpr(ctx, None, [(Qualifier.Final, None)])
@@ -467,10 +467,9 @@ def _annotation_expr_from_runtime(val: object, ctx: Context) -> AnnotationExpr:
             return AnnotationExpr(ctx, result)
         final_value = AnyValue(AnySource.inference)
         with ctx.add_evaluation(
-            # static analysis: ignore[undefined_attribute]
             val,
-            val.__forward_arg__,
-            val.__forward_module__,
+            val.__forward_arg__,  # static analysis: ignore[undefined_attribute]
+            val.__forward_module__,  # static analysis: ignore[undefined_attribute]
             lambda: final_value,
         ):
             # This is necessary because the forward ref may be defined in a different file, in
@@ -791,7 +790,7 @@ def _annotation_expr_from_subscripted_value(
     if is_typing_name(root_val, "Annotated"):
         origin, *metadata = members
         origin_expr = _annotation_expr_from_value(origin, ctx)
-        return origin_expr.add_metadata(metadata)
+        return origin_expr.add_metadata(translate_annotated_metadata(metadata, ctx))
     for qualifier in (
         Qualifier.Required,
         Qualifier.NotRequired,
@@ -1197,7 +1196,9 @@ def _annotation_expr_of_origin_args(
     if is_typing_name(origin, "Annotated"):
         origin, *metadata = args
         inner = _annotation_expr_from_runtime(origin, ctx)
-        meta = [KnownValue(data) for data in metadata]
+        meta = translate_annotated_metadata(
+            [KnownValue(data) for data in metadata], ctx
+        )
         return inner.add_metadata(meta)
     for qualifier in (
         Qualifier.Required,
@@ -1394,7 +1395,9 @@ def _make_callable_from_value(
         return AnyValue(AnySource.error)
 
 
-def _make_annotated(origin: Value, metadata: Sequence[Value], ctx: Context) -> Value:
+def translate_annotated_metadata(
+    metadata: Sequence[Value], ctx: Context
+) -> list[Union[Value, Extension]]:
     metadata_objs: list[Union[Value, Extension]] = []
     for entry in metadata:
         if isinstance(entry, KnownValue):
@@ -1431,6 +1434,11 @@ def _make_annotated(origin: Value, metadata: Sequence[Value], ctx: Context) -> V
                 metadata_objs.extend(annotated_types_extensions)
             else:
                 metadata_objs.append(entry)
+    return metadata_objs
+
+
+def _make_annotated(origin: Value, metadata: Sequence[Value], ctx: Context) -> Value:
+    metadata_objs = translate_annotated_metadata(metadata, ctx)
     return annotate_value(origin, metadata_objs)
 
 

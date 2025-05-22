@@ -14,7 +14,7 @@ from enum import Enum
 from typing import Any, Callable, ClassVar, Optional, Union
 
 from .annotated_types import EnumName
-from .annotations import Context, type_from_annotations, type_from_runtime
+from .annotations import Context, annotation_expr_from_annotations, type_from_runtime
 from .maybe_asynq import asynq
 from .options import Options, PyObjectSequenceOption
 from .safe import is_bound_classmethod, safe_isinstance, safe_issubclass
@@ -33,6 +33,7 @@ from .value import (
     KnownValue,
     KnownValueWithTypeVars,
     MultiValuedValue,
+    Qualifier,
     SubclassValue,
     SyntheticModuleValue,
     TypedValue,
@@ -493,6 +494,19 @@ class AnnotationsContext(Context):
         return self.attr_ctx.get_signature(callable)
 
 
+def _get_triple_from_annotations(
+    annotations: dict[str, object], typ: object, ctx: AttrContext
+) -> Optional[tuple[Value, object, bool]]:
+    attr_expr = annotation_expr_from_annotations(
+        annotations, ctx.attr, ctx=AnnotationsContext(ctx, typ)
+    )
+    if attr_expr is not None:
+        attr_type, _ = attr_expr.maybe_unqualify({Qualifier.ClassVar, Qualifier.Final})
+        if attr_type is not None:
+            return (attr_type, typ, False)
+    return None
+
+
 def _get_attribute_from_mro(
     typ: object, ctx: AttrContext, on_class: bool
 ) -> tuple[Value, object, bool]:
@@ -511,11 +525,9 @@ def _get_attribute_from_mro(
         except Exception:
             pass
         else:
-            attr_type = type_from_annotations(
-                annotations, ctx.attr, ctx=AnnotationsContext(ctx, typ)
-            )
-            if attr_type is not None:
-                return (attr_type, typ, False)
+            triple = _get_triple_from_annotations(annotations, typ, ctx)
+            if triple is not None:
+                return triple
 
     if safe_isinstance(typ, type):
         try:
@@ -556,11 +568,9 @@ def _get_attribute_from_mro(
                 except Exception:
                     pass
                 else:
-                    attr_type = type_from_annotations(
-                        annotations, ctx.attr, ctx=AnnotationsContext(ctx, base_cls)
-                    )
-                    if attr_type is not None:
-                        return (attr_type, base_cls, False)
+                    triple = _get_triple_from_annotations(annotations, base_cls, ctx)
+                    if triple is not None:
+                        return triple
 
                 try:
                     # Make sure we use only the object from this class, but do invoke

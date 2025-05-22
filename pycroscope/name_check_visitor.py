@@ -54,11 +54,11 @@ from .annotations import (
     AnnotationExpr,
     Qualifier,
     SyntheticEvaluator,
+    annotation_expr_from_annotations,
     annotation_expr_from_value,
     is_context_manager_type,
     is_instance_of_typing_name,
     is_typing_name,
-    type_from_annotations,
     type_from_value,
 )
 from .arg_spec import ArgSpecCache, IgnoredCallees, UnwrapClass, is_dot_asynq_function
@@ -5958,7 +5958,13 @@ def build_stacked_scopes(
         module_vars = {}
         annotations = getattr(module, "__annotations__", {})
         for key, value in module.__dict__.items():
-            val = type_from_annotations(annotations, key, globals=module.__dict__)
+            expr = annotation_expr_from_annotations(
+                annotations, key, globals=module.__dict__
+            )
+            if expr is not None:
+                val, _ = expr.maybe_unqualify({Qualifier.TypeAlias, Qualifier.Final})
+            else:
+                val = None
             if val is None:
                 for transformer in options.get_value_for(TransformGlobals):
                     maybe_val = transformer(value)

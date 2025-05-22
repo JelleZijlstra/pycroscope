@@ -267,16 +267,18 @@ def compute_parameters(
         )
         if arg.annotation is not None:
             value = ctx.expr_of_annotation(arg.annotation)
-            if default is not None and value.value is not None:
-                tv_map = value.value.can_assign(default, ctx)
-                if isinstance(tv_map, CanAssignError):
-                    ctx.show_error(
-                        arg,
-                        f"Default value for argument {arg.arg} incompatible"
-                        f" with declared type {value.value}",
-                        error_code=ErrorCode.incompatible_default,
-                        detail=tv_map.display(),
-                    )
+            if default is not None:
+                inner_value, _ = value.maybe_unqualify(set(Qualifier))
+                if inner_value is not None:
+                    tv_map = inner_value.can_assign(default, ctx)
+                    if isinstance(tv_map, CanAssignError):
+                        ctx.show_error(
+                            arg,
+                            f"Default value for argument {arg.arg} incompatible"
+                            f" with declared type {inner_value}",
+                            error_code=ErrorCode.incompatible_default,
+                            detail=tv_map.display(),
+                        )
         elif is_self:
             assert enclosing_class is not None
             if is_classmethod or getattr(node, "name", None) in IMPLICIT_CLASSMETHODS:

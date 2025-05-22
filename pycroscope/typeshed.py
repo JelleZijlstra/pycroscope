@@ -1036,13 +1036,13 @@ class TypeshedFinder:
         val = self._parse_expr(node, module)
         ctx = _AnnotationContext(finder=self, module=module)
         expr = annotation_expr_from_value(val, ctx=ctx)
-        if self.verbose and isinstance(expr.value, AnyValue):
-            self.log("Got Any", (ast.dump(node), module))
         return expr
 
     def _parse_type(self, node: ast.AST, module: str) -> Value:
         expr = self._parse_annotation(node, module)
         val, _ = expr.unqualify()
+        if self.verbose and isinstance(val, AnyValue):
+            self.log("Got Any", (ast.dump(node), module))
         return val
 
     def _parse_call_assignment(

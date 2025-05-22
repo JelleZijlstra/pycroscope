@@ -2872,7 +2872,7 @@ class Qualifier(enum.Enum):
 @dataclass(frozen=True)
 class AnnotationExpr:
     ctx: "pycroscope.annotations.Context"
-    value: Value | None
+    _value: Value | None
     qualifiers: Sequence[tuple[Qualifier, Optional[ast.AST]]] = field(
         default_factory=list
     )
@@ -2883,7 +2883,7 @@ class AnnotationExpr:
     ) -> "AnnotationExpr":
         return AnnotationExpr(
             self.ctx,
-            self.value,
+            self._value,
             qualifiers=[*self.qualifiers, (qualifier, node)],
             metadata=self.metadata,
         )
@@ -2893,24 +2893,31 @@ class AnnotationExpr:
     ) -> "AnnotationExpr":
         return AnnotationExpr(
             self.ctx,
-            self.value,
+            self._value,
             qualifiers=self.qualifiers,
             metadata=[*self.metadata, *metadata],
         )
 
-    def to_value(self, *, allow_qualifiers: bool = False) -> Value:
-        if self.value is None:
-            innermost, node = self.qualifiers[-1]
-            self.ctx.show_error(f"Invalid bare {innermost.name} annotation", node=node)
-            return AnyValue(AnySource.error)
+    def to_value(
+        self, *, allow_qualifiers: bool = False, allow_empty: bool = False
+    ) -> Value:
+        if self._value is None:
+            if allow_empty:
+                return AnyValue(AnySource.incomplete_annotation)
+            else:
+                innermost, node = self.qualifiers[-1]
+                self.ctx.show_error(
+                    f"Invalid bare {innermost.name} annotation", node=node
+                )
+                return AnyValue(AnySource.error)
         if not allow_qualifiers:
             for qualifier, node in self.qualifiers:
                 self.ctx.show_error(
                     f"Unexpected {qualifier.name} annotation", node=node
                 )
         if self.metadata:
-            return annotate_value(self.value, self.metadata)
-        return self.value
+            return annotate_value(self._value, self.metadata)
+        return self._value
 
     def unqualify(
         self, allowed_qualifiers: Container[Qualifier] = frozenset()
@@ -2933,10 +2940,10 @@ class AnnotationExpr:
                 self.ctx.show_error(
                     f"Unexpected {qualifier.name} annotation", node=node
                 )
-        if self.value is None:
+        if self._value is None:
             return None, qualifiers
         if self.metadata:
-            value = annotate_value(self.value, self.metadata)
+            value = annotate_value(self._value, self.metadata)
         else:
-            value = self.value
+            value = self._value
         return value, qualifiers

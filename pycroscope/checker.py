@@ -80,10 +80,10 @@ class AdditionalBaseProviders(PyObjectSequenceOption[_BaseProvider]):
 class Checker:
     raw_options: InitVar[Optional[Options]] = None
     options: Options = field(init=False)
-    arg_spec_cache: ArgSpecCache = field(init=False)
-    ts_finder: TypeshedFinder = field(init=False)
-    reexport_tracker: ImplicitReexportTracker = field(init=False)
-    callable_tracker: CallableTracker = field(init=False)
+    arg_spec_cache: ArgSpecCache = field(init=False, repr=False)
+    ts_finder: TypeshedFinder = field(init=False, repr=False)
+    reexport_tracker: ImplicitReexportTracker = field(init=False, repr=False)
+    callable_tracker: CallableTracker = field(init=False, repr=False)
     type_object_cache: dict[Union[type, super, str], TypeObject] = field(
         default_factory=dict, init=False, repr=False
     )
