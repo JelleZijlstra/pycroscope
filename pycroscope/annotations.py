@@ -481,10 +481,13 @@ def _annotation_expr_from_runtime(val: object, ctx: Context) -> AnnotationExpr:
                 final_value = final_expr.to_value(allow_qualifiers=True)
         return final_expr
     else:
-        origin = get_origin(val)
-        if origin is not None:
-            args = get_args(val)
-            return _annotation_expr_of_origin_args(origin, args, val, ctx)
+        if not is_instance_of_typing_name(
+            val, "ParamSpecArgs"
+        ) and not is_instance_of_typing_name(val, "ParamSpecKwargs"):
+            origin = get_origin(val)
+            if origin is not None:
+                args = get_args(val)
+                return _annotation_expr_of_origin_args(origin, args, val, ctx)
         return AnnotationExpr(ctx, _type_from_runtime(val, ctx))
 
 
