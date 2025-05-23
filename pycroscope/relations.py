@@ -265,32 +265,6 @@ def _has_relation(
             bounds_maps.append(custom_can_assign)
         return unify_bounds_maps(bounds_maps)
 
-    # AnyValue
-    if isinstance(left, AnyValue):
-        if (
-            isinstance(left, VariableNameValue)
-            and isinstance(right, VariableNameValue)
-            and left != right
-        ):
-            return CanAssignError(f"Types {left} and {right} are different")
-        if isinstance(right, AnyValue):
-            # Any is a subtype etc. of itself
-            return {}
-        else:
-            if relation is Relation.SUBTYPE:
-                return CanAssignError("No type is a subtype of Any")
-            elif relation is Relation.ASSIGNABLE:
-                return {}  # everything is assignable to Any
-            else:
-                assert_never(relation)
-    if isinstance(right, AnyValue):
-        if relation is Relation.SUBTYPE:
-            return CanAssignError("Any is not a subtype of anything")
-        elif relation is Relation.ASSIGNABLE:
-            return {}  # Any is assignable to everything
-        else:
-            assert_never(relation)
-
     # Never (special case of MultiValuedValue)
     if right is NO_RETURN_VALUE:
         return {}
@@ -337,6 +311,32 @@ def _has_relation(
             bounds_maps.append(can_assign)
         return unify_bounds_maps(bounds_maps)
     assert not isinstance(right, (TypeVarValue, AnnotatedValue))
+
+    # AnyValue
+    if isinstance(left, AnyValue):
+        if (
+            isinstance(left, VariableNameValue)
+            and isinstance(right, VariableNameValue)
+            and left != right
+        ):
+            return CanAssignError(f"Types {left} and {right} are different")
+        if isinstance(right, AnyValue):
+            # Any is a subtype etc. of itself
+            return {}
+        else:
+            if relation is Relation.SUBTYPE:
+                return CanAssignError("No type is a subtype of Any")
+            elif relation is Relation.ASSIGNABLE:
+                return {}  # everything is assignable to Any
+            else:
+                assert_never(relation)
+    if isinstance(right, AnyValue):
+        if relation is Relation.SUBTYPE:
+            return CanAssignError("Any is not a subtype of anything")
+        elif relation is Relation.ASSIGNABLE:
+            return {}  # Any is assignable to everything
+        else:
+            assert_never(relation)
 
     # SyntheticModuleValue
     if isinstance(left, SyntheticModuleValue):

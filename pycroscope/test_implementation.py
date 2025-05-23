@@ -1526,6 +1526,15 @@ class TestAssertType(TestNameCheckVisitorBase):
             assert_type(y, object)  # E: inference_failure
             assert_type(y, int)  # E: inference_failure
 
+    @assert_passes()
+    def test_any_in_union(self):
+        from typing import Any
+
+        from typing_extensions import assert_type
+
+        def capybara(unannotated, explicit: Any, cond: bool):
+            assert_type(unannotated if cond else explicit, Any)
+
 
 class TestAny(TestNameCheckVisitorBase):
     @assert_passes()
