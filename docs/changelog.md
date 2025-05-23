@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- `assert_type()` now checks for type equivalence, not equality of the
+  internal representation of the type.
 - Improve parsing of annotation expressions as distinct from type expressions.
   Fixes crash on certain combinations of type qualifiers.
 - Improve support for recursive type aliases

@@ -21,7 +21,7 @@ from .extensions import assert_type, reveal_locals, reveal_type
 from .format_strings import parse_format_string
 from .maybe_asynq import qcore
 from .predicates import IsAssignablePredicate
-from .relations import check_hashability
+from .relations import check_hashability, is_equivalent_with_reason
 from .safe import hasattr_static, is_union, safe_isinstance, safe_issubclass
 from .signature import (
     ANY_SIGNATURE,
@@ -1477,21 +1477,13 @@ def _recursive_unanotate(val: Value) -> Value:
 
 
 def _assert_type_impl(ctx: CallContext) -> Value:
-    val = _recursive_unanotate(ctx.vars["val"])
+    val = ctx.vars["val"]
     typ = ctx.vars["typ"]
     expected_type = type_from_value(typ, visitor=ctx.visitor, node=ctx.node)
-    # Can't distinguish between different kinds of Any here
-    if (
-        isinstance(val, AnyValue)
-        and isinstance(expected_type, AnyValue)
-        and expected_type.source is not AnySource.error
-    ):
-        return val
-    if val != expected_type:
+    can_assign = is_equivalent_with_reason(val, expected_type, ctx.visitor)
+    if isinstance(can_assign, CanAssignError):
         ctx.show_error(
-            f"Type is {val} (expected {expected_type})",
-            error_code=ErrorCode.inference_failure,
-            arg="obj",
+            str(can_assign), error_code=ErrorCode.inference_failure, arg="val"
         )
     return val
 
