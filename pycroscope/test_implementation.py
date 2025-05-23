@@ -1494,7 +1494,7 @@ class TestAssertType(TestNameCheckVisitorBase):
 
     @assert_passes()
     def test_equivalence(self):
-        from typing_extensions import Literal, Protocol, TypedDict, assert_type
+        from typing_extensions import Literal, Protocol, TypedDict, Union, assert_type
 
         class TD1(TypedDict):
             a: int
@@ -1508,11 +1508,11 @@ class TestAssertType(TestNameCheckVisitorBase):
         class P2(Protocol):
             a: int
 
-        def func(td1: TD1, p1: P1, i: int, int_str: int | str) -> None:
+        def func(td1: TD1, p1: P1, i: int, int_str: Union[int, str]) -> None:
             assert_type(td1, TD2)
             assert_type(p1, P2)
-            assert_type(i, int | Literal[1])
-            assert_type(int_str, int | bool | str)
+            assert_type(i, Union[int, Literal[1]])
+            assert_type(int_str, Union[int, bool, str])
 
     @assert_passes()
     def test_rejections(self):
