@@ -1,6 +1,5 @@
 .tox
-pyanalyze.egg-info/
-pyanalyze/*.c
+pycroscope.egg-info/
 *.pyc
 build/
 *.code-workspace
