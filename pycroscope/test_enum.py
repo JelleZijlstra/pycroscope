@@ -120,8 +120,6 @@ class TestEnumName(TestNameCheckVisitorBase):
     def test(self):
         import enum
 
-        from typing_extensions import assert_type
-
         from pycroscope.extensions import EnumName
 
         class Rodent(enum.IntEnum):
@@ -131,8 +129,11 @@ class TestEnumName(TestNameCheckVisitorBase):
         def capybara(x: EnumName[Rodent]):
             pass
 
+        def needs_str(s: str):
+            pass
+
         def caller(r: Rodent, s: str):
             capybara(s)  # E: incompatible_argument
             capybara(r)  # E: incompatible_argument
-            assert_type(r.name, str)
+            needs_str(r.name)  # OK
             capybara(r.name)

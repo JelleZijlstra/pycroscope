@@ -1492,6 +1492,49 @@ class TestAssertType(TestNameCheckVisitorBase):
 
             assert_type(x, int)  # E: inference_failure
 
+    @assert_passes()
+    def test_equivalence(self):
+        from typing_extensions import Literal, Protocol, TypedDict, Union, assert_type
+
+        class TD1(TypedDict):
+            a: int
+
+        class TD2(TypedDict):
+            a: int
+
+        class P1(Protocol):
+            a: int
+
+        class P2(Protocol):
+            a: int
+
+        def func(td1: TD1, p1: P1, i: int, int_str: Union[int, str]) -> None:
+            assert_type(td1, TD2)
+            assert_type(p1, P2)
+            assert_type(i, Union[int, Literal[1]])
+            assert_type(int_str, Union[int, bool, str])
+
+    @assert_passes()
+    def test_rejections(self):
+        from typing import Any
+
+        from typing_extensions import assert_type
+
+        def capybara(x: int, y: Any):
+            assert_type(x, object)  # E: inference_failure
+            assert_type(x, Any)  # E: inference_failure
+            assert_type(y, object)  # E: inference_failure
+            assert_type(y, int)  # E: inference_failure
+
+    @assert_passes()
+    def test_any_in_union(self):
+        from typing import Any
+
+        from typing_extensions import assert_type
+
+        def capybara(unannotated, explicit: Any, cond: bool):
+            assert_type(unannotated if cond else explicit, Any)
+
 
 class TestAny(TestNameCheckVisitorBase):
     @assert_passes()
