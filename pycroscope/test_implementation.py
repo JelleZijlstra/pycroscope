@@ -1114,7 +1114,7 @@ class TestSequenceGetItem(TestNameCheckVisitorBase):
             empty = ()
             assert_is_value(empty[0], AnyValue(AnySource.error))  # E: incompatible_call
             assert_is_value(empty[1:], KnownValue(()))
-            assert_is_value(empty[i], AnyValue(AnySource.unreachable))
+            assert_is_value(empty[i], AnyValue(AnySource.error))  # E: incompatible_call
             assert_is_value(empty[s], SequenceValue(tuple, []))
             assert_is_value(empty[unannotated], AnyValue(AnySource.from_another))
 

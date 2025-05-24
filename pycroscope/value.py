@@ -912,6 +912,7 @@ class TypedValue(Value):
             and not type_object.is_assignable_to_type(enum.Flag)
         ):
             # Decompose enum into its members
+            assert issubclass(self.typ, enum.Enum)
             return (KnownValue(member) for member in self.typ)
         else:
             return None
@@ -1054,8 +1055,11 @@ class SequenceValue(GenericValue):
     ) -> None:
         if members:
             args = (unite_values(*[typ for _, typ in members]),)
-        else:
+        elif typ is tuple:
             args = (NO_RETURN_VALUE,)
+        else:
+            # Using Never for mutable types leads to issues
+            args = (AnyValue(AnySource.unreachable),)
         super().__init__(typ, args)
         self.members = tuple(members)
 

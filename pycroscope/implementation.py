@@ -410,11 +410,15 @@ def _sequence_common_getitem_impl(ctx: CallContext, typ: type) -> ImplReturn:
         self_value = replace_known_sequence_value(ctx.vars["self"])
         if not isinstance(self_value, TypedValue):
             return AnyValue(AnySource.error)  # shouldn't happen
+        type_arg = self_value.get_generic_arg_for_type(typ, ctx.visitor, 0)
         key = replace_known_sequence_value(key)
         if not TypedValue(slice).is_assignable(key, ctx.visitor):
             key, _ = ctx.visitor._check_dunder_call(
                 ctx.ast_for_arg("obj"), Composite(key), "__index__", [], allow_call=True
             )
+            if type_arg is NO_RETURN_VALUE:
+                ctx.show_error(f"{self_value} is empty", arg="self")
+                return AnyValue(AnySource.error)
 
         if isinstance(key, KnownValue):
             if isinstance(key.val, int):
@@ -428,7 +432,7 @@ def _sequence_common_getitem_impl(ctx: CallContext, typ: type) -> ImplReturn:
                             return AnyValue(AnySource.error)
                         else:
                             # fall back to the common type
-                            return self_value.args[0]
+                            return type_arg
                     else:
                         # The value contains at least one unpack. We try to find a precise
                         # type if everything leading up to the index we're interested in is
@@ -454,9 +458,9 @@ def _sequence_common_getitem_impl(ctx: CallContext, typ: type) -> ImplReturn:
                                 if i == index_from_back:
                                     return member
                     # fall back to the common type
-                    return self_value.args[0]
+                    return type_arg
                 else:
-                    return self_value.get_generic_arg_for_type(typ, ctx.visitor, 0)
+                    return type_arg
             elif isinstance(key.val, slice):
                 if isinstance(self_value, SequenceValue):
                     members = self_value.get_member_sequence()
@@ -484,8 +488,9 @@ def _sequence_common_getitem_impl(ctx: CallContext, typ: type) -> ImplReturn:
         elif isinstance(key, TypedValue):
             tobj = key.get_type_object(ctx.visitor)
             if tobj.is_assignable_to_type(int):
-                return self_value.get_generic_arg_for_type(typ, ctx.visitor, 0)
+                return type_arg
             elif tobj.is_assignable_to_type(slice):
+                # TODO if it's a SequenceValue, we shouldn't return the exact type back
                 return self_value
             else:
                 ctx.show_error(f"Invalid {typ.__name__} key {key}")
