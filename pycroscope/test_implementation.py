@@ -1549,17 +1549,28 @@ class TestAssertType(TestNameCheckVisitorBase):
             assert_type(c1, Callable[[int], float])
             assert_type(l1, list[float | int])
             assert_type(t1, tuple[int] | tuple[str])
-            assert_type(t2, tuple[()] | tuple[int, *tuple[int]])
-            assert_type(t3, tuple[int, *tuple[int]])
+            assert_type(t2, tuple[()] | tuple[int, *tuple[int]])  # E: inference_failure
+            assert_type(t2, tuple[()] | tuple[int, *tuple[int, ...]])
+            assert_type(t3, tuple[int, *tuple[int, ...]])
 
-
-class TestAny(TestNameCheckVisitorBase):
     @assert_passes()
-    def test_call(self):
-        from typing import Any
+    def test_decomposition(self):
+        import enum
 
-        def capybara():
-            Any(42)  # E: incompatible_call
+        from typing_extensions import Literal, assert_type
+
+        class X(enum.Enum):
+            A = 1
+            B = 2
+
+        def capybara(
+            x: Literal[True, False],
+            y: Literal[X.A, X.B],
+            z: tuple[()] | tuple[int, *tuple[int, ...]],
+        ) -> None:
+            assert_type(x, bool)
+            assert_type(y, X)
+            assert_type(z, tuple[int, ...])
 
 
 class TestNamedTuple(TestNameCheckVisitorBase):

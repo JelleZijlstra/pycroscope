@@ -26,7 +26,6 @@ from pycroscope.value import (
     AnnotatedValue,
     AnySource,
     AnyValue,
-    BoundsMap,
     CallableValue,
     CanAssign,
     CanAssignContext,
@@ -277,15 +276,7 @@ def _has_relation(
     # MultiValuedValue
     if isinstance(left, MultiValuedValue):
         if isinstance(right, MultiValuedValue):
-            bounds_maps = []
-            for val in right.vals:
-                val = _gradualize(val)
-                can_assign = _has_relation(left, val, relation, ctx)
-                if isinstance(can_assign, CanAssignError):
-                    # Adding an additional layer here isn't helpful
-                    return can_assign
-                bounds_maps.append(can_assign)
-            return unify_bounds_maps(bounds_maps)
+            return _has_relation_union(left, right.vals, relation, ctx)
         else:
             # right is a subtype if it's a subtype of any of the members
             bounds_maps = []
@@ -298,6 +289,13 @@ def _has_relation(
                 else:
                     bounds_maps.append(can_assign)
             if not bounds_maps:
+                # Try decomposing the right
+                decomposed = right.decompose()
+                if decomposed is not None:
+                    can_assign = _has_relation_union(left, decomposed, relation, ctx)
+                    if not isinstance(can_assign, CanAssignError):
+                        return can_assign
+                    # Fall back to the original error
                 return CanAssignError(
                     f"{right} is not {relation.description} {left}", children=errors
                 )
@@ -578,6 +576,23 @@ def _has_relation(
     assert_never(left)
 
 
+def _has_relation_union(
+    left: GradualType,
+    right_vals: Iterable[Value],
+    relation: Literal[Relation.SUBTYPE, Relation.ASSIGNABLE],
+    ctx: CanAssignContext,
+) -> CanAssign:
+    bounds_maps = []
+    for val in right_vals:
+        val = _gradualize(val)
+        can_assign = _has_relation(left, val, relation, ctx)
+        if isinstance(can_assign, CanAssignError):
+            # Adding an additional layer here isn't helpful
+            return can_assign
+        bounds_maps.append(can_assign)
+    return unify_bounds_maps(bounds_maps)
+
+
 def _has_relation_thrift_enum(
     left: TypedValue,
     right: Union[TypedValue, KnownValue],
@@ -669,6 +684,9 @@ class _LazySequenceValue(Value):
     prefix: Optional[Value] = None
     suffix: Optional[Value] = None
 
+    def __post_init__(self) -> None:
+        assert len(self) >= 0
+
     def __len__(self) -> int:
         size = len(self.seq.members) - self.start_idx + self.end_idx
         if self.prefix is not None:
@@ -680,6 +698,8 @@ class _LazySequenceValue(Value):
     def __getitem__(self, idx: int) -> tuple[bool, Value]:
         if idx < 0:
             idx += len(self)
+        if idx < 0:
+            raise IndexError(idx)
         if self.prefix is not None:
             if idx == 0:
                 return False, self.prefix
@@ -715,14 +735,14 @@ class _LazySequenceValue(Value):
     def get_fallback_value(self) -> SequenceValue:
         members = []
         if self.prefix is not None:
-            members.append(self.prefix)
+            members.append((False, self.prefix))
         members.extend(self.seq.members[self.start_idx : -self.end_idx])
         if self.suffix is not None:
-            members.append(self.suffix)
-        return SequenceValue(self.seq.typ, members)
+            members.append((False, self.suffix))
+        return SequenceValue(self.seq.typ, list(self))
 
     def decompose_left(self) -> Iterable["_LazySequenceValue"]:
-        if self[0][0]:
+        if len(self) > 0 and self[0][0]:
             # If the first element is tuple[T, ...], we can decompose it into...
             # ... the case where it is empty
             yield self.slice_left()
@@ -733,7 +753,7 @@ class _LazySequenceValue(Value):
             yield self
 
     def decompose_right(self) -> Iterable["_LazySequenceValue"]:
-        if self[-1][0]:
+        if len(self) > 0 and self[-1][0]:
             # If the last element is tuple[T, ...], we can decompose it into...
             # ... the case where it is empty
             yield self.slice_right()
@@ -749,7 +769,7 @@ class _LazySequenceValue(Value):
     def __iter__(self) -> Iterator[tuple[bool, Value]]:
         if self.prefix is not None:
             yield False, self.prefix
-        for i in range(self.start_idx, len(self.seq.members) - self.end_idx):
+        for i in range(self.start_idx, len(self.seq.members) + self.end_idx):
             yield self.seq.members[i]
         if self.suffix is not None:
             yield False, self.suffix
@@ -761,6 +781,51 @@ def _has_relation_lazy_sequence(
     relation: Literal[Relation.SUBTYPE, Relation.ASSIGNABLE],
     ctx: CanAssignContext,
 ) -> CanAssign:
+    """Check the relation between two sequences A and B.
+
+    Sequences can contain either single values (Single, represented in examples as "int")
+    or an unknown number of values (Many, represented as "*int").
+
+    The algorithm is:
+
+    - If a is empty:
+        - If b is empty: success.
+        - Else: error.
+    - If b is empty:
+        - If all elements in a are Many: success.
+        - Else: error.
+    - If both a and b have a Single element on the left:
+        - Check whether they're compatible.
+        - If so, continue checking the rest of the sequences.
+        - If not: error.
+    - If both a and b have a Single element on the right:
+        - Check whether they're compatible.
+        - If so, continue checking the rest of the sequences.
+        - If not: error.
+    - If all elements at the left and right ends are Many:
+        - Check whether the leftmost elements are compatible.
+        - If not, remove the leftmost element from A and continue.
+        - If so, we can succeed in three ways:
+            - Consume A's leftmost and continue.
+              Example: A = (*object, *int), B = (*int,)
+            - Consume B's leftmost and continue.
+              Example: A = (*object,), B = (*object, *int)
+            - Consume both leftmost and continue.
+              Example: A = (*object, int, *int), B = (*object, int, *int)
+    - In all cases where one of the two has a Many on one end and the other has a
+    - Single on the same end, decompose the Many elements *T into two options:
+      either they are empty, or they contain (T, *T) (on the left)
+      or (*T, T) (on the right). Then compare the resulting unions.
+      Examples:
+        - (*int) :> (int, *int, int) turns into:
+            - () | (int,) | (int, *int) :> (int, *int, int)
+            - (int, *int) :> (int, *int, int)
+            - (*int) :> (*int, int)
+            - Succeeds by the step above.
+        - (*int, int) -> (int, *int) turns into:
+            - (int,) | (int, *int, int) -> (int,) | (int, *int, int)
+            - Succeeds as the unions contain the same elements.
+    """
     len_a = len(a)
     len_b = len(b)
 
@@ -778,7 +843,7 @@ def _has_relation_lazy_sequence(
             return {}
         else:
             return CanAssignError(
-                f"Empty sequence {b} is not {relation.description} non-empty sequence {a}"
+                f"Empty sequence {b!r} is not {relation.description} non-empty sequence {a}"
             )
 
     # Do both have a Single element on the left?
@@ -853,18 +918,18 @@ def _has_relation_lazy_sequence(
     # Now there is at least one Many-Single match on either the left or right end.
     # Decompose both sides at once; if we only decompose one at a time, we'll miss
     # some matches.
-    if a[0][0]:
+    if a[0][0] and not b[0][0]:
         a_decomposed = a.decompose_left()
     else:
         a_decomposed = [a]
-    if b[0][0]:
+    if b[0][0] and not a[0][0]:
         b_decomposed = b.decompose_left()
     else:
         b_decomposed = [b]
 
-    if a[-1][0]:
+    if a[-1][0] and not b[-1][0]:
         a_decomposed = [a_dd for a_d in a_decomposed for a_dd in a_d.decompose_right()]
-    if b[-1][0]:
+    if b[-1][0] and not a[-1][0]:
         b_decomposed = [b_dd for b_d in b_decomposed for b_dd in b_d.decompose_right()]
 
     return _has_relation_lazy_seq_multi(a_decomposed, b_decomposed, relation, ctx)
@@ -877,6 +942,7 @@ def _has_relation_lazy_seq_multi(
     ctx: CanAssignContext,
 ) -> CanAssign:
     bounds_maps = []
+    a_iter = list(a_iter)
     for b in b_iter:
         errors = []
         inner_bounds_maps = []
@@ -895,27 +961,6 @@ def _has_relation_lazy_seq_multi(
     return unify_bounds_maps(bounds_maps)
 
 
-# I think the right algorithm is "double-ended deunioning".
-# Notation: Single elements (written as "int") are standard tuple elements.
-# Many elements (written as "*int") are unpacked tuple elements.
-# 1. Remove matching Single elements on both ends. If their types are compatible, great,
-#    if not, return an error.
-# 2. If on either end you have a Many-Single match, deunion both ends simultaneously
-#    Deunion means to decompose a Many into either an empty tuple or (Single, Many)
-#    (if on the left end) or (Many, Single) (if on the right end).
-#    Is (*int, int) assignable to (int, *int)? -> check whether (int) | (int, *int, int)
-#    is assignable to (int) | (int, *int, int)
-# 3. If both sides are a single Many, just compare them
-# 4. Else, we must have multiple Manys on one side, which means we're out of spec territory.
-#    Check the relation between the leftmost elements in A and B.
-# 5. If they're not compatible, remove the leftmost element from A and continue.
-# 6. If they are compatible, then try three variants:
-#    a. Remove leftmost from A and remove leftmost from B.
-#    b. Remove leftmost from A and leave B.
-#    c. Leave A and remove leftmost from B.
-#    If any of these succeeds, we succeed.
-
-
 def _has_relation_sequence(
     left: SequenceValue,
     right: SequenceValue,
@@ -929,145 +974,9 @@ def _has_relation_sequence(
             f" {stringify_object(left.typ)}"
         )
 
-    if not left.members:
-        if not right.members:
-            return can_assign
-        else:
-            return CanAssignError(
-                f"Non-empty {stringify_object(right.typ)} is not"
-                f" {relation.description} empty {stringify_object(left.typ)}"
-            )
-
-    inner_can_assign = _has_relation_sequence_inner(
-        can_assign, left, right, relation, ctx
+    return _has_relation_lazy_sequence(
+        _LazySequenceValue(left), _LazySequenceValue(right), relation, ctx
     )
-    if isinstance(inner_can_assign, CanAssignError):
-        return CanAssignError(
-            f"{right} is not {relation.description} {left}", [inner_can_assign]
-        )
-    return inner_can_assign
-
-
-def _compare_single_element(
-    left: SequenceValue,
-    right: SequenceValue,
-    relation: Literal[Relation.SUBTYPE, Relation.ASSIGNABLE],
-    ctx: CanAssignContext,
-    my_idx: int,
-    their_idx: int,
-    *,
-    their_min_idx: int = 0,
-    their_max_idx: Optional[int] = None,
-) -> CanAssign:
-    if (
-        their_idx >= len(right.members)
-        or their_idx < their_min_idx
-        or (their_max_idx is not None and their_idx > their_max_idx)
-    ):
-        return CanAssignError(f"{right} does not contain as many members as {left}")
-    their_is_many, their_member = right.members[their_idx]
-    if their_is_many:
-        return CanAssignError(
-            f"Member {their_idx} is a single element, but an unpacked type is"
-            " provided"
-        )
-    _, my_member = left.members[my_idx]
-    my_gradualized = _gradualize(my_member)
-    their_gradualized = _gradualize(their_member)
-    can_assign = _has_relation(my_gradualized, their_gradualized, relation, ctx)
-    if isinstance(can_assign, CanAssignError):
-        return CanAssignError(
-            f"Types for member {my_idx} are incompatible", [can_assign]
-        )
-    else:
-        return can_assign
-
-
-def _has_relation_sequence_inner(
-    bounds_map: BoundsMap,
-    left: SequenceValue,
-    right: SequenceValue,
-    relation: Literal[Relation.SUBTYPE, Relation.ASSIGNABLE],
-    ctx: CanAssignContext,
-) -> CanAssign:
-    my_len = len(left.members)
-    their_len = len(right.members)
-    bounds_maps = [bounds_map]
-
-    # First, look at simple values on the left end of left
-    their_idx = my_idx = 0
-    for i in range(my_len):
-        my_is_many, my_member = left.members[i]
-        if my_is_many:
-            break
-        my_idx += 1
-        can_assign = _compare_single_element(left, right, relation, ctx, i, their_idx)
-        if isinstance(can_assign, CanAssignError):
-            return can_assign
-        bounds_maps.append(can_assign)
-        their_idx += 1
-    if my_idx == my_len:
-        # We consumed all of left. Is there anything left in right?
-        if their_idx < their_len:
-            remaining = their_len - their_idx
-            return CanAssignError(f"{right} has {remaining} extra members")
-        return unify_bounds_maps(bounds_maps)
-
-    # Now we consume more from the right
-    my_end_idx = my_len - 1
-    their_end_idx = their_len - 1
-    for i in range(my_len - 1, my_idx, -1):
-        my_is_many, my_member = left.members[i]
-        if my_is_many:
-            break
-        my_end_idx -= 1
-        can_assign = _compare_single_element(
-            left, right, relation, ctx, i, their_end_idx, their_min_idx=their_idx
-        )
-        if isinstance(can_assign, CanAssignError):
-            return can_assign
-        bounds_maps.append(can_assign)
-        their_end_idx -= 1
-
-    # Now look at what's left, and match them up greedily. Possibly we could do
-    # something more precise with backtracking, but the spec only requires support
-    # for one unpacking per tuple type.
-    my_remaining = left.members[my_idx : my_end_idx + 1]
-    for my_remaining_idx, (my_is_many, my_member) in enumerate(
-        my_remaining, start=my_idx + 1
-    ):
-        if my_is_many:
-            my_gradualized = _gradualize(my_member)
-            while their_idx <= their_end_idx:
-                _, their_member = right.members[their_idx]
-                can_assign = _has_relation(
-                    my_gradualized, _gradualize(their_member), relation, ctx
-                )
-                if isinstance(can_assign, CanAssignError):
-                    break
-                else:
-                    bounds_maps.append(can_assign)
-                    their_idx += 1
-        else:
-            can_assign = _compare_single_element(
-                left,
-                right,
-                relation,
-                ctx,
-                my_remaining_idx,
-                their_idx,
-                their_max_idx=their_end_idx,
-            )
-            if isinstance(can_assign, CanAssignError):
-                return can_assign
-            bounds_maps.append(can_assign)
-            their_idx += 1
-
-    # Now is there anything left in right?
-    if their_idx <= their_end_idx:
-        remaining = their_end_idx - their_idx + 1
-        return CanAssignError(f"{right} has {remaining} extra members")
-    return unify_bounds_maps(bounds_maps)
 
 
 def _map_relation(relation: Literal[Relation.SUBTYPE, Relation.ASSIGNABLE]) -> Relation:

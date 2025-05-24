@@ -185,6 +185,11 @@ class Value:
         """Simplify this Value to reduce excessive detail."""
         return self
 
+    def decompose(self) -> Iterable["Value"] | None:
+        """Optionally, decompose this value into smaller values. The union of these
+        values should be equivalent to this value."""
+        return None
+
     def __or__(self, other: "Value") -> "Value":
         """Shortcut for defining a MultiValuedValue."""
         return unite_values(self, other)
@@ -897,6 +902,20 @@ class TypedValue(Value):
             return AnyValue(AnySource.inference)
         return KnownValue(self.typ)
 
+    def decompose(self) -> Optional[Iterable[Value]]:
+        if self.typ is bool:
+            return [KnownValue(True), KnownValue(False)]
+        type_object = self.get_type_object()
+        if (
+            isinstance(self.typ, type)
+            and type_object.is_assignable_to_type(enum.Enum)
+            and not type_object.is_assignable_to_type(enum.Flag)
+        ):
+            # Decompose enum into its members
+            return (KnownValue(member) for member in self.typ)
+        else:
+            return None
+
     def __str__(self) -> str:
         if self.literal_only:
             if self.typ is str:
@@ -1003,6 +1022,14 @@ class GenericValue(TypedValue):
     def simplify(self) -> Value:
         return GenericValue(self.typ, [arg.simplify() for arg in self.args])
 
+    def decompose(self) -> Optional[Iterable[Value]]:
+        if self.typ is tuple and len(self.args) == 1:
+            # either it's empty, or it has at least one element
+            arg = self.args[0]
+            return [KnownValue(()), SequenceValue(tuple, [(False, arg), (True, arg)])]
+        else:
+            return None
+
 
 @dataclass(unsafe_hash=True, init=False)
 class SequenceValue(GenericValue):
@@ -1028,7 +1055,7 @@ class SequenceValue(GenericValue):
         if members:
             args = (unite_values(*[typ for _, typ in members]),)
         else:
-            args = (AnyValue(AnySource.unreachable),)
+            args = (NO_RETURN_VALUE,)
         super().__init__(typ, args)
         self.members = tuple(members)
 
@@ -1096,6 +1123,33 @@ class SequenceValue(GenericValue):
         if arg is NO_RETURN_VALUE:
             arg = AnyValue(AnySource.unreachable)
         return GenericValue(self.typ, [arg])
+
+    def decompose(self) -> Optional[Iterable[Value]]:
+        if not self.members:
+            return None
+        if self.members[0][0]:
+            return [
+                # treat it as empty
+                SequenceValue(self.typ, self.members[1:]),
+                # it has at least one member
+                SequenceValue(self.typ, [(False, self.members[0][1]), *self.members]),
+            ]
+        elif self.members[-1][0]:
+            return [
+                # treat it as empty
+                SequenceValue(self.typ, self.members[:-1]),
+                # it has at least one member
+                SequenceValue(self.typ, [*self.members, (False, self.members[-1][1])]),
+            ]
+        else:
+            # For simplicity, only decompose the first member
+            first_decomposed = self.members[0][1].decompose()
+            if first_decomposed is not None:
+                return [
+                    SequenceValue(self.typ, [(False, val), *self.members[1:]])
+                    for val in first_decomposed
+                ]
+            return None
 
 
 @dataclass(frozen=True)
@@ -1596,6 +1650,9 @@ class MultiValuedValue(Value):
         if not self.vals:
             return self
         return MultiValuedValue([val.get_type_value() for val in self.vals])
+
+    def decompose(self) -> Iterable[Value]:
+        return self.vals
 
     def __eq__(self, other: Value) -> bool:
         if not isinstance(other, MultiValuedValue):

@@ -10,7 +10,6 @@ from unittest import mock
 
 from typing_extensions import Protocol, runtime_checkable
 
-from pycroscope.relations import Relation, has_relation
 from pycroscope.test_node_visitor import skip_if_not_installed
 
 from . import tests, value
@@ -22,6 +21,7 @@ from .value import (
     AnnotatedValue,
     AnySource,
     AnyValue,
+    BoundsMap,
     CallableValue,
     CanAssignError,
     GenericValue,
@@ -32,7 +32,6 @@ from .value import (
     SequenceValue,
     SubclassValue,
     TypedValue,
-    TypeVarMap,
     Value,
     concrete_values_from_iterable,
     unite_and_simplify,
@@ -50,13 +49,12 @@ def assert_cannot_assign(
         tv_map = left.can_assign(right, CTX)
         assert isinstance(tv_map, CanAssignError)
 
-    tv_map = has_relation(left, right, Relation.ASSIGNABLE, CTX)
-    assert isinstance(tv_map, CanAssignError)
 
-
-def assert_can_assign(left: Value, right: Value, typevar_map: TypeVarMap = {}) -> None:
-    assert left.can_assign(right, CTX) == typevar_map
-    assert has_relation(left, right, Relation.ASSIGNABLE, CTX) == typevar_map
+def assert_can_assign(left: Value, right: Value, bounds_map: BoundsMap = {}) -> None:
+    can_assign = left.can_assign(right, CTX)
+    if isinstance(can_assign, CanAssignError):
+        raise AssertionError(str(can_assign))
+    assert can_assign == bounds_map
 
 
 def test_any_value() -> None:
