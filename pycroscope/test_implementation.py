@@ -1550,8 +1550,8 @@ class TestAssertType(TestNameCheckVisitorBase):
             assert_type(l1, list[float | int])
             assert_type(t1, tuple[int] | tuple[str])
             assert_type(
-                t2, tuple[()] | tuple[int, Unpack[tuple[int]]]
-            )  # E: inference_failure
+                t2, tuple[()] | tuple[int, Unpack[tuple[int]]]  # E: inference_failure
+            )
             assert_type(t2, tuple[()] | tuple[int, Unpack[tuple[int, ...]]])
             assert_type(t3, tuple[int, Unpack[tuple[int, ...]]])
 
