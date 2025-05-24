@@ -1535,6 +1535,7 @@ class TestAssertType(TestNameCheckVisitorBase):
         def capybara(unannotated, explicit: Any, cond: bool):
             assert_type(unannotated if cond else explicit, Any)
 
+    @skip_before((3, 10))  # I've had enough of Union[]
     @assert_passes()
     def test_complex_equivalence(self):
         from typing_extensions import Callable, Unpack, assert_type
@@ -1555,6 +1556,7 @@ class TestAssertType(TestNameCheckVisitorBase):
             assert_type(t2, tuple[()] | tuple[int, Unpack[tuple[int, ...]]])
             assert_type(t3, tuple[int, Unpack[tuple[int, ...]]])
 
+    @skip_before((3, 10))  # I've had enough of Union[]
     @assert_passes()
     def test_decomposition(self):
         import enum
