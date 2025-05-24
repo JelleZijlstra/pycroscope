@@ -1559,7 +1559,7 @@ class TestAssertType(TestNameCheckVisitorBase):
     def test_decomposition(self):
         import enum
 
-        from typing_extensions import Literal, assert_type
+        from typing_extensions import Literal, Unpack, assert_type
 
         class X(enum.Enum):
             A = 1
@@ -1568,7 +1568,7 @@ class TestAssertType(TestNameCheckVisitorBase):
         def capybara(
             x: Literal[True, False],
             y: Literal[X.A, X.B],
-            z: tuple[()] | tuple[int, *tuple[int, ...]],
+            z: tuple[()] | tuple[int, Unpack[tuple[int, ...]]],
         ) -> None:
             assert_type(x, bool)
             assert_type(y, X)
