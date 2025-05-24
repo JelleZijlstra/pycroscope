@@ -185,7 +185,7 @@ class Value:
         """Simplify this Value to reduce excessive detail."""
         return self
 
-    def decompose(self) -> Iterable["Value"] | None:
+    def decompose(self) -> Optional[Iterable["Value"]]:
         """Optionally, decompose this value into smaller values. The union of these
         values should be equivalent to this value."""
         return None
