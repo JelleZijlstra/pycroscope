@@ -1537,21 +1537,23 @@ class TestAssertType(TestNameCheckVisitorBase):
 
     @assert_passes()
     def test_complex_equivalence(self):
-        from typing_extensions import Callable, assert_type
+        from typing_extensions import Callable, Unpack, assert_type
 
         def func2(
             c1: Callable[[float], int] | Callable[[int], float],
             l1: list[float],
             t1: tuple[int | str],
             t2: tuple[int, ...],
-            t3: tuple[*tuple[int, ...], int],
+            t3: tuple[Unpack[tuple[int, ...]], int],
         ) -> None:
             assert_type(c1, Callable[[int], float])
             assert_type(l1, list[float | int])
             assert_type(t1, tuple[int] | tuple[str])
-            assert_type(t2, tuple[()] | tuple[int, *tuple[int]])  # E: inference_failure
-            assert_type(t2, tuple[()] | tuple[int, *tuple[int, ...]])
-            assert_type(t3, tuple[int, *tuple[int, ...]])
+            assert_type(
+                t2, tuple[()] | tuple[int, Unpack[tuple[int]]]
+            )  # E: inference_failure
+            assert_type(t2, tuple[()] | tuple[int, Unpack[tuple[int, ...]]])
+            assert_type(t3, tuple[int, Unpack[tuple[int, ...]]])
 
     @assert_passes()
     def test_decomposition(self):

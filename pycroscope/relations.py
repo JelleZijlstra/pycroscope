@@ -825,6 +825,8 @@ def _has_relation_lazy_sequence(
         - (*int, int) -> (int, *int) turns into:
             - (int,) | (int, *int, int) -> (int,) | (int, *int, int)
             - Succeeds as the unions contain the same elements.
+      This last step is incorrect. It fails to recognize this:
+      (*int, int, str, int, *int) == (int, *int, str, *int, int)
     """
     len_a = len(a)
     len_b = len(b)

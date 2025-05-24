@@ -327,6 +327,11 @@ def test_sequence_value_unpack() -> None:
 
     assert_cannot_assign(s("iIi"), s("i"))
 
+    # this fails
+    assert_can_assign(s("iIsIi"), s("IisiI"))
+    # TODO
+    # assert_can_assign(s("IisiI"), s("iIsIi"))
+
 
 def test_dict_incomplete_value() -> None:
     val = value.DictIncompleteValue(dict, [KVPair(TypedValue(int), KnownValue("x"))])
