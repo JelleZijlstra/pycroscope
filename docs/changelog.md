@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Support subtyping between more kinds of heterogeneous tuples.
+- Treat `bool` and enum classes as equivalent to the union of all their
+  members.
+- Add support for unpacked tuple types using native unpack syntax (e.g.,
+  `tuple[int, *tuple[int, ...]]`; the alternative syntax with `Unpack`
+  was already supported).
 - `assert_type()` now checks for type equivalence, not equality of the
   internal representation of the type.
 - Improve parsing of annotation expressions as distinct from type expressions.

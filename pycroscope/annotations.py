@@ -31,6 +31,7 @@ import typing
 from collections.abc import Callable, Container, Generator, Hashable, Mapping, Sequence
 from contextlib import AbstractContextManager
 from dataclasses import InitVar, dataclass, field
+from types import GenericAlias
 from typing import TYPE_CHECKING, Any, NewType, Optional, TypeVar, Union, cast
 
 import typing_extensions
@@ -479,6 +480,9 @@ def _annotation_expr_from_runtime(val: object, ctx: Context) -> AnnotationExpr:
                 final_expr = _eval_forward_ref(val.__forward_arg__, ctx)
                 final_value = final_expr.to_value(allow_qualifiers=True)
         return final_expr
+    elif isinstance(val, GenericAlias) and getattr(val, "__unpacked__", False):
+        inner = _type_from_runtime(val, ctx)
+        return AnnotationExpr(ctx, inner, qualifiers=[(Qualifier.Unpack, None)])
     else:
         if not is_instance_of_typing_name(
             val, "ParamSpecArgs"
@@ -1079,6 +1083,10 @@ class _Visitor(ast.NodeVisitor):
             )
         else:
             return None
+
+    def visit_Starred(self, node: ast.Starred) -> Value:
+        value = self.visit(node.value)
+        return _SubscriptedValue(KnownValue(typing_extensions.Unpack), node, (value,))
 
     def visit_UnaryOp(self, node: ast.UnaryOp) -> Optional[Value]:
         # Only int and float negation on literals are supported.

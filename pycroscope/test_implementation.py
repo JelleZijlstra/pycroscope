@@ -1114,7 +1114,7 @@ class TestSequenceGetItem(TestNameCheckVisitorBase):
             empty = ()
             assert_is_value(empty[0], AnyValue(AnySource.error))  # E: incompatible_call
             assert_is_value(empty[1:], KnownValue(()))
-            assert_is_value(empty[i], AnyValue(AnySource.unreachable))
+            assert_is_value(empty[i], AnyValue(AnySource.error))  # E: incompatible_call
             assert_is_value(empty[s], SequenceValue(tuple, []))
             assert_is_value(empty[unannotated], AnyValue(AnySource.from_another))
 
@@ -1535,14 +1535,46 @@ class TestAssertType(TestNameCheckVisitorBase):
         def capybara(unannotated, explicit: Any, cond: bool):
             assert_type(unannotated if cond else explicit, Any)
 
-
-class TestAny(TestNameCheckVisitorBase):
+    @skip_before((3, 10))  # I've had enough of Union[]
     @assert_passes()
-    def test_call(self):
-        from typing import Any
+    def test_complex_equivalence(self):
+        from typing_extensions import Callable, Unpack, assert_type
 
-        def capybara():
-            Any(42)  # E: incompatible_call
+        def func2(
+            c1: Callable[[float], int] | Callable[[int], float],
+            l1: list[float],
+            t1: tuple[int | str],
+            t2: tuple[int, ...],
+            t3: tuple[Unpack[tuple[int, ...]], int],
+        ) -> None:
+            assert_type(c1, Callable[[int], float])
+            assert_type(l1, list[float | int])
+            assert_type(t1, tuple[int] | tuple[str])
+            assert_type(
+                t2, tuple[()] | tuple[int, Unpack[tuple[int]]]  # E: inference_failure
+            )
+            assert_type(t2, tuple[()] | tuple[int, Unpack[tuple[int, ...]]])
+            assert_type(t3, tuple[int, Unpack[tuple[int, ...]]])
+
+    @skip_before((3, 10))  # I've had enough of Union[]
+    @assert_passes()
+    def test_decomposition(self):
+        import enum
+
+        from typing_extensions import Literal, Unpack, assert_type
+
+        class X(enum.Enum):
+            A = 1
+            B = 2
+
+        def capybara(
+            x: Literal[True, False],
+            y: Literal[X.A, X.B],
+            z: tuple[()] | tuple[int, Unpack[tuple[int, ...]]],
+        ) -> None:
+            assert_type(x, bool)
+            assert_type(y, X)
+            assert_type(z, tuple[int, ...])
 
 
 class TestNamedTuple(TestNameCheckVisitorBase):

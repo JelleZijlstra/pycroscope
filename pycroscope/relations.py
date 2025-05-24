@@ -9,6 +9,8 @@ https://typing.python.org/en/latest/spec/concepts.html#summary-of-type-relations
 
 import collections.abc
 import enum
+from collections.abc import Iterable, Iterator
+from dataclasses import dataclass, replace
 from types import FunctionType
 from typing import Optional, Protocol, Union
 
@@ -274,15 +276,7 @@ def _has_relation(
     # MultiValuedValue
     if isinstance(left, MultiValuedValue):
         if isinstance(right, MultiValuedValue):
-            bounds_maps = []
-            for val in right.vals:
-                val = _gradualize(val)
-                can_assign = _has_relation(left, val, relation, ctx)
-                if isinstance(can_assign, CanAssignError):
-                    # Adding an additional layer here isn't helpful
-                    return can_assign
-                bounds_maps.append(can_assign)
-            return unify_bounds_maps(bounds_maps)
+            return _has_relation_union(left, right.vals, relation, ctx)
         else:
             # right is a subtype if it's a subtype of any of the members
             bounds_maps = []
@@ -295,6 +289,13 @@ def _has_relation(
                 else:
                     bounds_maps.append(can_assign)
             if not bounds_maps:
+                # Try decomposing the right
+                decomposed = right.decompose()
+                if decomposed is not None:
+                    can_assign = _has_relation_union(left, decomposed, relation, ctx)
+                    if not isinstance(can_assign, CanAssignError):
+                        return can_assign
+                    # Fall back to the original error
                 return CanAssignError(
                     f"{right} is not {relation.description} {left}", children=errors
                 )
@@ -575,6 +576,23 @@ def _has_relation(
     assert_never(left)
 
 
+def _has_relation_union(
+    left: GradualType,
+    right_vals: Iterable[Value],
+    relation: Literal[Relation.SUBTYPE, Relation.ASSIGNABLE],
+    ctx: CanAssignContext,
+) -> CanAssign:
+    bounds_maps = []
+    for val in right_vals:
+        val = _gradualize(val)
+        can_assign = _has_relation(left, val, relation, ctx)
+        if isinstance(can_assign, CanAssignError):
+            # Adding an additional layer here isn't helpful
+            return can_assign
+        bounds_maps.append(can_assign)
+    return unify_bounds_maps(bounds_maps)
+
+
 def _has_relation_thrift_enum(
     left: TypedValue,
     right: Union[TypedValue, KnownValue],
@@ -658,6 +676,293 @@ def _maybe_specify_error_for_generic(
     return CanAssignError(f"In generic argument {i} to {left}", [error])
 
 
+@dataclass(frozen=True)
+class _LazySequenceValue(Value):
+    seq: SequenceValue
+    start_idx: int = 0
+    end_idx: int = 0  # i.e., include the entire thing
+    prefix: Optional[Value] = None
+    suffix: Optional[Value] = None
+
+    def __post_init__(self) -> None:
+        assert len(self) >= 0
+
+    def __len__(self) -> int:
+        size = len(self.seq.members) - self.start_idx + self.end_idx
+        if self.prefix is not None:
+            size += 1
+        if self.suffix is not None:
+            size += 1
+        return size
+
+    def __getitem__(self, idx: int) -> tuple[bool, Value]:
+        if idx < 0:
+            idx += len(self)
+        if idx < 0:
+            raise IndexError(idx)
+        if self.prefix is not None:
+            if idx == 0:
+                return False, self.prefix
+            idx -= 1
+        idx += self.start_idx
+        inner_len = len(self.seq.members) + self.end_idx
+        if idx < inner_len:
+            return self.seq.members[idx]
+        if idx == inner_len and self.suffix is not None:
+            return False, self.suffix
+        raise IndexError(idx)
+
+    def add_prefix(self, prefix: Value) -> "_LazySequenceValue":
+        if self.prefix is not None:
+            raise ValueError("Prefix already set")
+        return replace(self, prefix=prefix)
+
+    def add_suffix(self, suffix: Value) -> "_LazySequenceValue":
+        if self.suffix is not None:
+            raise ValueError("Suffix already set")
+        return replace(self, suffix=suffix)
+
+    def slice_left(self) -> "_LazySequenceValue":
+        if self.prefix is not None:
+            return replace(self, prefix=None)
+        return replace(self, start_idx=self.start_idx + 1)
+
+    def slice_right(self) -> "_LazySequenceValue":
+        if self.suffix is not None:
+            return replace(self, suffix=None)
+        return replace(self, end_idx=self.end_idx - 1)
+
+    def get_fallback_value(self) -> SequenceValue:
+        members = []
+        if self.prefix is not None:
+            members.append((False, self.prefix))
+        members.extend(self.seq.members[self.start_idx : -self.end_idx])
+        if self.suffix is not None:
+            members.append((False, self.suffix))
+        return SequenceValue(self.seq.typ, list(self))
+
+    def decompose_left(self) -> Iterable["_LazySequenceValue"]:
+        if len(self) > 0 and self[0][0]:
+            # If the first element is tuple[T, ...], we can decompose it into...
+            # ... the case where it is empty
+            yield self.slice_left()
+            # ... the case where it contains a single element, followed by a new tuple[T, ...]
+            yield self.add_prefix(self[0][1])
+        else:
+            # If the first element is Single, we can't decompose.
+            yield self
+
+    def decompose_right(self) -> Iterable["_LazySequenceValue"]:
+        if len(self) > 0 and self[-1][0]:
+            # If the last element is tuple[T, ...], we can decompose it into...
+            # ... the case where it is empty
+            yield self.slice_right()
+            # ... the case where it contains a single element, followed by a new tuple[T, ...]
+            yield self.add_suffix(self[-1][1])
+        else:
+            # If the last element is Single, we can't decompose.
+            yield self
+
+    def __str__(self) -> str:
+        return str(self.get_fallback_value())
+
+    def __iter__(self) -> Iterator[tuple[bool, Value]]:
+        if self.prefix is not None:
+            yield False, self.prefix
+        for i in range(self.start_idx, len(self.seq.members) + self.end_idx):
+            yield self.seq.members[i]
+        if self.suffix is not None:
+            yield False, self.suffix
+
+
+def _has_relation_lazy_sequence(
+    a: _LazySequenceValue,
+    b: _LazySequenceValue,
+    relation: Literal[Relation.SUBTYPE, Relation.ASSIGNABLE],
+    ctx: CanAssignContext,
+) -> CanAssign:
+    """Check the relation between two sequences A and B.
+
+    Sequences can contain either single values (Single, represented in examples as "int")
+    or an unknown number of values (Many, represented as "*int").
+
+    The algorithm is:
+
+    - If a is empty:
+        - If b is empty: success.
+        - Else: error.
+    - If b is empty:
+        - If all elements in a are Many: success.
+        - Else: error.
+    - If both a and b have a Single element on the left:
+        - Check whether they're compatible.
+        - If so, continue checking the rest of the sequences.
+        - If not: error.
+    - If both a and b have a Single element on the right:
+        - Check whether they're compatible.
+        - If so, continue checking the rest of the sequences.
+        - If not: error.
+    - If all elements at the left and right ends are Many:
+        - Check whether the leftmost elements are compatible.
+        - If not, remove the leftmost element from A and continue.
+        - If so, we can succeed in three ways:
+            - Consume A's leftmost and continue.
+              Example: A = (*object, *int), B = (*int,)
+            - Consume B's leftmost and continue.
+              Example: A = (*object,), B = (*object, *int)
+            - Consume both leftmost and continue.
+              Example: A = (*object, int, *int), B = (*object, int, *int)
+    - In all cases where one of the two has a Many on one end and the other has a
+    - Single on the same end, decompose the Many elements *T into two options:
+      either they are empty, or they contain (T, *T) (on the left)
+      or (*T, T) (on the right). Then compare the resulting unions.
+      Examples:
+        - (*int) :> (int, *int, int) turns into:
+            - () | (int,) | (int, *int) :> (int, *int, int)
+            - (int, *int) :> (int, *int, int)
+            - (*int) :> (*int, int)
+            - Succeeds by the step above.
+        - (*int, int) -> (int, *int) turns into:
+            - (int,) | (int, *int, int) -> (int,) | (int, *int, int)
+            - Succeeds as the unions contain the same elements.
+      This last step is incorrect. It fails to recognize this:
+      (*int, int, str, int, *int) == (int, *int, str, *int, int)
+    """
+    len_a = len(a)
+    len_b = len(b)
+
+    # Is either empty?
+    if len_a == 0:
+        if len_b == 0:
+            return {}
+        else:
+            return CanAssignError(
+                f"Non-empty sequence {b} is not {relation.description} empty sequence {a}"
+            )
+    if len_b == 0:
+        if all(is_many for is_many, _ in a):
+            # If all elements are Many, we can still assign empty sequence to it
+            return {}
+        else:
+            return CanAssignError(
+                f"Empty sequence {b!r} is not {relation.description} non-empty sequence {a}"
+            )
+
+    # Do both have a Single element on the left?
+    if a[0][0] is False and b[0][0] is False:
+        # If so, check whether they're compatible
+        can_assign = _has_relation(
+            _gradualize(a[0][1]), _gradualize(b[0][1]), relation, ctx
+        )
+        if isinstance(can_assign, CanAssignError):
+            if a.start_idx == b.start_idx:
+                text = f"position {a.start_idx}"
+            else:
+                text = f"positions {a.start_idx} and {b.start_idx}"
+            return CanAssignError(
+                f"Elements at {text} are not compatible", [can_assign]
+            )
+        return _has_relation_lazy_sequence(
+            a.slice_left(), b.slice_left(), relation, ctx
+        )
+
+    # Do both have a Single element on the right?
+    if a[-1][0] is False and b[-1][0] is False:
+        # If so, check whether they're compatible
+        can_assign = _has_relation(
+            _gradualize(a[-1][1]), _gradualize(b[-1][1]), relation, ctx
+        )
+        if isinstance(can_assign, CanAssignError):
+            a_end = len(a.seq.members) + a.end_idx - 1
+            b_end = len(b.seq.members) + b.end_idx - 1
+            if a_end == b_end:
+                text = f"position {a_end}"
+            else:
+                text = f"positions {a_end} and {b_end}"
+            return CanAssignError(
+                f"Elements at {text} are not compatible", [can_assign]
+            )
+        return _has_relation_lazy_sequence(
+            a.slice_right(), b.slice_right(), relation, ctx
+        )
+
+    # Do both have a Many on the left and also on the right?
+    if a[0][0] is True and b[0][0] is True and a[-1][0] is True and b[-1][0] is True:
+        can_assign = _has_relation(
+            _gradualize(a[0][1]), _gradualize(b[0][1]), relation, ctx
+        )
+        if isinstance(can_assign, CanAssignError):
+            # If the leftmost Many in a is not compatible, assume it's empty
+            # and continue.
+            return _has_relation_lazy_sequence(a.slice_left(), b, relation, ctx)
+        else:
+            # If the leftmost Many is compatible, we can succeed in three ways:
+            # 1. Consume A's leftmost and continue. (Example: A = (*object, *int), B = (*object,))
+            can_assign1 = _has_relation_lazy_sequence(
+                a.slice_left(), b.slice_left(), relation, ctx
+            )
+            if not isinstance(can_assign1, CanAssignError):
+                return can_assign1
+            # 2. Consume B's leftmost and continue. (Example: A = (*object,), B = (*object, *int))
+            can_assign2 = _has_relation_lazy_sequence(a.slice_left(), b, relation, ctx)
+            if not isinstance(can_assign2, CanAssignError):
+                return can_assign2
+            # 3. Consume both leftmost and continue.
+            # (Example: A = (*object, int, *int), B = (*object, int, *int))
+            can_assign3 = _has_relation_lazy_sequence(a, b.slice_left(), relation, ctx)
+            if not isinstance(can_assign3, CanAssignError):
+                return can_assign3
+            return CanAssignError(
+                f"{b} is not {relation.description} {a}",
+                children=[can_assign1, can_assign2, can_assign3],
+            )
+
+    # Now there is at least one Many-Single match on either the left or right end.
+    # Decompose both sides at once; if we only decompose one at a time, we'll miss
+    # some matches.
+    if a[0][0] and not b[0][0]:
+        a_decomposed = a.decompose_left()
+    else:
+        a_decomposed = [a]
+    if b[0][0] and not a[0][0]:
+        b_decomposed = b.decompose_left()
+    else:
+        b_decomposed = [b]
+
+    if a[-1][0] and not b[-1][0]:
+        a_decomposed = [a_dd for a_d in a_decomposed for a_dd in a_d.decompose_right()]
+    if b[-1][0] and not a[-1][0]:
+        b_decomposed = [b_dd for b_d in b_decomposed for b_dd in b_d.decompose_right()]
+
+    return _has_relation_lazy_seq_multi(a_decomposed, b_decomposed, relation, ctx)
+
+
+def _has_relation_lazy_seq_multi(
+    a_iter: Iterable[_LazySequenceValue],
+    b_iter: Iterable[_LazySequenceValue],
+    relation: Literal[Relation.SUBTYPE, Relation.ASSIGNABLE],
+    ctx: CanAssignContext,
+) -> CanAssign:
+    bounds_maps = []
+    a_iter = list(a_iter)
+    for b in b_iter:
+        errors = []
+        inner_bounds_maps = []
+        for a in a_iter:
+            can_assign = _has_relation_lazy_sequence(a, b, relation, ctx)
+            if isinstance(can_assign, CanAssignError):
+                errors.append(can_assign)
+            else:
+                inner_bounds_maps.append(can_assign)
+        if not inner_bounds_maps:
+            return CanAssignError(
+                f"{b} is not {relation.description} any of {' | '.join(map(str, a_iter))}",
+                children=errors,
+            )
+        bounds_maps.append(intersect_bounds_maps(inner_bounds_maps))
+    return unify_bounds_maps(bounds_maps)
+
+
 def _has_relation_sequence(
     left: SequenceValue,
     right: SequenceValue,
@@ -670,40 +975,10 @@ def _has_relation_sequence(
             f"{stringify_object(right.typ)} is not {relation.description}"
             f" {stringify_object(left.typ)}"
         )
-    my_len = len(left.members)
-    their_len = len(right.members)
-    if my_len != their_len:
-        type_str = stringify_object(right.typ)
-        return CanAssignError(
-            f"{type_str} of length {their_len} is not {relation.description} {type_str} of"
-            f" length {my_len}"
-        )
-    if my_len == 0:
-        return {}  # they're both empty
-    bounds_maps = [can_assign]
-    for i, ((my_is_many, my_member), (their_is_many, their_member)) in enumerate(
-        zip(left.members, right.members)
-    ):
-        my_member = _gradualize(my_member)
-        their_member = _gradualize(their_member)
-        if my_is_many != their_is_many:
-            if my_is_many:
-                return CanAssignError(
-                    f"Member {i} is an unpacked type, but a single element is"
-                    " provided"
-                )
-            else:
-                return CanAssignError(
-                    f"Member {i} is a single element, but an unpacked type is"
-                    " provided"
-                )
-        can_assign = _has_relation(my_member, their_member, relation, ctx)
-        if isinstance(can_assign, CanAssignError):
-            return CanAssignError(
-                f"Types for member {i} are incompatible", [can_assign]
-            )
-        bounds_maps.append(can_assign)
-    return unify_bounds_maps(bounds_maps)
+
+    return _has_relation_lazy_sequence(
+        _LazySequenceValue(left), _LazySequenceValue(right), relation, ctx
+    )
 
 
 def _map_relation(relation: Literal[Relation.SUBTYPE, Relation.ASSIGNABLE]) -> Relation:

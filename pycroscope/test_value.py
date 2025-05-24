@@ -10,7 +10,6 @@ from unittest import mock
 
 from typing_extensions import Protocol, runtime_checkable
 
-from pycroscope.relations import Relation, has_relation
 from pycroscope.test_node_visitor import skip_if_not_installed
 
 from . import tests, value
@@ -22,6 +21,7 @@ from .value import (
     AnnotatedValue,
     AnySource,
     AnyValue,
+    BoundsMap,
     CallableValue,
     CanAssignError,
     GenericValue,
@@ -32,7 +32,6 @@ from .value import (
     SequenceValue,
     SubclassValue,
     TypedValue,
-    TypeVarMap,
     Value,
     concrete_values_from_iterable,
     unite_and_simplify,
@@ -50,13 +49,12 @@ def assert_cannot_assign(
         tv_map = left.can_assign(right, CTX)
         assert isinstance(tv_map, CanAssignError)
 
-    tv_map = has_relation(left, right, Relation.ASSIGNABLE, CTX)
-    assert isinstance(tv_map, CanAssignError)
 
-
-def assert_can_assign(left: Value, right: Value, typevar_map: TypeVarMap = {}) -> None:
-    assert left.can_assign(right, CTX) == typevar_map
-    assert has_relation(left, right, Relation.ASSIGNABLE, CTX) == typevar_map
+def assert_can_assign(left: Value, right: Value, bounds_map: BoundsMap = {}) -> None:
+    can_assign = left.can_assign(right, CTX)
+    if isinstance(can_assign, CanAssignError):
+        raise AssertionError(str(can_assign))
+    assert can_assign == bounds_map
 
 
 def test_any_value() -> None:
@@ -284,6 +282,55 @@ def test_sequence_value() -> None:
         str(value.SequenceValue(list, [(False, TypedValue(int))]))
         == "<list containing [int]>"
     )
+
+
+def test_sequence_value_unpack() -> None:
+    fmt_map = {"i": int, "s": str, "b": bool, "o": object}
+
+    def s(fmt: str) -> SequenceValue:
+        members = []
+        for c in fmt:
+            is_many = c.isupper()
+            members.append((is_many, TypedValue(fmt_map[c.lower()])))
+        return SequenceValue(tuple, members)
+
+    # left is empty
+    assert_can_assign(s(""), s(""))
+    assert_cannot_assign(s(""), s("i"))
+
+    # only single values
+    assert_can_assign(s("i"), s("i"))
+    assert_cannot_assign(s("i"), s("ii"))
+    assert_cannot_assign(s("ii"), s("i"))
+    assert_can_assign(s("o"), s("i"))
+
+    # left is one many
+    assert_can_assign(s("I"), s("i"))
+    assert_can_assign(s("I"), s("ii"))
+    assert_can_assign(s("I"), s("iI"))
+    assert_can_assign(s("I"), s("iIii"))
+    assert_can_assign(s("I"), s("bIb"))
+    assert_cannot_assign(s("I"), s("o"))
+
+    # prefix on the left
+    assert_can_assign(s("iI"), s("i"))
+    assert_can_assign(s("oI"), s("iB"))
+    assert_cannot_assign(s("iI"), s("I"))
+    assert_can_assign(s("sI"), s("siIi"))
+    assert_can_assign(s("Ii"), s("iI"))
+
+    # suffix on the right
+    assert_can_assign(s("Ii"), s("i"))
+    assert_can_assign(s("Ii"), s("Ii"))
+    assert_can_assign(s("Ii"), s("iIi"))
+    assert_can_assign(s("Ii"), s("iI"))
+
+    assert_cannot_assign(s("iIi"), s("i"))
+
+    # this fails
+    assert_can_assign(s("iIsIi"), s("IisiI"))
+    # TODO
+    # assert_can_assign(s("IisiI"), s("iIsIi"))
 
 
 def test_dict_incomplete_value() -> None:

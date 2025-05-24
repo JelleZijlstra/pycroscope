@@ -3356,6 +3356,11 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         values = []
         for i, elt in enumerate(elts):
             if isinstance(elt, _StarredValue):
+                if isinstance(elt.value, KnownValue) and isinstance(
+                    elt.value.val, GenericAlias
+                ):
+                    values.append((False, KnownValue((*elt.value.val,)[0])))
+                    continue
                 vals = concrete_values_from_iterable(elt.value, self)
                 if isinstance(vals, CanAssignError):
                     self.show_error(
