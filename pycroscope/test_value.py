@@ -286,6 +286,50 @@ def test_sequence_value() -> None:
     )
 
 
+def test_sequence_value_unpack() -> None:
+    fmt_map = {"i": int, "s": str, "b": bool, "o": object}
+
+    def s(fmt: str) -> SequenceValue:
+        members = []
+        for c in fmt:
+            is_many = c.isupper()
+            members.append((is_many, TypedValue(fmt_map[c.lower()])))
+        return SequenceValue(tuple, members)
+
+    # left is empty
+    assert_can_assign(s(""), s(""))
+    assert_cannot_assign(s(""), s("i"))
+
+    # only single values
+    assert_can_assign(s("i"), s("i"))
+    assert_cannot_assign(s("i"), s("ii"))
+    assert_cannot_assign(s("ii"), s("i"))
+    assert_can_assign(s("o"), s("i"))
+
+    # left is one many
+    assert_can_assign(s("I"), s("i"))
+    assert_can_assign(s("I"), s("ii"))
+    assert_can_assign(s("I"), s("iI"))
+    assert_can_assign(s("I"), s("iIii"))
+    assert_can_assign(s("I"), s("bIb"))
+    assert_cannot_assign(s("I"), s("o"))
+
+    # prefix on the left
+    assert_can_assign(s("iI"), s("i"))
+    assert_can_assign(s("oI"), s("iB"))
+    assert_cannot_assign(s("iI"), s("I"))
+    assert_can_assign(s("sI"), s("siIi"))
+    assert_can_assign(s("Ii"), s("iI"))
+
+    # suffix on the right
+    assert_can_assign(s("Ii"), s("i"))
+    assert_can_assign(s("Ii"), s("Ii"))
+    assert_can_assign(s("Ii"), s("iIi"))
+    assert_can_assign(s("Ii"), s("iI"))
+
+    assert_cannot_assign(s("iIi"), s("i"))
+
+
 def test_dict_incomplete_value() -> None:
     val = value.DictIncompleteValue(dict, [KVPair(TypedValue(int), KnownValue("x"))])
     assert "<dict containing {int: Literal['x']}>" == str(val)

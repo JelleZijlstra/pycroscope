@@ -1958,6 +1958,33 @@ class TestUnpack(TestNameCheckVisitorBase):
                 ),
             )
 
+    @skip_before((3, 11))
+    @assert_passes()
+    def test_native_unpack(self):
+        obj: tuple[int, *tuple[str, ...]] = (1, "x", "y")
+
+        def capybara(
+            x: tuple[int, *tuple[str, ...]], y: "tuple[int, *tuple[str, ...]]"
+        ):
+            assert_is_value(
+                x,
+                SequenceValue(
+                    tuple, [(False, TypedValue(int)), (True, TypedValue(str))]
+                ),
+            )
+            assert_is_value(
+                y,
+                SequenceValue(
+                    tuple, [(False, TypedValue(int)), (True, TypedValue(str))]
+                ),
+            )
+            assert_is_value(
+                obj,
+                SequenceValue(
+                    tuple, [(False, TypedValue(int)), (True, TypedValue(str))]
+                ),
+            )
+
 
 class TestMissinGenericParameters(TestNameCheckVisitorBase):
     @assert_passes()
