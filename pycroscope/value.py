@@ -3037,3 +3037,53 @@ class AnnotationExpr:
         else:
             value = self._value
         return value, qualifiers
+
+
+BasicType: TypeAlias = Union[
+    AnyValue,
+    KnownValue,
+    SyntheticModuleValue,
+    UnboundMethodValue,
+    TypedValue,
+    SubclassValue,
+    MultiValuedValue,
+]
+
+# Subclasses of Value that represent real types in the type system.
+# There are a few other subclasses of Value that represent temporary
+# objects in some contexts; this alias exists to make it easier to refer
+# to those Values that are actually part of the type system.
+GradualType: TypeAlias = Union[
+    BasicType,
+    # Invariant: all non-basic types support get_fallback_value()
+    TypeAliasValue,
+    NewTypeValue,
+    TypeVarValue,
+    ParamSpecArgsValue,
+    ParamSpecKwargsValue,
+    AnnotatedValue,
+]
+
+GRADUAL_TYPE = GradualType.__args__
+BASIC_TYPE = BasicType.__args__
+
+
+class NotAGradualType(Exception):
+    """Raised when a value is not a gradual type."""
+
+
+def gradualize(value: Value) -> GradualType:
+    if not isinstance(value, GRADUAL_TYPE):
+        raise NotAGradualType(f"Encountered non-type {value}")
+    return value
+
+
+def replace_fallback(val: Value) -> BasicType:
+    while True:
+        fallback = val.get_fallback_value()
+        if fallback is None:
+            break
+        val = fallback
+    if not isinstance(val, BASIC_TYPE):
+        raise NotAGradualType(f"Encountered non-basic type {val}")
+    return val
