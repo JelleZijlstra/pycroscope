@@ -54,6 +54,7 @@ from .annotations import (
     AnnotationExpr,
     Qualifier,
     SyntheticEvaluator,
+    _SubscriptedValue,
     annotation_expr_from_annotations,
     annotation_expr_from_value,
     is_context_manager_type,
@@ -2682,7 +2683,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             error_node = alias
         else:
             error_node = node
-        if self.check_deprecation(error_node, value):
+        if not isinstance(value, _SubscriptedValue) and self.check_deprecation(
+            error_node, value
+        ):
             value = annotate_value(value, [SkipDeprecatedExtension()])
         if alias.asname is not None:
             self._set_name_in_scope(

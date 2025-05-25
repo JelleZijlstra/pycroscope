@@ -128,7 +128,7 @@ class TestTypeAliasType(TestNameCheckVisitorBase):
             type MyType = Literal[1, 2, 3]
 
             def capybara(x: MyType):
-                assert_type(x + 1, int)
+                assert_type(x + 1, Literal[2, 3, 4])
 
             def pacarana(x: MyType):
                 capybara(x)
