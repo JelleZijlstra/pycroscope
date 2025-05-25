@@ -13,6 +13,8 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Callable, ClassVar, Optional, Union
 
+from typing_extensions import assert_never
+
 from .annotated_types import EnumName
 from .annotations import Context, annotation_expr_from_annotations, type_from_runtime
 from .maybe_asynq import asynq
@@ -139,7 +141,7 @@ def get_attribute(ctx: AttrContext) -> Value:
         module = ".".join(root_value.module_path)
         attribute_value = ctx.resolve_name_from_typeshed(module, ctx.attr)
     else:
-        attribute_value = UNINITIALIZED_VALUE
+        assert_never(root_value)
     if (
         isinstance(attribute_value, AnyValue) or attribute_value is UNINITIALIZED_VALUE
     ) and isinstance(ctx.root_value, AnnotatedValue):
