@@ -10,22 +10,26 @@ a particular type is usable as a boolean.
 
 import enum
 
+from typing_extensions import assert_never
+
 from pycroscope.maybe_asynq import asynq
 from pycroscope.safe import safe_getattr, safe_hasattr
 
 from .value import (
     KNOWN_MUTABLE_TYPES,
     AnyValue,
+    BasicType,
     DictIncompleteValue,
     KnownValue,
     MultiValuedValue,
     SequenceValue,
+    SimpleType,
     SubclassValue,
+    SyntheticModuleValue,
     TypedDictValue,
     TypedValue,
     UnboundMethodValue,
     Value,
-    replace_fallback,
     replace_known_sequence_value,
 )
 
@@ -72,8 +76,15 @@ _ASYNQ_BOOL = (
 
 def get_boolability(value: Value) -> Boolability:
     value = replace_known_sequence_value(value)
+    return _get_boolability_basic(value)
+
+
+def _get_boolability_basic(value: BasicType) -> Boolability:
     if isinstance(value, MultiValuedValue):
-        boolabilities = {_get_boolability_no_mvv(subval) for subval in value.vals}
+        boolabilities = {
+            _get_boolability_basic(replace_known_sequence_value(subval))
+            for subval in value.vals
+        }
         if Boolability.erroring_bool in boolabilities:
             return Boolability.erroring_bool
         elif Boolability.boolable in boolabilities:
@@ -95,9 +106,7 @@ def get_boolability(value: Value) -> Boolability:
         return _get_boolability_no_mvv(value)
 
 
-def _get_boolability_no_mvv(value: Value) -> Boolability:
-    value = replace_fallback(value)
-    value = replace_known_sequence_value(value)
+def _get_boolability_no_mvv(value: SimpleType) -> Boolability:
     if isinstance(value, AnyValue):
         return Boolability.boolable
     elif isinstance(value, UnboundMethodValue):
@@ -136,7 +145,7 @@ def _get_boolability_no_mvv(value: Value) -> Boolability:
             return Boolability.boolable
         else:
             return Boolability.value_always_false_mutable
-    elif isinstance(value, SubclassValue):
+    elif isinstance(value, (SubclassValue, SyntheticModuleValue)):
         # Could be false if a metaclass overrides __bool__, but we're
         # not handling that for now.
         return Boolability.type_always_true
@@ -176,7 +185,7 @@ def _get_boolability_no_mvv(value: Value) -> Boolability:
             return Boolability.boolable  # TODO deal with synthetic types
         return _get_type_boolability(value.typ)
     else:
-        assert False, f"unhandled value {value!r}"
+        assert_never(value)
 
 
 def _get_type_boolability(typ: type, *, is_exact: bool = False) -> Boolability:

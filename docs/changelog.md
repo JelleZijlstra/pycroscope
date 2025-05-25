@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Fix crash on checking the boolability of certain complex types.
 - Support subtyping between more kinds of heterogeneous tuples.
 - Treat `bool` and enum classes as equivalent to the union of all their
   members.
