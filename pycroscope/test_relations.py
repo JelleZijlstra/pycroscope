@@ -1,7 +1,7 @@
 # static analysis: ignore
 
 from pycroscope.test_name_check_visitor import TestNameCheckVisitorBase
-from pycroscope.test_node_visitor import skip_before
+from pycroscope.test_node_visitor import assert_passes, skip_before
 
 
 class TestRelations(TestNameCheckVisitorBase):
@@ -25,3 +25,25 @@ class TestRelations(TestNameCheckVisitorBase):
                 assert_type(ge0, Eq0 | Ge1)
             """
         )
+
+
+class TestIntersections(TestNameCheckVisitorBase):
+    @assert_passes()
+    def test_equivalence(self):
+        from typing_extensions import Any, Literal, Never, assert_type
+
+        from pycroscope.extensions import Intersection
+
+        class A:
+            x: Any
+
+        class B:
+            x: int
+
+        def capybara(
+            x: Intersection[Literal[1], Literal[2]], y: Intersection[A, B]
+        ) -> None:
+            assert_type(x, Never)
+
+            assert_type(y, Intersection[A, B])
+            assert_type(y.x, Intersection[int, Any])
