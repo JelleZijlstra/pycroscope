@@ -67,6 +67,7 @@ from .value import (
     TypedDictValue,
     TypedValue,
     TypeVarValue,
+    UninitializedValue,
     Value,
     annotate_value,
     extract_typevars,
@@ -730,6 +731,8 @@ class TypeshedFinder:
             return None
 
     def _sig_from_value(self, val: Value) -> Optional[ConcreteSignature]:
+        if isinstance(val, UninitializedValue):
+            return None
         val, extensions = unannotate_value(val, DeprecatedExtension)
         val = replace_fallback(val)
         if not isinstance(val, CallableValue):

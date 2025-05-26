@@ -33,6 +33,7 @@ from itertools import chain
 from types import FunctionType, ModuleType
 from typing import Any, Callable, Optional, TypeVar, Union
 
+import typing_extensions
 from typing_extensions import ParamSpec, Protocol, assert_never
 
 import pycroscope
@@ -494,6 +495,9 @@ class TypeAliasValue(Value):
             }
             val = val.substitute_typevars(typevars)
         return val
+
+    def get_fallback_value(self) -> Value:
+        return self.get_value()
 
     def is_type(self, typ: type) -> bool:
         return self.get_value().is_type(typ)
@@ -2282,6 +2286,57 @@ class VariableNameValue(AnyValue):
         return None
 
 
+SimpleType: typing_extensions.TypeAlias = Union[
+    AnyValue,
+    KnownValue,
+    SyntheticModuleValue,
+    UnboundMethodValue,
+    TypedValue,
+    SubclassValue,
+]
+
+BasicType: typing_extensions.TypeAlias = Union[SimpleType, MultiValuedValue]
+
+# Subclasses of Value that represent real types in the type system.
+# There are a few other subclasses of Value that represent temporary
+# objects in some contexts; this alias exists to make it easier to refer
+# to those Values that are actually part of the type system.
+GradualType: typing_extensions.TypeAlias = Union[
+    BasicType,
+    # Invariant: all non-basic types support get_fallback_value()
+    TypeAliasValue,
+    NewTypeValue,
+    TypeVarValue,
+    ParamSpecArgsValue,
+    ParamSpecKwargsValue,
+    AnnotatedValue,
+]
+
+GRADUAL_TYPE = GradualType.__args__
+BASIC_TYPE = BasicType.__args__
+
+
+class NotAGradualType(Exception):
+    """Raised when a value is not a gradual type."""
+
+
+def gradualize(value: Value) -> GradualType:
+    if not isinstance(value, GRADUAL_TYPE):
+        raise NotAGradualType(f"Encountered non-type {value!r}")
+    return value
+
+
+def replace_fallback(val: Value) -> BasicType:
+    while True:
+        fallback = val.get_fallback_value()
+        if fallback is None:
+            break
+        val = fallback
+    if not isinstance(val, BASIC_TYPE):
+        raise NotAGradualType(f"Encountered non-basic type {val!r}")
+    return val
+
+
 def is_union(val: Value) -> bool:
     return isinstance(val, MultiValuedValue) or (
         isinstance(val, AnnotatedValue) and isinstance(val.value, MultiValuedValue)
@@ -2496,7 +2551,9 @@ def concrete_values_from_iterable(
     """
     value = replace_known_sequence_value(value)
     is_nonempty = False
-    if isinstance(value, MultiValuedValue):
+    if value is NO_RETURN_VALUE:
+        return NO_RETURN_VALUE
+    elif isinstance(value, MultiValuedValue):
         subvals = [concrete_values_from_iterable(val, ctx) for val in value.vals]
         errors = [subval for subval in subvals if isinstance(subval, CanAssignError)]
         if errors:
@@ -2534,8 +2591,6 @@ def concrete_values_from_iterable(
             if len(value.val) < ITERATION_LIMIT:
                 return [KnownValue(c) for c in value.val]
             is_nonempty = True
-    elif value is NO_RETURN_VALUE:
-        return NO_RETURN_VALUE
     iterable_type = is_iterable(value, ctx)
     if isinstance(iterable_type, Value):
         val = iterable_type
@@ -2812,7 +2867,7 @@ def _unpack_sequence_value(
             return [*head, SequenceValue(list, remaining_members), *reversed(tail)]
 
 
-def replace_known_sequence_value(value: Value) -> Value:
+def replace_known_sequence_value(value: Value) -> BasicType:
     """Simplify a Value in a way that is easier to handle for most typechecking use cases.
 
     Does the following:
@@ -2823,12 +2878,7 @@ def replace_known_sequence_value(value: Value) -> Value:
       SequenceValue or DictIncompleteValue.
 
     """
-    if isinstance(value, (AnnotatedValue, NewTypeValue)):
-        return replace_known_sequence_value(value.value)
-    if isinstance(value, TypeVarValue):
-        return replace_known_sequence_value(value.get_fallback_value())
-    if isinstance(value, TypeAliasValue):
-        return replace_known_sequence_value(value.get_value())
+    value = replace_fallback(value)
     if isinstance(value, KnownValue):
         return typify_literal(value)
     return value
@@ -2896,15 +2946,6 @@ def make_coro_type(return_type: Value) -> GenericValue:
         collections.abc.Coroutine,
         [AnyValue(AnySource.inference), AnyValue(AnySource.inference), return_type],
     )
-
-
-def replace_fallback(val: Value) -> Value:
-    while True:
-        fallback = val.get_fallback_value()
-        if fallback is None:
-            break
-        val = fallback
-    return val
 
 
 class Qualifier(enum.Enum):

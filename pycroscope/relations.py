@@ -14,7 +14,7 @@ from dataclasses import dataclass, replace
 from types import FunctionType
 from typing import Optional, Protocol, Union
 
-from typing_extensions import Literal, TypeAlias, assert_never
+from typing_extensions import Literal, assert_never
 
 import pycroscope
 from pycroscope.find_unused import used
@@ -33,6 +33,7 @@ from pycroscope.value import (
     DictIncompleteValue,
     Extension,
     GenericValue,
+    GradualType,
     IterableValue,
     KnownValue,
     LowerBound,
@@ -54,6 +55,7 @@ from pycroscope.value import (
     Value,
     VariableNameValue,
     flatten_values,
+    gradualize,
     intersect_bounds_maps,
     stringify_object,
     typify_literal,
@@ -79,30 +81,6 @@ class Relation(enum.Enum):
             return "equivalent to"
         else:
             assert_never(self)
-
-
-# Subclasses of Value that represent real types in the type system.
-GradualType: TypeAlias = Union[
-    AnyValue,
-    TypeAliasValue,
-    KnownValue,
-    SyntheticModuleValue,
-    UnboundMethodValue,
-    NewTypeValue,
-    TypedValue,
-    SubclassValue,
-    MultiValuedValue,
-    TypeVarValue,
-    ParamSpecArgsValue,
-    ParamSpecKwargsValue,
-    AnnotatedValue,
-]
-
-GRADUAL_TYPE = GradualType.__args__
-
-
-class NotAGradualType(Exception):
-    """Raised when a value is not a gradual type."""
 
 
 @used
@@ -170,8 +148,8 @@ def is_subtype_with_reason(
 def has_relation(
     left: Value, right: Value, relation: Relation, ctx: CanAssignContext
 ) -> CanAssign:
-    left = _gradualize(left)
-    right = _gradualize(right)
+    left = gradualize(left)
+    right = gradualize(right)
     if relation is Relation.EQUIVALENT:
         # A is equivalent to B if A is a subtype of B and B is a subtype of A.
         result1 = _has_relation(left, right, Relation.SUBTYPE, ctx)
@@ -198,12 +176,6 @@ def has_relation(
         return unify_bounds_maps([result1, result2])
     else:
         return _has_relation(left, right, relation, ctx)
-
-
-def _gradualize(value: Value) -> GradualType:
-    if not isinstance(value, GRADUAL_TYPE):
-        raise NotAGradualType(f"Encountered non-type {value}")
-    return value
 
 
 def _has_relation(
@@ -233,17 +205,17 @@ def _has_relation(
             ):
                 return {}
             with ctx.aliases_assume_compatibility(left, right):
-                left_inner = _gradualize(left.get_value())
+                left_inner = gradualize(left.get_value())
                 return _has_relation(left_inner, right, relation, ctx)
-        left_inner = _gradualize(left.get_value())
+        left_inner = gradualize(left.get_value())
         return _has_relation(left_inner, right, relation, ctx)
     if isinstance(right, TypeAliasValue):
-        right_inner = _gradualize(right.get_value())
+        right_inner = gradualize(right.get_value())
         return _has_relation(left, right_inner, relation, ctx)
 
     # AnnotatedValue
     if isinstance(left, AnnotatedValue):
-        left_inner = _gradualize(left.value)
+        left_inner = gradualize(left.value)
         can_assign = _has_relation(left_inner, right, relation, ctx)
         if isinstance(can_assign, CanAssignError):
             return can_assign
@@ -255,7 +227,7 @@ def _has_relation(
             bounds_maps.append(custom_can_assign)
         return unify_bounds_maps(bounds_maps)
     if isinstance(right, AnnotatedValue) and not isinstance(left, MultiValuedValue):
-        right_inner = _gradualize(right.value)
+        right_inner = gradualize(right.value)
         can_assign = _has_relation(left, right_inner, relation, ctx)
         if isinstance(can_assign, CanAssignError):
             return can_assign
@@ -282,7 +254,7 @@ def _has_relation(
             bounds_maps = []
             errors = []
             for val in left.vals:
-                val = _gradualize(val)
+                val = gradualize(val)
                 can_assign = _has_relation(val, right, relation, ctx)
                 if isinstance(can_assign, CanAssignError):
                     errors.append(can_assign)
@@ -304,7 +276,7 @@ def _has_relation(
         # right is a subtype if all the members are subtypes of left
         bounds_maps = []
         for val in right.vals:
-            val = _gradualize(val)
+            val = gradualize(val)
             can_assign = _has_relation(left, val, relation, ctx)
             if isinstance(can_assign, CanAssignError):
                 # Adding an additional layer here isn't helpful
@@ -384,7 +356,7 @@ def _has_relation(
         else:
             return CanAssignError(f"{right} is not {relation.description} {left}")
     if isinstance(right, NewTypeValue):
-        right_inner = _gradualize(right.value)
+        right_inner = gradualize(right.value)
         return _has_relation(left, right_inner, relation, ctx)
 
     # UnboundMethodValue
@@ -584,7 +556,7 @@ def _has_relation_union(
 ) -> CanAssign:
     bounds_maps = []
     for val in right_vals:
-        val = _gradualize(val)
+        val = gradualize(val)
         can_assign = _has_relation(left, val, relation, ctx)
         if isinstance(can_assign, CanAssignError):
             # Adding an additional layer here isn't helpful
@@ -852,7 +824,7 @@ def _has_relation_lazy_sequence(
     if a[0][0] is False and b[0][0] is False:
         # If so, check whether they're compatible
         can_assign = _has_relation(
-            _gradualize(a[0][1]), _gradualize(b[0][1]), relation, ctx
+            gradualize(a[0][1]), gradualize(b[0][1]), relation, ctx
         )
         if isinstance(can_assign, CanAssignError):
             if a.start_idx == b.start_idx:
@@ -870,7 +842,7 @@ def _has_relation_lazy_sequence(
     if a[-1][0] is False and b[-1][0] is False:
         # If so, check whether they're compatible
         can_assign = _has_relation(
-            _gradualize(a[-1][1]), _gradualize(b[-1][1]), relation, ctx
+            gradualize(a[-1][1]), gradualize(b[-1][1]), relation, ctx
         )
         if isinstance(can_assign, CanAssignError):
             a_end = len(a.seq.members) + a.end_idx - 1
@@ -889,7 +861,7 @@ def _has_relation_lazy_sequence(
     # Do both have a Many on the left and also on the right?
     if a[0][0] is True and b[0][0] is True and a[-1][0] is True and b[-1][0] is True:
         can_assign = _has_relation(
-            _gradualize(a[0][1]), _gradualize(b[0][1]), relation, ctx
+            gradualize(a[0][1]), gradualize(b[0][1]), relation, ctx
         )
         if isinstance(can_assign, CanAssignError):
             # If the leftmost Many in a is not compatible, assume it's empty
@@ -1004,9 +976,9 @@ def _has_relation_typeddict(
             if not entry.readonly:
                 # "other" may be a subclass of its TypedDict type that sets a different key
                 return CanAssignError(f"Mutable key {key} is missing in {right}")
-            extra_keys_type = _gradualize(right.extra_keys or TypedValue(object))
+            extra_keys_type = gradualize(right.extra_keys or TypedValue(object))
             can_assign = _has_relation(
-                _gradualize(entry.typ), extra_keys_type, relation, ctx
+                gradualize(entry.typ), extra_keys_type, relation, ctx
             )
             if isinstance(can_assign, CanAssignError):
                 return CanAssignError(

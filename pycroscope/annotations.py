@@ -1005,7 +1005,13 @@ class _DefaultContext(Context):
 
 
 @dataclass(frozen=True)
-class _SubscriptedValue(Value):
+class _SubscriptedValue(AnyValue):
+    """Represents certain values encountered while parsing an AST directly, primarily in stubs.
+
+    Ideally should not exist but currently it helps support some use cases.
+
+    """
+
     root: Optional[Value]
     root_node: ast.AST
     members: tuple[Value, ...]
@@ -1038,7 +1044,7 @@ class _Visitor(ast.NodeVisitor):
             members = tuple(members)
         else:
             members = (index,)
-        return _SubscriptedValue(value, node.value, members)
+        return _SubscriptedValue(AnySource.inference, value, node.value, members)
 
     def visit_Attribute(self, node: ast.Attribute) -> Optional[Value]:
         root_value = self.visit(node.value)
@@ -1079,14 +1085,19 @@ class _Visitor(ast.NodeVisitor):
     def visit_BinOp(self, node: ast.BinOp) -> Optional[Value]:
         if isinstance(node.op, ast.BitOr):
             return _SubscriptedValue(
-                KnownValue(Union), node, (self.visit(node.left), self.visit(node.right))
+                AnySource.inference,
+                KnownValue(Union),
+                node,
+                (self.visit(node.left), self.visit(node.right)),
             )
         else:
             return None
 
     def visit_Starred(self, node: ast.Starred) -> Value:
         value = self.visit(node.value)
-        return _SubscriptedValue(KnownValue(typing_extensions.Unpack), node, (value,))
+        return _SubscriptedValue(
+            AnySource.inference, KnownValue(typing_extensions.Unpack), node, (value,)
+        )
 
     def visit_UnaryOp(self, node: ast.UnaryOp) -> Optional[Value]:
         # Only int and float negation on literals are supported.

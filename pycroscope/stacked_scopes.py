@@ -327,12 +327,13 @@ class Constraint(AbstractConstraint):
         The value may not be a MultiValuedValue.
 
         """
-        inner_value = replace_fallback(value)
-        if inner_value is UNINITIALIZED_VALUE:
+        if value is UNINITIALIZED_VALUE:
             # If a constraint applies to a value, it must have been initialized,
             # or at least we must have already tried to read it and gotten a
             # possibly_undefined_name error.
             return
+
+        inner_value = replace_fallback(value)
         if self.constraint_type == ConstraintType.is_instance:
             if isinstance(inner_value, AnyValue):
                 if self.positive:
