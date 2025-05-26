@@ -198,6 +198,12 @@ class Value:
     def __ror__(self, other: "Value") -> "Value":
         return unite_values(other, self)
 
+    def __and__(self, other: "Value") -> "Value":
+        return IntersectionValue((self, other))
+
+    def __rand__(self, other: "Value") -> "Value":
+        return IntersectionValue((other, self))
+
 
 class CanAssignContext(Protocol):
     """A context passed to the :meth:`Value.can_assign` method.
@@ -1602,11 +1608,9 @@ class IntersectionValue(Value):
         assert self.vals, "IntersectionValue must have at least one value"
 
     def substitute_typevars(self, typevars: TypeVarMap) -> Value:
-        val0 = self.vals[0].substitute_typevars(typevars)
-        for val in self.vals[1:]:
-            new_val = val.substitute_typevars(typevars)
-            val0 = pycroscope.relations.intersect_values(val0, new_val)
-        return val0
+        return IntersectionValue(
+            tuple(val.substitute_typevars(typevars) for val in self.vals)
+        )
 
     def walk_values(self) -> Iterable[Value]:
         yield self

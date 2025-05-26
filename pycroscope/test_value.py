@@ -18,6 +18,7 @@ from .name_check_visitor import NameCheckVisitor
 from .signature import ELLIPSIS_PARAM, Signature
 from .stacked_scopes import Composite
 from .value import (
+    NO_RETURN_VALUE,
     AnnotatedValue,
     AnySource,
     AnyValue,
@@ -610,6 +611,50 @@ def test_annotated_value() -> None:
     tv_int = TypedValue(int)
     assert_can_assign(AnnotatedValue(tv_int, [tv_int]), tv_int)
     assert_can_assign(tv_int, AnnotatedValue(tv_int, [tv_int]))
+
+
+class A:
+    pass
+
+
+class B(A):
+    pass
+
+
+class C(A):
+    pass
+
+
+class D(B, C):
+    pass
+
+
+def test_intersection_value() -> None:
+    val = TypedValue(int) & TypedValue(str)
+    assert str(val) == "int & str"
+
+    assert_can_assign(val, val)
+    assert_can_assign(TypedValue(object), val)
+
+    val = TypedValue(B) & TypedValue(C)
+    assert str(val) == "pycroscope.test_value.B & pycroscope.test_value.C"
+    assert_can_assign(val, val)
+    assert_can_assign(TypedValue(A), val)
+    assert_cannot_assign(val, TypedValue(A))
+
+    assert_cannot_assign(TypedValue(D), val)
+    assert_can_assign(val, TypedValue(D))
+
+    assert_can_assign(TypedValue(B), val)
+    assert_cannot_assign(val, TypedValue(B))
+
+    assert_can_assign(TypedValue(B) | TypedValue(C), val)
+    assert_cannot_assign(val, TypedValue(B) | TypedValue(C))
+
+    never = KnownValue(1) & KnownValue(2)
+    assert_can_assign(never, never)
+    assert_can_assign(NO_RETURN_VALUE, never)
+    assert_can_assign(never, NO_RETURN_VALUE)
 
 
 def test_io() -> None:

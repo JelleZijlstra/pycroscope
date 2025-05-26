@@ -9,7 +9,7 @@ https://typing.python.org/en/latest/spec/concepts.html#summary-of-type-relations
 
 import collections.abc
 import enum
-from collections.abc import Iterable, Iterator
+from collections.abc import Iterable, Iterator, Sequence
 from dataclasses import dataclass, replace
 from types import FunctionType
 from typing import Optional, Protocol, Union
@@ -17,6 +17,7 @@ from typing import Optional, Protocol, Union
 from typing_extensions import Literal, assert_never
 
 import pycroscope
+from pycroscope.analysis_lib import Sentinel
 from pycroscope.find_unused import used
 from pycroscope.safe import safe_equals, safe_isinstance
 from pycroscope.typevar import resolve_bounds_map
@@ -26,6 +27,7 @@ from pycroscope.value import (
     AnnotatedValue,
     AnySource,
     AnyValue,
+    BasicType,
     CallableValue,
     CanAssign,
     CanAssignContext,
@@ -43,10 +45,12 @@ from pycroscope.value import (
     ParamSpecArgsValue,
     ParamSpecKwargsValue,
     SequenceValue,
+    SimpleType,
     SubclassValue,
     SyntheticModuleValue,
     T,
     TypeAliasValue,
+    TypedDictEntry,
     TypedDictValue,
     TypedValue,
     TypeVarMap,
@@ -239,6 +243,47 @@ def _has_relation(
             if isinstance(custom_can_assign, CanAssignError):
                 return custom_can_assign
             bounds_maps.append(custom_can_assign)
+        return unify_bounds_maps(bounds_maps)
+
+    # IntersectionValue
+    if isinstance(left, IntersectionValue):
+        # Try to simplify first
+        left = intersect_multi(left.vals, ctx)
+        if not isinstance(left, IntersectionValue):
+            return _has_relation(left, right, relation, ctx)
+        if isinstance(right, IntersectionValue):
+            right = intersect_multi(right.vals, ctx)
+        # Must be a subtype of all the members
+        bounds_maps = []
+        errors = []
+        for val in left.vals:
+            can_assign = _has_relation(gradualize(val), right, relation, ctx)
+            if isinstance(can_assign, CanAssignError):
+                errors.append(can_assign)
+            else:
+                bounds_maps.append(can_assign)
+        if errors:
+            return CanAssignError(
+                f"{right} is not {relation.description} {left}", children=errors
+            )
+        return intersect_bounds_maps(bounds_maps)
+    if isinstance(right, IntersectionValue):
+        right = intersect_multi(right.vals, ctx)
+        if not isinstance(right, IntersectionValue):
+            return _has_relation(left, right, relation, ctx)
+        # At least one member must be a subtype
+        bounds_maps = []
+        errors = []
+        for val in right.vals:
+            can_assign = _has_relation(left, gradualize(val), relation, ctx)
+            if isinstance(can_assign, CanAssignError):
+                errors.append(can_assign)
+            else:
+                bounds_maps.append(can_assign)
+        if not bounds_maps:
+            return CanAssignError(
+                f"{right} is not {relation.description} {left}", children=errors
+            )
         return unify_bounds_maps(bounds_maps)
 
     # Never (special case of MultiValuedValue)
@@ -1148,10 +1193,125 @@ def can_assign_and_used_any(
     return assignability_result, True
 
 
+Irreducible = Sentinel("Irreducible")
+TypeOrIrreducible = Union[GradualType, Literal[Irreducible]]
+
+
+def intersect_multi(values: Sequence[Value], ctx: CanAssignContext) -> GradualType:
+    """Intersect multiple values."""
+    if not values:
+        return TypedValue(object)
+
+    result = values[0]
+    for value in values[1:]:
+        result = intersect_values(result, value, ctx)
+    return gradualize(result)
+
+
 def intersect_values(left: Value, right: Value, ctx: CanAssignContext) -> GradualType:
+    value = _intersect_values_inner(left, right, ctx)
+    if value is Irreducible:
+        return IntersectionValue((left, right))
+    return value
+
+
+def _intersect_values_inner(
+    left: Value, right: Value, ctx: CanAssignContext
+) -> TypeOrIrreducible:
     left = gradualize(left)
     right = gradualize(right)
 
+    if (result := _simple_intersection(left, right, ctx)) is not None:
+        return result
+
+    if isinstance(left, TypeAliasValue):
+        return _intersect_alias(left, right, ctx)
+    if isinstance(right, TypeAliasValue):
+        return _intersect_alias(right, left, ctx)
+
+    if isinstance(
+        left,
+        (
+            AnnotatedValue,
+            NewTypeValue,
+            ParamSpecArgsValue,
+            ParamSpecKwargsValue,
+            TypeVarValue,
+        ),
+    ):
+        return _intersect_wrapper(left, right, ctx)
+    if isinstance(
+        right,
+        (
+            AnnotatedValue,
+            NewTypeValue,
+            ParamSpecArgsValue,
+            ParamSpecKwargsValue,
+            TypeVarValue,
+        ),
+    ):
+        return _intersect_wrapper(right, left, ctx)
+
+    return _intersect_basic_types(left, right, ctx)
+
+
+def _intersect_wrapper(
+    left: Union[
+        NewTypeValue,
+        AnnotatedValue,
+        ParamSpecArgsValue,
+        ParamSpecKwargsValue,
+        TypeVarValue,
+    ],
+    right: GradualType,
+    ctx: CanAssignContext,
+) -> TypeOrIrreducible:
+    left_inner = left.get_fallback_value()
+    result = _intersect_values_inner(left_inner, right, ctx)
+    if result is NO_RETURN_VALUE:
+        return NO_RETURN_VALUE
+    if result is Irreducible:
+        return Irreducible
+    # Example: NT = NewType("NT", Literal[1, 2, 3])
+    # NT & Literal[2, 3, 4] = NT & Literal[2, 3]
+    return IntersectionValue((left_inner, result))
+
+
+def _intersect_alias(
+    left: TypeAliasValue, right: GradualType, ctx: CanAssignContext
+) -> TypeOrIrreducible:
+    left_inner = left.get_value()
+    if isinstance(right, TypeAliasValue):
+        if ctx.can_aliases_assume_compatibility(left, right):
+            # Treat it as irreducible
+            # TODO: Is this right?
+            return Irreducible
+        with ctx.aliases_assume_compatibility(left, right):
+            right_inner = right.get_value()
+            return _intersect_values_inner(left_inner, right_inner, ctx)
+    else:
+        return _intersect_values_inner(left_inner, right, ctx)
+
+
+def _intersect_basic_types(
+    left: BasicType, right: BasicType, ctx: CanAssignContext
+) -> TypeOrIrreducible:
+    if isinstance(left, MultiValuedValue):
+        return _intersect_union(left, right, ctx)
+    if isinstance(right, MultiValuedValue):
+        return _intersect_union(right, left, ctx)
+
+    if isinstance(left, IntersectionValue):
+        return _intersect_intersection(left, right, ctx)
+    if isinstance(right, IntersectionValue):
+        return _intersect_intersection(right, left, ctx)
+
+    return _intersect_simple_types(left, right, ctx)
+
+
+def _simple_intersection(
+    left: GradualType, right: GradualType, ctx: CanAssignContext
+) -> Optional[TypeOrIrreducible]:
     # Anything & Never = Never
     if left is NO_RETURN_VALUE or right is NO_RETURN_VALUE:
         return NO_RETURN_VALUE
@@ -1164,46 +1324,176 @@ def intersect_values(left: Value, right: Value, ctx: CanAssignContext) -> Gradua
 
     # Intersections with Any don't simplify
     if isinstance(left, AnyValue):
-        return left
+        return Irreducible
     if isinstance(right, AnyValue):
-        return right
+        return Irreducible
 
     # If one is a subtype of the other, the narrower type prevails
     if is_subtype(left, right, ctx):
         return right
     if is_subtype(right, left, ctx):
         return left
-
-    if isinstance(left, MultiValuedValue):
-        return _intersect_union(left, right, ctx)
-    if isinstance(right, MultiValuedValue):
-        return _intersect_union(right, left, ctx)
-
-    if isinstance(left, IntersectionValue):
-        return _intersect_intersection(left, right, ctx)
-    if isinstance(right, IntersectionValue):
-        return _intersect_intersection(right, left, ctx)
-
-    if isinstance(left, KnownValue):
-        return _intersect_known(left, right, ctx)
-    if isinstance(right, KnownValue):
-        return _intersect_known(right, left, ctx)
-
-    assert_never(left)
+    return None
 
 
-def _intersect_newtype(
-    left: NewTypeValue, right: GradualType, ctx: CanAssignContext
-) -> GradualType:
-    pass
+def _intersect_simple_types(
+    left: SimpleType, right: SimpleType, ctx: CanAssignContext
+) -> TypeOrIrreducible:
+    if isinstance(left, (KnownValue, SyntheticModuleValue, UnboundMethodValue)):
+        return _intersect_singular_type(left, right, ctx)
+    if isinstance(right, (KnownValue, SyntheticModuleValue, UnboundMethodValue)):
+        return _intersect_singular_type(right, left, ctx)
+    if isinstance(left, AnyValue) or isinstance(right, AnyValue):
+        return Irreducible
+    if isinstance(left, SubclassValue):
+        if isinstance(right, SubclassValue):
+            return _intersect_subclass_values(left, right, ctx)
+        else:
+            return _intersect_subclass_typed(left, right, ctx)
+    if isinstance(right, SubclassValue):
+        return _intersect_subclass_typed(right, left, ctx)
+    return _intersect_typed(left, right, ctx)
 
 
-def _intersect_known(
-    left: KnownValue, right: GradualType, ctx: CanAssignContext
-) -> GradualType:
+def _intersect_typed(
+    left: TypedValue, right: TypedValue, ctx: CanAssignContext
+) -> TypeOrIrreducible:
+    if isinstance(left, TypedDictValue) and isinstance(right, TypedDictValue):
+        return _intersect_typeddict(left, right, ctx)
+    # TODO: Consider more options
+    return Irreducible
+
+
+def _intersect_maybe_mutable(
+    left: Value,
+    left_readonly: bool,
+    right: Value,
+    right_readonly: bool,
+    ctx: CanAssignContext,
+) -> tuple[Value, bool]:
+    if left_readonly:
+        if right_readonly:
+            return intersect_values(left, right, ctx), True
+        else:
+            if is_assignable(left, right, ctx):
+                return intersect_values(left, right, ctx), False
+            else:
+                return NO_RETURN_VALUE, False
+    else:
+        if right_readonly:
+            if is_assignable(right, left, ctx):
+                return intersect_values(left, right, ctx), False
+            else:
+                return NO_RETURN_VALUE, False
+        else:
+            if is_consistent(left, right, ctx):
+                return intersect_values(left, right, ctx), False
+            else:
+                return NO_RETURN_VALUE, False
+
+
+def _intersect_entry_with_extra(
+    entry: TypedDictEntry, right: TypedDictValue, ctx: CanAssignContext
+) -> Optional[TypedDictEntry]:
+    value, readonly = _intersect_maybe_mutable(
+        entry.typ,
+        entry.readonly,
+        right.extra_keys or TypedValue(object),
+        right.extra_keys_readonly,
+        ctx,
+    )
+    if entry.required and value is NO_RETURN_VALUE:
+        return None
+    return TypedDictEntry(typ=value, required=entry.required, readonly=readonly)
+
+
+def _intersect_typeddict(
+    left: TypedDictValue, right: TypedDictValue, ctx: CanAssignContext
+) -> TypeOrIrreducible:
+    left_extra = left.extra_keys or TypedValue(object)
+    right_extra = right.extra_keys or TypedValue(object)
+    if left.extra_keys is None and right.extra_keys is None:
+        extra_keys = None
+        extra_readonly = False
+    else:
+        extra_keys, extra_readonly = _intersect_maybe_mutable(
+            left_extra,
+            left.extra_keys_readonly,
+            right_extra,
+            right.extra_keys_readonly,
+            ctx,
+        )
+
+    items = {}
+    for key, entry in left.items.items():
+        if key in right.items:
+            their_entry = right.items[key]
+            required = entry.required or their_entry.required
+
+            result, readonly = _intersect_maybe_mutable(
+                entry.typ, entry.readonly, their_entry.typ, their_entry.readonly, ctx
+            )
+            if required and result is NO_RETURN_VALUE:
+                return NO_RETURN_VALUE
+            items[key] = TypedDictEntry(
+                typ=result, required=required, readonly=readonly
+            )
+        else:
+            new_entry = _intersect_entry_with_extra(entry, right, ctx)
+            if new_entry is None:
+                return NO_RETURN_VALUE
+            items[key] = new_entry
+    for key, entry in right.items.items():
+        if key not in items:
+            new_entry = _intersect_entry_with_extra(entry, left, ctx)
+            if new_entry is None:
+                return NO_RETURN_VALUE
+            items[key] = new_entry
+
+    return TypedDictValue(
+        items=items, extra_keys=extra_keys, extra_keys_readonly=extra_readonly
+    )
+
+
+def _intersect_subclass_typed(
+    left: SubclassValue, right: TypedValue, ctx: CanAssignContext
+) -> TypeOrIrreducible:
+    if is_assignable(right, TypedValue(type), ctx):
+        return Irreducible
+    else:
+        return NO_RETURN_VALUE
+
+
+def _intersect_subclass_values(
+    left: SubclassValue, right: SubclassValue, ctx: CanAssignContext
+) -> TypeOrIrreducible:
+    result = _intersect_values_inner(left.typ, right.typ, ctx)
+    if result is NO_RETURN_VALUE:
+        return NO_RETURN_VALUE
+    elif result is Irreducible:
+        return Irreducible
+    elif isinstance(result, (TypedValue, TypeVarValue)):
+        return SubclassValue(result)
+    elif isinstance(result, IntersectionValue):
+        vals = []
+        for subval in result.vals:
+            if isinstance(subval, (TypedValue, TypeVarValue)):
+                vals.append(SubclassValue(subval))
+            else:
+                return Irreducible
+        return IntersectionValue(tuple(vals))
+    else:
+        return Irreducible
+
+
+def _intersect_singular_type(
+    left: Union[KnownValue, SyntheticModuleValue, UnboundMethodValue],
+    right: GradualType,
+    ctx: CanAssignContext,
+) -> TypeOrIrreducible:
     if is_assignable(right, left, ctx):
-        # Now it is irreducible (e.g. an alias to Any & Literal[1])
-        return IntersectionValue((left, right))
+        # Now it is irreducible (e.g. tuple[Any, ...] & Literal[(1, 2)])
+        return Irreducible
     else:
         # Otherwise it must be an empty type.
         return NO_RETURN_VALUE
@@ -1219,12 +1509,20 @@ def _intersect_union(
 def _intersect_intersection(
     left: IntersectionValue, right: GradualType, ctx: CanAssignContext
 ) -> GradualType:
-    intersections = [intersect_values(subval, right, ctx) for subval in left.vals]
+    intersections = [
+        _intersect_values_inner(subval, right, ctx) for subval in left.vals
+    ]
     results = []
-    for subval in intersections:
-        if isinstance(subval, IntersectionValue):
-            for subsubval in subval.vals:
+    should_add_right = False
+    for subval, new_subval in zip(left.vals, intersections):
+        if new_subval is Irreducible:
+            results.append(subval)
+            should_add_right = True
+        elif isinstance(new_subval, IntersectionValue):
+            for subsubval in new_subval.vals:
                 results.append(gradualize(subsubval))
         else:
-            results.append(subval)
+            results.append(new_subval)
+    if should_add_right:
+        results.append(right)
     return IntersectionValue(tuple(dict.fromkeys(results)))

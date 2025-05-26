@@ -32,6 +32,7 @@ from .value import (
     GenericBases,
     GenericValue,
     HasAttrExtension,
+    IntersectionValue,
     KnownValue,
     KnownValueWithTypeVars,
     MultiValuedValue,
@@ -136,6 +137,8 @@ def get_attribute(ctx: AttrContext) -> Value:
     elif isinstance(root_value, AnyValue):
         attribute_value = AnyValue(AnySource.from_another)
     elif isinstance(root_value, MultiValuedValue):
+        raise TypeError("caller should unwrap MultiValuedValue")
+    elif isinstance(root_value, IntersectionValue):
         raise TypeError("caller should unwrap MultiValuedValue")
     elif isinstance(root_value, SyntheticModuleValue):
         module = ".".join(root_value.module_path)

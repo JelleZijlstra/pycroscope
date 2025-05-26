@@ -275,7 +275,9 @@ class Intersection:
         return tuple(dict.fromkeys(params))
 
     def __getitem__(self, item: object) -> Any:
-        return types.GenericAlias(self, item)
+        return types.GenericAlias(
+            self, item
+        )  # static analysis: ignore[incompatible_argument]
 
     def __call__(self, *args: Any, **kwargs: Any) -> Any:
         raise TypeError(f"{self} is not callable")
