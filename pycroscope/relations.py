@@ -34,6 +34,7 @@ from pycroscope.value import (
     Extension,
     GenericValue,
     GradualType,
+    IntersectionValue,
     IterableValue,
     KnownValue,
     LowerBound,
@@ -60,6 +61,7 @@ from pycroscope.value import (
     stringify_object,
     typify_literal,
     unify_bounds_maps,
+    unite_values,
 )
 
 
@@ -1144,3 +1146,85 @@ def can_assign_and_used_any(
         return subtype_result, False
     assignability_result = is_assignable_with_reason(param_typ, var_value, ctx)
     return assignability_result, True
+
+
+def intersect_values(left: Value, right: Value, ctx: CanAssignContext) -> GradualType:
+    left = gradualize(left)
+    right = gradualize(right)
+
+    # Anything & Never = Never
+    if left is NO_RETURN_VALUE or right is NO_RETURN_VALUE:
+        return NO_RETURN_VALUE
+
+    # Anything & object = Anything
+    if left == TypedValue(object):
+        return right
+    if right == TypedValue(object):
+        return left
+
+    # Intersections with Any don't simplify
+    if isinstance(left, AnyValue):
+        return left
+    if isinstance(right, AnyValue):
+        return right
+
+    # If one is a subtype of the other, the narrower type prevails
+    if is_subtype(left, right, ctx):
+        return right
+    if is_subtype(right, left, ctx):
+        return left
+
+    if isinstance(left, MultiValuedValue):
+        return _intersect_union(left, right, ctx)
+    if isinstance(right, MultiValuedValue):
+        return _intersect_union(right, left, ctx)
+
+    if isinstance(left, IntersectionValue):
+        return _intersect_intersection(left, right, ctx)
+    if isinstance(right, IntersectionValue):
+        return _intersect_intersection(right, left, ctx)
+
+    if isinstance(left, KnownValue):
+        return _intersect_known(left, right, ctx)
+    if isinstance(right, KnownValue):
+        return _intersect_known(right, left, ctx)
+
+    assert_never(left)
+
+
+def _intersect_newtype(
+    left: NewTypeValue, right: GradualType, ctx: CanAssignContext
+) -> GradualType:
+    pass
+
+
+def _intersect_known(
+    left: KnownValue, right: GradualType, ctx: CanAssignContext
+) -> GradualType:
+    if is_assignable(right, left, ctx):
+        # Now it is irreducible (e.g. an alias to Any & Literal[1])
+        return IntersectionValue((left, right))
+    else:
+        # Otherwise it must be an empty type.
+        return NO_RETURN_VALUE
+
+
+def _intersect_union(
+    left: MultiValuedValue, right: GradualType, ctx: CanAssignContext
+) -> GradualType:
+    vals = [intersect_values(subval, right, ctx) for subval in left.vals]
+    return gradualize(unite_values(*vals))
+
+
+def _intersect_intersection(
+    left: IntersectionValue, right: GradualType, ctx: CanAssignContext
+) -> GradualType:
+    intersections = [intersect_values(subval, right, ctx) for subval in left.vals]
+    results = []
+    for subval in intersections:
+        if isinstance(subval, IntersectionValue):
+            for subsubval in subval.vals:
+                results.append(gradualize(subsubval))
+        else:
+            results.append(subval)
+    return IntersectionValue(tuple(dict.fromkeys(results)))

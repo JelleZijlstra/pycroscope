@@ -1593,6 +1593,31 @@ class SubclassValue(Value):
 
 
 @dataclass(frozen=True, order=False)
+class IntersectionValue(Value):
+    """Represents the intersection of multiple values."""
+
+    vals: tuple[Value, ...]
+
+    def __post_init__(self) -> None:
+        assert self.vals, "IntersectionValue must have at least one value"
+
+    def substitute_typevars(self, typevars: TypeVarMap) -> Value:
+        val0 = self.vals[0].substitute_typevars(typevars)
+        for val in self.vals[1:]:
+            new_val = val.substitute_typevars(typevars)
+            val0 = pycroscope.relations.intersect_values(val0, new_val)
+        return val0
+
+    def walk_values(self) -> Iterable[Value]:
+        yield self
+        for val in self.vals:
+            yield from val.walk_values()
+
+    def __str__(self) -> str:
+        return " & ".join(str(val) for val in self.vals)
+
+
+@dataclass(frozen=True, order=False)
 class MultiValuedValue(Value):
     """Equivalent of ``typing.Union``. Represents the union of multiple values."""
 
@@ -2295,7 +2320,9 @@ SimpleType: typing_extensions.TypeAlias = Union[
     SubclassValue,
 ]
 
-BasicType: typing_extensions.TypeAlias = Union[SimpleType, MultiValuedValue]
+BasicType: typing_extensions.TypeAlias = Union[
+    SimpleType, MultiValuedValue, IntersectionValue
+]
 
 # Subclasses of Value that represent real types in the type system.
 # There are a few other subclasses of Value that represent temporary

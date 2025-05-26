@@ -248,6 +248,15 @@ class AsynqCallable(metaclass=_AsynqCallableMeta):
 
 @dataclass(frozen=True)
 class Intersection:
+    """An intersection of two (or more) types.
+
+    The intersection of two fully static types is the static type that contains
+    all elements common to both types. The intersection of two gradual types is a
+    gradual type that can materialize to all types that are materializations of both
+    elements of the intersection.
+
+    """
+
     args: tuple[object, ...]
 
     def __class_getitem__(cls, params: tuple[object, ...]) -> "Intersection":
