@@ -259,7 +259,7 @@ class Intersection:
 
     args: tuple[object, ...]
 
-    def __class_getitem__(cls, params: tuple[object, ...]) -> "Intersection":
+    def __class_getitem__(cls, params: tuple[object, ...]) -> Any:
         if not isinstance(params, tuple):
             raise TypeError(f"{cls.__name__}[...] should be instantiated with a tuple")
         return cls(params)
