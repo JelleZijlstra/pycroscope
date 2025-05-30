@@ -10,6 +10,7 @@ be gracefully ignored by other type checkers.
 """
 
 import enum
+import types
 import typing
 from collections import defaultdict
 from collections.abc import Container, Iterable, Iterator, Sequence
@@ -240,6 +241,43 @@ class AsynqCallable(metaclass=_AsynqCallableMeta):
         if self.args is not Ellipsis:
             yield from self.args
         yield self.return_type
+
+    def __call__(self, *args: Any, **kwargs: Any) -> Any:
+        raise TypeError(f"{self} is not callable")
+
+
+@dataclass(frozen=True)
+class Intersection:
+    """An intersection of two (or more) types.
+
+    The intersection of two fully static types is the static type that contains
+    all elements common to both types. The intersection of two gradual types is a
+    gradual type that can materialize to all types that are materializations of both
+    elements of the intersection.
+
+    """
+
+    args: tuple[object, ...]
+
+    def __class_getitem__(cls, params: tuple[object, ...]) -> Any:
+        if not isinstance(params, tuple):
+            raise TypeError(f"{cls.__name__}[...] should be instantiated with a tuple")
+        return cls(params)
+
+    @property
+    def __parameters__(self) -> tuple["TypeVar", ...]:
+        params = []
+        for arg in self.args:
+            if isinstance(arg, TypeVar):
+                params.append(arg)
+            elif hasattr(arg, "__parameters__"):
+                params += arg.__parameters__
+        return tuple(dict.fromkeys(params))
+
+    def __getitem__(self, item: object) -> Any:
+        return types.GenericAlias(
+            self, item  # static analysis: ignore[incompatible_argument]
+        )
 
     def __call__(self, *args: Any, **kwargs: Any) -> Any:
         raise TypeError(f"{self} is not callable")

@@ -20,6 +20,7 @@ from .value import (
     AnyValue,
     BasicType,
     DictIncompleteValue,
+    IntersectionValue,
     KnownValue,
     MultiValuedValue,
     SequenceValue,
@@ -102,6 +103,12 @@ def _get_boolability_basic(value: BasicType) -> Boolability:
         else:
             # NO_RETURN_VALUE
             return Boolability.boolable
+    elif isinstance(value, IntersectionValue):
+        boolabilities = {
+            _get_boolability_basic(replace_known_sequence_value(member))
+            for member in value.vals
+        }
+        return max(boolabilities, key=lambda b: b.value)
     else:
         return _get_boolability_no_mvv(value)
 

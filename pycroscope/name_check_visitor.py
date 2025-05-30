@@ -106,7 +106,7 @@ from .options import (
 from .patma import PatmaVisitor
 from .predicates import EqualsPredicate, InPredicate
 from .reexport import ImplicitReexportTracker
-from .relations import check_hashability
+from .relations import check_hashability, intersect_multi
 from .safe import (
     all_of_type,
     is_dataclass_type,
@@ -186,6 +186,7 @@ from .value import (
     DictIncompleteValue,
     GenericBases,
     GenericValue,
+    IntersectionValue,
     KnownValue,
     KVPair,
     MultiValuedValue,
@@ -5296,6 +5297,40 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     subresult = self._get_attribute_fallback(subval, attr, node)
                 results.append(subresult)
             return unite_values(*results)
+        elif isinstance(root_composite.value, IntersectionValue):
+            # If the value is an intersection, we need to get the attribute from each
+            # of the intersection's values.
+            results = []
+            for subval in root_composite.value.vals:
+                composite = Composite(
+                    subval, root_composite.varname, root_composite.node
+                )
+                subresult = self.get_attribute(
+                    composite,
+                    attr,
+                    node,
+                    ignore_none=ignore_none,
+                    use_fallback=use_fallback,
+                )
+                if (
+                    subresult is UNINITIALIZED_VALUE
+                    and use_fallback
+                    and node is not None
+                ):
+                    subresult = self._get_attribute_fallback(
+                        subval, attr, node, allow_error=False
+                    )
+                if subresult is not UNINITIALIZED_VALUE:
+                    results.append(subresult)
+            if not results:
+                if node is not None:
+                    self._show_error_if_checking(
+                        node,
+                        f"Intersection value {root_composite.value} has no attribute {attr!r}",
+                        ErrorCode.undefined_attribute,
+                    )
+                return UNINITIALIZED_VALUE
+            return intersect_multi(results, self)
         ctx = _AttrContext(
             root_composite,
             attr,
@@ -5317,7 +5352,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         )
 
     def _get_attribute_fallback(
-        self, root_value: Value, attr: str, node: ast.AST
+        self, root_value: Value, attr: str, node: ast.AST, *, allow_error: bool = True
     ) -> Value:
         # We don't throw an error in many
         # cases where we're not quite sure whether an attribute
@@ -5363,16 +5398,21 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         elif isinstance(root_value, MultiValuedValue):
             return unite_values(
                 *[
-                    self._get_attribute_fallback(val, attr, node)
+                    self._get_attribute_fallback(
+                        val, attr, node, allow_error=allow_error
+                    )
                     for val in root_value.vals
                 ]
             )
-        self._show_error_if_checking(
-            node,
-            f"{root_value} has no attribute {attr!r}",
-            ErrorCode.undefined_attribute,
-        )
-        return AnyValue(AnySource.error)
+        if allow_error:
+            self._show_error_if_checking(
+                node,
+                f"{root_value} has no attribute {attr!r}",
+                ErrorCode.undefined_attribute,
+            )
+            return AnyValue(AnySource.error)
+        else:
+            return UNINITIALIZED_VALUE
 
     def composite_from_node(self, node: ast.AST) -> Composite:
         if isinstance(node, ast.Attribute):

@@ -49,6 +49,7 @@ from .extensions import (
     CustomCheck,
     ExternalType,
     HasAttrGuard,
+    Intersection,
     NoReturnGuard,
     ParameterTypeGuard,
     TypeGuard,
@@ -78,6 +79,7 @@ from .value import (
     Extension,
     GenericValue,
     HasAttrGuardExtension,
+    IntersectionValue,
     KnownValue,
     KVPair,
     MultiValuedValue,
@@ -553,6 +555,9 @@ def _type_from_runtime(val: Any, ctx: Context) -> Value:
         )
     elif val is AsynqCallable:
         return CallableValue(Signature.make([ELLIPSIS_PARAM], is_asynq=True))
+    elif val is Intersection:
+        ctx.show_error("Intersection[] is missing arguments")
+        return AnyValue(AnySource.error)
     elif is_typing_name(val, "Any"):
         return AnyValue(AnySource.explicit)
     elif isinstance(val, type):
@@ -608,6 +613,13 @@ def _type_from_runtime(val: Any, ctx: Context) -> Value:
             params, _type_from_runtime(val.return_type, ctx), is_asynq=True
         )
         return CallableValue(sig)
+    elif isinstance(val, Intersection):
+        if not val.args:
+            ctx.show_error("Intersection[] is missing arguments")
+            return AnyValue(AnySource.error)
+        return IntersectionValue(
+            tuple(_type_from_runtime(subval, ctx) for subval in val.args)
+        )
     elif isinstance(val, ExternalType):
         try:
             typ = object_from_string(val.type_path)
@@ -917,6 +929,13 @@ def _type_from_subscripted_value(
             return _make_callable_from_value(args, return_value, ctx, is_asynq=True)
         ctx.show_error("AsynqCallable requires exactly two arguments")
         return AnyValue(AnySource.error)
+    elif root is Intersection:
+        if not members:
+            ctx.show_error("Intersection[] is missing arguments")
+            return AnyValue(AnySource.error)
+        return IntersectionValue(
+            tuple(_type_from_value(subval, ctx) for subval in members)
+        )
     elif isinstance(root, type):
         return GenericValue(root, [_type_from_value(elt, ctx) for elt in members])
     elif is_typing_name(root, "ClassVar"):
