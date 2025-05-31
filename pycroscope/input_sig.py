@@ -221,6 +221,7 @@ def extract_type_params(value: Value) -> Iterable[TypeVarLike]:
 def wrap_type_param(type_param: TypeVarLike) -> Value:
     """Wrap a type parameter in an InputSigValue."""
     if is_instance_of_typing_name(type_param, "ParamSpec"):
+        # static analysis: ignore[incompatible_argument]
         return InputSigValue(ParamSpecSig(type_param))
     elif is_instance_of_typing_name(type_param, "TypeVar"):
         return TypeVarValue(type_param)
