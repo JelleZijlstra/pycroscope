@@ -565,7 +565,21 @@ def _has_relation(
             if generic_args is not None and len(left.args) == len(generic_args):
                 bounds_maps = []
                 for i, (my_arg, their_arg) in enumerate(zip(left.args, generic_args)):
-                    can_assign = has_relation(my_arg, their_arg, relation, ctx)
+                    left_is_input_sig = isinstance(
+                        my_arg, pycroscope.input_sig.InputSigValue
+                    )
+                    right_is_input_sig = isinstance(
+                        their_arg, pycroscope.input_sig.InputSigValue
+                    )
+                    if left_is_input_sig and right_is_input_sig:
+                        can_assign = pycroscope.input_sig.input_sigs_have_relation(
+                            my_arg.input_sig, their_arg.input_sig, relation, ctx
+                        )
+                    else:
+                        assert (
+                            not left_is_input_sig and not right_is_input_sig
+                        ), f"Unexpected input sigs: {my_arg!r}, {their_arg!r}"
+                        can_assign = has_relation(my_arg, their_arg, relation, ctx)
                     if isinstance(can_assign, CanAssignError):
                         return _maybe_specify_error_for_generic(
                             i, left, right, can_assign, relation, ctx

@@ -2929,12 +2929,6 @@ def typify_literal(value: KnownValue) -> Union[KnownValue, TypedValue]:
         return value
 
 
-def extract_typevars(value: Value) -> Iterable[TypeVarLike]:
-    for val in value.walk_values():
-        if isinstance(val, TypeVarValue):
-            yield val.typevar
-
-
 def stringify_object(obj: Any) -> str:
     # Stringify arbitrary Python objects such as methods and types.
     if isinstance(obj, str):

@@ -2,7 +2,12 @@
 from typing import Dict, Union
 
 from .test_name_check_visitor import TestNameCheckVisitorBase
-from .test_node_visitor import assert_passes, only_before, skip_if_not_installed
+from .test_node_visitor import (
+    assert_passes,
+    only_before,
+    skip_before,
+    skip_if_not_installed,
+)
 from .value import (
     AnnotatedValue,
     AnySource,
@@ -232,6 +237,19 @@ class TestAttributes(TestNameCheckVisitorBase):
                     },
                 ),
             )
+
+    @skip_before((3, 12))
+    def test_annotated_plus_alias(self):
+        self.assert_passes(
+            """
+            from typing import Annotated, Literal, assert_type
+
+            type X = Annotated[str, "hi"]
+
+            def capybara(x: X):
+                assert_type(x.isnumeric(), bool)
+            """
+        )
 
     @assert_passes()
     def test_optional_operation(self):

@@ -24,7 +24,6 @@ import typing_extensions
 from typing_extensions import is_typeddict
 
 import pycroscope
-from pycroscope.input_sig import InputSigValue, ParamSpecSig
 
 from . import implementation
 from .analysis_lib import is_positional_only_arg_name, override
@@ -38,6 +37,7 @@ from .extensions import CustomCheck, TypeGuard, get_type_evaluations
 from .extensions import get_overloads as pycroscope_get_overloads
 from .find_unused import used
 from .functions import translate_vararg_type
+from .input_sig import InputSigValue, ParamSpecSig, extract_type_params, wrap_type_param
 from .maybe_asynq import asynq, qcore
 from .options import Options, PyObjectSequenceOption
 from .safe import (
@@ -85,7 +85,6 @@ from .value import (
     TypedValue,
     TypeVarValue,
     Value,
-    extract_typevars,
     make_coro_type,
 )
 
@@ -1087,9 +1086,9 @@ class ArgSpecCache:
             key=lambda base: not isinstance(base, TypedValue)
             or base.typ is not Generic,
         )
-        my_typevars = uniq_chain(extract_typevars(base) for base in bases)
+        my_typevars = uniq_chain(extract_type_params(base) for base in bases)
         generic_bases = {}
-        generic_bases[typ] = {tv: TypeVarValue(tv) for tv in my_typevars}
+        generic_bases[typ] = {tv: wrap_type_param(tv) for tv in my_typevars}
         for base in bases:
             if isinstance(base, TypedValue):
                 if isinstance(base.typ, str):

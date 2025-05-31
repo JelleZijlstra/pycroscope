@@ -1,6 +1,6 @@
 import sys
 import typing
-from collections.abc import Container, Sequence
+from collections.abc import Container, Iterable, Sequence
 from dataclasses import dataclass
 from typing import Literal, Optional, Union
 
@@ -9,6 +9,7 @@ from typing_extensions import Self, assert_never
 
 import pycroscope
 from pycroscope.relations import Relation
+from pycroscope.safe import is_instance_of_typing_name
 from pycroscope.stacked_scopes import Composite
 from pycroscope.value import (
     AnyValue,
@@ -17,7 +18,9 @@ from pycroscope.value import (
     CanAssignContext,
     CanAssignError,
     LowerBound,
+    TypeVarLike,
     TypeVarMap,
+    TypeVarValue,
     UpperBound,
     Value,
 )
@@ -38,11 +41,18 @@ class ParamSpecSig:
             return assert_input_sig(typevars[self.param_spec])
         return self
 
+    def walk_values(self) -> Iterable[Value]:
+        if self.default is not None:
+            yield from self.default.walk_values()
+
 
 @dataclass(frozen=True)
 class AnySig:
     def substitute_typevars(self, typevars: TypeVarMap) -> Self:
         return self
+
+    def walk_values(self) -> Iterable[Value]:
+        return []
 
 
 ELLIPSIS = AnySig()
@@ -76,6 +86,16 @@ class ActualArguments:
     def __hash__(self) -> int:
         return id(self)
 
+    def walk_values(self) -> Iterable[Value]:
+        for _, composite in self.positionals:
+            yield from composite.value.walk_values()
+        if self.star_args is not None:
+            yield from self.star_args.walk_values()
+        for _, composite in self.keywords.values():
+            yield from composite.value.walk_values()
+        if self.star_kwargs is not None:
+            yield from self.star_kwargs.walk_values()
+
 
 @dataclass(frozen=True)
 class FullSignature:
@@ -83,6 +103,9 @@ class FullSignature:
 
     def substitute_typevars(self, typevars: TypeVarMap) -> "FullSignature":
         return FullSignature(sig=self.sig.substitute_typevars(typevars))
+
+    def walk_values(self) -> Iterable[Value]:
+        yield from self.sig.walk_values()
 
     def __str__(self) -> str:
         return str(self.sig)
@@ -99,6 +122,10 @@ class InputSigValue(Value):
 
     def substitute_typevars(self, typevars: TypeVarMap) -> Value:
         return InputSigValue(self.input_sig.substitute_typevars(typevars))
+
+    def walk_values(self) -> Iterable[Value]:
+        yield self
+        yield from self.input_sig.walk_values()
 
     def __str__(self) -> str:
         return str(self.input_sig)
@@ -126,6 +153,8 @@ def input_sigs_have_relation(
     elif isinstance(left, ParamSpecSig):
         return {left.param_spec: [LowerBound(left.param_spec, InputSigValue(right))]}
     elif isinstance(left, ActualArguments):
+        if left == right:
+            return {}
         return CanAssignError("Cannot be assigned to")
     elif isinstance(left, FullSignature):
         if isinstance(right, AnySig):
@@ -177,3 +206,23 @@ def solve_paramspec(
         else:
             return CanAssignError("Unsupported ParamSpec bound")
     return InputSigValue(solution)
+
+
+def extract_type_params(value: Value) -> Iterable[TypeVarLike]:
+    for val in value.walk_values():
+        if isinstance(val, TypeVarValue):
+            yield val.typevar
+        elif isinstance(val, InputSigValue):
+            input_sig = val.input_sig
+            if isinstance(input_sig, ParamSpecSig):
+                yield input_sig.param_spec
+
+
+def wrap_type_param(type_param: TypeVarLike) -> Value:
+    """Wrap a type parameter in an InputSigValue."""
+    if is_instance_of_typing_name(type_param, "ParamSpec"):
+        return InputSigValue(ParamSpecSig(type_param))
+    elif is_instance_of_typing_name(type_param, "TypeVar"):
+        return TypeVarValue(type_param)
+    else:
+        raise TypeError(f"Unsupported type parameter: {type_param!r}")

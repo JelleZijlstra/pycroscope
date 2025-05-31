@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Fix incorrect treatment of `ParamSpec` in certain contexts.
 - Add basic support for intersection types with `pycroscope.extensions.Intersection`.
 - Fix crash on checking the boolability of certain complex types.
 - Support subtyping between more kinds of heterogeneous tuples.
