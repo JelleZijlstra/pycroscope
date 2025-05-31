@@ -38,6 +38,7 @@ from .input_sig import (
     InputSigValue,
     ParamSpecSig,
     assert_input_sig,
+    extract_type_params,
     input_sigs_have_relation,
 )
 from .maybe_asynq import asynq
@@ -103,7 +104,6 @@ from .value import (
     Value,
     annotate_value,
     concrete_values_from_iterable,
-    extract_typevars,
     flatten_values,
     get_tv_map,
     replace_fallback,
@@ -539,10 +539,10 @@ class Signature:
 
     def __post_init__(self) -> None:
         for param_name, param in self.parameters.items():
-            typevars = list(extract_typevars(param.annotation))
+            typevars = list(extract_type_params(param.annotation))
             if typevars:
                 self.typevars_of_params[param_name] = typevars
-        return_typevars = list(extract_typevars(self.return_value))
+        return_typevars = list(extract_type_params(self.return_value))
         if return_typevars:
             self.typevars_of_params[self._return_key] = return_typevars
         self.all_typevars.update(

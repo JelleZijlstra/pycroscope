@@ -37,6 +37,7 @@ from .annotations import (
 from .error_code import Error, ErrorCode
 from .extensions import deprecated as deprecated_decorator
 from .extensions import evaluated, overload, real_overload
+from .input_sig import extract_type_params
 from .node_visitor import Failure
 from .options import Options, PathSequenceOption
 from .safe import hasattr_static, is_typing_name, safe_isinstance
@@ -70,7 +71,6 @@ from .value import (
     UninitializedValue,
     Value,
     annotate_value,
-    extract_typevars,
     make_coro_type,
     replace_fallback,
     unannotate_value,
@@ -997,7 +997,7 @@ class TypeshedFinder:
             if bases is None:
                 typ = TypedValue(objclass)
             else:
-                typevars = uniq_chain(extract_typevars(base) for base in bases)
+                typevars = uniq_chain(extract_type_params(base) for base in bases)
                 if typevars:
                     typ = GenericValue(
                         objclass,

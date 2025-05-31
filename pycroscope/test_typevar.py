@@ -434,3 +434,93 @@ class TestGenericClasses(TestNameCheckVisitorBase):
                 C(s)  # E: incompatible_argument
         """
         )
+
+
+class TestIntegration(TestNameCheckVisitorBase):
+    @assert_passes()
+    def test_wraps(self):
+        import functools
+        from typing import Callable
+
+        from typing_extensions import assert_type
+
+        CachedCallable = Callable[[str], str]
+
+        def cached() -> Callable[[CachedCallable], CachedCallable]:
+            def decorator(func: CachedCallable) -> CachedCallable:
+                @functools.wraps(func)
+                def wrapper(key: str) -> str:
+                    return func(key)
+
+                return wrapper
+
+            return decorator
+
+        def capybara() -> None:
+            @cached()
+            def paca(x: str) -> str:
+                return x
+
+            assert_type(paca("hello"), str)
+            paca(1)  # E: incompatible_argument
+
+    @assert_passes()
+    def test_wraps_inlined(self):
+        from collections.abc import Callable
+        from typing import Generic, TypeVar
+
+        from typing_extensions import ParamSpec, assert_type
+
+        _PWrapped = ParamSpec("_PWrapped")
+        _RWrapped = TypeVar("_RWrapped")
+        _PWrapper = ParamSpec("_PWrapper")
+        _RWrapper = TypeVar("_RWrapper")
+
+        class _Wrapped(Generic[_PWrapped, _RWrapped, _PWrapper, _RWrapper]):
+            __wrapped__: Callable[_PWrapped, _RWrapped]
+
+            def __call__(
+                self, *args: _PWrapper.args, **kwargs: _PWrapper.kwargs
+            ) -> _RWrapper:
+                raise NotImplementedError
+
+        class _Wrapper(Generic[_PWrapped, _RWrapped]):
+            def __call__(
+                self, f: Callable[_PWrapper, _RWrapper]
+            ) -> _Wrapped[_PWrapped, _RWrapped, _PWrapper, _RWrapper]:
+                raise NotImplementedError
+
+        def wraps(
+            wrapped: Callable[_PWrapped, _RWrapped],
+        ) -> _Wrapper[_PWrapped, _RWrapped]:
+            raise NotImplementedError
+
+        def paca(x: str) -> str:
+            return x
+
+        def capybara() -> None:
+            @wraps(paca)
+            def wrapper(*args: str, **kwargs: str) -> str:
+                return paca(*args, **kwargs)
+
+            assert_type(wrapper("hello"), str)
+            wrapper(1)  # TODO should fail
+
+    @assert_passes()
+    def test_independent_generics(self):
+        from typing import Generic, TypeVar
+
+        from typing_extensions import Literal, assert_type
+
+        T = TypeVar("T")
+        U = TypeVar("U")
+
+        class B(Generic[T, U]):
+            pass
+
+        class A(Generic[T]):
+            def meth(self, obj: U) -> B[T, U]:
+                raise NotImplementedError
+
+        def capybara(a: A[int]) -> None:
+            assert_type(a.meth(1), B[int, Literal[1]])
