@@ -1786,7 +1786,8 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             if sys.version_info >= (3, 12) and node.type_params:
                 self.visit_type_param_values(node.type_params)
             self._generic_visit_list(node.bases)
-            self._generic_visit_list(node.keywords)
+            for kw in node.keywords:
+                self.visit(kw.value)
             value = self._visit_class_and_get_value(node, class_obj)
         value, _ = self._set_name_in_scope(node.name, node, value)
         return value
@@ -5466,14 +5467,13 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
 
     # Call nodes
 
-    def visit_keyword(self, node: ast.keyword) -> tuple[Optional[str], Composite]:
-        return (node.arg, self.composite_from_node(node.value))
-
     def visit_Call(self, node: ast.Call) -> Value:
         callee_wrapped = self.visit(node.func)
         args = [self.composite_from_node(arg) for arg in node.args]
         if node.keywords:
-            keywords = [self.visit_keyword(kw) for kw in node.keywords]
+            keywords = [
+                (kw.arg, self.composite_from_node(kw.value)) for kw in node.keywords
+            ]
         else:
             keywords = []
 

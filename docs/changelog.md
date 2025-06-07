@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Fix crash on class definition keyword args when the `no_implicit_any` error
+  is enabled.
 - Fix incorrect treatment of `ParamSpec` in certain contexts.
 - Add basic support for intersection types with `pycroscope.extensions.Intersection`.
 - Fix crash on checking the boolability of certain complex types.
