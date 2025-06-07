@@ -2306,3 +2306,14 @@ class TestMustUse(TestNameCheckVisitorBase):
 
         def capybara() -> None:
             gen()  # E: must_use
+
+
+class TestImplicitAny(TestNameCheckVisitorBase):
+    @assert_passes(settings={ErrorCode.implicit_any: True})
+    def test_class_args(self):
+        class Base:
+            def __init_subclass__(cls, **kwargs) -> None:
+                pass
+
+        class X(Base, a=True):
+            pass
