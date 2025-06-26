@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## Version 0.2.0 (June 26, 2025)
 
 - Fix crash on class definition keyword args when the `no_implicit_any` error
   is enabled.
