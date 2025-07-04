@@ -151,7 +151,11 @@ class Checker:
             else:
                 protocol_members = set()
             return TypeObject(
-                typ, bases, is_protocol=is_protocol, protocol_members=protocol_members
+                typ,
+                bases,
+                is_protocol=is_protocol,
+                protocol_members=protocol_members,
+                is_final=self.ts_finder.is_final(typ),
             )
         elif isinstance(typ, super):
             return TypeObject(typ, self.get_additional_bases(typ))
@@ -181,7 +185,8 @@ class Checker:
                     typ, additional_bases, is_protocol=True, protocol_members=members
                 )
 
-            return TypeObject(typ, additional_bases)
+            is_final = self.ts_finder.is_final(typ)
+            return TypeObject(typ, additional_bases, is_final=is_final)
 
     def _get_recursive_typeshed_bases(
         self, typ: Union[type, str]

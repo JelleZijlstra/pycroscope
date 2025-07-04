@@ -18,7 +18,7 @@ from pycroscope.signature import (
     Signature,
 )
 
-from .safe import safe_in, safe_isinstance, safe_issubclass
+from .safe import safe_getattr, safe_in, safe_isinstance, safe_issubclass
 from .value import (
     UNINITIALIZED_VALUE,
     AnySource,
@@ -53,6 +53,7 @@ def get_mro(typ: Union[type, super]) -> Sequence[type]:
 class TypeObject:
     typ: Union[type, super, str]
     base_classes: set[Union[type, str]] = field(default_factory=set)
+    is_final: bool = False
     is_protocol: bool = False
     protocol_members: set[str] = field(default_factory=set)
     is_thrift_enum: bool = field(init=False)
@@ -73,6 +74,8 @@ class TypeObject:
         else:
             assert isinstance(self.typ, type), repr(self.typ)
             self.is_universally_assignable = issubclass(self.typ, mock.NonCallableMock)
+            if safe_getattr(self.typ, "__final__", False):
+                self.is_final = True
         self.is_thrift_enum = hasattr(self.typ, "_VALUES_TO_NAMES")
         self.base_classes |= set(get_mro(self.typ))
         # As a special case, the Python type system treats int as
