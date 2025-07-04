@@ -287,7 +287,7 @@ class TypeshedFinder:
         )
         return sig
 
-    def is_final(self, fq_name: str | type) -> bool:
+    def is_final(self, fq_name: Union[str, type]) -> bool:
         """Return whether this type is marked as final in the stubs."""
         if isinstance(fq_name, type):
             maybe_fq_name = self._get_fq_name(fq_name)
