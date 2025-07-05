@@ -287,6 +287,35 @@ class TypeshedFinder:
         )
         return sig
 
+    def is_final(self, fq_name: Union[str, type]) -> bool:
+        """Return whether this type is marked as final in the stubs."""
+        if isinstance(fq_name, type):
+            maybe_fq_name = self._get_fq_name(fq_name)
+            if maybe_fq_name is None:
+                return False
+            fq_name = maybe_fq_name
+        info = self._get_info_for_name(fq_name)
+        mod, _ = fq_name.rsplit(".", maxsplit=1)
+        return self._is_final_from_info(info, mod)
+
+    def _is_final_from_info(
+        self, info: typeshed_client.resolver.ResolvedName, mod: str
+    ) -> bool:
+        if info is None:
+            return False
+        if isinstance(info, typeshed_client.ImportedInfo):
+            return self._is_final_from_info(info.info, mod)
+        if isinstance(info, typeshed_client.NameInfo) and isinstance(
+            info.ast, ast.ClassDef
+        ):
+            for deco in info.ast.decorator_list:
+                deco_value = self._parse_expr(deco, mod)
+                if isinstance(deco_value, KnownValue) and is_typing_name(
+                    deco_value.val, "final"
+                ):
+                    return True
+        return False
+
     def get_bases(self, typ: type) -> Optional[list[Value]]:
         """Return the base classes for this type, including generic bases."""
         return self.get_bases_for_value(TypedValue(typ))

@@ -9,6 +9,8 @@ https://typing.python.org/en/latest/spec/concepts.html#summary-of-type-relations
 
 import collections.abc
 import enum
+import struct
+import sys
 from collections.abc import Iterable, Iterator, Sequence
 from dataclasses import dataclass, replace
 from types import FunctionType
@@ -19,7 +21,7 @@ from typing_extensions import Literal, assert_never
 import pycroscope
 from pycroscope.analysis_lib import Sentinel
 from pycroscope.find_unused import used
-from pycroscope.safe import safe_equals, safe_isinstance
+from pycroscope.safe import safe_equals, safe_isinstance, safe_issubclass
 from pycroscope.typevar import resolve_bounds_map
 from pycroscope.value import (
     NO_RETURN_VALUE,
@@ -1374,8 +1376,94 @@ def _intersect_typed(
 ) -> TypeOrIrreducible:
     if isinstance(left, TypedDictValue) and isinstance(right, TypedDictValue):
         return _intersect_typeddict(left, right, ctx)
-    # TODO: Consider more options
+
+    # If either type is final, the intersection reduces to Never unless the final class
+    # is a subclass of the other class. In that case, we treat the intersection as irreducible.
+    # Note that we would have already reduced intersections where the *types* are subtypes;
+    # the irreducible case can happen in certain situations involving generics.
+    left_tobj = left.get_type_object(ctx)
+    right_tobj = right.get_type_object(ctx)
+    if left_tobj.is_final and not left_tobj.is_assignable_to_type_object(right_tobj):
+        return NO_RETURN_VALUE
+    if right_tobj.is_final and not right_tobj.is_assignable_to_type_object(left_tobj):
+        return NO_RETURN_VALUE
+
+    # If both types are nominal and are real (non-synthetic) types, we can mirror CPython's logic
+    # to check whether a child class can exist at runtime.
+    if (
+        not left_tobj.is_protocol
+        and not right_tobj.is_protocol
+        and isinstance(left_tobj.typ, type)
+        and isinstance(right_tobj.typ, type)
+        and not _can_nominal_types_intersect(left_tobj.typ, right_tobj.typ)
+    ):
+        return NO_RETURN_VALUE
+
+    # TODO: Consider more options for reducing the intersection:
+    # - Certain cases involving incompatible metaclasses can return to Never
+    # - Possibly some cases with attributes of incompatible types (possibly debatable)
+    # - Cases involving SequenceValue, DictIncompleteValue, and other concrete subclasses of
+    #   TypedValue
     return Irreducible
+
+
+def _can_nominal_types_intersect(t1: type[object], t2: type[object]) -> bool:
+    sb1 = _solid_base(t1)
+    sb2 = _solid_base(t2)
+    return safe_issubclass(sb1, sb2) or safe_issubclass(sb2, sb1)
+
+
+SIZEOF_PYOBJECT = struct.calcsize("P")
+
+
+def _shape_differs(t1: type[object], t2: type[object]) -> bool:
+    """Check whether two types differ in shape.
+
+    Mirrors the shape_differs() function in typeobject.c in CPython."""
+    if sys.version_info >= (3, 12):
+        return (
+            t1.__basicsize__ != t2.__basicsize__ or t1.__itemsize__ != t2.__itemsize__
+        )
+    else:
+        # CPython had more complicated logic before 3.12:
+        # https://github.com/python/cpython/blob/f3c6f882cddc8dc30320d2e73edf019e201394fc/Objects/typeobject.c#L2224
+        # We attempt to mirror it here well enough to support the most common cases.
+        if t1.__itemsize__ or t2.__itemsize__:
+            return (
+                t1.__basicsize__ != t2.__basicsize__
+                or t1.__itemsize__ != t2.__itemsize__
+            )
+        t_size = t1.__basicsize__
+        if (
+            # TODO: better understanding of attributes of type objects
+            not t2.__weakrefoffset__  # static analysis: ignore[value_always_true]
+            and t1.__weakrefoffset__ + SIZEOF_PYOBJECT == t_size
+        ):
+            t_size -= SIZEOF_PYOBJECT
+        if (
+            not t2.__dictoffset__  # static analysis: ignore[value_always_true]
+            and t1.__dictoffset__ + SIZEOF_PYOBJECT == t_size
+        ):
+            t_size -= SIZEOF_PYOBJECT
+        if (
+            not t2.__weakrefoffset__  # static analysis: ignore[value_always_true]
+            and t2.__weakrefoffset__ == t_size
+        ):
+            t_size -= SIZEOF_PYOBJECT
+        return t_size != t2.__basicsize__
+
+
+def _solid_base(typ: type[object]) -> type[object]:
+    """Return the "solid base" of a type, mirroring the logic in CPython's typeobject.c.
+
+    A "solid base" is a base that determines the shape of the type."""
+    if typ is object:
+        return object
+    base = typ.__base__
+    assert base is not None, f"Type {typ} has no base"
+    if _shape_differs(typ, base):
+        return typ
+    return _solid_base(base)
 
 
 def _intersect_maybe_mutable(

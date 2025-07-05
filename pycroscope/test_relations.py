@@ -47,3 +47,25 @@ class TestIntersections(TestNameCheckVisitorBase):
 
             assert_type(y, Intersection[A, B])
             assert_type(y.x, Intersection[int, Any])
+
+    @assert_passes()
+    def test_typed_value_intersections(self):
+        from typing_extensions import Never, assert_type, final
+
+        from pycroscope.extensions import Intersection
+
+        class A:
+            x: int
+
+        @final
+        class B:
+            x: str
+
+        def capybara(
+            ab: Intersection[A, B],
+            int_str: Intersection[int, str],
+            a_int: Intersection[A, int],
+        ) -> None:
+            assert_type(ab, Never)
+            assert_type(int_str, Never)
+            assert_type(a_int, Never)  # E: inference_failure
