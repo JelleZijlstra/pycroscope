@@ -191,7 +191,15 @@ def _has_relation(
     right: GradualType,
     relation: Literal[Relation.SUBTYPE, Relation.ASSIGNABLE],
     ctx: CanAssignContext,
+    *,
+    original_left: Optional[GradualType] = None,
+    original_right: Optional[GradualType] = None,
 ) -> CanAssign:
+    if original_right is None:
+        original_right = right
+    if original_left is None:
+        original_left = left
+
     # TypeVarValue
     if isinstance(left, TypeVarValue):
         if left == right:
@@ -224,7 +232,7 @@ def _has_relation(
     # AnnotatedValue
     if isinstance(left, AnnotatedValue):
         left_inner = gradualize(left.value)
-        can_assign = _has_relation(left_inner, right, relation, ctx)
+        can_assign = _has_relation(left_inner, right, relation, ctx, original_left=left)
         if isinstance(can_assign, CanAssignError):
             return can_assign
         bounds_maps = [can_assign]
@@ -234,9 +242,11 @@ def _has_relation(
                 return custom_can_assign
             bounds_maps.append(custom_can_assign)
         return unify_bounds_maps(bounds_maps)
-    if isinstance(right, AnnotatedValue) and not isinstance(left, MultiValuedValue):
+    if isinstance(right, AnnotatedValue):
         right_inner = gradualize(right.value)
-        can_assign = _has_relation(left, right_inner, relation, ctx)
+        can_assign = _has_relation(
+            left, right_inner, relation, ctx, original_right=right
+        )
         if isinstance(can_assign, CanAssignError):
             return can_assign
         bounds_maps = [can_assign]
@@ -252,14 +262,14 @@ def _has_relation(
         # Try to simplify first
         left = intersect_multi(left.vals, ctx)
         if not isinstance(left, IntersectionValue):
-            return _has_relation(left, right, relation, ctx)
+            return _has_relation(left, original_right, relation, ctx)
         if isinstance(right, IntersectionValue):
             right = intersect_multi(right.vals, ctx)
         # Must be a subtype of all the members
         bounds_maps = []
         errors = []
         for val in left.vals:
-            can_assign = _has_relation(gradualize(val), right, relation, ctx)
+            can_assign = _has_relation(gradualize(val), original_right, relation, ctx)
             if isinstance(can_assign, CanAssignError):
                 errors.append(can_assign)
             else:
@@ -272,12 +282,12 @@ def _has_relation(
     if isinstance(right, IntersectionValue):
         right = intersect_multi(right.vals, ctx)
         if not isinstance(right, IntersectionValue):
-            return _has_relation(left, right, relation, ctx)
+            return _has_relation(original_left, right, relation, ctx)
         # At least one member must be a subtype
         bounds_maps = []
         errors = []
         for val in right.vals:
-            can_assign = _has_relation(left, gradualize(val), relation, ctx)
+            can_assign = _has_relation(original_left, gradualize(val), relation, ctx)
             if isinstance(can_assign, CanAssignError):
                 errors.append(can_assign)
             else:
@@ -304,7 +314,7 @@ def _has_relation(
             errors = []
             for val in left.vals:
                 val = gradualize(val)
-                can_assign = _has_relation(val, right, relation, ctx)
+                can_assign = _has_relation(val, original_right, relation, ctx)
                 if isinstance(can_assign, CanAssignError):
                     errors.append(can_assign)
                 else:
@@ -326,7 +336,7 @@ def _has_relation(
         bounds_maps = []
         for val in right.vals:
             val = gradualize(val)
-            can_assign = _has_relation(left, val, relation, ctx)
+            can_assign = _has_relation(original_left, val, relation, ctx)
             if isinstance(can_assign, CanAssignError):
                 # Adding an additional layer here isn't helpful
                 return can_assign
