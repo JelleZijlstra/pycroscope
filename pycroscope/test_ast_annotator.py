@@ -1,0 +1,80 @@
+import ast
+from pathlib import Path
+from typing import Callable, Type
+
+from .analysis_lib import files_with_extension_from_directory
+from .ast_annotator import annotate_code, annotate_file
+from .value import KnownValue, Value, unannotate
+
+
+def _check_inferred_value(
+    tree: ast.Module,
+    node_type: Type[ast.AST],
+    value: Value,
+    predicate: Callable[[ast.AST], bool] = lambda node: True,
+) -> None:
+    for node in ast.walk(tree):
+        if isinstance(node, node_type) and predicate(node):
+            assert hasattr(node, "inferred_value"), repr(node)
+            assert value == unannotate(node.inferred_value), ast.dump(node)
+
+
+def test_annotate_code() -> None:
+    tree = annotate_code("a = 1")
+    _check_inferred_value(tree, ast.Constant, KnownValue(1))
+    _check_inferred_value(tree, ast.Name, KnownValue(1))
+
+    tree = annotate_code(
+        """
+        class X:
+            def __init__(self):
+                self.a = 1
+        """
+    )
+    _check_inferred_value(tree, ast.Attribute, KnownValue(1))
+    tree = annotate_code(
+        """
+        class X:
+            def __init__(self):
+                self.a = 1
+
+        x = X()
+        x.a + 1
+        """
+    )
+    _check_inferred_value(tree, ast.BinOp, KnownValue(2))
+
+    tree = annotate_code(
+        """
+        class A:
+            def __init__(self):
+                self.a = 1
+
+            def bla(self):
+                return self.a
+
+
+        a = A()
+        b = a.bla()
+        """
+    )
+    _check_inferred_value(tree, ast.Name, KnownValue(1), lambda node: node.id == "b")
+
+
+def test_everything_annotated() -> None:
+    pycroscope_dir = Path(__file__).parent
+    failures = []
+    for filename in sorted(files_with_extension_from_directory("py", pycroscope_dir)):
+        tree = annotate_file(filename, show_errors=True)
+        for node in ast.walk(tree):
+            if (
+                hasattr(node, "lineno")
+                and hasattr(node, "col_offset")
+                and not hasattr(node, "inferred_value")
+                and not isinstance(node, (ast.keyword, ast.arg))
+            ):
+                failures.append((filename, node))
+    if failures:
+        for filename, node in failures:
+            print(f"{filename}:{node.lineno}:{node.col_offset}: {ast.dump(node)}")
+        assert False, f"found no annotations on {len(failures)} expressions"

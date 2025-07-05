@@ -1,5 +1,62 @@
+[build-system]
+requires = ["setuptools>=42", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pycroscope"
+version = "0.2.0"
+description = "A static analyzer for Python"
+readme = {file = "README.md", content-type = "text/markdown"}
+authors = [
+  { name = "Jelle Zijlstra", email = "jelle.zijlstra@gmail.com" }
+]
+license = {text = "Apache Software License"}
+requires-python = ">=3.9"
+keywords = ["type checker", "static analysis"]
+classifiers = [
+  "License :: OSI Approved :: Apache Software License",
+  "Programming Language :: Python",
+  "Programming Language :: Python :: 3.9",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+]
+
+dependencies = [
+  "ast_decompiler>=0.4.0",
+  "typeshed_client>=2.1.0",
+  "typing_extensions>=4.12.0",
+  "codemod",
+  "tomli>=1.1.0"
+]
+
+[project.optional-dependencies]
+tests = [
+  "pytest",
+  "mypy_extensions",
+  "attrs",
+  "pydantic; python_version < '3.14'", # TODO currently fails to build on 3.14
+  "annotated-types"
+]
+asynq = ["asynq", "qcore>=0.5.1"]
+
+[project.urls]
+Homepage = "https://github.com/JelleZijlstra/pycroscope"
+
+[project.scripts]
+pycroscope = "pycroscope.__main__:main"
+
+[tool.setuptools]
+packages = ["pycroscope"]
+
+[tool.setuptools.package-data]
+# These are useful for unit tests of pycroscope extensions
+# outside the package.
+pycroscope = ["test.toml", "asynq_test.toml", "stubs/*/*.pyi"]
+
 [tool.black]
-target_version = ['py38']
+target-version = ['py39']
 include = '\.pyi?$'
 skip-magic-trailing-comma = true
 preview = true
@@ -14,12 +71,8 @@ exclude = '''
 )/
 '''
 
-[build-system]
-requires = ["setuptools>=42", "wheel"]
-build-backend = "setuptools.build_meta"
-
-[tool.pyanalyze]
-paths = ["pyanalyze"]
+[tool.pycroscope]
+paths = ["pycroscope"]
 import_paths = ["."]
 enforce_no_unused = true
 
@@ -34,23 +87,24 @@ suggested_return_type = true
 incompatible_override = true
 missing_generic_parameters = true
 
-[[tool.pyanalyze.overrides]]
-module = "pyanalyze.typevar"
+[[tool.pycroscope.overrides]]
+module = "pycroscope.typevar"
 implicit_any = true
 
-[[tool.pyanalyze.overrides]]
-module = "pyanalyze.yield_checker"
+[[tool.pycroscope.overrides]]
+module = "pycroscope.yield_checker"
 implicit_any = true
 
 [tool.ruff]
 line-length = 100
-target-version = "py38"
+target-version = "py39"
 
 [tool.ruff.lint]
 select = [
   "F",
   "E",
   "I",  # import sorting
+  "UP",
 ]
 
 ignore = [
@@ -69,4 +123,12 @@ ignore = [
   "E742",  # Ambiguous class name
   "E731",  # do not assign a lambda expression, use a def
   "E741",  # ambiguous variable name
+]
+
+[tool.ruff.lint.per-file-ignores]
+"pycroscope/test_*.py" = [
+  "UP",  # Want to test old-style code
+]
+"pycroscope/annotations.py" = [
+  "UP006",  # Need to refer to typing.Type
 ]

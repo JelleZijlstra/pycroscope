@@ -1,5 +1,5 @@
-pyanalyze.value
-===============
+pycroscope.value
+================
 
-.. automodule:: pyanalyze.value
+.. automodule:: pycroscope.value
    :members:

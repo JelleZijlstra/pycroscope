@@ -20,12 +20,12 @@ sys.path.insert(0, os.path.abspath(".."))
 
 # -- Project information -----------------------------------------------------
 
-project = "pyanalyze"
+project = "pycroscope"
 copyright = "2021, Jelle Zijlstra"
 author = "Jelle Zijlstra"
 
 # The full version, including alpha/beta/rc tags
-release = get_distribution("pyanalyze").version
+release = get_distribution("pycroscope").version
 
 
 # -- General configuration ---------------------------------------------------

@@ -1,5 +1,5 @@
-pyanalyze.extensions
-====================
+pycroscope.extensions
+=====================
 
-.. automodule:: pyanalyze.extensions
+.. automodule:: pycroscope.extensions
    :members:

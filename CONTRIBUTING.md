@@ -1,11 +1,11 @@
-Welcome! We'd like to make contributing to pyanalyze as painless
+Welcome! We'd like to make contributing to pycroscope as painless
 as possible. Here is a quick guide.
 
 It's useful to have a virtual environment to work in. I use
 commands like these:
 
 ```
-$ cd pyanalyze
+$ cd pycroscope
 $ python3 -m venv .venv
 $ source .venv/bin/activate
 $ pip install -r requirements.txt
@@ -18,7 +18,7 @@ The code is formatted using [_Black_](https://black.readthedocs.io).
 You can run the formatter with:
 
 ```
-$ black pyanalyze
+$ black pycroscope
 ```
 
 ## ruff
@@ -26,7 +26,7 @@ $ black pyanalyze
 We use [ruff](https://docs.astral.sh/ruff/) as a linter and import sorter:
 
 ```
-$ ruff check pyanalyze
+$ ruff check pycroscope
 ```
 
 ## Unit tests
@@ -34,7 +34,7 @@ $ ruff check pyanalyze
 The unit tests are run with [pytest](https://docs.pytest.org/):
 
 ```
-$ pytest -v pyanalyze
+$ pytest -v pycroscope
 ```
 
 Running all of the tests takes a few minutes, so I often use the
@@ -42,7 +42,7 @@ Running all of the tests takes a few minutes, so I often use the
 For example:
 
 ```
-$ pytest -v pyanalyze -k PEP673
+$ pytest -v pycroscope -k PEP673
 ```
 
 We run tests on all supported Python versions on GitHub Actions,

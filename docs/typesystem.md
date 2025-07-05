@@ -1,27 +1,27 @@
 # Type system
 
-Pyanalyze supports most of the Python type system, as specified in [PEP 484](https://www.python.org/dev/peps/pep-0484/) and various later PEPs and in the [Python documentation](https://docs.python.org/3/library/typing.html). It uses type annotations to infer types and checks for type compatibility in calls and return types. Supported type system features include generics like `List[int]`, `NewType`, `TypedDict`, `TypeVar`, and `Callable`.
+Pycroscope supports most of the Python type system, as specified in [PEP 484](https://www.python.org/dev/peps/pep-0484/) and various later PEPs and in the [Python documentation](https://docs.python.org/3/library/typing.html). It uses type annotations to infer types and checks for type compatibility in calls and return types. Supported type system features include generics like `List[int]`, `NewType`, `TypedDict`, `TypeVar`, and `Callable`.
 
 ## Extensions
 
-In addition to the standard Python type system, pyanalyze supports a number of non-standard extensions:
+In addition to the standard Python type system, pycroscope supports a number of non-standard extensions:
 
-- Callable literals: you can declare a parameter as `Literal[some_function]` and it will accept any callable assignable to `some_function`. Pyanalyze also supports Literals of various other types in addition to those supported by [PEP 586](https://www.python.org/dev/peps/pep-0586/).
-- `pyanalyze.extensions.AsynqCallable` is a variant of `Callable` that applies to `asynq` functions.
-- `pyanalyze.extensions.ParameterTypeGuard` is a generalization of PEP 649's `TypeGuard` that allows guards on any parameter to a function. To use it, return `Annotated[bool, ParameterTypeGuard["arg", SomeType]]`.
-- `pyanalyze.extensions.HasAttrGuard` is a similar mechanism that allows indicating that an object has a particular attribute. To use it, return `Annotated[bool, HasAttrGuard["arg", "attribute", SomeType]]`.
-- `pyanalyze.extensions.ExternalType` is a way to refer to a type that cannot
+- Callable literals: you can declare a parameter as `Literal[some_function]` and it will accept any callable assignable to `some_function`. Pycroscope also supports Literals of various other types in addition to those supported by [PEP 586](https://www.python.org/dev/peps/pep-0586/).
+- `pycroscope.extensions.AsynqCallable` is a variant of `Callable` that applies to `asynq` functions.
+- `pycroscope.extensions.ParameterTypeGuard` is a generalization of PEP 649's `TypeGuard` that allows guards on any parameter to a function. To use it, return `Annotated[bool, ParameterTypeGuard["arg", SomeType]]`.
+- `pycroscope.extensions.HasAttrGuard` is a similar mechanism that allows indicating that an object has a particular attribute. To use it, return `Annotated[bool, HasAttrGuard["arg", "attribute", SomeType]]`.
+- `pycroscope.extensions.ExternalType` is a way to refer to a type that cannot
   be referenced by name in contexts where using `if TYPE_CHECKING` is not possible.
-- `pyanalyze.extensions.CustomCheck` is a powerful mechanism to extend the type system
+- `pycroscope.extensions.CustomCheck` is a powerful mechanism to extend the type system
   with custom user-defined checks.
 
 They are explained in more detail below.
 
 ### Extended literals
 
-Literal types are specified by [PEP 586](https://www.python.org/dev/peps/pep-0586/). The PEP only supports Literals of int, str, bytes, bool, Enum, and None objects, but pyanalyze accepts Literals over all Python objects.
+Literal types are specified by [PEP 586](https://www.python.org/dev/peps/pep-0586/). The PEP only supports Literals of int, str, bytes, bool, Enum, and None objects, but pycroscope accepts Literals over all Python objects.
 
-As an extension, pyanalyze accepts any compatible callable for a Literal over a function type. This allows more flexible callable types.
+As an extension, pycroscope accepts any compatible callable for a Literal over a function type. This allows more flexible callable types.
 
 For example:
 
@@ -53,7 +53,7 @@ For example, this construct can be used to implement the `asynq.tools.amap` help
 
 ```python
 from asynq import asynq
-from pyanalyze.extensions import AsynqCallable
+from pycroscope.extensions import AsynqCallable
 from typing import TypeVar, List, Iterable
 
 T = TypeVar("T")
@@ -70,14 +70,14 @@ Because of limitations in the runtime typing library, some generic aliases invol
 
 [PEP 647](https://www.python.org/dev/peps/pep-0647/) added support for type guards, a mechanism to narrow the type of a variable. However, it only supports narrowing the first argument to a function.
 
-Pyanalyze supports an extended version that combines with [PEP 593](https://www.python.org/dev/peps/pep-0593/)'s `Annotated` type to support guards on any function parameter.
+Pycroscope supports an extended version that combines with [PEP 593](https://www.python.org/dev/peps/pep-0593/)'s `Annotated` type to support guards on any function parameter.
 
 For example, the below function narrows the type of two of its parameters:
 
 ```python
 from typing import Iterable, Annotated
-from pyanalyze.extensions import ParameterTypeGuard
-from pyanalyze.value import KnownValue, Value
+from pycroscope.extensions import ParameterTypeGuard
+from pycroscope.value import KnownValue, Value
 
 
 def _can_perform_call(
@@ -98,20 +98,20 @@ def _can_perform_call(
 
 ```python
 from typing import Literal, Annotated
-from pyanalyze.extensions import HasAttrGuard
+from pycroscope.extensions import HasAttrGuard
 
 def has_time(arg: object) -> Annotated[bool, HasAttrGuard["arg", Literal["time"], int]]:
     attr = getattr(arg, "time", None)
     return isinstance(attr, int)
 ```
 
-After a call to `has_time(o)` succeeds, pyanalyze will know that `o.time` exists and is of type `int`.
+After a call to `has_time(o)` succeeds, pycroscope will know that `o.time` exists and is of type `int`.
 
 In practice the main use of this type is to implement the type of `hasattr` itself. In pure Python `hasattr` could look like this:
 
 ```python
 from typing import Any, TypeVar, Annotated
-from pyanalyze.extensions import HasAttrGuard
+from pycroscope.extensions import HasAttrGuard
 
 T = TypeVar("T", bound=str)
 
@@ -131,13 +131,13 @@ As currently implemented, `HasAttrGuard` does not narrow types; instead it prese
 The type must be fully qualified.
 
 ```python
-from pyanalyze.extensions import ExternalType
+from pycroscope.extensions import ExternalType
 
 def function(arg: ExternalType["other_module.Type"]) -> None:
     pass
 ```
 
-To resolve the type, pyanalyze will import `other_module`, but the module
+To resolve the type, pycroscope will import `other_module`, but the module
 using `ExternalType` does not have to import `other_module`.
 
 `typing.TYPE_CHECKING` can be used in a similar fashion, but `ExternalType`
@@ -157,8 +157,8 @@ For example, the following creates a custom check that allows only literal
 values:
 
 ```python
-from pyanalyze.extensions import CustomCheck
-from pyanalyze.value import Value, CanAssign, CanAssignContext, CanAssignError, KnownValue, flatten_values
+from pycroscope.extensions import CustomCheck
+from pycroscope.value import Value, CanAssign, CanAssignContext, CanAssignError, KnownValue, flatten_values
 
 class LiteralOnly(CustomCheck):
     def can_assign(self, value: Value, ctx: CanAssignContext) -> CanAssign:
@@ -183,8 +183,8 @@ implements basic support for integers with a limited range:
 
 ```python
 from dataclasses import dataclass
-from pyanalyze.extensions import CustomCheck
-from pyanalyze.value import (
+from pycroscope.extensions import CustomCheck
+from pycroscope.value import (
     AnyValue,
     flatten_values,
     CanAssign,
@@ -283,20 +283,20 @@ def caller(x: int) -> None:
 This is not a full, usable implementation of ranged integers; for that we would
 also need to add support for this check to operators like `int.__add__`.
 
-Two custom checks are exposed by `pyanalyze.extensions`:
+Two custom checks are exposed by `pycroscope.extensions`:
 
-- `pyanalyze.extensions.LiteralOnly`, which allows only literal values (as discussed above)
-- `pyanalyze.extensions.NoAny`, which disallows passing untyped values
+- `pycroscope.extensions.LiteralOnly`, which allows only literal values (as discussed above)
+- `pycroscope.extensions.NoAny`, which disallows passing untyped values
 
 ## Limitations
 
-Although pyanalyze aims to support the full Python type system, support for some features is still missing or incomplete, including:
+Although pycroscope aims to support the full Python type system, support for some features is still missing or incomplete, including:
 
 - Variance of TypeVars
 - `NewType` over non-trivial types
 - `ParamSpec` (PEP 612)
 - `TypeVarTuple` (PEP 646)
 
-More generally, Python is sufficiently dynamic that almost any check like the ones run by pyanalyze will inevitably have false positives: cases where the script sees an error, but the code in fact runs fine. Attributes may be added at runtime in hard-to-detect ways, variables may be created by direct manipulation of the `globals()` dictionary, and the `unittest.mock` module can change anything into anything. Although pyanalyze has a number of configuration mechanisms to deal with these false positives, it is usually better to write code in a way that doesn't require use of these knobs: code that's easier for the script to understand is probably also easier for humans to understand.
+More generally, Python is sufficiently dynamic that almost any check like the ones run by pycroscope will inevitably have false positives: cases where the script sees an error, but the code in fact runs fine. Attributes may be added at runtime in hard-to-detect ways, variables may be created by direct manipulation of the `globals()` dictionary, and the `unittest.mock` module can change anything into anything. Although pycroscope has a number of configuration mechanisms to deal with these false positives, it is usually better to write code in a way that doesn't require use of these knobs: code that's easier for the script to understand is probably also easier for humans to understand.
 
-Just as the tool inevitably has false positives, it equally inevitably cannot find all code that will throw a runtime error. It is generally impossible to statically determine what a program does or whether it runs successfully without actually running the program. Pyanalyze doesn't check program logic and it cannot always determine exactly what value a variable will have. It is no substitute for unit tests.
+Just as the tool inevitably has false positives, it equally inevitably cannot find all code that will throw a runtime error. It is generally impossible to statically determine what a program does or whether it runs successfully without actually running the program. Pycroscope doesn't check program logic and it cannot always determine exactly what value a variable will have. It is no substitute for unit tests.

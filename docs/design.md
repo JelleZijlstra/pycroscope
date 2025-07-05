@@ -1,12 +1,12 @@
 # Design
 
-Fundamentally, the way pyanalyze works is that it tries to infer, with as much precision as possible, what Python value or what kind of Python value each node in a file's AST corresponds to, and then uses that information to flag code that does something undesirable. Mostly, that involves identifying code that will cause the Python interpreter to throw an error at runtime, for example because it accesses an attribute that doesn't exist or because it passes incorrect arguments to a function.
+Fundamentally, the way pycroscope works is that it tries to infer, with as much precision as possible, what Python value or what kind of Python value each node in a file's AST corresponds to, and then uses that information to flag code that does something undesirable. Mostly, that involves identifying code that will cause the Python interpreter to throw an error at runtime, for example because it accesses an attribute that doesn't exist or because it passes incorrect arguments to a function.
 
 This is done by recursively visiting the AST of the file and building up a context of information gathered from previously visited nodes. For example, the `visit_ClassDef` method visits the body of the class within a context that indicates that AST nodes are part of the class, which enables method definitions within the class to infer the type of their `self` arguments as being the class. In some cases, the visitor will traverse the AST twice: once to collect places where names are set, and once again to check that every place a name is accessed is valid. This is necessary because functions may use names that are only defined later in the file.
 
 ## Background
 
-Pyanalyze is built on top of two lower-level abstractions: Python's built-in `ast` module and our own `node_visitor` abstraction, which is an extension of the `ast.NodeVisitor` class.
+Pycroscope is built on top of two lower-level abstractions: Python's built-in `ast` module and our own `node_visitor` abstraction, which is an extension of the `ast.NodeVisitor` class.
 
 ### Python AST module
 
@@ -39,13 +39,13 @@ class ImportFinder(ast.NodeVisitor):
 
 ### node_visitor.py
 
-Pyanalyze uses an extension to `ast.NodeVisitor`, implemented in `pyanalyze/node_visitor.py`, that adds two main features: management of files to run the visitor on and management of errors that are found by the visitor.
+Pycroscope uses an extension to `ast.NodeVisitor`, implemented in `pycroscope/node_visitor.py`, that adds two main features: management of files to run the visitor on and management of errors that are found by the visitor.
 
 The following is a simple example of a visitor using this abstraction---a visitor that will show an error for every `assert` and `import` statement found:
 
 ```python
 import enum
-from pyanalyze import node_visitor
+from pycroscope import node_visitor
 
 class ErrorCode(enum.Enum):
     found_assert = 1
@@ -108,11 +108,11 @@ Subclasses of `BaseNodeVisitor` can specify which errors are enabled by default 
 
 ## Name resolution
 
-The name resolution component of pyanalyze makes it possible to connect usage of a Python variable with the place where it is defined.
+The name resolution component of pycroscope makes it possible to connect usage of a Python variable with the place where it is defined.
 
-Pyanalyze uses the `StackedScopes` class to simulate Python scoping rules. This class contains a stack of nested scopes, implemented as dictionaries, that contain names defined in a particular Python scope (e.g., a function). When we need to determine what a particular name refers to, we iterate through the scopes, starting at the top of the scope stack, until we find a scope dictionary that contains the name. This is similar to how name lookup is implemented in Python itself. When a name that is accessed in Python code is not found in any scope object, pyanalyze will throw an error with code `undefined_name`.
+Pycroscope uses the `StackedScopes` class to simulate Python scoping rules. This class contains a stack of nested scopes, implemented as dictionaries, that contain names defined in a particular Python scope (e.g., a function). When we need to determine what a particular name refers to, we iterate through the scopes, starting at the top of the scope stack, until we find a scope dictionary that contains the name. This is similar to how name lookup is implemented in Python itself. When a name that is accessed in Python code is not found in any scope object, pycroscope will throw an error with code `undefined_name`.
 
-When pyanalyze is run on a file, the scopes object is initialized with two scope levels containing builtin objects such as `len` and `Exception` and the file's module-level globals (found by importing the file and inspecting its `__dict__`). When it inspects the AST, it adds names that it finds in assignment context into the appropriate nested scope. For example, when it sees a `FunctionDef` AST node, it adds a new function-level scope, and if the function contains a statement like `x = 1`, it will add the variable `x` to the function's scope. Then when the function accesses the variable `x`, it can retrieve it from the function-level scope in the `StackedScopes` object.
+When pycroscope is run on a file, the scopes object is initialized with two scope levels containing builtin objects such as `len` and `Exception` and the file's module-level globals (found by importing the file and inspecting its `__dict__`). When it inspects the AST, it adds names that it finds in assignment context into the appropriate nested scope. For example, when it sees a `FunctionDef` AST node, it adds a new function-level scope, and if the function contains a statement like `x = 1`, it will add the variable `x` to the function's scope. Then when the function accesses the variable `x`, it can retrieve it from the function-level scope in the `StackedScopes` object.
 
 The following scope types exist:
 
@@ -121,7 +121,7 @@ The following scope types exist:
 - `class_scope` is entered whenever the AST visitor encounters a class definition. It can contain nested class or function scopes.
 - `function_scope` is entered for each function definition.
 
-The function scope has a more complicated representation than the others so that it can reflect changes in values during the execution of a function. Broadly speaking, pyanalyze collects the places where every local variable is either written (definition nodes) or read (usage nodes), and it maps every usage node to the set of possible definition nodes that the value may come from. For example, if a variable is written to and then read on the next line, the usage node on the second line is mapped to the definition node on the first line only, but if a variable is set within both the if and the else branch of an if block, a usage after the if block will be mapped to definition nodes from both the if and the else block. If the variable is never set in some branches, a special marker object is used again, and pyanalyze will emit a `possibly_undefined_name` error.
+The function scope has a more complicated representation than the others so that it can reflect changes in values during the execution of a function. Broadly speaking, pycroscope collects the places where every local variable is either written (definition nodes) or read (usage nodes), and it maps every usage node to the set of possible definition nodes that the value may come from. For example, if a variable is written to and then read on the next line, the usage node on the second line is mapped to the definition node on the first line only, but if a variable is set within both the if and the else branch of an if block, a usage after the if block will be mapped to definition nodes from both the if and the else block. If the variable is never set in some branches, a special marker object is used again, and pycroscope will emit a `possibly_undefined_name` error.
 
 Function scopes also support **constraints**. Constraints are restrictions on the values a local variable may take. For example, take the following code:
 
@@ -132,7 +132,7 @@ def f(x: Union[int, None]) -> None:
         dump_value(x)  # int
 ```
 
-In this code, the `x is not None` check is translated into a constraint that is stored in the local scope, similar to how assignments are stored. When a variable is used within the block, we look at active constraints to restrict the type. In this example, this makes pyanalyze able to understand that within the if block the type of `x` is `int`, not `Union[int, None]`.
+In this code, the `x is not None` check is translated into a constraint that is stored in the local scope, similar to how assignments are stored. When a variable is used within the block, we look at active constraints to restrict the type. In this example, this makes pycroscope able to understand that within the if block the type of `x` is `int`, not `Union[int, None]`.
 
 The following constructs are understood as constraints:
 
@@ -174,16 +174,16 @@ Each `Value` object has a method `can_assign` that checks whether types are corr
 
 When the visitor encounters a `Call` node (representing a function call) and it can resolve the object being called, it will check that the object can in fact be called and that it accepts the arguments given to it. This checks only the number of arguments and the names of keyword arguments, not their types.
 
-The first step in implementing this check is to retrieve the signature for the callee. Python provides the `inspect.signature` function to do this, but for some callables additional logic is required. In addition, pyanalyze uses [typeshed](http://github.com/python/typeshed), a repository of types for standard library modules, to produce more precise signatures.
+The first step in implementing this check is to retrieve the signature for the callee. Python provides the `inspect.signature` function to do this, but for some callables additional logic is required. In addition, pycroscope uses [typeshed](http://github.com/python/typeshed), a repository of types for standard library modules, to produce more precise signatures.
 
 Once we have the signature, we can figure out whether the arguments passed to the callee in the AST node under consideration are compatible with the signature. This is done by matching up the arguments passed by the call to the formal parameters in the signature. The abstraction also supports providing an _implementation function_ for a callable, a function that gets called with the types of the arguments to the function and that computes a more specific return type or checks the arguments.
 
 ## Non-existent object attributes
 
-Python throws a runtime `AttributeError` when you try to access an object attribute that doesn't exist. Pyanalyze can statically find some kinds of code that will access non-existent attributes. The simpler case is when code accesses an attribute of a `KnownValue` , like in a file that has `import os` and then accesses `os.ptah`. In this case, we know the value that `os` contains, so we can try to access the attribute `ptah` on it, and show an error if the attribute lookup fails. Similarly, `os.path` will return a `KnownValue` of the `os.path` module, so that we can also check attribute lookups on `os.path`.
+Python throws a runtime `AttributeError` when you try to access an object attribute that doesn't exist. Pycroscope can statically find some kinds of code that will access non-existent attributes. The simpler case is when code accesses an attribute of a `KnownValue` , like in a file that has `import os` and then accesses `os.ptah`. In this case, we know the value that `os` contains, so we can try to access the attribute `ptah` on it, and show an error if the attribute lookup fails. Similarly, `os.path` will return a `KnownValue` of the `os.path` module, so that we can also check attribute lookups on `os.path`.
 
-Another class of bugs involves objects accessing attributes on `self` that don't exist. For example, an object may set `self.promote` in its `__init__` method, but then access `self.promotion` in its `tree` method. To detect such cases, pyanalyze uses the `ClassAttributeChecker` class. This class keeps a record of every node where an attribute is written or read on a `TypedValue`. After checking all code that uses the class, it then takes the difference between the sets of read and written values and shows an error for every attribute that is read but never written. This approach is complicated by inheritance---subclasses may read values only written on the superclass, and vice versa. Therefore, the check doesn't trigger for any attribute that is set on any superclass or subclass of the class under consideration. It also doesn't trigger for any attributes of a class that has a base class that wasn't itself examined by the `ClassAttributeChecker`. This was needed to deal with Thrift classes that used attributes defined in superclasses outside of code checked by pyanalyze. Two superclasses are excluded from this, so that undefined attributes are flagged on their subclasses even though test_scope.py hasn't examined their definitions: `object` (the superclass of every class) and `qutils.webnode2.Component` (which doesn't define any attributes that are read by its subclasses).
+Another class of bugs involves objects accessing attributes on `self` that don't exist. For example, an object may set `self.promote` in its `__init__` method, but then access `self.promotion` in its `tree` method. To detect such cases, pycroscope uses the `ClassAttributeChecker` class. This class keeps a record of every node where an attribute is written or read on a `TypedValue`. After checking all code that uses the class, it then takes the difference between the sets of read and written values and shows an error for every attribute that is read but never written. This approach is complicated by inheritance---subclasses may read values only written on the superclass, and vice versa. Therefore, the check doesn't trigger for any attribute that is set on any superclass or subclass of the class under consideration. It also doesn't trigger for any attributes of a class that has a base class that wasn't itself examined by the `ClassAttributeChecker`. This was needed to deal with Thrift classes that used attributes defined in superclasses outside of code checked by pycroscope. Two superclasses are excluded from this, so that undefined attributes are flagged on their subclasses even though test_scope.py hasn't examined their definitions: `object` (the superclass of every class) and `qutils.webnode2.Component` (which doesn't define any attributes that are read by its subclasses).
 
 ## Finding unused code
 
-Because pyanalyze tries to resolve all names and attribute lookups in code in a package, it was easy to extend it to determine which of the classes and functions defined in the package aren't accessed in any other code. This is done by recording every name and attribute lookup that results in a `KnownValue` containing a function or class defined in the package. After the AST visitor run, it compares the set of accessed objects with another set of all the functions and classes that are defined in submodules of the package. All objects that appear in the second set but not the first are probably unused. (There are false positives, such as functions that are registered in some registry by decorators, or those that are called from outside of `a` itself.) This check can be run by passing the `--find-unused` argument to pyanalyze.
+Because pycroscope tries to resolve all names and attribute lookups in code in a package, it was easy to extend it to determine which of the classes and functions defined in the package aren't accessed in any other code. This is done by recording every name and attribute lookup that results in a `KnownValue` containing a function or class defined in the package. After the AST visitor run, it compares the set of accessed objects with another set of all the functions and classes that are defined in submodules of the package. All objects that appear in the second set but not the first are probably unused. (There are false positives, such as functions that are registered in some registry by decorators, or those that are called from outside of `a` itself.) This check can be run by passing the `--find-unused` argument to pycroscope.

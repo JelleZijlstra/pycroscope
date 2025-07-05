@@ -1,34 +1,36 @@
-# pyanalyze
+# pycroscope
 
-Pyanalyze is a semi-static type checker for Python code. Like a static type checker (e.g., mypy or pyright), it
+Pycroscope is a semi-static type checker for Python code. Like a static type checker (e.g., mypy or pyright), it
 detects type errors in your code so bugs can be found before they reach production. Unlike such tools, however,
-it imports the modules it type checks, enabling pyanalyze to understand many dynamic constructs that other type
-checkers will reject. This property also makes it possible to extend pyanalyze with plugins that interact directly
+it imports the modules it type checks, enabling pycroscope to understand many dynamic constructs that other type
+checkers will reject. This property also makes it possible to extend pycroscope with plugins that interact directly
 with your code.
+
+Pycroscope is a friendly fork of [pyanalyze](https://github.com/quora/pyanalyze).
 
 ## Usage
 
-You can install pyanalyze with:
+You can install pycroscope with:
 
 ```bash
-$ pip install pyanalyze
+$ pip install pycroscope
 ```
 
-Once it is installed, you can run pyanalyze on a Python file or package as follows:
+Once it is installed, you can run pycroscope on a Python file or package as follows:
 
 ```bash
-$ python -m pyanalyze file.py
-$ python -m pyanalyze package/
+$ python -m pycroscope file.py
+$ python -m pycroscope package/
 ```
 
-But note that this will try to import all Python files it is passed. If you have scripts that perform operations without `if __name__ == "__main__":` blocks, pyanalyze may end up executing them.
+But note that this will try to import all Python files it is passed. If you have scripts that perform operations without `if __name__ == "__main__":` blocks, pycroscope may end up executing them.
 
-In order to run successfully, pyanalyze needs to be able to import the code it checks. To make this work you may have to manually adjust Python's import path using the `$PYTHONPATH` environment variable.
+In order to run successfully, pycroscope needs to be able to import the code it checks. To make this work you may have to manually adjust Python's import path using the `$PYTHONPATH` environment variable.
 
 For quick experimentation, you can also use the `-c` option to directly type check a piece of code:
 
 ```
-$ python -m pyanalyze -c 'import typing; typing.reveal_type(1)'
+$ python -m pycroscope -c 'import typing; typing.reveal_type(1)'
 Runtime type is 'int'
 
 Revealed type is 'Literal[1]' (code: reveal_type)
@@ -39,15 +41,15 @@ In <code> at line 1
 
 ### Configuration
 
-Pyanalyze has a number of command-line options, which you can see by running `python -m pyanalyze --help`. Important ones include `-f`, which runs an interactive prompt that lets you examine and fix each error found by pyanalyze, and `--enable`/`--disable`, which enable and disable specific error codes.
+Pycroscope has a number of command-line options, which you can see by running `python -m pycroscope --help`. Important ones include `-f`, which runs an interactive prompt that lets you examine and fix each error found by pycroscope, and `--enable`/`--disable`, which enable and disable specific error codes.
 
 Configuration through a `pyproject.toml` file is also supported. See
-[the documentation](https://pyanalyze.readthedocs.io/en/latest/configuration.html) for
+[the documentation](https://pycroscope.readthedocs.io/en/latest/configuration.html) for
 details.
 
-### Extending pyanalyze
+### Extending pycroscope
 
-One of the main ways to extend pyanalyze is by providing a specification for a particular function. This allows you to run arbitrary code that inspects the arguments to the function and raises errors if something is wrong.
+One of the main ways to extend pycroscope is by providing a specification for a particular function. This allows you to run arbitrary code that inspects the arguments to the function and raises errors if something is wrong.
 
 As an example, suppose your codebase contains a function `database.run_query()` that takes as an argument a SQL string, like this:
 
@@ -58,9 +60,9 @@ database.run_query("SELECT answer, question FROM content")
 You want to detect when a call to `run_query()` contains syntactically invalid SQL or refers to a non-existent table or column. You could set that up with code like this:
 
 ```python
-from pyanalyze.error_code import ErrorCode
-from pyanalyze.signature import CallContext, Signature, SigParameter
-from pyanalyze.value import KnownValue, TypedValue, AnyValue, AnySource, Value
+from pycroscope.error_code import ErrorCode
+from pycroscope.signature import CallContext, Signature, SigParameter
+from pycroscope.value import KnownValue, TypedValue, AnyValue, AnySource, Value
 
 from database import run_query, parse_sql
 
@@ -85,7 +87,7 @@ def run_query_impl(ctx: CallContext) -> Value:
 
     # check that the parsed SQL is valid...
 
-    # pyanalyze will use this as the inferred return type for the function
+    # pycroscope will use this as the inferred return type for the function
     return TypedValue(list)
 
 
@@ -108,32 +110,31 @@ def get_known_argspecs(arg_spec_cache):
 
 ### Supported features
 
-Pyanalyze generally aims to implement [the Python typing spec](https://typing.readthedocs.io/en/latest/spec/index.html),
-but support for some features is incomplete. See [the documentation](https://pyanalyze.readthedocs.io/en/latest/)
+Pycroscope generally aims to implement [the Python typing spec](https://typing.readthedocs.io/en/latest/spec/index.html),
+but support for some features is incomplete. See [the documentation](https://pycroscope.readthedocs.io/en/latest/)
 for details.
 
 ### Ignoring errors
 
-Sometimes pyanalyze gets things wrong and you need to ignore an error it emits. This can be done as follows:
+Sometimes pycroscope gets things wrong and you need to ignore an error it emits. This can be done as follows:
 
 - Add `# static analysis: ignore` on a line by itself before the line that generates the error.
 - Add `# static analysis: ignore` at the end of the line that generates the error.
 - Add `# static analysis: ignore` at the top of the file; this will ignore errors in the entire file.
 
-You can add an error code, like `# static analysis: ignore[undefined_name]`, to ignore only a specific error code. This does not work for whole-file ignores. If the `bare_ignore` error code is turned on, pyanalyze will emit an error if you don't specify an error code on an ignore comment.
+You can add an error code, like `# static analysis: ignore[undefined_name]`, to ignore only a specific error code. This does not work for whole-file ignores. If the `bare_ignore` error code is turned on, pycroscope will emit an error if you don't specify an error code on an ignore comment.
 
-Pyanalyze does not currently support the standard `# type: ignore` comment syntax.
+Pycroscope does not currently support the standard `# type: ignore` comment syntax.
 
 ### Python version support
 
-Pyanalyze supports all versions of Python that have not reached end-of-life. Because it imports the code it checks, you have to run it using the same version of Python you use to run your code.
+Pycroscope supports all versions of Python that have not reached end-of-life. Because it imports the code it checks, you have to run it using the same version of Python you use to run your code.
 
 ## Contributing
 
-We welcome your contributions. See [CONTRIBUTING.md](https://github.com/quora/pyanalyze/blob/master/CONTRIBUTING.md)
+We welcome your contributions. See [CONTRIBUTING.md](https://github.com/JelleZijlstra/pycroscope/blob/master/CONTRIBUTING.md)
 for how to get started.
 
 ## Documentation
 
-Documentation is available at [ReadTheDocs](https://pyanalyze.readthedocs.io/en/latest/)
-or on [GitHub](https://github.com/quora/pyanalyze/tree/master/docs).
+Documentation is available on [GitHub](https://github.com/JelleZijlstra/pycroscope/tree/master/docs).

@@ -1,15 +1,15 @@
 repos:
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.2.2
+    rev: v0.11.8
     hooks:
       - id: ruff
         args: [--fix]
 
   - repo: https://github.com/psf/black
-    rev: 24.2.0
+    rev: 25.1.0
     hooks:
       - id: black
-        language_version: python3.12
+        language_version: python3.13
 
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v4.4.0
