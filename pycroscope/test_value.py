@@ -606,6 +606,9 @@ def test_new_type_value() -> None:
     assert_cannot_assign(nt1_val, TypedValue(Capybara))
     assert_cannot_assign(nt1_val, KnownValue(Capybara.hydrochaeris))
 
+    assert_can_assign(nt1_val, AnyValue(AnySource.marker))
+    assert_can_assign(AnyValue(AnySource.marker), nt1_val)
+
 
 def test_annotated_value() -> None:
     tv_int = TypedValue(int)

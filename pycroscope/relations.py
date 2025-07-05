@@ -264,6 +264,8 @@ def _has_relation(
                 return {}
             else:
                 return CanAssignError(f"{right} is not {relation.description} {left}")
+        elif isinstance(right, AnyValue):
+            pass
         else:
             return CanAssignError(f"{right} is not {relation.description} {left}")
     if isinstance(right, NewTypeValue):
@@ -382,6 +384,7 @@ def _has_relation(
             return {}  # Any is assignable to everything
         else:
             assert_never(relation)
+    assert not isinstance(left, NewTypeValue)
 
     # SyntheticModuleValue
     if isinstance(left, SyntheticModuleValue):
