@@ -268,7 +268,7 @@ def _has_relation(
             return CanAssignError(f"{right} is not {relation.description} {left}")
     if isinstance(right, NewTypeValue):
         right_inner = gradualize(right.value)
-        return _has_relation(left, right_inner, relation, ctx)
+        return _has_relation(left, right_inner, relation, ctx, original_right=right)
 
     # IntersectionValue
     if isinstance(left, IntersectionValue):
