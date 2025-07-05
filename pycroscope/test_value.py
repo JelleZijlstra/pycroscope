@@ -612,6 +612,11 @@ def test_annotated_value() -> None:
     assert_can_assign(AnnotatedValue(tv_int, [tv_int]), tv_int)
     assert_can_assign(tv_int, AnnotatedValue(tv_int, [tv_int]))
 
+    union = TypedValue(int) | TypedValue(float)
+    annotated = AnnotatedValue(union, [KnownValue(1)])
+    assert_can_assign(annotated, union)
+    assert_can_assign(union, annotated)
+
 
 class A:
     pass
