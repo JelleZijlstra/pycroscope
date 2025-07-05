@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Change implementation of implicit int/float and float/complex promotion
+  in accordance with https://github.com/python/typing/pull/1748. Now,
+  annotations of `float` implicitly mean `float | int`.
+- Fix assignability for certain combinations of unions, `Annotated`, and `NewType`.
 - Reduce more uninhabited intersections to `Never`
 
 ## Version 0.2.0 (June 26, 2025)
