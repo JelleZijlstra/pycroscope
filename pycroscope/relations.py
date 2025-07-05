@@ -257,6 +257,19 @@ def _has_relation(
             bounds_maps.append(custom_can_assign)
         return unify_bounds_maps(bounds_maps)
 
+    # NewTypeValue
+    if isinstance(left, NewTypeValue):
+        if isinstance(right, NewTypeValue):
+            if left.newtype is right.newtype:
+                return {}
+            else:
+                return CanAssignError(f"{right} is not {relation.description} {left}")
+        else:
+            return CanAssignError(f"{right} is not {relation.description} {left}")
+    if isinstance(right, NewTypeValue):
+        right_inner = gradualize(right.value)
+        return _has_relation(left, right_inner, relation, ctx)
+
     # IntersectionValue
     if isinstance(left, IntersectionValue):
         # Try to simplify first
@@ -404,19 +417,6 @@ def _has_relation(
             return CanAssignError(f"{right} is not {relation.description} {left}")
     if isinstance(right, ParamSpecKwargsValue):
         return has_relation(left, right.get_fallback_value(), relation, ctx)
-
-    # NewTypeValue
-    if isinstance(left, NewTypeValue):
-        if isinstance(right, NewTypeValue):
-            if left.newtype is right.newtype:
-                return {}
-            else:
-                return CanAssignError(f"{right} is not {relation.description} {left}")
-        else:
-            return CanAssignError(f"{right} is not {relation.description} {left}")
-    if isinstance(right, NewTypeValue):
-        right_inner = gradualize(right.value)
-        return _has_relation(left, right_inner, relation, ctx)
 
     # UnboundMethodValue
     if isinstance(left, UnboundMethodValue):
