@@ -531,7 +531,7 @@ class TestGetGenericBases:
 
     def check(
         self,
-        expected: BasesMap | list[BasesMap],
+        expected: Union[BasesMap, list[BasesMap]],
         base: Union[type, str],
         args: typing.Sequence[Value] = (),
     ) -> None:
