@@ -1,8 +1,11 @@
 # static analysis: ignore
+import _io
+import abc
 import collections
 import collections.abc
 import contextlib
 import io
+import itertools
 import sys
 import tempfile
 import textwrap
@@ -11,7 +14,7 @@ import typing
 import urllib.parse
 from collections.abc import Collection, MutableSequence, Reversible, Sequence, Set
 from pathlib import Path
-from typing import Dict, Generic, List, NewType, Type, TypeVar, Union
+from typing import Generic, List, NewType, Type, TypeVar, Union
 from unittest.mock import ANY
 from urllib.error import HTTPError
 
@@ -73,9 +76,17 @@ class TestTypeshedClient(TestNameCheckVisitorBase):
         generic = GenericValue(Generic, (TypeVarValue(typevar=ANY),))
 
         # typeshed removed Generic[] from the base list, account for both options
+        # Plus the ordering might change
         def assert_with_maybe_generic(cls: Type[object], expected: List[Value]) -> None:
             actual = tsf.get_bases(cls)
-            assert actual == expected or actual == [*expected, generic]
+            assert actual is not None
+
+            def options():
+                for ordering in itertools.permutations(expected):
+                    yield [*ordering]
+                    yield [*ordering, generic]
+
+            assert any(actual == o for o in options())
 
         assert_with_maybe_generic(
             list, [GenericValue(MutableSequence, (TypeVarValue(typevar=ANY),))]
@@ -83,8 +94,8 @@ class TestTypeshedClient(TestNameCheckVisitorBase):
         assert_with_maybe_generic(
             Sequence,
             [
-                GenericValue(Collection, (TypeVarValue(typevar=ANY),)),
                 GenericValue(Reversible, (TypeVarValue(typevar=ANY),)),
+                GenericValue(Collection, (TypeVarValue(typevar=ANY),)),
             ],
         )
         assert_with_maybe_generic(Set, [GenericValue(Collection, (TypeVarValue(ANY),))])
@@ -491,6 +502,9 @@ class GenericChild(Parent[T]):
     pass
 
 
+BasesMap = dict[Union[type, str], list[Value]]
+
+
 class TestGetGenericBases:
     def setup_method(self) -> None:
         checker = Checker()
@@ -517,13 +531,16 @@ class TestGetGenericBases:
 
     def check(
         self,
-        expected: Dict[Union[type, str], List[Value]],
+        expected: Union[BasesMap, list[BasesMap]],
         base: Union[type, str],
         args: typing.Sequence[Value] = (),
     ) -> None:
         actual = self.get_generic_bases(base, args)
         cleaned = {base: list(tv_map.values()) for base, tv_map in actual.items()}
-        assert expected == cleaned
+        if isinstance(expected, list):
+            assert cleaned in expected
+        else:
+            assert expected == cleaned
 
     def test_coroutine(self):
         one = KnownValue(1)
@@ -577,12 +594,21 @@ class TestGetGenericBases:
         int_tv = TypedValue(int)
         missing = AnyValue(AnySource.generic_argument)
         self.check(
-            {contextlib.AbstractContextManager: [int_tv, missing]},
+            [
+                {contextlib.AbstractContextManager: [int_tv, missing]},
+                {contextlib.AbstractContextManager: [int_tv, missing], abc.ABC: []},
+            ],
             contextlib.AbstractContextManager,
             [int_tv],
         )
         self.check(
-            {contextlib.AbstractAsyncContextManager: [int_tv, missing]},
+            [
+                {contextlib.AbstractAsyncContextManager: [int_tv, missing]},
+                {
+                    contextlib.AbstractAsyncContextManager: [int_tv, missing],
+                    abc.ABC: [],
+                },
+            ],
             contextlib.AbstractAsyncContextManager,
             [int_tv],
         )
@@ -687,15 +713,26 @@ class TestGetGenericBases:
 
     def test_io(self):
         self.check(
-            {
-                io.BytesIO: [],
-                io.BufferedIOBase: [],
-                io.IOBase: [],
-                typing.BinaryIO: [],
-                typing.IO: [TypedValue(bytes)],
-                collections.abc.Iterator: [TypedValue(bytes)],
-                collections.abc.Iterable: [TypedValue(bytes)],
-            },
+            [
+                {
+                    io.BytesIO: [],
+                    io.BufferedIOBase: [],
+                    io.IOBase: [],
+                    typing.BinaryIO: [],
+                    typing.IO: [TypedValue(bytes)],
+                    collections.abc.Iterator: [TypedValue(bytes)],
+                    collections.abc.Iterable: [TypedValue(bytes)],
+                },
+                {
+                    io.BytesIO: [],
+                    io.BufferedIOBase: [],
+                    io.IOBase: [],
+                    typing.BinaryIO: [],
+                    typing.IO: [TypedValue(bytes)],
+                    _io._IOBase: [],
+                    _io._BufferedIOBase: [],
+                },
+            ],
             io.BytesIO,
         )
 
@@ -722,15 +759,26 @@ class TestGetGenericBases:
 
     def test_buffered_reader(self):
         self.check(
-            {
-                io.IOBase: [],
-                io.BufferedIOBase: [],
-                collections.abc.Iterable: [TypedValue(bytes)],
-                collections.abc.Iterator: [TypedValue(bytes)],
-                io.BufferedReader: [],
-                typing.BinaryIO: [],
-                typing.IO: [TypedValue(bytes)],
-            },
+            [
+                {
+                    io.IOBase: [],
+                    io.BufferedIOBase: [],
+                    collections.abc.Iterable: [TypedValue(bytes)],
+                    collections.abc.Iterator: [TypedValue(bytes)],
+                    io.BufferedReader: [],
+                    typing.BinaryIO: [],
+                    typing.IO: [TypedValue(bytes)],
+                },
+                {
+                    io.IOBase: [],
+                    io.BufferedIOBase: [],
+                    _io._BufferedIOBase: [],
+                    io.BufferedReader: [AnyValue(AnySource.generic_argument)],
+                    typing.BinaryIO: [],
+                    typing.IO: [TypedValue(bytes)],
+                    _io._IOBase: [],
+                },
+            ],
             io.BufferedReader,
         )
 

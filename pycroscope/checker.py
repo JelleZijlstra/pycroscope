@@ -209,11 +209,12 @@ class Checker:
         return {base.typ for base in base_values if isinstance(base, TypedValue)}
 
     def _get_protocol_members(self, bases: Iterable[Union[type, str]]) -> set[str]:
-        return set(
-            itertools.chain.from_iterable(
-                self.ts_finder.get_all_attributes(base) for base in bases
-            )
-        )
+        return {
+            attr
+            for base in bases
+            for attr in self.ts_finder.get_all_attributes(base)
+            if attr != "__slots__"
+        }
 
     def get_generic_bases(
         self, typ: Union[type, str], generic_args: Sequence[Value] = ()
@@ -431,6 +432,7 @@ EXCLUDED_PROTOCOL_MEMBERS = {
     "__new__",
     "__module__",
     "__parameters__",
+    "__slots__",
     "__subclasshook__",
     "__weakref__",
     "_abc_impl",
