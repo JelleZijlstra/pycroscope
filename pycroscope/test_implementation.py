@@ -1,6 +1,7 @@
 # static analysis: ignore
 import typing_extensions
 
+from .error_code import ErrorCode
 from .test_name_check_visitor import TestNameCheckVisitorBase
 from .test_node_visitor import assert_passes, only_before, skip_before, skip_if
 from .tests import make_simple_sequence
@@ -1067,7 +1068,8 @@ class TestDictDelitem(TestNameCheckVisitorBase):
 
 
 class TestSequenceGetItem(TestNameCheckVisitorBase):
-    @assert_passes()
+    # slice is generic in newer typeshed
+    @assert_passes(settings={ErrorCode.missing_generic_parameters: False})
     def test_list(self):
         from typing import List
 
@@ -1098,7 +1100,8 @@ class TestSequenceGetItem(TestNameCheckVisitorBase):
             )
             assert_is_value(known[unannotated], AnyValue(AnySource.from_another))
 
-    @assert_passes()
+    # slice is generic in newer typeshed
+    @assert_passes(settings={ErrorCode.missing_generic_parameters: False})
     def test_tuple(self):
         from typing import Tuple
 
