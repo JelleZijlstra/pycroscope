@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Ignore presence of `__slots__` in protocols defined in stubs.
 - Change implementation of implicit int/float and float/complex promotion
   in accordance with https://github.com/python/typing/pull/1748. Now,
   annotations of `float` implicitly mean `float | int`.
