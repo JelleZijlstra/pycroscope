@@ -14,7 +14,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, ClassVar, Generic, Optional, TypeVar
 
-import tomli
+if sys.version_info >= (3, 11):
+    import tomllib
+else:
+    import tomli as tomllib
 
 from .analysis_lib import object_from_string
 from .error_code import Error, ErrorCode
@@ -353,7 +356,7 @@ def parse_config_file(
     with path.open("rb") as f:
         # tomli annotates the arg as BinaryIO, and we don't treat BufferedReader
         # as a BinaryIO
-        data = tomli.load(f)  # static analysis: ignore[incompatible_argument]
+        data = tomllib.load(f)  # static analysis: ignore[incompatible_argument]
     data = data.get("tool", {}).get("pycroscope", {})
     yield from _parse_config_section(
         data, path=path, priority=priority, seen_paths={path, *seen_paths}

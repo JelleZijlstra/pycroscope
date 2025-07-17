@@ -11,8 +11,8 @@ import textwrap
 from collections import defaultdict
 
 import pytest
-from ast_decompiler import decompile
 
+from .analysis_lib import decompile
 from .node_visitor import (
     BaseNodeVisitor,
     NodeTransformer,
@@ -391,10 +391,6 @@ class TestHouseDivided(BaseNodeVisitorTester):
 
 def assert_code_equal(expected, actual):
     """Asserts that two pieces of code are equal, and prints a nice diff if they are not."""
-    # In Python2.7 ast_decompiler sometimes inserts an extra newline in the beginning
-    # for some reason. We don't care.
-    expected = expected.lstrip()
-    actual = actual.lstrip()
     if expected != actual:
         diff = "".join(
             line + "\n"

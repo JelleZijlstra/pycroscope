@@ -39,6 +39,14 @@ In <code> at line 1
                                         ^
 ```
 
+Pycroscope tries to minimize its dependencies, and some functionality is available only if certain
+dependencies are installed. You can install all optional dependencies with
+`pip install pycroscope[full]`. This will install:
+
+- `asynq` and `qcore`, used for type checking code using the `asynq` framework
+- `codemod`, used for interactive autofixing of some errors
+- `ast_decompiler`, used to create higher-quality autofixes
+
 ### Configuration
 
 Pycroscope has a number of command-line options, which you can see by running `python -m pycroscope --help`. Important ones include `-f`, which runs an interactive prompt that lets you examine and fix each error found by pycroscope, and `--enable`/`--disable`, which enable and disable specific error codes.

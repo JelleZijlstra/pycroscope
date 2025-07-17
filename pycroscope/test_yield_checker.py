@@ -8,7 +8,7 @@ from .maybe_asynq import asynq
 if asynq is None:
     pytest.skip("asynq not available", allow_module_level=True)
 from .test_name_check_visitor import TestNameCheckVisitorBase
-from .test_node_visitor import assert_passes
+from .test_node_visitor import assert_passes, skip_if_not_installed
 from .yield_checker import VarnameGenerator, _camel_case_to_snake_case
 
 
@@ -40,6 +40,7 @@ class TestUnnecessaryYield(TestNameCheckVisitorBase):
             var1, var2 = yield (inner.asynq(1), inner.asynq(2))
             result(var1 + var2)
 
+    @skip_if_not_installed("ast_decompiler")  # ast.unparse adds more parens
     def test_attribute(self):
         self.assert_is_changed(
             """
@@ -182,6 +183,7 @@ class TestBatchingYields(TestNameCheckVisitorBase):
 
     """
 
+    @skip_if_not_installed("ast_decompiler")  # ast.unparse adds more parens
     def test_basic(self):
         # also tests that it only fixes one error and stops
         self.assert_is_changed(
@@ -212,6 +214,7 @@ class TestBatchingYields(TestNameCheckVisitorBase):
             repeat=True,
         )
 
+    @skip_if_not_installed("ast_decompiler")  # ast.unparse adds more parens
     def test_yield_tuple(self):
         # also tests multiple line assign statement
         self.assert_is_changed(
@@ -247,6 +250,7 @@ class TestBatchingYields(TestNameCheckVisitorBase):
             repeat=True,
         )
 
+    @skip_if_not_installed("ast_decompiler")  # ast.unparse adds more parens
     def test_lots_of_underscores(self):
         self.assert_is_changed(
             """
@@ -268,6 +272,7 @@ class TestBatchingYields(TestNameCheckVisitorBase):
             """,
         )
 
+    @skip_if_not_installed("ast_decompiler")  # ast.unparse adds more parens
     def test_target_tuple(self):
         # when multiple values are yielded to one target
         self.assert_is_changed(
@@ -378,6 +383,7 @@ class TestBatchingYields(TestNameCheckVisitorBase):
             repeat=True,
         )
 
+    @skip_if_not_installed("ast_decompiler")  # ast.unparse adds more parens
     def test_assign_and_non_assign(self):
         self.assert_is_changed(
             """
@@ -407,6 +413,7 @@ class TestBatchingYields(TestNameCheckVisitorBase):
             repeat=True,
         )
 
+    @skip_if_not_installed("ast_decompiler")  # ast.unparse adds more parens
     def test_non_assign_and_assign(self):
         self.assert_is_changed(
             """
@@ -432,6 +439,7 @@ class TestBatchingYields(TestNameCheckVisitorBase):
             repeat=True,
         )
 
+    @skip_if_not_installed("ast_decompiler")  # ast.unparse adds more parens
     def test_both_non_assign(self):
         self.assert_is_changed(
             """
@@ -588,6 +596,7 @@ class TestMissingAsync(TestNameCheckVisitorBase):
         def box_get(box):
             yield box.get_async()  # E: missing_asynq
 
+    @skip_if_not_installed("ast_decompiler")  # ast.unparse adds more parens
     def test_autofix(self):
         self.assert_is_changed(
             """
@@ -691,6 +700,7 @@ class TestDuplicateYield(TestNameCheckVisitorBase):
             for uid in lst:
                 yield uid, uid
 
+    @skip_if_not_installed("ast_decompiler")  # ast.unparse adds more parens
     def test_autofix(self):
         self.assert_is_changed(
             """

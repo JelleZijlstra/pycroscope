@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Reduce the set of dependencies (`ast_decompiler` is no longer used;
+  `tomli` is only used before Python 3.11; `codemod` is an extra).
+- Package a `py.typed` file for pycroscope itself.
 - Ignore presence of `__slots__` in protocols defined in stubs.
 - Change implementation of implicit int/float and float/complex promotion
   in accordance with https://github.com/python/typing/pull/1748. Now,
