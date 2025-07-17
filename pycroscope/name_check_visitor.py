@@ -6100,7 +6100,7 @@ def _extract_definite_value(val: Value) -> Optional[bool]:
 
 
 try:
-    from pydantic import BaseModel
+    from pydantic import BaseModel  # static analysis: ignore[import_failed]
 except ImportError:
 
     def _is_safe_pydantic_class(typ: type) -> bool:

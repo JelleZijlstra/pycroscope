@@ -24,11 +24,9 @@ classifiers = [
 ]
 
 dependencies = [
-  "ast_decompiler>=0.4.0",
   "typeshed_client>=2.1.0",
   "typing_extensions>=4.12.0",
-  "codemod",
-  "tomli>=1.1.0"
+  "tomli>=1.1.0; python_version < '3.11'",
 ]
 
 [project.optional-dependencies]
@@ -37,9 +35,12 @@ tests = [
   "mypy_extensions",
   "attrs",
   "pydantic; python_version < '3.14'", # TODO currently fails to build on 3.14
-  "annotated-types"
+  "annotated-types",
+  "ast_decompiler>=0.4.0",
 ]
 asynq = ["asynq", "qcore>=0.5.1"]
+codemod = ["codemod"]
+full = ["asynq", "qcore>=0.5.1", "ast_decompiler>=0.4.0", "codemod"]
 
 [project.urls]
 Homepage = "https://github.com/JelleZijlstra/pycroscope"
@@ -53,7 +54,7 @@ packages = ["pycroscope"]
 [tool.setuptools.package-data]
 # These are useful for unit tests of pycroscope extensions
 # outside the package.
-pycroscope = ["test.toml", "asynq_test.toml", "stubs/*/*.pyi"]
+pycroscope = ["test.toml", "asynq_test.toml", "stubs/*/*.pyi", "py.typed"]
 
 [tool.black]
 target-version = ['py39']

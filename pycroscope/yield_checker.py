@@ -18,11 +18,9 @@ from contextlib import AbstractContextManager
 from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
 
-from ast_decompiler import decompile
-
 import pycroscope
 
-from .analysis_lib import get_indentation, get_line_range_for_node, override
+from .analysis_lib import decompile, get_indentation, get_line_range_for_node, override
 from .asynq_checker import AsyncFunctionKind
 from .error_code import ErrorCode
 from .functions import FunctionNode

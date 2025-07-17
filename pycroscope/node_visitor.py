@@ -27,13 +27,16 @@ from pathlib import Path
 from types import ModuleType
 from typing import Any, Optional, Union
 
-import codemod
-from ast_decompiler import decompile
 from typing_extensions import Literal, NotRequired, Protocol, TypedDict
 
 from . import analysis_lib, error_code
-from .analysis_lib import override
+from .analysis_lib import decompile, override
 from .safe import safe_getattr, safe_isinstance, safe_str
+
+try:
+    import codemod
+except ImportError:
+    codemod = None
 
 Error = dict[str, Any]
 ErrorCodeContainer = Union[error_code.ErrorRegistry, type[Enum]]
@@ -61,33 +64,34 @@ ITERATION_LIMIT = 150
 UNUSED_OBJECT_FILENAME = "<unused>"
 
 
-class _PatchWithDescription(codemod.Patch):
-    def __init__(
-        self,
-        start_line_number: int,
-        end_line_number: Optional[int] = None,
-        new_lines: Optional[list[str]] = None,
-        path: Optional[str] = None,
-        description: Optional[str] = None,
-    ) -> None:
-        super().__init__(start_line_number, end_line_number, new_lines, path)
-        self.description = description
+if codemod is not None:
 
-    def render_range(self) -> str:
-        text = super().render_range()
-        if self.description is not None:
-            return text + ": " + self.description
-        return text
+    class _PatchWithDescription(codemod.Patch):
+        def __init__(
+            self,
+            start_line_number: int,
+            end_line_number: Optional[int] = None,
+            new_lines: Optional[list[str]] = None,
+            path: Optional[str] = None,
+            description: Optional[str] = None,
+        ) -> None:
+            super().__init__(start_line_number, end_line_number, new_lines, path)
+            self.description = description
 
+        def render_range(self) -> str:
+            text = super().render_range()
+            if self.description is not None:
+                return text + ": " + self.description
+            return text
 
-@dataclass
-class _Query:
-    """Simple equivalent of codemod.Query."""
+    @dataclass
+    class _Query:
+        """Simple equivalent of codemod.Query."""
 
-    patches: list[_PatchWithDescription]
+        patches: list[_PatchWithDescription]
 
-    def generate_patches(self) -> list[_PatchWithDescription]:
-        return self.patches
+        def generate_patches(self) -> list[_PatchWithDescription]:
+            return self.patches
 
 
 class VisitorError(Exception):
@@ -515,9 +519,16 @@ class BaseNodeVisitor(ast.NodeVisitor):
                     )
                     offset += len(additions or []) - len(linenos)
             if patches:
-                # poor man's version of https://github.com/facebook/codemod/pull/113
-                with override(builtins, "print", _flushing_print):
-                    codemod.run_interactive(_Query(patches))
+                if codemod is None:
+                    print(
+                        "codemod is not installed, cannot run interactive codemod. "
+                        "Install pycroscope[codemod] to fix.",
+                        file=sys.stderr,
+                    )
+                else:
+                    # poor man's version of https://github.com/facebook/codemod/pull/113
+                    with override(builtins, "print", _flushing_print):
+                        codemod.run_interactive(_Query(patches))
         return had_failure
 
     @classmethod

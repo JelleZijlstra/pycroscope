@@ -10,6 +10,7 @@ import linecache
 import os
 import secrets
 import sys
+import textwrap
 import types
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -262,3 +263,17 @@ def trace(func: Callable[P, T]) -> Callable[P, T]:
         return result
 
     return wrapper
+
+
+try:
+    from ast_decompiler import decompile as decompile
+except ImportError:
+
+    def decompile(node: ast.AST, starting_indentation: int = 0) -> str:
+        ast.fix_missing_locations(node)
+        text = ast.unparse(node)
+        if starting_indentation:
+            text = textwrap.indent(text, " " * starting_indentation)
+        if not text.endswith("\n"):
+            text += "\n"
+        return text
