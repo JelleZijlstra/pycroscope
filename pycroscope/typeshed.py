@@ -330,6 +330,8 @@ class TypeshedFinder:
                     return [GenericValue(Collection, (TypeVarValue(T_co),))]
                 if typ is collections.abc.Callable:
                     return None
+                if sys.version_info >= (3, 10) and typ is types.UnionType:
+                    return None
                 # In 3.11 it's named EnumType and EnumMeta is an alias, but the
                 # stubs have it the other way around. We can't deal with that for now.
                 if typ is EnumMeta:
@@ -343,7 +345,12 @@ class TypeshedFinder:
                     return [GenericValue(Collection, (TypeVarValue(T_co),))]
                 elif fq_name == "contextlib.AbstractContextManager":
                     return [GenericValue(Protocol, (TypeVarValue(T_co),))]
-                elif fq_name in ("typing.Callable", "collections.abc.Callable"):
+                elif fq_name in (
+                    "typing.Callable",
+                    "collections.abc.Callable",
+                    "typing.Union",
+                    "types.UnionType",
+                ):
                     return None
                 elif is_typing_name(fq_name, "TypedDict"):
                     return [

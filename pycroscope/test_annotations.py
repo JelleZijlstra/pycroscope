@@ -75,6 +75,18 @@ class TestAnnotations(TestNameCheckVisitorBase):
             assert_is_value(p, GenericValue(_Pattern, [TypedValue(bytes)]))
             assert_is_value(m, GenericValue(_Match, [TypedValue(str)]))
 
+    @skip_before((3, 10))
+    @assert_passes()
+    def test_union_as_an_annotation(self):
+        from types import UnionType
+
+        def capybara(x: UnionType) -> None:
+            pass
+
+        def caller() -> None:
+            capybara(1)  # E: incompatible_argument
+            capybara(int | str)
+
     @assert_passes()
     def test_generic(self):
         from typing import Any, List
