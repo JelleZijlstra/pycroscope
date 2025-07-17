@@ -27,7 +27,6 @@ from pathlib import Path
 from types import ModuleType
 from typing import Any, Optional, Union
 
-import codemod
 from typing_extensions import Literal, NotRequired, Protocol, TypedDict
 
 from . import analysis_lib, error_code
