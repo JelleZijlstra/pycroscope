@@ -2,7 +2,7 @@
 asynq
 qcore>=0.5.1
 typeshed_client>=2.0.0
-typing_extensions==4.12.2
+typing_extensions==4.15.0
 codemod
 myst-parser==4.0.0
 Sphinx==7.4.7
