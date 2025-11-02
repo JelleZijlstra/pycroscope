@@ -18,6 +18,8 @@ try:
 except ImportError:
     mypy_extensions = None
 
+from .maybe_asynq import asynq
+
 T = TypeVar("T")
 
 
@@ -215,3 +217,14 @@ def safe_str(obj: object) -> str:
             return f"<error in str(): {e!r}>"
         except Exception:
             return "<error in str() and in error message>"
+
+
+def is_async_fn(obj: object) -> bool:
+    if asynq is None:
+        return False
+    try:
+        return asynq.is_async_fn(obj)
+    except Exception:
+        # This does certain attribute accesses, which may raise if the object has
+        # an unusual __getattr__.
+        return False
