@@ -377,7 +377,10 @@ def _unwrap_value_from_typed(result: Value, typ: type, ctx: AttrContext) -> Valu
     elif _static_hasattr(cls_val, "func_code"):
         # Cython function probably
         return UnboundMethodValue(ctx.attr, ctx.root_composite, typevars=typevars)
-    elif _static_hasattr(cls_val, "__get__"):
+    transformed = ClassAttributeTransformer.transform_attribute(cls_val, ctx.options)
+    if transformed is not None:
+        return transformed
+    if _static_hasattr(cls_val, "__get__"):
         typeshed_type = ctx.get_attribute_from_typeshed(typ, on_class=False)
         if typeshed_type is not UNINITIALIZED_VALUE:
             return typeshed_type
@@ -385,11 +388,6 @@ def _unwrap_value_from_typed(result: Value, typ: type, ctx: AttrContext) -> Valu
     elif TreatClassAttributeAsAny.should_treat_as_any(cls_val, ctx.options):
         return AnyValue(AnySource.error)
     else:
-        transformed = ClassAttributeTransformer.transform_attribute(
-            cls_val, ctx.options
-        )
-        if transformed is not None:
-            return transformed
         return result
 
 

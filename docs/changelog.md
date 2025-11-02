@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Apply the `class_attribute_transformers` plugin also for values that
+  have a `__get__` method.
 - Fix internal error in certain cases involving custom `__getattr__` methods
   that raise an error.
 - Reduce the set of dependencies (`ast_decompiler` is no longer used;
