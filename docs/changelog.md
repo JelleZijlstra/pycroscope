@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Fix internal error in certain cases involving custom `__getattr__` methods
+  that raise an error.
 - Reduce the set of dependencies (`ast_decompiler` is no longer used;
   `tomli` is only used before Python 3.11; `codemod` is an extra).
 - Package a `py.typed` file for pycroscope itself.

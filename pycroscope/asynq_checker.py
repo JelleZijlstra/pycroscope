@@ -17,7 +17,7 @@ from .error_code import ErrorCode
 from .functions import AsyncFunctionKind
 from .maybe_asynq import asynq
 from .options import Options, PyObjectSequenceOption, StringSequenceOption
-from .safe import safe_getattr, safe_hasattr
+from .safe import is_async_fn, safe_getattr, safe_hasattr
 from .value import KnownValue, TypedValue, UnboundMethodValue, Value, replace_fallback
 
 
@@ -180,12 +180,12 @@ def is_impure_async_fn(value: Value) -> bool:
     if asynq is None:
         return False
     if isinstance(value, KnownValue):
-        return asynq.is_async_fn(value.val) and not asynq.is_pure_async_fn(value.val)
+        return is_async_fn(value.val) and not asynq.is_pure_async_fn(value.val)
     elif isinstance(value, UnboundMethodValue):
         method = value.get_method()
         if method is None:
             return False
-        return asynq.is_async_fn(method) and not asynq.is_pure_async_fn(method)
+        return is_async_fn(method) and not asynq.is_pure_async_fn(method)
     return False
 
 

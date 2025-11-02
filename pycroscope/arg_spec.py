@@ -44,6 +44,7 @@ from .safe import (
     all_of_type,
     get_fully_qualified_name,
     hasattr_static,
+    is_async_fn,
     is_bound_classmethod,
     is_newtype,
     is_typing_name,
@@ -156,23 +157,15 @@ def is_dot_asynq_function(obj: Any) -> bool:
         return False
     try:
         self_obj = obj.__self__
-    except AttributeError:
-        # the attribute doesn't exist
-        return False
     except Exception:
-        # The object has a buggy __getattr__ that threw an error. Just ignore it.
+        # The attribute doesn't exist, or
+        # the object has a buggy __getattr__ that threw an error. Just ignore it.
         return False
     if is_bound_classmethod(obj):
         return False
     if obj is self_obj:
         return False
-    try:
-        is_async_fn = asynq.is_async_fn(self_obj)
-    except Exception:
-        # The object may have a buggy __getattr__. Ignore it. This happens with
-        # pylons request objects.
-        return False
-    if not is_async_fn:
+    if not is_async_fn(self_obj):
         return False
 
     return getattr(obj, "__name__", None) in ("async", "asynq")
