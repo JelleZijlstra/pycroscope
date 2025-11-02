@@ -11,16 +11,16 @@ authors = [
   { name = "Jelle Zijlstra", email = "jelle.zijlstra@gmail.com" }
 ]
 license = {text = "Apache Software License"}
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 keywords = ["type checker", "static analysis"]
 classifiers = [
   "License :: OSI Approved :: Apache Software License",
   "Programming Language :: Python",
-  "Programming Language :: Python :: 3.9",
   "Programming Language :: Python :: 3.10",
   "Programming Language :: Python :: 3.11",
   "Programming Language :: Python :: 3.12",
   "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
 ]
 
 dependencies = [
@@ -34,7 +34,7 @@ tests = [
   "pytest",
   "mypy_extensions",
   "attrs",
-  "pydantic; python_version < '3.14'", # TODO currently fails to build on 3.14
+  "pydantic",
   "annotated-types",
   "ast_decompiler>=0.4.0",
 ]
@@ -98,7 +98,6 @@ implicit_any = true
 
 [tool.ruff]
 line-length = 100
-target-version = "py39"
 
 [tool.ruff.lint]
 select = [
