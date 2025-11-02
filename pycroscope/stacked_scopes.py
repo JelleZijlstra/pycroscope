@@ -719,9 +719,14 @@ class Scope:
         node: object,
         state: VisitorState,
         from_parent_scope: bool = False,
+        fallback_value: Optional[Value] = None,
     ) -> tuple[Value, Optional["Scope"], VarnameOrigin]:
         local_value, origin = self.get_local(
-            varname, node, state, from_parent_scope=from_parent_scope
+            varname,
+            node,
+            state,
+            from_parent_scope=from_parent_scope,
+            fallback_value=fallback_value,
         )
         if local_value is not UNINITIALIZED_VALUE:
             return self.resolve_reference(local_value, state), self, origin
@@ -731,7 +736,11 @@ class Scope:
                 (varname, self.scope_node) if self.scope_node is not None else None
             )
             val, scope, _ = self.parent_scope.get(
-                varname, parent_node, state, from_parent_scope=True
+                varname,
+                parent_node,
+                state,
+                from_parent_scope=True,
+                fallback_value=fallback_value,
             )
             # Tag lookups in the parent scope with this scope node, so we
             # don't carry over constraints across scopes.
@@ -1445,7 +1454,14 @@ class StackedScopes:
         finally:
             self.scopes += rest
 
-    def get(self, varname: Varname, node: Node, state: VisitorState) -> Value:
+    def get(
+        self,
+        varname: Varname,
+        node: Node,
+        state: VisitorState,
+        *,
+        fallback_value: Optional[Value] = None,
+    ) -> Value:
         """Gets a variable of the given name from the current scope stack.
 
         :param varname: :term:`varname` of the variable to retrieve
@@ -1470,11 +1486,18 @@ class StackedScopes:
         scope.
 
         """
-        value, _, _ = self.get_with_scope(varname, node, state)
+        value, _, _ = self.get_with_scope(
+            varname, node, state, fallback_value=fallback_value
+        )
         return value
 
     def get_with_scope(
-        self, varname: Varname, node: Node, state: VisitorState
+        self,
+        varname: Varname,
+        node: Node,
+        state: VisitorState,
+        *,
+        fallback_value: Optional[Value] = None,
     ) -> tuple[Value, Optional[Scope], VarnameOrigin]:
         """Like :meth:`get`, but also returns the scope object the name was found in.
 
@@ -1482,7 +1505,7 @@ class StackedScopes:
         :class:`Scope` is ``None`` if the name was not found.
 
         """
-        return self.scopes[-1].get(varname, node, state)
+        return self.scopes[-1].get(varname, node, state, fallback_value=fallback_value)
 
     def get_nonlocal_scope(
         self, varname: Varname, using_scope: Scope

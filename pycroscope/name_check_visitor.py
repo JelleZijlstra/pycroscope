@@ -5161,9 +5161,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         return return_value, True
 
     def _get_composite(self, composite: Varname, node: ast.AST, value: Value) -> Value:
-        local_value, _ = self.scopes.current_scope().get_local(
-            composite, node, self.state, fallback_value=value
-        )
+        local_value = self.scopes.get(composite, node, self.state, fallback_value=value)
         if isinstance(local_value, MultiValuedValue):
             vals = [val for val in local_value.vals if val is not UNINITIALIZED_VALUE]
             if vals:

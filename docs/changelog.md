@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Narrow attribute and subscript expressions in nested scopes based on
+  narrowing checks in the outer scope.
 - Apply the `class_attribute_transformers` plugin also for values that
   have a `__get__` method.
 - Fix internal error in certain cases involving custom `__getattr__` methods

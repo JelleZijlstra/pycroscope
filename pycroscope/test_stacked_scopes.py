@@ -1975,3 +1975,30 @@ class TestClassNesting(TestNameCheckVisitorBase):
                 return innermost
 
             return inner
+
+
+class TestNestedAttributeNarrowing(TestNameCheckVisitorBase):
+    @assert_passes()
+    def test_nested_attribute(self):
+        from typing import Optional
+
+        from typing_extensions import assert_type
+
+        class A:
+            a: Optional[str]
+
+        def f(x: A) -> None:
+            if x.a is None:
+                return
+            any(assert_type(x.a, str) for _ in ["foo"])
+
+    @assert_passes()
+    def test_nested_subscript(self):
+        from typing import Optional
+
+        from typing_extensions import assert_type
+
+        def f(x: list[Optional[str]]):
+            if x[0] is None:
+                return
+            any(assert_type(x[0], str) for _ in ["foo"])
