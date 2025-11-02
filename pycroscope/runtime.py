@@ -5,7 +5,6 @@ Expose an interface for a runtime type checker.
 """
 
 from functools import cache
-from typing import Optional
 
 from typing_extensions import deprecated
 
@@ -45,7 +44,7 @@ def is_assignable(value: object, typ: object) -> bool:
 
 
 @used
-def get_assignability_error(value: object, typ: object) -> Optional[str]:
+def get_assignability_error(value: object, typ: object) -> str | None:
     """Return an error message explaining why ``value`` is not
     assignable to ``type``, or None if it is assignable.
 
@@ -77,6 +76,6 @@ def is_compatible(value: object, typ: object) -> bool:
 
 @used
 @deprecated("Use get_assignability_error instead")
-def get_compatibility_error(value: object, typ: object) -> Optional[str]:
+def get_compatibility_error(value: object, typ: object) -> str | None:
     """Deprecated alias for get_assignability_error(). Use that instead."""
     return get_assignability_error(value, typ)

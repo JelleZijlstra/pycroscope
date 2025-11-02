@@ -6,9 +6,9 @@ An object that represents a type.
 
 import collections.abc
 import inspect
-from collections.abc import Container, Sequence
+from collections.abc import Callable, Container, Sequence
 from dataclasses import dataclass, field
-from typing import Callable, Union, cast
+from typing import cast
 from unittest import mock
 
 from pycroscope.signature import (
@@ -37,7 +37,7 @@ from .value import (
 )
 
 
-def get_mro(typ: Union[type, super]) -> Sequence[type]:
+def get_mro(typ: type | super) -> Sequence[type]:
     if isinstance(typ, super):
         typ_for_mro = typ.__thisclass__
     else:
@@ -51,8 +51,8 @@ def get_mro(typ: Union[type, super]) -> Sequence[type]:
 
 @dataclass
 class TypeObject:
-    typ: Union[type, super, str]
-    base_classes: set[Union[type, str]] = field(default_factory=set)
+    typ: type | super | str
+    base_classes: set[type | str] = field(default_factory=set)
     is_final: bool = False
     is_protocol: bool = False
     protocol_members: set[str] = field(default_factory=set)
@@ -106,7 +106,7 @@ class TypeObject:
     def can_assign(
         self,
         self_val: Value,
-        other_val: Union[KnownValue, TypedValue, SubclassValue],
+        other_val: KnownValue | TypedValue | SubclassValue,
         ctx: CanAssignContext,
     ) -> CanAssign:
         other = other_val.get_type_object(ctx)

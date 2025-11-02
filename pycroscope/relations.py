@@ -14,9 +14,9 @@ import sys
 from collections.abc import Iterable, Iterator, Sequence
 from dataclasses import dataclass, replace
 from types import FunctionType
-from typing import Optional, Protocol, Union
+from typing import Literal, Protocol
 
-from typing_extensions import Literal, assert_never
+from typing_extensions import assert_never
 
 import pycroscope
 from pycroscope.analysis_lib import Sentinel
@@ -192,8 +192,8 @@ def _has_relation(
     relation: Literal[Relation.SUBTYPE, Relation.ASSIGNABLE],
     ctx: CanAssignContext,
     *,
-    original_left: Optional[GradualType] = None,
-    original_right: Optional[GradualType] = None,
+    original_left: GradualType | None = None,
+    original_right: GradualType | None = None,
 ) -> CanAssign:
     if original_right is None:
         original_right = right
@@ -643,7 +643,7 @@ def _has_relation_union(
 
 def _has_relation_thrift_enum(
     left: TypedValue,
-    right: Union[TypedValue, KnownValue],
+    right: TypedValue | KnownValue,
     relation: Literal[Relation.SUBTYPE, Relation.ASSIGNABLE],
     ctx: CanAssignContext,
 ) -> CanAssign:
@@ -729,8 +729,8 @@ class _LazySequenceValue(Value):
     seq: SequenceValue
     start_idx: int = 0
     end_idx: int = 0  # i.e., include the entire thing
-    prefix: Optional[Value] = None
-    suffix: Optional[Value] = None
+    prefix: Value | None = None
+    suffix: Value | None = None
 
     def __post_init__(self) -> None:
         assert len(self) >= 0
@@ -1171,7 +1171,7 @@ def _has_relation_typeddict_dict(
 
 def get_tv_map(
     left: Value, right: Value, relation: Relation, ctx: CanAssignContext
-) -> Union[TypeVarMap, CanAssignError]:
+) -> TypeVarMap | CanAssignError:
     bounds_map = has_relation(left, right, relation, ctx)
     if isinstance(bounds_map, CanAssignError):
         return bounds_map
@@ -1183,7 +1183,7 @@ def get_tv_map(
 
 def is_iterable(
     value: Value, relation: Relation, ctx: CanAssignContext
-) -> Union[CanAssignError, Value]:
+) -> CanAssignError | Value:
     """Check whether a value is iterable."""
     tv_map = get_tv_map(IterableValue, value, relation, ctx)
     if isinstance(tv_map, CanAssignError):
@@ -1199,7 +1199,7 @@ class HashableProto(Protocol):
 HashableProtoValue = TypedValue(HashableProto)
 
 
-def check_hashability(value: Value, ctx: CanAssignContext) -> Optional[CanAssignError]:
+def check_hashability(value: Value, ctx: CanAssignContext) -> CanAssignError | None:
     """Check whether a value is hashable.
 
     Return None if it is hashable, otherwise a CanAssignError.
@@ -1223,7 +1223,7 @@ def can_assign_and_used_any(
 
 
 Irreducible = Sentinel("Irreducible")
-TypeOrIrreducible = Union[GradualType, Literal[Irreducible]]
+TypeOrIrreducible = GradualType | Literal[Irreducible]
 
 
 def intersect_multi(values: Sequence[Value], ctx: CanAssignContext) -> GradualType:
@@ -1285,13 +1285,13 @@ def _intersect_values_inner(
 
 
 def _intersect_wrapper(
-    left: Union[
-        NewTypeValue,
-        AnnotatedValue,
-        ParamSpecArgsValue,
-        ParamSpecKwargsValue,
-        TypeVarValue,
-    ],
+    left: (
+        NewTypeValue
+        | AnnotatedValue
+        | ParamSpecArgsValue
+        | ParamSpecKwargsValue
+        | TypeVarValue
+    ),
     right: GradualType,
     ctx: CanAssignContext,
 ) -> TypeOrIrreducible:
@@ -1340,7 +1340,7 @@ def _intersect_basic_types(
 
 def _simple_intersection(
     left: GradualType, right: GradualType, ctx: CanAssignContext
-) -> Optional[TypeOrIrreducible]:
+) -> TypeOrIrreducible | None:
     # Anything & Never = Never
     if left is NO_RETURN_VALUE or right is NO_RETURN_VALUE:
         return NO_RETURN_VALUE
@@ -1509,7 +1509,7 @@ def _intersect_maybe_mutable(
 
 def _intersect_entry_with_extra(
     entry: TypedDictEntry, right: TypedDictValue, ctx: CanAssignContext
-) -> Optional[TypedDictEntry]:
+) -> TypedDictEntry | None:
     value, readonly = _intersect_maybe_mutable(
         entry.typ,
         entry.readonly,
@@ -1602,7 +1602,7 @@ def _intersect_subclass_values(
 
 
 def _intersect_singular_type(
-    left: Union[KnownValue, SyntheticModuleValue, UnboundMethodValue],
+    left: KnownValue | SyntheticModuleValue | UnboundMethodValue,
     right: GradualType,
     ctx: CanAssignContext,
 ) -> TypeOrIrreducible:

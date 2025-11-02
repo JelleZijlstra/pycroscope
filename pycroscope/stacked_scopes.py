@@ -25,12 +25,12 @@ import contextlib
 import enum
 from ast import AST
 from collections import OrderedDict, defaultdict
-from collections.abc import Iterable, Iterator, Sequence
+from collections.abc import Callable, Iterable, Iterator, Sequence
 from contextlib import AbstractContextManager
 from dataclasses import dataclass, field, replace
 from itertools import chain
 from types import ModuleType
-from typing import Any, Callable, NamedTuple, Optional, TypeVar, Union
+from typing import Any, NamedTuple, Optional, TypeVar
 
 from .analysis_lib import Sentinel, override
 from .boolability import get_boolability
@@ -83,8 +83,8 @@ class ScopeType(enum.Enum):
 # Nodes as used in scopes can be any object, as long as they are hashable.
 Node = object
 # Tag for a Varname that changes when the variable is assigned to.
-VarnameOrigin = frozenset[Optional[Node]]
-CompositeIndex = Union[str, KnownValue]
+VarnameOrigin = frozenset[Node | None]
+CompositeIndex = str | KnownValue
 
 EMPTY_ORIGIN = frozenset((None,))
 
@@ -117,7 +117,7 @@ class CompositeVariable:
         return "".join(pieces)
 
 
-Varname = Union[str, CompositeVariable]
+Varname = str | CompositeVariable
 
 
 @dataclass(frozen=True)
@@ -169,10 +169,10 @@ class Composite(NamedTuple):
     origin. This is useful for setting constraints."""
 
     value: Value
-    varname: Optional[VarnameWithOrigin] = None
-    node: Optional[AST] = None
+    varname: VarnameWithOrigin | None = None
+    node: AST | None = None
 
-    def get_extended_varname(self, index: CompositeIndex) -> Optional[Varname]:
+    def get_extended_varname(self, index: CompositeIndex) -> Varname | None:
         if self.varname is None:
             return None
         base = self.varname.get_varname()
@@ -182,7 +182,7 @@ class Composite(NamedTuple):
 
     def get_extended_varname_with_origin(
         self, index: CompositeIndex, origin: VarnameOrigin
-    ) -> Optional[VarnameWithOrigin]:
+    ) -> VarnameWithOrigin | None:
         if self.varname is None:
             return None
         return self.varname.extend_with(index, origin)
@@ -204,7 +204,7 @@ class Composite(NamedTuple):
 @dataclass(frozen=True)
 class _LookupContext:
     varname: Varname
-    fallback_value: Optional[Value]
+    fallback_value: Value | None
     node: Node
     state: VisitorState
 
@@ -273,7 +273,7 @@ class Constraint(AbstractConstraint):
     For example::
 
         def f(x: Optional[int]) -> None:
-            reveal_type(x)  # Union[int, None]
+            reveal_type(x)  # int | None
             assert x
             # Now a constraint of type is_truthy is active. Because
             # None is not truthy, we know that x is of type int.
@@ -281,7 +281,7 @@ class Constraint(AbstractConstraint):
 
     """
 
-    varname: Optional[VarnameWithOrigin]
+    varname: VarnameWithOrigin | None
     """The :term:`varname` that the constraint applies to."""
     constraint_type: ConstraintType
     """Type of constraint. Determines the meaning of :attr:`value`."""
@@ -483,7 +483,7 @@ class PredicateProvider(AbstractConstraint):
 
     Consider the following code::
 
-        def two_lengths(tpl: Union[Tuple[int], Tuple[str, int]]) -> int:
+        def two_lengths(tpl: tuple[int] | tuple[str, int]) -> int:
             if len(tpl) == 1:
                 return tpl[0]
             else:
@@ -503,7 +503,7 @@ class PredicateProvider(AbstractConstraint):
 
     varname: VarnameWithOrigin
     provider: Callable[[Value], Value]
-    value_transformer: Optional[Callable[[Value, type[AST], object], Value]] = None
+    value_transformer: Callable[[Value, type[AST], object], Value] | None = None
 
     def apply(self) -> Iterable[Constraint]:
         return []
@@ -696,10 +696,10 @@ class Scope:
     scope_type: ScopeType
     variables: dict[Varname, Value] = field(default_factory=dict)
     parent_scope: Optional["Scope"] = None
-    scope_node: Optional[Node] = None
-    scope_object: Optional[object] = None
-    simplification_limit: Optional[int] = None
-    declared_types: dict[str, tuple[Optional[Value], bool, AST]] = field(
+    scope_node: Node | None = None
+    scope_object: object | None = None
+    simplification_limit: int | None = None
+    declared_types: dict[str, tuple[Value | None, bool, AST]] = field(
         default_factory=dict
     )
 
@@ -719,7 +719,7 @@ class Scope:
         node: object,
         state: VisitorState,
         from_parent_scope: bool = False,
-        fallback_value: Optional[Value] = None,
+        fallback_value: Value | None = None,
     ) -> tuple[Value, Optional["Scope"], VarnameOrigin]:
         local_value, origin = self.get_local(
             varname,
@@ -754,7 +754,7 @@ class Scope:
         node: Node,
         state: VisitorState,
         from_parent_scope: bool = False,
-        fallback_value: Optional[Value] = None,
+        fallback_value: Value | None = None,
     ) -> tuple[Value, VarnameOrigin]:
         if varname in self.variables:
             return self.variables[varname], EMPTY_ORIGIN
@@ -797,7 +797,7 @@ class Scope:
         return self.variables
 
     def set_declared_type(
-        self, varname: str, typ: Optional[Value], is_final: bool, node: AST
+        self, varname: str, typ: Value | None, is_final: bool, node: AST
     ) -> bool:
         if varname in self.declared_types:
             _, _, existing_node = self.declared_types[varname]
@@ -811,7 +811,7 @@ class Scope:
         self.declared_types[varname] = (typ, is_final, node)
         return not already_present
 
-    def get_declared_type(self, varname: str) -> Optional[Value]:
+    def get_declared_type(self, varname: str) -> Value | None:
         if varname not in self.declared_types:
             return None
         typ, _, _ = self.declared_types[varname]
@@ -1025,8 +1025,8 @@ class FunctionScope(Scope):
     def __init__(
         self,
         parent_scope: Scope,
-        scope_node: Optional[Node] = None,
-        simplification_limit: Optional[int] = None,
+        scope_node: Node | None = None,
+        simplification_limit: int | None = None,
     ) -> None:
         super().__init__(
             ScopeType.function_scope,
@@ -1139,7 +1139,7 @@ class FunctionScope(Scope):
         node: Node,
         state: VisitorState,
         from_parent_scope: bool = False,
-        fallback_value: Optional[Value] = None,
+        fallback_value: Value | None = None,
     ) -> tuple[Value, VarnameOrigin]:
         self._add_composite(varname)
         ctx = _LookupContext(varname, fallback_value, node, state)
@@ -1392,9 +1392,9 @@ class StackedScopes:
     def __init__(
         self,
         module_vars: dict[str, Value],
-        module: Optional[ModuleType],
+        module: ModuleType | None,
         *,
-        simplification_limit: Optional[int] = None,
+        simplification_limit: int | None = None,
     ) -> None:
         self.simplification_limit = simplification_limit
         self.scopes = [
@@ -1413,7 +1413,7 @@ class StackedScopes:
         self,
         scope_type: ScopeType,
         scope_node: Node,
-        scope_object: Optional[object] = None,
+        scope_object: object | None = None,
     ) -> Iterator[None]:
         """Context manager that adds a scope of this type to the top of the stack."""
         if scope_type is ScopeType.function_scope:
@@ -1460,7 +1460,7 @@ class StackedScopes:
         node: Node,
         state: VisitorState,
         *,
-        fallback_value: Optional[Value] = None,
+        fallback_value: Value | None = None,
     ) -> Value:
         """Gets a variable of the given name from the current scope stack.
 
@@ -1497,8 +1497,8 @@ class StackedScopes:
         node: Node,
         state: VisitorState,
         *,
-        fallback_value: Optional[Value] = None,
-    ) -> tuple[Value, Optional[Scope], VarnameOrigin]:
+        fallback_value: Value | None = None,
+    ) -> tuple[Value, Scope | None, VarnameOrigin]:
         """Like :meth:`get`, but also returns the scope object the name was found in.
 
         Returns a (:class:`pycroscope.value.Value`, :class:`Scope`, origin) tuple. The
@@ -1507,9 +1507,7 @@ class StackedScopes:
         """
         return self.scopes[-1].get(varname, node, state, fallback_value=fallback_value)
 
-    def get_nonlocal_scope(
-        self, varname: Varname, using_scope: Scope
-    ) -> Optional[Scope]:
+    def get_nonlocal_scope(self, varname: Varname, using_scope: Scope) -> Scope | None:
         """Gets the defining scope of a non-local variable."""
         for scope in reversed(self.scopes):
             if scope.scope_type is not ScopeType.function_scope:
@@ -1579,7 +1577,7 @@ def constrain_value(
     value: Value,
     constraint: AbstractConstraint,
     *,
-    simplification_limit: Optional[int] = None,
+    simplification_limit: int | None = None,
 ) -> Value:
     """Create a version of this :term:`value` with the :term:`constraint` applied."""
     return _constrain_value(
@@ -1596,8 +1594,8 @@ def _constrain_value(
     values: Sequence[Value],
     constraints: Iterable[Constraint],
     *,
-    fallback_value: Optional[Value] = None,
-    simplification_limit: Optional[int] = None,
+    fallback_value: Value | None = None,
+    simplification_limit: int | None = None,
 ) -> Value:
     # Flatten MultiValuedValue so that we can apply constraints.
     if not values and fallback_value is not None:

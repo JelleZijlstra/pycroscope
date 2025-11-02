@@ -8,12 +8,10 @@ import ast
 import contextlib
 import operator
 import sys
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field
-from typing import Any, Callable, Optional, Union
-
-from typing_extensions import Literal
+from typing import Any, Literal
 
 from pycroscope.relations import is_assignable_with_reason, is_subtype_with_reason
 
@@ -51,7 +49,7 @@ UNKNOWN = Sentinel("unknown")
 # str for a keyword arg, DEFAULT for a parameter filled from the
 # default, ARGS for a parameter filled from *args, KWARGS for **kwargs,
 # UNKNOWN if there are multiple possibilities.
-Position = Union[int, str, Literal[DEFAULT, ARGS, KWARGS, UNKNOWN]]
+Position = int | str | Literal[DEFAULT, ARGS, KWARGS, UNKNOWN]
 
 VarMap = Mapping[str, Value]
 
@@ -193,7 +191,7 @@ def subtract_unions(left: Value, right: Value) -> Value:
     return unite_values(*remaining)
 
 
-_Operator = Union[type[ast.cmpop], Literal["is of type", "is not of type"]]
+_Operator = type[ast.cmpop] | Literal["is of type", "is not of type"]
 
 
 @dataclass
@@ -233,9 +231,9 @@ class InvalidEvaluation:
 class UserRaisedError:
     message: str
     active_conditions: Sequence[Condition]
-    argument: Optional[str] = None
+    argument: str | None = None
 
-    def get_detail(self) -> Optional[str]:
+    def get_detail(self) -> str | None:
         if self.active_conditions:
             return str(
                 CanAssignError(
@@ -245,7 +243,7 @@ class UserRaisedError:
         return None
 
 
-EvaluateError = Union[InvalidEvaluation, UserRaisedError]
+EvaluateError = InvalidEvaluation | UserRaisedError
 
 
 @dataclass
@@ -256,7 +254,7 @@ class EvalContext:
     tv_map: TypeVarMap
 
     @contextmanager
-    def narrow_variables(self, varmap: Optional[VarMap]) -> Iterator[None]:
+    def narrow_variables(self, varmap: VarMap | None) -> Iterator[None]:
         if varmap is None:
             yield
             return
@@ -271,7 +269,7 @@ class EvalContext:
 
 @dataclass
 class Evaluator:
-    node: Union[ast.FunctionDef, ast.AsyncFunctionDef]
+    node: ast.FunctionDef | ast.AsyncFunctionDef
     return_annotation: Value
 
     def evaluate(self, ctx: EvalContext) -> tuple[Value, Sequence[UserRaisedError]]:
@@ -300,7 +298,7 @@ class Evaluator:
 
 @dataclass
 class CombinedReturn:
-    children: Sequence[Optional[Value]]
+    children: Sequence[Value | None]
 
     @classmethod
     def make(cls, *returns: "EvalReturn") -> "EvalReturn":
@@ -315,7 +313,7 @@ class CombinedReturn:
         return CombinedReturn(children)
 
 
-EvalReturn = Union[None, Value, CombinedReturn]
+EvalReturn = None | Value | CombinedReturn
 
 
 @dataclass
@@ -323,8 +321,8 @@ class ConditionReturn:
     condition: Condition
     # These are None if there is no match, and a (possibly empty)
     # map of new variable values if there is a match.
-    left_varmap: Optional[VarMap] = None
-    right_varmap: Optional[VarMap] = None
+    left_varmap: VarMap | None = None
+    right_varmap: VarMap | None = None
 
     def reverse(self) -> "ConditionReturn":
         return ConditionReturn(
@@ -585,7 +583,7 @@ class ConditionEvaluator(ast.NodeVisitor):
                 right_varmap=narrowed_varmap,
             )
 
-    def evaluate_literal(self, node: ast.expr) -> Optional[KnownValue]:
+    def evaluate_literal(self, node: ast.expr) -> KnownValue | None:
         val = self.evaluator.evaluate_value(node)
         if isinstance(val, SequenceValue):
             val = val.make_known_value()
@@ -594,7 +592,7 @@ class ConditionEvaluator(ast.NodeVisitor):
         self.errors.append(InvalidEvaluation("Only literals supported", node))
         return None
 
-    def get_name(self, node: ast.Name) -> Optional[Value]:
+    def get_name(self, node: ast.Name) -> Value | None:
         try:
             return self.ctx.variables[node.id]
         except KeyError:
@@ -770,7 +768,7 @@ class EvaluateVisitor(ast.NodeVisitor):
 
 def decompose_union(
     expected_type: Value, parent_value: Value, ctx: CanAssignContext, exclude_any: bool
-) -> Optional[tuple[BoundsMap, Value]]:
+) -> tuple[BoundsMap, Value] | None:
     value = unannotate(parent_value)
     if isinstance(value, MultiValuedValue):
         bounds_maps = []
@@ -801,7 +799,7 @@ def can_assign_maybe_exclude_any(
         return is_assignable_with_reason(left, right, ctx)
 
 
-def unite_varmaps(varmaps: Sequence[VarMap]) -> Optional[VarMap]:
+def unite_varmaps(varmaps: Sequence[VarMap]) -> VarMap | None:
     if not varmaps:
         return None
     keys = set.intersection(*[set(m) for m in varmaps])

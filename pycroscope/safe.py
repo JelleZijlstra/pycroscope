@@ -9,7 +9,7 @@ import sys
 import types
 import typing
 from collections.abc import Container, Sequence
-from typing import Any, NewType, Optional, TypeVar, Union
+from typing import Any, NewType, TypeVar
 
 import typing_extensions
 
@@ -59,7 +59,7 @@ def safe_equals(left: object, right: object) -> bool:
         return False
 
 
-def safe_issubclass(cls: type, class_or_tuple: Union[type, tuple[type, ...]]) -> bool:
+def safe_issubclass(cls: type, class_or_tuple: type | tuple[type, ...]) -> bool:
     """Safe version of ``issubclass()``.
 
     Apart from incorrect arguments, ``issubclass(a, b)`` can throw an error
@@ -77,7 +77,7 @@ def safe_issubclass(cls: type, class_or_tuple: Union[type, tuple[type, ...]]) ->
 
 
 def safe_isinstance(
-    obj: object, class_or_tuple: Union[type[T], tuple[type[T], ...]]
+    obj: object, class_or_tuple: type[T] | tuple[type[T], ...]
 ) -> typing_extensions.TypeIs[T]:
     """Safe version of ``isinstance()``.
 
@@ -186,7 +186,7 @@ def _fill_typing_name_cache(name: str) -> tuple[tuple[Any, ...], tuple[str, ...]
         return result
 
 
-def get_fully_qualified_name(obj: object) -> Optional[str]:
+def get_fully_qualified_name(obj: object) -> str | None:
     if safe_hasattr(obj, "__module__") and safe_hasattr(obj, "__qualname__"):
         return f"{obj.__module__}.{obj.__qualname__}"
     return None

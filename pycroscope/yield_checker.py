@@ -13,10 +13,10 @@ import ast
 import contextlib
 import itertools
 import logging
-from collections.abc import Iterator, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from contextlib import AbstractContextManager
 from dataclasses import dataclass, field
-from typing import Any, Callable, Optional
+from typing import Any
 
 import pycroscope
 
@@ -161,10 +161,10 @@ class YieldChecker:
     in_yield_result_assignment: bool = False
     in_non_async_yield: bool = False
     last_yield_in_aug_assign: bool = False
-    previous_yield: Optional[ast.Yield] = None
-    statement_for_previous_yield: Optional[ast.stmt] = None
+    previous_yield: ast.Yield | None = None
+    statement_for_previous_yield: ast.stmt | None = None
     used_varnames: set[str] = field(default_factory=set)
-    current_function_node: Optional[FunctionNode] = None
+    current_function_node: FunctionNode | None = None
     alerted_nodes: set[FunctionNode] = field(default_factory=set)
 
     def set_function_node(self, node: FunctionNode) -> AbstractContextManager[None]:
@@ -413,7 +413,7 @@ class YieldChecker:
 
     def _create_replacement_for_yield_nodes(
         self, second_node: ast.Yield, second_parent: ast.stmt
-    ) -> Optional[Replacement]:
+    ) -> Replacement | None:
         """Returns one statement that does a batched yield of the given 2 yields."""
         lines = self.visitor._lines()
         assert self.previous_yield is not None
@@ -524,7 +524,7 @@ class YieldChecker:
 
     def _move_out_var_from_yield(
         self, yield_info: YieldInfo, indentation: int
-    ) -> tuple[list[str], Optional[Replacement]]:
+    ) -> tuple[list[str], Replacement | None]:
         """Helper for splitting up a yield node and moving it to an earlier place.
 
         For example, it will help turn:

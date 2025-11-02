@@ -13,7 +13,7 @@ import os
 import textwrap
 import traceback
 import types
-from typing import Optional, Union
+from typing import Union
 
 from .analysis_lib import make_module
 from .error_code import ErrorCode
@@ -121,7 +121,7 @@ def annotate_file(
 
 
 def dump_annotated_code(
-    node: ast.AST, depth: int = 0, field_name: Optional[str] = None
+    node: ast.AST, depth: int = 0, field_name: str | None = None
 ) -> None:
     """Print an annotated AST in a readable format."""
     line = type(node).__name__
@@ -156,7 +156,7 @@ def dump_annotated_code(
 
 def _annotate_module(
     filename: str,
-    module: Optional[types.ModuleType],
+    module: types.ModuleType | None,
     tree: ast.Module,
     code_str: str,
     visitor_cls: type[NameCheckVisitor],

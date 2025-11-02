@@ -9,7 +9,7 @@ from collections import defaultdict
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from types import FunctionType
-from typing import Any, Optional, Union
+from typing import Any
 
 from .error_code import ErrorCode
 from .node_visitor import ErrorContext, Failure
@@ -38,7 +38,7 @@ from .value import (
 )
 
 CallArgs = Mapping[str, Value]
-FunctionNode = Union[ast.FunctionDef, ast.AsyncFunctionDef]
+FunctionNode = ast.FunctionDef | ast.AsyncFunctionDef
 
 
 @dataclass
@@ -118,7 +118,7 @@ class CallableTracker:
 
 def display_suggested_type(
     value: Value, scopes: StackedScopes
-) -> tuple[str, Optional[dict[str, Any]]]:
+) -> tuple[str, dict[str, Any] | None]:
     value = prepare_type(value)
     if isinstance(value, MultiValuedValue) and value.vals:
         cae = CanAssignError("Union", [CanAssignError(str(val)) for val in value.vals])

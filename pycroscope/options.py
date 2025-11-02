@@ -12,7 +12,7 @@ from collections import defaultdict
 from collections.abc import Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, ClassVar, Generic, Optional, TypeVar
+from typing import Any, ClassVar, Generic, TypeVar
 
 if sys.version_info >= (3, 11):
     import tomllib
@@ -46,7 +46,7 @@ else:
             parser: argparse.ArgumentParser,
             namespace: argparse.Namespace,
             values: object,
-            option_string: Optional[str] = None,
+            option_string: str | None = None,
         ) -> None:
             if option_string is not None and option_string in self.option_strings:
                 setattr(namespace, self.dest, not option_string.startswith("--no-"))
@@ -276,7 +276,7 @@ class Options:
     def from_option_list(
         cls,
         instances: Sequence[ConfigOption[Any]] = (),
-        config_file_path: Optional[Path] = None,
+        config_file_path: Path | None = None,
     ) -> "Options":
         if config_file_path:
             instances = [*instances, *parse_config_file(config_file_path)]

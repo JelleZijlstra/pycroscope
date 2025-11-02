@@ -124,9 +124,9 @@ class UnusedObjectFinder:
 
     def __exit__(
         self,
-        exc_typ: Optional[type[BaseException]],
-        exc_val: Optional[BaseException],
-        exc_tb: Optional[TracebackType],
+        exc_typ: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: TracebackType | None,
     ) -> None:
         if not self.enabled or not self.print_output:
             return

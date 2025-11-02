@@ -11,7 +11,7 @@ from collections.abc import Sequence
 from functools import lru_cache
 from pathlib import Path
 from types import ModuleType
-from typing import Optional, cast
+from typing import cast
 
 
 @lru_cache
@@ -21,7 +21,7 @@ def directory_has_init(path: Path) -> bool:
 
 def load_module_from_file(
     filename: str, *, verbose: bool = False, import_paths: Sequence[str] = ()
-) -> tuple[Optional[ModuleType], bool]:
+) -> tuple[ModuleType | None, bool]:
     """Import the Python code in the given file.
 
     Return a tuple (module object, whether it is a compiled file).
