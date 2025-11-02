@@ -418,6 +418,12 @@ class ExternalType(metaclass=_ExternalTypeMeta):
     def __call__(self) -> NoReturn:
         raise NotImplementedError("just here to fool typing._type_check")
 
+    def __or__(self, other: object) -> Any:
+        return typing.Union[self, other]  # noqa: UP007
+
+    def __ror__(self, other: Any) -> Any:
+        return typing.Union[other, self]  # noqa: UP007
+
 
 _T = TypeVar("_T")
 

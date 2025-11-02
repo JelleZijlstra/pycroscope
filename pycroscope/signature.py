@@ -159,7 +159,7 @@ BoundArgs = dict[str, tuple[Position, Composite]]
 
 class CheckCallContext(Protocol):
     @property
-    def visitor(self) -> NameCheckVisitor | None:
+    def visitor(self) -> "NameCheckVisitor | None":
         raise NotImplementedError
 
     def on_error(
@@ -181,7 +181,7 @@ class CheckCallContext(Protocol):
 @dataclass
 class _CanAssignBasedContext:
     can_assign_ctx: CanAssignContext
-    visitor: NameCheckVisitor | None = None
+    visitor: "NameCheckVisitor | None" = None
     errors: list[str] = field(default_factory=list)
 
     def on_error(
