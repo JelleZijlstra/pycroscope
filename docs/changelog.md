@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Drop support for Python 3.9 and add official support for Python 3.14.
 - Narrow attribute and subscript expressions in nested scopes based on
   narrowing checks in the outer scope.
 - Apply the `class_attribute_transformers` plugin also for values that

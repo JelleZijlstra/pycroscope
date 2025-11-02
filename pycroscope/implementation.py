@@ -4,9 +4,9 @@ import collections.abc
 import inspect
 import re
 import typing
-from collections.abc import Iterable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from itertools import product
-from typing import Callable, NewType, Optional, TypeVar, Union, cast
+from typing import NewType, TypeVar, cast
 
 import typing_extensions
 
@@ -83,16 +83,14 @@ from .value import (
 _NO_ARG_SENTINEL = KnownValue(Sentinel("no argument given"))
 
 
-def clean_up_implementation_fn_return(
-    return_value: Union[Value, ImplReturn],
-) -> ImplReturn:
+def clean_up_implementation_fn_return(return_value: Value | ImplReturn) -> ImplReturn:
     if isinstance(return_value, Value):
         return ImplReturn(return_value)
     return return_value
 
 
 def flatten_unions(
-    callable: Callable[..., Union[ImplReturn, Value]],
+    callable: Callable[..., ImplReturn | Value],
     *values: Value,
     unwrap_annotated: bool = False,
 ) -> ImplReturn:
@@ -179,7 +177,7 @@ def _resolve_isinstance_arg(val: object) -> Iterable[type]:
 
 
 def _constraint_from_isinstance(
-    varname: Optional[VarnameWithOrigin], class_or_tuple: Value
+    varname: VarnameWithOrigin | None, class_or_tuple: Value
 ) -> AbstractConstraint:
     if varname is None:
         return NULL_CONSTRAINT
@@ -1044,7 +1042,7 @@ def _dict_setdefault_impl(ctx: CallContext) -> ImplReturn:
 
 def _unpack_iterable_of_pairs(
     val: Value, ctx: CanAssignContext
-) -> Union[Sequence[KVPair], CanAssignError]:
+) -> Sequence[KVPair] | CanAssignError:
     concrete = concrete_values_from_iterable(val, ctx)
     if isinstance(concrete, CanAssignError):
         return concrete
@@ -1067,7 +1065,7 @@ def _update_incomplete_dict(
     self_val: Value,
     pairs: Sequence[KVPair],
     ctx: CallContext,
-    varname: Optional[VarnameWithOrigin],
+    varname: VarnameWithOrigin | None,
 ) -> ImplReturn:
     self_pairs = kv_pairs_from_mapping(self_val, ctx.visitor)
     if isinstance(self_pairs, CanAssignError):
@@ -1093,7 +1091,7 @@ def _add_pairs_to_dict(
     self_val: Value,
     pairs: Sequence[KVPair],
     ctx: CallContext,
-    varname: Optional[VarnameWithOrigin],
+    varname: VarnameWithOrigin | None,
 ) -> ImplReturn:
     self_val = replace_known_sequence_value(self_val)
     if isinstance(self_val, TypedDictValue):
@@ -2218,7 +2216,7 @@ def get_default_argspecs() -> dict[object, Signature]:
     return {sig.callable: sig for sig in signatures}
 
 
-def check_regex(pattern: Union[str, bytes]) -> Optional[CanAssignError]:
+def check_regex(pattern: str | bytes) -> CanAssignError | None:
     try:
         # TODO allow this without the useless isinstance()
         if isinstance(pattern, str):
@@ -2232,7 +2230,7 @@ def check_regex(pattern: Union[str, bytes]) -> Optional[CanAssignError]:
     return None
 
 
-def check_regex_in_value(value: Value) -> Optional[CanAssignError]:
+def check_regex_in_value(value: Value) -> CanAssignError | None:
     errors = []
     for subval in flatten_values(value):
         if not isinstance(subval, KnownValue):

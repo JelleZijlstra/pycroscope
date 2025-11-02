@@ -5,7 +5,6 @@ TypeVar solver.
 """
 
 from collections.abc import Iterable, Sequence
-from typing import Union
 
 import pycroscope
 
@@ -54,9 +53,7 @@ def resolve_bounds_map(
     return tv_map, errors
 
 
-def solve(
-    bounds: Iterable[Bound], ctx: CanAssignContext
-) -> Union[Value, CanAssignError]:
+def solve(bounds: Iterable[Bound], ctx: CanAssignContext) -> Value | CanAssignError:
     bottom = BOTTOM
     top = TOP
     options = None

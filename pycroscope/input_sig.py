@@ -1,8 +1,7 @@
-import sys
 import typing
 from collections.abc import Container, Iterable, Sequence
 from dataclasses import dataclass
-from typing import Literal, Optional, Union
+from typing import Literal
 
 import typing_extensions
 from typing_extensions import Self, assert_never
@@ -25,16 +24,13 @@ from pycroscope.value import (
     Value,
 )
 
-if sys.version_info >= (3, 10):
-    ParamSpecLike = Union[typing_extensions.ParamSpec, typing.ParamSpec]
-else:
-    ParamSpecLike = typing_extensions.ParamSpec
+ParamSpecLike = typing_extensions.ParamSpec | typing.ParamSpec
 
 
 @dataclass(frozen=True)
 class ParamSpecSig:
     param_spec: ParamSpecLike
-    default: Optional[Value] = None  # unsupported
+    default: Value | None = None  # unsupported
 
     def substitute_typevars(self, typevars: TypeVarMap) -> "InputSig":
         if self.param_spec in typevars:
@@ -72,13 +68,13 @@ class ActualArguments:
     """
 
     positionals: list[tuple[bool, Composite]]
-    star_args: Optional[Value]  # represents the type of the elements of *args
+    star_args: Value | None  # represents the type of the elements of *args
     keywords: dict[str, tuple[bool, Composite]]
-    star_kwargs: Optional[Value]  # represents the type of the elements of **kwargs
+    star_kwargs: Value | None  # represents the type of the elements of **kwargs
     kwargs_required: bool
-    pos_or_keyword_params: Container[Union[int, str]]
+    pos_or_keyword_params: Container[int | str]
     ellipsis: bool = False
-    param_spec: Optional[ParamSpecSig] = None
+    param_spec: ParamSpecSig | None = None
 
     def substitute_typevars(self, typevars: TypeVarMap) -> Self:
         return self
@@ -111,7 +107,7 @@ class FullSignature:
         return str(self.sig)
 
 
-InputSig = Union[ActualArguments, ParamSpecSig, AnySig, FullSignature]
+InputSig = ActualArguments | ParamSpecSig | AnySig | FullSignature
 
 
 @dataclass(frozen=True)
@@ -179,7 +175,7 @@ def input_sigs_have_relation(
 
 def solve_paramspec(
     bounds: Sequence[Bound], ctx: CanAssignContext
-) -> Union[Value, CanAssignError]:
+) -> Value | CanAssignError:
     if not bounds:
         return CanAssignError("Unsupported ParamSpec")
     bound = bounds[0]

@@ -11,21 +11,12 @@ import collections.abc
 import enum
 import inspect
 import itertools
-from collections.abc import Iterable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, field, replace
 from types import FunctionType, MethodType
-from typing import (
-    TYPE_CHECKING,
-    Any,
-    Callable,
-    ClassVar,
-    NamedTuple,
-    Optional,
-    TypeVar,
-    Union,
-)
+from typing import TYPE_CHECKING, Any, ClassVar, Literal, NamedTuple, TypeVar
 
-from typing_extensions import Literal, Protocol, Self, assert_never
+from typing_extensions import Protocol, Self, assert_never
 
 from pycroscope import relations
 
@@ -139,7 +130,7 @@ class InvalidSignature(Exception):
 @dataclass
 class PossibleArg:
     # Label used for arguments that may not be present at runtiime.
-    name: Optional[str]
+    name: str | None
 
 
 @dataclass
@@ -154,14 +145,12 @@ class PosOrKeyword:
 # be missing, TypeVarValue for a ParamSpec.
 Argument = tuple[
     Composite,
-    Union[
-        None,
-        str,
-        PossibleArg,
-        Literal[ARGS, KWARGS, ELLIPSIS],
-        ParamSpecSig,
-        PosOrKeyword,
-    ],
+    None
+    | str
+    | PossibleArg
+    | Literal[ARGS, KWARGS, ELLIPSIS]
+    | ParamSpecSig
+    | PosOrKeyword,
 ]
 
 # Arguments bound to a call
@@ -170,7 +159,7 @@ BoundArgs = dict[str, tuple[Position, Composite]]
 
 class CheckCallContext(Protocol):
     @property
-    def visitor(self) -> Optional["NameCheckVisitor"]:
+    def visitor(self) -> "NameCheckVisitor | None":
         raise NotImplementedError
 
     def on_error(
@@ -178,9 +167,9 @@ class CheckCallContext(Protocol):
         __message: str,
         *,
         code: Error = ...,
-        node: Optional[ast.AST] = ...,
-        detail: Optional[str] = ...,
-        replacement: Optional[Replacement] = ...,
+        node: ast.AST | None = ...,
+        detail: str | None = ...,
+        replacement: Replacement | None = ...,
     ) -> object:
         raise NotImplementedError
 
@@ -192,7 +181,7 @@ class CheckCallContext(Protocol):
 @dataclass
 class _CanAssignBasedContext:
     can_assign_ctx: CanAssignContext
-    visitor: Optional["NameCheckVisitor"] = None
+    visitor: "NameCheckVisitor | None" = None
     errors: list[str] = field(default_factory=list)
 
     def on_error(
@@ -200,9 +189,9 @@ class _CanAssignBasedContext:
         message: str,
         *,
         code: Error = ErrorCode.incompatible_call,
-        node: Optional[ast.AST] = None,
-        detail: Optional[str] = ...,
-        replacement: Optional[Replacement] = ...,
+        node: ast.AST | None = None,
+        detail: str | None = ...,
+        replacement: Replacement | None = ...,
     ) -> object:
         self.errors.append(message)
         return None
@@ -211,7 +200,7 @@ class _CanAssignBasedContext:
 @dataclass
 class _VisitorBasedContext:
     visitor: "NameCheckVisitor"
-    node: Optional[ast.AST]
+    node: ast.AST | None
 
     @property
     def can_assign_ctx(self) -> CanAssignContext:
@@ -222,9 +211,9 @@ class _VisitorBasedContext:
         message: str,
         *,
         code: Error = ErrorCode.incompatible_call,
-        node: Optional[ast.AST] = None,
-        detail: Optional[str] = ...,
-        replacement: Optional[Replacement] = None,
+        node: ast.AST | None = None,
+        detail: str | None = ...,
+        replacement: Replacement | None = None,
     ) -> None:
         if node is None:
             node = self.node
@@ -250,7 +239,7 @@ class CallReturn(NamedTuple):
     """Whether there was an error in this call. Used only for overload resolutioon."""
     used_any_for_match: bool = False
     """Whether Any was used for this match. Used only for overload resolution."""
-    remaining_arguments: Optional[ActualArguments] = None
+    remaining_arguments: ActualArguments | None = None
     """Arguments that still need to be processed. Used only for overload resolution."""
 
 
@@ -292,19 +281,19 @@ class CallContext:
     """Using the visitor can allow various kinds of advanced logic
     in impl functions."""
     composites: dict[str, Composite]
-    node: Optional[ast.AST]
+    node: ast.AST | None
     """AST node corresponding to the function call. Useful for
     showing errors."""
     sig: "Signature"
     inferred_return_value: Value
 
-    def ast_for_arg(self, arg: str) -> Optional[ast.AST]:
+    def ast_for_arg(self, arg: str) -> ast.AST | None:
         composite = self.composite_for_arg(arg)
         if composite is not None:
             return composite.node
         return None
 
-    def varname_for_arg(self, arg: str) -> Optional[VarnameWithOrigin]:
+    def varname_for_arg(self, arg: str) -> VarnameWithOrigin | None:
         """Return a :term:`varname` corresponding to the given function argument.
 
         This is useful for creating a :class:`pycroscope.stacked_scopes.Constraint`
@@ -316,7 +305,7 @@ class CallContext:
             return composite.varname
         return None
 
-    def composite_for_arg(self, arg: str) -> Optional[Composite]:
+    def composite_for_arg(self, arg: str) -> Composite | None:
         composite = self.composites.get(arg)
         if isinstance(composite, Composite):
             return composite
@@ -327,9 +316,9 @@ class CallContext:
         message: str,
         error_code: Error = ErrorCode.incompatible_call,
         *,
-        arg: Optional[str] = None,
-        node: Optional[ast.AST] = None,
-        detail: Optional[str] = None,
+        arg: str | None = None,
+        node: ast.AST | None = None,
+        detail: str | None = None,
     ) -> None:
         """Show an error.
 
@@ -345,7 +334,7 @@ class CallContext:
         self.visitor.show_error(node, message, error_code=error_code, detail=detail)
 
 
-Impl = Callable[[CallContext], Union[Value, ImplReturn]]
+Impl = Callable[[CallContext], Value | ImplReturn]
 
 
 class ParameterKind(enum.Enum):
@@ -407,7 +396,7 @@ class SigParameter:
     """Name of the parameter."""
     kind: ParameterKind = ParameterKind.POSITIONAL_OR_KEYWORD
     """How the parameter can be passed."""
-    default: Optional[Value] = None
+    default: Value | None = None
     """The default for the parameter, or None if there is no default."""
     annotation: Value = AnyValue(AnySource.unannotated)
     """Type annotation for the parameter."""
@@ -517,18 +506,18 @@ class Signature:
     """An ordered mapping of the signature's parameters."""
     return_value: Value
     """What the callable returns."""
-    impl: Optional[Impl] = field(default=None, compare=False)
+    impl: Impl | None = field(default=None, compare=False)
     """:term:`impl` function for this signature."""
-    callable: Optional[object] = field(default=None, compare=False)
+    callable: object | None = field(default=None, compare=False)
     """The callable that this signature represents."""
     is_asynq: bool = False
     """Whether this signature represents an asynq function."""
     has_return_annotation: bool = True
     allow_call: bool = False
     """Whether type checking can call the actual function to retrieve a precise return value."""
-    evaluator: Optional[Evaluator] = None
+    evaluator: Evaluator | None = None
     """Type evaluator for this function."""
-    deprecated: Optional[str] = None
+    deprecated: str | None = None
     """Deprecation message for this callable."""
     typevars_of_params: dict[str, list[TypeVarLike]] = field(
         init=False, default_factory=dict, repr=False, compare=False, hash=False
@@ -611,9 +600,9 @@ class Signature:
         param: SigParameter,
         composite: Composite,
         ctx: CheckCallContext,
-        typevar_map: Optional[TypeVarMap] = None,
+        typevar_map: TypeVarMap | None = None,
         is_overload: bool = False,
-    ) -> tuple[Optional[BoundsMap], bool, Optional[Value]]:
+    ) -> tuple[BoundsMap | None, bool, Value | None]:
         """Check type compatibility for a single parameter.
 
         Returns a three-tuple:
@@ -672,7 +661,7 @@ class Signature:
             return bounds_map, used_any, None
         return {}, False, None
 
-    def _get_positional_parameter(self, index: int) -> Optional[SigParameter]:
+    def _get_positional_parameter(self, index: int) -> SigParameter | None:
         for i, param in enumerate(self.parameters.values()):
             if param.kind in (
                 ParameterKind.VAR_KEYWORD,
@@ -686,7 +675,7 @@ class Signature:
 
     def _apply_annotated_constraints(
         self,
-        raw_return: Union[Value, ImplReturn],
+        raw_return: Value | ImplReturn,
         composites: dict[str, Composite],
         ctx: CheckCallContext,
     ) -> Value:
@@ -780,7 +769,7 @@ class Signature:
 
     def _get_typeguard_varname(
         self, composites: dict[str, Composite]
-    ) -> Optional[VarnameWithOrigin]:
+    ) -> VarnameWithOrigin | None:
         # This might miss some cases where we should use the second argument instead. We'll
         # have to come up with additional heuristics if that comes up.
         if isinstance(self.callable, MethodType) or (
@@ -799,7 +788,7 @@ class Signature:
 
     def bind_arguments(
         self, actual_args: ActualArguments, ctx: CheckCallContext
-    ) -> Optional[BoundArgs]:
+    ) -> BoundArgs | None:
         """Attempt to bind the parameters in the signature to the arguments actually passed in.
 
         Nomenclature:
@@ -1137,8 +1126,8 @@ class Signature:
         message: str,
         ctx: CheckCallContext,
         *,
-        node: Optional[ast.AST] = None,
-        detail: Optional[str] = None,
+        node: ast.AST | None = None,
+        detail: str | None = None,
     ) -> None:
         if self.callable is not None:
             message = f"In call to {stringify_object(self.callable)}: {message}"
@@ -1155,7 +1144,7 @@ class Signature:
         self,
         args: Iterable[Argument],
         visitor: "NameCheckVisitor",
-        node: Optional[ast.AST],
+        node: ast.AST | None,
     ) -> Value:
         """Type check a call to this Signature with the given arguments.
 
@@ -1219,8 +1208,8 @@ class Signature:
         ctx: CheckCallContext,
         *,
         is_overload: bool = False,
-        original_args: Optional[Sequence[Argument]] = None,
-        node: Optional[ast.AST] = None,
+        original_args: Sequence[Argument] | None = None,
+        node: ast.AST | None = None,
     ) -> CallReturn:
         bound_args = self.bind_arguments(preprocessed, ctx)
         if bound_args is None:
@@ -1377,7 +1366,7 @@ class Signature:
 
     def _maybe_perform_call(
         self, actual_args: ActualArguments, ctx: CheckCallContext
-    ) -> Optional[Value]:
+    ) -> Value | None:
         if self.callable is None or not callable(self.callable):
             return None
         args = []
@@ -1464,7 +1453,7 @@ class Signature:
             )
         return return_tv_map
 
-    def get_param_of_kind(self, kind: ParameterKind) -> Optional[SigParameter]:
+    def get_param_of_kind(self, kind: ParameterKind) -> SigParameter | None:
         for param in self.parameters.values():
             if param.kind is kind:
                 return param
@@ -1552,15 +1541,15 @@ class Signature:
     def make(
         cls,
         parameters: Iterable[SigParameter],
-        return_annotation: Optional[Value] = None,
+        return_annotation: Value | None = None,
         *,
-        impl: Optional[Impl] = None,
-        callable: Optional[object] = None,
+        impl: Impl | None = None,
+        callable: object | None = None,
         has_return_annotation: bool = True,
         is_asynq: bool = False,
         allow_call: bool = False,
-        evaluator: Optional[Evaluator] = None,
-        deprecated: Optional[str] = None,
+        evaluator: Evaluator | None = None,
+        deprecated: str | None = None,
     ) -> "Signature":
         """Create a :class:`Signature` object.
 
@@ -1667,10 +1656,10 @@ class Signature:
         self,
         *,
         preserve_impl: bool = False,
-        self_annotation_value: Optional[Value] = None,
-        self_value: Optional[Value] = None,
+        self_annotation_value: Value | None = None,
+        self_value: Value | None = None,
         ctx: CanAssignContext,
-    ) -> Optional["Signature"]:
+    ) -> "Signature | None":
         params = list(self.parameters.values())
         if not params:
             return None
@@ -1736,7 +1725,7 @@ ANY_SIGNATURE = Signature.make([ELLIPSIS_PARAM], AnyValue(AnySource.explicit))
 
 def preprocess_args(
     args: Iterable[Argument], ctx: CheckCallContext
-) -> Optional[ActualArguments]:
+) -> ActualArguments | None:
     """Preprocess the argument list. Produces an ActualArguments object."""
 
     # Step 1: Split up args and kwargs if possible.
@@ -1847,8 +1836,8 @@ def preprocess_args(
     # all the **kwargs into a single argument.
     more_processed_args: list[tuple[bool, Composite]] = []
     more_processed_kwargs: dict[str, tuple[bool, Composite]] = {}
-    star_args: Optional[Value] = None
-    star_kwargs: Optional[Value] = None
+    star_args: Value | None = None
+    star_kwargs: Value | None = None
     is_ellipsis: bool = False
     pok_indices = set()
     param_spec = None
@@ -1924,7 +1913,7 @@ def preprocess_args(
 
 def _preprocess_kwargs_no_mvv(
     value: Value, ctx: CheckCallContext
-) -> Optional[tuple[dict[str, tuple[bool, Value]], Optional[Value]]]:
+) -> tuple[dict[str, tuple[bool, Value]], Value | None] | None:
     """Preprocess a Value passed as **kwargs.
 
     Two possible return types:
@@ -1959,7 +1948,7 @@ def _preprocess_kwargs_no_mvv(
 
 def _preprocess_kwargs_kv_pairs(
     items: Sequence[KVPair], ctx: CheckCallContext
-) -> Optional[tuple[dict[str, tuple[bool, Value]], Optional[Value]]]:
+) -> tuple[dict[str, tuple[bool, Value]], Value | None] | None:
     out_items = {}
     possible_values = []
     covered_keys: set[Value] = set()
@@ -2024,7 +2013,7 @@ class OverloadedSignature:
         self,
         args: Iterable[Argument],
         visitor: "NameCheckVisitor",
-        node: Optional[ast.AST],
+        node: ast.AST | None,
     ) -> Value:
         """Check a call to an overloaded function.
 
@@ -2176,10 +2165,10 @@ class OverloadedSignature:
         any_rets: Sequence[CallReturn],
         union_and_any_rets: Sequence[CallReturn],
         union_rets: Sequence[CallReturn],
-        clean_ret: Optional[CallReturn] = None,
+        clean_ret: CallReturn | None = None,
         *,
         visitor: "NameCheckVisitor",
-        node: Optional[ast.AST],
+        node: ast.AST | None,
     ) -> Value:
         if any_rets or union_and_any_rets:
             deduped = {ret.return_value for ret in any_rets}
@@ -2234,10 +2223,10 @@ class OverloadedSignature:
         self,
         *,
         preserve_impl: bool = False,
-        self_value: Optional[Value] = None,
-        self_annotation_value: Optional[Value] = None,
+        self_value: Value | None = None,
+        self_annotation_value: Value | None = None,
         ctx: CanAssignContext,
-    ) -> Optional["ConcreteSignature"]:
+    ) -> "ConcreteSignature | None":
         bound_sigs = [
             sig.bind_self(
                 preserve_impl=preserve_impl,
@@ -2287,7 +2276,7 @@ class OverloadedSignature:
         return signatures_have_relation(self, other, Relation.ASSIGNABLE, ctx)
 
 
-ConcreteSignature = Union[Signature, OverloadedSignature]
+ConcreteSignature = Signature | OverloadedSignature
 
 
 @dataclass(frozen=True)
@@ -2296,13 +2285,13 @@ class BoundMethodSignature:
 
     signature: ConcreteSignature
     self_composite: Composite
-    return_override: Optional[Value] = None
+    return_override: Value | None = None
 
     def check_call(
         self,
         args: Iterable[Argument],
         visitor: "NameCheckVisitor",
-        node: Optional[ast.AST],
+        node: ast.AST | None,
     ) -> Value:
         ret = self.signature.check_call(
             [(self.self_composite, None), *args], visitor, node
@@ -2318,8 +2307,8 @@ class BoundMethodSignature:
         *,
         preserve_impl: bool = False,
         ctx: CanAssignContext,
-        self_annotation_value: Optional[Value] = None,
-    ) -> Optional[ConcreteSignature]:
+        self_annotation_value: Value | None = None,
+    ) -> ConcreteSignature | None:
         if self_annotation_value is None:
             self_annotation_value = self.self_composite.value
         return self.signature.bind_self(
@@ -2357,16 +2346,16 @@ class BoundMethodSignature:
         return f"{self.signature} bound to {self.self_composite.value}"
 
 
-MaybeSignature = Union[None, Signature, BoundMethodSignature, OverloadedSignature]
+MaybeSignature = None | Signature | BoundMethodSignature | OverloadedSignature
 
 
 def make_bound_method(
     argspec: MaybeSignature,
     self_composite: Composite,
-    return_override: Optional[Value] = None,
+    return_override: Value | None = None,
     *,
     ctx: CanAssignContext,
-) -> Optional[BoundMethodSignature]:
+) -> BoundMethodSignature | None:
     if argspec is None:
         return None
     if isinstance(argspec, (Signature, OverloadedSignature)):
@@ -2389,7 +2378,7 @@ MappingValue = GenericValue(collections.abc.Mapping, [TypeVarValue(K), TypeVarVa
 
 def decompose_union(
     expected_type: Value, parent_value: Value, ctx: CanAssignContext
-) -> Optional[tuple[BoundsMap, bool, Value]]:
+) -> tuple[BoundsMap, bool, Value] | None:
     value = unannotate(parent_value)
     if isinstance(value, MultiValuedValue):
         bounds_maps = []
@@ -2429,7 +2418,7 @@ def check_call_preprocessed(
         return CanAssignError("Overloads are not supported")
 
 
-def _extract_known_value(val: Value) -> Optional[KnownValue]:
+def _extract_known_value(val: Value) -> KnownValue | None:
     val = replace_fallback(val)
     if isinstance(val, KnownValue):
         return val
@@ -2740,7 +2729,7 @@ def has_relation_var_positional(
     relation: Literal[Relation.ASSIGNABLE, Relation.SUBTYPE],
     idx: int,
     ctx: CanAssignContext,
-) -> Union[list[BoundsMap], CanAssignError]:
+) -> list[BoundsMap] | CanAssignError:
     my_annotation = my_param.get_annotation()
     if isinstance(args_annotation, SequenceValue):
         members = args_annotation.get_member_sequence()
@@ -2781,7 +2770,7 @@ def has_relation_var_keyword(
     kwargs_annotation: Value,
     relation: Literal[Relation.ASSIGNABLE, Relation.SUBTYPE],
     ctx: CanAssignContext,
-) -> Union[list[BoundsMap], CanAssignError]:
+) -> list[BoundsMap] | CanAssignError:
     my_annotation = my_param.get_annotation()
     bounds_maps = []
     if isinstance(kwargs_annotation, TypedDictValue):

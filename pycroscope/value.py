@@ -26,12 +26,12 @@ import enum
 import sys
 import textwrap
 from collections import deque
-from collections.abc import Container, Iterable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Container, Iterable, Iterator, Mapping, Sequence
 from contextlib import AbstractContextManager
 from dataclasses import InitVar, dataclass, field
 from itertools import chain
 from types import FunctionType, ModuleType
-from typing import Any, Callable, Optional, TypeVar, Union
+from typing import Any, Optional, TypeVar, Union
 
 import typing_extensions
 from typing_extensions import ParamSpec, Protocol, assert_never
@@ -48,33 +48,26 @@ KNOWN_MUTABLE_TYPES = (list, set, dict, deque)
 ITERATION_LIMIT = 1000
 
 if sys.version_info >= (3, 11):
-    TypeVarLike = Union[
-        ExternalType["typing.TypeVar"],
-        ExternalType["typing_extensions.TypeVar"],
-        ExternalType["typing.ParamSpec"],
-        ExternalType["typing_extensions.ParamSpec"],
-        ExternalType["typing.TypeVarTuple"],
-        ExternalType["typing_extensions.TypeVarTuple"],
-    ]
-elif sys.version_info >= (3, 10):
-    TypeVarLike = Union[
-        ExternalType["typing.TypeVar"],
-        ExternalType["typing_extensions.TypeVar"],
-        ExternalType["typing.ParamSpec"],
-        ExternalType["typing_extensions.ParamSpec"],
-        ExternalType["typing_extensions.TypeVarTuple"],
-    ]
+    TypeVarLike = (
+        ExternalType["typing.TypeVar"]
+        | ExternalType["typing_extensions.TypeVar"]
+        | ExternalType["typing.ParamSpec"]
+        | ExternalType["typing_extensions.ParamSpec"]
+        | ExternalType["typing.TypeVarTuple"]
+        | ExternalType["typing_extensions.TypeVarTuple"]
+    )
 else:
-    TypeVarLike = Union[
-        ExternalType["typing.TypeVar"],
-        ExternalType["typing_extensions.TypeVar"],
-        ExternalType["typing_extensions.ParamSpec"],
-        ExternalType["typing_extensions.TypeVarTuple"],
-    ]
+    TypeVarLike = (
+        ExternalType["typing.TypeVar"]
+        | ExternalType["typing_extensions.TypeVar"]
+        | ExternalType["typing.ParamSpec"]
+        | ExternalType["typing_extensions.ParamSpec"]
+        | ExternalType["typing_extensions.TypeVarTuple"]
+    )
 
 TypeVarMap = Mapping[TypeVarLike, ExternalType["pycroscope.value.Value"]]
 BoundsMap = Mapping[TypeVarLike, Sequence[ExternalType["pycroscope.value.Bound"]]]
-GenericBases = Mapping[Union[type, str], TypeVarMap]
+GenericBases = Mapping[type | str, TypeVarMap]
 
 
 class OverlapMode(enum.Enum):
@@ -161,7 +154,7 @@ class Value:
         """
         return False
 
-    def get_type(self) -> Optional[type]:
+    def get_type(self) -> type | None:
         """Returns the type of this value, or None if it is not known.
 
         This method should be avoided.
@@ -186,7 +179,7 @@ class Value:
         """Simplify this Value to reduce excessive detail."""
         return self
 
-    def decompose(self) -> Optional[Iterable["Value"]]:
+    def decompose(self) -> Iterable["Value"] | None:
         """Optionally, decompose this value into smaller values. The union of these
         values should be equivalent to this value."""
         return None
@@ -213,13 +206,13 @@ class CanAssignContext(Protocol):
     """
 
     def make_type_object(
-        self, typ: Union[type, super, str]
+        self, typ: type | super | str
     ) -> "pycroscope.type_object.TypeObject":
         """Return a :class:`pycroscope.type_object.TypeObject` for this concrete type."""
         raise NotImplementedError
 
     def get_generic_bases(
-        self, typ: Union[type, str], generic_args: Sequence["Value"] = ()
+        self, typ: type | str, generic_args: Sequence["Value"] = ()
     ) -> GenericBases:
         """Return the base classes for `typ` with their generic arguments.
 
@@ -313,7 +306,7 @@ class CanAssignError:
 
     message: str = ""
     children: list["CanAssignError"] = field(default_factory=list)
-    error_code: Optional[Error] = None
+    error_code: Error | None = None
 
     def display(self, depth: int = 2) -> str:
         """Display all errors in a human-readable format."""
@@ -326,7 +319,7 @@ class CanAssignError:
         else:
             return child_result
 
-    def get_error_code(self) -> Optional[Error]:
+    def get_error_code(self) -> Error | None:
         errors = {child.get_error_code() for child in self.children}
         if self.error_code:
             errors.add(self.error_code)
@@ -339,7 +332,7 @@ class CanAssignError:
 
 
 # Return value of CanAssign
-CanAssign = Union[BoundsMap, CanAssignError]
+CanAssign = BoundsMap | CanAssignError
 
 
 def assert_is_value(obj: object, value: Value, *, skip_annotated: bool = False) -> None:
@@ -422,7 +415,7 @@ class AnyValue(Value):
 
     def can_overlap(
         self, other: Value, ctx: CanAssignContext, mode: OverlapMode
-    ) -> Optional[CanAssignError]:
+    ) -> CanAssignError | None:
         return None  # always overlaps
 
 
@@ -458,9 +451,9 @@ class TypeAlias:
     """Callable that evaluates the value."""
     evaluate_type_params: Callable[[], Sequence[TypeVarLike]]
     """Callable that evaluates the type parameters."""
-    evaluated_value: Optional[Value] = None
+    evaluated_value: Value | None = None
     """Value that the type alias evaluates to."""
-    type_params: Optional[Sequence[TypeVarLike]] = None
+    type_params: Sequence[TypeVarLike] | None = None
     """Type parameters of the type alias."""
 
     def get_value(self) -> Value:
@@ -508,7 +501,7 @@ class TypeAliasValue(Value):
     def is_type(self, typ: type) -> bool:
         return self.get_value().is_type(typ)
 
-    def get_type(self) -> Optional[type]:
+    def get_type(self) -> type | None:
         return self.get_value().get_type()
 
     def get_type_value(self) -> Value:
@@ -516,7 +509,7 @@ class TypeAliasValue(Value):
 
     def can_overlap(
         self, other: Value, ctx: CanAssignContext, mode: OverlapMode
-    ) -> Optional[CanAssignError]:
+    ) -> CanAssignError | None:
         if isinstance(other, TypeAliasValue) and self.alias is other.alias:
             return None
         return self.get_value().can_overlap(other, ctx, mode)
@@ -574,7 +567,7 @@ class KnownValue(Value):
         return type(self.val)
 
     def get_type_object(
-        self, ctx: Optional[CanAssignContext] = None
+        self, ctx: CanAssignContext | None = None
     ) -> "pycroscope.type_object.TypeObject":
         if ctx is not None:
             return ctx.make_type_object(type(self.val))
@@ -585,7 +578,7 @@ class KnownValue(Value):
 
     def can_overlap(
         self, other: Value, ctx: CanAssignContext, mode: OverlapMode
-    ) -> Optional[CanAssignError]:
+    ) -> CanAssignError | None:
         if isinstance(other, (SubclassValue, TypedValue)):
             return other.can_overlap(self, ctx, mode)
         elif isinstance(other, KnownValue):
@@ -657,7 +650,7 @@ class KnownValue(Value):
         return val.simplify()
 
 
-def get_fully_qualified_name(obj: Union[FunctionType, type]) -> str:
+def get_fully_qualified_name(obj: FunctionType | type) -> str:
     mod = getattr(obj, "__module__", None)
     if mod == "builtins":
         mod = None
@@ -701,7 +694,7 @@ class UnboundMethodValue(Value):
     """Name of the method."""
     composite: "pycroscope.stacked_scopes.Composite"
     """Value the method is bound to."""
-    secondary_attr_name: Optional[str] = None
+    secondary_attr_name: str | None = None
     """Used when an attribute is accessed on an existing ``UnboundMethodValue``.
 
     This is mostly useful in conjunction with asynq, where we might use
@@ -709,10 +702,10 @@ class UnboundMethodValue(Value):
     with `secondary_attr_name` set to ``"asynq"``.
 
     """
-    typevars: Optional[TypeVarMap] = field(default=None, compare=False)
+    typevars: TypeVarMap | None = field(default=None, compare=False)
     """Extra TypeVars applied to this method."""
 
-    def get_method(self) -> Optional[Any]:
+    def get_method(self) -> Any | None:
         """Return the runtime callable for this ``UnboundMethodValue``, or
         None if it cannot be found."""
         root = replace_fallback(self.composite.value)
@@ -739,7 +732,7 @@ class UnboundMethodValue(Value):
 
     def can_overlap(
         self, other: Value, ctx: CanAssignContext, mode: OverlapMode
-    ) -> Optional[CanAssignError]:
+    ) -> CanAssignError | None:
         signature = self.get_signature(ctx)
         if signature is None:
             return None
@@ -781,7 +774,7 @@ class TypedValue(Value):
 
     """
 
-    typ: Union[type, str]
+    typ: type | str
     """The underlying type, or a fully qualified reference to one."""
     literal_only: bool = False
     """True if this is LiteralString (PEP 675)."""
@@ -790,7 +783,7 @@ class TypedValue(Value):
     )
 
     def get_type_object(
-        self, ctx: Optional[CanAssignContext] = None
+        self, ctx: CanAssignContext | None = None
     ) -> "pycroscope.type_object.TypeObject":
         if self._type_object is None:
             if ctx is None:
@@ -833,7 +826,7 @@ class TypedValue(Value):
 
     def can_overlap(
         self, other: Value, ctx: CanAssignContext, mode: OverlapMode
-    ) -> Optional[CanAssignError]:
+    ) -> CanAssignError | None:
         self_tobj = self.get_type_object(ctx)
         if self_tobj.is_thrift_enum:
             if isinstance(other, (KnownValue, TypedValue)):
@@ -877,8 +870,8 @@ class TypedValue(Value):
             return super().can_overlap(other, ctx, mode)
 
     def get_generic_args_for_type(
-        self, typ: Union[type, super, str], ctx: CanAssignContext
-    ) -> Optional[list[Value]]:
+        self, typ: type | super | str, ctx: CanAssignContext
+    ) -> list[Value] | None:
         if isinstance(self, GenericValue):
             args = self.args
         else:
@@ -892,7 +885,7 @@ class TypedValue(Value):
         return None
 
     def get_generic_arg_for_type(
-        self, typ: Union[type, super], ctx: CanAssignContext, index: int
+        self, typ: type | super, ctx: CanAssignContext, index: int
     ) -> Value:
         args = self.get_generic_args_for_type(typ, ctx)
         if args and index < len(args):
@@ -902,7 +895,7 @@ class TypedValue(Value):
     def is_type(self, typ: type) -> bool:
         return self.get_type_object().is_assignable_to_type(typ)
 
-    def get_type(self) -> Optional[type]:
+    def get_type(self) -> type | None:
         if isinstance(self.typ, str):
             return None
         return self.typ
@@ -912,7 +905,7 @@ class TypedValue(Value):
             return AnyValue(AnySource.inference)
         return KnownValue(self.typ)
 
-    def decompose(self) -> Optional[Iterable[Value]]:
+    def decompose(self) -> Iterable[Value] | None:
         if self.typ is bool:
             return [KnownValue(True), KnownValue(False)]
         type_object = self.get_type_object()
@@ -959,7 +952,7 @@ class NewTypeValue(Value):
 
     def can_overlap(
         self, other: Value, ctx: CanAssignContext, mode: OverlapMode
-    ) -> Optional[CanAssignError]:
+    ) -> CanAssignError | None:
         if isinstance(other, NewTypeValue):
             if self.newtype is other.newtype:
                 return None
@@ -987,7 +980,7 @@ class GenericValue(TypedValue):
     args: tuple[Value, ...]
     """The generic arguments to the type."""
 
-    def __init__(self, typ: Union[type, str], args: Iterable[Value]) -> None:
+    def __init__(self, typ: type | str, args: Iterable[Value]) -> None:
         super().__init__(typ)
         self.args = tuple(args)
 
@@ -1001,7 +994,7 @@ class GenericValue(TypedValue):
 
     def can_overlap(
         self, other: Value, ctx: CanAssignContext, mode: OverlapMode
-    ) -> Optional[CanAssignError]:
+    ) -> CanAssignError | None:
         if isinstance(other, GenericValue) and self.typ is other.typ:
             if len(self.args) != len(other.args):
                 return CanAssignError(f"Cannot overlap {self} and {other}")
@@ -1033,7 +1026,7 @@ class GenericValue(TypedValue):
     def simplify(self) -> Value:
         return GenericValue(self.typ, [arg.simplify() for arg in self.args])
 
-    def decompose(self) -> Optional[Iterable[Value]]:
+    def decompose(self) -> Iterable[Value] | None:
         if self.typ is tuple and len(self.args) == 1:
             # either it's empty, or it has at least one element
             arg = self.args[0]
@@ -1060,9 +1053,7 @@ class SequenceValue(GenericValue):
     members: tuple[tuple[bool, Value], ...]
     """The elements of the sequence."""
 
-    def __init__(
-        self, typ: Union[type, str], members: Sequence[tuple[bool, Value]]
-    ) -> None:
+    def __init__(self, typ: type | str, members: Sequence[tuple[bool, Value]]) -> None:
         if members:
             args = (unite_values(*[typ for _, typ in members]),)
         elif typ is tuple:
@@ -1073,7 +1064,7 @@ class SequenceValue(GenericValue):
         super().__init__(typ, args)
         self.members = tuple(members)
 
-    def get_member_sequence(self) -> Optional[Sequence[Value]]:
+    def get_member_sequence(self) -> Sequence[Value] | None:
         """Return the :class:`Value` objects in this sequence. Return
         None if there are any unpacked values in the sequence."""
         members = []
@@ -1138,7 +1129,7 @@ class SequenceValue(GenericValue):
             arg = AnyValue(AnySource.unreachable)
         return GenericValue(self.typ, [arg])
 
-    def decompose(self) -> Optional[Iterable[Value]]:
+    def decompose(self) -> Iterable[Value] | None:
         if not self.members:
             return None
         if self.members[0][0]:
@@ -1208,7 +1199,7 @@ class DictIncompleteValue(GenericValue):
     kv_pairs: tuple[KVPair, ...]
     """Sequence of :class:`KVPair` objects representing the keys and values of the dict."""
 
-    def __init__(self, typ: Union[type, str], kv_pairs: Sequence[KVPair]) -> None:
+    def __init__(self, typ: type | str, kv_pairs: Sequence[KVPair]) -> None:
         if kv_pairs:
             key_type = unite_values(*[pair.key for pair in kv_pairs])
             value_type = unite_values(*[pair.value for pair in kv_pairs])
@@ -1291,7 +1282,7 @@ class TypedDictValue(GenericValue):
     items: dict[str, TypedDictEntry]
     """The items of the ``TypedDict``. Required items are represented as (True, value) and optional
     ones as (False, value)."""
-    extra_keys: Optional[Value] = None
+    extra_keys: Value | None = None
     """The type of unknown keys, if any."""
     extra_keys_readonly: bool = False
     """Whether the extra keys are readonly."""
@@ -1299,7 +1290,7 @@ class TypedDictValue(GenericValue):
     def __init__(
         self,
         items: dict[str, TypedDictEntry],
-        extra_keys: Optional[Value] = None,
+        extra_keys: Value | None = None,
         extra_keys_readonly: bool = False,
     ) -> None:
         # Compatibility with old format, where values were (required, type) tuples.
@@ -1336,7 +1327,7 @@ class TypedDictValue(GenericValue):
 
     def can_overlap(
         self, other: Value, ctx: CanAssignContext, mode: OverlapMode
-    ) -> Optional[CanAssignError]:
+    ) -> CanAssignError | None:
         other = replace_known_sequence_value(other)
         if isinstance(other, TypedDictValue):
             for key, entry in self.items.items():
@@ -1425,7 +1416,7 @@ class AsyncTaskIncompleteValue(GenericValue):
     value: Value
     """The value returned by the task on completion."""
 
-    def __init__(self, typ: Union[type, str], value: Value) -> None:
+    def __init__(self, typ: type | str, value: Value) -> None:
         super().__init__(typ, (value,))
         self.value = value
 
@@ -1452,7 +1443,7 @@ class CallableValue(TypedValue):
     def __init__(
         self,
         signature: "pycroscope.signature.ConcreteSignature",
-        fallback: Union[type, str] = collections.abc.Callable,
+        fallback: type | str = collections.abc.Callable,
     ) -> None:
         super().__init__(fallback)
         self.signature = signature
@@ -1471,7 +1462,7 @@ class CallableValue(TypedValue):
 
     def can_overlap(
         self, other: Value, ctx: CanAssignContext, mode: OverlapMode
-    ) -> Optional[CanAssignError]:
+    ) -> CanAssignError | None:
         if not isinstance(other, (MultiValuedValue, AnyValue, AnnotatedValue)):
             signature = ctx.signature_from_value(other)
             return _signatures_overlap(self.signature, signature, ctx)
@@ -1485,7 +1476,7 @@ def _signatures_overlap(
     left: "pycroscope.signature.MaybeSignature",
     right: "pycroscope.signature.MaybeSignature",
     ctx: CanAssignContext,
-) -> Optional[CanAssignError]:
+) -> CanAssignError | None:
     if left is None or right is None:
         return CanAssignError("Not a callable type")
     if isinstance(left, pycroscope.signature.BoundMethodSignature):
@@ -1548,7 +1539,7 @@ class SubclassValue(Value):
 
     def can_overlap(
         self, other: Value, ctx: CanAssignContext, mode: OverlapMode
-    ) -> Optional[CanAssignError]:
+    ) -> CanAssignError | None:
         if isinstance(other, (KnownValue, TypedValue)):
             can_assign = self.can_assign(other, ctx)
             if not isinstance(can_assign, CanAssignError):
@@ -1567,7 +1558,7 @@ class SubclassValue(Value):
             )
         return super().can_overlap(other, ctx, mode)
 
-    def get_type(self) -> Optional[type]:
+    def get_type(self) -> type | None:
         if isinstance(self.typ, TypedValue):
             return type(self.typ.typ)
         else:
@@ -1628,7 +1619,7 @@ class MultiValuedValue(Value):
     raw_vals: InitVar[Iterable[Value]]
     vals: tuple[Value, ...] = field(init=False)
     """The underlying values of the union."""
-    _known_subvals: Optional[tuple[set[tuple[object, type]], Sequence[Value]]] = field(
+    _known_subvals: tuple[set[tuple[object, type]], Sequence[Value]] | None = field(
         init=False, repr=False, hash=False, compare=False
     )
 
@@ -1642,7 +1633,7 @@ class MultiValuedValue(Value):
 
     def _get_known_subvals(
         self,
-    ) -> Optional[tuple[set[tuple[object, type]], Sequence[Value]]]:
+    ) -> tuple[set[tuple[object, type]], Sequence[Value]] | None:
         # Not worth it for small unions
         if len(self.vals) < 10:
             return None
@@ -1672,7 +1663,7 @@ class MultiValuedValue(Value):
 
     def can_overlap(
         self, other: Value, ctx: CanAssignContext, mode: OverlapMode
-    ) -> Optional[CanAssignError]:
+    ) -> CanAssignError | None:
         if not self.vals:
             return None
         errors: list[CanAssignError] = []
@@ -1812,8 +1803,8 @@ class TypeVarValue(Value):
     """
 
     typevar: TypeVarLike
-    bound: Optional[Value] = None
-    default: Optional[Value] = None  # unsupported
+    bound: Value | None = None
+    default: Value | None = None  # unsupported
     constraints: Sequence[Value] = ()
     is_typevartuple: bool = False  # unsupported
 
@@ -1833,7 +1824,7 @@ class TypeVarValue(Value):
 
     def can_overlap(
         self, other: Value, ctx: CanAssignContext, mode: OverlapMode
-    ) -> Optional[CanAssignError]:
+    ) -> CanAssignError | None:
         return self.get_fallback_value().can_overlap(other, ctx, mode)
 
     def make_bounds_map(
@@ -2204,19 +2195,17 @@ class AnnotatedValue(Value):
 
     value: Value
     """The underlying value."""
-    metadata: tuple[Union[Value, Extension], ...]
+    metadata: tuple[Value | Extension, ...]
     """The extensions associated with this value."""
 
-    def __init__(
-        self, value: Value, metadata: Sequence[Union[Value, Extension]]
-    ) -> None:
+    def __init__(self, value: Value, metadata: Sequence[Value | Extension]) -> None:
         object.__setattr__(self, "value", value)
         object.__setattr__(self, "metadata", tuple(metadata))
 
     def is_type(self, typ: type) -> bool:
         return self.value.is_type(typ)
 
-    def get_type(self) -> Optional[type]:
+    def get_type(self) -> type | None:
         return self.value.get_type()
 
     def get_type_value(self) -> Value:
@@ -2228,7 +2217,7 @@ class AnnotatedValue(Value):
 
     def can_overlap(
         self, other: Value, ctx: CanAssignContext, mode: OverlapMode
-    ) -> Optional[CanAssignError]:
+    ) -> CanAssignError | None:
         return self.value.can_overlap(other, ctx, mode)
 
     def walk_values(self) -> Iterable[Value]:
@@ -2288,7 +2277,7 @@ class VariableNameValue(AnyValue):
 
     def can_overlap(
         self, other: Value, ctx: CanAssignContext, mode: OverlapMode
-    ) -> Optional[CanAssignError]:
+    ) -> CanAssignError | None:
         return None
 
     def __str__(self) -> str:
@@ -2315,33 +2304,32 @@ class VariableNameValue(AnyValue):
         return None
 
 
-SimpleType: typing_extensions.TypeAlias = Union[
-    AnyValue,
-    KnownValue,
-    SyntheticModuleValue,
-    UnboundMethodValue,
-    TypedValue,
-    SubclassValue,
-]
+SimpleType: typing_extensions.TypeAlias = (
+    AnyValue
+    | KnownValue
+    | SyntheticModuleValue
+    | UnboundMethodValue
+    | TypedValue
+    | SubclassValue
+)
 
-BasicType: typing_extensions.TypeAlias = Union[
-    SimpleType, MultiValuedValue, IntersectionValue
-]
+BasicType: typing_extensions.TypeAlias = (
+    SimpleType | MultiValuedValue | IntersectionValue
+)
 
 # Subclasses of Value that represent real types in the type system.
 # There are a few other subclasses of Value that represent temporary
 # objects in some contexts; this alias exists to make it easier to refer
 # to those Values that are actually part of the type system.
-GradualType: typing_extensions.TypeAlias = Union[
-    BasicType,
-    # Invariant: all non-basic types support get_fallback_value()
-    TypeAliasValue,
-    NewTypeValue,
-    TypeVarValue,
-    ParamSpecArgsValue,
-    ParamSpecKwargsValue,
-    AnnotatedValue,
-]
+GradualType: typing_extensions.TypeAlias = (
+    BasicType
+    | TypeAliasValue
+    | NewTypeValue
+    | TypeVarValue
+    | ParamSpecArgsValue
+    | ParamSpecKwargsValue
+    | AnnotatedValue
+)
 
 GRADUAL_TYPE = GradualType.__args__
 BASIC_TYPE = BasicType.__args__
@@ -2402,7 +2390,7 @@ def flatten_values(val: Value, *, unwrap_annotated: bool = False) -> Iterable[Va
 
 def get_tv_map(
     left: Value, right: Value, ctx: CanAssignContext
-) -> Union[TypeVarMap, CanAssignError]:
+) -> TypeVarMap | CanAssignError:
     bounds_map = left.can_assign(right, ctx)
     if isinstance(bounds_map, CanAssignError):
         return bounds_map
@@ -2436,7 +2424,7 @@ def intersect_bounds_maps(bounds_maps: Sequence[BoundsMap]) -> BoundsMap:
     }
 
 
-def annotate_value(origin: Value, metadata: Sequence[Union[Value, Extension]]) -> Value:
+def annotate_value(origin: Value, metadata: Sequence[Value | Extension]) -> Value:
     if not metadata:
         return origin
     if isinstance(origin, AnnotatedValue):
@@ -2563,7 +2551,7 @@ GetItemProtoValue = GenericValue(GetItemProto, [TypeVarValue(T)])
 
 def concrete_values_from_iterable(
     value: Value, ctx: CanAssignContext
-) -> Union[CanAssignError, Value, Sequence[Value]]:
+) -> CanAssignError | Value | Sequence[Value]:
     """Return the exact values that can be extracted from an iterable.
 
     Three possible return types:
@@ -2670,7 +2658,7 @@ ProtocolMappingValue = GenericValue(CustomMapping, [TypeVarValue(K), TypeVarValu
 
 def kv_pairs_from_mapping(
     value_val: Value, ctx: CanAssignContext
-) -> Union[Sequence[KVPair], CanAssignError]:
+) -> Sequence[KVPair] | CanAssignError:
     """Return the :class:`KVPair` objects that can be extracted from this value,
     or a :class:`CanAssignError` on error."""
     value_val = replace_known_sequence_value(value_val)
@@ -2724,8 +2712,8 @@ def unpack_values(
     value: Value,
     ctx: CanAssignContext,
     target_length: int,
-    post_starred_length: Optional[int] = None,
-) -> Union[Sequence[Value], CanAssignError]:
+    post_starred_length: int | None = None,
+) -> Sequence[Value] | CanAssignError:
     """Implement iterable unpacking.
 
     If `post_starred_length` is None, return a list of `target_length`
@@ -2790,7 +2778,7 @@ def unpack_values(
     return _create_unpacked_list(iterable_type, target_length, post_starred_length)
 
 
-def is_iterable(value: Value, ctx: CanAssignContext) -> Union[CanAssignError, Value]:
+def is_iterable(value: Value, ctx: CanAssignContext) -> CanAssignError | Value:
     """Check whether a value is iterable."""
     tv_map = get_tv_map(IterableValue, value, ctx)
     if isinstance(tv_map, CanAssignError):
@@ -2798,9 +2786,7 @@ def is_iterable(value: Value, ctx: CanAssignContext) -> Union[CanAssignError, Va
     return tv_map.get(T, AnyValue(AnySource.generic_argument))
 
 
-def is_async_iterable(
-    value: Value, ctx: CanAssignContext
-) -> Union[CanAssignError, Value]:
+def is_async_iterable(value: Value, ctx: CanAssignContext) -> CanAssignError | Value:
     """Check whether a value is an async iterable."""
     tv_map = get_tv_map(AsyncIterableValue, value, ctx)
     if isinstance(tv_map, CanAssignError):
@@ -2809,7 +2795,7 @@ def is_async_iterable(
 
 
 def _create_unpacked_list(
-    iterable_type: Value, target_length: int, post_starred_length: Optional[int]
+    iterable_type: Value, target_length: int, post_starred_length: int | None
 ) -> list[Value]:
     if post_starred_length is not None:
         return [
@@ -2822,8 +2808,8 @@ def _create_unpacked_list(
 
 
 def _unpack_sequence_value(
-    value: SequenceValue, target_length: int, post_starred_length: Optional[int]
-) -> Union[Sequence[Value], CanAssignError]:
+    value: SequenceValue, target_length: int, post_starred_length: int | None
+) -> Sequence[Value] | CanAssignError:
     head = []
     tail = []
     while len(head) < target_length:
@@ -2915,7 +2901,7 @@ def replace_known_sequence_value(value: Value) -> BasicType:
     return value
 
 
-def typify_literal(value: KnownValue) -> Union[KnownValue, TypedValue]:
+def typify_literal(value: KnownValue) -> KnownValue | TypedValue:
     if isinstance(value.val, (list, tuple, set)):
         return SequenceValue(
             type(value.val), [(False, KnownValue(elt)) for elt in value.val]
@@ -2987,14 +2973,12 @@ class Qualifier(enum.Enum):
 @dataclass(frozen=True)
 class AnnotationExpr:
     ctx: "pycroscope.annotations.Context"
-    _value: Optional[Value]
-    qualifiers: Sequence[tuple[Qualifier, Optional[ast.AST]]] = field(
-        default_factory=list
-    )
-    metadata: Sequence[Union[Value, Extension]] = field(default_factory=list)
+    _value: Value | None
+    qualifiers: Sequence[tuple[Qualifier, ast.AST | None]] = field(default_factory=list)
+    metadata: Sequence[Value | Extension] = field(default_factory=list)
 
     def add_qualifier(
-        self, qualifier: Qualifier, node: Optional[ast.AST]
+        self, qualifier: Qualifier, node: ast.AST | None
     ) -> "AnnotationExpr":
         return AnnotationExpr(
             self.ctx,
@@ -3003,9 +2987,7 @@ class AnnotationExpr:
             metadata=self.metadata,
         )
 
-    def add_metadata(
-        self, metadata: Sequence[Union[Value, Extension]]
-    ) -> "AnnotationExpr":
+    def add_metadata(self, metadata: Sequence[Value | Extension]) -> "AnnotationExpr":
         return AnnotationExpr(
             self.ctx,
             self._value,
@@ -3046,7 +3028,7 @@ class AnnotationExpr:
 
     def maybe_unqualify(
         self, allowed_qualifiers: Container[Qualifier] = frozenset()
-    ) -> tuple[Optional[Value], set[Qualifier]]:
+    ) -> tuple[Value | None, set[Qualifier]]:
         qualifiers = set()
         for qualifier, node in self.qualifiers:
             if qualifier in allowed_qualifiers:

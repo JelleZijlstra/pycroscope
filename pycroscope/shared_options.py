@@ -4,8 +4,8 @@ Defines some concrete options that cannot easily be placed elsewhere.
 
 """
 
+from collections.abc import Callable
 from types import ModuleType
-from typing import Callable
 
 from .error_code import DISABLED_BY_DEFAULT, ErrorCode
 from .options import BooleanOption, PathSequenceOption, PyObjectSequenceOption

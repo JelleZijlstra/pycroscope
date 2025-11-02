@@ -5,10 +5,10 @@ Support for annotations from the annotated_types library.
 """
 
 import enum
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from datetime import datetime, timezone, tzinfo
-from typing import Any, Callable, Optional, Union
+from typing import Any
 
 from pycroscope.value import CanAssign, CanAssignContext, Value, flatten_values
 
@@ -50,7 +50,7 @@ else:
 
     def _get_single_annotated_types_extension(
         obj: annotated_types.BaseMetadata,
-    ) -> Optional[CustomCheck]:
+    ) -> CustomCheck | None:
         if isinstance(obj, annotated_types.Gt):
             return Gt(obj.gt)
         elif isinstance(obj, annotated_types.Ge):
@@ -259,7 +259,7 @@ class MaxLen(AnnotatedTypesCheck):
 
 @dataclass(frozen=True)
 class Timezone(AnnotatedTypesCheck):
-    value: Union[str, timezone, tzinfo, type(...), None]
+    value: str | timezone | tzinfo | type(...) | None
 
     def predicate(self, value: Any) -> bool:
         if not isinstance(value, datetime):
@@ -291,7 +291,7 @@ class Predicate(AnnotatedTypesCheck):
         return self.predicate_callable(value)
 
 
-def _min_len_of_value(val: Value) -> Optional[int]:
+def _min_len_of_value(val: Value) -> int | None:
     if isinstance(val, SequenceValue):
         return sum(is_many is False for is_many, _ in val.members)
     elif isinstance(val, DictIncompleteValue):
@@ -302,7 +302,7 @@ def _min_len_of_value(val: Value) -> Optional[int]:
         return None
 
 
-def _max_len_of_value(val: Value) -> Optional[int]:
+def _max_len_of_value(val: Value) -> int | None:
     if isinstance(val, SequenceValue):
         maximum = 0
         for is_many, _ in val.members:

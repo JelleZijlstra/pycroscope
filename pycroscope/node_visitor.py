@@ -25,9 +25,9 @@ from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 from types import ModuleType
-from typing import Any, Optional, Union
+from typing import Any, Literal
 
-from typing_extensions import Literal, NotRequired, Protocol, TypedDict
+from typing_extensions import NotRequired, Protocol, TypedDict
 
 from . import analysis_lib, error_code
 from .analysis_lib import decompile, override
@@ -39,8 +39,8 @@ except ImportError:
     codemod = None
 
 Error = dict[str, Any]
-ErrorCodeContainer = Union[error_code.ErrorRegistry, type[Enum]]
-ErrorCodeInstance = Union[error_code.Error, Enum]
+ErrorCodeContainer = error_code.ErrorRegistry | type[Enum]
+ErrorCodeInstance = error_code.Error | Enum
 
 
 @dataclass(frozen=True)
@@ -70,10 +70,10 @@ if codemod is not None:
         def __init__(
             self,
             start_line_number: int,
-            end_line_number: Optional[int] = None,
-            new_lines: Optional[list[str]] = None,
-            path: Optional[str] = None,
-            description: Optional[str] = None,
+            end_line_number: int | None = None,
+            new_lines: list[str] | None = None,
+            path: str | None = None,
+            description: str | None = None,
         ) -> None:
             super().__init__(start_line_number, end_line_number, new_lines, path)
             self.description = description
@@ -96,7 +96,7 @@ if codemod is not None:
 
 class VisitorError(Exception):
     def __init__(
-        self, message: str, error_code: Optional[ErrorCodeInstance] = None
+        self, message: str, error_code: ErrorCodeInstance | None = None
     ) -> None:
         self.message = message
         self.error_code = error_code
@@ -122,8 +122,8 @@ class Replacement:
     """
 
     linenos_to_delete: Sequence[int]
-    lines_to_add: Optional[Sequence[str]]
-    error_str: Optional[str] = None
+    lines_to_add: Sequence[str] | None
+    error_str: str | None = None
 
 
 class FileNotFoundError(Exception):
@@ -152,10 +152,10 @@ class ErrorContext(Protocol):
         e: str,
         error_code: ErrorCodeInstance,
         *,
-        detail: Optional[str] = None,
+        detail: str | None = None,
         save: bool = True,
-        extra_metadata: Optional[dict[str, Any]] = None,
-    ) -> Optional[Failure]:
+        extra_metadata: dict[str, Any] | None = None,
+    ) -> Failure | None:
         raise NotImplementedError
 
 
@@ -167,11 +167,11 @@ class BaseNodeVisitor(ast.NodeVisitor):
 
     # Number of context lines to show around errors
     CONTEXT_LINES: int = 3
-    error_code_enum: Optional[ErrorCodeContainer] = None
-    default_module: Optional[ModuleType] = None  # module to run on by default
+    error_code_enum: ErrorCodeContainer | None = None
+    default_module: ModuleType | None = None  # module to run on by default
     # whether to look at FILE_ENVIRON_KEY to find files to run on
     should_check_environ_for_files: bool = True
-    caught_errors: Optional[list[dict[str, Any]]] = None
+    caught_errors: list[dict[str, Any]] | None = None
 
     _changes_for_fixer: dict[str, list[Replacement]] = collections.defaultdict(list)
 
@@ -184,7 +184,7 @@ class BaseNodeVisitor(ast.NodeVisitor):
         filename: str,
         contents: str,
         tree: ast.Module,
-        settings: Optional[Mapping[ErrorCodeInstance, bool]] = None,
+        settings: Mapping[ErrorCodeInstance, bool] | None = None,
         fail_after_first: bool = False,
         verbosity: int = logging.CRITICAL,
         collect_failures: bool = False,
@@ -220,7 +220,7 @@ class BaseNodeVisitor(ast.NodeVisitor):
         self.is_code_only = is_code_only
         self.lines = [line + "\n" for line in self.contents.splitlines()]
         self._has_file_level_ignore_cache: dict[
-            tuple[Optional[ErrorCodeInstance], str], bool
+            tuple[ErrorCodeInstance | None, str], bool
         ] = {}
 
     def check(self) -> list[Failure]:
@@ -251,7 +251,7 @@ class BaseNodeVisitor(ast.NodeVisitor):
 
     def has_file_level_ignore(
         self,
-        error_code: Optional[ErrorCodeInstance] = None,
+        error_code: ErrorCodeInstance | None = None,
         ignore_comment: str = IGNORE_COMMENT,
     ) -> bool:
         key = (error_code, ignore_comment)
@@ -262,7 +262,7 @@ class BaseNodeVisitor(ast.NodeVisitor):
         return self._has_file_level_ignore_cache[key]
 
     def _has_file_level_ignore(
-        self, error_code: Optional[ErrorCodeInstance], ignore_comment: str
+        self, error_code: ErrorCodeInstance | None, ignore_comment: str
     ) -> bool:
         # if the IGNORE_COMMENT occurs before any non-comment line, all errors in the file are
         # ignored
@@ -561,7 +561,7 @@ class BaseNodeVisitor(ast.NodeVisitor):
         return lines
 
     @classmethod
-    def _get_default_settings(cls) -> Optional[dict[ErrorCodeInstance, bool]]:
+    def _get_default_settings(cls) -> dict[ErrorCodeInstance, bool] | None:
         if cls.error_code_enum is None:
             return None
         else:
@@ -586,17 +586,17 @@ class BaseNodeVisitor(ast.NodeVisitor):
 
     def show_error(
         self,
-        node: Union[ast.AST, _FakeNode, None],
-        e: Optional[str] = None,
-        error_code: Optional[ErrorCodeInstance] = None,
+        node: ast.AST | _FakeNode | None,
+        e: str | None = None,
+        error_code: ErrorCodeInstance | None = None,
         *,
-        replacement: Optional[Replacement] = None,
+        replacement: Replacement | None = None,
         obey_ignore: bool = True,
         ignore_comment: str = IGNORE_COMMENT,
-        detail: Optional[str] = None,
+        detail: str | None = None,
         save: bool = True,
-        extra_metadata: Optional[dict[str, Any]] = None,
-    ) -> Optional[Failure]:
+        extra_metadata: dict[str, Any] | None = None,
+    ) -> Failure | None:
         """Shows an error associated with this node.
 
         Arguments:
@@ -759,13 +759,13 @@ class BaseNodeVisitor(ast.NodeVisitor):
             raise VisitorError(message, error_code)
         return error
 
-    def _get_attribute_path(self, node: ast.AST) -> Optional[list[str]]:
+    def _get_attribute_path(self, node: ast.AST) -> list[str] | None:
         return analysis_lib.get_attribute_path(node)
 
     @classmethod
     def _run(
         cls, profile: bool = False, num_iterations: int = 1, **kwargs: Any
-    ) -> Optional[list[Failure]]:
+    ) -> list[Failure] | None:
         result = None
         for _ in range(num_iterations):
             if profile:
@@ -777,10 +777,7 @@ class BaseNodeVisitor(ast.NodeVisitor):
 
     @classmethod
     def _run_on_files_or_all(
-        cls,
-        files: Optional[Sequence[str]] = None,
-        code: Optional[str] = None,
-        **kwargs: Any,
+        cls, files: Sequence[str] | None = None, code: str | None = None, **kwargs: Any
     ) -> list[Failure]:
         if code is not None:
             return cls._run_on_code(code, **kwargs)
@@ -1027,7 +1024,7 @@ class BaseNodeVisitor(ast.NodeVisitor):
     def _get_all_python_files(
         cls,
         include_tests: bool = False,
-        modules: Optional[Iterable[ModuleType]] = None,
+        modules: Iterable[ModuleType] | None = None,
         **kwargs: Any,
     ) -> Iterable[str]:
         """Gets Python files inside of the given modules that should be tested.
@@ -1124,7 +1121,7 @@ class ReplaceNodeTransformer(NodeTransformer):
 class ReplacingNodeVisitor(BaseNodeVisitor):
     """A NodeVisitor that enables replacing AST nodes directly in errors."""
 
-    current_statement: Optional[ast.stmt]
+    current_statement: ast.stmt | None
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
@@ -1134,8 +1131,8 @@ class ReplacingNodeVisitor(BaseNodeVisitor):
         self,
         current_node: ast.AST,
         new_node: ast.AST,
-        current_statement: Optional[ast.stmt] = None,
-    ) -> Optional[Replacement]:
+        current_statement: ast.stmt | None = None,
+    ) -> Replacement | None:
         if current_statement is None:
             current_statement = self.current_statement
         if current_statement is None:
@@ -1153,8 +1150,8 @@ class ReplacingNodeVisitor(BaseNodeVisitor):
         return Replacement(lines_to_remove, lines_to_add)
 
     def remove_node(
-        self, current_node: ast.AST, current_statement: Optional[ast.stmt] = None
-    ) -> Optional[Replacement]:
+        self, current_node: ast.AST, current_statement: ast.stmt | None = None
+    ) -> Replacement | None:
         if current_statement is None:
             current_statement = self.current_statement
         if current_statement is None:
@@ -1175,7 +1172,7 @@ class ReplacingNodeVisitor(BaseNodeVisitor):
 
 def get_files_to_check_from_environ(
     environ_key: str = FILE_ENVIRON_KEY,
-) -> Optional[list[str]]:
+) -> list[str] | None:
     """Returns any files to run on specified in the FILE_ENVIRON_KEY that we should run on.
 
     If the key isn't in the environ, return None.

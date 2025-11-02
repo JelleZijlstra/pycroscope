@@ -8,7 +8,6 @@ import enum
 import operator
 from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Optional
 
 from .safe import safe_issubclass
 from .value import (
@@ -57,7 +56,7 @@ class IsAssignablePredicate:
     ctx: CanAssignContext
     positive_only: bool
 
-    def __call__(self, value: Value, positive: bool) -> Optional[Value]:
+    def __call__(self, value: Value, positive: bool) -> Value | None:
         compatible = is_overlapping(self.pattern_value, value, self.ctx)
         if positive:
             if not compatible:
@@ -92,7 +91,7 @@ class EqualsPredicate:
     ctx: CanAssignContext
     use_is: bool = False
 
-    def __call__(self, value: Value, positive: bool) -> Optional[Value]:
+    def __call__(self, value: Value, positive: bool) -> Value | None:
         inner_value = unannotate(value)
         if isinstance(inner_value, KnownValue):
             op = _OPERATOR[(positive, self.use_is)]
@@ -138,7 +137,7 @@ class InPredicate:
     pattern_type: type
     ctx: CanAssignContext
 
-    def __call__(self, value: Value, positive: bool) -> Optional[Value]:
+    def __call__(self, value: Value, positive: bool) -> Value | None:
         inner_value = unannotate(value)
         if isinstance(inner_value, KnownValue):
             try:

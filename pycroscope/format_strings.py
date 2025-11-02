@@ -8,12 +8,12 @@ import ast
 import enum
 import re
 from collections import defaultdict
-from collections.abc import Iterable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, field
 from re import Match
-from typing import Callable, Optional, Union, runtime_checkable
+from typing import Literal, Union, runtime_checkable
 
-from typing_extensions import Literal, Protocol
+from typing_extensions import Protocol
 
 from .error_code import ErrorCode
 from .value import (
@@ -71,17 +71,15 @@ class ConversionSpecifier:
     """Class representing a single conversion specifier in a format string."""
 
     conversion_type: str
-    mapping_key: Optional[str] = None
-    conversion_flags: Optional[str] = None
-    field_width: Union[int, Literal["*"], None] = None
-    precision: Union[int, Literal["*"], None] = None
-    length_modifier: Optional[str] = None
+    mapping_key: str | None = None
+    conversion_flags: str | None = None
+    field_width: int | Literal["*"] | None = None
+    precision: int | Literal["*"] | None = None
+    length_modifier: str | None = None
     is_bytes: bool = False
 
     @classmethod
-    def from_match(
-        cls, match: Union[Match[bytes], Match[str]]
-    ) -> "ConversionSpecifier":
+    def from_match(cls, match: Match[bytes] | Match[str]) -> "ConversionSpecifier":
         """Argument is a match returned by _FORMAT_STRING_REGEX."""
         conversion_type = match.group("conversion_type")
         is_bytes = isinstance(conversion_type, bytes)
@@ -107,7 +105,7 @@ class ConversionSpecifier:
         )
 
     @classmethod
-    def _maybe_decode(cls, string: Union[str, bytes]) -> str:
+    def _maybe_decode(cls, string: str | bytes) -> str:
         """We want to treat all fields as text even on a bytes pattern for simplicity."""
         if isinstance(string, bytes):
             return string.decode("ascii")
@@ -115,7 +113,7 @@ class ConversionSpecifier:
             return string
 
     @classmethod
-    def _parse_int_field(cls, raw: Union[str, bytes]) -> Union[int, Literal["*"]]:
+    def _parse_int_field(cls, raw: str | bytes) -> int | Literal["*"]:
         """Helper for parsing match results for the field_width and precision fields."""
         if isinstance(raw, bytes):
             raw = raw.decode("ascii")
@@ -212,10 +210,10 @@ class PercentFormatString:
 
     """
 
-    pattern: Union[bytes, str]
+    pattern: bytes | str
     is_bytes: bool = False
     specifiers: Sequence[ConversionSpecifier] = ()
-    raw_pieces: Union[Sequence[bytes], Sequence[str]] = ()
+    raw_pieces: Sequence[bytes] | Sequence[str] = ()
 
     @classmethod
     def from_pattern(cls, pattern: str) -> "PercentFormatString":
@@ -338,7 +336,7 @@ class PercentFormatString:
 
     def get_serial_specifiers(
         self,
-    ) -> Iterable[Union[ConversionSpecifier, StarConversionSpecifier]]:
+    ) -> Iterable[ConversionSpecifier | StarConversionSpecifier]:
         """Returns all specifiers to use when formatting with a tuple."""
         for specifier in self.specifiers:
             if specifier.field_width == "*":
@@ -387,12 +385,12 @@ class PercentFormatString:
 
 def check_string_format(
     node: ast.AST,
-    format_str: Union[str, bytes],
+    format_str: str | bytes,
     args_node: ast.expr,
     args: Value,
     on_error: Callable[..., None],
     ctx: CanAssignContext,
-) -> tuple[Value, Optional[ast.expr]]:
+) -> tuple[Value, ast.expr | None]:
     """Checks that arguments to %-formatted strings are correct."""
     if isinstance(format_str, bytes):
         fs = PercentFormatString.from_bytes_pattern(format_str)
@@ -407,7 +405,7 @@ def check_string_format(
 
 def maybe_replace_with_fstring(
     fs: PercentFormatString, args_node: ast.expr
-) -> Optional[ast.expr]:
+) -> ast.expr | None:
     """If appropriate, emits an error to replace this % format with an f-string."""
     # there are no bytes f-strings
     if isinstance(fs.pattern, bytes):
@@ -485,12 +483,12 @@ class _ParserState:
     current_index: int = 0
     errors: FormatErrors = field(default_factory=list)
 
-    def peek(self) -> Optional[str]:
+    def peek(self) -> str | None:
         if self.current_index >= len(self.string):
             return None
         return self.string[self.current_index]
 
-    def next(self) -> Optional[str]:
+    def next(self) -> str | None:
         char = self.peek()
         self.current_index += 1
         return char
@@ -534,10 +532,10 @@ class IndexOrAttribute(enum.Enum):
 
 @dataclass
 class ReplacementField:
-    arg_name: Union[None, int, str]
+    arg_name: None | int | str
     index_attribute: Sequence[tuple[IndexOrAttribute, str]] = ()
-    conversion: Optional[str] = None
-    format_spec: Optional[FormatString] = None
+    conversion: str | None = None
+    format_spec: FormatString | None = None
 
     def iter_replacement_fields(self) -> Iterable["ReplacementField"]:
         """Iterator over all child replacement fields."""
@@ -554,7 +552,7 @@ def parse_format_string(string: str) -> tuple[FormatString, FormatErrors]:
     return FormatString(children), state.errors
 
 
-def _parse_children(state: _ParserState, end_at: Optional[str] = None) -> Children:
+def _parse_children(state: _ParserState, end_at: str | None = None) -> Children:
     children = []
     current_literal = []
     while True:
@@ -592,7 +590,7 @@ def _parse_children(state: _ParserState, end_at: Optional[str] = None) -> Childr
     return children
 
 
-def _parse_replacement_field(state: _ParserState) -> Union[str, ReplacementField]:
+def _parse_replacement_field(state: _ParserState) -> str | ReplacementField:
     arg_name_chars = []
     index_attribute = []
     conversion = None

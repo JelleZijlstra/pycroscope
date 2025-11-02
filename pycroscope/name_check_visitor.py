@@ -27,17 +27,34 @@ import types
 import typing
 from abc import abstractmethod
 from argparse import ArgumentParser
-from collections.abc import Container, Generator, Iterable, Iterator, Mapping, Sequence
+from collections.abc import (
+    Callable,
+    Container,
+    Generator,
+    Iterable,
+    Iterator,
+    Mapping,
+    Sequence,
+)
 from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from itertools import chain
 from pathlib import Path
 from types import GenericAlias
-from typing import Annotated, Any, Callable, ClassVar, Optional, TypeVar, Union
+from typing import (
+    Annotated,
+    Any,
+    ClassVar,
+    Optional,
+    TypeVar,
+    Union,
+    get_args,
+    get_origin,
+)
 from unittest.mock import ANY
 
 import typeshed_client
-from typing_extensions import Protocol, get_args, get_origin, is_typeddict
+from typing_extensions import Protocol, is_typeddict
 
 from pycroscope.input_sig import InputSigValue, ParamSpecSig
 
@@ -338,9 +355,9 @@ class CustomContextManager(Protocol[T, U]):
 
     def __exit__(
         self,
-        __exc_type: Optional[type[BaseException]],
-        __exc_value: Optional[BaseException],
-        __traceback: Optional[types.TracebackType],
+        __exc_type: type[BaseException] | None,
+        __exc_value: BaseException | None,
+        __traceback: types.TracebackType | None,
     ) -> U:
         raise NotImplementedError
 
@@ -351,9 +368,9 @@ class AsyncCustomContextManager(Protocol[T, U]):
 
     async def __aexit__(
         self,
-        __exc_type: Optional[type[BaseException]],
-        __exc_value: Optional[BaseException],
-        __traceback: Optional[types.TracebackType],
+        __exc_type: type[BaseException] | None,
+        __exc_value: BaseException | None,
+        __traceback: types.TracebackType | None,
     ) -> U:
         raise NotImplementedError
 
@@ -377,7 +394,7 @@ class _StarredValue(Value):
 @dataclass(init=False)
 class _AttrContext(CheckerAttrContext):
     visitor: "NameCheckVisitor"
-    node: Optional[ast.AST]
+    node: ast.AST | None
     ignore_none: bool = False
     record_reads: bool = True
 
@@ -388,7 +405,7 @@ class _AttrContext(CheckerAttrContext):
         attr: str,
         visitor: "NameCheckVisitor",
         *,
-        node: Optional[ast.AST],
+        node: ast.AST | None,
         ignore_none: bool = False,
         skip_mro: bool = False,
         skip_unwrap: bool = False,
@@ -624,7 +641,7 @@ def should_check_for_duplicate_values(cls: object, options: Options) -> bool:
     return True
 
 
-def _anything_to_any(obj: object) -> Optional[Value]:
+def _anything_to_any(obj: object) -> Value | None:
     if obj is ANY:
         return AnyValue(AnySource.explicit)
     if qcore is not None and obj is qcore.testing.Anything:
@@ -632,7 +649,7 @@ def _anything_to_any(obj: object) -> Optional[Value]:
     return None
 
 
-class TransformGlobals(PyObjectSequenceOption[Callable[[object], Optional[Value]]]):
+class TransformGlobals(PyObjectSequenceOption[Callable[[object], Value | None]]):
     """Transform global variables."""
 
     name = "transform_globals"
@@ -660,7 +677,7 @@ class ClassAttributeChecker:
         should_check_unused_attributes: bool = False,
         should_serialize: bool = False,
         options: Options = Options.from_option_list(),
-        ts_finder: Optional[TypeshedFinder] = None,
+        ts_finder: TypeshedFinder | None = None,
     ) -> None:
         self.options = options
         # we might not have examined all parent classes when looking for attributes set
@@ -694,9 +711,9 @@ class ClassAttributeChecker:
 
     def __exit__(
         self,
-        exc_type: Optional[type[BaseException]],
-        exc_value: Optional[BaseException],
-        exc_traceback: Optional[types.TracebackType],
+        exc_type: type[BaseException] | None,
+        exc_value: BaseException | None,
+        exc_traceback: types.TracebackType | None,
     ) -> None:
         if exc_type is None and self.enabled:
             self.check_attribute_reads()
@@ -781,7 +798,7 @@ class ClassAttributeChecker:
                 return (module, name)
         return None
 
-    def unserialize_type(self, serialized: Any) -> Optional[type]:
+    def unserialize_type(self, serialized: Any) -> type | None:
         if not self.should_serialize:
             return serialized
         module, name = serialized
@@ -1016,7 +1033,7 @@ class ClassAttributeChecker:
         return result
 
 
-_AstType = Union[type[ast.AST], tuple[type[ast.AST], ...]]
+_AstType = type[ast.AST] | tuple[type[ast.AST], ...]
 
 
 class StackedContexts:
@@ -1034,10 +1051,10 @@ class StackedContexts:
     def includes(self, typ: _AstType) -> bool:
         return any(isinstance(val, typ) for val in self.contexts)
 
-    def nth_parent(self, n: int) -> Optional[ast.AST]:
+    def nth_parent(self, n: int) -> ast.AST | None:
         return self.contexts[-n] if len(self.contexts) >= n else None
 
-    def nearest_enclosing(self, typ: _AstType) -> Optional[ast.AST]:
+    def nearest_enclosing(self, typ: _AstType) -> ast.AST | None:
         for node in reversed(self.contexts):
             if isinstance(node, typ):
                 return node
@@ -1073,44 +1090,44 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     """Visitor class that infers the type and value of Python objects and detects errors."""
 
     error_code_enum = ErrorCode
-    config_filename: ClassVar[Optional[str]] = None
+    config_filename: ClassVar[str | None] = None
     """Path (relative to this class's file) to a pyproject.toml config file."""
 
     _argspec_to_retval: dict[int, tuple[Value, MaybeSignature]]
-    _method_cache: dict[type[ast.AST], Callable[[Any], Optional[Value]]]
-    _name_node_to_statement: Optional[dict[ast.AST, Optional[ast.AST]]]
+    _method_cache: dict[type[ast.AST], Callable[[Any], Value | None]]
+    _name_node_to_statement: dict[ast.AST, ast.AST | None] | None
     _should_exclude_any: bool
     _statement_types: set[type[ast.AST]]
-    ann_assign_type: Optional[tuple[Optional[Value], bool]]
+    ann_assign_type: tuple[Value | None, bool] | None
     annotate: bool
     arg_spec_cache: ArgSpecCache
     async_kind: AsyncFunctionKind
     asynq_checker: AsynqChecker
     attribute_checker: ClassAttributeChecker
-    being_assigned: Optional[Value]
+    being_assigned: Value | None
     checker: Checker
-    collector: Optional[CallSiteCollector]
-    current_class: Optional[type]
-    current_enum_members: Optional[dict[object, str]]
-    current_function: Optional[object]
-    current_function_info: Optional[FunctionInfo]
-    current_function_name: Optional[str]
+    collector: CallSiteCollector | None
+    current_class: type | None
+    current_enum_members: dict[object, str] | None
+    current_function: object | None
+    current_function_info: FunctionInfo | None
+    current_function_name: str | None
     error_for_implicit_any: bool
-    expected_return_value: Optional[Value]
+    expected_return_value: Value | None
     future_imports: set[str]
     in_annotation: bool
     in_comprehension_body: bool
     in_union_decomposition: bool
-    import_name_to_node: dict[str, Union[ast.Import, ast.ImportFrom]]
+    import_name_to_node: dict[str, ast.Import | ast.ImportFrom]
     is_async_def: bool
     is_compiled: bool
     is_generator: bool
     match_subject: Composite
-    module: Optional[types.ModuleType]
+    module: types.ModuleType | None
     node_context: StackedContexts
     options: Options
     reexport_tracker: ImplicitReexportTracker
-    return_values: list[Optional[Value]]
+    return_values: list[Value | None]
     scopes: StackedScopes
     state: VisitorState
     unused_finder: UnusedObjectFinder
@@ -1122,13 +1139,13 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         contents: str,
         tree: ast.Module,
         *,
-        settings: Optional[Mapping[Error, bool]] = None,
+        settings: Mapping[Error, bool] | None = None,
         fail_after_first: bool = False,
         verbosity: int = logging.CRITICAL,
-        unused_finder: Optional[UnusedObjectFinder] = None,
-        module: Optional[types.ModuleType] = None,
-        attribute_checker: Optional[ClassAttributeChecker] = None,
-        collector: Optional[CallSiteCollector] = None,
+        unused_finder: UnusedObjectFinder | None = None,
+        module: types.ModuleType | None = None,
+        attribute_checker: ClassAttributeChecker | None = None,
+        collector: CallSiteCollector | None = None,
         annotate: bool = False,
         add_ignores: bool = False,
         checker: Checker,
@@ -1225,13 +1242,13 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         self._should_exclude_any = False
         self._fill_method_cache()
 
-    def get_local_return_value(self, sig: MaybeSignature) -> Optional[Value]:
+    def get_local_return_value(self, sig: MaybeSignature) -> Value | None:
         val, saved_sig = self._argspec_to_retval.get(id(sig), (None, None))
         if sig is not saved_sig:
             return None
         return val
 
-    def make_type_object(self, typ: Union[type, super, str]) -> TypeObject:
+    def make_type_object(self, typ: type | super | str) -> TypeObject:
         return self.checker.make_type_object(typ)
 
     def can_assume_compatibility(self, left: TypeObject, right: TypeObject) -> bool:
@@ -1265,20 +1282,20 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         return self._should_exclude_any
 
     def get_generic_bases(
-        self, typ: Union[type, str], generic_args: Sequence[Value] = ()
+        self, typ: type | str, generic_args: Sequence[Value] = ()
     ) -> GenericBases:
         return self.arg_spec_cache.get_generic_bases(typ, generic_args)
 
     def get_signature(
         self, obj: object, is_asynq: bool = False
-    ) -> Optional[ConcreteSignature]:
+    ) -> ConcreteSignature | None:
         return self.checker.get_signature(obj, is_asynq=is_asynq)
 
     def __reduce_ex__(self, proto: object) -> object:
         # Only pickle the attributes needed to get error reporting working
         return self.__class__, (self.filename, self.contents, self.tree, self.settings)
 
-    def _load_module(self) -> tuple[Optional[types.ModuleType], bool]:
+    def _load_module(self) -> tuple[types.ModuleType | None, bool]:
         """Sets the module_path and module for this file."""
         if not self.filename:
             return None, False
@@ -1450,12 +1467,12 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     def _show_error_if_checking(
         self,
         node: ast.AST,
-        msg: Optional[str] = None,
-        error_code: Optional[Error] = None,
+        msg: str | None = None,
+        error_code: Error | None = None,
         *,
-        replacement: Optional[node_visitor.Replacement] = None,
-        detail: Optional[str] = None,
-        extra_metadata: Optional[dict[str, Any]] = None,
+        replacement: node_visitor.Replacement | None = None,
+        detail: str | None = None,
+        extra_metadata: dict[str, Any] | None = None,
     ) -> None:
         """We usually should show errors only in the check_names state to avoid duplicate errors."""
         if self._is_checking():
@@ -1472,7 +1489,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         self,
         varname: str,
         node: ast.AST,
-        value: Optional[Value] = AnyValue(AnySource.inference),
+        value: Value | None = AnyValue(AnySource.inference),
         *,
         private: bool = False,
         lookup_node: object = None,
@@ -1529,7 +1546,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
 
     def _get_base_class_attributes(
         self, varname: str, node: ast.AST
-    ) -> Iterable[tuple[Union[type, str], Value]]:
+    ) -> Iterable[tuple[type | str, Value]]:
         if self.current_class is None:
             return
         for base_class in self.get_generic_bases(self.current_class):
@@ -1577,7 +1594,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         return self.checker.display_value(value)
 
     def resolve_property(
-        self, obj: property, root_composite: Composite, node: Optional[ast.AST]
+        self, obj: property, root_composite: Composite, node: ast.AST | None
     ) -> Value:
         if obj.fget is None:
             return UNINITIALIZED_VALUE
@@ -1589,7 +1606,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         self,
         base_value: Value,
         child_value: Value,
-        base_class: Union[type, str],
+        base_class: type | str,
         node: ast.AST,
     ) -> CanAssign:
         if base_value is UNINITIALIZED_VALUE:
@@ -1607,7 +1624,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         self,
         base_property: property,
         child_value: Value,
-        base_class: Union[type, str],
+        base_class: type | str,
         node: ast.AST,
     ) -> CanAssign:
         if isinstance(child_value, KnownValue) and isinstance(
@@ -1680,7 +1697,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     def resolve_name(
         self,
         node: ast.Name,
-        error_node: Optional[ast.AST] = None,
+        error_node: ast.AST | None = None,
         suppress_errors: bool = False,
     ) -> tuple[Value, VarnameOrigin]:
         """Resolves a Name node to a value.
@@ -1761,7 +1778,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         return isinstance(ctx, (ast.Load, ast.Del))
 
     @contextlib.contextmanager
-    def _set_current_class(self, current_class: Optional[type]) -> Iterator[None]:
+    def _set_current_class(self, current_class: type | None) -> Iterator[None]:
         if should_check_for_duplicate_values(current_class, self.options):
             current_enum_members = {}
         else:
@@ -1805,7 +1822,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 return KnownValue(runtime_obj)
         return AnyValue(AnySource.inference)
 
-    def _get_current_class_object(self, node: ast.ClassDef) -> Optional[type]:
+    def _get_current_class_object(self, node: ast.ClassDef) -> type | None:
         cls_obj = self._get_local_object(node.name, node)
 
         module = self.module
@@ -1833,7 +1850,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             return None
 
     def _visit_class_and_get_value(
-        self, node: ast.ClassDef, current_class: Optional[type]
+        self, node: ast.ClassDef, current_class: type | None
     ) -> Value:
         if self._is_collecting():
             # If this is a nested class, we need to run the collecting phase to get data
@@ -1871,8 +1888,8 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         node: FunctionNode,
         *,
         is_nested_in_class: bool = False,
-        enclosing_class: Optional[TypedValue] = None,
-        potential_function: Optional[object] = None,
+        enclosing_class: TypedValue | None = None,
+        potential_function: object | None = None,
     ) -> Generator[FunctionInfo, None, None]:
         """Visits a function's decorator list."""
         async_kind = AsyncFunctionKind.non_async
@@ -2154,7 +2171,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     error_code=ErrorCode.invalid_typeguard,
                 )
 
-    def _get_typeis_parameter(self, info: FunctionInfo) -> Optional[SigParameter]:
+    def _get_typeis_parameter(self, info: FunctionInfo) -> SigParameter | None:
         index = 0
         if info.is_classmethod or info.is_instancemethod:
             index = 1
@@ -2208,7 +2225,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             return
         self._argspec_to_retval[id(sig)] = (return_value, sig)
 
-    def _get_potential_function(self, node: FunctionDefNode) -> Optional[object]:
+    def _get_potential_function(self, node: FunctionDefNode) -> object | None:
         scope_type = self.scopes.scope_type()
         if scope_type == ScopeType.module_scope and self.module is not None:
             potential_function = safe_getattr(self.module, node.name, None)
@@ -2358,7 +2375,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     def _compute_return_type(
         self,
         node: FunctionNode,
-        return_values: Sequence[Optional[Value]],
+        return_values: Sequence[Value | None],
         return_set: Value,
         info: FunctionInfo,
         params: Sequence[SigParameter],
@@ -2400,7 +2417,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         )
 
     def _check_function_unused_vars(
-        self, scope: FunctionScope, enclosing_statement: Optional[ast.stmt] = None
+        self, scope: FunctionScope, enclosing_statement: ast.stmt | None = None
     ) -> None:
         """Shows errors for any unused variables in the function."""
         all_def_nodes = set(
@@ -2679,12 +2696,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         force_public: bool = False,
         node: ast.AST,
     ) -> None:
-        # aliases only have a lineno attached in 3.10+
-        if sys.version_info >= (3, 10):
-            error_node = alias
-        else:
-            error_node = node
-        if self.check_deprecation(error_node, value):
+        if self.check_deprecation(alias, value):
             value = annotate_value(value, [SkipDeprecatedExtension()])
         if alias.asname is not None:
             self._set_name_in_scope(
@@ -2751,13 +2763,8 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         if node.module is not None and node.level == 0:
             self.check_for_disallowed_import(node, node.module)
             for alias in node.names:
-                # Before 3.10 the alias doesn't have a lineno
-                if sys.version_info >= (3, 10):
-                    error_node = alias
-                else:
-                    error_node = node
                 self.check_for_disallowed_import(
-                    error_node, f"{node.module}.{alias.name}", check_parents=False
+                    alias, f"{node.module}.{alias.name}", check_parents=False
                 )
 
         self._maybe_record_usages_from_import(node)
@@ -2908,7 +2915,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             else:
                 self.unused_finder.record(module, alias.name, self.module.__name__)
 
-    def _is_unimportable_module(self, node: Union[ast.Import, ast.ImportFrom]) -> bool:
+    def _is_unimportable_module(self, node: ast.Import | ast.ImportFrom) -> bool:
         unimportable = self.options.get_value_for(UnimportableModules)
         if isinstance(node, ast.ImportFrom):
             # the split is needed for cases like "from foo.bar import baz" if foo is unimportable
@@ -2932,7 +2939,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         return self._visit_sequence_comp(node, types.GeneratorType)
 
     def visit_comprehension(
-        self, node: ast.comprehension, iterable_type: Optional[Value] = None
+        self, node: ast.comprehension, iterable_type: Value | None = None
     ) -> None:
         if iterable_type is None:
             is_async = bool(node.is_async)
@@ -2951,7 +2958,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
 
     def _visit_sequence_comp(
         self,
-        node: Union[ast.ListComp, ast.SetComp, ast.GeneratorExp, ast.DictComp],
+        node: ast.ListComp | ast.SetComp | ast.GeneratorExp | ast.DictComp,
         typ: type,
     ) -> Value:
         # the iteree of the first generator is executed in the enclosing scope
@@ -2987,9 +2994,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
 
     def _visit_comprehension_inner(
         self,
-        node: Union[ast.ListComp, ast.SetComp, ast.GeneratorExp, ast.DictComp],
+        node: ast.ListComp | ast.SetComp | ast.GeneratorExp | ast.DictComp,
         typ: type,
-        iterable_type: Union[Value, Sequence[Value]],
+        iterable_type: Value | Sequence[Value],
     ) -> Value:
         if not isinstance(iterable_type, Value):
             # If it is a simple comprehension (only one generator, no ifs) and we know
@@ -3163,7 +3170,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             self._maybe_show_missing_f_error(node, node.value)
         return KnownValue(node.value)
 
-    def _maybe_show_missing_f_error(self, node: ast.AST, s: Union[str, bytes]) -> None:
+    def _maybe_show_missing_f_error(self, node: ast.AST, s: str | bytes) -> None:
         """Show an error if this string was probably meant to be an f-string."""
         if isinstance(s, bytes):
             return
@@ -3280,15 +3287,13 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     def visit_Set(self, node: ast.Set) -> Value:
         return self._visit_display_read(node, set)
 
-    def visit_List(self, node: ast.List) -> Optional[Value]:
+    def visit_List(self, node: ast.List) -> Value | None:
         return self._visit_display(node, list)
 
-    def visit_Tuple(self, node: ast.Tuple) -> Optional[Value]:
+    def visit_Tuple(self, node: ast.Tuple) -> Value | None:
         return self._visit_display(node, tuple)
 
-    def _visit_display(
-        self, node: Union[ast.List, ast.Tuple], typ: type
-    ) -> Optional[Value]:
+    def _visit_display(self, node: ast.List | ast.Tuple, typ: type) -> Value | None:
         if self._is_write_ctx(node.ctx):
             target_length = 0
             post_starred_length = None
@@ -3336,7 +3341,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             return self._visit_display_read(node, typ)
 
     def _visit_display_read(
-        self, node: Union[ast.Set, ast.List, ast.Tuple], typ: type
+        self, node: ast.Set | ast.List | ast.Tuple, typ: type
     ) -> Value:
         if typ is tuple and self.in_annotation:
             elts = []
@@ -3353,7 +3358,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         typ: type,
         elts: Sequence[Value],
         node: ast.AST,
-        elt_nodes: Optional[Sequence[ast.AST]] = None,
+        elt_nodes: Sequence[ast.AST] | None = None,
     ) -> Value:
         values = []
         for i, elt in enumerate(elts):
@@ -3637,7 +3642,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         else:
             positive_operator, negative_operator, ext = COMPARATOR_TO_OPERATOR[type(op)]
 
-            def predicate_func(value: Value, positive: bool) -> Optional[Value]:
+            def predicate_func(value: Value, positive: bool) -> Value | None:
                 op = positive_operator if positive else negative_operator
                 if isinstance(value, KnownValue):
                     try:
@@ -3662,7 +3667,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     ) -> Constraint:
         positive_operator, negative_operator, _ = COMPARATOR_TO_OPERATOR[type(op)]
 
-        def predicate_func(value: Value, positive: bool) -> Optional[Value]:
+        def predicate_func(value: Value, positive: bool) -> Value | None:
             predicate_value = pred.provider(value)
             if isinstance(predicate_value, KnownValue):
                 operator = positive_operator if positive else negative_operator
@@ -3731,7 +3736,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             if isinstance(left, KnownValue) and isinstance(right, KnownValue):
                 self.check_for_missing_generic_params(left_node, left)
                 self.check_for_missing_generic_params(right_node, right)
-                return KnownValue(Union[left.val, right.val])
+                return KnownValue(Union[left.val, right.val])  # noqa: UP007
             else:
                 self._show_error_if_checking(
                     source_node,
@@ -4206,7 +4211,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     def visit_Continue(self, node: ast.Continue) -> None:
         self._set_name_in_scope(LEAVES_LOOP, node, AnyValue(AnySource.marker))
 
-    def visit_For(self, node: Union[ast.For, ast.AsyncFor]) -> None:
+    def visit_For(self, node: ast.For | ast.AsyncFor) -> None:
         iterated_value = self._member_value_of_iterator(
             node.iter, is_async=isinstance(node, ast.AsyncFor)
         )
@@ -4293,7 +4298,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
 
     def _member_value_of_iterator(
         self, node: ast.AST, is_async: bool = False
-    ) -> Union[Value, Sequence[Value]]:
+    ) -> Value | Sequence[Value]:
         """Analyze an iterator AST node.
 
         Returns a tuple of two values:
@@ -4955,7 +4960,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         node: ast.Subscript,
         root_composite: Composite,
         index_composite: Composite,
-        composite_var: Optional[VarnameWithOrigin],
+        composite_var: VarnameWithOrigin | None,
     ) -> Value:
         value = root_composite.value
         index = index_composite.value
@@ -5086,7 +5091,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         method_name: str,
         args: Iterable[Composite],
         allow_call: bool = False,
-    ) -> Union[Value, list[node_visitor.Error]]:
+    ) -> Value | list[node_visitor.Error]:
         """Use this for checking a dunder call that may fall back to another.
 
         There are three cases:
@@ -5175,7 +5180,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
 
     def _extend_composite(
         self, root_composite: Composite, index: CompositeIndex, node: ast.AST
-    ) -> Optional[VarnameWithOrigin]:
+    ) -> VarnameWithOrigin | None:
         varname = root_composite.get_extended_varname(index)
         if varname is None:
             return None
@@ -5258,7 +5263,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         self,
         root_composite: Composite,
         attr: str,
-        node: Optional[ast.AST] = None,
+        node: ast.AST | None = None,
         *,
         ignore_none: bool = False,
         use_fallback: bool = False,
@@ -5431,12 +5436,12 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             node.inferred_value = composite.value
         return composite
 
-    def varname_for_constraint(self, node: ast.AST) -> Optional[VarnameWithOrigin]:
+    def varname_for_constraint(self, node: ast.AST) -> VarnameWithOrigin | None:
         """Given a node, returns a variable name that could be used in a local scope."""
         composite = self.composite_from_node(node)
         return composite.varname
 
-    def varname_for_self_constraint(self, node: ast.AST) -> Optional[VarnameWithOrigin]:
+    def varname_for_self_constraint(self, node: ast.AST) -> VarnameWithOrigin | None:
         """Helper for constraints on self from method calls.
 
         Given an ``ast.Call`` node representing a method call, return the variable name
@@ -5511,7 +5516,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         return return_value
 
     def _can_perform_call(
-        self, args: Iterable[Value], keywords: Iterable[tuple[Optional[str], Value]]
+        self, args: Iterable[Value], keywords: Iterable[tuple[str | None, Value]]
     ) -> Annotated[
         bool,
         ParameterTypeGuard["args", Iterable[KnownValue]],
@@ -5525,10 +5530,10 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
 
     def check_call(
         self,
-        node: Optional[ast.AST],
+        node: ast.AST | None,
         callee: Value,
         args: Iterable[Composite],
-        keywords: Iterable[tuple[Optional[str], Composite]] = (),
+        keywords: Iterable[tuple[str | None, Composite]] = (),
         *,
         allow_call: bool = False,
     ) -> Value:
@@ -5562,10 +5567,10 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
 
     def _check_call_no_mvv(
         self,
-        node: Optional[ast.AST],
+        node: ast.AST | None,
         callee_wrapped: Value,
         args: Iterable[Composite],
-        keywords: Iterable[tuple[Optional[str], Composite]] = (),
+        keywords: Iterable[tuple[str | None, Composite]] = (),
         *,
         allow_call: bool = False,
     ) -> Value:
@@ -5668,7 +5673,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             return return_value
 
     def signature_from_value(
-        self, value: Value, node: Optional[ast.AST] = None
+        self, value: Value, node: ast.AST | None = None
     ) -> MaybeSignature:
         def get_call_attribute(value: Value) -> Value:
             return self.get_attribute(
@@ -5686,58 +5691,53 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
 
     # Match statements
 
-    if sys.version_info >= (3, 10):
-
-        def visit_Match(self, node: ast.Match) -> None:
-            subject = self.composite_from_node(node.subject)
-            patma_visitor = PatmaVisitor(self)
-            with override(self, "match_subject", subject):
-                constraints_to_apply = []
-                subscopes = []
-                for case in node.cases:
-                    with self.scopes.subscope() as case_scope:
-                        for constraint in constraints_to_apply:
-                            self.add_constraint(case, constraint)
-                        self.match_subject = self.match_subject._replace(
-                            value=constrain_value(
-                                self.match_subject.value,
-                                AndConstraint.make(constraints_to_apply),
-                            )
+    def visit_Match(self, node: ast.Match) -> None:
+        subject = self.composite_from_node(node.subject)
+        patma_visitor = PatmaVisitor(self)
+        with override(self, "match_subject", subject):
+            constraints_to_apply = []
+            subscopes = []
+            for case in node.cases:
+                with self.scopes.subscope() as case_scope:
+                    for constraint in constraints_to_apply:
+                        self.add_constraint(case, constraint)
+                    self.match_subject = self.match_subject._replace(
+                        value=constrain_value(
+                            self.match_subject.value,
+                            AndConstraint.make(constraints_to_apply),
                         )
-
-                        pattern_constraint = patma_visitor.visit(case.pattern)
-                        constraints = [pattern_constraint]
-                        self.add_constraint(case.pattern, pattern_constraint)
-                        if case.guard is not None:
-                            _, guard_constraint = self.constraint_from_condition(
-                                case.guard
-                            )
-                            self.add_constraint(case.guard, guard_constraint)
-                            constraints.append(guard_constraint)
-
-                        constraints_to_apply.append(
-                            AndConstraint.make(constraints).invert()
-                        )
-                        self._generic_visit_list(case.body)
-                        subscopes.append(case_scope)
-
-                    self.yield_checker.reset_yield_checks()
-
-                self.match_subject = self.match_subject._replace(
-                    value=constrain_value(
-                        self.match_subject.value,
-                        AndConstraint.make(constraints_to_apply),
                     )
-                )
 
-                if self.match_subject.value is NO_RETURN_VALUE:
-                    self._set_name_in_scope(LEAVES_SCOPE, node, NO_RETURN_VALUE)
-                else:
-                    with self.scopes.subscope() as else_scope:
-                        for constraint in constraints_to_apply:
-                            self.add_constraint(node, constraint)
-                        subscopes.append(else_scope)
-                self.scopes.combine_subscopes(subscopes)
+                    pattern_constraint = patma_visitor.visit(case.pattern)
+                    constraints = [pattern_constraint]
+                    self.add_constraint(case.pattern, pattern_constraint)
+                    if case.guard is not None:
+                        _, guard_constraint = self.constraint_from_condition(case.guard)
+                        self.add_constraint(case.guard, guard_constraint)
+                        constraints.append(guard_constraint)
+
+                    constraints_to_apply.append(
+                        AndConstraint.make(constraints).invert()
+                    )
+                    self._generic_visit_list(case.body)
+                    subscopes.append(case_scope)
+
+                self.yield_checker.reset_yield_checks()
+
+            self.match_subject = self.match_subject._replace(
+                value=constrain_value(
+                    self.match_subject.value, AndConstraint.make(constraints_to_apply)
+                )
+            )
+
+            if self.match_subject.value is NO_RETURN_VALUE:
+                self._set_name_in_scope(LEAVES_SCOPE, node, NO_RETURN_VALUE)
+            else:
+                with self.scopes.subscope() as else_scope:
+                    for constraint in constraints_to_apply:
+                        self.add_constraint(node, constraint)
+                    subscopes.append(else_scope)
+            self.scopes.combine_subscopes(subscopes)
 
     # Attribute checking
 
@@ -5830,9 +5830,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         return tuple(str(path) for path in paths)
 
     @classmethod
-    def _get_default_settings(
-        cls,
-    ) -> Optional[dict[node_visitor.ErrorCodeInstance, bool]]:
+    def _get_default_settings(cls) -> dict[node_visitor.ErrorCodeInstance, bool] | None:
         return {}
 
     @classmethod
@@ -5888,8 +5886,8 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         checker: Checker,
         find_unused: bool = False,
         find_unused_attributes: bool = False,
-        attribute_checker: Optional[ClassAttributeChecker] = None,
-        unused_finder: Optional[UnusedObjectFinder] = None,
+        attribute_checker: ClassAttributeChecker | None = None,
+        unused_finder: UnusedObjectFinder | None = None,
         **kwargs: Any,
     ) -> list[node_visitor.Failure]:
         attribute_checker_enabled = checker.options.is_error_code_enabled_anywhere(
@@ -5946,7 +5944,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     def check_file_in_worker(
         cls,
         filename: str,
-        attribute_checker: Optional[ClassAttributeChecker] = None,
+        attribute_checker: ClassAttributeChecker | None = None,
         **kwargs: Any,
     ) -> tuple[list[node_visitor.Failure], Any]:
         failures = cls.check_file(
@@ -5958,7 +5956,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     def merge_extra_data(
         cls,
         extra_data: Any,
-        attribute_checker: Optional[ClassAttributeChecker] = None,
+        attribute_checker: ClassAttributeChecker | None = None,
         **kwargs: Any,
     ) -> None:
         if attribute_checker is None:
@@ -5988,8 +5986,8 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
 
 
 def build_stacked_scopes(
-    module: Optional[types.ModuleType],
-    simplification_limit: Optional[int] = None,
+    module: types.ModuleType | None,
+    simplification_limit: int | None = None,
     *,
     options: Options,
 ) -> StackedScopes:
@@ -6089,7 +6087,7 @@ def _is_asynq_future(value: Value) -> bool:
     return value.is_type(asynq.FutureBase) or value.is_type(asynq.AsyncTask)
 
 
-def _extract_definite_value(val: Value) -> Optional[bool]:
+def _extract_definite_value(val: Value) -> bool | None:
     if isinstance(val, AnnotatedValue):
         dv_exts = val.get_metadata_of_type(DefiniteValueExtension)
         for dv_ext in dv_exts:
@@ -6119,9 +6117,7 @@ else:
         return typ.model_config.get("extra") != "allow"
 
 
-def _has_only_known_attributes(
-    ts_finder: Optional[TypeshedFinder], typ: object
-) -> bool:
+def _has_only_known_attributes(ts_finder: TypeshedFinder | None, typ: object) -> bool:
     if not isinstance(typ, type):
         return False
     if _is_safe_pydantic_class(typ) or issubclass(typ, enum.Enum):

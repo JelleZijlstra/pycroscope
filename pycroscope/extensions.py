@@ -13,23 +13,13 @@ import enum
 import types
 import typing
 from collections import defaultdict
-from collections.abc import Container, Iterable, Iterator, Sequence
+from collections.abc import Callable, Container, Iterable, Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field
-from typing import (
-    TYPE_CHECKING,
-    Annotated,
-    Any,
-    Callable,
-    NoReturn,
-    Optional,
-    TypeVar,
-    Union,
-)
+from typing import TYPE_CHECKING, Annotated, Any, Literal, NoReturn, TypeVar
 from typing import overload as real_overload
 
 import typing_extensions
-from typing_extensions import Literal
 
 import pycroscope
 
@@ -168,7 +158,7 @@ class ValidRegex(CustomCheck):
 
 class _AsynqCallableMeta(type):
     def __getitem__(
-        self, params: tuple[Union[Literal[Ellipsis], list[object]], object]
+        self, params: tuple[Literal[Ellipsis] | list[object], object]
     ) -> Any:
         if not isinstance(params, tuple) or len(params) != 2:
             raise TypeError(
@@ -198,7 +188,7 @@ class AsynqCallable(metaclass=_AsynqCallableMeta):
 
     """
 
-    args: Union[Literal[Ellipsis], tuple[object, ...]]
+    args: Literal[Ellipsis] | tuple[object, ...]
     return_type: object
 
     # Returns AsynqCallable but pycroscope interprets that as AsynqCallable[..., Any]
@@ -428,6 +418,12 @@ class ExternalType(metaclass=_ExternalTypeMeta):
     def __call__(self) -> NoReturn:
         raise NotImplementedError("just here to fool typing._type_check")
 
+    def __or__(self, other: object) -> Any:
+        return typing.Union[self, other]  # noqa: UP007
+
+    def __ror__(self, other: Any) -> Any:
+        return typing.Union[other, self]  # noqa: UP007
+
 
 _T = TypeVar("_T")
 
@@ -633,7 +629,7 @@ def is_of_type(arg: Any, type: Any, *, exclude_any: bool = False) -> bool:
     )
 
 
-def show_error(message: str, *, argument: Optional[Any] = None) -> bool:
+def show_error(message: str, *, argument: Any | None = None) -> bool:
     """Helper function for type evaluators.
 
     May not be called at runtime.

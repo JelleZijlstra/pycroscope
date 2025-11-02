@@ -32,10 +32,20 @@ from collections.abc import Callable, Container, Generator, Hashable, Mapping, S
 from contextlib import AbstractContextManager
 from dataclasses import InitVar, dataclass, field
 from types import GenericAlias
-from typing import TYPE_CHECKING, Any, NewType, Optional, TypeVar, Union, cast
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    NewType,
+    Optional,
+    TypeVar,
+    Union,
+    cast,
+    get_args,
+    get_origin,
+)
 
 import typing_extensions
-from typing_extensions import NoDefault, ParamSpec, TypedDict, get_args, get_origin
+from typing_extensions import NoDefault, ParamSpec, TypedDict
 
 from pycroscope.annotated_types import get_annotated_types_extension
 from pycroscope.input_sig import InputSigValue, ParamSpecSig
@@ -133,7 +143,7 @@ class Context:
         """Temporarily suppress errors about undefined names."""
         return override(self, "should_suppress_undefined_names", True)
 
-    def is_being_evaluted(self, obj: object) -> Optional[Value]:
+    def is_being_evaluted(self, obj: object) -> Value | None:
         return self._being_evaluated.get(id(obj))
 
     @contextlib.contextmanager
@@ -159,7 +169,7 @@ class Context:
         self,
         message: str,
         error_code: Error = ErrorCode.invalid_annotation,
-        node: Optional[ast.AST] = None,
+        node: ast.AST | None = None,
     ) -> None:
         """Show an error found while evaluating an annotation."""
         pass
@@ -230,7 +240,7 @@ class SyntheticEvaluator(type_evaluation.Evaluator):
         self,
         message: str,
         error_code: Error = ErrorCode.invalid_annotation,
-        node: Optional[ast.AST] = None,
+        node: ast.AST | None = None,
     ) -> None:
         self.error_ctx.show_error(node or self.node, message, error_code=error_code)
 
@@ -265,7 +275,7 @@ class SyntheticEvaluator(type_evaluation.Evaluator):
 def type_from_ast(
     ast_node: ast.AST,
     visitor: Optional["NameCheckVisitor"] = None,
-    ctx: Optional[Context] = None,
+    ctx: Context | None = None,
 ) -> Value:
     """Given an AST node representing an annotation, return a
     :class:`Value <pycroscope.value.Value>`.
@@ -288,7 +298,7 @@ def type_from_ast(
 def annotation_expr_from_ast(
     ast_node: ast.AST,
     visitor: Optional["NameCheckVisitor"] = None,
-    ctx: Optional[Context] = None,
+    ctx: Context | None = None,
 ) -> AnnotationExpr:
     """Given an AST node representing an annotation, return a
     :class:`AnnotationExpr`."""
@@ -302,9 +312,9 @@ def type_from_annotations(
     annotations: Mapping[str, object],
     key: str,
     *,
-    globals: Optional[Mapping[str, object]] = None,
-    ctx: Optional[Context] = None,
-) -> Optional[Value]:
+    globals: Mapping[str, object] | None = None,
+    ctx: Context | None = None,
+) -> Value | None:
     try:
         annotation = annotations[key]
     except Exception:
@@ -322,9 +332,9 @@ def annotation_expr_from_annotations(
     annotations: Mapping[str, object],
     key: str,
     *,
-    globals: Optional[Mapping[str, object]] = None,
-    ctx: Optional[Context] = None,
-) -> Optional[AnnotationExpr]:
+    globals: Mapping[str, object] | None = None,
+    ctx: Context | None = None,
+) -> AnnotationExpr | None:
     try:
         annotation = annotations[key]
     except Exception:
@@ -338,9 +348,9 @@ def annotation_expr_from_annotations(
 def type_from_runtime(
     val: object,
     visitor: Optional["NameCheckVisitor"] = None,
-    node: Optional[ast.AST] = None,
-    globals: Optional[Mapping[str, object]] = None,
-    ctx: Optional[Context] = None,
+    node: ast.AST | None = None,
+    globals: Mapping[str, object] | None = None,
+    ctx: Context | None = None,
 ) -> Value:
     """Given a runtime annotation object, return a
     :class:`Value <pycroscope.value.Value>`.
@@ -371,9 +381,9 @@ def annotation_expr_from_runtime(
     val: object,
     *,
     visitor: Optional["NameCheckVisitor"] = None,
-    node: Optional[ast.AST] = None,
-    globals: Optional[Mapping[str, object]] = None,
-    ctx: Optional[Context] = None,
+    node: ast.AST | None = None,
+    globals: Mapping[str, object] | None = None,
+    ctx: Context | None = None,
 ) -> AnnotationExpr:
     if ctx is None:
         ctx = _DefaultContext(visitor, node, globals)
@@ -383,8 +393,8 @@ def annotation_expr_from_runtime(
 def type_from_value(
     value: Value,
     visitor: Optional["NameCheckVisitor"] = None,
-    node: Optional[ast.AST] = None,
-    ctx: Optional[Context] = None,
+    node: ast.AST | None = None,
+    ctx: Context | None = None,
 ) -> Value:
     """Given a :class:`Value <pycroscope.value.Value` representing an annotation,
     return a :class:`Value <pycroscope.value.Value>` representing the type.
@@ -415,8 +425,8 @@ def annotation_expr_from_value(
     value: Value,
     *,
     visitor: Optional["NameCheckVisitor"] = None,
-    node: Optional[ast.AST] = None,
-    ctx: Optional[Context] = None,
+    node: ast.AST | None = None,
+    ctx: Context | None = None,
 ) -> AnnotationExpr:
     if ctx is None:
         ctx = _DefaultContext(visitor, node)
@@ -725,9 +735,9 @@ def _get_typeddict_value(
     value: Value,
     ctx: Context,
     key: str,
-    required_keys: Optional[Container[str]],
+    required_keys: Container[str] | None,
     total: bool,
-    readonly_keys: Optional[Container[str]],
+    readonly_keys: Container[str] | None,
 ) -> TypedDictEntry:
     ann_expr = _annotation_expr_from_runtime(value, ctx)
     val, qualifiers = ann_expr.unqualify(
@@ -797,7 +807,7 @@ def _type_from_value(value: Value, ctx: Context) -> Value:
 
 
 def _annotation_expr_from_subscripted_value(
-    root: Optional[Value], root_node: ast.AST, members: Sequence[Value], ctx: Context
+    root: Value | None, root_node: ast.AST, members: Sequence[Value], ctx: Context
 ) -> AnnotationExpr:
     if not isinstance(root, KnownValue):
         val = _type_from_subscripted_value(root, members, ctx)
@@ -826,7 +836,7 @@ def _annotation_expr_from_subscripted_value(
 
 
 def _type_from_subscripted_value(
-    root: Optional[Value], members: Sequence[Value], ctx: Context
+    root: Value | None, members: Sequence[Value], ctx: Context
 ) -> Value:
     if isinstance(root, GenericValue):
         if len(root.args) == len(members):
@@ -949,7 +959,7 @@ def _type_from_subscripted_value(
         return AnyValue(AnySource.error)
 
 
-def _maybe_get_extra(origin: type) -> Union[type, str]:
+def _maybe_get_extra(origin: type) -> type | str:
     # ContextManager is defined oddly and we lose the Protocol if we don't use
     # synthetic types.
     if any(origin is cls for cls in CONTEXT_MANAGER_TYPES):
@@ -964,8 +974,8 @@ class _DefaultContext(Context):
     def __init__(
         self,
         visitor: "NameCheckVisitor",
-        node: Optional[ast.AST],
-        globals: Optional[Mapping[str, object]] = None,
+        node: ast.AST | None,
+        globals: Mapping[str, object] | None = None,
         use_name_node_for_error: bool = False,
     ) -> None:
         super().__init__()
@@ -978,7 +988,7 @@ class _DefaultContext(Context):
         self,
         message: str,
         error_code: Error = ErrorCode.invalid_annotation,
-        node: Optional[ast.AST] = None,
+        node: ast.AST | None = None,
     ) -> None:
         if node is None:
             node = self.node
@@ -1031,7 +1041,7 @@ class _SubscriptedValue(AnyValue):
 
     """
 
-    root: Optional[Value]
+    root: Value | None
     root_node: ast.AST
     members: tuple[Value, ...]
 
@@ -1065,7 +1075,7 @@ class _Visitor(ast.NodeVisitor):
             members = (index,)
         return _SubscriptedValue(AnySource.inference, value, node.value, members)
 
-    def visit_Attribute(self, node: ast.Attribute) -> Optional[Value]:
+    def visit_Attribute(self, node: ast.Attribute) -> Value | None:
         root_value = self.visit(node.value)
         return self.ctx.get_attribute(root_value, node)
 
@@ -1101,7 +1111,7 @@ class _Visitor(ast.NodeVisitor):
     def visit_Expr(self, node: ast.Expr) -> Value:
         return self.visit(node.value)
 
-    def visit_BinOp(self, node: ast.BinOp) -> Optional[Value]:
+    def visit_BinOp(self, node: ast.BinOp) -> Value | None:
         if isinstance(node.op, ast.BitOr):
             return _SubscriptedValue(
                 AnySource.inference,
@@ -1118,7 +1128,7 @@ class _Visitor(ast.NodeVisitor):
             AnySource.inference, KnownValue(typing_extensions.Unpack), node, (value,)
         )
 
-    def visit_UnaryOp(self, node: ast.UnaryOp) -> Optional[Value]:
+    def visit_UnaryOp(self, node: ast.UnaryOp) -> Value | None:
         # Only int and float negation on literals are supported.
         if isinstance(node.op, ast.USub):
             operand = self.visit(node.operand)
@@ -1128,7 +1138,7 @@ class _Visitor(ast.NodeVisitor):
                 return KnownValue(-operand.val)
         return None
 
-    def visit_Call(self, node: ast.Call) -> Optional[Value]:
+    def visit_Call(self, node: ast.Call) -> Value | None:
         func = self.visit(node.func)
         if not isinstance(func, KnownValue):
             return None
@@ -1335,7 +1345,7 @@ def _value_of_origin_args(
         return AnyValue(AnySource.error)
 
 
-def _maybe_typed_value(val: Union[type, str]) -> Value:
+def _maybe_typed_value(val: type | str) -> Value:
     if val is type(None):
         return KnownValue(None)
     elif val is Hashable:
@@ -1366,7 +1376,7 @@ def _make_sequence_value(
     return SequenceValue(typ, pairs)
 
 
-def _unpack_value(value: Value) -> Optional[Sequence[tuple[bool, Value]]]:
+def _unpack_value(value: Value) -> Sequence[tuple[bool, Value]] | None:
     if isinstance(value, SequenceValue) and value.typ is tuple:
         return value.members
     elif isinstance(value, GenericValue) and value.typ is tuple:
@@ -1447,8 +1457,8 @@ def _make_callable_from_value(
 
 def translate_annotated_metadata(
     metadata: Sequence[Value], ctx: Context
-) -> list[Union[Value, Extension]]:
-    metadata_objs: list[Union[Value, Extension]] = []
+) -> list[Value | Extension]:
+    metadata_objs: list[Value | Extension] = []
     for entry in metadata:
         if isinstance(entry, KnownValue):
             if isinstance(entry.val, ParameterTypeGuard):
@@ -1502,5 +1512,5 @@ _CONTEXT_MANAGER_TYPES = {
 }
 
 
-def is_context_manager_type(typ: Union[str, type]) -> bool:
+def is_context_manager_type(typ: str | type) -> bool:
     return typ in _CONTEXT_MANAGER_TYPES

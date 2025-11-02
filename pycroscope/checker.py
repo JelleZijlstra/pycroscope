@@ -8,10 +8,9 @@ import collections.abc
 import itertools
 import sys
 import types
-from collections.abc import Iterable, Iterator, Sequence
+from collections.abc import Callable, Iterable, Iterator, Sequence
 from contextlib import AbstractContextManager, contextmanager
 from dataclasses import InitVar, dataclass, field
-from typing import Callable, Optional, Union
 
 from .analysis_lib import override
 from .arg_spec import ArgSpecCache, GenericBases
@@ -55,7 +54,7 @@ from .value import (
     unite_values,
 )
 
-_BaseProvider = Callable[[Union[type, super]], set[type]]
+_BaseProvider = Callable[[type | super], set[type]]
 
 
 class AdditionalBaseProviders(PyObjectSequenceOption[_BaseProvider]):
@@ -78,13 +77,13 @@ class AdditionalBaseProviders(PyObjectSequenceOption[_BaseProvider]):
 
 @dataclass
 class Checker:
-    raw_options: InitVar[Optional[Options]] = None
+    raw_options: InitVar[Options | None] = None
     options: Options = field(init=False)
     arg_spec_cache: ArgSpecCache = field(init=False, repr=False)
     ts_finder: TypeshedFinder = field(init=False, repr=False)
     reexport_tracker: ImplicitReexportTracker = field(init=False, repr=False)
     callable_tracker: CallableTracker = field(init=False, repr=False)
-    type_object_cache: dict[Union[type, super, str], TypeObject] = field(
+    type_object_cache: dict[type | super | str, TypeObject] = field(
         default_factory=dict, init=False, repr=False
     )
     assumed_compatibilities: list[tuple[TypeObject, TypeObject]] = field(
@@ -97,7 +96,7 @@ class Checker:
     type_alias_cache: dict[object, TypeAlias] = field(default_factory=dict)
     _should_exclude_any: bool = False
 
-    def __post_init__(self, raw_options: Optional[Options]) -> None:
+    def __post_init__(self, raw_options: Options | None) -> None:
         if raw_options is None:
             self.options = Options.from_option_list()
         else:
@@ -116,21 +115,19 @@ class Checker:
             for variable in vnv.varnames:
                 self.vnv_map[variable] = vnv
 
-    def maybe_get_variable_name_value(
-        self, varname: str
-    ) -> Optional[VariableNameValue]:
+    def maybe_get_variable_name_value(self, varname: str) -> VariableNameValue | None:
         return VariableNameValue.from_varname(varname, self.vnv_map)
 
     def perform_final_checks(self) -> list[Failure]:
         return self.callable_tracker.check()
 
-    def get_additional_bases(self, typ: Union[type, super]) -> set[type]:
+    def get_additional_bases(self, typ: type | super) -> set[type]:
         bases = set()
         for provider in self.options.get_value_for(AdditionalBaseProviders):
             bases |= provider(typ)
         return bases
 
-    def make_type_object(self, typ: Union[type, super, str]) -> TypeObject:
+    def make_type_object(self, typ: type | super | str) -> TypeObject:
         try:
             in_cache = typ in self.type_object_cache
         except Exception:
@@ -141,7 +138,7 @@ class Checker:
         self.type_object_cache[typ] = type_object
         return type_object
 
-    def _build_type_object(self, typ: Union[type, super, str]) -> TypeObject:
+    def _build_type_object(self, typ: type | super | str) -> TypeObject:
         if isinstance(typ, str):
             # Synthetic type
             bases = self._get_typeshed_bases(typ)
@@ -188,9 +185,7 @@ class Checker:
             is_final = self.ts_finder.is_final(typ)
             return TypeObject(typ, additional_bases, is_final=is_final)
 
-    def _get_recursive_typeshed_bases(
-        self, typ: Union[type, str]
-    ) -> set[Union[type, str]]:
+    def _get_recursive_typeshed_bases(self, typ: type | str) -> set[type | str]:
         seen = set()
         to_do = {typ}
         result = set()
@@ -204,11 +199,11 @@ class Checker:
             seen.add(typ)
         return result
 
-    def _get_typeshed_bases(self, typ: Union[type, str]) -> set[Union[type, str]]:
+    def _get_typeshed_bases(self, typ: type | str) -> set[type | str]:
         base_values = self.ts_finder.get_bases_recursively(typ)
         return {base.typ for base in base_values if isinstance(base, TypedValue)}
 
-    def _get_protocol_members(self, bases: Iterable[Union[type, str]]) -> set[str]:
+    def _get_protocol_members(self, bases: Iterable[type | str]) -> set[str]:
         return {
             attr
             for base in bases
@@ -217,13 +212,13 @@ class Checker:
         }
 
     def get_generic_bases(
-        self, typ: Union[type, str], generic_args: Sequence[Value] = ()
+        self, typ: type | str, generic_args: Sequence[Value] = ()
     ) -> GenericBases:
         return self.arg_spec_cache.get_generic_bases(typ, generic_args)
 
     def get_signature(
         self, obj: object, is_asynq: bool = False
-    ) -> Optional[ConcreteSignature]:
+    ) -> ConcreteSignature | None:
         sig = self.arg_spec_cache.get_argspec(obj, is_asynq=is_asynq)
         if isinstance(sig, Signature):
             return sig
@@ -295,10 +290,8 @@ class Checker:
         self,
         value: Value,
         *,
-        get_return_override: Callable[
-            [MaybeSignature], Optional[Value]
-        ] = lambda _: None,
-        get_call_attribute: Optional[Callable[[Value], Value]] = None,
+        get_return_override: Callable[[MaybeSignature], Value | None] = lambda _: None,
+        get_call_attribute: Callable[[Value], Value] | None = None,
     ) -> MaybeSignature:
         value = replace_fallback(value)
         if isinstance(value, KnownValue):
@@ -492,6 +485,6 @@ class CheckerAttrContext(AttrContext):
         return self.checker.signature_from_value(KnownValue(obj))
 
     def get_generic_bases(
-        self, typ: Union[type, str], generic_args: Sequence[Value]
+        self, typ: type | str, generic_args: Sequence[Value]
     ) -> GenericBases:
         return self.checker.get_generic_bases(typ, generic_args)
