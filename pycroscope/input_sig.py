@@ -1,4 +1,3 @@
-import sys
 import typing
 from collections.abc import Container, Iterable, Sequence
 from dataclasses import dataclass
@@ -25,10 +24,7 @@ from pycroscope.value import (
     Value,
 )
 
-if sys.version_info >= (3, 10):
-    ParamSpecLike = typing_extensions.ParamSpec | typing.ParamSpec
-else:
-    ParamSpecLike = typing_extensions.ParamSpec
+ParamSpecLike = typing_extensions.ParamSpec | typing.ParamSpec
 
 
 @dataclass(frozen=True)

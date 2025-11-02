@@ -1,6 +1,4 @@
-from typing import overload
-
-from typing_extensions import Literal
+from typing import Literal, overload
 
 @overload
 def func(x: int, y: Literal[1] = ..., z: str = ...) -> int: ...

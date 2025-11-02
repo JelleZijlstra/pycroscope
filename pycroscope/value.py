@@ -56,18 +56,11 @@ if sys.version_info >= (3, 11):
         | ExternalType["typing.TypeVarTuple"]
         | ExternalType["typing_extensions.TypeVarTuple"]
     )
-elif sys.version_info >= (3, 10):
-    TypeVarLike = (
-        ExternalType["typing.TypeVar"]
-        | ExternalType["typing_extensions.TypeVar"]
-        | ExternalType["typing.ParamSpec"]
-        | ExternalType["typing_extensions.ParamSpec"]
-        | ExternalType["typing_extensions.TypeVarTuple"]
-    )
 else:
     TypeVarLike = (
         ExternalType["typing.TypeVar"]
         | ExternalType["typing_extensions.TypeVar"]
+        | ExternalType["typing.ParamSpec"]
         | ExternalType["typing_extensions.ParamSpec"]
         | ExternalType["typing_extensions.TypeVarTuple"]
     )

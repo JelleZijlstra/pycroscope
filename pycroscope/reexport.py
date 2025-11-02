@@ -6,8 +6,8 @@ Functionality for dealing with implicit reexports.
 
 from ast import AST
 from collections import defaultdict
+from collections.abc import Callable
 from dataclasses import InitVar, dataclass, field
-from typing import Callable
 
 from .error_code import ErrorCode
 from .node_visitor import ErrorContext

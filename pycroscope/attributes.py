@@ -15,6 +15,11 @@ from typing import Any, ClassVar
 
 from typing_extensions import assert_never
 
+if sys.version_info >= (3, 14):
+    from annotationlib import Format, get_annotations
+else:
+    from inspect import get_annotations
+
 from .annotated_types import EnumName
 from .annotations import Context, annotation_expr_from_annotations, type_from_runtime
 from .options import Options, PyObjectSequenceOption
@@ -563,10 +568,12 @@ def _get_attribute_from_mro(
                     # Make sure to use only __annotations__ that are actually on this
                     # class, not ones inherited from a base class.
                     # Starting in 3.10, __annotations__ is not inherited.
-                    if sys.version_info >= (3, 10):
-                        annotations = base_cls.__annotations__
+                    if sys.version_info >= (3, 14):
+                        annotations = get_annotations(
+                            base_cls, format=Format.FORWARDREF
+                        )
                     else:
-                        annotations = base_dict["__annotations__"]
+                        annotations = get_annotations(base_cls)
                 except Exception:
                     pass
                 else:

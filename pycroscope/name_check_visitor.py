@@ -2696,12 +2696,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         force_public: bool = False,
         node: ast.AST,
     ) -> None:
-        # aliases only have a lineno attached in 3.10+
-        if sys.version_info >= (3, 10):
-            error_node = alias
-        else:
-            error_node = node
-        if self.check_deprecation(error_node, value):
+        if self.check_deprecation(alias, value):
             value = annotate_value(value, [SkipDeprecatedExtension()])
         if alias.asname is not None:
             self._set_name_in_scope(
@@ -2768,13 +2763,8 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         if node.module is not None and node.level == 0:
             self.check_for_disallowed_import(node, node.module)
             for alias in node.names:
-                # Before 3.10 the alias doesn't have a lineno
-                if sys.version_info >= (3, 10):
-                    error_node = alias
-                else:
-                    error_node = node
                 self.check_for_disallowed_import(
-                    error_node, f"{node.module}.{alias.name}", check_parents=False
+                    alias, f"{node.module}.{alias.name}", check_parents=False
                 )
 
         self._maybe_record_usages_from_import(node)
@@ -5701,58 +5691,53 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
 
     # Match statements
 
-    if sys.version_info >= (3, 10):
-
-        def visit_Match(self, node: ast.Match) -> None:
-            subject = self.composite_from_node(node.subject)
-            patma_visitor = PatmaVisitor(self)
-            with override(self, "match_subject", subject):
-                constraints_to_apply = []
-                subscopes = []
-                for case in node.cases:
-                    with self.scopes.subscope() as case_scope:
-                        for constraint in constraints_to_apply:
-                            self.add_constraint(case, constraint)
-                        self.match_subject = self.match_subject._replace(
-                            value=constrain_value(
-                                self.match_subject.value,
-                                AndConstraint.make(constraints_to_apply),
-                            )
+    def visit_Match(self, node: ast.Match) -> None:
+        subject = self.composite_from_node(node.subject)
+        patma_visitor = PatmaVisitor(self)
+        with override(self, "match_subject", subject):
+            constraints_to_apply = []
+            subscopes = []
+            for case in node.cases:
+                with self.scopes.subscope() as case_scope:
+                    for constraint in constraints_to_apply:
+                        self.add_constraint(case, constraint)
+                    self.match_subject = self.match_subject._replace(
+                        value=constrain_value(
+                            self.match_subject.value,
+                            AndConstraint.make(constraints_to_apply),
                         )
-
-                        pattern_constraint = patma_visitor.visit(case.pattern)
-                        constraints = [pattern_constraint]
-                        self.add_constraint(case.pattern, pattern_constraint)
-                        if case.guard is not None:
-                            _, guard_constraint = self.constraint_from_condition(
-                                case.guard
-                            )
-                            self.add_constraint(case.guard, guard_constraint)
-                            constraints.append(guard_constraint)
-
-                        constraints_to_apply.append(
-                            AndConstraint.make(constraints).invert()
-                        )
-                        self._generic_visit_list(case.body)
-                        subscopes.append(case_scope)
-
-                    self.yield_checker.reset_yield_checks()
-
-                self.match_subject = self.match_subject._replace(
-                    value=constrain_value(
-                        self.match_subject.value,
-                        AndConstraint.make(constraints_to_apply),
                     )
-                )
 
-                if self.match_subject.value is NO_RETURN_VALUE:
-                    self._set_name_in_scope(LEAVES_SCOPE, node, NO_RETURN_VALUE)
-                else:
-                    with self.scopes.subscope() as else_scope:
-                        for constraint in constraints_to_apply:
-                            self.add_constraint(node, constraint)
-                        subscopes.append(else_scope)
-                self.scopes.combine_subscopes(subscopes)
+                    pattern_constraint = patma_visitor.visit(case.pattern)
+                    constraints = [pattern_constraint]
+                    self.add_constraint(case.pattern, pattern_constraint)
+                    if case.guard is not None:
+                        _, guard_constraint = self.constraint_from_condition(case.guard)
+                        self.add_constraint(case.guard, guard_constraint)
+                        constraints.append(guard_constraint)
+
+                    constraints_to_apply.append(
+                        AndConstraint.make(constraints).invert()
+                    )
+                    self._generic_visit_list(case.body)
+                    subscopes.append(case_scope)
+
+                self.yield_checker.reset_yield_checks()
+
+            self.match_subject = self.match_subject._replace(
+                value=constrain_value(
+                    self.match_subject.value, AndConstraint.make(constraints_to_apply)
+                )
+            )
+
+            if self.match_subject.value is NO_RETURN_VALUE:
+                self._set_name_in_scope(LEAVES_SCOPE, node, NO_RETURN_VALUE)
+            else:
+                with self.scopes.subscope() as else_scope:
+                    for constraint in constraints_to_apply:
+                        self.add_constraint(node, constraint)
+                    subscopes.append(else_scope)
+            self.scopes.combine_subscopes(subscopes)
 
     # Attribute checking
 

@@ -5,7 +5,6 @@
 """
 
 import inspect
-import sys
 import types
 import typing
 from collections.abc import Container, Sequence
@@ -126,19 +125,8 @@ def all_of_type(
     return all(isinstance(elt, typ) for elt in elts)
 
 
-if sys.version_info >= (3, 10):
-
-    def is_newtype(obj: object) -> bool:
-        return isinstance(obj, NewType)
-
-else:
-
-    def is_newtype(obj: object) -> bool:
-        return (
-            inspect.isfunction(obj)
-            and hasattr(obj, "__supertype__")
-            and isinstance(obj.__supertype__, type)
-        )
+def is_newtype(obj: object) -> bool:
+    return isinstance(obj, NewType)
 
 
 def is_typing_name(obj: object, name: str) -> bool:
