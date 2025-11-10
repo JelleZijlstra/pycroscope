@@ -7,4 +7,4 @@ codemod
 myst-parser==4.0.0
 Sphinx==7.4.7
 black==25.11.0
-ruff==0.14.1
+ruff==0.14.4
