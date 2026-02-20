@@ -10,6 +10,7 @@ import builtins
 import collections
 import concurrent.futures
 import cProfile
+import importlib.metadata
 import json
 import logging
 import os
@@ -62,6 +63,21 @@ IGNORE_COMMENT = "# static analysis: ignore"
 ITERATION_LIMIT = 150
 
 UNUSED_OBJECT_FILENAME = "<unused>"
+
+
+def _get_pycroscope_version() -> str:
+    try:
+        return importlib.metadata.version("pycroscope")
+    except importlib.metadata.PackageNotFoundError:
+        pyproject = Path(__file__).resolve().parents[1] / "pyproject.toml"
+        try:
+            pyproject_text = pyproject.read_text(encoding="utf-8")
+        except OSError:
+            return "unknown"
+        match = re.search(r'^version\s*=\s*"([^"]+)"', pyproject_text, re.MULTILINE)
+        if match is None:
+            return "unknown"
+        return match.group(1)
 
 
 if codemod is not None:
@@ -878,6 +894,11 @@ class BaseNodeVisitor(ast.NodeVisitor):
             formatter_class=argparse.RawDescriptionHelpFormatter,
         )
         parser.add_argument("files", nargs="*", help="Files or directories to check")
+        parser.add_argument(
+            "--version",
+            action="version",
+            version=f"%(prog)s {_get_pycroscope_version()}",
+        )
         parser.add_argument(
             "-v", "--verbose", help="Print more information.", action="count"
         )
