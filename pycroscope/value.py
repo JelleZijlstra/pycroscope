@@ -2051,6 +2051,118 @@ class TypeIsExtension(Extension):
 
 
 @dataclass(frozen=True)
+class TypeFormExtension(Extension):
+    """An :class:`Extension` used to represent ``typing.TypeForm`` values."""
+
+    inner_type: Value
+
+    def substitute_typevars(self, typevars: TypeVarMap) -> Extension:
+        inner_type = self.inner_type.substitute_typevars(typevars)
+        return TypeFormExtension(inner_type)
+
+    def walk_values(self) -> Iterable[Value]:
+        yield from self.inner_type.walk_values()
+
+    def can_assign(self, value: Value, ctx: CanAssignContext) -> CanAssign:
+        return _can_assign_type_form(self.inner_type, value, ctx)
+
+    def can_be_assigned(self, value: Value, ctx: CanAssignContext) -> CanAssign:
+        # Like other typing metadata (TypeGuard/TypeIs), this is interpreted on the
+        # expected type side. A plain `object` remains assignable from a TypeForm value.
+        return {}
+
+    def __str__(self) -> str:
+        return f"TypeForm[{self.inner_type}]"
+
+
+def _can_assign_type_form(
+    inner_type: Value, value: Value, ctx: CanAssignContext
+) -> CanAssign:
+    value_as_type = _extract_type_form(value, ctx)
+    if isinstance(value_as_type, CanAssignError):
+        return value_as_type
+    can_assign = inner_type.can_assign(value_as_type, ctx)
+    if isinstance(can_assign, CanAssignError):
+        return CanAssignError("Incompatible types in TypeForm", [can_assign])
+    return can_assign
+
+
+def _extract_type_form(value: Value, ctx: CanAssignContext) -> Value | CanAssignError:
+    try:
+        value = gradualize(value)
+    except NotAGradualType:
+        fallback = value.get_fallback_value()
+        if fallback is not None:
+            return _extract_type_form(fallback, ctx)
+        return CanAssignError(f"{value} is not a TypeForm")
+
+    if isinstance(value, AnnotatedValue):
+        type_form = next(value.get_metadata_of_type(TypeFormExtension), None)
+        if type_form is not None:
+            try:
+                return gradualize(type_form.inner_type)
+            except NotAGradualType:
+                return CanAssignError(f"{value} is not a TypeForm")
+        return _extract_type_form(value.value, ctx)
+    if isinstance(value, MultiValuedValue):
+        vals: list[Value] = []
+        for subval in value.vals:
+            subval_as_type = _extract_type_form(subval, ctx)
+            if isinstance(subval_as_type, CanAssignError):
+                return subval_as_type
+            vals.append(subval_as_type)
+        try:
+            return gradualize(unite_values(*vals))
+        except NotAGradualType:
+            return CanAssignError(f"{value} is not a TypeForm")
+    if isinstance(value, KnownValue):
+        # Avoid emitting annotation errors while checking assignability.
+        from pycroscope.annotations import type_from_runtime, type_from_value
+
+        if isinstance(value.val, str) and hasattr(ctx, "resolve_name"):
+            # Use lexical scope when evaluating quoted type expressions.
+            type_form = type_from_value(value, visitor=ctx)
+        else:
+            type_form = type_from_runtime(value.val)
+        if type_form == AnyValue(AnySource.error):
+            return CanAssignError(f"{value} is not a TypeForm")
+        try:
+            extracted = gradualize(type_form)
+        except NotAGradualType:
+            return CanAssignError(f"{value} is not a TypeForm")
+        if isinstance(extracted, TypeVarValue) and extracted.typevar is SelfT:
+            return CanAssignError(f"{value} is not a TypeForm")
+        if isinstance(extracted, (ParamSpecArgsValue, ParamSpecKwargsValue)):
+            return CanAssignError(f"{value} is not a TypeForm")
+        return extracted
+    if isinstance(value, SubclassValue):
+        return value.typ
+    if isinstance(value, TypedValue) and value.typ is type:
+        return AnyValue(AnySource.inference)
+    if isinstance(value, TypedValue):
+        return CanAssignError(f"{value} is not a TypeForm")
+    if isinstance(value, (AnyValue, TypeAliasValue)):
+        return value
+    if isinstance(value, TypeVarValue):
+        if value.typevar is SelfT:
+            return CanAssignError(f"{value} is not a TypeForm")
+        return value
+    if isinstance(
+        value,
+        (
+            NewTypeValue,
+            ParamSpecArgsValue,
+            ParamSpecKwargsValue,
+            IntersectionValue,
+            SyntheticModuleValue,
+            UnboundMethodValue,
+        ),
+    ):
+        return CanAssignError(f"{value} is not a TypeForm")
+    assert_never(value)
+
+
+@dataclass(frozen=True)
 class HasAttrGuardExtension(Extension):
     """An :class:`Extension` used in a function return type. Used to
     indicate that the function argument named `varname` has an attribute

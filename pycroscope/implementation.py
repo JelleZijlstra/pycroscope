@@ -66,6 +66,7 @@ from .value import (
     SubclassValue,
     TypedDictValue,
     TypedValue,
+    TypeFormExtension,
     TypeVarValue,
     Value,
     annotate_value,
@@ -1469,6 +1470,14 @@ def _cast_impl(ctx: CallContext) -> Value:
     return type_from_value(typ, visitor=ctx.visitor, node=ctx.node)
 
 
+def _typeform_impl(ctx: CallContext) -> Value:
+    typ = ctx.vars["typ"]
+    type_form = type_from_value(typ, visitor=ctx.visitor, node=ctx.node)
+    if type_form == AnyValue(AnySource.error):
+        return AnyValue(AnySource.error)
+    return AnnotatedValue(TypedValue(object), [TypeFormExtension(type_form)])
+
+
 def _recursive_unanotate(val: Value) -> Value:
     # Maybe we should also recurse into type parameters?
     if isinstance(val, AnnotatedValue):
@@ -2152,6 +2161,21 @@ def get_default_argspecs() -> dict[object, Signature]:
             ),
         ]
     for mod in typing, typing_extensions:
+        try:
+            typeform_func = getattr(mod, "TypeForm")
+        except AttributeError:
+            pass
+        else:
+            sig = Signature.make(
+                [SigParameter("typ", _POS_ONLY)],
+                return_annotation=AnnotatedValue(
+                    TypedValue(object),
+                    [TypeFormExtension(AnyValue(AnySource.explicit))],
+                ),
+                callable=typeform_func,
+                impl=_typeform_impl,
+            )
+            signatures.append(sig)
         try:
             reveal_type_func = getattr(mod, "reveal_type")
         except AttributeError:
