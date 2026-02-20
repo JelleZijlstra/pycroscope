@@ -20,6 +20,7 @@ from .node_visitor import (
     ReplaceNodeTransformer,
     ReplacingNodeVisitor,
     VisitorError,
+    _get_pycroscope_version,
 )
 
 
@@ -119,6 +120,16 @@ class BaseNodeVisitorTester(object):
         return self.visitor_cls(
             "<test input>", code_str, tree, **kwargs
         ).check_for_test(apply_changes=apply_changes)
+
+
+def test_version_argument(capsys):
+    parser = BaseNodeVisitor._get_argument_parser()
+    with pytest.raises(SystemExit) as exc:
+        parser.parse_args(["--version"])
+    assert exc.value.code == 0
+    captured = capsys.readouterr()
+    assert captured.err == ""
+    assert captured.out.strip().endswith(_get_pycroscope_version())
 
 
 def assert_passes(**kwargs):
