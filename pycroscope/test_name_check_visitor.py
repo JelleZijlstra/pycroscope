@@ -726,6 +726,17 @@ class TestReturn(TestNameCheckVisitorBase):
                 """this is intentionally abstract"""
                 ...
 
+        class AbsyPass:
+            @abstractmethod
+            def doesnt_return(self) -> int:  # ok
+                pass
+
+        class AbsyPassWithDoc:
+            @abstractmethod
+            def doesnt_return(self) -> int:  # ok
+                """this is intentionally abstract"""
+                pass
+
         class Proto(Protocol):
             def doesnt_return(self) -> int:  # ok
                 ...
@@ -734,6 +745,15 @@ class TestReturn(TestNameCheckVisitorBase):
             def doesnt_return(self) -> int:  # ok
                 """this is intentionally abstract"""
                 ...
+
+        class ProtoPass(Protocol):
+            def doesnt_return(self) -> int:  # ok
+                pass
+
+        class ProtoPassWithDoc(Protocol):
+            def doesnt_return(self) -> int:  # ok
+                """this is intentionally abstract"""
+                pass
 
         def you_can_skip_return_none() -> None:
             pass

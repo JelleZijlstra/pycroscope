@@ -2180,7 +2180,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         node = info.node
         if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             return False
-        if not self._has_only_docstring_and_ellipsis(node):
+        if not self._has_only_docstring_and_stub(node):
             return False
         if info.is_abstractmethod:
             return True
@@ -2189,7 +2189,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             and self.checker.make_type_object(self.current_class).is_protocol
         )
 
-    def _has_only_docstring_and_ellipsis(
+    def _has_only_docstring_and_stub(
         self, node: ast.FunctionDef | ast.AsyncFunctionDef
     ) -> bool:
         body = node.body
@@ -2206,6 +2206,8 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             candidate = body[1]
         else:
             return False
+        if isinstance(candidate, ast.Pass):
+            return True
         return (
             isinstance(candidate, ast.Expr)
             and isinstance(candidate.value, ast.Constant)
