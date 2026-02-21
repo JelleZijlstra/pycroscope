@@ -209,6 +209,7 @@ from .value import (
     MultiValuedValue,
     NoReturnConstraintExtension,
     OverlapMode,
+    PredicateValue,
     ReferencingValue,
     SequenceValue,
     SkipDeprecatedExtension,
@@ -247,6 +248,18 @@ if sys.version_info >= (3, 11):
     TryNode = ast.Try | ast.TryStar
 else:
     TryNode = ast.Try
+
+
+def _strip_predicate_intersection(value: Value) -> Value:
+    """Remove predicate-only refinements when invoking runtime dunder methods."""
+    if not isinstance(value, IntersectionValue):
+        return value
+    vals = [subval for subval in value.vals if not isinstance(subval, PredicateValue)]
+    if not vals or len(vals) == len(value.vals):
+        return value
+    if len(vals) == 1:
+        return vals[0]
+    return IntersectionValue(tuple(vals))
 
 
 T = TypeVar("T")
@@ -3853,7 +3866,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 )
             return value
 
-        (_, method, imethod, _) = BINARY_OPERATION_TO_DESCRIPTION_AND_METHOD[type(op)]
+        _, method, imethod, _ = BINARY_OPERATION_TO_DESCRIPTION_AND_METHOD[type(op)]
         allow_call = allow_call and method not in self.options.get_value_for(
             DisallowCallsToDunders
         )
@@ -3896,7 +3909,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     ) -> Value:
         left = left_composite.value
         right = right_composite.value
-        (description, method, _, rmethod) = BINARY_OPERATION_TO_DESCRIPTION_AND_METHOD[
+        description, method, _, rmethod = BINARY_OPERATION_TO_DESCRIPTION_AND_METHOD[
             type(op)
         ]
         if rmethod is None:
@@ -5095,19 +5108,29 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 else:
                     return_value = AnyValue(AnySource.inference)
             else:
+                stripped_value = _strip_predicate_intersection(value)
+                stripped_root = (
+                    root_composite
+                    if stripped_value is value
+                    else Composite(
+                        stripped_value, root_composite.varname, root_composite.node
+                    )
+                )
                 with self.catch_errors():
-                    getitem = self._get_dunder(node.value, value, "__getitem__")
+                    getitem = self._get_dunder(
+                        node.value, stripped_root.value, "__getitem__"
+                    )
                 if getitem is not UNINITIALIZED_VALUE:
                     return_value = self.check_call(
                         node.value,
                         getitem,
-                        [root_composite, index_composite],
+                        [stripped_root, index_composite],
                         allow_call=True,
                     )
                 else:
                     # If there was no __getitem__, try __class_getitem__ in 3.7+
                     cgi = self.get_attribute(
-                        Composite(value), "__class_getitem__", node.value
+                        Composite(stripped_root.value), "__class_getitem__", node.value
                     )
                     if cgi is UNINITIALIZED_VALUE:
                         self._show_error_if_checking(
@@ -5253,11 +5276,19 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         args: Iterable[Composite],
         allow_call: bool = False,
     ) -> tuple[Value, bool]:
-        method_object = self._get_dunder(node, callee_composite.value, method_name)
+        stripped_value = _strip_predicate_intersection(callee_composite.value)
+        stripped_callee = (
+            callee_composite
+            if stripped_value is callee_composite.value
+            else Composite(
+                stripped_value, callee_composite.varname, callee_composite.node
+            )
+        )
+        method_object = self._get_dunder(node, stripped_callee.value, method_name)
         if method_object is UNINITIALIZED_VALUE:
             return AnyValue(AnySource.error), False
         return_value = self.check_call(
-            node, method_object, [callee_composite, *args], allow_call=allow_call
+            node, method_object, [stripped_callee, *args], allow_call=allow_call
         )
         return return_value, True
 
@@ -5406,11 +5437,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     subval, root_composite.varname, root_composite.node
                 )
                 subresult = self.get_attribute(
-                    composite,
-                    attr,
-                    node,
-                    ignore_none=ignore_none,
-                    use_fallback=use_fallback,
+                    composite, attr, node, ignore_none=ignore_none, use_fallback=False
                 )
                 if (
                     subresult is UNINITIALIZED_VALUE

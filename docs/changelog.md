@@ -13,9 +13,9 @@
   some sequence indexing operations).
 - Fix a crash when accessing attributes on `len()` predicate constraints by
   treating `PredicateValue` attributes like attributes on `object`.
-- Fix dunder method lookup on intersection types so operations like indexing
-  `list[...] & Predicate[...]` values no longer produce spurious call-arity
-  errors.
+- Fix dunder method handling on intersection types so operations like indexing
+  `list[...] & Predicate[...]` values no longer produce spurious errors and
+  `Any[error]` inference.
 - Keep unexpected keyword argument names in call errors in source order,
   so repeated runs produce stable output.
 - Fix an internal error on Python 3.12+ when parsing PEP 695 generics that include `**P` (`ParamSpec`) type parameters.

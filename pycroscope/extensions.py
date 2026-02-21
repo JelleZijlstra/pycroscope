@@ -90,6 +90,9 @@ class PredicateCheck(CustomCheck):
         """Whether `metadata` implies this predicate."""
         return metadata == self
 
+    def substitute_typevars(self, typevars: "TypeVarMap") -> "PredicateCheck":
+        return self
+
 
 @dataclass(frozen=True)
 class LiteralOnly(CustomCheck):

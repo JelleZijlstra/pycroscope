@@ -2164,6 +2164,7 @@ def _extract_type_form(value: Value, ctx: CanAssignContext) -> Value | CanAssign
             NewTypeValue,
             ParamSpecArgsValue,
             ParamSpecKwargsValue,
+            PredicateValue,
             IntersectionValue,
             SyntheticModuleValue,
             UnboundMethodValue,
@@ -2438,6 +2439,9 @@ class PredicateValue(Value):
 
     def substitute_typevars(self, typevars: TypeVarMap) -> Value:
         return PredicateValue(self.predicate.substitute_typevars(typevars))
+
+    def get_type_value(self) -> Value:
+        return KnownValue(object)
 
     def walk_values(self) -> Iterable[Value]:
         yield self

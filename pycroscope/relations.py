@@ -1396,7 +1396,8 @@ def _expand_tuple_members_to_max_len(
     return deduped
 
 
-def _narrow_tuple_to_exact_len(value: Value, target_len: int) -> Value | None:
+@used
+def _narrow_tuple_to_exact_len(value: Value, target_len: int) -> GradualType | None:
     members = _tuple_members_from_value(value)
     if members is None:
         return None
@@ -1405,10 +1406,12 @@ def _narrow_tuple_to_exact_len(value: Value, target_len: int) -> Value | None:
         return None
     if not expanded:
         return NO_RETURN_VALUE
-    return unite_values(*[SequenceValue(tuple, members) for members in expanded])
+    return gradualize(
+        unite_values(*[SequenceValue(tuple, members) for members in expanded])
+    )
 
 
-def _narrow_tuple_to_min_len(value: Value, target_len: int) -> Value | None:
+def _narrow_tuple_to_min_len(value: Value, target_len: int) -> GradualType | None:
     members = _tuple_members_from_value(value)
     if members is None:
         return None
@@ -1417,10 +1420,12 @@ def _narrow_tuple_to_min_len(value: Value, target_len: int) -> Value | None:
         return None
     if not expanded:
         return NO_RETURN_VALUE
-    return unite_values(*[SequenceValue(tuple, members) for members in expanded])
+    return gradualize(
+        unite_values(*[SequenceValue(tuple, members) for members in expanded])
+    )
 
 
-def _narrow_tuple_to_max_len(value: Value, target_len: int) -> Value | None:
+def _narrow_tuple_to_max_len(value: Value, target_len: int) -> GradualType | None:
     members = _tuple_members_from_value(value)
     if members is None:
         return None
@@ -1429,7 +1434,9 @@ def _narrow_tuple_to_max_len(value: Value, target_len: int) -> Value | None:
         return None
     if not expanded:
         return NO_RETURN_VALUE
-    return unite_values(*[SequenceValue(tuple, members) for members in expanded])
+    return gradualize(
+        unite_values(*[SequenceValue(tuple, members) for members in expanded])
+    )
 
 
 def _get_len_bounds(value: Value) -> tuple[int | None, int | None]:
@@ -1455,11 +1462,14 @@ def _get_len_bounds(value: Value) -> tuple[int | None, int | None]:
     if isinstance(value, DictIncompleteValue):
         min_len = sum(pair.is_required and not pair.is_many for pair in value.kv_pairs)
         max_len = 0
+        has_unbounded_tail = False
         for pair in value.kv_pairs:
             if pair.is_many:
-                max_len = None
+                has_unbounded_tail = True
                 break
             max_len += 1
+        if has_unbounded_tail:
+            return min_len, None
         return min_len, max_len
     if isinstance(value, TypedDictValue):
         min_len = sum(entry.required for entry in value.items.values())
