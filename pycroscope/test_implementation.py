@@ -363,7 +363,6 @@ class TestLen(TestNameCheckVisitorBase):
                         assert_type(variadic, tuple[int, int])
             """
         )
-
 class TestBool(TestNameCheckVisitorBase):
     @assert_passes()
     def test_return_value(self):
