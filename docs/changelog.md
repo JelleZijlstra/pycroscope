@@ -27,6 +27,8 @@
   with `# static analysis: ignore[import_failed]`).
 - Fix a crash in callable assignability involving `Concatenate[...,]`
   signatures represented as `AnySig`.
+- Fix crash when checking certain `TypeAliasType` specializations that include
+  unhashable runtime arguments (e.g. ParamSpec argument lists).
 - Suppress `missing_return` for known abstract stub bodies (protocol methods
   and `@abstractmethod` methods) when the body is just `...` or `pass`
   (including optional docstrings), while still reporting `missing_return` for
