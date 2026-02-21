@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Keep unexpected keyword argument names in call errors in source order,
+  so repeated runs produce stable output.
 - Fix crash if accessing a module's `__annotations__` raises an error.
 - Implement PEP 747 `TypeForm` support, including implicit and explicit
   `TypeForm` evaluation, assignability checks, and conformance tests.

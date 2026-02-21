@@ -526,6 +526,33 @@ class TestCalls(TestNameCheckVisitorBase):
         def run():
             fn(1, z=2)  # E: incompatible_call
 
+    def test_unexpected_kwargs_message_preserves_source_order(self):
+        errors = self._run_str(
+            """
+            def fn() -> None:
+                pass
+
+            def capybara() -> None:
+                fn(
+                    name=1,
+                    year=2,
+                    title=3,
+                    genre=4,
+                    director=5,
+                    rating=6,
+                    score=7,
+                    runtime=8,
+                )
+            """,
+            fail_after_first=False,
+        )
+        assert len(errors) == 1
+        expected_suffix = (
+            "Got unexpected keyword arguments 'name', 'year', 'title', 'genre', "
+            "'director', 'rating', 'score', 'runtime'"
+        )
+        assert expected_suffix in errors[0]["message"]
+
     @assert_passes()
     def test_right_kwarg(self):
         def fn(x, y=3):

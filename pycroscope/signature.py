@@ -1098,7 +1098,9 @@ class Signature:
             )
             return None
         if not star_kwargs_consumed:
-            extra_kwargs = set(actual_args.keywords) - keywords_consumed
+            extra_kwargs = [
+                key for key in actual_args.keywords if key not in keywords_consumed
+            ]
             if extra_kwargs:
                 extra_kwargs_str = ", ".join(map(repr, extra_kwargs))
                 if len(extra_kwargs) == 1:
