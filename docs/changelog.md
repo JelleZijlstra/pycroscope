@@ -24,6 +24,10 @@
 - Keep checking files when module import fails, and report `import_failed`
   on the line that triggered the import-time error (so it can be ignored
   with `# static analysis: ignore[import_failed]`).
+- Suppress `missing_return` for known abstract ellipsis stubs (protocol methods
+  and `@abstractmethod` methods, including optional docstrings), while still
+  reporting `missing_return` for `@abstractmethod` methods with nontrivial
+  bodies.
 
 ## Version 0.2.0 (June 26, 2025)
 

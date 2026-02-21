@@ -700,7 +700,7 @@ class TestReturn(TestNameCheckVisitorBase):
     def test_missing_return(self):
         from abc import abstractmethod
 
-        from typing_extensions import NoReturn
+        from typing_extensions import NoReturn, Protocol
 
         def foo(cond: bool) -> int:  # E: missing_return
             if cond:
@@ -711,8 +711,29 @@ class TestReturn(TestNameCheckVisitorBase):
 
         class Absy:
             @abstractmethod
+            def doesnt_return(self, cond: bool) -> int:  # E: missing_return
+                if cond:
+                    return 1
+
+        class AbsyEllipsis:
+            @abstractmethod
             def doesnt_return(self) -> int:  # ok
-                pass
+                ...
+
+        class AbsyEllipsisWithDoc:
+            @abstractmethod
+            def doesnt_return(self) -> int:  # ok
+                """this is intentionally abstract"""
+                ...
+
+        class Proto(Protocol):
+            def doesnt_return(self) -> int:  # ok
+                ...
+
+        class ProtoWithDoc(Protocol):
+            def doesnt_return(self) -> int:  # ok
+                """this is intentionally abstract"""
+                ...
 
         def you_can_skip_return_none() -> None:
             pass
