@@ -55,6 +55,7 @@ from pycroscope.value import (
     TypedDictEntry,
     TypedDictValue,
     TypedValue,
+    TypeFormValue,
     TypeVarMap,
     TypeVarValue,
     UnboundMethodValue,
@@ -256,6 +257,13 @@ def _has_relation(
                 return custom_can_assign
             bounds_maps.append(custom_can_assign)
         return unify_bounds_maps(bounds_maps)
+
+    # TypeFormValue
+    if isinstance(left, TypeFormValue):
+        return left.can_assign(right, ctx)
+    if isinstance(right, TypeFormValue):
+        right_inner = gradualize(right.get_fallback_value())
+        return _has_relation(left, right_inner, relation, ctx, original_right=right)
 
     # NewTypeValue
     if isinstance(left, NewTypeValue):
@@ -1368,6 +1376,12 @@ def _simple_intersection(
 def _intersect_simple_types(
     left: SimpleType, right: SimpleType, ctx: CanAssignContext
 ) -> TypeOrIrreducible:
+    if isinstance(left, TypeFormValue) or isinstance(right, TypeFormValue):
+        # Most TypeForm intersections don't have a useful reduction rule.
+        # We keep them as intersections unless a prior generic simplification
+        # (for example X & object, X & Never, or obvious subtype relations)
+        # already applied in _simple_intersection().
+        return Irreducible
     if isinstance(left, (KnownValue, SyntheticModuleValue, UnboundMethodValue)):
         return _intersect_singular_type(left, right, ctx)
     if isinstance(right, (KnownValue, SyntheticModuleValue, UnboundMethodValue)):

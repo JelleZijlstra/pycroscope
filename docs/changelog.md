@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Implement PEP 747 `TypeForm` support, including implicit and explicit
+  `TypeForm` evaluation, assignability checks, and conformance tests.
+- Require `typing_extensions>=4.13.0`.
 - Drop support for Python 3.9 and add official support for Python 3.14.
 - Narrow attribute and subscript expressions in nested scopes based on
   narrowing checks in the outer scope.

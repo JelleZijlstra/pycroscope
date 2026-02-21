@@ -29,6 +29,7 @@ from .value import (
     SyntheticModuleValue,
     TypedDictValue,
     TypedValue,
+    TypeFormValue,
     UnboundMethodValue,
     Value,
     replace_known_sequence_value,
@@ -191,6 +192,8 @@ def _get_boolability_no_mvv(value: SimpleType) -> Boolability:
         if isinstance(value.typ, str):
             return Boolability.boolable  # TODO deal with synthetic types
         return _get_type_boolability(value.typ)
+    elif isinstance(value, TypeFormValue):
+        return Boolability.boolable
     else:
         assert_never(value)
 

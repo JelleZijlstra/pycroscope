@@ -44,6 +44,7 @@ from .value import (
     SubclassValue,
     SyntheticModuleValue,
     TypedValue,
+    TypeFormValue,
     TypeVarValue,
     UnboundMethodValue,
     Value,
@@ -147,6 +148,8 @@ def get_attribute(ctx: AttrContext) -> Value:
     elif isinstance(root_value, SyntheticModuleValue):
         module = ".".join(root_value.module_path)
         attribute_value = ctx.resolve_name_from_typeshed(module, ctx.attr)
+    elif isinstance(root_value, TypeFormValue):
+        attribute_value = _get_attribute_from_typed(object, (), ctx)
     else:
         assert_never(root_value)
     if (
