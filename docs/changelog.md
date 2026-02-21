@@ -49,6 +49,9 @@
   (including optional docstrings), while still reporting `missing_return` for
   `@abstractmethod` methods with nontrivial bodies.
 - Fix a crash when checking classes that inherit from `typing.Any`.
+- Narrow variables correctly when calling `TypeGuard` or `TypeIs` functions
+  defined as `@staticmethod`, including calls through either instances or
+  classes.
 
 ## Version 0.2.0 (June 26, 2025)
 
