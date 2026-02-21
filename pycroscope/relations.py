@@ -2015,11 +2015,15 @@ def _intersect_intersection(
     results = []
     should_add_right = False
     for subval, new_subval in zip(left.vals, intersections):
+        if new_subval is NO_RETURN_VALUE:
+            return NO_RETURN_VALUE
         if new_subval is Irreducible:
             results.append(subval)
             should_add_right = True
         elif isinstance(new_subval, IntersectionValue):
             for subsubval in new_subval.vals:
+                if subsubval is NO_RETURN_VALUE:
+                    return NO_RETURN_VALUE
                 results.append(gradualize(subsubval))
         else:
             results.append(new_subval)

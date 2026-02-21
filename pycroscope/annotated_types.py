@@ -90,12 +90,6 @@ class AnnotatedTypesCheck(PredicateCheck):
             subval = unannotate(subval)
             if isinstance(subval, AnyValue):
                 continue
-            if subval == NO_RETURN_VALUE:
-                continue
-            if isinstance(subval, IntersectionValue) and any(
-                part == NO_RETURN_VALUE for part in subval.vals
-            ):
-                continue
             if isinstance(subval, KnownValue):
                 try:
                     result = self.predicate(subval.val)
