@@ -4480,7 +4480,12 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             assigned = can_assign.get(T, AnyValue(AnySource.generic_argument))
             exit_assigned = can_assign.get(U, AnyValue(AnySource.generic_argument))
             exit_boolability = get_boolability(exit_assigned)
-            can_suppress = not exit_boolability.is_safely_false()
+            exit_is_bool_subtype = not isinstance(
+                TypedValue(bool).can_assign(exit_assigned, self), CanAssignError
+            )
+            can_suppress = (
+                exit_is_bool_subtype and not exit_boolability.is_safely_false()
+            )
             if isinstance(exit_assigned, AnyValue) or (
                 isinstance(context, TypedValue) and is_context_manager_type(context.typ)
             ):
