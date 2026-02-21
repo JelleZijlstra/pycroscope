@@ -25,6 +25,8 @@
 - Keep checking files when module import fails, and report `import_failed`
   on the line that triggered the import-time error (so it can be ignored
   with `# static analysis: ignore[import_failed]`).
+- Fix crash when checking certain `TypeAliasType` specializations that include
+  unhashable runtime arguments (e.g. ParamSpec argument lists).
 - Suppress `missing_return` for known abstract stub bodies (protocol methods
   and `@abstractmethod` methods) when the body is just `...` or `pass`
   (including optional docstrings), while still reporting `missing_return` for
