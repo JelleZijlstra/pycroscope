@@ -675,7 +675,8 @@ def make_type_var_value(tv: TypeVarLike, ctx: Context) -> TypeVarValue:
         bound=bound,
         constraints=constraints,
         default=default,
-        is_typevartuple=is_instance_of_typing_name(tv, "TypeVarTuple"),
+        is_typevartuple=is_instance_of_typing_name(tv, "TypeVarTuple")
+        or is_typing_name(type(tv), "TypeVarTuple"),
     )
 
 

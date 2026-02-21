@@ -36,7 +36,8 @@
 - Preserve overload-based return inference for `@staticmethod` and
   `@classmethod` definitions.
 - Avoid errors in generic-base extraction when runtime annotations include
-  `TypeVarTuple` parameters.
+  `TypeVarTuple` parameters, including `typing_extensions.TypeVarTuple` on
+  Python 3.10.
 - Suppress `missing_return` for known abstract stub bodies (protocol methods
   and `@abstractmethod` methods) when the body is just `...` or `pass`
   (including optional docstrings), while still reporting `missing_return` for
