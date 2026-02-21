@@ -107,7 +107,7 @@ from .value import (
     TypedDictEntry,
     TypedDictValue,
     TypedValue,
-    TypeFormExtension,
+    TypeFormValue,
     TypeGuardExtension,
     TypeIsExtension,
     TypeVarLike,
@@ -573,9 +573,7 @@ def _type_from_runtime(val: Any, ctx: Context) -> Value:
         return AnyValue(AnySource.explicit)
     elif is_typing_name(val, "TypeForm"):
         # Bare TypeForm is equivalent to TypeForm[Any].
-        return AnnotatedValue(
-            TypedValue(object), [TypeFormExtension(AnyValue(AnySource.explicit))]
-        )
+        return TypeFormValue(AnyValue(AnySource.explicit))
     elif isinstance(val, type):
         return _maybe_typed_value(val)
     elif val is None:
@@ -794,10 +792,9 @@ def _type_from_value(value: Value, ctx: Context) -> Value:
         return value
     elif isinstance(value, MultiValuedValue):
         return unite_values(*[_type_from_value(val, ctx) for val in value.vals])
+    elif isinstance(value, TypeFormValue):
+        return value
     elif isinstance(value, AnnotatedValue):
-        type_form = next(value.get_metadata_of_type(TypeFormExtension), None)
-        if type_form is not None:
-            return type_form.inner_type
         return _type_from_value(value.value, ctx)
     elif isinstance(value, _SubscriptedValue):
         return _type_from_subscripted_value(value.root, value.members, ctx)
@@ -928,9 +925,7 @@ def _type_from_subscripted_value(
         if len(members) != 1:
             ctx.show_error("TypeForm requires a single argument")
             return AnyValue(AnySource.error)
-        return AnnotatedValue(
-            TypedValue(object), [TypeFormExtension(_type_from_value(members[0], ctx))]
-        )
+        return TypeFormValue(_type_from_value(members[0], ctx))
     elif is_typing_name(root, "Required"):
         ctx.show_error("Required[] used in unsupported context")
         return AnyValue(AnySource.error)
@@ -1347,9 +1342,7 @@ def _value_of_origin_args(
         if len(args) != 1:
             ctx.show_error("TypeForm requires a single argument")
             return AnyValue(AnySource.error)
-        return AnnotatedValue(
-            TypedValue(object), [TypeFormExtension(_type_from_runtime(args[0], ctx))]
-        )
+        return TypeFormValue(_type_from_runtime(args[0], ctx))
     elif is_instance_of_typing_name(origin, "TypeAliasType"):
         args_vals = [_type_from_runtime(val, ctx) for val in args]
         alias_object = cast(Any, origin)

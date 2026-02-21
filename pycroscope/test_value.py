@@ -15,6 +15,7 @@ from pycroscope.test_node_visitor import skip_if_not_installed
 from . import tests, value
 from .checker import Checker
 from .name_check_visitor import NameCheckVisitor
+from .relations import intersect_values
 from .signature import ELLIPSIS_PARAM, Signature
 from .stacked_scopes import Composite
 from .value import (
@@ -663,6 +664,20 @@ def test_intersection_value() -> None:
     assert_can_assign(never, never)
     assert_can_assign(NO_RETURN_VALUE, never)
     assert_can_assign(never, NO_RETURN_VALUE)
+
+
+def test_typeform_intersection_simplification() -> None:
+    typeform_int = value.TypeFormValue(TypedValue(int))
+    tf_and_int = intersect_values(typeform_int, TypedValue(int), CTX)
+    int_and_tf = intersect_values(TypedValue(int), typeform_int, CTX)
+
+    assert tf_and_int == value.IntersectionValue((typeform_int, TypedValue(int)))
+    assert int_and_tf == value.IntersectionValue((TypedValue(int), typeform_int))
+
+    tf_and_obj = intersect_values(typeform_int, TypedValue(object), CTX)
+    obj_and_tf = intersect_values(TypedValue(object), typeform_int, CTX)
+    assert tf_and_obj == typeform_int
+    assert obj_and_tf == typeform_int
 
 
 def test_io() -> None:

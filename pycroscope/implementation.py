@@ -66,7 +66,7 @@ from .value import (
     SubclassValue,
     TypedDictValue,
     TypedValue,
-    TypeFormExtension,
+    TypeFormValue,
     TypeVarValue,
     Value,
     annotate_value,
@@ -1475,7 +1475,7 @@ def _typeform_impl(ctx: CallContext) -> Value:
     type_form = type_from_value(typ, visitor=ctx.visitor, node=ctx.node)
     if type_form == AnyValue(AnySource.error):
         return AnyValue(AnySource.error)
-    return AnnotatedValue(TypedValue(object), [TypeFormExtension(type_form)])
+    return TypeFormValue(type_form)
 
 
 def _recursive_unanotate(val: Value) -> Value:
@@ -2168,10 +2168,7 @@ def get_default_argspecs() -> dict[object, Signature]:
         else:
             sig = Signature.make(
                 [SigParameter("typ", _POS_ONLY)],
-                return_annotation=AnnotatedValue(
-                    TypedValue(object),
-                    [TypeFormExtension(AnyValue(AnySource.explicit))],
-                ),
+                return_annotation=TypeFormValue(AnyValue(AnySource.explicit)),
                 callable=typeform_func,
                 impl=_typeform_impl,
             )

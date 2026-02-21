@@ -2051,25 +2051,25 @@ class TypeIsExtension(Extension):
 
 
 @dataclass(frozen=True)
-class TypeFormExtension(Extension):
-    """An :class:`Extension` used to represent ``typing.TypeForm`` values."""
+class TypeFormValue(Value):
+    """Represents a ``typing.TypeForm`` value."""
 
     inner_type: Value
 
-    def substitute_typevars(self, typevars: TypeVarMap) -> Extension:
+    def substitute_typevars(self, typevars: TypeVarMap) -> Value:
         inner_type = self.inner_type.substitute_typevars(typevars)
-        return TypeFormExtension(inner_type)
+        return TypeFormValue(inner_type)
 
     def walk_values(self) -> Iterable[Value]:
+        yield self
         yield from self.inner_type.walk_values()
 
-    def can_assign(self, value: Value, ctx: CanAssignContext) -> CanAssign:
-        return _can_assign_type_form(self.inner_type, value, ctx)
+    def can_assign(self, other: Value, ctx: CanAssignContext) -> CanAssign:
+        return _can_assign_type_form(self.inner_type, other, ctx)
 
-    def can_be_assigned(self, value: Value, ctx: CanAssignContext) -> CanAssign:
-        # Like other typing metadata (TypeGuard/TypeIs), this is interpreted on the
-        # expected type side. A plain `object` remains assignable from a TypeForm value.
-        return {}
+    def get_fallback_value(self) -> Value:
+        # TypeForm is a subtype of object.
+        return TypedValue(object)
 
     def __str__(self) -> str:
         return f"TypeForm[{self.inner_type}]"
@@ -2088,6 +2088,14 @@ def _can_assign_type_form(
 
 
 def _extract_type_form(value: Value, ctx: CanAssignContext) -> Value | CanAssignError:
+    """Interpret ``value`` as a ``TypeForm`` payload and return the extracted type.
+
+    The result is always a gradual type suitable for relation checks. This accepts
+    explicit ``TypeFormValue`` objects, unions of valid TypeForm-like values, runtime
+    type-expression literals (for example ``KnownValue(str)`` or quoted expressions),
+    and a small set of type-like wrappers (for example ``SubclassValue``). If the
+    input cannot be interpreted as a valid TypeForm expression, return ``CanAssignError``.
+    """
     try:
         value = gradualize(value)
     except NotAGradualType:
@@ -2096,13 +2104,13 @@ def _extract_type_form(value: Value, ctx: CanAssignContext) -> Value | CanAssign
             return _extract_type_form(fallback, ctx)
         return CanAssignError(f"{value} is not a TypeForm")
 
+    if isinstance(value, TypeFormValue):
+        try:
+            return gradualize(value.inner_type)
+        except NotAGradualType:
+            return CanAssignError(f"{value} is not a TypeForm")
     if isinstance(value, AnnotatedValue):
-        type_form = next(value.get_metadata_of_type(TypeFormExtension), None)
-        if type_form is not None:
-            try:
-                return gradualize(type_form.inner_type)
-            except NotAGradualType:
-                return CanAssignError(f"{value} is not a TypeForm")
+        # Annotated metadata is ignored for implicit TypeForm extraction.
         return _extract_type_form(value.value, ctx)
     if isinstance(value, MultiValuedValue):
         vals: list[Value] = []
@@ -2423,6 +2431,7 @@ SimpleType: typing_extensions.TypeAlias = (
     | UnboundMethodValue
     | TypedValue
     | SubclassValue
+    | TypeFormValue
 )
 
 BasicType: typing_extensions.TypeAlias = (
