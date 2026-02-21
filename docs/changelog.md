@@ -24,6 +24,8 @@
 - Keep checking files when module import fails, and report `import_failed`
   on the line that triggered the import-time error (so it can be ignored
   with `# static analysis: ignore[import_failed]`).
+- Fix crash when checking certain `TypeAliasType` specializations that include
+  unhashable runtime arguments (e.g. ParamSpec argument lists).
 
 ## Version 0.2.0 (June 26, 2025)
 
