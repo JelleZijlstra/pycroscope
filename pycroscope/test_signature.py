@@ -194,6 +194,59 @@ class TestCanAssign:
         self.cannot(sig, no_default_sig)
         self.can(no_default_sig, sig)
 
+    def test_anysig_paramspec(self) -> None:
+        from typing_extensions import ParamSpec
+
+        from .input_sig import InputSigValue, ParamSpecSig
+
+        left = Signature.make(
+            [
+                P("x", annotation=TypedValue(int), kind=K.POSITIONAL_ONLY),
+                P("__P", annotation=AnyValue(AnySource.explicit), kind=K.PARAM_SPEC),
+            ],
+            TypedValue(str),
+        )
+        self.can(
+            left,
+            Signature.make(
+                [P("x", annotation=TypedValue(int), kind=K.POSITIONAL_ONLY)],
+                TypedValue(str),
+            ),
+        )
+        self.can(
+            left,
+            Signature.make(
+                [
+                    P("x", annotation=TypedValue(int), kind=K.POSITIONAL_ONLY),
+                    P("y", annotation=TypedValue(int), kind=K.POSITIONAL_ONLY),
+                    P("z", annotation=TypedValue(int), kind=K.POSITIONAL_ONLY),
+                ],
+                TypedValue(str),
+            ),
+        )
+        q = ParamSpec("Q")
+        self.can(
+            left,
+            Signature.make(
+                [
+                    P("x", annotation=TypedValue(int), kind=K.POSITIONAL_ONLY),
+                    P(
+                        "__Q",
+                        annotation=InputSigValue(ParamSpecSig(q)),
+                        kind=K.PARAM_SPEC,
+                    ),
+                ],
+                TypedValue(str),
+            ),
+        )
+        self.cannot(
+            left,
+            Signature.make(
+                [P("x", annotation=TypedValue(str), kind=K.POSITIONAL_ONLY)],
+                TypedValue(str),
+            ),
+        )
+
     def test_kw_only(self) -> None:
         kw_only_int = P("a", annotation=TypedValue(int), kind=K.KEYWORD_ONLY)
         kw_only_int_b = P("b", annotation=TypedValue(int), kind=K.KEYWORD_ONLY)
