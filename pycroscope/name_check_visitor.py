@@ -1295,6 +1295,49 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         # Only pickle the attributes needed to get error reporting working
         return self.__class__, (self.filename, self.contents, self.tree, self.settings)
 
+    @staticmethod
+    def _maybe_normalize_filename(filename: str) -> str:
+        try:
+            return str(Path(filename).resolve())
+        except OSError:
+            return os.path.abspath(filename)
+
+    def _get_import_failure_lineno(self, error: BaseException) -> int | None:
+        target_filename = self._maybe_normalize_filename(self.filename)
+
+        tb = error.__traceback__
+        lineno = None
+        while tb is not None:
+            frame_filename = self._maybe_normalize_filename(
+                tb.tb_frame.f_code.co_filename
+            )
+            if frame_filename == target_filename:
+                lineno = tb.tb_lineno
+            tb = tb.tb_next
+        if lineno is not None:
+            return lineno
+
+        lineno = getattr(error, "lineno", None)
+        if not isinstance(lineno, int) or lineno <= 0:
+            return None
+
+        error_filename = getattr(error, "filename", None)
+        if error_filename is None:
+            return lineno
+        if self._maybe_normalize_filename(error_filename) == target_filename:
+            return lineno
+        return None
+
+    def _get_import_failure_node(
+        self, error: BaseException
+    ) -> ast.AST | node_visitor._FakeNode | None:
+        lineno = self._get_import_failure_lineno(error)
+        if lineno is not None:
+            return node_visitor._FakeNode(lineno=lineno, col_offset=0)
+        if self.tree is not None and self.tree.body:
+            return self.tree.body[0]
+        return None
+
     def _load_module(self) -> tuple[types.ModuleType | None, bool]:
         """Sets the module_path and module for this file."""
         if not self.filename:
@@ -1303,14 +1346,11 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         if self.is_code_only:
             mod_dict = {}
             try:
-                exec(self.contents, mod_dict)
+                exec(compile(self.contents, self.filename, "exec"), mod_dict)
             except KeyboardInterrupt:
                 raise
             except BaseException as e:
-                if self.tree is not None and self.tree.body:
-                    node = self.tree.body[0]
-                else:
-                    node = None
+                node = self._get_import_failure_node(e)
                 self.show_error(
                     node,
                     f"Failed to execute code due to {e!r}",
@@ -1332,10 +1372,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             # don't re-raise the error, just proceed without a module object
             # this can happen with scripts that aren't intended to be imported
             if not self.has_file_level_ignore():
-                if self.tree is not None and self.tree.body:
-                    node = self.tree.body[0]
-                else:
-                    node = None
+                node = self._get_import_failure_node(e)
                 failure = self.show_error(
                     node,
                     f"Failed to import {self.filename} due to {e!r}",
@@ -1357,8 +1394,12 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             if self.tree is None:
                 return self.all_failures
             if self.module is None and not ignore_missing_module:
-                # If we could not import the module, other checks frequently fail.
-                return self.all_failures
+                # Keep checking so we can surface non-import-related issues too.
+                self.log(
+                    logging.INFO,
+                    "Continuing check despite missing module",
+                    self.filename,
+                )
             with override(self, "state", VisitorState.collect_names):
                 self.visit(self.tree)
             with override(self, "state", VisitorState.check_names):

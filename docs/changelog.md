@@ -21,6 +21,9 @@
   annotations of `float` implicitly mean `float | int`.
 - Fix assignability for certain combinations of unions, `Annotated`, and `NewType`.
 - Reduce more uninhabited intersections to `Never`
+- Keep checking files when module import fails, and report `import_failed`
+  on the line that triggered the import-time error (so it can be ignored
+  with `# static analysis: ignore[import_failed]`).
 
 ## Version 0.2.0 (June 26, 2025)
 
