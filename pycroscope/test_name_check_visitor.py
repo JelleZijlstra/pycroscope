@@ -159,6 +159,48 @@ def test_annotation():
     assert TypedValue(int) == tree.inferred_value
 
 
+class TestImportFailureHandling:
+    @staticmethod
+    def _check_file(filename: str):
+        settings = {code: code not in DISABLED_IN_TESTS for code in ErrorCode}
+        kwargs = ConfiguredNameCheckVisitor.prepare_constructor_kwargs(
+            {"settings": settings, "fail_after_first": False}
+        )
+        return ConfiguredNameCheckVisitor.check_file(filename, **kwargs)
+
+    def test_import_failure_points_to_failing_line_and_continues(self, tmp_path):
+        filename = tmp_path / "broken_module.py"
+        filename.write_text(
+            "a = 1\n" "b = 1 / 0\n" "\n" "def f():\n" "    return missing_name\n"
+        )
+        failures = self._check_file(str(filename))
+
+        assert any(
+            failure["code"] == ErrorCode.import_failed and failure["lineno"] == 2
+            for failure in failures
+        )
+        assert any(
+            failure["code"] == ErrorCode.undefined_name and failure["lineno"] == 5
+            for failure in failures
+        )
+
+    def test_import_failure_is_ignorable(self, tmp_path):
+        filename = tmp_path / "ignored_import_failure.py"
+        filename.write_text(
+            "a = 1\n"
+            "b = 1 / 0  # static analysis: ignore[import_failed]\n"
+            "\n"
+            "def f():\n"
+            "    return missing_name\n"
+        )
+        failures = self._check_file(str(filename))
+
+        assert not any(
+            failure["code"] == ErrorCode.import_failed for failure in failures
+        )
+        assert any(failure["code"] == ErrorCode.undefined_name for failure in failures)
+
+
 class TestNameCheckVisitor(TestNameCheckVisitorBase):
     @assert_passes()
     def test_known_ordered(self):
