@@ -35,6 +35,7 @@
   and `@abstractmethod` methods) when the body is just `...` or `pass`
   (including optional docstrings), while still reporting `missing_return` for
   `@abstractmethod` methods with nontrivial bodies.
+- Fix a crash when checking classes that inherit from `typing.Any`.
 
 ## Version 0.2.0 (June 26, 2025)
 

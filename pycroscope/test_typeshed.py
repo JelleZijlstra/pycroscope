@@ -529,6 +529,19 @@ class TestGetGenericBases:
             GenericChild, [one]
         )
 
+    def test_runtime_with_any_base(self):
+        class ParentFromAny(typing.Any):
+            pass
+
+        class ChildFromAny(ParentFromAny):
+            pass
+
+        assert self.get_generic_bases(ParentFromAny) == {ParentFromAny: {}}
+        assert self.get_generic_bases(ChildFromAny) == {
+            ChildFromAny: {},
+            ParentFromAny: {},
+        }
+
     def check(
         self,
         expected: Union[BasesMap, list[BasesMap]],
