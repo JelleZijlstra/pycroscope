@@ -18,6 +18,7 @@ from typing import Generic, List, NewType, Type, TypeVar, Union
 from unittest.mock import ANY
 from urllib.error import HTTPError
 
+import typing_extensions
 from typeshed_client import Resolver, get_search_context
 
 from .checker import Checker
@@ -529,8 +530,8 @@ class TestGetGenericBases:
             GenericChild, [one]
         )
 
-    def test_runtime_with_any_base(self):
-        class ParentFromAny(typing.Any):
+    def _assert_runtime_any_base(self, any_base: object) -> None:
+        class ParentFromAny(any_base):
             pass
 
         class ChildFromAny(ParentFromAny):
@@ -541,6 +542,14 @@ class TestGetGenericBases:
             ChildFromAny: {},
             ParentFromAny: {},
         }
+
+    def test_runtime_with_typing_any_base(self):
+        if sys.version_info < (3, 11):
+            return
+        self._assert_runtime_any_base(typing.Any)
+
+    def test_runtime_with_typing_extensions_any_base(self):
+        self._assert_runtime_any_base(typing_extensions.Any)
 
     def check(
         self,
