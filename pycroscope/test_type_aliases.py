@@ -68,6 +68,18 @@ class TestTypeAliasType(TestNameCheckVisitorBase):
             f([i])
             f([s])  # E: incompatible_argument
 
+    @assert_passes()
+    def test_typing_extensions_paramspec_list_arg(self):
+        from typing import Callable, ParamSpec
+
+        from typing_extensions import TypeAliasType
+
+        P = ParamSpec("P")
+        Alias = TypeAliasType("Alias", Callable[P, int], type_params=(P,))
+
+        def f(x: Alias[[int, str]]) -> None:  # E: invalid_annotation
+            pass
+
     @skip_before((3, 12))
     def test_312(self):
         self.assert_passes(

@@ -981,6 +981,27 @@ def _maybe_get_extra(origin: type) -> type | str:
         return origin
 
 
+def _type_alias_cache_key(key: object) -> object:
+    """Return a hashable cache key for runtime type alias objects."""
+    try:
+        hash(key)
+    except TypeError:
+        if isinstance(key, list):
+            return ("list", tuple(_type_alias_cache_key(item) for item in key))
+        if isinstance(key, tuple):
+            return ("tuple", tuple(_type_alias_cache_key(item) for item in key))
+        origin = get_origin(key)
+        if origin is not None:
+            return (
+                "origin_args",
+                _type_alias_cache_key(origin),
+                tuple(_type_alias_cache_key(arg) for arg in get_args(key)),
+            )
+        return ("object_id", type(key), id(key))
+    else:
+        return key
+
+
 class _DefaultContext(Context):
     def __init__(
         self,
@@ -1036,10 +1057,11 @@ class _DefaultContext(Context):
     ) -> TypeAlias:
         if self.visitor is not None:
             cache = self.visitor.checker.type_alias_cache
-            if key in cache:
-                return cache[key]
+            cache_key = _type_alias_cache_key(key)
+            if cache_key in cache:
+                return cache[cache_key]
             alias = super().get_type_alias(key, evaluator, evaluate_type_params)
-            cache[key] = alias
+            cache[cache_key] = alias
             return alias
         return super().get_type_alias(key, evaluator, evaluate_type_params)
 

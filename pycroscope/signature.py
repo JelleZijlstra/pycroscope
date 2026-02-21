@@ -2659,7 +2659,12 @@ def signatures_have_relation(
             ]
             new_sig = Signature.make(remaining)
             my_annotation = assert_input_sig(my_annotation)
-            assert isinstance(my_annotation, ParamSpecSig), repr(my_annotation)
+            if isinstance(my_annotation, AnySig):
+                # Concatenate[...,] uses AnySig to represent the open-ended tail.
+                consumed_paramspec = True
+                continue
+            if not isinstance(my_annotation, ParamSpecSig):
+                return CanAssignError(f"invalid ParamSpec annotation {my_annotation!r}")
             tv_maps.append(
                 {
                     my_annotation.param_spec: [
