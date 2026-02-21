@@ -2096,9 +2096,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
 
         if (
             not result.has_return
-            and not info.is_overload
-            and not info.is_evaluated
-            and not info.is_abstractmethod
+            and not self._allow_missing_return(info)
             and node.returns is not None
             and (
                 info.return_annotation is None
@@ -2175,6 +2173,46 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
 
         self._set_argspec_to_retval(val, info, result)
         return val
+
+    def _allow_missing_return(self, info: FunctionInfo) -> bool:
+        if info.is_overload or info.is_evaluated:
+            return True
+        node = info.node
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            return False
+        if not self._has_only_docstring_and_stub(node):
+            return False
+        if info.is_abstractmethod:
+            return True
+        return (
+            self.current_class is not None
+            and self.checker.make_type_object(self.current_class).is_protocol
+        )
+
+    def _has_only_docstring_and_stub(
+        self, node: ast.FunctionDef | ast.AsyncFunctionDef
+    ) -> bool:
+        body = node.body
+        if not body:
+            return False
+        if len(body) == 1:
+            candidate = body[0]
+        elif (
+            len(body) == 2
+            and isinstance(body[0], ast.Expr)
+            and isinstance(body[0].value, ast.Constant)
+            and isinstance(body[0].value.value, str)
+        ):
+            candidate = body[1]
+        else:
+            return False
+        if isinstance(candidate, ast.Pass):
+            return True
+        return (
+            isinstance(candidate, ast.Expr)
+            and isinstance(candidate.value, ast.Constant)
+            and candidate.value.value is Ellipsis
+        )
 
     def check_typeis(self, info: FunctionInfo) -> None:
         if info.return_annotation is None:
