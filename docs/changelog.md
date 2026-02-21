@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Fix an internal error on Python 3.12+ when parsing PEP 695 generics that include `**P` (`ParamSpec`) type parameters.
 - Fix crash if accessing a module's `__annotations__` raises an error.
 - Implement PEP 747 `TypeForm` support, including implicit and explicit
   `TypeForm` evaluation, assignability checks, and conformance tests.

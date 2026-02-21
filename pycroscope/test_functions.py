@@ -243,3 +243,19 @@ class TestGenericFunctions(TestNameCheckVisitorBase):
                 func(s)  # E: incompatible_argument
         """
         )
+
+    @skip_before((3, 12))
+    def test_generic_with_paramspec(self):
+        self.assert_passes(
+            """
+            from typing import Callable
+
+            def decorator[T, **P, R](
+                x: type[T],
+            ) -> Callable[[Callable[P, R]], Callable[P, R]]:
+                def apply(func: Callable[P, R]) -> Callable[P, R]:
+                    return func
+
+                return apply
+        """
+        )
