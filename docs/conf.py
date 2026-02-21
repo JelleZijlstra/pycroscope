@@ -12,8 +12,8 @@
 #
 import os
 import sys
-
-from pkg_resources import get_distribution
+from importlib.metadata import PackageNotFoundError
+from importlib.metadata import version as package_version
 
 sys.path.insert(0, os.path.abspath(".."))
 
@@ -25,7 +25,10 @@ copyright = "2021, Jelle Zijlstra"
 author = "Jelle Zijlstra"
 
 # The full version, including alpha/beta/rc tags
-release = get_distribution("pycroscope").version
+try:
+    release = package_version("pycroscope")
+except PackageNotFoundError:
+    release = "unknown"
 
 
 # -- General configuration ---------------------------------------------------
