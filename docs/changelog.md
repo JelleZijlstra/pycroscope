@@ -8,6 +8,9 @@
 - Extend `len()`-based narrowing to use intersection predicates, which also
   improves narrowing for non-tuple cases such as literal strings and impossible
   `TypedDict` length branches.
+- Fix false-positive errors in some `len()`-narrowed branches involving
+  `Any & Predicate[...]` intersections (including `assert_type(..., Any)` and
+  some sequence indexing operations).
 - Keep unexpected keyword argument names in call errors in source order,
   so repeated runs produce stable output.
 - Fix an internal error on Python 3.12+ when parsing PEP 695 generics that include `**P` (`ParamSpec`) type parameters.

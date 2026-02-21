@@ -329,6 +329,24 @@ def _has_relation(
         right = intersect_multi(right.vals, ctx)
         if not isinstance(right, IntersectionValue):
             return _has_relation(original_left, right, relation, ctx)
+        if isinstance(left, MultiValuedValue):
+            # For expected unions, first test each union arm against the whole
+            # intersection. Decomposing the right side too early can lose
+            # correlations (e.g. Any & Predicate[...] should match a union arm
+            # that expects the same intersection).
+            bounds_maps = []
+            errors = []
+            for val in left.vals:
+                can_assign = _has_relation(gradualize(val), right, relation, ctx)
+                if isinstance(can_assign, CanAssignError):
+                    errors.append(can_assign)
+                else:
+                    bounds_maps.append(can_assign)
+            if not bounds_maps:
+                return CanAssignError(
+                    f"{right} is not {relation.description} {left}", children=errors
+                )
+            return intersect_bounds_maps(bounds_maps)
         # At least one member must be a subtype
         bounds_maps = []
         errors = []
@@ -1553,6 +1571,22 @@ def _intersect_predicate(
 def _value_guarantees_predicate(
     value: GradualType, predicate: PredicateCheck, ctx: CanAssignContext
 ) -> bool:
+    if value is NO_RETURN_VALUE:
+        return True
+    if isinstance(value, AnyValue):
+        return True
+    if isinstance(value, MultiValuedValue):
+        return all(
+            _value_guarantees_predicate(gradualize(val), predicate, ctx)
+            for val in value.vals
+        )
+    if isinstance(value, IntersectionValue):
+        return any(
+            _value_guarantees_predicate(gradualize(val), predicate, ctx)
+            for val in value.vals
+        )
+    if isinstance(value, PredicateValue):
+        return _predicate_implies(value.predicate, predicate)
     if isinstance(predicate, MinLen) and isinstance(predicate.value, int):
         min_len, _ = _get_len_bounds(value)
         return min_len is not None and min_len >= predicate.value

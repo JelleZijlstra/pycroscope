@@ -57,6 +57,7 @@ from .value import (
     DictIncompleteValue,
     GenericValue,
     HasAttrGuardExtension,
+    IntersectionValue,
     KnownValue,
     KVPair,
     MultiValuedValue,
@@ -493,6 +494,11 @@ def _sequence_common_getitem_impl(ctx: CallContext, typ: type) -> ImplReturn:
             else:
                 ctx.show_error(f"Invalid {typ.__name__} key {key}")
                 return AnyValue(AnySource.error)
+        elif isinstance(key, IntersectionValue):
+            if any(isinstance(subval, AnyValue) for subval in key.vals):
+                return AnyValue(AnySource.from_another)
+            ctx.show_error(f"Invalid {typ.__name__} key {key}")
+            return AnyValue(AnySource.error)
         elif isinstance(key, AnyValue):
             return AnyValue(AnySource.from_another)
         else:
