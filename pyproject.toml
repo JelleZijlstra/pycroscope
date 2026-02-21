@@ -42,6 +42,13 @@ asynq = ["asynq", "qcore>=0.5.1"]
 codemod = ["codemod"]
 full = ["asynq", "qcore>=0.5.1", "ast_decompiler>=0.4.0", "codemod"]
 
+[dependency-groups]
+docs = [
+  "myst-parser==4.0.0",
+  "sphinx==7.4.7",
+  "pygments==2.19.1",
+]
+
 [project.urls]
 Homepage = "https://github.com/JelleZijlstra/pycroscope"
 
