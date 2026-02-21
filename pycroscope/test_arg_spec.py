@@ -4,8 +4,10 @@ from dataclasses import dataclass
 from typing import List, NewType, TypeVar
 
 import pytest
+from typing_extensions import TypeVarTuple
 
 from .checker import Checker
+from .input_sig import wrap_type_param
 from .maybe_asynq import asynq
 from .signature import BoundMethodSignature, ParameterKind, Signature, SigParameter
 from .stacked_scopes import Composite
@@ -22,11 +24,17 @@ from .value import (
     MultiValuedValue,
     NewTypeValue,
     TypedValue,
+    TypeVarValue,
     assert_is_value,
 )
 
 T = TypeVar("T")
 NT = NewType("NT", int)
+
+
+def test_wrap_typevartuple_param() -> None:
+    ts = TypeVarTuple("Ts")
+    assert wrap_type_param(ts) == TypeVarValue(ts, is_typevartuple=True)
 
 
 class ClassWithCall(object):

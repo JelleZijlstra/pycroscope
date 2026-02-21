@@ -215,11 +215,13 @@ def extract_type_params(value: Value) -> Iterable[TypeVarLike]:
 
 
 def wrap_type_param(type_param: TypeVarLike) -> Value:
-    """Wrap a type parameter in an InputSigValue."""
+    """Wrap a type parameter in the corresponding Value representation."""
     if is_instance_of_typing_name(type_param, "ParamSpec"):
         # static analysis: ignore[incompatible_argument]
         return InputSigValue(ParamSpecSig(type_param))
     elif is_instance_of_typing_name(type_param, "TypeVar"):
         return TypeVarValue(type_param)
+    elif is_instance_of_typing_name(type_param, "TypeVarTuple"):
+        return TypeVarValue(type_param, is_typevartuple=True)
     else:
         raise TypeError(f"Unsupported type parameter: {type_param!r}")

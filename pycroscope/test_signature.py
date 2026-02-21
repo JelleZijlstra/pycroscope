@@ -555,6 +555,30 @@ class TestCalls(TestNameCheckVisitorBase):
                 self.hutia()
 
     @assert_passes()
+    def test_overloaded_staticmethod_definition(self):
+        from typing_extensions import overload
+
+        # staticmethod is generic over a hidden ParamSpec in stubs, so
+        # decorating each overload with @staticmethod exercises ParamSpec
+        # compatibility on callable generic arguments.
+        class Capybara(object):
+            @overload
+            @staticmethod
+            def hutia(x: int, /) -> int: ...
+
+            @overload
+            @staticmethod
+            def hutia(x: str, /) -> str: ...
+
+            @staticmethod
+            def hutia(x: int | str, /) -> int | str:
+                return x
+
+        def caller() -> None:
+            assert_is_value(Capybara.hutia(1), TypedValue(int))
+            assert_is_value(Capybara.hutia("x"), TypedValue(str))
+
+    @assert_passes()
     def test_staticmethod_bad_arg(self):
         class Capybara(object):
             @staticmethod
