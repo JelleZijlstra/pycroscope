@@ -363,6 +363,7 @@ class TestLen(TestNameCheckVisitorBase):
                         assert_type(variadic, tuple[int, int])
             """
         )
+
     @assert_passes()
     def test_narrowing_other_types(self):
         from typing_extensions import Literal, Never, TypedDict, assert_type
