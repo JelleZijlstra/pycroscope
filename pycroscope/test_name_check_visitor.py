@@ -210,7 +210,7 @@ class TestImportFailureHandling:
             "    a: Required[int]\n"
             "    b: ReadOnly[NotRequired[int]]\n"
             "    c: ReadOnly[Required[int]]\n"
-            "\n"
+            "boom = 1 / 0\n"
             "class F3(F1):\n"
             "    a: ReadOnly[int]\n"
             "\n"
@@ -246,7 +246,7 @@ class TestImportFailureHandling:
         failures = self._check_file(str(filename))
 
         assert any(
-            failure["code"] == ErrorCode.import_failed and failure["lineno"] == 9
+            failure["code"] == ErrorCode.import_failed and failure["lineno"] == 8
             for failure in failures
         )
         for lineno in (10, 13, 19, 29, 39):
