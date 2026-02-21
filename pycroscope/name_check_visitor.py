@@ -2571,9 +2571,12 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                             enclosing_statement,
                         )
                 elif isinstance(statement, ast.AnnAssign):
-                    # ignore assignments in AnnAssign nodes, which don't actually
-                    # bind the name
-                    continue
+                    # Ignore bare annotations (`x: int`), which don't assign a value.
+                    # But treat `x: int = value` like a regular assignment for
+                    # unused-variable reporting.
+                    if statement.value is None:
+                        continue
+                    replacement = self.remove_node(unused, statement)
             if all(
                 node in all_unused_nodes
                 for node in scope.name_to_all_definition_nodes[unused.id]

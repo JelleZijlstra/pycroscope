@@ -554,6 +554,11 @@ class TestUnusedVariable(TestNameCheckVisitorBase):
         def capybara():
             y = 3  # E: unused_variable
 
+    @assert_passes()
+    def test_unused_annotated_assignment(self):
+        def capybara():
+            y: int = 3  # E: unused_variable
+
     def test_replacement(self):
         self.assert_is_changed(
             """
@@ -571,6 +576,13 @@ def capybara():
     def test_unused_then_used(self):
         def capybara():
             y = 3  # E: unused_assignment
+            y = 4
+            return y
+
+    @assert_passes()
+    def test_unused_annotated_assignment_then_used(self):
+        def capybara():
+            y: int = 3  # E: unused_assignment
             y = 4
             return y
 

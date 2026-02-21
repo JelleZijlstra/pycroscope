@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Report `unused_variable` and `unused_assignment` for annotated assignments
+  like `x: int = value` when the assigned value is never read.
 - Narrow tuple types after `len()` checks when bounds imply a more specific
   shape, including exact-length refinements and lower-bound refinements for
   tuples with fixed and variadic parts, which simplifies `reveal_type()` output.
