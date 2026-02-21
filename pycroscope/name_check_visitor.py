@@ -5003,6 +5003,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             annotation = self._visit_annotation(node.annotation)
             expr = self._expr_of_annotation_type(annotation, node.annotation)
         else:
+            # Still visit the annotation node so ast_annotator can attach
+            # inferred values to all annotation expressions.
+            self._visit_annotation(node.annotation)
             expr = annotation_expr_from_ast(node.annotation, visitor=self)
         if self.is_in_typeddict_definition():
             qualifiers = {Qualifier.Required, Qualifier.NotRequired, Qualifier.ReadOnly}

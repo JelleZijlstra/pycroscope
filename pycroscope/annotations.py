@@ -809,8 +809,6 @@ def _type_from_value(value: Value, ctx: Context) -> Value:
         return _type_from_subscripted_value(value.root, value.members, ctx)
     elif isinstance(value, AnyValue):
         return value
-    elif isinstance(value, TypedValue):
-        return value
     elif isinstance(value, SubclassValue) and value.exactly:
         return value.typ
     elif isinstance(value, InputSigValue):
