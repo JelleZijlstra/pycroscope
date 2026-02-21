@@ -4,6 +4,7 @@
 
 - Keep unexpected keyword argument names in call errors in source order,
   so repeated runs produce stable output.
+- Fix an internal error on Python 3.12+ when parsing PEP 695 generics that include `**P` (`ParamSpec`) type parameters.
 - Fix crash if accessing a module's `__annotations__` raises an error.
 - Implement PEP 747 `TypeForm` support, including implicit and explicit
   `TypeForm` evaluation, assignability checks, and conformance tests.
@@ -37,6 +38,7 @@
   and `@abstractmethod` methods) when the body is just `...` or `pass`
   (including optional docstrings), while still reporting `missing_return` for
   `@abstractmethod` methods with nontrivial bodies.
+- Fix a crash when checking classes that inherit from `typing.Any`.
 
 ## Version 0.2.0 (June 26, 2025)
 

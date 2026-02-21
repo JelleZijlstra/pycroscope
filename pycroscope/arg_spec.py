@@ -1090,6 +1090,10 @@ class ArgSpecCache:
                 else:
                     args = ()
                 generic_bases.update(self.get_generic_bases(base.typ, args))
+            elif isinstance(base, AnyValue):
+                # Runtime bases can contain `typing.Any` (e.g. `class C(Any): ...`).
+                # Treat this as an unknown base instead of failing extraction.
+                continue
             else:
                 return None
         return generic_bases

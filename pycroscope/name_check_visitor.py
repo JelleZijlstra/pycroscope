@@ -1777,7 +1777,12 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     error_node, f"Undefined name: {node.id}", ErrorCode.undefined_name
                 )
             return AnyValue(AnySource.error), origin
-        value_for_subvals = replace_fallback(value)
+        if isinstance(value, InputSigValue):
+            # ParamSpecs are stored as InputSigValues and cannot be converted to a
+            # gradual fallback.
+            value_for_subvals = value
+        else:
+            value_for_subvals = replace_fallback(value)
         if isinstance(value_for_subvals, MultiValuedValue):
             subvals = value_for_subvals.vals
         else:
@@ -2706,6 +2711,8 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 )
                 return True
             return self.check_deprecation(node, value.value)
+        if isinstance(value, InputSigValue):
+            return False
         value = replace_fallback(value)
         if isinstance(value, UnboundMethodValue):
             method = value.get_method()
@@ -4847,7 +4854,17 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     def visit_type_param_values(
         self, type_params: Sequence[ast.AST]
     ) -> Sequence[TypeVarValue]:
-        type_param_values = [self.visit(param) for param in type_params]
+        type_param_values = []
+        for param in type_params:
+            value = self.visit(param)
+            if isinstance(value, TypeVarValue):
+                type_param_values.append(value)
+            elif isinstance(value, InputSigValue) and isinstance(
+                value.input_sig, ParamSpecSig
+            ):
+                type_param_values.append(TypeVarValue(value.input_sig.param_spec))
+            else:
+                assert False, f"unexpected type parameter value: {value!r}"
         assert all_of_type(type_param_values, TypeVarValue)
         return type_param_values
 
