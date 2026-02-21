@@ -40,6 +40,14 @@ def caller(i: int) -> None:
 
 Similarly, pycroscope infers the `MinLen` and `MaxLen` attributes after checks
 on `len()`.
+For tuple types, pycroscope narrows using these bounds:
+
+- when both bounds imply an exact length, it narrows to a concrete fixed tuple
+  shape (for example, `tuple[int, ...]` becomes `tuple[int, int]` after
+  `if len(x) == 2:`)
+- when a lower bound alone is available, it can still refine tuple structure
+  (for example, `tuple[*tuple[int, ...], str]` becomes
+  `tuple[int, *tuple[int, ...], str]` after `if len(x) >= 2:`)
 
 For the `MultipleOf` check, pycroscope follows Python semantics: values
 are accepted if `value % multiple_of == 0`.

@@ -332,6 +332,38 @@ class TestLen(TestNameCheckVisitorBase):
         def capybara():
             len(3)  # E: incompatible_argument
 
+    @skip_before((3, 11))
+    def test_tuple_narrowing(self):
+        self.assert_passes(
+            """
+            from typing_extensions import assert_type
+
+            def capybara(
+                variadic: tuple[int, ...],
+                fixed_and_variadic: tuple[int, *tuple[str, ...], float],
+                variadic_then_fixed: tuple[*tuple[int, ...], str],
+            ) -> None:
+                if len(variadic) == 2:
+                    assert_type(variadic, tuple[int, int])
+
+                if len(fixed_and_variadic) == 2:
+                    assert_type(fixed_and_variadic, tuple[int, float | int])
+
+                if len(fixed_and_variadic) == 3:
+                    assert_type(fixed_and_variadic, tuple[int, str, float | int])
+
+                if len(variadic_then_fixed) == 2:
+                    assert_type(variadic_then_fixed, tuple[int, str])
+
+                if len(variadic_then_fixed) >= 2:
+                    assert_type(variadic_then_fixed, tuple[int, *tuple[int, ...], str])
+
+                if len(variadic) >= 2:
+                    if len(variadic) <= 2:
+                        assert_type(variadic, tuple[int, int])
+            """
+        )
+
 
 class TestBool(TestNameCheckVisitorBase):
     @assert_passes()
