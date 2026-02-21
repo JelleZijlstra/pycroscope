@@ -670,7 +670,14 @@ def make_type_var_value(tv: TypeVarLike, ctx: Context) -> TypeVarValue:
         default = _type_from_runtime(tv.__default__, ctx)
     else:
         default = None
-    return TypeVarValue(tv, bound=bound, constraints=constraints, default=default)
+    return TypeVarValue(
+        tv,
+        bound=bound,
+        constraints=constraints,
+        default=default,
+        is_typevartuple=is_instance_of_typing_name(tv, "TypeVarTuple")
+        or is_typing_name(type(tv), "TypeVarTuple"),
+    )
 
 
 def _callable_args_from_runtime(

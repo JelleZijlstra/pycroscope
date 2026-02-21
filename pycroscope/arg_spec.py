@@ -958,11 +958,17 @@ class ArgSpecCache:
     ) -> OverloadedSignature | None:
         if not overloads:
             return None
+        normalized_overloads = []
+        for overload in overloads:
+            if isinstance(overload, (staticmethod, classmethod)):
+                normalized_overloads.append(overload.__func__)
+            else:
+                normalized_overloads.append(overload)
         sigs = [
             self._cached_get_argspec(
                 overload, impl, is_asynq, in_overload_resolution=True
             )
-            for overload in overloads
+            for overload in normalized_overloads
         ]
         if not all_of_type(sigs, Signature):
             return None

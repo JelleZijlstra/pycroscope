@@ -34,6 +34,13 @@
   signatures represented as `AnySig`.
 - Fix crash when checking certain `TypeAliasType` specializations that include
   unhashable runtime arguments (e.g. ParamSpec argument lists).
+- Fix a crash when checking overloaded `@staticmethod` definitions that involve
+  `ParamSpec`-based callable signatures.
+- Preserve overload-based return inference for `@staticmethod` and
+  `@classmethod` definitions.
+- Avoid errors in generic-base extraction when runtime annotations include
+  `TypeVarTuple` parameters, including `typing_extensions.TypeVarTuple` on
+  Python 3.10.
 - Suppress `missing_return` for known abstract stub bodies (protocol methods
   and `@abstractmethod` methods) when the body is just `...` or `pass`
   (including optional docstrings), while still reporting `missing_return` for

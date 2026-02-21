@@ -21,7 +21,12 @@ from typing_extensions import assert_never
 import pycroscope
 from pycroscope.analysis_lib import Sentinel
 from pycroscope.find_unused import used
-from pycroscope.safe import safe_equals, safe_isinstance, safe_issubclass
+from pycroscope.safe import (
+    is_instance_of_typing_name,
+    safe_equals,
+    safe_isinstance,
+    safe_issubclass,
+)
 from pycroscope.typevar import resolve_bounds_map
 from pycroscope.value import (
     NO_RETURN_VALUE,
@@ -588,6 +593,16 @@ def _has_relation(
             if generic_args is not None and len(left.args) == len(generic_args):
                 bounds_maps = []
                 for i, (my_arg, their_arg) in enumerate(zip(left.args, generic_args)):
+                    if isinstance(my_arg, TypeVarValue) and is_instance_of_typing_name(
+                        my_arg.typevar, "ParamSpec"
+                    ):
+                        my_arg = pycroscope.input_sig.wrap_type_param(my_arg.typevar)
+                    if isinstance(
+                        their_arg, TypeVarValue
+                    ) and is_instance_of_typing_name(their_arg.typevar, "ParamSpec"):
+                        their_arg = pycroscope.input_sig.wrap_type_param(
+                            their_arg.typevar
+                        )
                     left_is_input_sig = isinstance(
                         my_arg, pycroscope.input_sig.InputSigValue
                     )
@@ -599,9 +614,6 @@ def _has_relation(
                             my_arg.input_sig, their_arg.input_sig, relation, ctx
                         )
                     else:
-                        assert (
-                            not left_is_input_sig and not right_is_input_sig
-                        ), f"Unexpected input sigs: {my_arg!r}, {their_arg!r}"
                         can_assign = has_relation(my_arg, their_arg, relation, ctx)
                     if isinstance(can_assign, CanAssignError):
                         return _maybe_specify_error_for_generic(
