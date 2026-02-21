@@ -491,6 +491,28 @@ class TestAnnotations(TestNameCheckVisitorBase):
         def test_typed_value_annotation() -> dict():  # E: invalid_annotation
             return {}
 
+    def test_forward_ref_invalid_listcomp(self):
+        from .annotations import Context, type_from_runtime
+
+        val = type_from_runtime("[int for i in range(1)]", ctx=Context())
+        assert isinstance(val, AnyValue)
+
+    def test_forward_ref_invalid_unusual_expressions(self):
+        from .annotations import Context, type_from_runtime
+
+        for annotation in (
+            "[int for i in range(1)]",
+            "{int for i in range(1)}",
+            "{i: int for i in range(1)}",
+            "(int for i in range(1))",
+            "int if True else str",
+            "int or str",
+            "(lambda: int)()",
+            'f"int"',
+        ):
+            val = type_from_runtime(annotation, ctx=Context())
+            assert isinstance(val, AnyValue), annotation
+
     @assert_passes()
     def test_forward_ref_optional(self):
         import typing
