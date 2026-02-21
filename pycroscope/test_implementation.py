@@ -365,6 +365,25 @@ class TestLen(TestNameCheckVisitorBase):
         )
 
     @assert_passes()
+    def test_narrowed_sequence_ops(self):
+        from typing_extensions import assert_type
+
+        def capybara(values: list[int]) -> None:
+            if len(values) >= 1:
+                assert_type(values[0], int)
+                assert_type(values.__getitem__(0), int)
+                assert_type(values + [1], list[int])
+
+    @assert_passes()
+    def test_narrowed_value_bool_check(self):
+        from typing_extensions import assert_type
+
+        def capybara(values: list[int]) -> None:
+            if len(values) >= 1:
+                if values:
+                    assert_type(values[0], int)
+
+    @assert_passes()
     def test_narrowing_other_types(self):
         from typing_extensions import Literal, Never, TypedDict, assert_type
 

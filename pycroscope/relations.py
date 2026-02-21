@@ -1396,21 +1396,6 @@ def _expand_tuple_members_to_max_len(
     return deduped
 
 
-@used
-def _narrow_tuple_to_exact_len(value: Value, target_len: int) -> GradualType | None:
-    members = _tuple_members_from_value(value)
-    if members is None:
-        return None
-    expanded = _expand_tuple_members_to_exact_len(members, target_len)
-    if expanded is None:
-        return None
-    if not expanded:
-        return NO_RETURN_VALUE
-    return gradualize(
-        unite_values(*[SequenceValue(tuple, members) for members in expanded])
-    )
-
-
 def _narrow_tuple_to_min_len(value: Value, target_len: int) -> GradualType | None:
     members = _tuple_members_from_value(value)
     if members is None:
