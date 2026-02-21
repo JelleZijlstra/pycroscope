@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Fix crash if accessing a module's `__annotations__` raises an error.
 - Implement PEP 747 `TypeForm` support, including implicit and explicit
   `TypeForm` evaluation, assignability checks, and conformance tests.
 - Require `typing_extensions>=4.13.0`.
@@ -26,6 +27,10 @@
   with `# static analysis: ignore[import_failed]`).
 - Fix a crash in callable assignability involving `Concatenate[...,]`
   signatures represented as `AnySig`.
+- Suppress `missing_return` for known abstract stub bodies (protocol methods
+  and `@abstractmethod` methods) when the body is just `...` or `pass`
+  (including optional docstrings), while still reporting `missing_return` for
+  `@abstractmethod` methods with nontrivial bodies.
 
 ## Version 0.2.0 (June 26, 2025)
 
