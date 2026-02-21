@@ -12,7 +12,7 @@ from typing import Any
 
 from pycroscope.value import CanAssign, CanAssignContext, Value, flatten_values
 
-from .extensions import CustomCheck
+from .extensions import CustomCheck, PredicateCheck
 from .value import (
     NO_RETURN_VALUE,
     AnnotatedValue,
@@ -20,7 +20,9 @@ from .value import (
     CanAssignError,
     CustomCheckExtension,
     DictIncompleteValue,
+    IntersectionValue,
     KnownValue,
+    PredicateValue,
     SequenceValue,
     TypedDictValue,
     unannotate,
@@ -75,7 +77,7 @@ else:
 
 
 @dataclass(frozen=True)
-class AnnotatedTypesCheck(CustomCheck):
+class AnnotatedTypesCheck(PredicateCheck):
     def can_assign(self, value: Value, ctx: CanAssignContext) -> CanAssign:
         for subval in flatten_values(value):
             original_subval = subval
@@ -110,7 +112,7 @@ class AnnotatedTypesCheck(CustomCheck):
     def predicate(self, value: Any) -> bool:
         raise NotImplementedError
 
-    def is_compatible_metadata(self, metadata: "AnnotatedTypesCheck") -> bool:
+    def is_compatible_metadata(self, metadata: PredicateCheck) -> bool:
         """Override this to allow metadata that is not exactly the same as the
         one in this object to match. For example, Gt(5) should accept Gt(4), as that
         is a strictly weaker condition.
@@ -145,7 +147,7 @@ class Gt(AnnotatedTypesCheck):
     def predicate(self, value: Any) -> bool:
         return value > self.value
 
-    def is_compatible_metadata(self, metadata: AnnotatedTypesCheck) -> bool:
+    def is_compatible_metadata(self, metadata: PredicateCheck) -> bool:
         if isinstance(metadata, Gt):
             return metadata.value >= self.value
         elif isinstance(metadata, Ge):
@@ -161,7 +163,7 @@ class Ge(AnnotatedTypesCheck):
     def predicate(self, value: Any) -> bool:
         return value >= self.value
 
-    def is_compatible_metadata(self, metadata: AnnotatedTypesCheck) -> bool:
+    def is_compatible_metadata(self, metadata: PredicateCheck) -> bool:
         if isinstance(metadata, Gt):
             return metadata.value >= self.value
         elif isinstance(metadata, Ge):
@@ -177,7 +179,7 @@ class Lt(AnnotatedTypesCheck):
     def predicate(self, value: Any) -> bool:
         return value < self.value
 
-    def is_compatible_metadata(self, metadata: AnnotatedTypesCheck) -> bool:
+    def is_compatible_metadata(self, metadata: PredicateCheck) -> bool:
         if isinstance(metadata, Lt):
             return metadata.value <= self.value
         elif isinstance(metadata, Le):
@@ -193,7 +195,7 @@ class Le(AnnotatedTypesCheck):
     def predicate(self, value: Any) -> bool:
         return value <= self.value
 
-    def is_compatible_metadata(self, metadata: AnnotatedTypesCheck) -> bool:
+    def is_compatible_metadata(self, metadata: PredicateCheck) -> bool:
         if isinstance(metadata, Lt):
             return metadata.value <= self.value
         elif isinstance(metadata, Le):
@@ -209,7 +211,7 @@ class MultipleOf(AnnotatedTypesCheck):
     def predicate(self, value: Any) -> bool:
         return value % self.value == 0
 
-    def is_compatible_metadata(self, metadata: AnnotatedTypesCheck) -> bool:
+    def is_compatible_metadata(self, metadata: PredicateCheck) -> bool:
         if isinstance(metadata, MultipleOf):
             # If we want a MultipleOf(5), but we're passed a MultipleOf(10), that's ok
             return metadata.value % self.value == 0
@@ -224,7 +226,7 @@ class MinLen(AnnotatedTypesCheck):
     def predicate(self, value: Any) -> bool:
         return len(value) >= self.value
 
-    def is_compatible_metadata(self, metadata: AnnotatedTypesCheck) -> bool:
+    def is_compatible_metadata(self, metadata: PredicateCheck) -> bool:
         if isinstance(metadata, MinLen):
             return metadata.value >= self.value
         else:
@@ -244,7 +246,7 @@ class MaxLen(AnnotatedTypesCheck):
     def predicate(self, value: Any) -> bool:
         return len(value) <= self.value
 
-    def is_compatible_metadata(self, metadata: AnnotatedTypesCheck) -> bool:
+    def is_compatible_metadata(self, metadata: PredicateCheck) -> bool:
         if isinstance(metadata, MaxLen):
             return metadata.value <= self.value
         else:
@@ -273,7 +275,7 @@ class Timezone(AnnotatedTypesCheck):
         else:
             return False
 
-    def is_compatible_metadata(self, metadata: AnnotatedTypesCheck) -> bool:
+    def is_compatible_metadata(self, metadata: PredicateCheck) -> bool:
         if (
             self.value is ...
             and isinstance(metadata, Timezone)
@@ -294,6 +296,19 @@ class Predicate(AnnotatedTypesCheck):
 def _min_len_of_value(val: Value) -> int | None:
     if isinstance(val, SequenceValue):
         return sum(is_many is False for is_many, _ in val.members)
+    elif isinstance(val, PredicateValue):
+        if isinstance(val.predicate, MinLen) and isinstance(val.predicate.value, int):
+            return val.predicate.value
+        return None
+    elif isinstance(val, IntersectionValue):
+        minima = []
+        for subval in val.vals:
+            sub_min = _min_len_of_value(subval)
+            if sub_min is not None:
+                minima.append(sub_min)
+        if minima:
+            return max(minima)
+        return None
     elif isinstance(val, DictIncompleteValue):
         return sum(pair.is_required and not pair.is_many for pair in val.kv_pairs)
     elif isinstance(val, TypedDictValue):
@@ -310,6 +325,19 @@ def _max_len_of_value(val: Value) -> int | None:
                 return None
             maximum += 1
         return maximum
+    elif isinstance(val, PredicateValue):
+        if isinstance(val.predicate, MaxLen) and isinstance(val.predicate.value, int):
+            return val.predicate.value
+        return None
+    elif isinstance(val, IntersectionValue):
+        maxima = []
+        for subval in val.vals:
+            sub_max = _max_len_of_value(subval)
+            if sub_max is not None:
+                maxima.append(sub_max)
+        if maxima:
+            return min(maxima)
+        return None
     elif isinstance(val, DictIncompleteValue):
         maximum = 0
         for pair in val.kv_pairs:

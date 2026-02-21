@@ -2208,6 +2208,18 @@ class TestContextManagerWithSuppression(TestNameCheckVisitorBase):
             ) -> None:
                 pass
 
+        class MaybeSuppressException:
+            def __enter__(self) -> None:
+                pass
+
+            def __exit__(
+                self,
+                typ: Optional[Type[BaseException]],
+                exn: Optional[BaseException],
+                tb: Optional[TracebackType],
+            ) -> Optional[bool]:
+                return None
+
         def empty_context_manager() -> ContextManager[None]:
             return EmptyContext()
 
@@ -2252,6 +2264,12 @@ class TestContextManagerWithSuppression(TestNameCheckVisitorBase):
             with empty_contextlib_manager():
                 a = 3
             assert_is_value(a, KnownValue(3))
+
+        def use_optional_bool_return(x: int | str) -> None:
+            if isinstance(x, int):
+                with MaybeSuppressException():
+                    raise ValueError
+            assert_is_value(x, TypedValue(str))
 
         def use_nested_contexts():
             b = 2

@@ -83,6 +83,17 @@ class CustomCheck:
         return self
 
 
+class PredicateCheck(CustomCheck):
+    """Base class for checks that represent a predicate constraint."""
+
+    def is_compatible_metadata(self, metadata: "PredicateCheck") -> bool:
+        """Whether `metadata` implies this predicate."""
+        return metadata == self
+
+    def substitute_typevars(self, typevars: "TypeVarMap") -> "PredicateCheck":
+        return self
+
+
 @dataclass(frozen=True)
 class LiteralOnly(CustomCheck):
     """Custom check that allows only values pycroscope infers as literals.

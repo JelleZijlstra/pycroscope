@@ -38,7 +38,7 @@ from typing_extensions import ParamSpec, Protocol, assert_never
 
 import pycroscope
 from pycroscope.error_code import Error
-from pycroscope.extensions import CustomCheck, ExternalType
+from pycroscope.extensions import CustomCheck, ExternalType, PredicateCheck
 from pycroscope.safe import all_of_type, safe_equals, safe_isinstance, safe_issubclass
 
 T = TypeVar("T")
@@ -1608,6 +1608,9 @@ class IntersectionValue(Value):
         for val in self.vals:
             yield from val.walk_values()
 
+    def get_type_value(self) -> Value:
+        return IntersectionValue(tuple(val.get_type_value() for val in self.vals))
+
     def __str__(self) -> str:
         return " & ".join(str(val) for val in self.vals)
 
@@ -2161,6 +2164,7 @@ def _extract_type_form(value: Value, ctx: CanAssignContext) -> Value | CanAssign
             NewTypeValue,
             ParamSpecArgsValue,
             ParamSpecKwargsValue,
+            PredicateValue,
             IntersectionValue,
             SyntheticModuleValue,
             UnboundMethodValue,
@@ -2424,6 +2428,26 @@ class VariableNameValue(AnyValue):
         return None
 
 
+@dataclass(frozen=True)
+class PredicateValue(Value):
+    """Represents a type-level predicate constraint."""
+
+    predicate: PredicateCheck
+
+    def __str__(self) -> str:
+        return f"Predicate[{self.predicate}]"
+
+    def substitute_typevars(self, typevars: TypeVarMap) -> Value:
+        return PredicateValue(self.predicate.substitute_typevars(typevars))
+
+    def get_type_value(self) -> Value:
+        return KnownValue(object)
+
+    def walk_values(self) -> Iterable[Value]:
+        yield self
+        yield from self.predicate.walk_values()
+
+
 SimpleType: typing_extensions.TypeAlias = (
     AnyValue
     | KnownValue
@@ -2432,6 +2456,7 @@ SimpleType: typing_extensions.TypeAlias = (
     | TypedValue
     | SubclassValue
     | TypeFormValue
+    | PredicateValue
 )
 
 BasicType: typing_extensions.TypeAlias = (
