@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Improve TypedDict checking when runtime class objects are unavailable
+  (for example after import-time failures or for function-local class
+  definitions) by falling back to syntactic TypedDict analysis, so
+  `ReadOnly`/`Required`/`NotRequired` annotations and inheritance conflicts
+  are still reported.
 - Narrow tuple types after `len()` checks when bounds imply a more specific
   shape, including exact-length refinements and lower-bound refinements for
   tuples with fixed and variadic parts, which simplifies `reveal_type()` output.

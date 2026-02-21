@@ -38,6 +38,7 @@ from collections.abc import (
 )
 from contextlib import AbstractContextManager
 from dataclasses import dataclass
+from dataclasses import field as dataclass_field
 from itertools import chain
 from pathlib import Path
 from types import GenericAlias
@@ -72,6 +73,7 @@ from .annotations import (
     Qualifier,
     SyntheticEvaluator,
     annotation_expr_from_annotations,
+    annotation_expr_from_ast,
     annotation_expr_from_value,
     is_context_manager_type,
     is_instance_of_typing_name,
@@ -217,6 +219,8 @@ from .value import (
     SysVersionInfoExtension,
     TypeAlias,
     TypeAliasValue,
+    TypedDictEntry,
+    TypedDictValue,
     TypedValue,
     TypeGuardExtension,
     TypeIsExtension,
@@ -438,6 +442,15 @@ class _AttrContext(CheckerAttrContext):
 
     def should_ignore_none_attributes(self) -> bool:
         return self.ignore_none
+
+
+@dataclass
+class _SyntheticTypedDictContext:
+    total: bool
+    bases: list[TypedDictValue]
+    local_items: dict[str, tuple[TypedDictEntry, ast.AST]] = dataclass_field(
+        default_factory=dict
+    )
 
 
 class ComprehensionLengthInferenceLimit(IntegerOption):
@@ -1112,6 +1125,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     current_function: object | None
     current_function_info: FunctionInfo | None
     current_function_name: str | None
+    current_synthetic_typeddict: _SyntheticTypedDictContext | None
     error_for_implicit_any: bool
     expected_return_value: Value | None
     future_imports: set[str]
@@ -1174,6 +1188,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         self.match_subject = Composite(AnyValue(AnySource.inference))
         # current class (for inferring the type of cls and self arguments)
         self.current_class = None
+        self.current_synthetic_typeddict = None
         self.current_function_name = None
         self.current_function_info = None
 
@@ -1848,12 +1863,102 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         with ctx:
             if sys.version_info >= (3, 12) and node.type_params:
                 self.visit_type_param_values(node.type_params)
-            self._generic_visit_list(node.bases)
-            for kw in node.keywords:
-                self.visit(kw.value)
-            value = self._visit_class_and_get_value(node, class_obj)
-        value, _ = self._set_name_in_scope(node.name, node, value)
+            base_values = self._generic_visit_list(node.bases)
+            keyword_values = [(kw, self.visit(kw.value)) for kw in node.keywords]
+            synthetic_typeddict = None
+            if class_obj is None:
+                synthetic_typeddict = self._make_synthetic_typeddict_context(
+                    node, base_values, keyword_values
+                )
+            with override(self, "current_synthetic_typeddict", synthetic_typeddict):
+                value = self._visit_class_and_get_value(node, class_obj)
+            if synthetic_typeddict is not None:
+                value = self._build_synthetic_typeddict_value(synthetic_typeddict, node)
+        value_to_store: Value | None = value
+        if (
+            class_obj is None
+            and self._is_collecting()
+            and self.scopes.scope_type() == ScopeType.module_scope
+        ):
+            # In the collect phase we don't always visit top-level class bodies.
+            # Avoid storing placeholder values that later get unioned with the
+            # check-phase result.
+            value_to_store = None
+        value, _ = self._set_name_in_scope(node.name, node, value_to_store)
         return value
+
+    def _make_synthetic_typeddict_context(
+        self,
+        node: ast.ClassDef,
+        base_values: Sequence[Value],
+        keyword_values: Sequence[tuple[ast.keyword, Value]],
+    ) -> _SyntheticTypedDictContext | None:
+        has_typeddict_base = False
+        bases = []
+        for base_node, base_value in zip(node.bases, base_values):
+            if self._is_typeddict_marker_base(base_value):
+                has_typeddict_base = True
+                continue
+            base_typed_dict = self._typed_dict_base_value(base_value, base_node)
+            if base_typed_dict is not None:
+                has_typeddict_base = True
+                bases.append(base_typed_dict)
+        if not has_typeddict_base:
+            return None
+        total = True
+        for keyword, value in keyword_values:
+            if keyword.arg != "total":
+                continue
+            bool_value = self._get_bool_literal(value)
+            if bool_value is None:
+                self._show_error_if_checking(
+                    keyword.value,
+                    "TypedDict total= argument must be a bool literal",
+                    error_code=ErrorCode.invalid_annotation,
+                )
+            else:
+                total = bool_value
+        return _SyntheticTypedDictContext(total=total, bases=bases)
+
+    @staticmethod
+    def _is_typeddict_marker_base(base_value: Value) -> bool:
+        return isinstance(base_value, KnownValue) and is_typing_name(
+            base_value.val, "TypedDict"
+        )
+
+    def _typed_dict_base_value(
+        self, base_value: Value, base_node: ast.AST
+    ) -> TypedDictValue | None:
+        if isinstance(base_value, MultiValuedValue):
+            typeddict_values = [
+                typed_dict
+                for subval in base_value.vals
+                if (typed_dict := self._typed_dict_base_value(subval, base_node))
+                is not None
+            ]
+            if typeddict_values:
+                return max(
+                    typeddict_values,
+                    key=lambda value: (
+                        len(value.items),
+                        int(value.extra_keys is not None),
+                    ),
+                )
+            return None
+        if isinstance(base_value, TypedDictValue):
+            return base_value
+        if isinstance(base_value, KnownValue):
+            if isinstance(base_value.val, type) and is_typeddict(base_value.val):
+                typed_dict_type = type_from_value(base_value, self, base_node)
+                if isinstance(typed_dict_type, TypedDictValue):
+                    return typed_dict_type
+        return None
+
+    @staticmethod
+    def _get_bool_literal(value: Value) -> bool | None:
+        if isinstance(value, KnownValue) and isinstance(value.val, bool):
+            return value.val
+        return None
 
     def _get_local_object(self, name: str, node: ast.AST) -> Value:
         if self.scopes.scope_type() == ScopeType.module_scope:
@@ -1924,6 +2029,107 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 return KnownValue(current_class)
 
         return AnyValue(AnySource.inference)
+
+    def _build_synthetic_typeddict_value(
+        self, context: _SyntheticTypedDictContext, node: ast.ClassDef
+    ) -> TypedDictValue:
+        items: dict[str, TypedDictEntry] = {}
+        for base in context.bases:
+            for key, incoming in base.items.items():
+                if key not in items:
+                    items[key] = incoming
+                    continue
+                merged = self._merge_typeddict_base_entries(
+                    key, items[key], incoming, node
+                )
+                if merged is not None:
+                    items[key] = merged
+
+        for key, (entry, entry_node) in context.local_items.items():
+            if key in items:
+                if not self._is_valid_typeddict_override(key, items[key], entry):
+                    self._show_error_if_checking(
+                        entry_node,
+                        f"Incompatible TypedDict override for key {key!r}",
+                        error_code=ErrorCode.invalid_annotation,
+                    )
+                items[key] = entry
+            else:
+                items[key] = entry
+
+        return TypedDictValue(items=items)
+
+    def _merge_typeddict_base_entries(
+        self, key: str, left: TypedDictEntry, right: TypedDictEntry, node: ast.AST
+    ) -> TypedDictEntry | None:
+        if left.readonly != right.readonly:
+            self._show_error_if_checking(
+                node,
+                f"TypedDict base classes define key {key!r} with incompatible mutability",
+                error_code=ErrorCode.invalid_annotation,
+            )
+            return None
+
+        if left.readonly:
+            if left.required != right.required:
+                self._show_error_if_checking(
+                    node,
+                    f"TypedDict base classes define key {key!r} with incompatible requiredness",
+                    error_code=ErrorCode.invalid_annotation,
+                )
+                return None
+            if isinstance(left.typ.can_assign(right.typ, self), CanAssignError):
+                if isinstance(right.typ.can_assign(left.typ, self), CanAssignError):
+                    self._show_error_if_checking(
+                        node,
+                        f"TypedDict base classes define key {key!r} with incompatible types",
+                        error_code=ErrorCode.invalid_annotation,
+                    )
+                    return None
+                return right
+            return left
+
+        if left.required != right.required:
+            self._show_error_if_checking(
+                node,
+                f"TypedDict base classes define key {key!r} with incompatible requiredness",
+                error_code=ErrorCode.invalid_annotation,
+            )
+            return None
+        if isinstance(
+            left.typ.can_assign(right.typ, self), CanAssignError
+        ) or isinstance(right.typ.can_assign(left.typ, self), CanAssignError):
+            self._show_error_if_checking(
+                node,
+                f"TypedDict base classes define key {key!r} with incompatible types",
+                error_code=ErrorCode.invalid_annotation,
+            )
+            return None
+        return left
+
+    def _is_valid_typeddict_override(
+        self, key: str, base: TypedDictEntry, override_entry: TypedDictEntry
+    ) -> bool:
+        if not base.readonly:
+            if override_entry.readonly:
+                return False
+            if base.required != override_entry.required:
+                return False
+            if isinstance(
+                base.typ.can_assign(override_entry.typ, self), CanAssignError
+            ):
+                return False
+            if isinstance(
+                override_entry.typ.can_assign(base.typ, self), CanAssignError
+            ):
+                return False
+            return True
+
+        if base.required and not override_entry.required:
+            return False
+        if isinstance(base.typ.can_assign(override_entry.typ, self), CanAssignError):
+            return False
+        return True
 
     def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> Value:
         return self.visit_FunctionDef(node)
@@ -4782,12 +4988,18 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     self.current_enum_members[value.val] = name
 
     def is_in_typeddict_definition(self) -> bool:
-        return is_instance_of_typing_name(self.current_class, "_TypedDictMeta")
+        return (
+            is_instance_of_typing_name(self.current_class, "_TypedDictMeta")
+            or self.current_synthetic_typeddict is not None
+        )
 
     def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
-        annotation = self._visit_annotation(node.annotation)
-        expr = self._expr_of_annotation_type(annotation, node.annotation)
-        if self.current_class is not None and is_typeddict(self.current_class):
+        if self.current_synthetic_typeddict is None:
+            annotation = self._visit_annotation(node.annotation)
+            expr = self._expr_of_annotation_type(annotation, node.annotation)
+        else:
+            expr = annotation_expr_from_ast(node.annotation, visitor=self)
+        if self.is_in_typeddict_definition():
             qualifiers = {Qualifier.Required, Qualifier.NotRequired, Qualifier.ReadOnly}
         else:
             # TODO: validate these qualifiers more
@@ -4798,6 +5010,12 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 Qualifier.InitVar,
             }
         expected_type, qualifiers = expr.maybe_unqualify(qualifiers)
+        if self.current_synthetic_typeddict is not None and isinstance(
+            node.target, ast.Name
+        ):
+            self._record_synthetic_typeddict_item(
+                node.target.id, expected_type, qualifiers, node
+            )
 
         # TODO: handle TypeAlias and ClassVar
         is_final = Qualifier.Final in qualifiers
@@ -4830,6 +5048,31 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             override(self, "ann_assign_type", (expected_type, is_final)),
         ):
             self.visit(node.target)
+
+    def _record_synthetic_typeddict_item(
+        self,
+        key: str,
+        expected_type: Value | None,
+        qualifiers: Container[Qualifier],
+        node: ast.AST,
+    ) -> None:
+        context = self.current_synthetic_typeddict
+        if context is None:
+            return
+        required = context.total
+        readonly = Qualifier.ReadOnly in qualifiers
+        if Qualifier.Required in qualifiers:
+            required = True
+        if Qualifier.NotRequired in qualifiers:
+            required = False
+        context.local_items[key] = (
+            TypedDictEntry(
+                typ=expected_type or AnyValue(AnySource.error),
+                required=required,
+                readonly=readonly,
+            ),
+            node,
+        )
 
     def visit_AugAssign(self, node: ast.AugAssign) -> None:
         is_yield = isinstance(node.value, ast.Yield)
