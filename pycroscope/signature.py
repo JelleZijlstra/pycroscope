@@ -2048,7 +2048,7 @@ class OverloadedSignature:
 
         This is implemented by setting a flag on the :class:`pycroscope.value.CanAssignContext` when
         a type check succeeds due to ``Any``. This flag gets propagated to
-        :attr:`ImplReturn.used_any_for_match`.
+        ``ImplReturn.used_any_for_match``.
 
         If an overload does not match, but one of the arguments passed was a ``Union``, we try all
         the components of the ``Union`` separately. If some of them match, we subtract them from the
@@ -2058,8 +2058,8 @@ class OverloadedSignature:
         The decomposition happens in the private ``_check_param_type_compatibility`` method of
         :class:`Signature`. When we perform decomposition, this method returns a
         :class:`pycroscope.value.Value` representing the remaining union members. This value is
-        then used to construct a new :class:`ActualArguments` object, which ends up in
-        :attr:`ImplReturn.remaining_arguments`.
+        then used to construct a new ``ActualArguments`` object, which ends up in
+        ``ImplReturn.remaining_arguments``.
 
         An overload that matches without requiring use of ``Any`` or
         union decomposition is called a "clean match".

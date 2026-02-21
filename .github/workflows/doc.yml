@@ -32,4 +32,4 @@ jobs:
         run: uv sync --frozen --group docs
 
       - name: Build documentation
-        run: uv run --frozen --group docs sphinx-build -a -b html --keep-going docs/ docs/_build
+        run: uv run --frozen --group docs sphinx-build -a -b html -n -W --keep-going docs/ docs/_build

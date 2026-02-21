@@ -208,7 +208,7 @@ class CanAssignContext(Protocol):
     def make_type_object(
         self, typ: type | super | str
     ) -> "pycroscope.type_object.TypeObject":
-        """Return a :class:`pycroscope.type_object.TypeObject` for this concrete type."""
+        """Return a ``pycroscope.type_object.TypeObject`` for this concrete type."""
         raise NotImplementedError
 
     def get_generic_bases(
@@ -2201,7 +2201,7 @@ class HasAttrExtension(Extension):
     """Attached to an object to indicate that it has the given attribute.
 
     These cannot be created directly from user code, only through the
-    :class:`pycroscope.extension.HasAttrGuard` mechanism. This is
+    :class:`pycroscope.extensions.HasAttrGuard` mechanism. This is
     because of potential code like this::
 
         def f(x: Annotated[object, HasAttr["y", int]]) -> None:

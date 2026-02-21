@@ -176,7 +176,7 @@ class Context:
         pass
 
     def get_name(self, node: ast.Name) -> Value:
-        """Return the :class:`Value <pycroscope.value.Value>` corresponding to a name."""
+        """Return the :class:`pycroscope.value.Value` corresponding to a name."""
         return AnyValue(AnySource.inference)
 
     def handle_undefined_name(self, name: str) -> Value:
@@ -228,7 +228,7 @@ class RuntimeEvaluator(type_evaluation.Evaluator, Context):
         return value_from_ast(node, ctx=self, error_on_unrecognized=False)
 
     def get_name(self, node: ast.Name) -> Value:
-        """Return the :class:`Value <pycroscope.value.Value>` corresponding to a name."""
+        """Return the :class:`pycroscope.value.Value` corresponding to a name."""
         return self.get_name_from_globals(node.id, self.globals)
 
 
@@ -254,7 +254,7 @@ class SyntheticEvaluator(type_evaluation.Evaluator):
         )
 
     def get_name(self, node: ast.Name) -> Value:
-        """Return the :class:`Value <pycroscope.value.Value>` corresponding to a name."""
+        """Return the :class:`pycroscope.value.Value` corresponding to a name."""
         return self.annotations_context.get_name(node)
 
     @classmethod
@@ -279,7 +279,7 @@ def type_from_ast(
     ctx: Context | None = None,
 ) -> Value:
     """Given an AST node representing an annotation, return a
-    :class:`Value <pycroscope.value.Value>`.
+    :class:`pycroscope.value.Value`.
 
     :param ast_node: AST node to evaluate.
 
@@ -302,7 +302,7 @@ def annotation_expr_from_ast(
     ctx: Context | None = None,
 ) -> AnnotationExpr:
     """Given an AST node representing an annotation, return a
-    :class:`AnnotationExpr`."""
+    ``AnnotationExpr``."""
     if ctx is None:
         ctx = _DefaultContext(visitor, ast_node)
     return _annotation_expr_from_ast(ast_node, ctx)
@@ -354,7 +354,7 @@ def type_from_runtime(
     ctx: Context | None = None,
 ) -> Value:
     """Given a runtime annotation object, return a
-    :class:`Value <pycroscope.value.Value>`.
+    :class:`pycroscope.value.Value`.
 
     :param val: Object to evaluate. This will usually come from an
                 ``__annotations__`` dictionary.
@@ -397,15 +397,15 @@ def type_from_value(
     node: ast.AST | None = None,
     ctx: Context | None = None,
 ) -> Value:
-    """Given a :class:`Value <pycroscope.value.Value` representing an annotation,
-    return a :class:`Value <pycroscope.value.Value>` representing the type.
+    """Given a :class:`pycroscope.value.Value` representing an annotation,
+    return a :class:`pycroscope.value.Value` representing the type.
 
     The input value represents an expression, the output value represents
     a type. For example, the :term:`impl` of ``typing.cast(typ, val)``
     calls :func:`type_from_value` on the value it receives for its
     `typ` argument and returns the result.
 
-    :param value: :class:`Value <pycroscope.value.Value` to evaluate.
+    :param value: :class:`pycroscope.value.Value` to evaluate.
 
     :param visitor: Visitor class to use. This is used in the default
                     :class:`Context` to resolve names and show errors.

@@ -1465,7 +1465,7 @@ class StackedScopes:
         """Gets a variable of the given name from the current scope stack.
 
         :param varname: :term:`varname` of the variable to retrieve
-        :type varname: Varname
+        :type varname: ``Varname``
 
         :param node: AST node corresponding to the place where the variable lookup is happening.
                      :class:`FunctionScope` uses this to decide which definition of the variable
@@ -1474,7 +1474,7 @@ class StackedScopes:
                      in outer scopes. Although this argument should normally be an AST node, it
                      can be any unique, hashable identifier, because sometimes a single AST node
                      sets multiple variables (e.g. in ImportFrom nodes).
-        :type node: Node
+        :type node: ``Node``
 
         :param state: The current :class:`VisitorState`. Pycroscope runs the collecting
                       :term:`phase` to collect all name assignments and map name usages to their

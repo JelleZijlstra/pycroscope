@@ -47,6 +47,32 @@ extensions = [
 # If you need extensions of a certain version or higher, list them here.
 needs_extensions = {"myst_parser": "0.13.7"}
 
+intersphinx_mapping = {"python": ("https://docs.python.org/3", None)}
+
+nitpick_ignore = [
+    ("py:class", "inspect._empty"),
+    ("py:class", "pycroscope.checker.Checker"),
+    ("py:class", "pycroscope.error_code.Error"),
+    ("py:class", "pycroscope.extensions._T"),
+    ("py:class", "pycroscope.find_unused.UnusedObjectFinder"),
+    ("py:class", "pycroscope.functions.FunctionInfo"),
+    ("py:class", "pycroscope.input_sig.ActualArguments"),
+    ("py:class", "pycroscope.input_sig.ParamSpecSig"),
+    ("py:class", "pycroscope.node_visitor.ErrorContext"),
+    ("py:class", "pycroscope.node_visitor.Failure"),
+    ("py:class", "pycroscope.options.Options"),
+    ("py:class", "pycroscope.options.T"),
+    ("py:class", "pycroscope.signature.CheckCallContext"),
+    ("py:class", "pycroscope.stacked_scopes.ConstraintType"),
+    ("py:class", "pycroscope.stacked_scopes.ScopeType"),
+    ("py:class", "pycroscope.stacked_scopes.T"),
+    ("py:class", "pycroscope.type_evaluation.Evaluator"),
+    ("py:class", "pycroscope.type_object.TypeObject"),
+    ("py:class", "pycroscope.typeshed.TypeshedFinder"),
+    ("py:class", "pycroscope.value.OverlapMode"),
+    ("py:class", "pycroscope.value.T"),
+]
+
 
 autodoc_member_order = "bysource"
 autodoc_default_options = {"inherited-members": False, "member-order": "bysource"}
