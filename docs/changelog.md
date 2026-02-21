@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Narrow tuple types after `len()` checks when bounds imply a more specific
+  shape, including exact-length refinements and lower-bound refinements for
+  tuples with fixed and variadic parts, which simplifies `reveal_type()` output.
 - Keep unexpected keyword argument names in call errors in source order,
   so repeated runs produce stable output.
 - Fix an internal error on Python 3.12+ when parsing PEP 695 generics that include `**P` (`ParamSpec`) type parameters.
