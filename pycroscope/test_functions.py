@@ -143,6 +143,7 @@ class TestFunctionDefinitions(TestNameCheckVisitorBase):
             fun = lambda: 1
             x: Callable[[], int] = fun
             y: Callable[[], str] = fun  # E: incompatible_assignment
+            print(x, y)
             fun(1)  # E: incompatible_call
             assert_is_value(fun(), KnownValue(1))
 
