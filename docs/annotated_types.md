@@ -49,6 +49,10 @@ For tuple types, pycroscope narrows using these bounds:
   (for example, `tuple[*tuple[int, ...], str]` becomes
   `tuple[int, *tuple[int, ...], str]` after `if len(x) >= 2:`)
 
+Internally these checks are modeled as intersections with length predicates,
+which also allows narrowing of other values (for example, literal strings) and
+eliminates impossible `TypedDict` branches based on length constraints.
+
 For the `MultipleOf` check, pycroscope follows Python semantics: values
 are accepted if `value % multiple_of == 0`.
 

@@ -6,6 +6,17 @@
 - Narrow tuple types after `len()` checks when bounds imply a more specific
   shape, including exact-length refinements and lower-bound refinements for
   tuples with fixed and variadic parts, which simplifies `reveal_type()` output.
+- Extend `len()`-based narrowing to use intersection predicates, which also
+  improves narrowing for non-tuple cases such as literal strings and impossible
+  `TypedDict` length branches.
+- Fix false-positive errors in some `len()`-narrowed branches involving
+  `Any & Predicate[...]` intersections (including `assert_type(..., Any)` and
+  some sequence indexing operations).
+- Fix a crash when accessing attributes on `len()` predicate constraints by
+  treating `PredicateValue` attributes like attributes on `object`.
+- Fix dunder method handling on intersection types so operations like indexing
+  `list[...] & Predicate[...]` values no longer produce spurious errors and
+  `Any[error]` inference.
 - Keep unexpected keyword argument names in call errors in source order,
   so repeated runs produce stable output.
 - Make protocol member lists in type incompatibility messages deterministic by

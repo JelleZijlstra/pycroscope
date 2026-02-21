@@ -42,6 +42,7 @@ from .value import (
     AnnotatedValue,
     AnySource,
     AnyValue,
+    CanAssignContext,
     ConstraintExtension,
     KnownValue,
     MultiValuedValue,
@@ -503,7 +504,9 @@ class PredicateProvider(AbstractConstraint):
 
     varname: VarnameWithOrigin
     provider: Callable[[Value], Value]
-    value_transformer: Callable[[Value, type[AST], object], Value] | None = None
+    value_transformer: (
+        Callable[[Value, type[AST], object, CanAssignContext], Value] | None
+    ) = None
 
     def apply(self) -> Iterable[Constraint]:
         return []

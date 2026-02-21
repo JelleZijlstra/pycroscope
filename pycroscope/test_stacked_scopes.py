@@ -1903,6 +1903,13 @@ class TestInvalidation(TestNameCheckVisitorBase):
                     data = [ids]
 
     @assert_passes()
+    def test_len_condition_attribute_access(self) -> None:
+        def capybara(x):
+            if len(x) >= 2:
+                x.__class__
+                x.__str__
+
+    @assert_passes()
     def test_else(self) -> None:
         from typing import Optional
 

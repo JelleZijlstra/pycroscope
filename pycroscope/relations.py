@@ -13,6 +13,7 @@ import struct
 import sys
 from collections.abc import Iterable, Iterator, Sequence
 from dataclasses import dataclass, replace
+from math import comb
 from types import FunctionType
 from typing import Literal, Protocol
 
@@ -20,6 +21,8 @@ from typing_extensions import assert_never
 
 import pycroscope
 from pycroscope.analysis_lib import Sentinel
+from pycroscope.annotated_types import MaxLen, MinLen
+from pycroscope.extensions import PredicateCheck
 from pycroscope.find_unused import used
 from pycroscope.safe import (
     is_instance_of_typing_name,
@@ -51,6 +54,7 @@ from pycroscope.value import (
     NewTypeValue,
     ParamSpecArgsValue,
     ParamSpecKwargsValue,
+    PredicateValue,
     SequenceValue,
     SimpleType,
     SubclassValue,
@@ -238,7 +242,7 @@ def _has_relation(
     # AnnotatedValue
     if isinstance(left, AnnotatedValue):
         left_inner = gradualize(left.value)
-        can_assign = _has_relation(left_inner, right, relation, ctx, original_left=left)
+        can_assign = _has_relation(left_inner, right, relation, ctx)
         if isinstance(can_assign, CanAssignError):
             return can_assign
         bounds_maps = [can_assign]
@@ -262,6 +266,20 @@ def _has_relation(
                 return custom_can_assign
             bounds_maps.append(custom_can_assign)
         return unify_bounds_maps(bounds_maps)
+
+    # PredicateValue
+    if isinstance(left, PredicateValue):
+        if isinstance(right, PredicateValue):
+            if _predicate_implies(right.predicate, left.predicate):
+                return {}
+            return CanAssignError(f"{right} is not {relation.description} {left}")
+        if _value_guarantees_predicate(right, left.predicate, ctx):
+            return {}
+        return CanAssignError(f"{right} is not {relation.description} {left}")
+    if isinstance(right, PredicateValue):
+        if left == TypedValue(object):
+            return {}
+        return CanAssignError(f"{right} is not {relation.description} {left}")
 
     # TypeFormValue
     if isinstance(left, TypeFormValue):
@@ -311,6 +329,24 @@ def _has_relation(
         right = intersect_multi(right.vals, ctx)
         if not isinstance(right, IntersectionValue):
             return _has_relation(original_left, right, relation, ctx)
+        if isinstance(left, MultiValuedValue):
+            # For expected unions, first test each union arm against the whole
+            # intersection. Decomposing the right side too early can lose
+            # correlations (e.g. Any & Predicate[...] should match a union arm
+            # that expects the same intersection).
+            bounds_maps = []
+            errors = []
+            for val in left.vals:
+                can_assign = _has_relation(gradualize(val), right, relation, ctx)
+                if isinstance(can_assign, CanAssignError):
+                    errors.append(can_assign)
+                else:
+                    bounds_maps.append(can_assign)
+            if not bounds_maps:
+                return CanAssignError(
+                    f"{right} is not {relation.description} {left}", children=errors
+                )
+            return intersect_bounds_maps(bounds_maps)
         # At least one member must be a subtype
         bounds_maps = []
         errors = []
@@ -1245,6 +1281,320 @@ def can_assign_and_used_any(
 Irreducible = Sentinel("Irreducible")
 TypeOrIrreducible = GradualType | Literal[Irreducible]
 
+_MAX_EXACT_TUPLE_LENGTH = 64
+_MAX_EXACT_TUPLE_EXPANSIONS = 128
+
+
+def _iter_compositions(total: int, parts: int) -> Iterable[tuple[int, ...]]:
+    if parts == 1:
+        yield (total,)
+        return
+    for first in range(total + 1):
+        for rest in _iter_compositions(total - first, parts - 1):
+            yield (first, *rest)
+
+
+def _tuple_members_from_value(value: Value) -> tuple[tuple[bool, Value], ...] | None:
+    if isinstance(value, SequenceValue) and value.typ is tuple:
+        return value.members
+    if isinstance(value, GenericValue) and value.typ is tuple and len(value.args) == 1:
+        return ((True, value.args[0]),)
+    return None
+
+
+def _expand_tuple_members_to_exact_len(
+    members: tuple[tuple[bool, Value], ...], target_len: int
+) -> list[tuple[tuple[bool, Value], ...]] | None:
+    if target_len < 0:
+        return []
+    if target_len > _MAX_EXACT_TUPLE_LENGTH:
+        return None
+    fixed_count = sum(not is_many for is_many, _ in members)
+    many_values = [value for is_many, value in members if is_many]
+    if target_len < fixed_count:
+        return []
+    if not many_values:
+        if target_len == fixed_count:
+            return [members]
+        return []
+    extra = target_len - fixed_count
+    if len(many_values) > 1:
+        expansions = comb(extra + len(many_values) - 1, len(many_values) - 1)
+        if expansions > _MAX_EXACT_TUPLE_EXPANSIONS:
+            return None
+    result = []
+    for counts in _iter_compositions(extra, len(many_values)):
+        many_index = 0
+        expanded = []
+        for is_many, member in members:
+            if not is_many:
+                expanded.append((False, member))
+                continue
+            expanded.extend((False, member) for _ in range(counts[many_index]))
+            many_index += 1
+        result.append(tuple(expanded))
+    return result
+
+
+def _expand_tuple_members_to_min_len(
+    members: tuple[tuple[bool, Value], ...], target_len: int
+) -> list[tuple[tuple[bool, Value], ...]] | None:
+    if target_len < 0:
+        return [members]
+    if target_len > _MAX_EXACT_TUPLE_LENGTH:
+        return None
+    fixed_count = sum(not is_many for is_many, _ in members)
+    many_values = [value for is_many, value in members if is_many]
+    if target_len <= fixed_count:
+        return [members]
+    if not many_values:
+        return []
+    needed = target_len - fixed_count
+    if len(many_values) > 1:
+        expansions = comb(needed + len(many_values) - 1, len(many_values) - 1)
+        if expansions > _MAX_EXACT_TUPLE_EXPANSIONS:
+            return None
+    result = []
+    for counts in _iter_compositions(needed, len(many_values)):
+        many_index = 0
+        expanded = []
+        for is_many, member in members:
+            if not is_many:
+                expanded.append((False, member))
+                continue
+            expanded.extend((False, member) for _ in range(counts[many_index]))
+            expanded.append((True, member))
+            many_index += 1
+        result.append(tuple(expanded))
+    return result
+
+
+def _expand_tuple_members_to_max_len(
+    members: tuple[tuple[bool, Value], ...], target_len: int
+) -> list[tuple[tuple[bool, Value], ...]] | None:
+    if target_len < 0:
+        return []
+    if target_len > _MAX_EXACT_TUPLE_LENGTH:
+        return None
+    fixed_count = sum(not is_many for is_many, _ in members)
+    if fixed_count > target_len:
+        return []
+
+    expanded = []
+    for current_len in range(fixed_count, target_len + 1):
+        exact = _expand_tuple_members_to_exact_len(members, current_len)
+        if exact is None:
+            return None
+        expanded.extend(exact)
+        if len(expanded) > _MAX_EXACT_TUPLE_EXPANSIONS:
+            return None
+
+    deduped = []
+    for option in expanded:
+        if option not in deduped:
+            deduped.append(option)
+    return deduped
+
+
+def _narrow_tuple_to_min_len(value: Value, target_len: int) -> GradualType | None:
+    members = _tuple_members_from_value(value)
+    if members is None:
+        return None
+    expanded = _expand_tuple_members_to_min_len(members, target_len)
+    if expanded is None:
+        return None
+    if not expanded:
+        return NO_RETURN_VALUE
+    return gradualize(
+        unite_values(*[SequenceValue(tuple, members) for members in expanded])
+    )
+
+
+def _narrow_tuple_to_max_len(value: Value, target_len: int) -> GradualType | None:
+    members = _tuple_members_from_value(value)
+    if members is None:
+        return None
+    expanded = _expand_tuple_members_to_max_len(members, target_len)
+    if expanded is None:
+        return None
+    if not expanded:
+        return NO_RETURN_VALUE
+    return gradualize(
+        unite_values(*[SequenceValue(tuple, members) for members in expanded])
+    )
+
+
+def _get_len_bounds(value: Value) -> tuple[int | None, int | None]:
+    if isinstance(value, KnownValue):
+        try:
+            length = len(value.val)
+        except Exception:
+            return None, None
+        return length, length
+    if isinstance(value, SequenceValue):
+        min_len = 0
+        max_len = 0
+        for is_many, _ in value.members:
+            if is_many:
+                max_len = None
+            else:
+                min_len += 1
+                if max_len is not None:
+                    max_len += 1
+        return min_len, max_len
+    if isinstance(value, GenericValue) and value.typ is tuple and len(value.args) == 1:
+        return 0, None
+    if isinstance(value, DictIncompleteValue):
+        min_len = sum(pair.is_required and not pair.is_many for pair in value.kv_pairs)
+        max_len = 0
+        has_unbounded_tail = False
+        for pair in value.kv_pairs:
+            if pair.is_many:
+                has_unbounded_tail = True
+                break
+            max_len += 1
+        if has_unbounded_tail:
+            return min_len, None
+        return min_len, max_len
+    if isinstance(value, TypedDictValue):
+        min_len = sum(entry.required for entry in value.items.values())
+        if value.extra_keys is not NO_RETURN_VALUE:
+            return min_len, None
+        return min_len, len(value.items)
+    if isinstance(value, TypedValue) and value.typ in {
+        str,
+        bytes,
+        bytearray,
+        tuple,
+        list,
+        set,
+        frozenset,
+        dict,
+    }:
+        return 0, None
+    return None, None
+
+
+def _predicate_implies(stronger: PredicateCheck, weaker: PredicateCheck) -> bool:
+    if stronger == weaker:
+        return True
+    return weaker.is_compatible_metadata(stronger)
+
+
+def _intersect_len_predicate(
+    predicate: MinLen | MaxLen, value: SimpleType
+) -> TypeOrIrreducible:
+    if not isinstance(predicate.value, int):
+        return Irreducible
+
+    min_len, max_len = _get_len_bounds(value)
+    if isinstance(value, KnownValue) and min_len is None and max_len is None:
+        return NO_RETURN_VALUE
+    if isinstance(predicate, MinLen):
+        target = predicate.value
+        tuple_narrowed = _narrow_tuple_to_min_len(value, target)
+        if tuple_narrowed is NO_RETURN_VALUE:
+            return NO_RETURN_VALUE
+        if tuple_narrowed is not None:
+            return tuple_narrowed
+        if max_len is not None and max_len < target:
+            return NO_RETURN_VALUE
+        if min_len is not None and min_len >= target:
+            return value
+        return Irreducible
+    else:
+        target = predicate.value
+        tuple_narrowed = _narrow_tuple_to_max_len(value, target)
+        if tuple_narrowed is NO_RETURN_VALUE:
+            return NO_RETURN_VALUE
+        if tuple_narrowed is not None:
+            return tuple_narrowed
+        if min_len is not None and min_len > target:
+            return NO_RETURN_VALUE
+        if max_len is not None and max_len <= target:
+            return value
+        return Irreducible
+
+
+def _intersect_predicate_predicate(
+    left: PredicateValue, right: PredicateValue
+) -> TypeOrIrreducible:
+    left_pred = left.predicate
+    right_pred = right.predicate
+    if isinstance(left_pred, MinLen) and isinstance(right_pred, MinLen):
+        if isinstance(left_pred.value, int) and isinstance(right_pred.value, int):
+            return PredicateValue(MinLen(max(left_pred.value, right_pred.value)))
+    if isinstance(left_pred, MaxLen) and isinstance(right_pred, MaxLen):
+        if isinstance(left_pred.value, int) and isinstance(right_pred.value, int):
+            return PredicateValue(MaxLen(min(left_pred.value, right_pred.value)))
+    if isinstance(left_pred, MinLen) and isinstance(right_pred, MaxLen):
+        if (
+            isinstance(left_pred.value, int)
+            and isinstance(right_pred.value, int)
+            and left_pred.value > right_pred.value
+        ):
+            return NO_RETURN_VALUE
+    if isinstance(left_pred, MaxLen) and isinstance(right_pred, MinLen):
+        if (
+            isinstance(left_pred.value, int)
+            and isinstance(right_pred.value, int)
+            and right_pred.value > left_pred.value
+        ):
+            return NO_RETURN_VALUE
+    if _predicate_implies(left_pred, right_pred):
+        return left
+    if _predicate_implies(right_pred, left_pred):
+        return right
+    return Irreducible
+
+
+def _intersect_predicate(
+    left: PredicateValue, right: SimpleType, ctx: CanAssignContext
+) -> TypeOrIrreducible:
+    if isinstance(right, PredicateValue):
+        return _intersect_predicate_predicate(left, right)
+    if isinstance(left.predicate, (MinLen, MaxLen)):
+        return _intersect_len_predicate(left.predicate, right)
+    if isinstance(right, KnownValue):
+        can_assign = left.predicate.can_assign(right, ctx)
+        if isinstance(can_assign, CanAssignError):
+            return NO_RETURN_VALUE
+        return right
+    return Irreducible
+
+
+def _value_guarantees_predicate(
+    value: GradualType, predicate: PredicateCheck, ctx: CanAssignContext
+) -> bool:
+    if value is NO_RETURN_VALUE:
+        return True
+    if isinstance(value, AnyValue):
+        return True
+    if isinstance(value, MultiValuedValue):
+        return all(
+            _value_guarantees_predicate(gradualize(val), predicate, ctx)
+            for val in value.vals
+        )
+    if isinstance(value, IntersectionValue):
+        return any(
+            _value_guarantees_predicate(gradualize(val), predicate, ctx)
+            for val in value.vals
+        )
+    if isinstance(value, PredicateValue):
+        return _predicate_implies(value.predicate, predicate)
+    if isinstance(predicate, MinLen) and isinstance(predicate.value, int):
+        min_len, _ = _get_len_bounds(value)
+        return min_len is not None and min_len >= predicate.value
+    if isinstance(predicate, MaxLen) and isinstance(predicate.value, int):
+        _, max_len = _get_len_bounds(value)
+        return max_len is not None and max_len <= predicate.value
+    if isinstance(value, KnownValue):
+        try:
+            return not isinstance(predicate.can_assign(value, ctx), CanAssignError)
+        except Exception:
+            return False
+    return False
+
 
 def intersect_multi(values: Sequence[Value], ctx: CanAssignContext) -> GradualType:
     """Intersect multiple values."""
@@ -1388,6 +1738,10 @@ def _simple_intersection(
 def _intersect_simple_types(
     left: SimpleType, right: SimpleType, ctx: CanAssignContext
 ) -> TypeOrIrreducible:
+    if isinstance(left, PredicateValue):
+        return _intersect_predicate(left, right, ctx)
+    if isinstance(right, PredicateValue):
+        return _intersect_predicate(right, left, ctx)
     if isinstance(left, TypeFormValue) or isinstance(right, TypeFormValue):
         # Most TypeForm intersections don't have a useful reduction rule.
         # We keep them as intersections unless a prior generic simplification
@@ -1656,11 +2010,15 @@ def _intersect_intersection(
     results = []
     should_add_right = False
     for subval, new_subval in zip(left.vals, intersections):
+        if new_subval is NO_RETURN_VALUE:
+            return NO_RETURN_VALUE
         if new_subval is Irreducible:
             results.append(subval)
             should_add_right = True
         elif isinstance(new_subval, IntersectionValue):
             for subsubval in new_subval.vals:
+                if subsubval is NO_RETURN_VALUE:
+                    return NO_RETURN_VALUE
                 results.append(gradualize(subsubval))
         else:
             results.append(new_subval)
