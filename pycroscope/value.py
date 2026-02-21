@@ -1608,6 +1608,9 @@ class IntersectionValue(Value):
         for val in self.vals:
             yield from val.walk_values()
 
+    def get_type_value(self) -> Value:
+        return IntersectionValue(tuple(val.get_type_value() for val in self.vals))
+
     def __str__(self) -> str:
         return " & ".join(str(val) for val in self.vals)
 
