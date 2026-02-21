@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Report `unused_variable` and `unused_assignment` for annotated assignments
+  like `x: int = value` when the assigned value is never read.
 - Treat `with` blocks as non-suppressing when `__exit__`/`__aexit__` return types include non-`bool` members like `None | bool`, which improves narrowing after the block.
 - Narrow tuple types after `len()` checks when bounds imply a more specific
   shape, including exact-length refinements and lower-bound refinements for

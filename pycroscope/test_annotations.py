@@ -380,6 +380,7 @@ class TestAnnotations(TestNameCheckVisitorBase):
     def test_incompatible_annassign(self):
         def capybara(y: str):
             x: int = y  # E: incompatible_assignment
+            print(x)
 
     @assert_passes()
     def test_typing_tuples(self):

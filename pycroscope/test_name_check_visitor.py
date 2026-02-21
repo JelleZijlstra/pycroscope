@@ -1858,7 +1858,7 @@ class TestAnnAssign(TestNameCheckVisitorBase):
         x = 2  # E: incompatible_assignment
 
         def capybara():
-            y: Final = 1
+            y: Final = 1  # E: unused_assignment
             y = 2  # E: incompatible_assignment
             return y
 
@@ -1888,9 +1888,9 @@ class TestAnnAssign(TestNameCheckVisitorBase):
     def test_loop(self):
         def capybara():
             for i in range(3):
-                j: int = i
+                j: int = i  # E: unused_variable
 
-            j: int = 0  # E: already_declared
+            j: int = 0  # E: already_declared  # E: unused_variable
 
     @assert_passes()
     def test_module_scope(self):
