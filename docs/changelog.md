@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Fix crash if accessing a module's `__annotations__` raises an error.
 - Implement PEP 747 `TypeForm` support, including implicit and explicit
   `TypeForm` evaluation, assignability checks, and conformance tests.
 - Require `typing_extensions>=4.13.0`.

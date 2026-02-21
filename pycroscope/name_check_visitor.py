@@ -6038,7 +6038,10 @@ def build_stacked_scopes(
         module_vars = {"__name__": TypedValue(str), "__file__": TypedValue(str)}
     else:
         module_vars = {}
-        annotations = getattr(module, "__annotations__", {})
+        try:
+            annotations = module.__annotations__
+        except Exception:
+            annotations = {}
         for key, value in module.__dict__.items():
             expr = annotation_expr_from_annotations(
                 annotations, key, globals=module.__dict__
