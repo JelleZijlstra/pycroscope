@@ -1090,6 +1090,10 @@ class _Visitor(ast.NodeVisitor):
         self.ctx = ctx
 
     def generic_visit(self, node: ast.AST) -> None:
+        if isinstance(node, ast.expr):
+            # Unsupported annotation expression: let callers turn this into a
+            # normal "invalid annotation" error rather than crashing.
+            return None
         raise NotImplementedError(f"no visitor implemented for {node!r}")
 
     def visit_Name(self, node: ast.Name) -> Value:

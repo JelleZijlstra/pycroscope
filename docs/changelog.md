@@ -25,6 +25,8 @@
 - Keep checking files when module import fails, and report `import_failed`
   on the line that triggered the import-time error (so it can be ignored
   with `# static analysis: ignore[import_failed]`).
+- Fix crashes on unsupported syntax in string forward references by
+  reporting regular `invalid_annotation` errors instead.
 - Fix a crash in callable assignability involving `Concatenate[...,]`
   signatures represented as `AnySig`.
 - Fix crash when checking certain `TypeAliasType` specializations that include
