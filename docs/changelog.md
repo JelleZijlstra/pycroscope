@@ -7,6 +7,8 @@
   tuples with fixed and variadic parts, which simplifies `reveal_type()` output.
 - Keep unexpected keyword argument names in call errors in source order,
   so repeated runs produce stable output.
+- Make protocol member lists in type incompatibility messages deterministic by
+  using definition order when available and sorted order otherwise.
 - Fix an internal error on Python 3.12+ when parsing PEP 695 generics that include `**P` (`ParamSpec`) type parameters.
 - Fix crash if accessing a module's `__annotations__` raises an error.
 - Implement PEP 747 `TypeForm` support, including implicit and explicit
