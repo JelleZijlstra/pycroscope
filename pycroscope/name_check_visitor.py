@@ -3771,7 +3771,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                         op_cls = AST_TO_REVERSE[op_cls]
                     else:
                         return value
-                return pred.value_transformer(value, op_cls, other_val)
+                return pred.value_transformer(value, op_cls, other_val, self)
             return value
 
         return Constraint(pred.varname, ConstraintType.predicate, True, predicate_func)
