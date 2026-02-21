@@ -364,7 +364,6 @@ class TestLen(TestNameCheckVisitorBase):
             """
         )
 
-
 class TestBool(TestNameCheckVisitorBase):
     @assert_passes()
     def test_return_value(self):
