@@ -40,6 +40,7 @@ from .value import (
     KnownValue,
     KnownValueWithTypeVars,
     MultiValuedValue,
+    PredicateValue,
     Qualifier,
     SubclassValue,
     SyntheticModuleValue,
@@ -149,6 +150,8 @@ def get_attribute(ctx: AttrContext) -> Value:
         module = ".".join(root_value.module_path)
         attribute_value = ctx.resolve_name_from_typeshed(module, ctx.attr)
     elif isinstance(root_value, TypeFormValue):
+        attribute_value = _get_attribute_from_typed(object, (), ctx)
+    elif isinstance(root_value, PredicateValue):
         attribute_value = _get_attribute_from_typed(object, (), ctx)
     else:
         assert_never(root_value)

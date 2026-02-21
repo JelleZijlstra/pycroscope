@@ -11,6 +11,8 @@
 - Fix false-positive errors in some `len()`-narrowed branches involving
   `Any & Predicate[...]` intersections (including `assert_type(..., Any)` and
   some sequence indexing operations).
+- Fix a crash when accessing attributes on `len()` predicate constraints by
+  treating `PredicateValue` attributes like attributes on `object`.
 - Keep unexpected keyword argument names in call errors in source order,
   so repeated runs produce stable output.
 - Fix an internal error on Python 3.12+ when parsing PEP 695 generics that include `**P` (`ParamSpec`) type parameters.
