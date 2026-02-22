@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Fix `assert_type(..., Callable[..., Any])` equivalence checks.
 - Fix handling of historical positional-only parameters (`__x`) in source code:
   keyword calls to these parameters now error correctly, and invalid definitions
   like `def f(x, __y): ...` are now reported under a dedicated
