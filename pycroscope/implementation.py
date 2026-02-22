@@ -21,7 +21,13 @@ from .extensions import assert_type, reveal_locals, reveal_type
 from .format_strings import parse_format_string
 from .maybe_asynq import qcore
 from .predicates import IsAssignablePredicate
-from .relations import check_hashability, intersect_values, is_equivalent_with_reason
+from .relations import (
+    Relation,
+    check_hashability,
+    has_relation,
+    intersect_values,
+    is_equivalent_with_reason,
+)
 from .safe import (
     hasattr_static,
     is_typing_name,
@@ -592,7 +598,9 @@ def _typeddict_setitem(
                     arg="k",
                 )
                 return
-            can_assign = entry.typ.can_assign(value, ctx.visitor)
+            can_assign = has_relation(
+                entry.typ, value, Relation.ASSIGNABLE, ctx.visitor
+            )
             if isinstance(can_assign, CanAssignError):
                 ctx.show_error(
                     f"Value for key {key} must be {entry.typ}, not {value}",
@@ -637,7 +645,7 @@ def _typeddict_setitem(
             )
             return
         expected_type = entry.typ
-    tv_map = expected_type.can_assign(value, ctx.visitor)
+    tv_map = has_relation(expected_type, value, Relation.ASSIGNABLE, ctx.visitor)
     if isinstance(tv_map, CanAssignError):
         ctx.show_error(
             f"Value for key {key.val!r} must be {expected_type}, not {value}",
@@ -728,7 +736,7 @@ def _dict_getitem_impl(ctx: CallContext) -> ImplReturn:
             return val
         elif isinstance(self_value, TypedValue):
             key_type = self_value.get_generic_arg_for_type(dict, ctx.visitor, 0)
-            can_assign = key_type.can_assign(key, ctx.visitor)
+            can_assign = has_relation(key_type, key, Relation.ASSIGNABLE, ctx.visitor)
             if isinstance(can_assign, CanAssignError):
                 ctx.show_error(
                     f"Dictionary does not accept keys of type {key}",
@@ -805,7 +813,7 @@ def _dict_get_impl(ctx: CallContext) -> ImplReturn:
             return val | default
         elif isinstance(self_value, TypedValue):
             key_type = self_value.get_generic_arg_for_type(dict, ctx.visitor, 0)
-            can_assign = key_type.can_assign(key, ctx.visitor)
+            can_assign = has_relation(key_type, key, Relation.ASSIGNABLE, ctx.visitor)
             if isinstance(can_assign, CanAssignError):
                 ctx.show_error(
                     f"Dictionary does not accept keys of type {key}",
@@ -889,7 +897,7 @@ def _dict_delitem_impl(ctx: CallContext) -> ImplReturn:
         return ImplReturn(KnownValue(None), no_return_unless=no_return_unless)
     elif isinstance(self_value, TypedValue):
         key_type = self_value.get_generic_arg_for_type(dict, ctx.visitor, 0)
-        tv_map = key_type.can_assign(key, ctx.visitor)
+        tv_map = has_relation(key_type, key, Relation.ASSIGNABLE, ctx.visitor)
         if isinstance(tv_map, CanAssignError):
             ctx.show_error(
                 f"Key {key} is not valid for {self_value}",
@@ -985,7 +993,7 @@ def _dict_pop_impl(ctx: CallContext) -> ImplReturn:
     elif isinstance(self_value, TypedValue):
         key_type = self_value.get_generic_arg_for_type(dict, ctx.visitor, 0)
         value_type = self_value.get_generic_arg_for_type(dict, ctx.visitor, 1)
-        tv_map = key_type.can_assign(key, ctx.visitor)
+        tv_map = has_relation(key_type, key, Relation.ASSIGNABLE, ctx.visitor)
         if isinstance(tv_map, CanAssignError):
             ctx.show_error(
                 f"Key {key} is not valid for {self_value}",
@@ -1034,7 +1042,9 @@ def _dict_setdefault_impl(ctx: CallContext) -> ImplReturn:
                         error_code=ErrorCode.readonly_typeddict,
                         arg="key",
                     )
-                tv_map = entry.typ.can_assign(default, ctx.visitor)
+                tv_map = has_relation(
+                    entry.typ, default, Relation.ASSIGNABLE, ctx.visitor
+                )
                 if isinstance(tv_map, CanAssignError):
                     ctx.show_error(
                         f"TypedDict key {key.val} expected value of type"
@@ -1076,7 +1086,7 @@ def _dict_setdefault_impl(ctx: CallContext) -> ImplReturn:
         key_type = self_value.get_generic_arg_for_type(dict, ctx.visitor, 0)
         value_type = self_value.get_generic_arg_for_type(dict, ctx.visitor, 1)
         new_value_type = unite_values(value_type, default)
-        tv_map = key_type.can_assign(key, ctx.visitor)
+        tv_map = has_relation(key_type, key, Relation.ASSIGNABLE, ctx.visitor)
         if isinstance(tv_map, CanAssignError):
             ctx.show_error(
                 f"Key {key} is not valid for {self_value}",
@@ -1152,7 +1162,7 @@ def _add_pairs_to_dict(
         key_type = self_val.get_generic_arg_for_type(dict, ctx.visitor, 0)
         value_type = self_val.get_generic_arg_for_type(dict, ctx.visitor, 1)
         for pair in pairs:
-            tv_map = key_type.can_assign(pair.key, ctx.visitor)
+            tv_map = has_relation(key_type, pair.key, Relation.ASSIGNABLE, ctx.visitor)
             if isinstance(tv_map, CanAssignError):
                 ctx.show_error(
                     f"Cannot set key of type {pair.key} (expecting {key_type})",
@@ -1160,7 +1170,9 @@ def _add_pairs_to_dict(
                     arg="k",
                     detail=str(tv_map),
                 )
-            tv_map = value_type.can_assign(pair.value, ctx.visitor)
+            tv_map = has_relation(
+                value_type, pair.value, Relation.ASSIGNABLE, ctx.visitor
+            )
             if isinstance(tv_map, CanAssignError):
                 ctx.show_error(
                     f"Cannot set value of type {pair.value} (expecting {value_type})",
@@ -1318,7 +1330,7 @@ def _check_generic_container(
     return_container: bool = False,
 ) -> ImplReturn:
     expected_type = container_type.get_generic_arg_for_type(typ, ctx.visitor, 0)
-    tv_map = expected_type.can_assign(actual_type, ctx.visitor)
+    tv_map = has_relation(expected_type, actual_type, Relation.ASSIGNABLE, ctx.visitor)
     if isinstance(tv_map, CanAssignError):
         ctx.show_error(
             f"{function_name}: expected {expected_type} but got {actual_type}",
