@@ -795,6 +795,8 @@ def _annotation_expr_from_value(value: Value, ctx: Context) -> AnnotationExpr:
 def _type_from_value(value: Value, ctx: Context) -> Value:
     if isinstance(value, KnownValue):
         return _type_from_runtime(value.val, ctx)
+    elif isinstance(value, TypedDictValue):
+        return value
     elif isinstance(value, (TypeVarValue, TypeAliasValue)):
         return value
     elif isinstance(value, MultiValuedValue):
@@ -809,9 +811,6 @@ def _type_from_value(value: Value, ctx: Context) -> Value:
         return value
     elif isinstance(value, SubclassValue) and value.exactly:
         return value.typ
-    elif isinstance(value, TypedValue) and isinstance(value.typ, str):
-        # Synthetic type
-        return value
     elif isinstance(value, InputSigValue):
         return value
     else:

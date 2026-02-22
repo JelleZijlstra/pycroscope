@@ -200,8 +200,136 @@ class TestImportFailureHandling:
         )
         assert any(failure["code"] == ErrorCode.undefined_name for failure in failures)
 
+    def test_typeddict_fallback_after_import_failure(self, tmp_path):
+        filename = tmp_path / "typeddict_import_failure.py"
+        filename.write_text(
+            "from typing import TypedDict\n"
+            "from typing_extensions import NotRequired, ReadOnly, Required\n"
+            "\n"
+            "class F1(TypedDict):\n"
+            "    a: Required[int]\n"
+            "    b: ReadOnly[NotRequired[int]]\n"
+            "    c: ReadOnly[Required[int]]\n"
+            "boom = 1 / 0\n"
+            "class F3(F1):\n"
+            "    a: ReadOnly[int]\n"
+            "\n"
+            "class F4(F1):\n"
+            "    a: NotRequired[int]\n"
+            "\n"
+            "class F5(F1):\n"
+            "    b: ReadOnly[Required[int]]\n"
+            "\n"
+            "class F6(F1):\n"
+            "    c: ReadOnly[NotRequired[int]]\n"
+            "\n"
+            "class TD_A1(TypedDict):\n"
+            "    x: int\n"
+            "    y: ReadOnly[int]\n"
+            "\n"
+            "class TD_A2(TypedDict):\n"
+            "    x: float\n"
+            "    y: ReadOnly[float]\n"
+            "\n"
+            "class TD_A(TD_A1, TD_A2): ...\n"
+            "\n"
+            "class TD_B1(TypedDict):\n"
+            "    x: ReadOnly[NotRequired[int]]\n"
+            "    y: ReadOnly[Required[int]]\n"
+            "\n"
+            "class TD_B2(TypedDict):\n"
+            "    x: ReadOnly[Required[int]]\n"
+            "    y: ReadOnly[NotRequired[int]]\n"
+            "\n"
+            "class TD_B(TD_B1, TD_B2): ...\n"
+        )
+        failures = self._check_file(str(filename))
+
+        assert any(
+            failure["code"] == ErrorCode.import_failed and failure["lineno"] == 8
+            for failure in failures
+        )
+        for lineno in (10, 13, 19, 29, 39):
+            assert any(
+                failure["code"] == ErrorCode.invalid_annotation
+                and failure["lineno"] == lineno
+                for failure in failures
+            )
+
+        allowed_annotation_lines = {16, 23, 27, 32, 33, 36, 37}
+        assert not any(
+            failure["code"] == ErrorCode.invalid_annotation
+            and failure["lineno"] in allowed_annotation_lines
+            for failure in failures
+        )
+
 
 class TestNameCheckVisitor(TestNameCheckVisitorBase):
+    @assert_passes()
+    def test_function_scope_typeddict_readonly_inheritance(self):
+        from typing import TypedDict
+
+        from typing_extensions import NotRequired, ReadOnly, Required
+
+        def run() -> None:
+            class F1(TypedDict):
+                a: Required[int]
+                b: ReadOnly[NotRequired[int]]
+                c: ReadOnly[Required[int]]
+
+            class F3(F1):
+                a: ReadOnly[int]  # E: invalid_annotation
+
+            class F4(F1):
+                a: NotRequired[int]  # E: invalid_annotation
+
+            class F5(F1):
+                b: ReadOnly[Required[int]]
+
+            class F6(F1):
+                c: ReadOnly[NotRequired[int]]  # E: invalid_annotation
+
+            class TD_A1(TypedDict):
+                x: int
+                y: ReadOnly[int]
+
+            class TD_A2(TypedDict):
+                x: float
+                y: ReadOnly[float]
+
+            class TD_A(TD_A1, TD_A2): ...  # E: invalid_annotation
+
+            class TD_B1(TypedDict):
+                x: ReadOnly[NotRequired[int]]
+                y: ReadOnly[Required[int]]
+
+            class TD_B2(TypedDict):
+                x: ReadOnly[Required[int]]
+                y: ReadOnly[NotRequired[int]]
+
+            class TD_B(TD_B1, TD_B2): ...  # E: invalid_annotation
+
+    @assert_passes()
+    def test_function_scope_typeddict_values(self):
+        from typing import TypedDict
+
+        from typing_extensions import NotRequired, ReadOnly, Required
+
+        def run() -> None:
+            class OptionalName(TypedDict):
+                name: ReadOnly[NotRequired[str]]
+
+            class RequiredName(OptionalName):
+                name: ReadOnly[Required[str]]
+
+            d: RequiredName = {}  # E: incompatible_assignment
+
+            class Movie(TypedDict):
+                title: ReadOnly[str]
+
+            movie: Movie = {"title": ""}
+            movie["title"] = "x"  # E: readonly_typeddict
+
     @assert_passes()
     def test_known_ordered(self):
         from typing_extensions import OrderedDict
