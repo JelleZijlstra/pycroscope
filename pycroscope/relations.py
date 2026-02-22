@@ -72,6 +72,7 @@ from pycroscope.value import (
     UpperBound,
     Value,
     VariableNameValue,
+    _can_assign_type_form,
     flatten_values,
     gradualize,
     intersect_bounds_maps,
@@ -295,7 +296,7 @@ def _has_relation(
 
     # TypeFormValue
     if isinstance(left, TypeFormValue):
-        return left.can_assign(right, ctx)
+        return _can_assign_type_form(left.inner_type, right, ctx)
     if isinstance(right, TypeFormValue):
         right_inner = gradualize(right.get_fallback_value())
         return _has_relation(left, right_inner, relation, ctx, original_right=right)
@@ -1274,7 +1275,6 @@ def check_hashability(value: Value, ctx: CanAssignContext) -> CanAssignError | N
 
     """
     can_assign = is_assignable_with_reason(HashableProtoValue, value, ctx)
-    HashableProtoValue.can_assign(value, ctx)
     if isinstance(can_assign, CanAssignError):
         return can_assign
     return None
