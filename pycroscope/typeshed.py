@@ -16,6 +16,8 @@ from collections.abc import Collection, Iterable, MutableMapping, Sequence
 from collections.abc import Set as AbstractSet
 from dataclasses import dataclass, field, replace
 from enum import EnumMeta
+from functools import lru_cache
+from pathlib import Path
 from types import GeneratorType, MethodDescriptorType, ModuleType
 from typing import Any, Generic, TypeVar
 
@@ -84,6 +86,28 @@ if sys.version_info >= (3, 11):
 
 
 T_co = TypeVar("T_co", covariant=True)
+
+
+@lru_cache(maxsize=1)
+def _get_default_typeshed_search_context() -> Any:
+    return typeshed_client.get_search_context()
+
+
+@lru_cache(maxsize=10)
+def _get_resolver_for_stub_paths(
+    extra_paths: tuple[str, ...],
+) -> typeshed_client.Resolver:
+    default_ctx = _get_default_typeshed_search_context()
+    search_path = [*default_ctx.search_path, *(Path(path) for path in extra_paths)]
+    ctx = typeshed_client.get_search_context(
+        typeshed=default_ctx.typeshed,
+        search_path=search_path,
+        version=default_ctx.version,
+        platform=default_ctx.platform,
+        raise_on_warnings=default_ctx.raise_on_warnings,
+        allow_py_files=default_ctx.allow_py_files,
+    )
+    return typeshed_client.Resolver(ctx)
 
 
 @dataclass
@@ -177,12 +201,8 @@ class TypeshedFinder:
         *,
         verbose: bool = False,
     ) -> "TypeshedFinder":
-        extra_paths = options.get_value_for(StubPath)
-        ctx = typeshed_client.get_search_context()
-        ctx = typeshed_client.get_search_context(
-            search_path=[*ctx.search_path, *extra_paths]
-        )
-        resolver = typeshed_client.Resolver(ctx)
+        extra_paths = tuple(str(path) for path in options.get_value_for(StubPath))
+        resolver = _get_resolver_for_stub_paths(extra_paths)
         return TypeshedFinder(can_assign_ctx, verbose, resolver)
 
     def log(self, message: str, obj: object) -> None:
