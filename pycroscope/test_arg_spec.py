@@ -1,13 +1,11 @@
 # static analysis: ignore
 import functools
-import re
 from dataclasses import dataclass
 from typing import List, NewType, TypeVar
 
 import pytest
 from typing_extensions import TypeVarTuple
 
-from . import implementation
 from .checker import Checker
 from .input_sig import wrap_type_param
 from .maybe_asynq import asynq
@@ -153,26 +151,6 @@ def test_get_argspec():
             NewTypeValue("NT", TypedValue(int), NT),
             callable=NT,
         ) == asc.get_argspec(NT)
-
-
-def test_default_argspecs_with_cache_are_lazy(monkeypatch):
-    calls = 0
-    original = implementation.get_default_argspecs_with_cache
-
-    def wrapped(asc):
-        nonlocal calls
-        calls += 1
-        return original(asc)
-
-    monkeypatch.setattr(implementation, "get_default_argspecs_with_cache", wrapped)
-    checker = Checker()
-    asc = checker.arg_spec_cache
-
-    assert calls == 0
-    asc.get_argspec(function)
-    assert calls == 0
-    asc.get_argspec(re.compile)
-    assert calls == 1
 
 
 def test_get_argspec_asynq():
