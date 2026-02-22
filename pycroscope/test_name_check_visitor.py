@@ -203,8 +203,8 @@ class TestImportFailureHandling:
     def test_typeddict_fallback_after_import_failure(self, tmp_path):
         filename = tmp_path / "typeddict_import_failure.py"
         filename.write_text(
-            "from typing import NotRequired, Required, TypedDict\n"
-            "from typing_extensions import ReadOnly\n"
+            "from typing import TypedDict\n"
+            "from typing_extensions import NotRequired, ReadOnly, Required\n"
             "\n"
             "class F1(TypedDict):\n"
             "    a: Required[int]\n"
@@ -267,9 +267,9 @@ class TestImportFailureHandling:
 class TestNameCheckVisitor(TestNameCheckVisitorBase):
     @assert_passes()
     def test_function_scope_typeddict_readonly_inheritance(self):
-        from typing import NotRequired, Required, TypedDict
+        from typing import TypedDict
 
-        from typing_extensions import ReadOnly
+        from typing_extensions import NotRequired, ReadOnly, Required
 
         def run() -> None:
             class F1(TypedDict):
@@ -311,9 +311,9 @@ class TestNameCheckVisitor(TestNameCheckVisitorBase):
 
     @assert_passes()
     def test_function_scope_typeddict_values(self):
-        from typing import NotRequired, Required, TypedDict
+        from typing import TypedDict
 
-        from typing_extensions import ReadOnly
+        from typing_extensions import NotRequired, ReadOnly, Required
 
         def run() -> None:
             class OptionalName(TypedDict):
