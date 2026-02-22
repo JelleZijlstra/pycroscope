@@ -21,6 +21,7 @@ class TestRelations(TestNameCheckVisitorBase):
                 eq0_ge1__eq1: Eq0 | Ge1 = eq1
                 eq0_ge1__ge0: Eq0 | Ge1 = ge0
                 eq0_ge1__ge1: Eq0 | Ge1 = ge1
+                print(eq0_ge1__eq0, eq0_ge1__eq1, eq0_ge1__ge0, eq0_ge1__ge1)
 
                 assert_type(ge0, Eq0 | Ge1)
             """
