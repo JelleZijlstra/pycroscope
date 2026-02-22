@@ -430,6 +430,16 @@ class TestNameCheckVisitor(TestNameCheckVisitorBase):
         assert_is_value(outer().runtime_method(), TypedValue(str))
 
     @assert_passes()
+    def test_typedvalue_accepts_function_local_synthetic_class(self):
+        from pycroscope.value import TypedValue
+
+        def outer():
+            class Local:
+                pass
+
+            TypedValue(Local)
+
+    @assert_passes()
     def test_function_scope_typeddict_readonly_inheritance(self):
         from typing import TypedDict
 
