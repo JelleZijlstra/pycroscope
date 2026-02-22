@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Validate that overloaded implementations are compatible with their
+  `@overload` signatures (including async/decorator-transformed signatures), and
+  report overload/implementation mismatches with the new
+  `inconsistent_overload` error code.
 - Improve TypedDict checking when runtime class objects are unavailable
   (for example after import-time failures or for function-local class
   definitions) by falling back to syntactic TypedDict analysis, so
