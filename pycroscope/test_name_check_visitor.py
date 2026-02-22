@@ -323,6 +323,7 @@ class TestNameCheckVisitor(TestNameCheckVisitorBase):
                 name: ReadOnly[Required[str]]
 
             d: RequiredName = {}  # E: incompatible_assignment
+            print(d)
 
             class Movie(TypedDict):
                 title: ReadOnly[str]
