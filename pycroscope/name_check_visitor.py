@@ -2526,7 +2526,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     ) -> ConcreteSignature:
         if isinstance(signature, OverloadedSignature):
             normalized_signatures = [
-                self._normalize_overload_input_signature(sig)
+                self._normalize_single_overload_input_signature(sig)
                 for sig in signature.signatures
             ]
             if all(
@@ -2537,7 +2537,11 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             ):
                 return signature
             return OverloadedSignature(normalized_signatures)
+        return self._normalize_single_overload_input_signature(signature)
 
+    def _normalize_single_overload_input_signature(
+        self, signature: Signature
+    ) -> Signature:
         parameters = {}
         changed = False
         for name, parameter in signature.parameters.items():
