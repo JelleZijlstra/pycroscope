@@ -58,6 +58,7 @@ from pycroscope.value import (
     SequenceValue,
     SimpleType,
     SubclassValue,
+    SyntheticClassObjectValue,
     SyntheticModuleValue,
     T,
     TypeAliasValue,
@@ -209,6 +210,17 @@ def _has_relation(
         original_right = right
     if original_left is None:
         original_left = left
+
+    if isinstance(left, SyntheticClassObjectValue):
+        if isinstance(right, SyntheticClassObjectValue) and left == right:
+            return {}
+        return CanAssignError(f"{right} is not {relation.description} {left}")
+    if isinstance(right, SyntheticClassObjectValue):
+        if isinstance(right.class_type, TypedDictValue):
+            if isinstance(left, SubclassValue):
+                return CanAssignError(f"{right} is not {relation.description} {left}")
+            return _has_relation(left, TypedValue(type), relation, ctx)
+        return _has_relation(left, SubclassValue(right.class_type), relation, ctx)
 
     # TypeVarValue
     if isinstance(left, TypeVarValue):
@@ -1748,9 +1760,25 @@ def _intersect_simple_types(
         # (for example X & object, X & Never, or obvious subtype relations)
         # already applied in _simple_intersection().
         return Irreducible
-    if isinstance(left, (KnownValue, SyntheticModuleValue, UnboundMethodValue)):
+    if isinstance(
+        left,
+        (
+            KnownValue,
+            SyntheticModuleValue,
+            SyntheticClassObjectValue,
+            UnboundMethodValue,
+        ),
+    ):
         return _intersect_singular_type(left, right, ctx)
-    if isinstance(right, (KnownValue, SyntheticModuleValue, UnboundMethodValue)):
+    if isinstance(
+        right,
+        (
+            KnownValue,
+            SyntheticModuleValue,
+            SyntheticClassObjectValue,
+            UnboundMethodValue,
+        ),
+    ):
         return _intersect_singular_type(right, left, ctx)
     if isinstance(left, AnyValue) or isinstance(right, AnyValue):
         return Irreducible
@@ -1982,7 +2010,12 @@ def _intersect_subclass_values(
 
 
 def _intersect_singular_type(
-    left: KnownValue | SyntheticModuleValue | UnboundMethodValue,
+    left: (
+        KnownValue
+        | SyntheticModuleValue
+        | SyntheticClassObjectValue
+        | UnboundMethodValue
+    ),
     right: GradualType,
     ctx: CanAssignContext,
 ) -> TypeOrIrreducible:

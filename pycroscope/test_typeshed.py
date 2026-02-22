@@ -41,7 +41,7 @@ from .value import (
     KVPair,
     NewTypeValue,
     SequenceValue,
-    SubclassValue,
+    SyntheticClassObjectValue,
     TypedDictEntry,
     TypedDictValue,
     TypedValue,
@@ -310,7 +310,9 @@ class TestBundledStubs(TestNameCheckVisitorBase):
         mod = "_pycroscope_tests.typeddict"
 
         for name, expected in _EXPECTED_TYPED_DICTS.items():
-            assert tsf.resolve_name(mod, name) == SubclassValue(expected, exactly=True)
+            assert tsf.resolve_name(mod, name) == SyntheticClassObjectValue(
+                name, expected
+            )
 
     @assert_passes()
     def test_cdata(self):
