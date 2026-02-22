@@ -2,6 +2,7 @@
 import ast
 import collections
 import os
+import sys
 import types
 
 from . import test_node_visitor
@@ -343,6 +344,46 @@ class TestImportFailureHandling:
             and failure["lineno"] == 11
             for failure in failures
         )
+
+    def test_any_base_class_after_import_failure(self, tmp_path):
+        filename = tmp_path / "any_base_class_import_failure.py"
+        code = (
+            "from typing import Any\n"
+            "\n"
+            "class ClassA(Any):\n"
+            "    def method1(self) -> int:\n"
+            "        return 1\n"
+            "\n"
+            "a = ClassA()\n"
+            "x = a.method1()\n"
+            "y = a.method2()\n"
+            "z = ClassA.method3()\n"
+        )
+        filename.write_text(code)
+        settings = {code: code not in DISABLED_IN_TESTS for code in ErrorCode}
+        kwargs = ConfiguredNameCheckVisitor.prepare_constructor_kwargs(
+            {"settings": settings, "fail_after_first": False}
+        )
+        tree = ast.parse(code, str(filename))
+        visitor = ConfiguredNameCheckVisitor(str(filename), code, tree, **kwargs)
+        failures = visitor.check()
+        expected_import_failed_lineno = 3 if sys.version_info < (3, 11) else 9
+
+        assert any(
+            failure["code"] == ErrorCode.import_failed
+            and failure["lineno"] == expected_import_failed_lineno
+            for failure in failures
+        )
+        assert not any(
+            failure["code"] == ErrorCode.undefined_attribute
+            and failure["lineno"] in {9, 10}
+            for failure in failures
+        )
+
+        module_vars = visitor.scopes.module_scope().variables
+        assert module_vars["x"] == TypedValue(int)
+        assert isinstance(module_vars["y"], AnyValue)
+        assert isinstance(module_vars["z"], AnyValue)
 
 
 class TestNameCheckVisitor(TestNameCheckVisitorBase):

@@ -32,6 +32,9 @@
 - Treat synthetic class objects as class objects in assignability checks, so
   APIs expecting `type` (for example `TypedValue(...)`) accept synthetic
   classes.
+- Preserve dynamic `Any`-base behavior for synthetic classes while keeping
+  declared methods precise, so checks like `ClassA(Any).method1()` retain
+  annotated return types and unknown members still behave as `Any`.
 - Fix `Self` inference for classmethods on class objects loaded from stubs
   (including unimportable modules), so calls like `X.from_config()` now infer
   instance results correctly.
