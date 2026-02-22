@@ -117,6 +117,7 @@ class TestSyntheticType(TestNameCheckVisitorBase):
             bad: FloatArg = overloaded_narrow  # E: incompatible_assignment
             ok: OverloadedWide = int_str_arg
             bad2: OverloadedWide = str_arg  # E: incompatible_assignment
+            print(bad, ok, bad2)
 
     @assert_passes()
     def test_functools(self):
