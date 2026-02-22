@@ -22,6 +22,7 @@ from .error_code import ErrorCode
 from .maybe_asynq import asynq
 from .node_visitor import ErrorContext
 from .options import Options, PyObjectSequenceOption
+from .relations import Relation, has_relation
 from .signature import ParameterKind, Signature, SigParameter
 from .stacked_scopes import Composite
 from .value import (
@@ -310,7 +311,9 @@ def compute_parameters(
             if default is not None:
                 inner_value, _ = value.maybe_unqualify(set(Qualifier))
                 if inner_value is not None:
-                    tv_map = inner_value.can_assign(default, ctx)
+                    tv_map = has_relation(
+                        inner_value, default, Relation.ASSIGNABLE, ctx
+                    )
                     if isinstance(tv_map, CanAssignError):
                         ctx.show_error(
                             arg,
