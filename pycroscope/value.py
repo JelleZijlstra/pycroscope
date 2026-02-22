@@ -1583,6 +1583,12 @@ class SubclassValue(Value):
         elif isinstance(origin, AnyValue):
             # Type[Any] is equivalent to plain type
             return TypedValue(type)
+        elif isinstance(origin, KnownValue):
+            if origin.val is None:
+                return cls(TypedValue(type(None)), exactly=exactly)
+            elif isinstance(origin.val, type):
+                return cls(TypedValue(origin.val), exactly=exactly)
+            return AnyValue(AnySource.error)
         elif isinstance(origin, (TypeVarValue, TypedValue)):
             return cls(origin, exactly=exactly)
         else:
