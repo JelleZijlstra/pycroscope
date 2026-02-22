@@ -263,6 +263,19 @@ class CanAssignContext(Protocol):
     ) -> "Value":
         return UNINITIALIZED_VALUE
 
+    def resolve_name(
+        self,
+        node: ast.Name,
+        error_node: ast.AST | None = None,
+        suppress_errors: bool = False,
+    ) -> tuple["Value", object]:
+        """Resolve a name for annotation evaluation."""
+        return AnyValue(AnySource.inference), node.id
+
+    def get_type_alias_cache(self) -> MutableMapping[object, object] | None:
+        """Return cache storage for evaluated type aliases, if supported."""
+        return None
+
     def can_assume_compatibility(
         self,
         left: "pycroscope.type_object.TypeObject",

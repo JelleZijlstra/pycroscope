@@ -4,6 +4,7 @@ The checker maintains global state that is preserved across different modules.
 
 """
 
+import ast
 import collections.abc
 import itertools
 import sys
@@ -130,6 +131,17 @@ class Checker:
 
     def maybe_get_variable_name_value(self, varname: str) -> VariableNameValue | None:
         return VariableNameValue.from_varname(varname, self.vnv_map)
+
+    def resolve_name(
+        self,
+        node: ast.Name,
+        error_node: ast.AST | None = None,
+        suppress_errors: bool = False,
+    ) -> tuple[Value, object]:
+        return AnyValue(AnySource.inference), node.id
+
+    def get_type_alias_cache(self) -> dict[object, TypeAlias]:
+        return self.type_alias_cache
 
     def perform_final_checks(self) -> list[Failure]:
         return self.callable_tracker.check()

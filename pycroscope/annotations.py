@@ -84,6 +84,7 @@ from .value import (
     AnySource,
     AnyValue,
     CallableValue,
+    CanAssignContext,
     CustomCheckExtension,
     DictIncompleteValue,
     Extension,
@@ -139,11 +140,17 @@ class Context:
 
     should_suppress_undefined_names: bool = field(default=False, init=False)
     """While this is True, no errors are shown for undefined names."""
+    should_suppress_errors: bool = field(default=False, init=False)
+    """While this is True, no annotation errors are emitted."""
     _being_evaluated: dict[int, Value] = field(default_factory=dict, init=False)
 
     def suppress_undefined_names(self) -> AbstractContextManager[None]:
         """Temporarily suppress errors about undefined names."""
         return override(self, "should_suppress_undefined_names", True)
+
+    def suppress_errors(self) -> AbstractContextManager[None]:
+        """Temporarily suppress all annotation-evaluation errors."""
+        return override(self, "should_suppress_errors", True)
 
     def is_being_evaluted(self, obj: object) -> Value | None:
         return self._being_evaluated.get(id(obj))
@@ -349,10 +356,11 @@ def annotation_expr_from_annotations(
 
 def type_from_runtime(
     val: object,
-    visitor: Optional["NameCheckVisitor"] = None,
+    visitor: Optional["NameCheckVisitor | CanAssignContext"] = None,
     node: ast.AST | None = None,
     globals: Mapping[str, object] | None = None,
     ctx: Context | None = None,
+    suppress_errors: bool = False,
 ) -> Value:
     """Given a runtime annotation object, return a
     :class:`pycroscope.value.Value`.
@@ -376,6 +384,9 @@ def type_from_runtime(
 
     if ctx is None:
         ctx = _DefaultContext(visitor, node, globals)
+    if suppress_errors:
+        with ctx.suppress_errors(), ctx.suppress_undefined_names():
+            return _type_from_runtime(val, ctx)
     return _type_from_runtime(val, ctx)
 
 
@@ -394,9 +405,10 @@ def annotation_expr_from_runtime(
 
 def type_from_value(
     value: Value,
-    visitor: Optional["NameCheckVisitor"] = None,
+    visitor: Optional["NameCheckVisitor | CanAssignContext"] = None,
     node: ast.AST | None = None,
     ctx: Context | None = None,
+    suppress_errors: bool = False,
 ) -> Value:
     """Given a :class:`pycroscope.value.Value` representing an annotation,
     return a :class:`pycroscope.value.Value` representing the type.
@@ -420,6 +432,9 @@ def type_from_value(
     """
     if ctx is None:
         ctx = _DefaultContext(visitor, node)
+    if suppress_errors:
+        with ctx.suppress_errors(), ctx.suppress_undefined_names():
+            return _type_from_value(value, ctx)
     return _type_from_value(value, ctx)
 
 
@@ -1010,7 +1025,7 @@ def _type_alias_cache_key(key: object) -> object:
 class _DefaultContext(Context):
     def __init__(
         self,
-        visitor: "NameCheckVisitor",
+        visitor: "NameCheckVisitor | CanAssignContext",
         node: ast.AST | None,
         globals: Mapping[str, object] | None = None,
         use_name_node_for_error: bool = False,
@@ -1027,6 +1042,8 @@ class _DefaultContext(Context):
         error_code: Error = ErrorCode.invalid_annotation,
         node: ast.AST | None = None,
     ) -> None:
+        if self.should_suppress_errors:
+            return
         if node is None:
             node = self.node
         if self.visitor is not None and node is not None:
@@ -1061,13 +1078,14 @@ class _DefaultContext(Context):
         evaluate_type_params: typing.Callable[[], Sequence[TypeVarLike]],
     ) -> TypeAlias:
         if self.visitor is not None:
-            cache = self.visitor.checker.type_alias_cache
-            cache_key = _type_alias_cache_key(key)
-            if cache_key in cache:
-                return cache[cache_key]
-            alias = super().get_type_alias(key, evaluator, evaluate_type_params)
-            cache[cache_key] = alias
-            return alias
+            cache = self.visitor.get_type_alias_cache()
+            if cache is not None:
+                cache_key = _type_alias_cache_key(key)
+                if cache_key in cache:
+                    return cache[cache_key]
+                alias = super().get_type_alias(key, evaluator, evaluate_type_params)
+                cache[cache_key] = alias
+                return alias
         return super().get_type_alias(key, evaluator, evaluate_type_params)
 
 
