@@ -3,6 +3,7 @@
 ## Unreleased
 
 - Avoid runtime deprecation warnings during analysis by using non-deprecated coroutine detection and suppressing speculative-call deprecation warnings, which speeds up large runs like self-check.
+- Add a Python 3.12 CI workflow for typing conformance that runs unit tests for the conformance tooling and then fails if pycroscope's conformance outcomes diverge from the known-failing case list.
 - Speed up repeated analysis runs (including the test suite) by reusing typeshed resolvers across checker instances when stub search paths are the same.
 - Speed up checker setup by loading regex-related default argspecs only when regex functions are analyzed.
 - Speed up large analysis runs by memoizing repeated type-relation checks in assignability/subtyping logic.

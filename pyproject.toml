@@ -80,7 +80,7 @@ exclude = '''
 '''
 
 [tool.pycroscope]
-paths = ["pycroscope"]
+paths = ["pycroscope", "tools/conformance_ci.py"]
 import_paths = ["."]
 enforce_no_unused = true
 
