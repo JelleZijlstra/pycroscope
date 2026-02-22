@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Speed up repeated analysis runs (including the test suite) by reusing typeshed resolvers across checker instances when stub search paths are the same.
 - Validate that overloaded implementations are compatible with their
   `@overload` signatures (including async/decorator-transformed signatures), and
   report overload/implementation mismatches with the new
