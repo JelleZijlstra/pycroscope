@@ -1131,11 +1131,10 @@ class TestOverload(TestNameCheckVisitorBase):
 
     @assert_passes()
     def test_consistency_with_transforms(self):
-        from types import CoroutineType
         from typing import Callable, Coroutine, overload
 
         @overload
-        def returns_coroutine(x: int) -> CoroutineType[None, None, int]: ...
+        def returns_coroutine(x: int) -> Coroutine[None, None, int]: ...
 
         @overload
         async def returns_coroutine(x: str) -> str: ...
