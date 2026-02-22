@@ -2343,42 +2343,31 @@ def _re_impl_with_pattern(ctx: CallContext) -> Value:
     return ctx.inferred_return_value
 
 
-_MAX_DEFAULT_ARGSPECS_WITH_CACHE_RESOLVERS = 10
-_DEFAULT_ARGSPECS_WITH_CACHE_BY_RESOLVER: collections.OrderedDict[
-    object, dict[object, ConcreteSignature]
-] = collections.OrderedDict()
+DEFAULT_ARGSPECS_WITH_CACHE_CALLABLES = (
+    re.compile,
+    re.search,
+    re.match,
+    re.fullmatch,
+    re.split,
+    re.findall,
+    re.finditer,
+    re.sub,
+    re.subn,
+)
+
+
+def uses_default_argspecs_with_cache(obj: object) -> bool:
+    return obj in DEFAULT_ARGSPECS_WITH_CACHE_CALLABLES
 
 
 def get_default_argspecs_with_cache(
     asc: "pycroscope.arg_spec.ArgSpecCache",
 ) -> dict[object, ConcreteSignature]:
-    resolver = asc.ts_finder.resolver
-    cached = _DEFAULT_ARGSPECS_WITH_CACHE_BY_RESOLVER.get(resolver)
-    if cached is not None:
-        _DEFAULT_ARGSPECS_WITH_CACHE_BY_RESOLVER.move_to_end(resolver)
-        return cached
-
     sigs = {}
-    for func in (
-        re.compile,
-        re.search,
-        re.match,
-        re.fullmatch,
-        re.split,
-        re.findall,
-        re.finditer,
-        re.sub,
-        re.subn,
-    ):
+    for func in DEFAULT_ARGSPECS_WITH_CACHE_CALLABLES:
         sig = asc.get_argspec(func, impl=_re_impl_with_pattern)
         assert isinstance(
             sig, (Signature, OverloadedSignature)
         ), f"failed to find signature for {func}: {sig}"
         sigs[func] = sig
-    _DEFAULT_ARGSPECS_WITH_CACHE_BY_RESOLVER[resolver] = sigs
-    if (
-        len(_DEFAULT_ARGSPECS_WITH_CACHE_BY_RESOLVER)
-        > _MAX_DEFAULT_ARGSPECS_WITH_CACHE_RESOLVERS
-    ):
-        _DEFAULT_ARGSPECS_WITH_CACHE_BY_RESOLVER.popitem(last=False)
     return sigs

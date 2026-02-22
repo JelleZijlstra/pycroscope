@@ -317,7 +317,7 @@ class UnwrapClass(PyObjectSequenceOption[_Unwrapper]):
         return typ
 
 
-_BUILTIN_KNOWN_SIGNATURES = [implementation.get_default_argspecs_with_cache]
+_BUILTIN_KNOWN_SIGNATURES = []
 
 try:
     from pytest import ExceptionInfo, RaisesExc, raises
@@ -379,6 +379,8 @@ class ArgSpecCache:
         self.generic_bases_cache = {}
         self.default_context = AnnotationsContext(self)
         self.safe_bases = tuple(self.options.get_value_for(ClassesSafeToInstantiate))
+        self._did_load_default_argspecs_with_cache = False
+        self._loading_default_argspecs_with_cache = False
 
         default_argspecs = dict(self.DEFAULT_ARGSPECS)
         for provider in _BUILTIN_KNOWN_SIGNATURES:
@@ -612,6 +614,25 @@ class ArgSpecCache:
             hashable = False  # unhashable, or __eq__ failed
         else:
             hashable = True
+
+        if (
+            not self._did_load_default_argspecs_with_cache
+            and not self._loading_default_argspecs_with_cache
+            and implementation.uses_default_argspecs_with_cache(obj)
+        ):
+            self._loading_default_argspecs_with_cache = True
+            try:
+                self.known_argspecs.update(
+                    implementation.get_default_argspecs_with_cache(self)
+                )
+                self._did_load_default_argspecs_with_cache = True
+            finally:
+                self._loading_default_argspecs_with_cache = False
+            try:
+                if obj in self.known_argspecs:
+                    return self.known_argspecs[obj]
+            except Exception:
+                pass
 
         extended = self._uncached_get_argspec(
             obj, impl, is_asynq, in_overload_resolution
