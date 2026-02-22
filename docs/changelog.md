@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Fix `assert_type(..., Callable[..., Any])` equivalence checks.
 - Fix `type[None]` annotations so `type(None)` is accepted and `None` values are rejected in type-checked calls.
 - Fix handling of historical positional-only parameters (`__x`) in source code:
   keyword calls to these parameters now error correctly, and invalid definitions
