@@ -287,6 +287,14 @@ class CanAssignContext(Protocol):
     ) -> AbstractContextManager[None]:
         return contextlib.nullcontext()
 
+    def get_relation_cache(self) -> MutableMapping[object, object] | None:
+        """Return storage for relation memoization, if supported by this context."""
+        return None
+
+    def has_active_relation_assumptions(self) -> bool:
+        """Whether relation memoization should be disabled for this context."""
+        return False
+
     def record_any_used(self) -> None:
         """Record that Any was used to secure a match."""
 

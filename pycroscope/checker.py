@@ -96,6 +96,9 @@ class Checker:
     type_object_cache: dict[type | super | str, TypeObject] = field(
         default_factory=dict, init=False, repr=False
     )
+    _relation_cache: dict[object, object] = field(
+        default_factory=dict, init=False, repr=False
+    )
     assumed_compatibilities: list[tuple[TypeObject, TypeObject]] = field(
         default_factory=list
     )
@@ -269,6 +272,12 @@ class Checker:
             yield
         finally:
             self.alias_assumed_compatibilities.discard(pair)
+
+    def get_relation_cache(self) -> dict[object, object] | None:
+        return self._relation_cache
+
+    def has_active_relation_assumptions(self) -> bool:
+        return bool(self.assumed_compatibilities or self.alias_assumed_compatibilities)
 
     def display_value(self, value: Value) -> str:
         message = f"'{value!s}'"

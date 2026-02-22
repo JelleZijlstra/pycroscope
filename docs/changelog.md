@@ -4,6 +4,7 @@
 
 - Speed up repeated analysis runs (including the test suite) by reusing typeshed resolvers across checker instances when stub search paths are the same.
 - Speed up checker setup by loading regex-related default argspecs only when regex functions are analyzed.
+- Speed up large analysis runs by memoizing repeated type-relation checks in assignability/subtyping logic.
 - Validate that overloaded implementations are compatible with their
   `@overload` signatures (including async/decorator-transformed signatures), and
   report overload/implementation mismatches with the new
