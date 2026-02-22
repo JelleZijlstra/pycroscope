@@ -322,7 +322,8 @@ def _get_attribute_from_synthetic_class(
     elif ctx.attr == "__dict__":
         return TypedValue(dict)
     result, _ = ctx.get_attribute_from_typeshed_recursively(fq_name, on_class=True)
-    result = set_self(result, self_value)
+    assert isinstance(self_value, SyntheticClassObjectValue)
+    result = set_self(result, self_value.class_type)
     return result
 
 

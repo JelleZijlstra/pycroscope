@@ -18,6 +18,9 @@
   modules by tracking them as singleton class values, which improves
   compatibility checks for TypedDict class objects and type-expression
   evaluation.
+- Fix `Self` inference for classmethods on class objects loaded from stubs
+  (including unimportable modules), so calls like `X.from_config()` now infer
+  instance results correctly.
 - Treat `with` blocks as non-suppressing when `__exit__`/`__aexit__` return types include non-`bool` members like `None | bool`, which improves narrowing after the block.
 - Report `unused_variable` and `unused_assignment` for annotated assignments
   like `x: int = value` when the assigned value is never read.

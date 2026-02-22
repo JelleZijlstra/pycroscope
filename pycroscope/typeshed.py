@@ -561,7 +561,7 @@ class TypeshedFinder:
             else:
                 # TODO: apply decorators to the return value
                 sig = self._get_signature_from_func_def(
-                    node, None, mod, autobind=not on_class
+                    node, None, mod, autobind=not on_class, bind_classmethod=on_class
                 )
                 if sig is None:
                     return AnyValue(AnySource.inference)
@@ -883,6 +883,7 @@ class TypeshedFinder:
         objclass: type | None = None,
         *,
         autobind: bool = False,
+        bind_classmethod: bool = False,
         allow_call: bool = False,
     ) -> Signature | None:
         is_classmethod = is_staticmethod = is_evaluated = False
@@ -950,6 +951,9 @@ class TypeshedFinder:
         if autobind:
             if is_classmethod or not is_staticmethod:
                 arguments = arguments[1:]
+        elif bind_classmethod and is_classmethod:
+            # Access via class should bind classmethods, but not regular methods.
+            arguments = arguments[1:]
 
         if args.vararg is not None:
             arguments.append(
