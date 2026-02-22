@@ -3,15 +3,27 @@
 ## Unreleased
 
 - Fix callable protocol subtyping when `__call__` is overloaded, so pycroscope uses the declared overload signatures instead of a generic `*args, **kwargs` fallback.
+- Fix `assert_type(..., Callable[..., Any])` equivalence checks.
+- Fix `type[None]` annotations so `type(None)` is accepted and `None` values are rejected in type-checked calls.
 - Fix handling of historical positional-only parameters (`__x`) in source code:
   keyword calls to these parameters now error correctly, and invalid definitions
   like `def f(x, __y): ...` are now reported under a dedicated
   `invalid_positional_only` error code.
+- Allow constructor calls to TypedDict classes that are analyzed syntactically (for example when runtime class objects are unavailable), so `MyTypedDict(...)` is type-checked normally in those cases.
+- Report an error for `isinstance(obj, SomeTypedDict)` to match TypedDict runtime semantics.
+- Report an error when `TypedDict` is used as a `TypeVar` bound.
 - Improve TypedDict checking when runtime class objects are unavailable
   (for example after import-time failures or for function-local class
   definitions) by falling back to syntactic TypedDict analysis, so
   `ReadOnly`/`Required`/`NotRequired` annotations and inheritance conflicts
   are still reported.
+- Improve handling of class objects that come from stubs or unimportable
+  modules by tracking them as singleton class values, which improves
+  compatibility checks for TypedDict class objects and type-expression
+  evaluation.
+- Fix `Self` inference for classmethods on class objects loaded from stubs
+  (including unimportable modules), so calls like `X.from_config()` now infer
+  instance results correctly.
 - Treat `with` blocks as non-suppressing when `__exit__`/`__aexit__` return types include non-`bool` members like `None | bool`, which improves narrowing after the block.
 - Report `unused_variable` and `unused_assignment` for annotated assignments
   like `x: int = value` when the assigned value is never read.

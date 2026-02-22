@@ -481,6 +481,9 @@ class TestAnnotations(TestNameCheckVisitorBase):
         def not_an_annotation(x: 1):  # E: invalid_annotation
             pass
 
+        def invalid_type_argument(x: type[1]):  # E: invalid_annotation
+            pass
+
         def forward_ref_undefined(x: "NoSuchType"):  # E: undefined_name
             pass
 
@@ -595,6 +598,15 @@ class TestAnnotations(TestNameCheckVisitorBase):
         def capybara(x: type[str], y: "type[int]"):
             assert_is_value(x, SubclassValue(TypedValue(str)))
             assert_is_value(y, SubclassValue(TypedValue(int)))
+
+    @assert_passes()
+    def test_type_none(self):
+        def capybara(x: type[None]):
+            pass
+
+        capybara(type(None))
+        capybara(None.__class__)
+        capybara(None)  # E: incompatible_argument
 
     @assert_passes()
     def test_generic_alias(self):

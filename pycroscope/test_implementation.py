@@ -1612,6 +1612,15 @@ class TestAssertType(TestNameCheckVisitorBase):
             assert_type(x, int)  # E: inference_failure
 
     @assert_passes()
+    def test_bare_callable_equivalent_to_ellipsis_any(self):
+        from typing import Any, Callable
+
+        from typing_extensions import assert_type
+
+        def capybara(val: Callable) -> None:
+            assert_type(val, Callable[..., Any])
+
+    @assert_passes()
     def test_equivalence(self):
         from typing_extensions import Literal, Protocol, TypedDict, Union, assert_type
 
