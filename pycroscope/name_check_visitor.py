@@ -2499,10 +2499,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         implementation_signature: ConcreteSignature,
     ) -> CanAssignError | None:
         any_return = AnyValue(AnySource.marker)
-        normalized_overload = self._normalize_overload_input_signature(
-            overload_signature
-        )
-        can_assign = normalized_overload.replace_return_value(any_return).can_assign(
+        can_assign = overload_signature.replace_return_value(any_return).can_assign(
             implementation_signature.replace_return_value(any_return), self
         )
         if isinstance(can_assign, CanAssignError):
@@ -2520,38 +2517,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         if isinstance(can_assign, CanAssignError):
             return can_assign
         return None
-
-    def _normalize_overload_input_signature(
-        self, signature: ConcreteSignature
-    ) -> ConcreteSignature:
-        if isinstance(signature, OverloadedSignature):
-            normalized_signatures = [
-                self._normalize_single_overload_input_signature(sig)
-                for sig in signature.signatures
-            ]
-            if all(
-                normalized is original
-                for original, normalized in zip(
-                    signature.signatures, normalized_signatures
-                )
-            ):
-                return signature
-            return OverloadedSignature(normalized_signatures)
-        return self._normalize_single_overload_input_signature(signature)
-
-    def _normalize_single_overload_input_signature(
-        self, signature: Signature
-    ) -> Signature:
-        parameters = {}
-        changed = False
-        for name, parameter in signature.parameters.items():
-            if parameter.kind is ParameterKind.POSITIONAL_OR_KEYWORD:
-                parameter = replace(parameter, kind=ParameterKind.POSITIONAL_ONLY)
-                changed = True
-            parameters[name] = parameter
-        if not changed:
-            return signature
-        return replace(signature, parameters=parameters)
 
     def _is_overload_decorator(self, value: Value) -> bool:
         return isinstance(value, KnownValue) and value.val in (real_overload, overload)

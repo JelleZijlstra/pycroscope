@@ -1060,7 +1060,7 @@ class TestOverload(TestNameCheckVisitorBase):
             raise NotImplementedError
 
         @overload
-        def overloaded(x: str) -> str:
+        def overloaded(x: str, /) -> str:
             raise NotImplementedError
 
         def overloaded(*args: str) -> Union[int, str]:
@@ -1088,7 +1088,7 @@ class TestOverload(TestNameCheckVisitorBase):
             raise NotImplementedError
 
         @overload
-        def overloaded(x: str) -> str:
+        def overloaded(x: str, /) -> str:
             raise NotImplementedError
 
         def overloaded(*args: str) -> Union[int, str]:
