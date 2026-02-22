@@ -125,7 +125,7 @@ from .options import (
 from .patma import PatmaVisitor
 from .predicates import EqualsPredicate, InPredicate
 from .reexport import ImplicitReexportTracker
-from .relations import check_hashability, intersect_multi
+from .relations import Relation, check_hashability, has_relation, intersect_multi
 from .safe import (
     all_of_type,
     is_dataclass_type,
@@ -1599,7 +1599,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         else:
             declared_type = current_scope.get_declared_type(varname)
             if declared_type is not None and value is not None:
-                can_assign = declared_type.can_assign(value, self)
+                can_assign = has_relation(
+                    declared_type, value, Relation.ASSIGNABLE, self
+                )
                 if isinstance(can_assign, CanAssignError):
                     self._show_error_if_checking(
                         node,
@@ -1707,7 +1709,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 )
             if callable(base_value.val):
                 return self._can_assign_to_base_callable(base_value, child_value)
-        return base_value.can_assign(child_value, self)
+        return has_relation(base_value, child_value, Relation.ASSIGNABLE, self)
 
     def _can_assign_to_base_property(
         self,
@@ -1734,12 +1736,12 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         base_value = self.resolve_property(
             base_property, Composite(TypedValue(base_class)), node
         )
-        get_direction = base_value.can_assign(child_value, self)
+        get_direction = has_relation(base_value, child_value, Relation.ASSIGNABLE, self)
         if isinstance(get_direction, CanAssignError):
             return get_direction
         if base_property.fset is not None:
             # settable properties behave invariantly, so we need to check both directions
-            return child_value.can_assign(base_value, self)
+            return has_relation(child_value, base_value, Relation.ASSIGNABLE, self)
         else:
             return get_direction
 
@@ -2116,8 +2118,14 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     error_code=ErrorCode.invalid_annotation,
                 )
                 return None
-            if isinstance(left.typ.can_assign(right.typ, self), CanAssignError):
-                if isinstance(right.typ.can_assign(left.typ, self), CanAssignError):
+            if isinstance(
+                has_relation(left.typ, right.typ, Relation.ASSIGNABLE, self),
+                CanAssignError,
+            ):
+                if isinstance(
+                    has_relation(right.typ, left.typ, Relation.ASSIGNABLE, self),
+                    CanAssignError,
+                ):
                     self._show_error_if_checking(
                         node,
                         f"TypedDict base classes define key {key!r} with incompatible types",
@@ -2135,8 +2143,10 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             )
             return None
         if isinstance(
-            left.typ.can_assign(right.typ, self), CanAssignError
-        ) or isinstance(right.typ.can_assign(left.typ, self), CanAssignError):
+            has_relation(left.typ, right.typ, Relation.ASSIGNABLE, self), CanAssignError
+        ) or isinstance(
+            has_relation(right.typ, left.typ, Relation.ASSIGNABLE, self), CanAssignError
+        ):
             self._show_error_if_checking(
                 node,
                 f"TypedDict base classes define key {key!r} with incompatible types",
@@ -2154,18 +2164,23 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             if base.required != override_entry.required:
                 return False
             if isinstance(
-                base.typ.can_assign(override_entry.typ, self), CanAssignError
+                has_relation(base.typ, override_entry.typ, Relation.ASSIGNABLE, self),
+                CanAssignError,
             ):
                 return False
             if isinstance(
-                override_entry.typ.can_assign(base.typ, self), CanAssignError
+                has_relation(override_entry.typ, base.typ, Relation.ASSIGNABLE, self),
+                CanAssignError,
             ):
                 return False
             return True
 
         if base.required and not override_entry.required:
             return False
-        if isinstance(base.typ.can_assign(override_entry.typ, self), CanAssignError):
+        if isinstance(
+            has_relation(base.typ, override_entry.typ, Relation.ASSIGNABLE, self),
+            CanAssignError,
+        ):
             return False
         return True
 
@@ -2378,8 +2393,11 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             if result.is_generator:
                 if isinstance(node, ast.FunctionDef):
                     if info.async_kind is AsyncFunctionKind.non_async:
-                        can_assign = TypedValue(collections.abc.Iterable).can_assign(
-                            info.return_annotation, self
+                        can_assign = has_relation(
+                            TypedValue(collections.abc.Iterable),
+                            info.return_annotation,
+                            Relation.ASSIGNABLE,
+                            self,
                         )
                         if isinstance(can_assign, CanAssignError):
                             self._show_error_if_checking(
@@ -2389,8 +2407,11 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                                 detail=can_assign.display(),
                             )
                 else:
-                    can_assign = TypedValue(collections.abc.AsyncIterable).can_assign(
-                        info.return_annotation, self
+                    can_assign = has_relation(
+                        TypedValue(collections.abc.AsyncIterable),
+                        info.return_annotation,
+                        Relation.ASSIGNABLE,
+                        self,
                     )
                     if isinstance(can_assign, CanAssignError):
                         self._show_error_if_checking(
@@ -2525,8 +2546,11 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         overload_signature: ConcreteSignature,
         implementation_signature: ConcreteSignature,
     ) -> CanAssignError | None:
-        can_assign = implementation_signature.return_value.can_assign(
-            overload_signature.return_value, self
+        can_assign = has_relation(
+            implementation_signature.return_value,
+            overload_signature.return_value,
+            Relation.ASSIGNABLE,
+            self,
         )
         if isinstance(can_assign, CanAssignError):
             return can_assign
@@ -2591,7 +2615,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     error_code=ErrorCode.invalid_typeguard,
                 )
                 continue
-            can_assign = param.annotation.can_assign(type_is.guarded_type, self)
+            can_assign = has_relation(
+                param.annotation, type_is.guarded_type, Relation.ASSIGNABLE, self
+            )
             if isinstance(can_assign, CanAssignError):
                 self._show_error_if_checking(
                     info.node.returns,
@@ -4273,7 +4299,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
 
                 iterable_type = is_iterable(left, self)
                 if isinstance(iterable_type, Value):
-                    can_assign = iterable_type.can_assign(right, self)
+                    can_assign = has_relation(
+                        iterable_type, right, Relation.ASSIGNABLE, self
+                    )
                     if isinstance(can_assign, CanAssignError):
                         self._show_error_if_checking(
                             source_node,
@@ -4412,7 +4440,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         if self.current_function_info is not None:
             expected_yield = self.current_function_info.get_generator_yield_type(self)
             yield_type = tv_map.get(YieldT, AnyValue(AnySource.generic_argument))
-            can_assign = expected_yield.can_assign(yield_type, self)
+            can_assign = has_relation(
+                expected_yield, yield_type, Relation.ASSIGNABLE, self
+            )
             if isinstance(can_assign, CanAssignError):
                 self._show_error_if_checking(
                     node,
@@ -4423,7 +4453,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
 
             expected_send = self.current_function_info.get_generator_send_type(self)
             send_type = tv_map.get(SendT, AnyValue(AnySource.generic_argument))
-            can_assign = send_type.can_assign(expected_send, self)
+            can_assign = has_relation(
+                send_type, expected_send, Relation.ASSIGNABLE, self
+            )
             if isinstance(can_assign, CanAssignError):
                 self._show_error_if_checking(
                     node,
@@ -4464,7 +4496,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         if self.current_function_info is None:
             return AnyValue(AnySource.inference)
         yield_type = self.current_function_info.get_generator_yield_type(self)
-        can_assign = yield_type.can_assign(value, self)
+        can_assign = has_relation(yield_type, value, Relation.ASSIGNABLE, self)
         if isinstance(can_assign, CanAssignError):
             self._show_error_if_checking(
                 node,
@@ -4557,7 +4589,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         elif self.is_generator and self.async_kind == AsyncFunctionKind.non_async:
             if self.current_function_info is not None:
                 expected = self.current_function_info.get_generator_return_type(self)
-                can_assign = expected.can_assign(value, self)
+                can_assign = has_relation(expected, value, Relation.ASSIGNABLE, self)
                 if isinstance(can_assign, CanAssignError):
                     self._show_error_if_checking(
                         node,
@@ -4566,7 +4598,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                         detail=can_assign.display(),
                     )
         elif self.expected_return_value is not None:
-            can_assign = self.expected_return_value.can_assign(value, self)
+            can_assign = has_relation(
+                self.expected_return_value, value, Relation.ASSIGNABLE, self
+            )
             if isinstance(can_assign, CanAssignError):
                 self._show_error_if_checking(
                     node,
@@ -4595,7 +4629,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
 
         if raised_expr is not None:
             raised_value = self.visit(raised_expr)
-            can_assign = ExceptionValue.can_assign(raised_value, self)
+            can_assign = has_relation(
+                ExceptionValue, raised_value, Relation.ASSIGNABLE, self
+            )
             if isinstance(can_assign, CanAssignError):
                 self._show_error_if_checking(
                     node, error_code=ErrorCode.bad_exception, detail=str(can_assign)
@@ -4603,7 +4639,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
 
         if node.cause is not None:
             cause_value = self.visit(node.cause)
-            can_assign = ExceptionOrNone.can_assign(cause_value, self)
+            can_assign = has_relation(
+                ExceptionOrNone, cause_value, Relation.ASSIGNABLE, self
+            )
             if isinstance(can_assign, CanAssignError):
                 self._show_error_if_checking(
                     node,
@@ -4840,7 +4878,10 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             exit_assigned = can_assign.get(U, AnyValue(AnySource.generic_argument))
             exit_boolability = get_boolability(exit_assigned)
             exit_is_bool_subtype = not isinstance(
-                TypedValue(bool).can_assign(exit_assigned, self), CanAssignError
+                has_relation(
+                    TypedValue(bool), exit_assigned, Relation.ASSIGNABLE, self
+                ),
+                CanAssignError,
             )
             can_suppress = (
                 exit_is_bool_subtype and not exit_boolability.is_safely_false()
@@ -5186,7 +5227,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             value = self.visit(node.value)
 
             if expected_type is not None:
-                can_assign = expected_type.can_assign(value, self)
+                can_assign = has_relation(
+                    expected_type, value, Relation.ASSIGNABLE, self
+                )
                 if isinstance(can_assign, CanAssignError):
                     self._show_error_if_checking(
                         node,
