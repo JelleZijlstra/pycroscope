@@ -107,40 +107,12 @@ class Relation(enum.Enum):
 
 _RELATION_CACHE_MAX_SIZE = 200_000
 _RELATION_CACHE_EMPTY = object()
-_RELATION_CACHE_IMMUTABLE_LITERAL_TYPES = (
-    type(None),
-    bool,
-    int,
-    float,
-    complex,
-    str,
-    bytes,
-)
 
 
 def _get_relation_cache(ctx: CanAssignContext) -> MutableMapping[object, object] | None:
     if ctx.has_active_relation_assumptions():
         return None
     return ctx.get_relation_cache()
-
-
-def _is_immutable_runtime_literal(value: object) -> bool:
-    if isinstance(value, _RELATION_CACHE_IMMUTABLE_LITERAL_TYPES):
-        return True
-    if isinstance(value, tuple):
-        return all(_is_immutable_runtime_literal(item) for item in value)
-    if isinstance(value, frozenset):
-        return all(_is_immutable_runtime_literal(item) for item in value)
-    return False
-
-
-def _is_relation_cacheable_value(value: Value) -> bool:
-    for subvalue in value.walk_values():
-        if isinstance(subvalue, KnownValue) and not _is_immutable_runtime_literal(
-            subvalue.val
-        ):
-            return False
-    return True
 
 
 def _relation_key_piece(value: object) -> tuple[str, object]:
@@ -262,11 +234,7 @@ def has_relation(
     left = gradualize(left)
     right = gradualize(right)
     cache = _get_relation_cache(ctx)
-    use_cache = (
-        cache is not None
-        and _is_relation_cacheable_value(left)
-        and _is_relation_cacheable_value(right)
-    )
+    use_cache = cache is not None
     if use_cache:
         key = _make_relation_cache_key(left, right, relation, ctx)
         cached = _get_cached_relation_result(cache, key)
