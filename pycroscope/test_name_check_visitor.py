@@ -31,6 +31,7 @@ from .value import (
     ReferencingValue,
     SequenceValue,
     SubclassValue,
+    SyntheticClassObjectValue,
     TypedDictEntry,
     TypedDictValue,
     TypedValue,
@@ -263,8 +264,171 @@ class TestImportFailureHandling:
             for failure in failures
         )
 
+    def test_nominal_class_fallback_after_import_failure(self, tmp_path):
+        filename = tmp_path / "class_import_failure.py"
+        code = (
+            "from typing import Any, overload\n"
+            "boom = 1 / 0\n"
+            "\n"
+            "class Desc:\n"
+            "    value: int = 0\n"
+            "\n"
+            "    @overload\n"
+            '    def __get__(self, obj: None, owner: Any) -> "Desc":\n'
+            "        ...\n"
+            "\n"
+            "    @overload\n"
+            "    def __get__(self, obj: object, owner: Any) -> int:\n"
+            "        ...\n"
+            "\n"
+            '    def __get__(self, obj: object | None, owner: Any) -> "int | Desc":\n'
+            "        return Desc.value\n"
+        )
+        filename.write_text(code)
+        settings = {code: code not in DISABLED_IN_TESTS for code in ErrorCode}
+        kwargs = ConfiguredNameCheckVisitor.prepare_constructor_kwargs(
+            {"settings": settings, "fail_after_first": False}
+        )
+        tree = ast.parse(code, str(filename))
+        visitor = ConfiguredNameCheckVisitor(str(filename), code, tree, **kwargs)
+        failures = visitor.check()
+
+        assert any(
+            failure["code"] == ErrorCode.import_failed and failure["lineno"] == 2
+            for failure in failures
+        )
+        assert not any(
+            failure["code"] == ErrorCode.undefined_name
+            and failure["lineno"] in {8, 15, 16}
+            for failure in failures
+        )
+
+        class_value = visitor.scopes.module_scope().variables["Desc"]
+        assert isinstance(class_value, SyntheticClassObjectValue)
+        assert class_value == SyntheticClassObjectValue(
+            "Desc", TypedValue(f"{filename}.Desc")
+        )
+
+    def test_inherited_class_attribute_after_import_failure(self, tmp_path):
+        filename = tmp_path / "inherited_class_attr_import_failure.py"
+        code = (
+            "boom = 1 / 0\n"
+            "\n"
+            "class Base:\n"
+            "    @staticmethod\n"
+            "    def foo() -> int:\n"
+            "        return 1\n"
+            "\n"
+            "class Child(Base):\n"
+            "    pass\n"
+            "\n"
+            "x = Child.foo()\n"
+        )
+        filename.write_text(code)
+        settings = {code: code not in DISABLED_IN_TESTS for code in ErrorCode}
+        kwargs = ConfiguredNameCheckVisitor.prepare_constructor_kwargs(
+            {"settings": settings, "fail_after_first": False}
+        )
+        tree = ast.parse(code, str(filename))
+        visitor = ConfiguredNameCheckVisitor(str(filename), code, tree, **kwargs)
+        failures = visitor.check()
+
+        assert any(
+            failure["code"] == ErrorCode.import_failed and failure["lineno"] == 1
+            for failure in failures
+        )
+        assert not any(
+            failure["code"]
+            in {ErrorCode.undefined_attribute, ErrorCode.incompatible_call}
+            and failure["lineno"] == 11
+            for failure in failures
+        )
+
 
 class TestNameCheckVisitor(TestNameCheckVisitorBase):
+    @assert_passes()
+    def test_synthetic_class_methods_from_stub_import(self):
+        def run():
+            from _pycroscope_tests.self import X, Y
+
+            from pycroscope.value import SyntheticClassObjectValue
+
+            assert_is_value(
+                X,
+                SyntheticClassObjectValue("X", TypedValue("_pycroscope_tests.self.X")),
+            )
+            assert_is_value(
+                Y,
+                SyntheticClassObjectValue("Y", TypedValue("_pycroscope_tests.self.Y")),
+            )
+            assert_is_value(X.from_config(), TypedValue("_pycroscope_tests.self.X"))
+            assert_is_value(Y.from_config(), TypedValue("_pycroscope_tests.self.Y"))
+            assert_is_value(X().ret(), TypedValue("_pycroscope_tests.self.X"))
+            assert_is_value(Y().ret(), TypedValue("_pycroscope_tests.self.Y"))
+
+    @assert_passes()
+    def test_function_local_class_uses_synthetic_class_object(self):
+        from pycroscope.value import SyntheticClassObjectValue
+
+        def outer():
+            class Local:
+                @staticmethod
+                def static_method() -> int:
+                    return 1
+
+                @staticmethod
+                def plus_one(x: int) -> int:
+                    return x + 1
+
+            assert_is_value(
+                Local,
+                SyntheticClassObjectValue(
+                    "Local", TypedValue(f"{__name__}.outer.<locals>.Local")
+                ),
+            )
+            assert_is_value(Local.static_method(), TypedValue(int))
+            assert_is_value(Local.plus_one(1), TypedValue(int))
+            return Local
+
+        assert_is_value(
+            outer(),
+            SyntheticClassObjectValue(
+                "Local", TypedValue(f"{__name__}.outer.<locals>.Local")
+            ),
+        )
+
+    @assert_passes()
+    def test_synthetic_class_inherits_synthetic_base_attributes(self):
+        def outer():
+            class Base:
+                @staticmethod
+                def base_method() -> int:
+                    return 1
+
+            class Child(Base):
+                pass
+
+            assert_is_value(Child.base_method(), TypedValue(int))
+            return Child
+
+        assert_is_value(outer().base_method(), TypedValue(int))
+
+    @assert_passes()
+    def test_synthetic_class_inherits_runtime_base_attributes(self):
+        class RuntimeBase:
+            @staticmethod
+            def runtime_method() -> str:
+                return ""
+
+        def outer():
+            class Child(RuntimeBase):
+                pass
+
+            assert_is_value(Child.runtime_method(), TypedValue(str))
+            return Child
+
+        assert_is_value(outer().runtime_method(), TypedValue(str))
+
     @assert_passes()
     def test_function_scope_typeddict_readonly_inheritance(self):
         from typing import TypedDict
