@@ -162,6 +162,8 @@ class TypeObject:
     def _is_compatible_with_protocol(
         self, self_val: Value, other_val: Value, ctx: CanAssignContext
     ) -> CanAssign:
+        from .relations import Relation, has_relation
+
         bounds_maps = []
         for member in self.protocol_members:
             expected = ctx.get_attribute_from_value(
@@ -187,7 +189,7 @@ class TypeObject:
             if actual is UNINITIALIZED_VALUE:
                 can_assign = CanAssignError(f"{other_val} has no attribute {member!r}")
             else:
-                can_assign = expected.can_assign(actual, ctx)
+                can_assign = has_relation(expected, actual, Relation.ASSIGNABLE, ctx)
                 if isinstance(can_assign, CanAssignError):
                     can_assign = CanAssignError(
                         f"Value of protocol member {member!r} conflicts", [can_assign]
