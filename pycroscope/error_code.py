@@ -127,6 +127,9 @@ ErrorCode = ErrorRegistry(
         Error("incompatible_assignment", "Incompatible variable assignment"),
         Error("invalid_typeddict_key", "Invalid key in TypedDict"),
         Error("invalid_annotation", "Invalid type annotation"),
+        Error(
+            "invalid_positional_only", "Invalid positional-only parameter declaration"
+        ),
         Error("bare_ignore", "Ignore comment without an error code"),
         Error("duplicate_enum_member", "Duplicate enum member"),
         Error("missing_return_annotation", "Missing function return annotation"),

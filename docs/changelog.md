@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Fix handling of historical positional-only parameters (`__x`) in source code:
+  keyword calls to these parameters now error correctly, and invalid definitions
+  like `def f(x, __y): ...` are now reported under a dedicated
+  `invalid_positional_only` error code.
 - Improve TypedDict checking when runtime class objects are unavailable
   (for example after import-time failures or for function-local class
   definitions) by falling back to syntactic TypedDict analysis, so

@@ -433,6 +433,10 @@ class ArgSpecCache:
 
         parameters = []
         seen_paramspec_args: ParamSpecArgsValue | None = None
+        has_explicit_positional_only = any(
+            parameter.kind is inspect.Parameter.POSITIONAL_ONLY
+            for parameter in sig.parameters.values()
+        )
         for i, parameter in enumerate(sig.parameters.values()):
             param, make_everything_pos_only, new_ps_args = self._make_sig_parameter(
                 parameter,
@@ -441,6 +445,7 @@ class ArgSpecCache:
                 is_wrapped,
                 i,
                 seen_paramspec_args,
+                allow_historical_positional_only=not has_explicit_positional_only,
             )
             if make_everything_pos_only:
                 parameters = [
@@ -472,6 +477,8 @@ class ArgSpecCache:
         is_wrapped: bool,
         index: int,
         seen_paramspec_args: ParamSpecArgsValue | None,
+        *,
+        allow_historical_positional_only: bool,
     ) -> tuple[SigParameter | None, bool, ParamSpecArgsValue | None]:
         """Given an inspect.Parameter, returns a Parameter object."""
         if is_wrapped:
@@ -490,7 +497,8 @@ class ArgSpecCache:
         else:
             default = KnownValue(parameter.default)
         if (
-            parameter.kind == inspect.Parameter.POSITIONAL_OR_KEYWORD
+            allow_historical_positional_only
+            and parameter.kind == inspect.Parameter.POSITIONAL_OR_KEYWORD
             and is_positional_only_arg_name(
                 parameter.name, _get_class_name(function_object)
             )
