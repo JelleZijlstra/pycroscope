@@ -1574,6 +1574,16 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 extra_metadata=extra_metadata,
             )
 
+    def _is_collect_placeholder_value(self, value: Value) -> bool:
+        value = replace_fallback(value)
+        if isinstance(value, AnnotatedValue):
+            return self._is_collect_placeholder_value(value.value)
+        if isinstance(value, MultiValuedValue):
+            return all(
+                self._is_collect_placeholder_value(subval) for subval in value.vals
+            )
+        return isinstance(value, AnyValue)
+
     def _set_name_in_scope(
         self,
         varname: str,
@@ -1618,14 +1628,26 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 )
 
         scope_type = current_scope.scope_type
-        if self.module is not None and scope_type == ScopeType.module_scope:
-            if self.module.__name__ is not None and not private:
+        if scope_type == ScopeType.module_scope:
+            if (
+                self.module is not None
+                and self.module.__name__ is not None
+                and not private
+            ):
                 self.reexport_tracker.record_exported_attribute(
                     self.module.__name__, varname
                 )
             if varname in current_scope.variables:
-                value, _ = current_scope.get_local(varname, lookup_node, self.state)
-                return value, EMPTY_ORIGIN
+                existing, _ = current_scope.get_local(varname, lookup_node, self.state)
+                if (
+                    self._is_checking()
+                    and value is not None
+                    and self.module is None
+                    and self._is_collect_placeholder_value(existing)
+                ):
+                    current_scope.variables[varname] = value
+                    return value, EMPTY_ORIGIN
+                return existing, EMPTY_ORIGIN
         if scope_type == ScopeType.class_scope:
             if value is not None:
                 self._check_for_incompatible_overrides(varname, node, value)

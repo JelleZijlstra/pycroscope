@@ -23,6 +23,7 @@ from .safe import is_instance_of_typing_name, is_typing_name, safe_getattr
 from .shared_options import VariableNameValues
 from .signature import (
     ANY_SIGNATURE,
+    ELLIPSIS_PARAM,
     BoundMethodSignature,
     ConcreteSignature,
     MaybeSignature,
@@ -38,9 +39,11 @@ from .type_object import TypeObject, get_mro
 from .typeshed import TypeshedFinder
 from .value import (
     UNINITIALIZED_VALUE,
+    AnySource,
     AnyValue,
     CallableValue,
     GenericValue,
+    HasAttrExtension,
     KnownValue,
     KnownValueWithTypeVars,
     MultiValuedValue,
@@ -54,6 +57,7 @@ from .value import (
     UnboundMethodValue,
     Value,
     VariableNameValue,
+    annotate_value,
     flatten_values,
     is_union,
     replace_fallback,
@@ -395,6 +399,11 @@ class Checker:
                 value.class_type.typ, allow_synthetic_type=True
             )
             if argspec is None:
+                if self._synthetic_class_has_any_base(value):
+                    return Signature.make(
+                        [ELLIPSIS_PARAM],
+                        self._make_synthetic_any_base_instance_value(value),
+                    )
                 return ANY_SIGNATURE
             return argspec
         elif isinstance(value, TypedValue):
@@ -428,6 +437,7 @@ class Checker:
             if bound_method is None:
                 return None
             return bound_method.get_signature(ctx=self)
+
         elif isinstance(value, SubclassValue):
             if isinstance(value.typ, TypedValue):
                 if value.typ.typ is tuple:
@@ -460,6 +470,41 @@ class Checker:
                 return None
         else:
             return None
+
+    def _synthetic_class_has_any_base(self, value: SyntheticClassObjectValue) -> bool:
+        return any(self._synthetic_base_is_any(base) for base in value.base_classes)
+
+    def _synthetic_base_is_any(self, base: Value) -> bool:
+        base = replace_fallback(base)
+        if isinstance(base, MultiValuedValue):
+            return any(self._synthetic_base_is_any(subval) for subval in base.vals)
+        if isinstance(base, AnyValue):
+            return True
+        if isinstance(base, KnownValue):
+            return is_typing_name(base.val, "Any")
+        if isinstance(base, TypedValue):
+            return is_typing_name(base.typ, "Any")
+        return False
+
+    def _make_synthetic_any_base_instance_value(
+        self, value: SyntheticClassObjectValue
+    ) -> Value:
+        metadata = [
+            HasAttrExtension(KnownValue(name), self._make_any_base_attribute(attr))
+            for name, attr in value.class_attributes.items()
+            if not name.startswith("%")
+        ]
+        instance = AnyValue(AnySource.from_another)
+        if metadata:
+            return annotate_value(instance, metadata)
+        return instance
+
+    def _make_any_base_attribute(self, attr: Value) -> Value:
+        if isinstance(attr, CallableValue) and isinstance(attr.signature, Signature):
+            return CallableValue(
+                Signature.make([ELLIPSIS_PARAM], attr.signature.return_value)
+            )
+        return attr
 
     def get_attribute_from_value(
         self, root_value: Value, attribute: str, *, prefer_typeshed: bool = False

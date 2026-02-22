@@ -23,7 +23,13 @@ else:
 from .annotated_types import EnumName
 from .annotations import Context, annotation_expr_from_annotations, type_from_runtime
 from .options import Options, PyObjectSequenceOption
-from .safe import is_async_fn, is_bound_classmethod, safe_isinstance, safe_issubclass
+from .safe import (
+    is_async_fn,
+    is_bound_classmethod,
+    is_typing_name,
+    safe_isinstance,
+    safe_issubclass,
+)
 from .signature import MaybeSignature
 from .stacked_scopes import Composite
 from .value import (
@@ -326,6 +332,8 @@ def _get_attribute_from_synthetic_class(
         fq_name, self_value, ctx, seen={id(self_value)}
     )
     if result is UNINITIALIZED_VALUE:
+        if _synthetic_class_has_any_base(self_value):
+            return AnyValue(AnySource.from_another)
         return result
     result = set_self(result, self_value.class_type)
     return result
@@ -398,6 +406,23 @@ def _get_attribute_from_synthetic_base(
         return AnyValue(AnySource.from_another)
 
     return UNINITIALIZED_VALUE
+
+
+def _synthetic_class_has_any_base(self_value: SyntheticClassObjectValue) -> bool:
+    return any(_synthetic_base_is_any(base) for base in self_value.base_classes)
+
+
+def _synthetic_base_is_any(base: Value) -> bool:
+    base = replace_fallback(base)
+    if isinstance(base, MultiValuedValue):
+        return any(_synthetic_base_is_any(subval) for subval in base.vals)
+    if isinstance(base, AnyValue):
+        return True
+    if isinstance(base, KnownValue):
+        return is_typing_name(base.val, "Any")
+    if isinstance(base, TypedValue):
+        return is_typing_name(base.typ, "Any")
+    return False
 
 
 def _get_attribute_from_typed(
