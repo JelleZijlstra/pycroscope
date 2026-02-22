@@ -1477,7 +1477,9 @@ class Signature:
             return CanAssignError(
                 "Incompatible callable", [CanAssignError(e) for e in check_ctx.errors]
             )
-        return_tv_map = self.return_value.can_assign(return_value.return_value, ctx)
+        return_tv_map = has_relation(
+            self.return_value, return_value.return_value, Relation.ASSIGNABLE, ctx
+        )
         if isinstance(return_tv_map, CanAssignError):
             return CanAssignError(
                 "Return annotation is not compatible", [return_tv_map]
@@ -2011,7 +2013,9 @@ def _preprocess_kwargs_kv_pairs(
                     )
                     return None
             else:
-                can_assign = TypedValue(str).can_assign(subkey, ctx.can_assign_ctx)
+                can_assign = has_relation(
+                    TypedValue(str), subkey, Relation.ASSIGNABLE, ctx.can_assign_ctx
+                )
                 if isinstance(can_assign, CanAssignError):
                     ctx.on_error(
                         f"Dict passed as **kwargs contains non-string key {subkey!r}",
