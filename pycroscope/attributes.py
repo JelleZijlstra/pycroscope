@@ -321,10 +321,83 @@ def _get_attribute_from_synthetic_class(
         return KnownValue(type)
     elif ctx.attr == "__dict__":
         return TypedValue(dict)
-    result, _ = ctx.get_attribute_from_typeshed_recursively(fq_name, on_class=True)
     assert isinstance(self_value, SyntheticClassObjectValue)
+    result = _get_attribute_from_synthetic_class_inner(
+        fq_name, self_value, ctx, seen={id(self_value)}
+    )
+    if result is UNINITIALIZED_VALUE:
+        return result
     result = set_self(result, self_value.class_type)
     return result
+
+
+def _get_attribute_from_synthetic_class_inner(
+    fq_name: str,
+    self_value: SyntheticClassObjectValue,
+    ctx: AttrContext,
+    *,
+    seen: set[int],
+) -> Value:
+    if ctx.attr in self_value.class_attributes:
+        return self_value.class_attributes[ctx.attr]
+
+    for base in self_value.base_classes:
+        result = _get_attribute_from_synthetic_base(base, self_value, ctx, seen=seen)
+        if result is not UNINITIALIZED_VALUE:
+            return result
+
+    result, _ = ctx.get_attribute_from_typeshed_recursively(fq_name, on_class=True)
+    return result
+
+
+def _get_attribute_from_synthetic_base(
+    base: Value,
+    self_value: SyntheticClassObjectValue,
+    ctx: AttrContext,
+    *,
+    seen: set[int],
+) -> Value:
+    base = replace_fallback(base)
+
+    if isinstance(base, SyntheticClassObjectValue):
+        base_id = id(base)
+        if base_id in seen:
+            return UNINITIALIZED_VALUE
+        seen_with_base = {*seen, base_id}
+        if isinstance(base.class_type, TypedDictValue):
+            return _get_attribute_from_subclass(dict, self_value.class_type, ctx)
+        if isinstance(base.class_type.typ, str):
+            return _get_attribute_from_synthetic_class_inner(
+                base.class_type.typ, base, ctx, seen=seen_with_base
+            )
+        return _get_attribute_from_subclass(
+            base.class_type.typ, self_value.class_type, ctx
+        )
+
+    if isinstance(base, KnownValue) and isinstance(base.val, type):
+        return _get_attribute_from_subclass(base.val, self_value.class_type, ctx)
+
+    if isinstance(base, TypedValue):
+        if isinstance(base.typ, str):
+            result, _ = ctx.get_attribute_from_typeshed_recursively(
+                base.typ, on_class=True
+            )
+            return result
+        return _get_attribute_from_subclass(base.typ, self_value.class_type, ctx)
+
+    if isinstance(base, MultiValuedValue):
+        for subval in base.vals:
+            result = _get_attribute_from_synthetic_base(
+                subval, self_value, ctx, seen=seen
+            )
+            if result is not UNINITIALIZED_VALUE:
+                return result
+        return UNINITIALIZED_VALUE
+
+    if isinstance(base, AnyValue):
+        return AnyValue(AnySource.from_another)
+
+    return UNINITIALIZED_VALUE
 
 
 def _get_attribute_from_typed(

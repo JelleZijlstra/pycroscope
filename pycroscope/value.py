@@ -26,7 +26,15 @@ import enum
 import sys
 import textwrap
 from collections import deque
-from collections.abc import Callable, Container, Iterable, Iterator, Mapping, Sequence
+from collections.abc import (
+    Callable,
+    Container,
+    Iterable,
+    Iterator,
+    Mapping,
+    MutableMapping,
+    Sequence,
+)
 from contextlib import AbstractContextManager
 from dataclasses import InitVar, dataclass, field
 from itertools import chain
@@ -1411,15 +1419,33 @@ class SyntheticClassObjectValue(Value):
 
     name: str
     class_type: TypedValue | TypedDictValue
+    base_classes: Sequence[Value] = field(
+        default_factory=tuple, compare=False, hash=False, repr=False
+    )
+    class_attributes: MutableMapping[str, Value] = field(
+        default_factory=dict, compare=False, hash=False, repr=False
+    )
 
     def substitute_typevars(self, typevars: TypeVarMap) -> Value:
         substituted = self.class_type.substitute_typevars(typevars)
         assert isinstance(substituted, (TypedValue, TypedDictValue))
-        return SyntheticClassObjectValue(self.name, substituted)
+        return SyntheticClassObjectValue(
+            self.name,
+            substituted,
+            tuple(base.substitute_typevars(typevars) for base in self.base_classes),
+            {
+                key: val.substitute_typevars(typevars)
+                for key, val in self.class_attributes.items()
+            },
+        )
 
     def walk_values(self) -> Iterable[Value]:
         yield self
         yield from self.class_type.walk_values()
+        for base in self.base_classes:
+            yield from base.walk_values()
+        for val in self.class_attributes.values():
+            yield from val.walk_values()
 
     def __str__(self) -> str:
         return self.name

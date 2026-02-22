@@ -1901,17 +1901,48 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             base_values = self._generic_visit_list(node.bases)
             keyword_values = [(kw, self.visit(kw.value)) for kw in node.keywords]
             synthetic_typeddict = None
+            synthetic_class = None
             if class_obj is None:
                 synthetic_typeddict = self._make_synthetic_typeddict_context(
                     node, base_values, keyword_values
                 )
+                if synthetic_typeddict is None:
+                    synthetic_class = SyntheticClassObjectValue(
+                        node.name,
+                        TypedValue(self._get_synthetic_class_fq_name(node)),
+                        base_classes=tuple(base_values),
+                    )
+                    if self._is_checking():
+                        # Bind the class name while checking its body so references
+                        # like "return C.attr" or string annotations mentioning C
+                        # resolve even when no runtime class object exists.
+                        self.scopes.set(node.name, synthetic_class, node, self.state)
             with override(self, "current_synthetic_typeddict", synthetic_typeddict):
-                value = self._visit_class_and_get_value(node, class_obj)
+                value, class_scope_values = self._visit_class_and_get_value(
+                    node, class_obj
+                )
             if synthetic_typeddict is not None:
                 value = SyntheticClassObjectValue(
                     node.name,
                     self._build_synthetic_typeddict_value(synthetic_typeddict, node),
+                    base_classes=tuple(base_values),
                 )
+            elif synthetic_class is not None:
+                if class_scope_values is None:
+                    value = synthetic_class
+                else:
+                    class_attributes = {
+                        name: value
+                        for name, value in class_scope_values.items()
+                        if not name.startswith("%")
+                    }
+                    # Keep the prebound synthetic class object and fill in the
+                    # discovered class attributes on that same object so
+                    # references captured during class analysis (including bases
+                    # of later synthetic classes) see the enriched attributes.
+                    synthetic_class.class_attributes.clear()
+                    synthetic_class.class_attributes.update(class_attributes)
+                    value = synthetic_class
         value_to_store: Value | None = value
         if (
             class_obj is None
@@ -2040,9 +2071,30 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         else:
             return None
 
+    def _get_synthetic_class_fq_name(self, node: ast.ClassDef) -> str:
+        if self.module is not None and hasattr(self.module, "__name__"):
+            module_name = self.module.__name__
+        else:
+            module_name = self.filename
+
+        qualname_parts = []
+        for context in self.node_context.contexts:
+            if isinstance(context, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                qualname_parts.extend((context.name, "<locals>"))
+            elif isinstance(context, ast.Lambda):
+                qualname_parts.extend(("<lambda>", "<locals>"))
+            elif isinstance(context, ast.ClassDef):
+                qualname_parts.append(context.name)
+        if not qualname_parts or qualname_parts[-1] != node.name:
+            qualname_parts.append(node.name)
+
+        if module_name:
+            return ".".join((module_name, *qualname_parts))
+        return ".".join(qualname_parts)
+
     def _visit_class_and_get_value(
         self, node: ast.ClassDef, current_class: type | None
-    ) -> Value:
+    ) -> tuple[Value, Mapping[str, Value] | None]:
         if self._is_collecting():
             # If this is a nested class, we need to run the collecting phase to get data
             # about names accessed from the class.
@@ -2056,6 +2108,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     self._set_current_class(current_class),
                 ):
                     self._generic_visit_list(node.body)
+            return AnyValue(AnySource.inference), None
         else:
             with (
                 self.scopes.add_scope(
@@ -2064,11 +2117,13 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 self._set_current_class(current_class),
             ):
                 self._generic_visit_list(node.body)
+                class_scope_values = dict(self.scopes.current_scope().variables)
 
             if current_class is not None:
-                return KnownValue(current_class)
+                return KnownValue(current_class), class_scope_values
+            return AnyValue(AnySource.inference), class_scope_values
 
-        return AnyValue(AnySource.inference)
+        return AnyValue(AnySource.inference), None
 
     def _build_synthetic_typeddict_value(
         self, context: _SyntheticTypedDictContext, node: ast.ClassDef

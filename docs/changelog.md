@@ -25,6 +25,12 @@
   modules by tracking them as singleton class values, which improves
   compatibility checks for TypedDict class objects and type-expression
   evaluation.
+- Create synthetic class objects for non-TypedDict classes when runtime class
+  objects are unavailable (for example after import-time failures), so class
+  self-references continue to resolve and nominal class values are preserved.
+- Treat synthetic class objects as class objects in assignability checks, so
+  APIs expecting `type` (for example `TypedValue(...)`) accept synthetic
+  classes.
 - Fix `Self` inference for classmethods on class objects loaded from stubs
   (including unimportable modules), so calls like `X.from_config()` now infer
   instance results correctly.

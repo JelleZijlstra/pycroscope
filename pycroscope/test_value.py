@@ -635,6 +635,18 @@ def test_synthetic_class_object_value_nominal_class() -> None:
     assert_cannot_assign(SubclassValue(TypedValue(str)), int_cls)
 
 
+def test_synthetic_class_object_value_unresolved_nominal_class() -> None:
+    unresolved_cls = value.SyntheticClassObjectValue("X", TypedValue("mod.X"))
+    other_cls = value.SyntheticClassObjectValue("Y", TypedValue("mod.Y"))
+
+    # Synthetic class objects with unresolved class names should still behave
+    # like class objects for assignability checks.
+    assert_can_assign(TypedValue(type), unresolved_cls)
+    assert_can_assign(SubclassValue(TypedValue("mod.X")), unresolved_cls)
+    assert_cannot_assign(SubclassValue(TypedValue("mod.Y")), unresolved_cls)
+    assert_cannot_assign(unresolved_cls, other_cls)
+
+
 class Capybara(enum.IntEnum):
     hydrochaeris = 1
     isthmius = 2
