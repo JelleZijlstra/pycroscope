@@ -54,6 +54,8 @@ def resolve_bounds_map(
 
 
 def solve(bounds: Iterable[Bound], ctx: CanAssignContext) -> Value | CanAssignError:
+    from .relations import Relation, has_relation
+
     bottom = BOTTOM
     top = TOP
     options = None
@@ -96,7 +98,7 @@ def solve(bounds: Iterable[Bound], ctx: CanAssignContext) -> Value | CanAssignEr
     elif top is TOP:
         solution = bottom
     else:
-        can_assign = top.can_assign(bottom, ctx)
+        can_assign = has_relation(top, bottom, Relation.ASSIGNABLE, ctx)
         if isinstance(can_assign, CanAssignError):
             return CanAssignError(
                 "Incompatible bounds on type variable",
@@ -110,7 +112,10 @@ def solve(bounds: Iterable[Bound], ctx: CanAssignContext) -> Value | CanAssignEr
         solution = bottom
 
     if options is not None:
-        can_assigns = [option.can_assign(solution, ctx) for option in options]
+        can_assigns = [
+            has_relation(option, solution, Relation.ASSIGNABLE, ctx)
+            for option in options
+        ]
         if all_of_type(can_assigns, CanAssignError):
             return CanAssignError(children=list(can_assigns))
         available = [
