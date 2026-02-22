@@ -214,6 +214,7 @@ class TestTypedDict(TestNameCheckVisitorBase):
                 name: str
 
             cls: type = Movie
+            assert_is_value(cls, TypedValue(type))
 
     @assert_passes()
     def test_typevar_bound_disallows_typeddict(self):
