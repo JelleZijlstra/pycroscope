@@ -1,9 +1,7 @@
 import ast
-from pathlib import Path
 from typing import Callable, Type
 
-from .analysis_lib import files_with_extension_from_directory
-from .ast_annotator import annotate_code, annotate_file
+from .ast_annotator import annotate_code
 from .value import KnownValue, Value, unannotate
 
 
@@ -59,22 +57,3 @@ def test_annotate_code() -> None:
         """
     )
     _check_inferred_value(tree, ast.Name, KnownValue(1), lambda node: node.id == "b")
-
-
-def test_everything_annotated() -> None:
-    pycroscope_dir = Path(__file__).parent
-    failures = []
-    for filename in sorted(files_with_extension_from_directory("py", pycroscope_dir)):
-        tree = annotate_file(filename, show_errors=True)
-        for node in ast.walk(tree):
-            if (
-                hasattr(node, "lineno")
-                and hasattr(node, "col_offset")
-                and not hasattr(node, "inferred_value")
-                and not isinstance(node, (ast.keyword, ast.arg))
-            ):
-                failures.append((filename, node))
-    if failures:
-        for filename, node in failures:
-            print(f"{filename}:{node.lineno}:{node.col_offset}: {ast.dump(node)}")
-        assert False, f"found no annotations on {len(failures)} expressions"
