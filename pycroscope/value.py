@@ -1601,9 +1601,9 @@ class SubclassValue(Value):
             return TypedValue(type)
         elif isinstance(origin, KnownValue):
             if origin.val is None:
-                return cls(TypedValue(type(None)), exactly=exactly)
+                return cls(TypedValue(type(None)))
             elif isinstance(origin.val, type):
-                return cls(TypedValue(origin.val), exactly=exactly)
+                return cls(TypedValue(origin.val))
             return AnyValue(AnySource.error)
         elif isinstance(origin, (TypeVarValue, TypedValue)):
             return cls(origin)
