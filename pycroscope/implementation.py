@@ -2343,21 +2343,28 @@ def _re_impl_with_pattern(ctx: CallContext) -> Value:
     return ctx.inferred_return_value
 
 
+DEFAULT_ARGSPECS_WITH_CACHE_CALLABLES = (
+    re.compile,
+    re.search,
+    re.match,
+    re.fullmatch,
+    re.split,
+    re.findall,
+    re.finditer,
+    re.sub,
+    re.subn,
+)
+
+
+def uses_default_argspecs_with_cache(obj: object) -> bool:
+    return obj in DEFAULT_ARGSPECS_WITH_CACHE_CALLABLES
+
+
 def get_default_argspecs_with_cache(
     asc: "pycroscope.arg_spec.ArgSpecCache",
 ) -> dict[object, ConcreteSignature]:
     sigs = {}
-    for func in (
-        re.compile,
-        re.search,
-        re.match,
-        re.fullmatch,
-        re.split,
-        re.findall,
-        re.finditer,
-        re.sub,
-        re.subn,
-    ):
+    for func in DEFAULT_ARGSPECS_WITH_CACHE_CALLABLES:
         sig = asc.get_argspec(func, impl=_re_impl_with_pattern)
         assert isinstance(
             sig, (Signature, OverloadedSignature)
