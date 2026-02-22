@@ -94,6 +94,7 @@
 - Narrow variables correctly when calling `TypeGuard` or `TypeIs` functions
   defined as `@staticmethod`, including calls through either instances or
   classes.
+- Fix a crash when handling `typing.Annotated` on Python 3.14, where stubs expose it as an annotated assignment (`Annotated: _SpecialForm`).
 
 ## Version 0.2.0 (June 26, 2025)
 

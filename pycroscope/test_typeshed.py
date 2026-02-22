@@ -553,6 +553,9 @@ class TestGetGenericBases:
     def test_runtime_with_typing_extensions_any_base(self):
         self._assert_runtime_any_base(typing_extensions.Any)
 
+    def test_runtime_annotated_special_form(self):
+        assert {"typing.Annotated": {}} == self.get_generic_bases("typing.Annotated")
+
     def check(
         self,
         expected: Union[BasesMap, list[BasesMap]],

@@ -680,6 +680,18 @@ class TypeshedFinder:
             if isinstance(info.ast, ast.ClassDef):
                 bases = info.ast.bases
                 return [self._parse_type(base, mod) for base in bases]
+            elif isinstance(info.ast, ast.AnnAssign):
+                if info.ast.value is not None:
+                    val = self._parse_expr(info.ast.value, mod)
+                    if isinstance(val, KnownValue) and isinstance(val.val, type):
+                        new_fq_name = self._get_fq_name(val.val)
+                        if fq_name == new_fq_name:
+                            # prevent infinite recursion
+                            return [AnyValue(AnySource.inference)]
+                        return self.get_bases(val.val)
+                # Stubs model some typing special forms this way (for example
+                # `Annotated: _SpecialForm`), which do not have meaningful bases.
+                return [AnyValue(AnySource.inference)]
             elif isinstance(info.ast, ast.Assign):
                 val = self._parse_expr(info.ast.value, mod)
                 if isinstance(val, KnownValue) and isinstance(val.val, type):
