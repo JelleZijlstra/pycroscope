@@ -5,7 +5,6 @@ Implementation of extended argument specifications used by test_scope.
 """
 
 import ast
-import asyncio
 import collections
 import contextlib
 import enum
@@ -853,7 +852,7 @@ class ArgSpecCache:
                 inspect_sig,
                 function_object=obj,
                 callable_object=obj,
-                is_async=asyncio.iscoroutinefunction(obj),
+                is_async=inspect.iscoroutinefunction(obj),
                 impl=impl,
                 is_asynq=is_asynq,
             )

@@ -164,6 +164,9 @@ def _fill_typing_name_cache(name: str) -> tuple[tuple[Any, ...], tuple[str, ...]
         for mod in (typing, typing_extensions, mypy_extensions):
             if mod is None:
                 continue
+            if mod is mypy_extensions and name == "NoReturn":
+                # mypy_extensions.NoReturn emits a runtime DeprecationWarning.
+                continue
             try:
                 objs.append(getattr(mod, name))
                 names.append(f"{mod}.{name}")
