@@ -2,6 +2,7 @@
 import ast
 import collections
 import os
+import sys
 import types
 
 from . import test_node_visitor
@@ -366,9 +367,11 @@ class TestImportFailureHandling:
         tree = ast.parse(code, str(filename))
         visitor = ConfiguredNameCheckVisitor(str(filename), code, tree, **kwargs)
         failures = visitor.check()
+        expected_import_failed_lineno = 3 if sys.version_info < (3, 11) else 9
 
         assert any(
-            failure["code"] == ErrorCode.import_failed and failure["lineno"] == 9
+            failure["code"] == ErrorCode.import_failed
+            and failure["lineno"] == expected_import_failed_lineno
             for failure in failures
         )
         assert not any(
