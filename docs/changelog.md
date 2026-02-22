@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Fix handling of historical positional-only parameters (`__x`) in source code:
+  keyword calls to these parameters now error correctly, and invalid definitions
+  like `def f(x, __y): ...` are now reported under a dedicated
+  `invalid_positional_only` error code.
 - Narrow tuple types after `len()` checks when bounds imply a more specific
   shape, including exact-length refinements and lower-bound refinements for
   tuples with fixed and variadic parts, which simplifies `reveal_type()` output.
