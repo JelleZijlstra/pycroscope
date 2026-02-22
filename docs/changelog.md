@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Fix `type[None]` annotations so `type(None)` is accepted and `None` values are rejected in type-checked calls.
 - Fix handling of historical positional-only parameters (`__x`) in source code:
   keyword calls to these parameters now error correctly, and invalid definitions
   like `def f(x, __y): ...` are now reported under a dedicated

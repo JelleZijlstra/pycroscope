@@ -228,6 +228,10 @@ def test_subclass_value() -> None:
     assert_can_assign(val, SubclassValue(TypedValue(int)))
 
 
+def test_subclass_value_make_invalid_literal() -> None:
+    assert SubclassValue.make(KnownValue(1)) == AnyValue(AnySource.error)
+
+
 def test_generic_value() -> None:
     val = GenericValue(list, [TypedValue(int)])
     assert "list[int]" == str(val)
