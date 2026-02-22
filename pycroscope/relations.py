@@ -11,7 +11,7 @@ import collections.abc
 import enum
 import struct
 import sys
-from collections.abc import Iterable, Iterator, Sequence
+from collections.abc import Iterable, Iterator, MutableMapping, Sequence
 from dataclasses import dataclass, replace
 from math import comb
 from types import FunctionType
@@ -104,6 +104,67 @@ class Relation(enum.Enum):
             assert_never(self)
 
 
+_RELATION_CACHE_MAX_SIZE = 200_000
+_RELATION_CACHE_EMPTY = object()
+
+
+def _get_relation_cache(ctx: CanAssignContext) -> MutableMapping[object, object] | None:
+    if ctx.has_active_relation_assumptions():
+        return None
+    return ctx.get_relation_cache()
+
+
+def _relation_key_piece(value: object) -> tuple[str, object]:
+    try:
+        hash(value)
+    except Exception:
+        return ("id", id(value))
+    return ("val", value)
+
+
+def _make_relation_cache_key(
+    left: Value, right: Value, relation: Relation, ctx: CanAssignContext
+) -> tuple[tuple[str, object], tuple[str, object], Relation, bool]:
+    return (
+        _relation_key_piece(left),
+        _relation_key_piece(right),
+        relation,
+        ctx.should_exclude_any(),
+    )
+
+
+def _get_cached_relation_result(
+    cache: MutableMapping[object, object] | None, key: object
+) -> CanAssign | None:
+    if cache is None:
+        return None
+    cached = cache.get(key)
+    if cached is None:
+        return None
+    if cached is _RELATION_CACHE_EMPTY:
+        return {}
+    if isinstance(cached, CanAssignError):
+        return cached
+    return None
+
+
+def _store_cached_relation_result(
+    cache: MutableMapping[object, object] | None, key: object, result: CanAssign
+) -> None:
+    if cache is None:
+        return
+    if isinstance(result, CanAssignError):
+        cached = result
+    elif not result:
+        cached = _RELATION_CACHE_EMPTY
+    else:
+        # Bounds maps can contain mutable lists of bounds.
+        return
+    if len(cache) >= _RELATION_CACHE_MAX_SIZE:
+        cache.clear()
+    cache[key] = cached
+
+
 @used
 def is_equivalent(left: Value, right: Value, ctx: CanAssignContext) -> bool:
     """Return whether ``left`` and ``right`` are equivalent types."""
@@ -171,6 +232,14 @@ def has_relation(
 ) -> CanAssign:
     left = gradualize(left)
     right = gradualize(right)
+    cache = _get_relation_cache(ctx)
+    key = None
+    if cache is not None:
+        key = _make_relation_cache_key(left, right, relation, ctx)
+        cached = _get_cached_relation_result(cache, key)
+        if cached is not None:
+            return cached
+
     if relation is Relation.EQUIVALENT:
         # A is equivalent to B if A is a subtype of B and B is a subtype of A.
         result1 = _has_relation(left, right, Relation.SUBTYPE, ctx)
@@ -179,10 +248,11 @@ def has_relation(
             children = [
                 elt for elt in (result1, result2) if isinstance(elt, CanAssignError)
             ]
-            return CanAssignError(
+            result = CanAssignError(
                 f"{left} is not {relation.description} {right}", children=children
             )
-        return unify_bounds_maps([result1, result2])
+        else:
+            result = unify_bounds_maps([result1, result2])
     elif relation is Relation.CONSISTENT:
         # A is consistent with B if A is assignable to B and B is assignable to A.
         result1 = _has_relation(left, right, Relation.ASSIGNABLE, ctx)
@@ -191,12 +261,18 @@ def has_relation(
             children = [
                 elt for elt in (result1, result2) if isinstance(elt, CanAssignError)
             ]
-            return CanAssignError(
+            result = CanAssignError(
                 f"{left} is not {relation.description} {right}", children=children
             )
-        return unify_bounds_maps([result1, result2])
+        else:
+            result = unify_bounds_maps([result1, result2])
     else:
-        return _has_relation(left, right, relation, ctx)
+        result = _has_relation(left, right, relation, ctx)
+
+    if key is not None:
+        assert cache is not None
+        _store_cached_relation_result(cache, key, result)
+    return result
 
 
 def _has_relation(
@@ -749,14 +825,13 @@ def _extract_type_form(value: Value, ctx: CanAssignContext) -> Value | CanAssign
         except NotAGradualType:
             return CanAssignError(f"{value} is not a TypeForm")
     if isinstance(value, KnownValue):
-        # Avoid emitting annotation errors while checking assignability.
         from pycroscope.annotations import type_from_runtime, type_from_value
 
-        if isinstance(value.val, str) and hasattr(ctx, "resolve_name"):
+        if isinstance(value.val, str):
             # Use lexical scope when evaluating quoted type expressions.
-            type_form = type_from_value(value, visitor=ctx)
+            type_form = type_from_value(value, visitor=ctx, suppress_errors=True)
         else:
-            type_form = type_from_runtime(value.val)
+            type_form = type_from_runtime(value.val, visitor=ctx, suppress_errors=True)
         if type_form == AnyValue(AnySource.error):
             return CanAssignError(f"{value} is not a TypeForm")
         try:

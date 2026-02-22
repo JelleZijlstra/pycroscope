@@ -1315,6 +1315,15 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     ) -> AbstractContextManager[None]:
         return self.checker.aliases_assume_compatibility(left, right)
 
+    def get_relation_cache(self) -> dict[object, object] | None:
+        return self.checker.get_relation_cache()
+
+    def has_active_relation_assumptions(self) -> bool:
+        return self.checker.has_active_relation_assumptions()
+
+    def get_type_alias_cache(self) -> dict[object, TypeAlias]:
+        return self.checker.get_type_alias_cache()
+
     def record_any_used(self) -> None:
         """Record that Any was used to secure a match."""
         pass

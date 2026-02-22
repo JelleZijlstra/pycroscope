@@ -180,12 +180,16 @@ class Proto(Protocol):
 def test_protocol() -> None:
     tv = TypedValue(Proto)
 
-    def fn() -> None:
+    def fn_missing_asynq() -> None:
         pass
 
-    assert_cannot_assign(tv, KnownValue(fn))
-    fn.asynq = lambda: None
-    assert_can_assign(tv, KnownValue(fn))
+    assert_cannot_assign(tv, KnownValue(fn_missing_asynq))
+
+    def fn_with_asynq() -> None:
+        pass
+
+    fn_with_asynq.asynq = lambda: None
+    assert_can_assign(tv, KnownValue(fn_with_asynq))
 
     class X:
         def asynq(self) -> None:

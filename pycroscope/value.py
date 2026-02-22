@@ -263,6 +263,19 @@ class CanAssignContext(Protocol):
     ) -> "Value":
         return UNINITIALIZED_VALUE
 
+    def resolve_name(
+        self,
+        node: ast.Name,
+        error_node: ast.AST | None = None,
+        suppress_errors: bool = False,
+    ) -> tuple["Value", object]:
+        """Resolve a name for annotation evaluation."""
+        return AnyValue(AnySource.inference), node.id
+
+    def get_type_alias_cache(self) -> MutableMapping[object, object] | None:
+        """Return cache storage for evaluated type aliases, if supported."""
+        return None
+
     def can_assume_compatibility(
         self,
         left: "pycroscope.type_object.TypeObject",
@@ -286,6 +299,14 @@ class CanAssignContext(Protocol):
         self, left: "TypeAliasValue", right: "TypeAliasValue"
     ) -> AbstractContextManager[None]:
         return contextlib.nullcontext()
+
+    def get_relation_cache(self) -> MutableMapping[object, object] | None:
+        """Return storage for relation memoization, if supported by this context."""
+        return None
+
+    def has_active_relation_assumptions(self) -> bool:
+        """Whether relation memoization should be disabled for this context."""
+        return False
 
     def record_any_used(self) -> None:
         """Record that Any was used to secure a match."""

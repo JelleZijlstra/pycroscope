@@ -84,6 +84,7 @@ from .value import (
     AnySource,
     AnyValue,
     CallableValue,
+    CanAssignContext,
     CustomCheckExtension,
     DictIncompleteValue,
     Extension,
@@ -137,13 +138,13 @@ class Context:
 
     """
 
-    should_suppress_undefined_names: bool = field(default=False, init=False)
-    """While this is True, no errors are shown for undefined names."""
+    should_suppress_errors: bool = field(default=False, init=False)
+    """While this is True, no annotation errors are emitted."""
     _being_evaluated: dict[int, Value] = field(default_factory=dict, init=False)
 
-    def suppress_undefined_names(self) -> AbstractContextManager[None]:
-        """Temporarily suppress errors about undefined names."""
-        return override(self, "should_suppress_undefined_names", True)
+    def suppress_errors(self) -> AbstractContextManager[None]:
+        """Temporarily suppress all annotation-evaluation errors."""
+        return override(self, "should_suppress_errors", True)
 
     def is_being_evaluted(self, obj: object) -> Value | None:
         return self._being_evaluated.get(id(obj))
@@ -181,7 +182,7 @@ class Context:
         return AnyValue(AnySource.inference)
 
     def handle_undefined_name(self, name: str) -> Value:
-        if self.should_suppress_undefined_names:
+        if self.should_suppress_errors:
             return AnyValue(AnySource.inference)
         self.show_error(
             f"Undefined name {name!r} used in annotation", ErrorCode.undefined_name
@@ -349,10 +350,11 @@ def annotation_expr_from_annotations(
 
 def type_from_runtime(
     val: object,
-    visitor: Optional["NameCheckVisitor"] = None,
+    visitor: Optional["NameCheckVisitor | CanAssignContext"] = None,
     node: ast.AST | None = None,
     globals: Mapping[str, object] | None = None,
     ctx: Context | None = None,
+    suppress_errors: bool = False,
 ) -> Value:
     """Given a runtime annotation object, return a
     :class:`pycroscope.value.Value`.
@@ -376,6 +378,9 @@ def type_from_runtime(
 
     if ctx is None:
         ctx = _DefaultContext(visitor, node, globals)
+    if suppress_errors:
+        with ctx.suppress_errors():
+            return _type_from_runtime(val, ctx)
     return _type_from_runtime(val, ctx)
 
 
@@ -394,9 +399,10 @@ def annotation_expr_from_runtime(
 
 def type_from_value(
     value: Value,
-    visitor: Optional["NameCheckVisitor"] = None,
+    visitor: Optional["NameCheckVisitor | CanAssignContext"] = None,
     node: ast.AST | None = None,
     ctx: Context | None = None,
+    suppress_errors: bool = False,
 ) -> Value:
     """Given a :class:`pycroscope.value.Value` representing an annotation,
     return a :class:`pycroscope.value.Value` representing the type.
@@ -420,6 +426,9 @@ def type_from_value(
     """
     if ctx is None:
         ctx = _DefaultContext(visitor, node)
+    if suppress_errors:
+        with ctx.suppress_errors():
+            return _type_from_value(value, ctx)
     return _type_from_value(value, ctx)
 
 
@@ -487,9 +496,8 @@ def _annotation_expr_from_runtime(val: object, ctx: Context) -> AnnotationExpr:
             val.__forward_module__,  # static analysis: ignore[undefined_attribute]
             lambda: final_value,
         ):
-            # This is necessary because the forward ref may be defined in a different file, in
-            # which case we don't know which names are valid in it.
-            with ctx.suppress_undefined_names():
+            # Forward refs may be defined in a different file and errors can be misattributed.
+            with ctx.suppress_errors():
                 # static analysis: ignore[undefined_attribute]
                 final_expr = _eval_forward_ref(val.__forward_arg__, ctx)
                 final_value = final_expr.to_value(allow_qualifiers=True)
@@ -602,9 +610,8 @@ def _type_from_runtime(val: Any, ctx: Context) -> Value:
         with ctx.add_evaluation(
             val, val.__forward_arg__, val.__forward_module__, lambda: final_value
         ):
-            # This is necessary because the forward ref may be defined in a different file, in
-            # which case we don't know which names are valid in it.
-            with ctx.suppress_undefined_names():
+            # Forward refs may be defined in a different file and errors can be misattributed.
+            with ctx.suppress_errors():
                 final_value = _eval_forward_ref(val.__forward_arg__, ctx).to_value()
         return final_value
     elif is_instance_of_typing_name(val, "TypeAliasType"):
@@ -1010,7 +1017,7 @@ def _type_alias_cache_key(key: object) -> object:
 class _DefaultContext(Context):
     def __init__(
         self,
-        visitor: "NameCheckVisitor",
+        visitor: "NameCheckVisitor | CanAssignContext",
         node: ast.AST | None,
         globals: Mapping[str, object] | None = None,
         use_name_node_for_error: bool = False,
@@ -1027,6 +1034,8 @@ class _DefaultContext(Context):
         error_code: Error = ErrorCode.invalid_annotation,
         node: ast.AST | None = None,
     ) -> None:
+        if self.should_suppress_errors:
+            return
         if node is None:
             node = self.node
         if self.visitor is not None and node is not None:
@@ -1037,7 +1046,7 @@ class _DefaultContext(Context):
             val, _ = self.visitor.resolve_name(
                 node,
                 error_node=node if self.use_name_node_for_error else self.node,
-                suppress_errors=self.should_suppress_undefined_names,
+                suppress_errors=self.should_suppress_errors,
             )
             return val
         elif self.globals is not None:
@@ -1045,7 +1054,7 @@ class _DefaultContext(Context):
                 return KnownValue(self.globals[node.id])
             elif hasattr(builtins, node.id):
                 return KnownValue(getattr(builtins, node.id))
-        if self.should_suppress_undefined_names:
+        if self.should_suppress_errors:
             return AnyValue(AnySource.inference)
         self.show_error(
             f"Undefined name {node.id!r} used in annotation",
@@ -1061,13 +1070,14 @@ class _DefaultContext(Context):
         evaluate_type_params: typing.Callable[[], Sequence[TypeVarLike]],
     ) -> TypeAlias:
         if self.visitor is not None:
-            cache = self.visitor.checker.type_alias_cache
-            cache_key = _type_alias_cache_key(key)
-            if cache_key in cache:
-                return cache[cache_key]
-            alias = super().get_type_alias(key, evaluator, evaluate_type_params)
-            cache[cache_key] = alias
-            return alias
+            cache = self.visitor.get_type_alias_cache()
+            if cache is not None:
+                cache_key = _type_alias_cache_key(key)
+                if cache_key in cache:
+                    return cache[cache_key]
+                alias = super().get_type_alias(key, evaluator, evaluate_type_params)
+                cache[cache_key] = alias
+                return alias
         return super().get_type_alias(key, evaluator, evaluate_type_params)
 
 
