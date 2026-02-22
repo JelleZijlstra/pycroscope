@@ -2089,9 +2089,6 @@ class TypeFormValue(Value):
         yield self
         yield from self.inner_type.walk_values()
 
-    def can_assign(self, other: Value, ctx: CanAssignContext) -> CanAssign:
-        return _can_assign_type_form(self.inner_type, other, ctx)
-
     def get_fallback_value(self) -> Value:
         # TypeForm is a subtype of object.
         return TypedValue(object)
@@ -2106,7 +2103,9 @@ def _can_assign_type_form(
     value_as_type = _extract_type_form(value, ctx)
     if isinstance(value_as_type, CanAssignError):
         return value_as_type
-    can_assign = inner_type.can_assign(value_as_type, ctx)
+    can_assign = pycroscope.relations.has_relation(
+        inner_type, value_as_type, pycroscope.relations.Relation.ASSIGNABLE, ctx
+    )
     if isinstance(can_assign, CanAssignError):
         return CanAssignError("Incompatible types in TypeForm", [can_assign])
     return can_assign
