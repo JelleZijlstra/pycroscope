@@ -26,7 +26,9 @@ from .signature import (
     ConcreteSignature,
     MaybeSignature,
     OverloadedSignature,
+    ParameterKind,
     Signature,
+    SigParameter,
     make_bound_method,
 )
 from .stacked_scopes import Composite
@@ -37,12 +39,15 @@ from .value import (
     UNINITIALIZED_VALUE,
     AnyValue,
     CallableValue,
+    GenericValue,
     KnownValue,
     KnownValueWithTypeVars,
     MultiValuedValue,
     SubclassValue,
+    SyntheticClassObjectValue,
     TypeAlias,
     TypeAliasValue,
+    TypedDictValue,
     TypedValue,
     TypeVarValue,
     UnboundMethodValue,
@@ -266,7 +271,7 @@ class Checker:
             sig = self.arg_spec_cache.get_argspec(value.val)
         elif isinstance(value, UnboundMethodValue):
             sig = value.get_signature(self)
-        elif isinstance(value, SubclassValue) and value.exactly:
+        elif isinstance(value, SyntheticClassObjectValue):
             sig = self.signature_from_value(value)
         else:
             sig = None
@@ -326,6 +331,37 @@ class Checker:
             return None
         elif isinstance(value, CallableValue):
             return value.signature
+        elif isinstance(value, SyntheticClassObjectValue):
+            if isinstance(value.class_type, TypedDictValue):
+                params = [
+                    SigParameter(
+                        key,
+                        ParameterKind.KEYWORD_ONLY,
+                        default=None if entry.required else KnownValue(...),
+                        annotation=entry.typ,
+                    )
+                    for key, entry in value.class_type.items.items()
+                ]
+                if value.class_type.extra_keys is not None:
+                    params.append(
+                        SigParameter(
+                            "%kwargs",
+                            ParameterKind.VAR_KEYWORD,
+                            annotation=GenericValue(
+                                dict, [TypedValue(str), value.class_type.extra_keys]
+                            ),
+                        )
+                    )
+                return Signature.make(params, value.class_type)
+            if value.class_type.typ is tuple:
+                # Probably an unknown namedtuple
+                return ANY_SIGNATURE
+            argspec = self.arg_spec_cache.get_argspec(
+                value.class_type.typ, allow_synthetic_type=True
+            )
+            if argspec is None:
+                return ANY_SIGNATURE
+            return argspec
         elif isinstance(value, TypedValue):
             typ = value.typ
             if typ is collections.abc.Callable or typ is types.FunctionType:

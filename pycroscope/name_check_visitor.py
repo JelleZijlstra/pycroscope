@@ -216,6 +216,7 @@ from .value import (
     SequenceValue,
     SkipDeprecatedExtension,
     SubclassValue,
+    SyntheticClassObjectValue,
     SysPlatformExtension,
     SysVersionInfoExtension,
     TypeAlias,
@@ -1886,7 +1887,10 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             with override(self, "current_synthetic_typeddict", synthetic_typeddict):
                 value = self._visit_class_and_get_value(node, class_obj)
             if synthetic_typeddict is not None:
-                value = self._build_synthetic_typeddict_value(synthetic_typeddict, node)
+                value = SyntheticClassObjectValue(
+                    node.name,
+                    self._build_synthetic_typeddict_value(synthetic_typeddict, node),
+                )
         value_to_store: Value | None = value
         if (
             class_obj is None
@@ -1958,8 +1962,10 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     ),
                 )
             return None
-        if isinstance(base_value, TypedDictValue):
-            return base_value
+        if isinstance(base_value, SyntheticClassObjectValue) and isinstance(
+            base_value.class_type, TypedDictValue
+        ):
+            return base_value.class_type
         if isinstance(base_value, KnownValue):
             if isinstance(base_value.val, type) and is_typeddict(base_value.val):
                 typed_dict_type = type_from_value(base_value, self, base_node)
@@ -5905,6 +5911,37 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             for keyword, arg in keywords
         )
 
+    def _is_invalid_typevar_bound(self, value: Value) -> bool:
+        value = replace_fallback(value)
+        if isinstance(value, AnnotatedValue):
+            return self._is_invalid_typevar_bound(value.value)
+        if isinstance(value, MultiValuedValue):
+            return any(self._is_invalid_typevar_bound(subval) for subval in value.vals)
+        if isinstance(value, KnownValue):
+            return is_typing_name(value.val, "TypedDict")
+        return False
+
+    def _check_invalid_typevar_bound(
+        self,
+        callee: Value,
+        keywords: Sequence[tuple[str | None, Composite]],
+        node: ast.AST | None = None,
+    ) -> None:
+        if not (
+            isinstance(callee, KnownValue) and is_typing_name(callee.val, "TypeVar")
+        ):
+            return
+        for keyword, composite in keywords:
+            if keyword == "bound" and self._is_invalid_typevar_bound(composite.value):
+                error_node = composite.node if composite.node is not None else node
+                if error_node is None:
+                    continue
+                self._show_error_if_checking(
+                    error_node,
+                    "TypedDict cannot be used as a TypeVar bound",
+                    error_code=ErrorCode.invalid_annotation,
+                )
+
     def check_call(
         self,
         node: ast.AST | None,
@@ -5951,12 +5988,15 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         *,
         allow_call: bool = False,
     ) -> Value:
+        keywords = tuple(keywords)
         if isinstance(callee_wrapped, KnownValue) and any(
             callee_wrapped.val is ignored
             for ignored in self.options.get_value_for(IgnoredCallees)
         ):
             self.log(logging.INFO, "Ignoring callee", callee_wrapped)
             return AnyValue(AnySource.error)
+
+        self._check_invalid_typevar_bound(callee_wrapped, keywords, node=node)
 
         extended_argspec = self.signature_from_value(callee_wrapped, node)
         if extended_argspec is ANY_SIGNATURE:

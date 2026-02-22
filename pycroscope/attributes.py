@@ -43,7 +43,9 @@ from .value import (
     PredicateValue,
     Qualifier,
     SubclassValue,
+    SyntheticClassObjectValue,
     SyntheticModuleValue,
+    TypedDictValue,
     TypedValue,
     TypeFormValue,
     TypeVarValue,
@@ -153,6 +155,17 @@ def get_attribute(ctx: AttrContext) -> Value:
         attribute_value = _get_attribute_from_typed(object, (), ctx)
     elif isinstance(root_value, PredicateValue):
         attribute_value = _get_attribute_from_typed(object, (), ctx)
+    elif isinstance(root_value, SyntheticClassObjectValue):
+        if isinstance(root_value.class_type, TypedDictValue):
+            attribute_value = _get_attribute_from_subclass(dict, root_value, ctx)
+        elif isinstance(root_value.class_type.typ, str):
+            attribute_value = _get_attribute_from_synthetic_class(
+                root_value.class_type.typ, root_value, ctx
+            )
+        else:
+            attribute_value = _get_attribute_from_subclass(
+                root_value.class_type.typ, root_value, ctx
+            )
     else:
         assert_never(root_value)
     if (
@@ -297,6 +310,20 @@ def _get_attribute_from_synthetic_type(
     )
     result = _substitute_typevars(fq_name, generic_args, result, provider, ctx)
     result = set_self(result, ctx.root_value)
+    return result
+
+
+def _get_attribute_from_synthetic_class(
+    fq_name: str, self_value: Value, ctx: AttrContext
+) -> Value:
+    # First check values that are special in Python.
+    if ctx.attr == "__class__":
+        return KnownValue(type)
+    elif ctx.attr == "__dict__":
+        return TypedValue(dict)
+    result, _ = ctx.get_attribute_from_typeshed_recursively(fq_name, on_class=True)
+    assert isinstance(self_value, SyntheticClassObjectValue)
+    result = set_self(result, self_value.class_type)
     return result
 
 
