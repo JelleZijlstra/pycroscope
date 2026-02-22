@@ -6,16 +6,16 @@ from pathlib import Path
 
 import pytest
 
-if sys.version_info < (3, 11):
-    pytest.skip(
-        "conformance tooling tests require Python 3.11+", allow_module_level=True
-    )
-
-from tools.conformance_ci import (
-    diff_expected_errors,
-    get_expected_errors,
-    parse_pycroscope_concise_errors,
+pytestmark = pytest.mark.skipif(
+    sys.version_info < (3, 11), reason="conformance tooling tests require Python 3.11+"
 )
+
+if sys.version_info >= (3, 11):
+    from tools.conformance_ci import (
+        diff_expected_errors,
+        get_expected_errors,
+        parse_pycroscope_concise_errors,
+    )
 
 
 def test_get_expected_errors(tmp_path: Path) -> None:
