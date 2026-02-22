@@ -220,6 +220,10 @@ def _has_relation(
             if isinstance(left, SubclassValue):
                 return CanAssignError(f"{right} is not {relation.description} {left}")
             return _has_relation(left, TypedValue(type), relation, ctx)
+        if isinstance(left, TypedValue) and left.get_type_object(
+            ctx
+        ).is_assignable_to_type(type):
+            return {}
         return _has_relation(left, SubclassValue(right.class_type), relation, ctx)
 
     # TypeVarValue
@@ -552,6 +556,8 @@ def _has_relation(
             return CanAssignError(f"{right} is not {relation.description} {left}")
         elif isinstance(left, TypedValue):
             left_tobj = left.get_type_object(ctx)
+            if left_tobj.is_assignable_to_type(type):
+                return {}
             if isinstance(right.typ, TypedValue):
                 return left_tobj.can_assign(left, right, ctx)
             elif isinstance(right.typ, TypeVarValue):

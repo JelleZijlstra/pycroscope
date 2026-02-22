@@ -26,7 +26,15 @@ import enum
 import sys
 import textwrap
 from collections import deque
-from collections.abc import Callable, Container, Iterable, Iterator, Mapping, Sequence
+from collections.abc import (
+    Callable,
+    Container,
+    Iterable,
+    Iterator,
+    Mapping,
+    MutableMapping,
+    Sequence,
+)
 from contextlib import AbstractContextManager
 from dataclasses import InitVar, dataclass, field
 from itertools import chain
@@ -1414,7 +1422,7 @@ class SyntheticClassObjectValue(Value):
     base_classes: Sequence[Value] = field(
         default_factory=tuple, compare=False, hash=False, repr=False
     )
-    class_attributes: Mapping[str, Value] = field(
+    class_attributes: MutableMapping[str, Value] = field(
         default_factory=dict, compare=False, hash=False, repr=False
     )
 
