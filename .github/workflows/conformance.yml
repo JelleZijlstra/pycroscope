@@ -18,7 +18,7 @@ jobs:
         run: pip install .[tests] pytest
 
       - name: Run unit tests for conformance tooling
-        run: pytest pycroscope/test_conformance_ci.py
+        run: pytest tools/test_conformance_ci.py
 
       - name: Check out typing conformance suite
         uses: actions/checkout@v6

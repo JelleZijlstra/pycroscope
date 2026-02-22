@@ -1,9 +1,15 @@
 from __future__ import annotations
 
+import sys
 import textwrap
 from pathlib import Path
 
 import pytest
+
+if sys.version_info < (3, 11):
+    pytest.skip(
+        "conformance tooling tests require Python 3.11+", allow_module_level=True
+    )
 
 from tools.conformance_ci import (
     diff_expected_errors,
