@@ -136,6 +136,32 @@ class TestFunctionDefinitions(TestNameCheckVisitorBase):
             h(1, b=1)  # E: incompatible_call
 
     @assert_passes()
+    def test_historical_positional_only(self):
+        def f1(__x: int, __y__: int = 0) -> None:
+            pass
+
+        def f2(x: int, __y: int) -> None:  # E: invalid_positional_only
+            pass
+
+        class A:
+            def m1(self, __x: int, __y__: int = 0) -> None:
+                pass
+
+            def m2(self, x: int, __y: int) -> None:  # E: invalid_positional_only
+                pass
+
+        def f4(x: int, /, __y: int) -> None:
+            pass
+
+        def capybara() -> None:
+            f1(3, __y__=1)
+            f1(__x=3)  # E: incompatible_call
+            a = A()
+            a.m1(3, __y__=1)
+            a.m1(__x=3)  # E: incompatible_call
+            f4(3, __y=4)
+
+    @assert_passes()
     def test_lambda(self):
         from typing import Callable
 
@@ -143,6 +169,7 @@ class TestFunctionDefinitions(TestNameCheckVisitorBase):
             fun = lambda: 1
             x: Callable[[], int] = fun
             y: Callable[[], str] = fun  # E: incompatible_assignment
+            print(x, y)
             fun(1)  # E: incompatible_call
             assert_is_value(fun(), KnownValue(1))
 

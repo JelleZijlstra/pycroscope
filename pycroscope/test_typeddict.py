@@ -404,6 +404,7 @@ class TestClosed(TestNameCheckVisitorBase):
 
             x: Closed = {"a": 1, "b": "a", "c": "x"}  # E: incompatible_assignment
             y: Open = {"a": 1, "b": "a", "c": "x"}
+            print(x, y)
 
             want_closed(closed)
             want_closed(open)  # E: incompatible_argument
