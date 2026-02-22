@@ -165,6 +165,7 @@ from .stacked_scopes import (
     FunctionScope,
     OrConstraint,
     PredicateProvider,
+    Scope,
     ScopeType,
     StackedScopes,
     SubScope,
@@ -1107,6 +1108,7 @@ class _PendingOverload:
 @dataclass
 class _PendingOverloadBlock:
     name: str
+    scope: Scope
     overloads: list[_PendingOverload] = dataclass_field(default_factory=list)
 
 
@@ -2429,12 +2431,18 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     ) -> None:
         if not self._is_checking():
             return
-        scope_key = id(self.scopes.current_scope())
+        current_scope = self.scopes.current_scope()
+        scope_key = id(current_scope)
         pending_block = self._pending_overload_blocks.get(scope_key)
+        if pending_block is not None and pending_block.scope is not current_scope:
+            # A scope exited with a dangling overload block and a new scope reused
+            # its id(); discard the stale block.
+            self._pending_overload_blocks.pop(scope_key, None)
+            pending_block = None
         signature = self._signature_for_overload_consistency(info, computed_function)
         if info.is_overload:
             if pending_block is None or pending_block.name != node.name:
-                pending_block = _PendingOverloadBlock(node.name)
+                pending_block = _PendingOverloadBlock(node.name, current_scope)
                 self._pending_overload_blocks[scope_key] = pending_block
             if signature is not None:
                 pending_block.overloads.append(
