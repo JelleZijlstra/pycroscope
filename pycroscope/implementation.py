@@ -2343,9 +2343,21 @@ def _re_impl_with_pattern(ctx: CallContext) -> Value:
     return ctx.inferred_return_value
 
 
+_MAX_DEFAULT_ARGSPECS_WITH_CACHE_RESOLVERS = 10
+_DEFAULT_ARGSPECS_WITH_CACHE_BY_RESOLVER: collections.OrderedDict[
+    object, dict[object, ConcreteSignature]
+] = collections.OrderedDict()
+
+
 def get_default_argspecs_with_cache(
     asc: "pycroscope.arg_spec.ArgSpecCache",
 ) -> dict[object, ConcreteSignature]:
+    resolver = asc.ts_finder.resolver
+    cached = _DEFAULT_ARGSPECS_WITH_CACHE_BY_RESOLVER.get(resolver)
+    if cached is not None:
+        _DEFAULT_ARGSPECS_WITH_CACHE_BY_RESOLVER.move_to_end(resolver)
+        return cached
+
     sigs = {}
     for func in (
         re.compile,
@@ -2363,4 +2375,10 @@ def get_default_argspecs_with_cache(
             sig, (Signature, OverloadedSignature)
         ), f"failed to find signature for {func}: {sig}"
         sigs[func] = sig
+    _DEFAULT_ARGSPECS_WITH_CACHE_BY_RESOLVER[resolver] = sigs
+    if (
+        len(_DEFAULT_ARGSPECS_WITH_CACHE_BY_RESOLVER)
+        > _MAX_DEFAULT_ARGSPECS_WITH_CACHE_RESOLVERS
+    ):
+        _DEFAULT_ARGSPECS_WITH_CACHE_BY_RESOLVER.popitem(last=False)
     return sigs

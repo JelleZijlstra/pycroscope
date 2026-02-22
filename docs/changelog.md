@@ -3,6 +3,7 @@
 ## Unreleased
 
 - Speed up repeated analysis runs (including the test suite) by reusing typeshed resolvers across checker instances when stub search paths are the same.
+- Speed up repeated checker setup by caching regex-related default argspecs per typeshed resolver, reducing repeated work in test runs.
 - Validate that overloaded implementations are compatible with their
   `@overload` signatures (including async/decorator-transformed signatures), and
   report overload/implementation mismatches with the new
