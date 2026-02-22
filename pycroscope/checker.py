@@ -15,6 +15,7 @@ from dataclasses import InitVar, dataclass, field
 from .analysis_lib import override
 from .arg_spec import ArgSpecCache, GenericBases
 from .attributes import AttrContext, get_attribute
+from .extensions import get_overloads as get_runtime_overloads
 from .node_visitor import Failure
 from .options import Options, PyObjectSequenceOption
 from .reexport import ImplicitReexportTracker
@@ -291,6 +292,32 @@ class Checker:
         """Whether Any should be compatible only with itself."""
         return self._should_exclude_any
 
+    def _get_runtime_overloaded_method_signature(
+        self, typ: type, attr: str
+    ) -> OverloadedSignature | None:
+        fq_name = f"{typ.__module__}.{typ.__qualname__}.{attr}"
+        overloads = get_runtime_overloads(fq_name)
+        if not overloads:
+            return None
+        signatures: list[Signature] = []
+        for overload in overloads:
+            sig = self.arg_spec_cache.get_argspec(overload)
+            if isinstance(sig, OverloadedSignature):
+                return sig
+            if isinstance(sig, Signature):
+                signatures.append(sig)
+        if not signatures:
+            return None
+        return OverloadedSignature(signatures)
+
+    def _get_unbound_method_owner(self, value: UnboundMethodValue) -> type | None:
+        root = replace_fallback(value.composite.value)
+        if isinstance(root, TypedValue) and isinstance(root.typ, type):
+            return root.typ
+        if isinstance(root, KnownValue) and isinstance(root.val, type):
+            return root.val
+        return None
+
     def signature_from_value(
         self,
         value: Value,
@@ -316,7 +343,15 @@ class Checker:
         elif isinstance(value, UnboundMethodValue):
             method = value.get_method()
             if method is not None:
-                sig = self.arg_spec_cache.get_argspec(method)
+                sig: MaybeSignature = None
+                if value.attr_name == "__call__" and value.secondary_attr_name is None:
+                    owner = self._get_unbound_method_owner(value)
+                    if owner is not None:
+                        sig = self._get_runtime_overloaded_method_signature(
+                            owner, "__call__"
+                        )
+                if sig is None:
+                    sig = self.arg_spec_cache.get_argspec(method)
                 if sig is None:
                     # TODO return None here and figure out when the signature is missing
                     # Probably because of cythonized methods
@@ -383,7 +418,9 @@ class Checker:
             ):
                 return None
             call_fn = typ.__call__
-            sig = self.arg_spec_cache.get_argspec(call_fn)
+            sig = self._get_runtime_overloaded_method_signature(typ, "__call__")
+            if sig is None:
+                sig = self.arg_spec_cache.get_argspec(call_fn)
             return_override = get_return_override(sig)
             bound_method = make_bound_method(
                 sig, Composite(value), return_override, ctx=self
