@@ -63,6 +63,7 @@ from .value import (
     KnownValue,
     Qualifier,
     SubclassValue,
+    SyntheticClassObjectValue,
     SyntheticModuleValue,
     TypedDictEntry,
     TypedDictValue,
@@ -560,16 +561,15 @@ class TypeshedFinder:
             else:
                 # TODO: apply decorators to the return value
                 sig = self._get_signature_from_func_def(
-                    node, None, mod, autobind=not on_class
+                    node, None, mod, autobind=not on_class, bind_classmethod=on_class
                 )
                 if sig is None:
                     return AnyValue(AnySource.inference)
                 else:
                     return CallableValue(sig)
         elif isinstance(node, ast.ClassDef):
-            # should be
-            # SubclassValue(TypedValue(f"{mod}.{parent_name}.{node.name}"), exactly=True)
-            # but that doesn't currently work well
+            # Should be a synthetic singleton class object, but class-valued
+            # members in stubs are still modeled imprecisely.
             return AnyValue(AnySource.inference)
         elif isinstance(node, ast.Assign):
             return UNINITIALIZED_VALUE
@@ -883,6 +883,7 @@ class TypeshedFinder:
         objclass: type | None = None,
         *,
         autobind: bool = False,
+        bind_classmethod: bool = False,
         allow_call: bool = False,
     ) -> Signature | None:
         is_classmethod = is_staticmethod = is_evaluated = False
@@ -950,6 +951,9 @@ class TypeshedFinder:
         if autobind:
             if is_classmethod or not is_staticmethod:
                 arguments = arguments[1:]
+        elif bind_classmethod and is_classmethod:
+            # Access via class should bind classmethods, but not regular methods.
+            arguments = arguments[1:]
 
         if args.vararg is not None:
             arguments.append(
@@ -1130,7 +1134,7 @@ class TypeshedFinder:
                 for base in bases
             ):
                 typ = self._make_typeddict(module, info, bases)
-        val = SubclassValue(typ, exactly=True)
+        val = SyntheticClassObjectValue(info.name, typ)
         if metadata:
             return annotate_value(val, metadata)
         return val

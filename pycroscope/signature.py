@@ -2708,7 +2708,7 @@ def signatures_have_relation(
             )
             consumed_paramspec = True
         elif my_param.kind is ParameterKind.ELLIPSIS:
-            if relation is Relation.ASSIGNABLE or their_ellipsis is None:
+            if relation is Relation.ASSIGNABLE or their_ellipsis is not None:
                 consumed_paramspec = True
             elif relation is Relation.SUBTYPE:
                 return CanAssignError(

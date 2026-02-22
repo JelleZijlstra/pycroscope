@@ -102,6 +102,7 @@ from .value import (
     SelfTVV,
     SequenceValue,
     SubclassValue,
+    SyntheticClassObjectValue,
     TypeAlias,
     TypeAliasValue,
     TypedDictEntry,
@@ -797,6 +798,8 @@ def _type_from_value(value: Value, ctx: Context) -> Value:
         return _type_from_runtime(value.val, ctx)
     elif isinstance(value, TypedDictValue):
         return value
+    elif isinstance(value, SyntheticClassObjectValue):
+        return value.class_type
     elif isinstance(value, (TypeVarValue, TypeAliasValue)):
         return value
     elif isinstance(value, MultiValuedValue):
@@ -809,8 +812,6 @@ def _type_from_value(value: Value, ctx: Context) -> Value:
         return _type_from_subscripted_value(value.root, value.members, ctx)
     elif isinstance(value, AnyValue):
         return value
-    elif isinstance(value, SubclassValue) and value.exactly:
-        return value.typ
     elif isinstance(value, InputSigValue):
         return value
     else:
@@ -865,13 +866,11 @@ def _type_from_subscripted_value(
                 for subval in root.vals
             ]
         )
-    if (
-        isinstance(root, SubclassValue)
-        and root.exactly
-        and isinstance(root.typ, TypedValue)
+    if isinstance(root, SyntheticClassObjectValue) and isinstance(
+        root.class_type, TypedValue
     ):
         return GenericValue(
-            root.typ.typ, [_type_from_value(elt, ctx) for elt in members]
+            root.class_type.typ, [_type_from_value(elt, ctx) for elt in members]
         )
 
     if isinstance(root, TypedValue) and isinstance(root.typ, str):

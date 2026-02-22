@@ -22,7 +22,13 @@ from .format_strings import parse_format_string
 from .maybe_asynq import qcore
 from .predicates import IsAssignablePredicate
 from .relations import check_hashability, intersect_values, is_equivalent_with_reason
-from .safe import hasattr_static, is_union, safe_isinstance, safe_issubclass
+from .safe import (
+    hasattr_static,
+    is_typing_name,
+    is_union,
+    safe_isinstance,
+    safe_issubclass,
+)
 from .signature import (
     ANY_SIGNATURE,
     CallContext,
@@ -65,6 +71,7 @@ from .value import (
     PredicateValue,
     SequenceValue,
     SubclassValue,
+    SyntheticClassObjectValue,
     TypedDictValue,
     TypedValue,
     TypeFormValue,
@@ -137,6 +144,13 @@ def _issubclass_impl(ctx: CallContext) -> Value:
 
 def _isinstance_impl(ctx: CallContext) -> Value:
     class_or_tuple = ctx.vars["class_or_tuple"]
+    if _contains_typeddict_classinfo(class_or_tuple):
+        ctx.show_error(
+            'Second argument to "isinstance" cannot be a TypedDict',
+            ErrorCode.incompatible_argument,
+            arg="class_or_tuple",
+        )
+        return TypedValue(bool)
     varname = ctx.varname_for_arg("obj")
     if varname is None or not isinstance(class_or_tuple, KnownValue):
         return TypedValue(bool)
@@ -158,6 +172,34 @@ def _isinstance_impl(ctx: CallContext) -> Value:
 
 class _CannotResolve(Exception):
     pass
+
+
+def _contains_typeddict_classinfo(value: Value) -> bool:
+    if isinstance(value, MultiValuedValue):
+        return any(_contains_typeddict_classinfo(subval) for subval in value.vals)
+    if isinstance(value, SyntheticClassObjectValue):
+        return isinstance(value.class_type, TypedDictValue)
+    if isinstance(value, TypedDictValue):
+        return True
+    if not isinstance(value, KnownValue):
+        return False
+    return _contains_typeddict_classinfo_runtime(value.val)
+
+
+def _contains_typeddict_classinfo_runtime(val: object) -> bool:
+    if is_typing_name(val, "TypedDict"):
+        return True
+    if typing_extensions.is_typeddict(val):
+        return True
+    if safe_isinstance(val, tuple):
+        return any(_contains_typeddict_classinfo_runtime(elt) for elt in val)
+    origin = typing_extensions.get_origin(val)
+    if is_union(origin):
+        return any(
+            _contains_typeddict_classinfo_runtime(arg)
+            for arg in typing_extensions.get_args(val)
+        )
+    return False
 
 
 def _resolve_isinstance_arg(val: object) -> Iterable[type]:

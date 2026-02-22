@@ -1405,6 +1405,26 @@ class TypedDictValue(GenericValue):
             yield from entry.typ.walk_values()
 
 
+@dataclass(frozen=True)
+class SyntheticClassObjectValue(Value):
+    """Represents a singleton class object that exists but has no runtime object."""
+
+    name: str
+    class_type: TypedValue | TypedDictValue
+
+    def substitute_typevars(self, typevars: TypeVarMap) -> Value:
+        substituted = self.class_type.substitute_typevars(typevars)
+        assert isinstance(substituted, (TypedValue, TypedDictValue))
+        return SyntheticClassObjectValue(self.name, substituted)
+
+    def walk_values(self) -> Iterable[Value]:
+        yield self
+        yield from self.class_type.walk_values()
+
+    def __str__(self) -> str:
+        return self.name
+
+
 @dataclass(unsafe_hash=True, init=False)
 class AsyncTaskIncompleteValue(GenericValue):
     """A :class:`GenericValue` representing an async task.
@@ -1514,11 +1534,9 @@ class SubclassValue(Value):
 
     typ: Union[TypedValue, "TypeVarValue"]
     """The underlying type."""
-    exactly: bool = False
-    """If True, represents exactly this class and not a subclass."""
 
     def substitute_typevars(self, typevars: TypeVarMap) -> Value:
-        return self.make(self.typ.substitute_typevars(typevars), exactly=self.exactly)
+        return self.make(self.typ.substitute_typevars(typevars))
 
     def get_type_object(
         self, ctx: CanAssignContext
@@ -1575,16 +1593,20 @@ class SubclassValue(Value):
         return f"type[{self.typ}]"
 
     @classmethod
-    def make(cls, origin: Value, *, exactly: bool = False) -> Value:
+    def make(cls, origin: Value) -> Value:
         if isinstance(origin, MultiValuedValue):
-            return unite_values(
-                *[cls.make(val, exactly=exactly) for val in origin.vals]
-            )
+            return unite_values(*[cls.make(val) for val in origin.vals])
         elif isinstance(origin, AnyValue):
             # Type[Any] is equivalent to plain type
             return TypedValue(type)
+        elif isinstance(origin, KnownValue):
+            if origin.val is None:
+                return cls(TypedValue(type(None)), exactly=exactly)
+            elif isinstance(origin.val, type):
+                return cls(TypedValue(origin.val), exactly=exactly)
+            return AnyValue(AnySource.error)
         elif isinstance(origin, (TypeVarValue, TypedValue)):
-            return cls(origin, exactly=exactly)
+            return cls(origin)
         else:
             return AnyValue(AnySource.inference)
 
@@ -2148,6 +2170,8 @@ def _extract_type_form(value: Value, ctx: CanAssignContext) -> Value | CanAssign
         return extracted
     if isinstance(value, SubclassValue):
         return value.typ
+    if isinstance(value, SyntheticClassObjectValue):
+        return value.class_type
     if isinstance(value, TypedValue) and value.typ is type:
         return AnyValue(AnySource.inference)
     if isinstance(value, TypedValue):
@@ -2451,6 +2475,7 @@ class PredicateValue(Value):
 SimpleType: typing_extensions.TypeAlias = (
     AnyValue
     | KnownValue
+    | SyntheticClassObjectValue
     | SyntheticModuleValue
     | UnboundMethodValue
     | TypedValue
