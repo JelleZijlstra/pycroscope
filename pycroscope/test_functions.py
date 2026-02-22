@@ -10,6 +10,8 @@ class TestNestedFunction(TestNameCheckVisitorBase):
     @assert_passes()
     def test_inference(self):
         def capybara():
+            from pycroscope.value import SyntheticClassObjectValue
+
             def nested():
                 pass
 
@@ -18,8 +20,13 @@ class TestNestedFunction(TestNameCheckVisitorBase):
 
             assert_is_value(nested(), KnownValue(None))
             nested(1)  # E: incompatible_call
-            # Should ideally be something more specific
-            assert_is_value(NestedClass, AnyValue(AnySource.inference))
+            assert_is_value(
+                NestedClass,
+                SyntheticClassObjectValue(
+                    "NestedClass",
+                    TypedValue(f"{__name__}.capybara.<locals>.NestedClass"),
+                ),
+            )
 
     @assert_passes()
     def test_usage_in_nested_scope():

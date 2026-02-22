@@ -1059,6 +1059,11 @@ class ArgSpecCache:
             bases = self.ts_finder.get_bases(typ)
         generic_bases = self._extract_bases(typ, bases)
         if generic_bases is None:
+            if isinstance(typ, str):
+                # Synthetic classes may not have typeshed entries.
+                generic_bases = {}
+                self.generic_bases_cache[typ] = generic_bases
+                return generic_bases
             assert isinstance(
                 typ, type
             ), f"failed to extract typeshed bases for {typ!r}"
