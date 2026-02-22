@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Validate that overloaded implementations are compatible with their
+  `@overload` signatures (including async/decorator-transformed signatures), and
+  report overload/implementation mismatches with the new
+  `inconsistent_overload` error code.
 - Fix callable protocol subtyping when `__call__` is overloaded, so pycroscope uses the declared overload signatures instead of a generic `*args, **kwargs` fallback.
 - Fix `assert_type(..., Callable[..., Any])` equivalence checks.
 - Fix `type[None]` annotations so `type(None)` is accepted and `None` values are rejected in type-checked calls.

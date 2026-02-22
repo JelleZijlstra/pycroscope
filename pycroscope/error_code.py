@@ -69,6 +69,10 @@ ErrorCode = ErrorRegistry(
         ),
         Error("not_callable", "Attempt to call an object that is not callable."),
         Error("incompatible_call", "Incompatible arguments to a function call."),
+        Error(
+            "inconsistent_overload",
+            "Overload signature is incompatible with its implementation.",
+        ),
         Error("method_first_arg", "First argument to a method is not cls or self."),
         Error("bad_super_call", "Call to super() with invalid arguments."),
         Error(

@@ -1060,7 +1060,7 @@ class TestOverload(TestNameCheckVisitorBase):
             raise NotImplementedError
 
         @overload
-        def overloaded(x: str) -> str:
+        def overloaded(x: str, /) -> str:
             raise NotImplementedError
 
         def overloaded(*args: str) -> Union[int, str]:
@@ -1088,7 +1088,7 @@ class TestOverload(TestNameCheckVisitorBase):
             raise NotImplementedError
 
         @overload
-        def overloaded(x: str) -> str:
+        def overloaded(x: str, /) -> str:
             raise NotImplementedError
 
         def overloaded(*args: str) -> Union[int, str]:
@@ -1104,6 +1104,78 @@ class TestOverload(TestNameCheckVisitorBase):
             assert_is_value(overloaded("x"), TypedValue(str))
             overloaded(1)  # E: incompatible_argument
             overloaded("a", "b")  # E: incompatible_call
+
+    @assert_passes()
+    def test_inconsistent_implementation(self):
+        from typing import overload
+
+        @overload
+        def return_type(x: int) -> int: ...
+
+        @overload
+        def return_type(x: str) -> str:  # E: inconsistent_overload
+            ...
+
+        def return_type(x: int | str) -> int:
+            return 1
+
+        @overload
+        def parameter_type(x: int) -> int: ...
+
+        @overload
+        def parameter_type(x: str) -> str:  # E: inconsistent_overload
+            ...
+
+        def parameter_type(x: int) -> int | str:
+            return 1
+
+    @assert_passes()
+    def test_consistency_with_transforms(self):
+        from typing import Callable, Coroutine, overload
+
+        @overload
+        def returns_coroutine(x: int) -> Coroutine[None, None, int]: ...
+
+        @overload
+        async def returns_coroutine(x: str) -> str: ...
+
+        async def returns_coroutine(x: int | str) -> int | str:
+            return 1
+
+        @overload
+        async def returns_coroutine_2(x: int) -> int: ...
+
+        @overload
+        async def returns_coroutine_2(x: str) -> str: ...
+
+        def returns_coroutine_2(x: int | str) -> Coroutine[None, None, int | str]:
+            return _wrapped(x)
+
+        async def _wrapped(x: int | str) -> int | str:
+            return 2
+
+        def _deco_1(f: Callable) -> Callable[[int], int]:
+            def wrapped(_x: int, /) -> int:
+                return 1
+
+            return wrapped
+
+        def _deco_2(f: Callable) -> Callable[[int | str], int | str]:
+            def wrapped(_x: int | str, /) -> int | str:
+                return 1
+
+            return wrapped
+
+        @overload
+        @_deco_1
+        def decorated() -> None: ...
+
+        @overload
+        def decorated(x: str, /) -> str: ...
+
+        @_deco_2
+        def decorated(y: bytes, z: bytes) -> bytes:
+            return b""
 
     @assert_passes()
     def test_list_any(self):

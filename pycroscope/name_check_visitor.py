@@ -37,7 +37,7 @@ from collections.abc import (
     Sequence,
 )
 from contextlib import AbstractContextManager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from dataclasses import field as dataclass_field
 from itertools import chain
 from pathlib import Path
@@ -140,6 +140,7 @@ from .signature import (
     ANY_SIGNATURE,
     ARGS,
     KWARGS,
+    BoundMethodSignature,
     ConcreteSignature,
     MaybeSignature,
     OverloadedSignature,
@@ -1097,6 +1098,18 @@ class StackedContexts:
             self.contexts.pop()
 
 
+@dataclass(frozen=True)
+class _PendingOverload:
+    node: FunctionDefNode
+    signature: ConcreteSignature
+
+
+@dataclass
+class _PendingOverloadBlock:
+    name: str
+    overloads: list[_PendingOverload] = dataclass_field(default_factory=list)
+
+
 @used  # exposed as an API
 class CallSiteCollector:
     """Class to record function calls with their origin."""
@@ -1121,6 +1134,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     """Path (relative to this class's file) to a pyproject.toml config file."""
 
     _argspec_to_retval: dict[int, tuple[Value, MaybeSignature]]
+    _pending_overload_blocks: dict[int, _PendingOverloadBlock]
     _method_cache: dict[type[ast.AST], Callable[[Any], Value | None]]
     _name_node_to_statement: dict[ast.AST, ast.AST | None] | None
     _should_exclude_any: bool
@@ -1266,6 +1280,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         # infer types. Previously, we cached this globally, but that makes things non-
         # deterministic because we'll start depending on the order modules are checked.
         self._argspec_to_retval = {}
+        self._pending_overload_blocks = {}
         self._method_cache = {}
         self._statement_types = set()
         self._should_exclude_any = False
@@ -1431,8 +1446,10 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 )
             with override(self, "state", VisitorState.collect_names):
                 self.visit(self.tree)
+            self._pending_overload_blocks.clear()
             with override(self, "state", VisitorState.check_names):
                 self.visit(self.tree)
+            self._pending_overload_blocks.clear()
             # This doesn't deal correctly with errors from the attribute checker. Therefore,
             # leaving this check disabled by default for now.
             self.show_errors_for_unused_ignores(ErrorCode.unused_ignore)
@@ -2287,6 +2304,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 )
 
             computed_function = compute_value_of_function(info, self)
+            self._check_overload_implementation_consistency(
+                node, info, computed_function
+            )
             if potential_function is None:
                 val = computed_function
             else:
@@ -2403,6 +2423,109 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
 
         self._set_argspec_to_retval(val, info, result)
         return val
+
+    def _check_overload_implementation_consistency(
+        self, node: FunctionDefNode, info: FunctionInfo, computed_function: Value
+    ) -> None:
+        if not self._is_checking():
+            return
+        scope_key = id(self.scopes.current_scope())
+        pending_block = self._pending_overload_blocks.get(scope_key)
+        signature = self._signature_for_overload_consistency(info, computed_function)
+        if info.is_overload:
+            if pending_block is None or pending_block.name != node.name:
+                pending_block = _PendingOverloadBlock(node.name)
+                self._pending_overload_blocks[scope_key] = pending_block
+            if signature is not None:
+                pending_block.overloads.append(
+                    _PendingOverload(node=node, signature=signature)
+                )
+            return
+
+        # Overload consistency is checked only for a contiguous block of overloads
+        # followed by a non-overload function with the same name.
+        if pending_block is None:
+            return
+        self._pending_overload_blocks.pop(scope_key, None)
+        if pending_block.name != node.name:
+            return
+        if not pending_block.overloads or signature is None:
+            return
+
+        for pending in pending_block.overloads:
+            parameter_error = self._check_overload_parameter_compatibility(
+                pending.signature, signature
+            )
+            return_error = self._check_overload_return_compatibility(
+                pending.signature, signature
+            )
+            if parameter_error is not None or return_error is not None:
+                detail_lines = []
+                if parameter_error is not None:
+                    detail_lines.append(
+                        "Implementation signature does not accept all overload inputs."
+                    )
+                    detail_lines.append(parameter_error.display())
+                if return_error is not None:
+                    detail_lines.append(
+                        "Implementation return type does not include all overload returns."
+                    )
+                    detail_lines.append(return_error.display())
+                detail = "\n".join(detail_lines)
+                self._show_error_if_checking(
+                    pending.node,
+                    f"Overload for {node.name!r} is inconsistent with implementation",
+                    error_code=ErrorCode.inconsistent_overload,
+                    detail=detail,
+                )
+
+    def _signature_for_overload_consistency(
+        self, info: FunctionInfo, computed_function: Value
+    ) -> ConcreteSignature | None:
+        if info.is_overload:
+            decorators = [
+                decorator
+                for decorator in info.decorators
+                if not self._is_overload_decorator(decorator[0])
+            ]
+            if len(decorators) != len(info.decorators):
+                info = replace(info, decorators=decorators)
+                computed_function = compute_value_of_function(info, self)
+
+        signature = self.signature_from_value(computed_function)
+        if isinstance(signature, BoundMethodSignature):
+            signature = signature.get_signature(ctx=self)
+        if isinstance(signature, (Signature, OverloadedSignature)):
+            return signature
+        return None
+
+    def _check_overload_parameter_compatibility(
+        self,
+        overload_signature: ConcreteSignature,
+        implementation_signature: ConcreteSignature,
+    ) -> CanAssignError | None:
+        any_return = AnyValue(AnySource.marker)
+        can_assign = overload_signature.replace_return_value(any_return).can_assign(
+            implementation_signature.replace_return_value(any_return), self
+        )
+        if isinstance(can_assign, CanAssignError):
+            return can_assign
+        return None
+
+    def _check_overload_return_compatibility(
+        self,
+        overload_signature: ConcreteSignature,
+        implementation_signature: ConcreteSignature,
+    ) -> CanAssignError | None:
+        can_assign = implementation_signature.return_value.can_assign(
+            overload_signature.return_value, self
+        )
+        if isinstance(can_assign, CanAssignError):
+            return can_assign
+        return None
+
+    def _is_overload_decorator(self, value: Value) -> bool:
+        return isinstance(value, KnownValue) and value.val in (real_overload, overload)
 
     def _allow_missing_return(self, info: FunctionInfo) -> bool:
         if info.is_overload or info.is_evaluated:
