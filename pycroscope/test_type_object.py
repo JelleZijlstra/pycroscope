@@ -83,6 +83,42 @@ class TestNumerics(TestNameCheckVisitorBase):
 
 class TestSyntheticType(TestNameCheckVisitorBase):
     @assert_passes()
+    def test_overloaded_callable_protocols(self):
+        from typing import Protocol
+
+        from pycroscope.extensions import overload
+
+        class OverloadedNarrow(Protocol):
+            @overload
+            def __call__(self, x: int) -> int: ...
+
+            @overload
+            def __call__(self, x: str) -> str: ...
+
+        class FloatArg(Protocol):
+            def __call__(self, x: float) -> float: ...
+
+        class OverloadedWide(Protocol):
+            @overload
+            def __call__(self, x: int, y: str) -> float: ...
+
+            @overload
+            def __call__(self, x: str) -> complex: ...
+
+        class IntStrArg(Protocol):
+            def __call__(self, x: int | str, y: str = "") -> int: ...
+
+        class StrArg(Protocol):
+            def __call__(self, x: str) -> complex: ...
+
+        def capybara(
+            overloaded_narrow: OverloadedNarrow, int_str_arg: IntStrArg, str_arg: StrArg
+        ) -> None:
+            bad: FloatArg = overloaded_narrow  # E: incompatible_assignment
+            ok: OverloadedWide = int_str_arg
+            bad2: OverloadedWide = str_arg  # E: incompatible_assignment
+
+    @assert_passes()
     def test_functools(self):
         import functools
         import types
