@@ -42,7 +42,7 @@ def f() -> int:
 
 
 @overload
-def f(a: int) -> str:
+def f(a: int, /) -> str:
     raise NotImplementedError
 
 
@@ -56,7 +56,7 @@ class WithOverloadedMethods:
         raise NotImplementedError
 
     @overload
-    def f(self, a: int) -> str:
+    def f(self, a: int, /) -> str:
         raise NotImplementedError
 
     def f(self, *args: object) -> object:

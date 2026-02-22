@@ -284,11 +284,11 @@ class TestTypeIs(TestNameCheckVisitorBase):
         R = TypeVar("R")
 
         @overload
-        def filter(f: Callable[[T], TypeIs[R]], it: Iterable[T]) -> Iterator[R]:
+        def filter(f: Callable[[T], TypeIs[R]], it: Iterable[T], /) -> Iterator[R]:
             raise NotImplementedError
 
         @overload
-        def filter(f: Callable[[T], bool], it: Iterable[T]) -> Iterator[T]:
+        def filter(f: Callable[[T], bool], it: Iterable[T], /) -> Iterator[T]:
             raise NotImplementedError
 
         def filter(*args):
