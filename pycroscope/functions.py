@@ -17,6 +17,7 @@ from typing import TypeVar
 
 from typing_extensions import Protocol
 
+from .analysis_lib import is_positional_only_arg_name
 from .error_code import ErrorCode
 from .maybe_asynq import asynq
 from .node_visitor import ErrorContext
@@ -251,6 +252,45 @@ def compute_parameters(
     args += [(ParameterKind.KEYWORD_ONLY, arg) for arg in node.args.kwonlyargs]
     if node.args.kwarg is not None:
         args.append((ParameterKind.VAR_KEYWORD, node.args.kwarg))
+
+    # Support the historical positional-only convention (`__x`) only when
+    # no explicit "/" positional-only marker is present.
+    if not posonly_args:
+        saw_positional_or_keyword = False
+        for idx, (kind, arg) in enumerate(args):
+            if (
+                kind is ParameterKind.POSITIONAL_OR_KEYWORD
+                and is_positional_only_arg_name(arg.arg)
+            ):
+                if saw_positional_or_keyword:
+                    ctx.show_error(
+                        arg,
+                        "Historical positional-only parameter may not follow a"
+                        " positional-or-keyword parameter",
+                        error_code=ErrorCode.invalid_positional_only,
+                    )
+                for previous_idx in range(idx + 1):
+                    previous_kind, previous_arg = args[previous_idx]
+                    if previous_kind is ParameterKind.POSITIONAL_OR_KEYWORD:
+                        args[previous_idx] = (
+                            ParameterKind.POSITIONAL_ONLY,
+                            previous_arg,
+                        )
+                saw_positional_or_keyword = False
+                continue
+            is_implicit_method_first_param = (
+                idx == 0
+                and is_nested_in_class
+                and not is_staticmethod
+                and not isinstance(node, ast.Lambda)
+                and arg.arg in {"self", "cls"}
+            )
+            if (
+                kind is ParameterKind.POSITIONAL_OR_KEYWORD
+                and not is_implicit_method_first_param
+            ):
+                saw_positional_or_keyword = True
+
     params = []
     tv_index = 1
 
