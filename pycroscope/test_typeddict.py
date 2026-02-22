@@ -183,6 +183,64 @@ class TestTypedDict(TestNameCheckVisitorBase):
             )
 
     @assert_passes()
+    def test_function_scope_constructor_and_isinstance(self):
+        from typing import TypedDict
+
+        def run(movie: dict[str, object]) -> None:
+            class Movie(TypedDict):
+                name: str
+                year: int
+
+            m = Movie(name="Blade Runner", year=1982)
+            assert_is_value(
+                m,
+                TypedDictValue(
+                    {
+                        "name": TypedDictEntry(TypedValue(str)),
+                        "year": TypedDictEntry(TypedValue(int)),
+                    }
+                ),
+            )
+
+            if isinstance(movie, Movie):  # E: incompatible_argument
+                pass
+
+    @assert_passes()
+    def test_function_scope_class_assignable_to_type(self):
+        from typing import TypedDict
+
+        def run() -> None:
+            class Movie(TypedDict):
+                name: str
+
+            cls: type = Movie
+
+    @assert_passes()
+    def test_typevar_bound_disallows_typeddict(self):
+        from typing import TypeVar
+
+        from typing_extensions import TypedDict
+
+        TypeVar("T", bound=TypedDict)  # E: invalid_annotation
+
+    @assert_passes()
+    def test_typevar_bound_allows_typeddict_class(self):
+        from typing import TypeVar
+
+        from typing_extensions import TypedDict
+
+        class Movie(TypedDict):
+            name: str
+
+        TypeVar("T", bound=Movie)
+
+        def run() -> None:
+            class InnerMovie(TypedDict):
+                name: str
+
+            TypeVar("InnerT", bound=InnerMovie)
+
+    @assert_passes()
     def test_unknown_key(self):
         from typing_extensions import TypedDict, assert_type
 

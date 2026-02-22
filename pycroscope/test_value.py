@@ -589,6 +589,48 @@ def test_typeddict_value() -> None:
     )
 
 
+def test_synthetic_class_object_value_typeddict() -> None:
+    movie_td = value.TypedDictValue(
+        {
+            "name": value.TypedDictEntry(TypedValue(str)),
+            "year": value.TypedDictEntry(TypedValue(int)),
+        }
+    )
+    movie_cls = value.SyntheticClassObjectValue("Movie", movie_td)
+    other_movie_cls = value.SyntheticClassObjectValue("OtherMovie", movie_td)
+
+    assert str(movie_cls) == "Movie"
+
+    # Synthetic TypedDict class values are singleton-like.
+    assert_can_assign(movie_cls, movie_cls)
+    assert_cannot_assign(movie_cls, other_movie_cls)
+    assert_cannot_assign(movie_cls, TypedValue(type))
+
+    # But like other class objects, they can flow to plain type.
+    assert_can_assign(TypedValue(type), movie_cls)
+    assert_cannot_assign(SubclassValue(TypedValue(dict)), movie_cls)
+
+    # Intersections should behave like other singleton value intersections.
+    assert intersect_values(movie_cls, movie_cls, CTX) == movie_cls
+    assert intersect_values(movie_cls, other_movie_cls, CTX) == NO_RETURN_VALUE
+    assert intersect_values(movie_cls, TypedValue(type), CTX) == movie_cls
+    assert intersect_values(movie_cls, TypedValue(int), CTX) == NO_RETURN_VALUE
+
+
+def test_synthetic_class_object_value_nominal_class() -> None:
+    int_cls = value.SyntheticClassObjectValue("int", TypedValue(int))
+    other_int_cls = value.SyntheticClassObjectValue("other_int", TypedValue(int))
+
+    assert str(int_cls) == "int"
+    assert_can_assign(int_cls, int_cls)
+    assert_cannot_assign(int_cls, other_int_cls)
+
+    # Exact class object should satisfy type[int] and plain type.
+    assert_can_assign(SubclassValue(TypedValue(int)), int_cls)
+    assert_can_assign(TypedValue(type), int_cls)
+    assert_cannot_assign(SubclassValue(TypedValue(str)), int_cls)
+
+
 class Capybara(enum.IntEnum):
     hydrochaeris = 1
     isthmius = 2

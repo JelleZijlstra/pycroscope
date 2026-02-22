@@ -27,6 +27,7 @@ from .value import (
     SequenceValue,
     SimpleType,
     SubclassValue,
+    SyntheticClassObjectValue,
     SyntheticModuleValue,
     TypedDictValue,
     TypedValue,
@@ -154,7 +155,9 @@ def _get_boolability_no_mvv(value: SimpleType) -> Boolability:
             return Boolability.boolable
         else:
             return Boolability.value_always_false_mutable
-    elif isinstance(value, (SubclassValue, SyntheticModuleValue)):
+    elif isinstance(
+        value, (SubclassValue, SyntheticClassObjectValue, SyntheticModuleValue)
+    ):
         # Could be false if a metaclass overrides __bool__, but we're
         # not handling that for now.
         return Boolability.type_always_true

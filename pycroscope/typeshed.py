@@ -63,6 +63,7 @@ from .value import (
     KnownValue,
     Qualifier,
     SubclassValue,
+    SyntheticClassObjectValue,
     SyntheticModuleValue,
     TypedDictEntry,
     TypedDictValue,
@@ -567,9 +568,8 @@ class TypeshedFinder:
                 else:
                     return CallableValue(sig)
         elif isinstance(node, ast.ClassDef):
-            # should be
-            # SubclassValue(TypedValue(f"{mod}.{parent_name}.{node.name}"), exactly=True)
-            # but that doesn't currently work well
+            # Should be a synthetic singleton class object, but class-valued
+            # members in stubs are still modeled imprecisely.
             return AnyValue(AnySource.inference)
         elif isinstance(node, ast.Assign):
             return UNINITIALIZED_VALUE
@@ -1130,7 +1130,7 @@ class TypeshedFinder:
                 for base in bases
             ):
                 typ = self._make_typeddict(module, info, bases)
-        val = SubclassValue(typ, exactly=True)
+        val = SyntheticClassObjectValue(info.name, typ)
         if metadata:
             return annotate_value(val, metadata)
         return val
