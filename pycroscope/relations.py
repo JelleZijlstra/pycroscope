@@ -7,6 +7,7 @@ https://typing.python.org/en/latest/spec/concepts.html#summary-of-type-relations
 
 """
 
+import ast
 import collections.abc
 import enum
 import struct
@@ -135,9 +136,6 @@ def _is_immutable_runtime_literal(value: object) -> bool:
 
 def _is_relation_cacheable_value(value: Value) -> bool:
     for subvalue in value.walk_values():
-        if isinstance(subvalue, TypeFormValue):
-            # TypeForm assignability can emit annotation diagnostics as a side effect.
-            return False
         if isinstance(subvalue, KnownValue) and not _is_immutable_runtime_literal(
             subvalue.val
         ):
@@ -859,14 +857,36 @@ def _extract_type_form(value: Value, ctx: CanAssignContext) -> Value | CanAssign
         except NotAGradualType:
             return CanAssignError(f"{value} is not a TypeForm")
     if isinstance(value, KnownValue):
-        # Avoid emitting annotation errors while checking assignability.
-        from pycroscope.annotations import type_from_runtime, type_from_value
+        from pycroscope.annotations import Context, type_from_runtime, type_from_value
 
-        if isinstance(value.val, str) and hasattr(ctx, "resolve_name"):
+        class _SilentTypeFormContext(Context):
+            """Annotation context for TypeForm checks that never emits diagnostics."""
+
+            def __init__(self, can_assign_ctx: CanAssignContext) -> None:
+                super().__init__()
+                self.can_assign_ctx = can_assign_ctx
+
+            def show_error(self, message: str, *args: object, **kwargs: object) -> None:
+                return None
+
+            def get_name(self, node: ast.Name) -> Value:
+                resolve_name = getattr(self.can_assign_ctx, "resolve_name", None)
+                if resolve_name is not None:
+                    try:
+                        resolved, _ = resolve_name(
+                            node, error_node=node, suppress_errors=True
+                        )
+                    except TypeError:
+                        resolved, _ = resolve_name(node)
+                    return resolved
+                return super().get_name(node)
+
+        type_form_ctx = _SilentTypeFormContext(ctx)
+        if isinstance(value.val, str):
             # Use lexical scope when evaluating quoted type expressions.
-            type_form = type_from_value(value, visitor=ctx)
+            type_form = type_from_value(value, ctx=type_form_ctx)
         else:
-            type_form = type_from_runtime(value.val)
+            type_form = type_from_runtime(value.val, ctx=type_form_ctx)
         if type_form == AnyValue(AnySource.error):
             return CanAssignError(f"{value} is not a TypeForm")
         try:

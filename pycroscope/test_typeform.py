@@ -112,7 +112,7 @@ class TestTypeForm(TestNameCheckVisitorBase):
 
     @assert_passes()
     def test_invalid_type_expressions_for_implicit_typeform(self):
-        import typing  # E: invalid_annotation  # E: invalid_annotation
+        import typing
 
         from typing_extensions import Self, TypeForm, TypeVarTuple, Unpack
 
