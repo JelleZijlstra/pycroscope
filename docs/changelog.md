@@ -6,11 +6,30 @@
   keyword calls to these parameters now error correctly, and invalid definitions
   like `def f(x, __y): ...` are now reported under a dedicated
   `invalid_positional_only` error code.
+- Improve TypedDict checking when runtime class objects are unavailable
+  (for example after import-time failures or for function-local class
+  definitions) by falling back to syntactic TypedDict analysis, so
+  `ReadOnly`/`Required`/`NotRequired` annotations and inheritance conflicts
+  are still reported.
+- Treat `with` blocks as non-suppressing when `__exit__`/`__aexit__` return types include non-`bool` members like `None | bool`, which improves narrowing after the block.
 - Narrow tuple types after `len()` checks when bounds imply a more specific
   shape, including exact-length refinements and lower-bound refinements for
   tuples with fixed and variadic parts, which simplifies `reveal_type()` output.
+- Extend `len()`-based narrowing to use intersection predicates, which also
+  improves narrowing for non-tuple cases such as literal strings and impossible
+  `TypedDict` length branches.
+- Fix false-positive errors in some `len()`-narrowed branches involving
+  `Any & Predicate[...]` intersections (including `assert_type(..., Any)` and
+  some sequence indexing operations).
+- Fix a crash when accessing attributes on `len()` predicate constraints by
+  treating `PredicateValue` attributes like attributes on `object`.
+- Fix dunder method handling on intersection types so operations like indexing
+  `list[...] & Predicate[...]` values no longer produce spurious errors and
+  `Any[error]` inference.
 - Keep unexpected keyword argument names in call errors in source order,
   so repeated runs produce stable output.
+- Make protocol member lists in type incompatibility messages deterministic by
+  using definition order when available and sorted order otherwise.
 - Fix an internal error on Python 3.12+ when parsing PEP 695 generics that include `**P` (`ParamSpec`) type parameters.
 - Fix crash if accessing a module's `__annotations__` raises an error.
 - Implement PEP 747 `TypeForm` support, including implicit and explicit
@@ -53,6 +72,9 @@
   (including optional docstrings), while still reporting `missing_return` for
   `@abstractmethod` methods with nontrivial bodies.
 - Fix a crash when checking classes that inherit from `typing.Any`.
+- Narrow variables correctly when calling `TypeGuard` or `TypeIs` functions
+  defined as `@staticmethod`, including calls through either instances or
+  classes.
 
 ## Version 0.2.0 (June 26, 2025)
 

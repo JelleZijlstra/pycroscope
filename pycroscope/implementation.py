@@ -6,7 +6,6 @@ import re
 import typing
 from collections.abc import Callable, Iterable, Sequence
 from itertools import product
-from math import comb
 from typing import NewType, TypeVar, cast
 
 import typing_extensions
@@ -22,7 +21,7 @@ from .extensions import assert_type, reveal_locals, reveal_type
 from .format_strings import parse_format_string
 from .maybe_asynq import qcore
 from .predicates import IsAssignablePredicate
-from .relations import check_hashability, is_equivalent_with_reason
+from .relations import check_hashability, intersect_values, is_equivalent_with_reason
 from .safe import hasattr_static, is_union, safe_isinstance, safe_issubclass
 from .signature import (
     ANY_SIGNATURE,
@@ -55,14 +54,15 @@ from .value import (
     CallableValue,
     CanAssignContext,
     CanAssignError,
-    CustomCheckExtension,
     DictIncompleteValue,
     GenericValue,
     HasAttrGuardExtension,
+    IntersectionValue,
     KnownValue,
     KVPair,
     MultiValuedValue,
     ParameterTypeGuardExtension,
+    PredicateValue,
     SequenceValue,
     SubclassValue,
     TypedDictValue,
@@ -70,7 +70,6 @@ from .value import (
     TypeFormValue,
     TypeVarValue,
     Value,
-    annotate_value,
     assert_is_value,
     concrete_values_from_iterable,
     dump_value,
@@ -495,6 +494,11 @@ def _sequence_common_getitem_impl(ctx: CallContext, typ: type) -> ImplReturn:
             else:
                 ctx.show_error(f"Invalid {typ.__name__} key {key}")
                 return AnyValue(AnySource.error)
+        elif isinstance(key, IntersectionValue):
+            if any(isinstance(subval, AnyValue) for subval in key.vals):
+                return AnyValue(AnySource.from_another)
+            ctx.show_error(f"Invalid {typ.__name__} key {key}")
+            return AnyValue(AnySource.error)
         elif isinstance(key, AnyValue):
             return AnyValue(AnySource.from_another)
         else:
@@ -1555,258 +1559,31 @@ def len_of_value(val: Value) -> Value:
     return TypedValue(int)
 
 
-_MAX_EXACT_TUPLE_LENGTH = 64
-_MAX_EXACT_TUPLE_EXPANSIONS = 128
-
-
-def _iter_compositions(total: int, parts: int) -> Iterable[tuple[int, ...]]:
-    if parts == 1:
-        yield (total,)
-        return
-    for first in range(total + 1):
-        for rest in _iter_compositions(total - first, parts - 1):
-            yield (first, *rest)
-
-
-def _tuple_members_from_value(value: Value) -> tuple[tuple[bool, Value], ...] | None:
-    fallback = replace_fallback(value)
-    if isinstance(fallback, SequenceValue) and fallback.typ is tuple:
-        return fallback.members
-    if (
-        isinstance(fallback, GenericValue)
-        and fallback.typ is tuple
-        and len(fallback.args) == 1
-    ):
-        return ((True, fallback.args[0]),)
-    return None
-
-
-def _expand_tuple_members_to_exact_len(
-    members: tuple[tuple[bool, Value], ...], target_len: int
-) -> list[tuple[tuple[bool, Value], ...]] | None:
-    if target_len < 0:
-        return []
-    if target_len > _MAX_EXACT_TUPLE_LENGTH:
-        return None
-    fixed_count = sum(not is_many for is_many, _ in members)
-    many_values = [value for is_many, value in members if is_many]
-    if target_len < fixed_count:
-        return []
-    if not many_values:
-        if target_len == fixed_count:
-            return [members]
-        return []
-    extra = target_len - fixed_count
-    if len(many_values) > 1:
-        expansions = comb(extra + len(many_values) - 1, len(many_values) - 1)
-        if expansions > _MAX_EXACT_TUPLE_EXPANSIONS:
-            return None
-    result = []
-    for counts in _iter_compositions(extra, len(many_values)):
-        many_index = 0
-        expanded = []
-        for is_many, member in members:
-            if not is_many:
-                expanded.append((False, member))
-                continue
-            expanded.extend((False, member) for _ in range(counts[many_index]))
-            many_index += 1
-        result.append(tuple(expanded))
-    return result
-
-
-def _narrow_tuple_to_exact_len(value: Value, target_len: int) -> Value | None:
-    members = _tuple_members_from_value(value)
-    if members is None:
-        return None
-    expanded = _expand_tuple_members_to_exact_len(members, target_len)
-    if expanded is None:
-        return None
-    if not expanded:
-        return NO_RETURN_VALUE
-    return unite_values(*[SequenceValue(tuple, members) for members in expanded])
-
-
-def _expand_tuple_members_to_min_len(
-    members: tuple[tuple[bool, Value], ...], target_len: int
-) -> list[tuple[tuple[bool, Value], ...]] | None:
-    if target_len < 0:
-        return [members]
-    if target_len > _MAX_EXACT_TUPLE_LENGTH:
-        return None
-    fixed_count = sum(not is_many for is_many, _ in members)
-    many_values = [value for is_many, value in members if is_many]
-    if target_len <= fixed_count:
-        return [members]
-    if not many_values:
-        return []
-    needed = target_len - fixed_count
-    if len(many_values) > 1:
-        expansions = comb(needed + len(many_values) - 1, len(many_values) - 1)
-        if expansions > _MAX_EXACT_TUPLE_EXPANSIONS:
-            return None
-    result = []
-    for counts in _iter_compositions(needed, len(many_values)):
-        many_index = 0
-        expanded = []
-        for is_many, member in members:
-            if not is_many:
-                expanded.append((False, member))
-                continue
-            expanded.extend((False, member) for _ in range(counts[many_index]))
-            expanded.append((True, member))
-            many_index += 1
-        result.append(tuple(expanded))
-    return result
-
-
-def _narrow_tuple_to_min_len(value: Value, target_len: int) -> Value | None:
-    members = _tuple_members_from_value(value)
-    if members is None:
-        return None
-    expanded = _expand_tuple_members_to_min_len(members, target_len)
-    if expanded is None:
-        return None
-    if not expanded:
-        return NO_RETURN_VALUE
-    return unite_values(*[SequenceValue(tuple, members) for members in expanded])
-
-
-def _expand_tuple_members_to_max_len(
-    members: tuple[tuple[bool, Value], ...], target_len: int
-) -> list[tuple[tuple[bool, Value], ...]] | None:
-    if target_len < 0:
-        return []
-    if target_len > _MAX_EXACT_TUPLE_LENGTH:
-        return None
-    fixed_count = sum(not is_many for is_many, _ in members)
-    if fixed_count > target_len:
-        return []
-
-    expanded = []
-    for current_len in range(fixed_count, target_len + 1):
-        exact = _expand_tuple_members_to_exact_len(members, current_len)
-        if exact is None:
-            return None
-        expanded.extend(exact)
-        if len(expanded) > _MAX_EXACT_TUPLE_EXPANSIONS:
-            return None
-
-    deduped = []
-    for option in expanded:
-        if option not in deduped:
-            deduped.append(option)
-    return deduped
-
-
-def _narrow_tuple_to_max_len(value: Value, target_len: int) -> Value | None:
-    members = _tuple_members_from_value(value)
-    if members is None:
-        return None
-    expanded = _expand_tuple_members_to_max_len(members, target_len)
-    if expanded is None:
-        return None
-    if not expanded:
-        return NO_RETURN_VALUE
-    return unite_values(*[SequenceValue(tuple, members) for members in expanded])
-
-
-def _annotate_with_len_metadata(
-    value: Value, metadata: Sequence[CustomCheckExtension]
+def len_transformer(
+    val: Value, op: type[ast.AST], comparator: object, checker_ctx: CanAssignContext
 ) -> Value:
-    annotated = annotate_value(value, metadata)
-    if not isinstance(annotated, AnnotatedValue):
-        return annotated
-    min_len: int | None = None
-    max_len: int | None = None
-    remaining_metadata = []
-    for item in annotated.metadata:
-        if isinstance(item, CustomCheckExtension):
-            if isinstance(item.custom_check, MinLen) and isinstance(
-                item.custom_check.value, int
-            ):
-                if min_len is None:
-                    min_len = item.custom_check.value
-                else:
-                    min_len = max(min_len, item.custom_check.value)
-                continue
-            if isinstance(item.custom_check, MaxLen) and isinstance(
-                item.custom_check.value, int
-            ):
-                if max_len is None:
-                    max_len = item.custom_check.value
-                else:
-                    max_len = min(max_len, item.custom_check.value)
-                continue
-        remaining_metadata.append(item)
-    if min_len is not None and max_len is not None and min_len == max_len:
-        narrowed = _narrow_tuple_to_exact_len(annotated.value, min_len)
-        if narrowed is None:
-            return annotated
-        if narrowed is NO_RETURN_VALUE:
-            return NO_RETURN_VALUE
-        return annotate_value(narrowed, remaining_metadata)
-
-    narrowed_value = annotated.value
-    consumed_min = False
-    consumed_max = False
-
-    if min_len is not None:
-        narrowed = _narrow_tuple_to_min_len(narrowed_value, min_len)
-        if narrowed is NO_RETURN_VALUE:
-            return NO_RETURN_VALUE
-        if narrowed is not None:
-            narrowed_value = narrowed
-            consumed_min = True
-
-    if max_len is not None:
-        narrowed = _narrow_tuple_to_max_len(narrowed_value, max_len)
-        if narrowed is NO_RETURN_VALUE:
-            return NO_RETURN_VALUE
-        if narrowed is not None:
-            narrowed_value = narrowed
-            consumed_max = True
-
-    if not consumed_min and not consumed_max:
-        return annotated
-
-    metadata_to_keep = [*remaining_metadata]
-    if min_len is not None and not consumed_min:
-        metadata_to_keep.append(CustomCheckExtension(MinLen(min_len)))
-    if max_len is not None and not consumed_max:
-        metadata_to_keep.append(CustomCheckExtension(MaxLen(max_len)))
-    return annotate_value(narrowed_value, metadata_to_keep)
-
-
-def len_transformer(val: Value, op: type[ast.AST], comparator: object) -> Value:
     if not isinstance(comparator, int):
         return val
     if isinstance(len_of_value(val), KnownValue):
         return val  # no need to specify
     if op is ast.Eq:
-        return _annotate_with_len_metadata(
-            val,
-            [
-                CustomCheckExtension(MinLen(comparator)),
-                CustomCheckExtension(MaxLen(comparator)),
-            ],
+        return intersect_values(
+            intersect_values(val, PredicateValue(MinLen(comparator)), checker_ctx),
+            PredicateValue(MaxLen(comparator)),
+            checker_ctx,
         )
     elif op is ast.Lt:
-        return _annotate_with_len_metadata(
-            val, [CustomCheckExtension(MaxLen(comparator - 1))]
+        return intersect_values(
+            val, PredicateValue(MaxLen(comparator - 1)), checker_ctx
         )
     elif op is ast.LtE:
-        return _annotate_with_len_metadata(
-            val, [CustomCheckExtension(MaxLen(comparator))]
-        )
+        return intersect_values(val, PredicateValue(MaxLen(comparator)), checker_ctx)
     elif op is ast.Gt:
-        return _annotate_with_len_metadata(
-            val, [CustomCheckExtension(MinLen(comparator + 1))]
+        return intersect_values(
+            val, PredicateValue(MinLen(comparator + 1)), checker_ctx
         )
     elif op is ast.GtE:
-        return _annotate_with_len_metadata(
-            val, [CustomCheckExtension(MinLen(comparator))]
-        )
+        return intersect_values(val, PredicateValue(MinLen(comparator)), checker_ctx)
     else:
         return val
 

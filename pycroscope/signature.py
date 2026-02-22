@@ -772,10 +772,7 @@ class Signature:
     ) -> VarnameWithOrigin | None:
         # This might miss some cases where we should use the second argument instead. We'll
         # have to come up with additional heuristics if that comes up.
-        if isinstance(self.callable, MethodType) or (
-            isinstance(self.callable, FunctionType)
-            and self.callable.__name__ != self.callable.__qualname__
-        ):
+        if self._is_method_like_typeguard_callable():
             index = 1
         else:
             index = 0
@@ -785,6 +782,38 @@ class Signature:
             if composite.varname is not None:
                 return composite.varname
         return None
+
+    def _is_method_like_typeguard_callable(self) -> bool:
+        if isinstance(self.callable, MethodType):
+            return True
+        if not isinstance(self.callable, FunctionType):
+            return False
+        if self.callable.__name__ == self.callable.__qualname__:
+            return False
+        if "<locals>" in self.callable.__qualname__:
+            return False
+        return not self._is_staticmethod_callable(self.callable)
+
+    @staticmethod
+    def _is_staticmethod_callable(func: FunctionType) -> bool:
+        module = inspect.getmodule(func)
+        if module is None:
+            return False
+        qualname_parts = func.__qualname__.split(".")
+        if len(qualname_parts) < 2:
+            return False
+        owner: object = module
+        for part in qualname_parts[:-1]:
+            try:
+                owner = getattr(owner, part)
+            except AttributeError:
+                return False
+        attr_name = qualname_parts[-1]
+        try:
+            member = inspect.getattr_static(owner, attr_name)
+        except AttributeError:
+            return False
+        return isinstance(member, staticmethod)
 
     def bind_arguments(
         self, actual_args: ActualArguments, ctx: CheckCallContext

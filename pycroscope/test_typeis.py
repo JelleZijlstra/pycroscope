@@ -771,13 +771,10 @@ class TestTypeIs(TestNameCheckVisitorBase):
 
         def capybara(x: object):
             if Y().typeguard(x):
-                # This doesn't work because we treat it as a method, not a staticmethod,
-                # and narrow parameter 1 instead. Doesn't look easy to fix, because the Signature
-                # class has no way to know.
-                assert_type(x, object)  # TODO: int
+                assert_type(x, int)
             assert_type(x, object)
             if Y.typeguard(x):
-                assert_type(x, object)  # TODO: int
+                assert_type(x, int)
 
     @assert_passes()
     def testTypeIsKwargFollowingThroughOverloaded(self):

@@ -252,11 +252,36 @@ class TypeObject:
     def __str__(self) -> str:
         base = stringify_object(self.typ)
         if self.is_protocol:
+            protocol_members = self._get_protocol_members_for_display()
             return (
                 f"{base} (Protocol with members"
-                f" {', '.join(map(repr, self.protocol_members))})"
+                f" {', '.join(map(repr, protocol_members))})"
             )
         return base
+
+    def _get_protocol_members_for_display(self) -> list[str]:
+        if not isinstance(self.typ, type):
+            return sorted(self.protocol_members)
+
+        members: list[str] = []
+        seen = set()
+        for base in get_mro(self.typ):
+            for attr in base.__dict__:
+                if attr in self.protocol_members and attr not in seen:
+                    members.append(attr)
+                    seen.add(attr)
+
+            annotations = safe_getattr(base, "__annotations__", None)
+            if not isinstance(annotations, dict):
+                continue
+            for attr in annotations:
+                if attr in self.protocol_members and attr not in seen:
+                    members.append(attr)
+                    seen.add(attr)
+
+        if len(seen) == len(self.protocol_members):
+            return members
+        return [*members, *sorted(self.protocol_members - seen)]
 
 
 def _should_use_permissive_dunder_hash(val: Value) -> bool:

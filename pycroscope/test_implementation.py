@@ -364,6 +364,90 @@ class TestLen(TestNameCheckVisitorBase):
             """
         )
 
+    @assert_passes()
+    def test_narrowed_sequence_ops(self):
+        from typing_extensions import assert_type
+
+        def capybara(values: list[int]) -> None:
+            if len(values) >= 1:
+                assert_type(values[0], int)
+                assert_type(values.__getitem__(0), int)
+                assert_type(values + [1], list[int])
+
+    @assert_passes()
+    def test_narrowed_value_bool_check(self):
+        from typing_extensions import assert_type
+
+        def capybara(values: list[int]) -> None:
+            if len(values) >= 1:
+                if values:
+                    assert_type(values[0], int)
+
+    @assert_passes()
+    def test_narrowing_other_types(self):
+        from typing_extensions import Literal, Never, TypedDict, assert_type
+
+        class TD(TypedDict):
+            a: int
+
+        def capybara(s: Literal["", "ab"], td: TD) -> None:
+            if len(s) >= 1:
+                assert_type(s, Literal["ab"])
+            else:
+                assert_type(s, Literal[""])
+
+            if len(s) > 2:
+                assert_type(s, Never)
+
+            if len(td) < 1:
+                assert_type(td, Never)
+
+    @assert_passes()
+    def test_narrowing_typeddict_required_nonrequired(self):
+        from typing_extensions import (
+            Never,
+            NotRequired,
+            Required,
+            TypedDict,
+            assert_type,
+        )
+
+        class WithRequired(TypedDict):
+            a: Required[int]
+            b: NotRequired[int]
+
+        class OptionalOnly(TypedDict):
+            a: NotRequired[int]
+            b: NotRequired[int]
+
+        def capybara(with_required: WithRequired, optional_only: OptionalOnly) -> None:
+            if len(with_required) < 1:
+                assert_type(with_required, Never)
+
+            if len(optional_only) < 0:
+                assert_type(optional_only, Never)
+
+    @assert_passes()
+    def test_narrowing_typeddict_extra_items(self):
+        from typing_extensions import Never, NotRequired, TypedDict, assert_type
+
+        class ClosedTD(TypedDict, closed=True):
+            a: int
+            b: NotRequired[int]
+
+        class ExtraItemsTD(TypedDict, extra_items=int):
+            a: int
+            b: NotRequired[int]
+
+        def capybara(closed_td: ClosedTD, extra_items_td: ExtraItemsTD) -> None:
+            if len(closed_td) < 1:
+                assert_type(closed_td, Never)
+            if len(closed_td) > 2:
+                assert_type(closed_td, Never)
+
+            if len(extra_items_td) < 1:
+                assert_type(extra_items_td, Never)
+
 
 class TestBool(TestNameCheckVisitorBase):
     @assert_passes()

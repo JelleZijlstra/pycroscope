@@ -1304,6 +1304,26 @@ class TestTypeGuard(TestNameCheckVisitorBase):
                 assert_is_value(x, MultiValuedValue([TypedValue(int), TypedValue(str)]))
                 assert_is_value(cls, TypedValue(Cls))
 
+    @assert_passes()
+    def test_staticmethod(self) -> None:
+        from typing import Union
+
+        from typing_extensions import TypeGuard
+
+        class Cls:
+            @staticmethod
+            def is_int(x: Union[int, str]) -> TypeGuard[int]:
+                return x == 43
+
+        def capybara(x: Union[int, str]):
+            if Cls().is_int(x):
+                assert_is_value(x, TypedValue(int))
+            else:
+                assert_is_value(x, MultiValuedValue([TypedValue(int), TypedValue(str)]))
+            assert_is_value(x, MultiValuedValue([TypedValue(int), TypedValue(str)]))
+            if Cls.is_int(x):
+                assert_is_value(x, TypedValue(int))
+
 
 class TestCustomCheck(TestNameCheckVisitorBase):
     @assert_passes()

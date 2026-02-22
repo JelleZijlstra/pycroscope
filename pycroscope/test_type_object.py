@@ -2,6 +2,7 @@
 
 from .test_name_check_visitor import TestNameCheckVisitorBase
 from .test_node_visitor import assert_passes
+from .type_object import TypeObject
 from .value import (
     AnySource,
     AnyValue,
@@ -11,6 +12,25 @@ from .value import (
     TypedValue,
     assert_is_value,
 )
+
+
+def test_protocol_member_str_order_is_deterministic() -> None:
+    from typing_extensions import Protocol
+
+    class HasMembers(Protocol):
+        def f(self) -> int: ...
+
+        def m(self) -> int: ...
+
+    type_object = TypeObject(HasMembers, is_protocol=True, protocol_members={"m", "f"})
+    assert str(type_object).endswith("(Protocol with members 'f', 'm')")
+
+    synthetic_protocol = TypeObject(
+        "synthetic.Protocol", is_protocol=True, protocol_members={"m", "f"}
+    )
+    assert (
+        str(synthetic_protocol) == "synthetic.Protocol (Protocol with members 'f', 'm')"
+    )
 
 
 class TestNumerics(TestNameCheckVisitorBase):
