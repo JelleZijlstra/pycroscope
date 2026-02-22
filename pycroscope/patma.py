@@ -20,6 +20,7 @@ from .error_code import ErrorCode
 from .extensions import CustomCheck
 from .implementation import len_of_value
 from .predicates import EqualsPredicate, IsAssignablePredicate
+from .relations import Relation, has_relation
 from .signature import MappingValue
 from .stacked_scopes import (
     NULL_CONSTRAINT,
@@ -111,7 +112,7 @@ class Exclude(CustomCheck):
         for subval in flatten_values(value, unwrap_annotated=True):
             if isinstance(subval, AnyValue):
                 continue
-            can_assign = self.excluded.can_assign(subval, ctx)
+            can_assign = has_relation(self.excluded, subval, Relation.ASSIGNABLE, ctx)
             if not isinstance(can_assign, CanAssignError):
                 return CanAssignError(
                     f"{subval} is compatible with excluded type {self.excluded}"
@@ -296,7 +297,9 @@ class PatmaVisitor(ast.NodeVisitor):
 
     def visit_MatchClass(self, node: MatchClass) -> AbstractConstraint:
         cls = self.visitor.visit(node.cls)
-        can_assign = TypedValue(type).can_assign(cls, self.visitor)
+        can_assign = has_relation(
+            TypedValue(type), cls, Relation.ASSIGNABLE, self.visitor
+        )
         if isinstance(can_assign, CanAssignError):
             self.visitor.show_error(
                 node.cls,

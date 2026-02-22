@@ -12,6 +12,7 @@ import pycroscope
 
 from .annotations import type_from_runtime
 from .find_unused import used
+from .relations import Relation, has_relation
 from .value import CanAssignError, KnownValue
 
 
@@ -39,7 +40,9 @@ def is_assignable(value: object, typ: object) -> bool:
 
     """
     val = type_from_runtime(typ)
-    can_assign = val.can_assign(KnownValue(value), _get_checker())
+    can_assign = has_relation(
+        val, KnownValue(value), Relation.ASSIGNABLE, _get_checker()
+    )
     return not isinstance(can_assign, CanAssignError)
 
 
@@ -61,7 +64,9 @@ def get_assignability_error(value: object, typ: object) -> str | None:
 
     """
     val = type_from_runtime(typ)
-    can_assign = val.can_assign(KnownValue(value), _get_checker())
+    can_assign = has_relation(
+        val, KnownValue(value), Relation.ASSIGNABLE, _get_checker()
+    )
     if isinstance(can_assign, CanAssignError):
         return can_assign.display(depth=0)
     return None
