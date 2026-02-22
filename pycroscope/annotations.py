@@ -138,15 +138,9 @@ class Context:
 
     """
 
-    should_suppress_undefined_names: bool = field(default=False, init=False)
-    """While this is True, no errors are shown for undefined names."""
     should_suppress_errors: bool = field(default=False, init=False)
     """While this is True, no annotation errors are emitted."""
     _being_evaluated: dict[int, Value] = field(default_factory=dict, init=False)
-
-    def suppress_undefined_names(self) -> AbstractContextManager[None]:
-        """Temporarily suppress errors about undefined names."""
-        return override(self, "should_suppress_undefined_names", True)
 
     def suppress_errors(self) -> AbstractContextManager[None]:
         """Temporarily suppress all annotation-evaluation errors."""
@@ -188,7 +182,7 @@ class Context:
         return AnyValue(AnySource.inference)
 
     def handle_undefined_name(self, name: str) -> Value:
-        if self.should_suppress_undefined_names:
+        if self.should_suppress_errors:
             return AnyValue(AnySource.inference)
         self.show_error(
             f"Undefined name {name!r} used in annotation", ErrorCode.undefined_name
@@ -385,7 +379,7 @@ def type_from_runtime(
     if ctx is None:
         ctx = _DefaultContext(visitor, node, globals)
     if suppress_errors:
-        with ctx.suppress_errors(), ctx.suppress_undefined_names():
+        with ctx.suppress_errors():
             return _type_from_runtime(val, ctx)
     return _type_from_runtime(val, ctx)
 
@@ -433,7 +427,7 @@ def type_from_value(
     if ctx is None:
         ctx = _DefaultContext(visitor, node)
     if suppress_errors:
-        with ctx.suppress_errors(), ctx.suppress_undefined_names():
+        with ctx.suppress_errors():
             return _type_from_value(value, ctx)
     return _type_from_value(value, ctx)
 
@@ -502,9 +496,8 @@ def _annotation_expr_from_runtime(val: object, ctx: Context) -> AnnotationExpr:
             val.__forward_module__,  # static analysis: ignore[undefined_attribute]
             lambda: final_value,
         ):
-            # This is necessary because the forward ref may be defined in a different file, in
-            # which case we don't know which names are valid in it.
-            with ctx.suppress_undefined_names():
+            # Forward refs may be defined in a different file and errors can be misattributed.
+            with ctx.suppress_errors():
                 # static analysis: ignore[undefined_attribute]
                 final_expr = _eval_forward_ref(val.__forward_arg__, ctx)
                 final_value = final_expr.to_value(allow_qualifiers=True)
@@ -617,9 +610,8 @@ def _type_from_runtime(val: Any, ctx: Context) -> Value:
         with ctx.add_evaluation(
             val, val.__forward_arg__, val.__forward_module__, lambda: final_value
         ):
-            # This is necessary because the forward ref may be defined in a different file, in
-            # which case we don't know which names are valid in it.
-            with ctx.suppress_undefined_names():
+            # Forward refs may be defined in a different file and errors can be misattributed.
+            with ctx.suppress_errors():
                 final_value = _eval_forward_ref(val.__forward_arg__, ctx).to_value()
         return final_value
     elif is_instance_of_typing_name(val, "TypeAliasType"):
@@ -1054,7 +1046,7 @@ class _DefaultContext(Context):
             val, _ = self.visitor.resolve_name(
                 node,
                 error_node=node if self.use_name_node_for_error else self.node,
-                suppress_errors=self.should_suppress_undefined_names,
+                suppress_errors=self.should_suppress_errors,
             )
             return val
         elif self.globals is not None:
@@ -1062,7 +1054,7 @@ class _DefaultContext(Context):
                 return KnownValue(self.globals[node.id])
             elif hasattr(builtins, node.id):
                 return KnownValue(getattr(builtins, node.id))
-        if self.should_suppress_undefined_names:
+        if self.should_suppress_errors:
             return AnyValue(AnySource.inference)
         self.show_error(
             f"Undefined name {node.id!r} used in annotation",

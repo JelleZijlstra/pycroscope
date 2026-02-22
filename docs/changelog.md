@@ -6,6 +6,7 @@
 - Speed up checker setup by loading regex-related default argspecs only when regex functions are analyzed.
 - Speed up large analysis runs by memoizing repeated type-relation checks in assignability/subtyping logic.
 - Make implicit `TypeForm` checks side-effect-free so relation memoization stays safe and suppresses redundant work.
+- Suppress annotation errors while evaluating runtime forward references, so diagnostics are not misattributed to the current module.
 - Validate that overloaded implementations are compatible with their
   `@overload` signatures (including async/decorator-transformed signatures), and
   report overload/implementation mismatches with the new
