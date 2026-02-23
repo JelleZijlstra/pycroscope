@@ -6124,75 +6124,8 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
 
     # Call nodes
 
-    def _check_functional_typeddict_call(self, callee: Value, node: ast.Call) -> None:
-        if not (
-            isinstance(callee, KnownValue) and is_typing_name(callee.val, "TypedDict")
-        ):
-            return
-        if len(node.args) >= 2:
-            fields_node = node.args[1]
-            if not isinstance(fields_node, ast.Dict):
-                self._show_error_if_checking(
-                    fields_node,
-                    "TypedDict fields argument must be a dictionary literal",
-                    error_code=ErrorCode.incompatible_call,
-                )
-            else:
-                for key in fields_node.keys:
-                    if key is None:
-                        self._show_error_if_checking(
-                            fields_node,
-                            "TypedDict fields argument cannot use dictionary unpacking",
-                            error_code=ErrorCode.incompatible_call,
-                        )
-                        break
-                    if not (
-                        isinstance(key, ast.Constant) and isinstance(key.value, str)
-                    ):
-                        self._show_error_if_checking(
-                            key,
-                            "TypedDict field names must be string literals",
-                            error_code=ErrorCode.incompatible_call,
-                        )
-                        break
-
-        if not node.args:
-            return
-        typename_arg = node.args[0]
-        if not (
-            isinstance(typename_arg, ast.Constant)
-            and isinstance(typename_arg.value, str)
-        ):
-            return
-        assignment_target_name: str | None = None
-        parent = self.node_context.nth_parent(2)
-        if (
-            isinstance(parent, ast.Assign)
-            and parent.value is node
-            and len(parent.targets) == 1
-        ):
-            target = parent.targets[0]
-            if isinstance(target, ast.Name):
-                assignment_target_name = target.id
-        elif (
-            isinstance(parent, ast.AnnAssign)
-            and parent.value is node
-            and isinstance(parent.target, ast.Name)
-        ):
-            assignment_target_name = parent.target.id
-        if (
-            assignment_target_name is not None
-            and assignment_target_name != typename_arg.value
-        ):
-            self._show_error_if_checking(
-                typename_arg,
-                "TypedDict name argument must match the assignment target name",
-                error_code=ErrorCode.incompatible_call,
-            )
-
     def visit_Call(self, node: ast.Call) -> Value:
         callee_wrapped = self.visit(node.func)
-        self._check_functional_typeddict_call(callee_wrapped, node)
         args = [self.composite_from_node(arg) for arg in node.args]
         if node.keywords:
             keywords = [
