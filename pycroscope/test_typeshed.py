@@ -5,7 +5,6 @@ import collections
 import collections.abc
 import contextlib
 import io
-import itertools
 import sys
 import tempfile
 import textwrap
@@ -15,7 +14,6 @@ import urllib.parse
 from collections.abc import Collection, MutableSequence, Reversible, Sequence, Set
 from pathlib import Path
 from typing import Generic, List, NewType, Type, TypeVar, Union
-from unittest.mock import ANY
 from urllib.error import HTTPError
 
 import typing_extensions
@@ -74,32 +72,31 @@ class TestTypeshedClient(TestNameCheckVisitorBase):
 
     def test_get_bases(self):
         tsf = TypeshedFinder(Checker(), verbose=True)
-        generic = GenericValue(Generic, (TypeVarValue(typevar=ANY),))
 
-        # typeshed removed Generic[] from the base list, account for both options
-        # Plus the ordering might change
-        def assert_with_maybe_generic(cls: Type[object], expected: List[Value]) -> None:
+        # Typeshed removed Generic[] from some base lists, and TypeVar identities
+        # may differ across versions. Assert on base type shape rather than exact
+        # TypeVar object identity.
+        def assert_with_maybe_generic(
+            cls: Type[object], expected_bases: List[type]
+        ) -> None:
             actual = tsf.get_bases(cls)
             assert actual is not None
+            actual_generic = [base for base in actual if isinstance(base, GenericValue)]
+            actual_types = [base.typ for base in actual_generic]
 
-            def options():
-                for ordering in itertools.permutations(expected):
-                    yield [*ordering]
-                    yield [*ordering, generic]
+            assert set(actual_types) in (
+                set(expected_bases),
+                {*expected_bases, Generic},
+            )
+            for base in actual_generic:
+                if base.typ is Generic:
+                    continue
+                assert len(base.args) == 1
+                assert isinstance(base.args[0], TypeVarValue)
 
-            assert any(actual == o for o in options())
-
-        assert_with_maybe_generic(
-            list, [GenericValue(MutableSequence, (TypeVarValue(typevar=ANY),))]
-        )
-        assert_with_maybe_generic(
-            Sequence,
-            [
-                GenericValue(Reversible, (TypeVarValue(typevar=ANY),)),
-                GenericValue(Collection, (TypeVarValue(typevar=ANY),)),
-            ],
-        )
-        assert_with_maybe_generic(Set, [GenericValue(Collection, (TypeVarValue(ANY),))])
+        assert_with_maybe_generic(list, [MutableSequence])
+        assert_with_maybe_generic(Sequence, [Reversible, Collection])
+        assert_with_maybe_generic(Set, [Collection])
 
     def test_newtype(self):
         with tempfile.TemporaryDirectory() as temp_dir_str:

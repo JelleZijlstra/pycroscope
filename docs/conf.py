@@ -71,6 +71,8 @@ nitpick_ignore = [
     ("py:class", "pycroscope.typeshed.TypeshedFinder"),
     ("py:class", "pycroscope.value.OverlapMode"),
     ("py:class", "pycroscope.value.T"),
+    ("py:class", "pycroscope.value.Variance"),
+    ("py:class", "typing_extensions.ParamSpec"),
 ]
 
 

@@ -238,7 +238,7 @@ def test_generic_value() -> None:
     assert "list[int]" == str(val)
     assert_can_assign(val, TypedValue(list))
     assert_can_assign(val, GenericValue(list, [AnyValue(AnySource.marker)]))
-    assert_can_assign(val, GenericValue(list, [TypedValue(bool)]))
+    assert_cannot_assign(val, GenericValue(list, [TypedValue(bool)]))
     assert_cannot_assign(val, GenericValue(list, [TypedValue(str)]))
     assert_cannot_assign(val, GenericValue(set, [TypedValue(int)]))
     assert "tuple[int, ...]" == str(value.GenericValue(tuple, [TypedValue(int)]))

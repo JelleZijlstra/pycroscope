@@ -74,7 +74,9 @@ from pycroscope.value import (
     UpperBound,
     Value,
     VariableNameValue,
+    Variance,
     flatten_values,
+    get_typevar_variance,
     gradualize,
     intersect_bounds_maps,
     stringify_object,
@@ -733,30 +735,22 @@ def _has_relation(
             # If we don't think it's a generic base, try super;
             # runtime isinstance() may disagree.
             if generic_args is not None and len(left.args) == len(generic_args):
+                variances = _get_generic_variances(left.typ, len(left.args), ctx)
+                strict_invariant = not isinstance(
+                    right, (SequenceValue, DictIncompleteValue)
+                )
                 bounds_maps = []
-                for i, (my_arg, their_arg) in enumerate(zip(left.args, generic_args)):
-                    if isinstance(my_arg, TypeVarValue) and is_instance_of_typing_name(
-                        my_arg.typevar, "ParamSpec"
-                    ):
-                        my_arg = pycroscope.input_sig.wrap_type_param(my_arg.typevar)
-                    if isinstance(
-                        their_arg, TypeVarValue
-                    ) and is_instance_of_typing_name(their_arg.typevar, "ParamSpec"):
-                        their_arg = pycroscope.input_sig.wrap_type_param(
-                            their_arg.typevar
-                        )
-                    left_is_input_sig = isinstance(
-                        my_arg, pycroscope.input_sig.InputSigValue
+                for i, (my_arg, their_arg, variance) in enumerate(
+                    zip(left.args, generic_args, variances)
+                ):
+                    can_assign = _has_relation_for_generic_arg(
+                        my_arg,
+                        their_arg,
+                        relation,
+                        variance,
+                        ctx,
+                        strict_invariant=strict_invariant,
                     )
-                    right_is_input_sig = isinstance(
-                        their_arg, pycroscope.input_sig.InputSigValue
-                    )
-                    if left_is_input_sig and right_is_input_sig:
-                        can_assign = pycroscope.input_sig.input_sigs_have_relation(
-                            my_arg.input_sig, their_arg.input_sig, relation, ctx
-                        )
-                    else:
-                        can_assign = has_relation(my_arg, their_arg, relation, ctx)
                     if isinstance(can_assign, CanAssignError):
                         return _maybe_specify_error_for_generic(
                             i, left, right, can_assign, relation, ctx
@@ -784,6 +778,66 @@ def _has_relation(
             assert_never(right)
 
     assert_never(left)
+
+
+def _normalize_generic_arg_for_relation(arg: Value) -> Value:
+    if isinstance(arg, TypeVarValue) and is_instance_of_typing_name(
+        arg.typevar, "ParamSpec"
+    ):
+        return pycroscope.input_sig.wrap_type_param(arg.typevar)
+    return arg
+
+
+def _has_relation_for_generic_arg_pair(
+    left: Value,
+    right: Value,
+    relation: Literal[Relation.SUBTYPE, Relation.ASSIGNABLE],
+    ctx: CanAssignContext,
+) -> CanAssign:
+    left = _normalize_generic_arg_for_relation(left)
+    right = _normalize_generic_arg_for_relation(right)
+    if isinstance(left, pycroscope.input_sig.InputSigValue) and isinstance(
+        right, pycroscope.input_sig.InputSigValue
+    ):
+        return pycroscope.input_sig.input_sigs_have_relation(
+            left.input_sig, right.input_sig, relation, ctx
+        )
+    return has_relation(left, right, relation, ctx)
+
+
+def _has_relation_for_generic_arg(
+    left: Value,
+    right: Value,
+    relation: Literal[Relation.SUBTYPE, Relation.ASSIGNABLE],
+    variance: Variance,
+    ctx: CanAssignContext,
+    *,
+    strict_invariant: bool = True,
+) -> CanAssign:
+    if variance is Variance.COVARIANT:
+        return _has_relation_for_generic_arg_pair(left, right, relation, ctx)
+    if variance is Variance.CONTRAVARIANT:
+        return _has_relation_for_generic_arg_pair(right, left, relation, ctx)
+
+    forward = _has_relation_for_generic_arg_pair(left, right, relation, ctx)
+    if isinstance(forward, CanAssignError):
+        return forward
+    if relation is Relation.ASSIGNABLE and not strict_invariant:
+        return forward
+    backward = _has_relation_for_generic_arg_pair(right, left, relation, ctx)
+    if isinstance(backward, CanAssignError):
+        return backward
+    return unify_bounds_maps([forward, backward])
+
+
+def _get_generic_variances(
+    typ: type | str, num_args: int, ctx: CanAssignContext
+) -> tuple[Variance, ...]:
+    bases = ctx.get_generic_bases(typ)
+    typevar_map = bases.get(typ)
+    if typevar_map is None or len(typevar_map) != num_args:
+        return (Variance.INVARIANT,) * num_args
+    return tuple(get_typevar_variance(typevar) for typevar in typevar_map)
 
 
 def _can_assign_type_form(

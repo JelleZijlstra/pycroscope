@@ -3631,7 +3631,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             if self.filename.endswith("/__init__.py"):
                 level -= 1
 
-            current_module_path: list[str] = self.module.__name__.split(".")
+            current_module_path = [
+                str(part) for part in self.module.__name__.split(".")
+            ]
             if level >= len(current_module_path):
                 self._show_error_if_checking(
                     node,

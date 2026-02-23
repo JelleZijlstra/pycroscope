@@ -48,7 +48,13 @@ from typing_extensions import ParamSpec, Protocol, assert_never
 import pycroscope
 from pycroscope.error_code import Error
 from pycroscope.extensions import CustomCheck, ExternalType, PredicateCheck
-from pycroscope.safe import all_of_type, safe_equals, safe_isinstance, safe_issubclass
+from pycroscope.safe import (
+    all_of_type,
+    is_instance_of_typing_name,
+    safe_equals,
+    safe_isinstance,
+    safe_issubclass,
+)
 
 T = TypeVar("T")
 # __builtin__ in Python 2 and builtins in Python 3
@@ -83,6 +89,24 @@ class OverlapMode(enum.Enum):
     IS = 1
     MATCH = 2
     EQ = 3
+
+
+class Variance(enum.Enum):
+    COVARIANT = 1
+    CONTRAVARIANT = 2
+    INVARIANT = 3
+
+
+def get_typevar_variance(typevar: TypeVarLike) -> Variance:
+    if not is_instance_of_typing_name(typevar, "TypeVar"):
+        return Variance.INVARIANT
+    is_covariant = bool(getattr(typevar, "__covariant__", False))
+    is_contravariant = bool(getattr(typevar, "__contravariant__", False))
+    if is_covariant and not is_contravariant:
+        return Variance.COVARIANT
+    if is_contravariant and not is_covariant:
+        return Variance.CONTRAVARIANT
+    return Variance.INVARIANT
 
 
 class Value:
@@ -273,7 +297,7 @@ class CanAssignContext(Protocol):
         """Resolve a name for annotation evaluation."""
         return AnyValue(AnySource.inference), node.id
 
-    def get_type_alias_cache(self) -> MutableMapping[object, object] | None:
+    def get_type_alias_cache(self) -> MutableMapping[object, "TypeAlias"] | None:
         """Return cache storage for evaluated type aliases, if supported."""
         return None
 
@@ -1416,13 +1440,12 @@ class TypedDictValue(GenericValue):
         )
 
     def __str__(self) -> str:
-        entries: list[tuple[str, object]] = list(self.items.items())
+        items = [f'"{key}": {entry}' for key, entry in self.items.items()]
         if self.extra_keys is not None and self.extra_keys is not NO_RETURN_VALUE:
             extra_typ = str(self.extra_keys)
             if self.extra_keys_readonly:
                 extra_typ = f"ReadOnly[{extra_typ}]"
-            entries.append(("__extra_items__", extra_typ))
-        items = [f'"{key}": {entry}' for key, entry in entries]
+            items.append(f'"__extra_items__": {extra_typ}')
         closed = ", closed=True" if self.extra_keys is not None else ""
         return f"TypedDict({{{', '.join(items)}}}{closed})"
 
@@ -1869,16 +1892,13 @@ class IsOneOf(Bound):
 
 @dataclass(frozen=True)
 class TypeVarValue(Value):
-    """Value representing a ``typing.TypeVar``.
-
-    Currently, variance is ignored.
-
-    """
+    """Value representing a ``typing.TypeVar``."""
 
     typevar: TypeVarLike
     bound: Value | None = None
     default: Value | None = None  # unsupported
     constraints: Sequence[Value] = ()
+    variance: Variance = Variance.INVARIANT
     is_typevartuple: bool = False  # unsupported
 
     def substitute_typevars(self, typevars: TypeVarMap) -> Value:

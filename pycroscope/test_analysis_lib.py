@@ -39,7 +39,7 @@ string
 
 
 def test_get_line_range_for_node() -> None:
-    lines = CODE.splitlines()
+    lines = [str(line) for line in CODE.splitlines()]
     tree = ast.parse(CODE)
     assert [1] == get_line_range_for_node(tree.body[0], lines)
     assert [3] == get_line_range_for_node(tree.body[1], lines)
