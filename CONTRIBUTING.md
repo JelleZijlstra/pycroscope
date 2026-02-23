@@ -6,10 +6,7 @@ commands like these:
 
 ```
 $ cd pycroscope
-$ python3 -m venv .venv
-$ source .venv/bin/activate
-$ pip install -r requirements.txt
-$ pip install -e .
+$ uv sync --frozen --extra tests --extra full --group docs
 ```
 
 ## Black
@@ -18,7 +15,7 @@ The code is formatted using [_Black_](https://black.readthedocs.io).
 You can run the formatter with:
 
 ```
-$ black pycroscope
+$ uv run --with black black pycroscope
 ```
 
 ## ruff
@@ -26,7 +23,7 @@ $ black pycroscope
 We use [ruff](https://docs.astral.sh/ruff/) as a linter and import sorter:
 
 ```
-$ ruff check pycroscope
+$ uv run --with ruff ruff check pycroscope
 ```
 
 ## Unit tests
@@ -34,7 +31,7 @@ $ ruff check pycroscope
 The unit tests are run with [pytest](https://docs.pytest.org/):
 
 ```
-$ pytest -v pycroscope
+$ uv run --extra tests pytest -v pycroscope
 ```
 
 Running all of the tests takes a few minutes, so I often use the
@@ -42,7 +39,7 @@ Running all of the tests takes a few minutes, so I often use the
 For example:
 
 ```
-$ pytest -v pycroscope -k PEP673
+$ uv run --extra tests pytest -v pycroscope -k PEP673
 ```
 
 We run tests on all supported Python versions on GitHub Actions,
