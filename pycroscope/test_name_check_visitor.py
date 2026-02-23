@@ -265,6 +265,67 @@ class TestImportFailureHandling:
             for failure in failures
         )
 
+    def test_typeddict_extra_items_and_unpack_after_import_failure(self, tmp_path):
+        filename = tmp_path / "typeddict_extra_items_import_failure.py"
+        filename.write_text(
+            "from typing_extensions import TypedDict, Unpack\n"
+            "\n"
+            "class Movie(TypedDict, extra_items=bool):\n"
+            "    name: str\n"
+            "\n"
+            'MovieFunctional = TypedDict("MovieFunctional", {"name": str}, extra_items=bool)\n'
+            "\n"
+            "boom = {}.popitem()\n"
+            "\n"
+            'a: Movie = {"name": "Blade Runner", "year": 1982}\n'
+            'b: MovieFunctional = {"name": "Blade Runner", "year": 1982}\n'
+            "\n"
+            "class MovieNoExtra(TypedDict):\n"
+            "    name: str\n"
+            "\n"
+            "class MovieExtra(TypedDict, extra_items=int):\n"
+            "    name: str\n"
+            "\n"
+            "def unpack_no_extra(**kwargs: Unpack[MovieNoExtra]) -> None: ...\n"
+            "def unpack_extra(**kwargs: Unpack[MovieExtra]) -> None: ...\n"
+            "\n"
+            'unpack_no_extra(name="No Country for Old Men", year=2007)\n'
+            'unpack_extra(name="No Country for Old Men", year=2007)\n'
+        )
+        failures = self._check_file(str(filename))
+
+        assert any(
+            failure["code"] == ErrorCode.import_failed and failure["lineno"] == 8
+            for failure in failures
+        )
+        assert any(
+            failure["code"] == ErrorCode.incompatible_assignment
+            and failure["lineno"] == 10
+            for failure in failures
+        )
+        assert any(
+            failure["code"] == ErrorCode.incompatible_assignment
+            and failure["lineno"] == 11
+            for failure in failures
+        )
+        assert not any(
+            failure["code"] == ErrorCode.incompatible_call and failure["lineno"] == 6
+            for failure in failures
+        )
+        assert not any(
+            failure["code"] == ErrorCode.invalid_annotation
+            and failure["lineno"] in {19, 20}
+            for failure in failures
+        )
+        assert any(
+            failure["code"] == ErrorCode.incompatible_call and failure["lineno"] == 22
+            for failure in failures
+        )
+        assert not any(
+            failure["code"] == ErrorCode.incompatible_call and failure["lineno"] == 23
+            for failure in failures
+        )
+
     def test_nominal_class_fallback_after_import_failure(self, tmp_path):
         filename = tmp_path / "class_import_failure.py"
         code = (
