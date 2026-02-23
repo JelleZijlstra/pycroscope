@@ -330,7 +330,7 @@ class TestTypedDict(TestNameCheckVisitorBase):
             assert_is_value(x["a"], TypedValue(int))
             print(Bad1, Bad2, Bad3)
 
-    @assert_passes()
+    @assert_passes(allow_import_failures=True)
     def test_class_syntax_method_validation(self):
         from typing import Generic, TypedDict, TypeVar
 
@@ -638,11 +638,9 @@ class TestReadOnly(TestNameCheckVisitorBase):
             want_td2(td4)  # E: incompatible_argument
             want_td2(anydict)  # E: incompatible_argument
 
-    @assert_passes()
+    @assert_passes(allow_import_failures=True)
     def test_inheritance_validation_at_module_scope(self):
-        from typing import NotRequired, Required, TypedDict
-
-        from typing_extensions import ReadOnly
+        from typing_extensions import NotRequired, ReadOnly, Required, TypedDict
 
         class F1(TypedDict):
             a: Required[int]
@@ -683,9 +681,7 @@ class TestReadOnly(TestNameCheckVisitorBase):
 
     @assert_passes()
     def test_update_ignores_uninhabitable_optional_key(self):
-        from typing import Never, NotRequired, TypedDict
-
-        from typing_extensions import ReadOnly
+        from typing_extensions import Never, NotRequired, ReadOnly, TypedDict
 
         class A(TypedDict):
             x: ReadOnly[int]
