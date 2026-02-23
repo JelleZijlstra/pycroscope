@@ -15,7 +15,7 @@ import pycroscope
 from . import runtime
 from .analysis_lib import Sentinel
 from .annotated_types import MaxLen, MinLen
-from .annotations import annotation_expr_from_value, type_from_value
+from .annotations import _SubscriptedValue, annotation_expr_from_value, type_from_value
 from .error_code import ErrorCode
 from .extensions import assert_type, reveal_locals, reveal_type
 from .format_strings import parse_format_string
@@ -452,6 +452,51 @@ def _list_append_impl(ctx: CallContext) -> ImplReturn:
             "list.append", "object", ctx.vars["self"], lst, element, ctx, list
         )
     return ImplReturn(KnownValue(None))
+
+
+_UNKNOWN_SUBSCRIPT_ARGUMENT = object()
+
+
+def _runtime_subscript_argument(value: Value) -> object:
+    """Convert a Value into a runtime subscript argument when possible."""
+    if isinstance(value, KnownValue):
+        return value.val
+    if isinstance(value, SequenceValue):
+        members = value.get_member_sequence()
+        if members is None:
+            return _UNKNOWN_SUBSCRIPT_ARGUMENT
+        runtime_members = []
+        for member in members:
+            runtime_member = _runtime_subscript_argument(member)
+            if runtime_member is _UNKNOWN_SUBSCRIPT_ARGUMENT:
+                return _UNKNOWN_SUBSCRIPT_ARGUMENT
+            runtime_members.append(runtime_member)
+        return tuple(runtime_members)
+    return _UNKNOWN_SUBSCRIPT_ARGUMENT
+
+
+def _typing_special_form_getitem_impl(ctx: CallContext) -> Value:
+    self_value = ctx.vars["self"]
+    if not isinstance(self_value, KnownValue):
+        return AnyValue(AnySource.inference)
+    parameters = ctx.vars["parameters"]
+    runtime_arg = _runtime_subscript_argument(parameters)
+    if runtime_arg is _UNKNOWN_SUBSCRIPT_ARGUMENT:
+        if ctx.node is None:
+            return AnyValue(AnySource.inference)
+        if isinstance(parameters, SequenceValue):
+            members = parameters.get_member_sequence()
+            if members is not None:
+                return _SubscriptedValue(
+                    AnySource.inference, self_value, ctx.node, tuple(members)
+                )
+        return _SubscriptedValue(
+            AnySource.inference, self_value, ctx.node, (parameters,)
+        )
+    try:
+        return KnownValue(self_value.val[runtime_arg])
+    except Exception:
+        return AnyValue(AnySource.error)
 
 
 def _sequence_common_getitem_impl(ctx: CallContext, typ: type) -> ImplReturn:
@@ -2040,7 +2085,24 @@ V = TypeVar("V")
 
 
 def get_default_argspecs() -> dict[object, Signature]:
-    signatures = [
+    signatures = []
+    try:
+        special_form_getitem = getattr(typing, "_SpecialForm").__getitem__
+    except Exception:
+        pass
+    else:
+        signatures.append(
+            Signature.make(
+                [
+                    SigParameter("self", _POS_ONLY),
+                    SigParameter("parameters", _POS_ONLY),
+                ],
+                callable=special_form_getitem,
+                impl=_typing_special_form_getitem_impl,
+                return_annotation=AnyValue(AnySource.inference),
+            )
+        )
+    signatures += [
         # pycroscope helpers
         Signature.make(
             [

@@ -72,7 +72,6 @@ from .annotations import (
     AnnotationExpr,
     Qualifier,
     SyntheticEvaluator,
-    _SubscriptedValue,
     annotation_expr_from_annotations,
     annotation_expr_from_ast,
     annotation_expr_from_value,
@@ -80,7 +79,6 @@ from .annotations import (
     is_instance_of_typing_name,
     is_typing_name,
     type_from_value,
-    value_from_ast,
 )
 from .arg_spec import ArgSpecCache, IgnoredCallees, UnwrapClass, is_dot_asynq_function
 from .asynq_checker import AsynqChecker
@@ -5789,14 +5787,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         value = root_composite.value
         index = index_composite.value
 
-        if self.in_annotation and isinstance(node.ctx, ast.Load):
-            if isinstance(value, KnownValue) and is_typing_name(value.val, "Unpack"):
-                # Preserve structural Unpack[] in annotation mode instead of
-                # evaluating runtime __getitem__, which can collapse to object.
-                return value_from_ast(node, visitor=self, error_on_unrecognized=False)
-            if self._annotation_index_contains_unpack(index):
-                return value_from_ast(node, visitor=self, error_on_unrecognized=False)
-
         if isinstance(node.ctx, ast.Store):
             if self.ann_assign_type is not None:
                 self._show_error_if_checking(
@@ -5909,24 +5899,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 ErrorCode.unexpected_node,
             )
             return AnyValue(AnySource.error)
-
-    @staticmethod
-    def _annotation_index_contains_unpack(index: Value) -> bool:
-        if (
-            isinstance(index, _SubscriptedValue)
-            and isinstance(index.root, KnownValue)
-            and is_typing_name(index.root.val, "Unpack")
-        ):
-            return True
-        if isinstance(index, SequenceValue):
-            members = index.get_member_sequence()
-            if members is None:
-                return False
-            return any(
-                NameCheckVisitor._annotation_index_contains_unpack(member)
-                for member in members
-            )
-        return False
 
     def _get_dunder(self, node: ast.AST, callee_val: Value, method_name: str) -> Value:
         lookup_val = callee_val.get_type_value()
