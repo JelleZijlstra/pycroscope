@@ -1,0 +1,30 @@
+name: Conformance
+
+on: [push, pull_request]
+
+jobs:
+  conformance:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install .[tests] pytest
+
+      - name: Run unit tests for conformance tooling
+        run: pytest tools/test_conformance_ci.py
+
+      - name: Check out typing conformance suite
+        uses: actions/checkout@v6
+        with:
+          repository: python/typing
+          path: typing
+
+      - name: Run conformance gate
+        run: python tools/conformance_ci.py --typing-repo typing

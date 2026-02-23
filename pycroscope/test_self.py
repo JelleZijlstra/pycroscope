@@ -5,6 +5,8 @@ Runs pycroscope on itself.
 """
 
 import ast
+import sys
+from pathlib import Path
 
 import pycroscope
 from pycroscope.error_code import ErrorCode
@@ -16,11 +18,21 @@ class PycroscopeVisitor(pycroscope.name_check_visitor.NameCheckVisitor):
     config_filename = "../pyproject.toml"
 
 
+def _files_for_self_check() -> list[str]:
+    files = ["pycroscope"]
+    if sys.version_info >= (3, 11):
+        conformance_ci = (
+            Path(__file__).resolve().parent.parent / "tools" / "conformance_ci.py"
+        )
+        files.append(str(conformance_ci))
+    return files
+
+
 def _check_all_files_with_annotations() -> None:
     settings = PycroscopeVisitor._get_default_settings()
     if settings is not None:
         settings[ErrorCode.implicit_any] = False
-    kwargs: dict[str, object] = {"settings": settings}
+    kwargs: dict[str, object] = {"settings": settings, "files": _files_for_self_check()}
     kwargs = dict(PycroscopeVisitor.prepare_constructor_kwargs(kwargs))
     files = PycroscopeVisitor.get_files_to_check(False, **kwargs)
     failures = []
