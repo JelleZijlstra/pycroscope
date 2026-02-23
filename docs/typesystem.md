@@ -292,7 +292,7 @@ Two custom checks are exposed by `pycroscope.extensions`:
 
 Although pycroscope aims to support the full Python type system, support for some features is still missing or incomplete, including:
 
-- Variance of TypeVars
+- TypeVar variance inference (PEP 695)
 - `NewType` over non-trivial types
 - `ParamSpec` (PEP 612)
 - `TypeVarTuple` (PEP 646)

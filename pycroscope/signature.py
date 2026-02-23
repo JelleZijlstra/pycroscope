@@ -2700,7 +2700,16 @@ def signatures_have_relation(
         elif my_param.kind is ParameterKind.VAR_KEYWORD:
             if kwargs_annotation is None:
                 return CanAssignError("**kwargs are not accepted")
-            tv_map = has_relation(kwargs_annotation, my_annotation, relation, ctx)
+            my_kwargs_value = _get_var_keyword_value_type(my_annotation, relation, ctx)
+            their_kwargs_value = _get_var_keyword_value_type(
+                kwargs_annotation, relation, ctx
+            )
+            if my_kwargs_value is not None and their_kwargs_value is not None:
+                tv_map = has_relation(
+                    their_kwargs_value, my_kwargs_value, relation, ctx
+                )
+            else:
+                tv_map = has_relation(kwargs_annotation, my_annotation, relation, ctx)
             if isinstance(tv_map, CanAssignError):
                 return CanAssignError("type of **kwargs is incompatible", [tv_map])
             tv_maps.append(tv_map)
@@ -2713,9 +2722,14 @@ def signatures_have_relation(
                 and param.name not in consumed_required_pos_only
             ]
             for extra_param in extra_keyword:
-                tv_map = has_relation(
-                    extra_param.get_annotation(), my_annotation, relation, ctx
-                )
+                if my_kwargs_value is not None:
+                    tv_map = has_relation(
+                        extra_param.get_annotation(), my_kwargs_value, relation, ctx
+                    )
+                else:
+                    tv_map = has_relation(
+                        extra_param.get_annotation(), my_annotation, relation, ctx
+                    )
                 if isinstance(tv_map, CanAssignError):
                     return CanAssignError(
                         f"type of param {extra_param.name!r} is incompatible"
@@ -2891,3 +2905,16 @@ def has_relation_var_keyword(
             )
         bounds_maps.append(can_assign)
     return bounds_maps
+
+
+def _get_var_keyword_value_type(
+    annotation: Value,
+    relation: Literal[Relation.ASSIGNABLE, Relation.SUBTYPE],
+    ctx: CanAssignContext,
+) -> Value | None:
+    if isinstance(annotation, TypedDictValue):
+        return None
+    mapping_tv_map = relations.get_tv_map(MappingValue, annotation, relation, ctx)
+    if isinstance(mapping_tv_map, CanAssignError):
+        return None
+    return mapping_tv_map.get(V, AnyValue(AnySource.generic_argument))

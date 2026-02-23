@@ -115,7 +115,9 @@ from .value import (
     TypeVarLike,
     TypeVarValue,
     Value,
+    Variance,
     annotate_value,
+    get_typevar_variance,
     unite_values,
 )
 
@@ -705,6 +707,7 @@ def make_type_var_value(tv: TypeVarLike, ctx: Context) -> TypeVarValue:
         bound=bound,
         constraints=constraints,
         default=default,
+        variance=get_typevar_variance(tv),
         is_typevartuple=is_instance_of_typing_name(tv, "TypeVarTuple")
         or is_typing_name(type(tv), "TypeVarTuple"),
     )
@@ -1268,9 +1271,24 @@ class _Visitor(ast.NodeVisitor):
             for arg_value in arg_values[1:]:
                 constraints.append(_type_from_value(arg_value, self.ctx))
             bound = default = None
+            covariant = False
+            contravariant = False
+            infer_variance = False
             for name, kwarg_value in kwarg_values:
                 if name in ("covariant", "contravariant", "infer_variance"):
-                    continue
+                    if not isinstance(kwarg_value, KnownValue) or not isinstance(
+                        kwarg_value.val, bool
+                    ):
+                        self.ctx.show_error(
+                            f"TypeVar kwarg {name} must be a bool literal", node=node
+                        )
+                        return None
+                    if name == "covariant":
+                        covariant = kwarg_value.val
+                    elif name == "contravariant":
+                        contravariant = kwarg_value.val
+                    elif name == "infer_variance":
+                        infer_variance = kwarg_value.val
                 elif name == "bound":
                     bound = _type_from_value(kwarg_value, self.ctx)
                 elif name == "default":
@@ -1278,9 +1296,26 @@ class _Visitor(ast.NodeVisitor):
                 else:
                     self.ctx.show_error(f"Unrecognized TypeVar kwarg {name}", node=node)
                     return None
-            tv = TypeVar(name_val.val)
+            kwargs = {"covariant": covariant, "contravariant": contravariant}
+            if infer_variance:
+                kwargs["infer_variance"] = True
+            try:
+                tv = TypeVar(name_val.val, **kwargs)
+            except Exception as e:
+                self.ctx.show_error(str(e), node=node)
+                return None
+            if covariant:
+                variance = Variance.COVARIANT
+            elif contravariant:
+                variance = Variance.CONTRAVARIANT
+            else:
+                variance = Variance.INVARIANT
             return TypeVarValue(
-                tv, bound=bound, constraints=tuple(constraints), default=default
+                tv,
+                bound=bound,
+                constraints=tuple(constraints),
+                default=default,
+                variance=variance,
             )
         elif is_typing_name(func.val, "ParamSpec"):
             arg_values = [self.visit(arg) for arg in node.args]

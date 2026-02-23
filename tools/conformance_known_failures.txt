@@ -82,7 +82,6 @@ literals_parameterizations
 literals_semantics
 namedtuples_define_class
 namedtuples_usage
-narrowing_typeis
 overloads_basic
 overloads_definitions
 overloads_definitions_stub
@@ -104,5 +103,4 @@ specialtypes_type
 tuples_type_compat
 tuples_type_form
 tuples_unpacked
-typeddicts_readonly_inheritance
 typeddicts_type_consistency

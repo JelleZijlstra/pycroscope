@@ -48,7 +48,13 @@ from typing_extensions import ParamSpec, Protocol, assert_never
 import pycroscope
 from pycroscope.error_code import Error
 from pycroscope.extensions import CustomCheck, ExternalType, PredicateCheck
-from pycroscope.safe import all_of_type, safe_equals, safe_isinstance, safe_issubclass
+from pycroscope.safe import (
+    all_of_type,
+    is_instance_of_typing_name,
+    safe_equals,
+    safe_isinstance,
+    safe_issubclass,
+)
 
 T = TypeVar("T")
 # __builtin__ in Python 2 and builtins in Python 3
@@ -83,6 +89,30 @@ class OverlapMode(enum.Enum):
     IS = 1
     MATCH = 2
     EQ = 3
+
+
+class Variance(enum.Enum):
+    COVARIANT = 1
+    CONTRAVARIANT = 2
+    INVARIANT = 3
+
+
+def get_typevar_variance(typevar: TypeVarLike) -> Variance:
+    if not is_instance_of_typing_name(typevar, "TypeVar"):
+        return Variance.INVARIANT
+    try:
+        is_covariant = bool(typevar.__covariant__)
+    except Exception:
+        is_covariant = False
+    try:
+        is_contravariant = bool(typevar.__contravariant__)
+    except Exception:
+        is_contravariant = False
+    if is_covariant and not is_contravariant:
+        return Variance.COVARIANT
+    if is_contravariant and not is_covariant:
+        return Variance.CONTRAVARIANT
+    return Variance.INVARIANT
 
 
 class Value:
@@ -1869,16 +1899,13 @@ class IsOneOf(Bound):
 
 @dataclass(frozen=True)
 class TypeVarValue(Value):
-    """Value representing a ``typing.TypeVar``.
-
-    Currently, variance is ignored.
-
-    """
+    """Value representing a ``typing.TypeVar``."""
 
     typevar: TypeVarLike
     bound: Value | None = None
     default: Value | None = None  # unsupported
     constraints: Sequence[Value] = ()
+    variance: Variance = Variance.INVARIANT
     is_typevartuple: bool = False  # unsupported
 
     def substitute_typevars(self, typevars: TypeVarMap) -> Value:

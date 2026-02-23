@@ -491,6 +491,31 @@ class TestShadowing(TestNameCheckVisitorBase):
 
 class TestCalls(TestNameCheckVisitorBase):
     @assert_passes()
+    def test_callable_subtyping_var_keyword_regression(self):
+        from typing import Protocol
+
+        class IntKwargs5(Protocol):
+            def __call__(self, **kwargs: int) -> None: ...
+
+        class FloatKwargs5(Protocol):
+            def __call__(self, **kwargs: float) -> None: ...
+
+        class IntKwargs6(Protocol):
+            def __call__(self, **kwargs: int) -> None: ...
+
+        class IntStrKwargs6(Protocol):
+            def __call__(self, **kwargs: int | str) -> None: ...
+
+        class StrKwargs6(Protocol):
+            def __call__(self, *, a: int, **kwargs: str) -> None: ...
+
+        def capybara(float_kwargs: FloatKwargs5, int_str_kwargs: IntStrKwargs6) -> None:
+            ok1: IntKwargs5 = float_kwargs
+            ok2: StrKwargs6 = int_str_kwargs
+            ok3: IntKwargs6 = int_str_kwargs
+            print(ok1, ok2, ok3)
+
+    @assert_passes()
     def test_error_location(self):
         def two_args(x: str, y: int) -> None:
             pass

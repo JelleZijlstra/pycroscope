@@ -154,6 +154,45 @@ class TestTypeVar(TestNameCheckVisitorBase):
         def capybara(c: Derived):
             take_base(c)  # E: incompatible_argument
 
+    @assert_passes()
+    def test_variance_in_assignability(self):
+        from typing import Generic, TypeVar
+
+        T_co = TypeVar("T_co", covariant=True)
+        T_contra = TypeVar("T_contra", contravariant=True)
+        T_inv = TypeVar("T_inv")
+
+        class Co(Generic[T_co]):
+            pass
+
+        class Contra(Generic[T_contra]):
+            pass
+
+        class Inv(Generic[T_inv]):
+            pass
+
+        def capybara(
+            co_int: Co[int],
+            co_object: Co[object],
+            contra_int: Contra[int],
+            contra_object: Contra[object],
+            inv_int: Inv[int],
+            inv_object: Inv[object],
+        ) -> None:
+            co_assign_ok: Co[object] = co_int
+            print(co_assign_ok, co_object)
+            co_assign_bad: Co[int] = co_object  # E: incompatible_assignment
+            print(co_assign_bad)
+
+            contra_assign_ok: Contra[int] = contra_object
+            print(contra_assign_ok, contra_int)
+            contra_assign_bad: Contra[object] = contra_int  # E: incompatible_assignment
+            print(contra_assign_bad)
+
+            inv_assign_bad_1: Inv[object] = inv_int  # E: incompatible_assignment
+            inv_assign_bad_2: Inv[int] = inv_object  # E: incompatible_assignment
+            print(inv_assign_bad_1, inv_assign_bad_2)
+
     @skip_before((3, 10))
     @assert_passes()
     def test_typeshed(self):

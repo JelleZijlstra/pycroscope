@@ -22,6 +22,7 @@ from pycroscope.value import (
     TypeVarValue,
     UpperBound,
     Value,
+    get_typevar_variance,
 )
 
 ParamSpecLike = typing_extensions.ParamSpec | typing.ParamSpec
@@ -222,8 +223,10 @@ def wrap_type_param(type_param: TypeVarLike) -> Value:
     elif is_instance_of_typing_name(type_param, "TypeVarTuple") or is_typing_name(
         type(type_param), "TypeVarTuple"
     ):
-        return TypeVarValue(type_param, is_typevartuple=True)
+        return TypeVarValue(
+            type_param, variance=get_typevar_variance(type_param), is_typevartuple=True
+        )
     elif is_instance_of_typing_name(type_param, "TypeVar"):
-        return TypeVarValue(type_param)
+        return TypeVarValue(type_param, variance=get_typevar_variance(type_param))
     else:
         raise TypeError(f"Unsupported type parameter: {type_param!r}")
