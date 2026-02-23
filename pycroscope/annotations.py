@@ -181,6 +181,10 @@ class Context:
         """Return the :class:`pycroscope.value.Value` corresponding to a name."""
         return AnyValue(AnySource.inference)
 
+    def get_error_node(self) -> ast.AST | None:
+        """Return the node that should be used as fallback for annotation errors."""
+        return None
+
     def handle_undefined_name(self, name: str) -> Value:
         if self.should_suppress_errors:
             return AnyValue(AnySource.inference)
@@ -302,11 +306,15 @@ def annotation_expr_from_ast(
     ast_node: ast.AST,
     visitor: Optional["NameCheckVisitor"] = None,
     ctx: Context | None = None,
+    suppress_errors: bool = False,
 ) -> AnnotationExpr:
     """Given an AST node representing an annotation, return a
     ``AnnotationExpr``."""
     if ctx is None:
         ctx = _DefaultContext(visitor, ast_node)
+    if suppress_errors:
+        with ctx.suppress_errors():
+            return _annotation_expr_from_ast(ast_node, ctx)
     return _annotation_expr_from_ast(ast_node, ctx)
 
 
@@ -391,9 +399,13 @@ def annotation_expr_from_runtime(
     node: ast.AST | None = None,
     globals: Mapping[str, object] | None = None,
     ctx: Context | None = None,
+    suppress_errors: bool = False,
 ) -> AnnotationExpr:
     if ctx is None:
         ctx = _DefaultContext(visitor, node, globals)
+    if suppress_errors:
+        with ctx.suppress_errors():
+            return _annotation_expr_from_runtime(val, ctx)
     return _annotation_expr_from_runtime(val, ctx)
 
 
@@ -438,9 +450,13 @@ def annotation_expr_from_value(
     visitor: Optional["NameCheckVisitor"] = None,
     node: ast.AST | None = None,
     ctx: Context | None = None,
+    suppress_errors: bool = False,
 ) -> AnnotationExpr:
     if ctx is None:
         ctx = _DefaultContext(visitor, node)
+    if suppress_errors:
+        with ctx.suppress_errors():
+            return _annotation_expr_from_value(value, ctx)
     return _annotation_expr_from_value(value, ctx)
 
 
@@ -781,13 +797,21 @@ def _get_typeddict_value(
 
 
 def _eval_forward_ref(val: str, ctx: Context) -> AnnotationExpr:
+    parse_source = val
+    if "\n" in val or "\r" in val:
+        # Per the typing spec, multiline string annotations are parsed as if
+        # they were parenthesized.
+        parse_source = f"({val})"
     try:
-        tree = ast.parse(val, mode="eval")
+        tree = ast.parse(parse_source, mode="eval")
     except SyntaxError:
         ctx.show_error(f"Syntax error in type annotation: {val}")
         return AnnotationExpr(ctx, AnyValue(AnySource.error))
-    else:
-        return _annotation_expr_from_ast(tree.body, ctx)
+
+    node = ctx.get_error_node()
+    if node is not None and hasattr(node, "lineno") and node.lineno > 1:
+        ast.increment_lineno(tree, node.lineno - 1)
+    return _annotation_expr_from_ast(tree.body, ctx)
 
 
 def _annotation_expr_from_value(value: Value, ctx: Context) -> AnnotationExpr:
@@ -1041,6 +1065,9 @@ class _DefaultContext(Context):
             node = self.node
         if self.visitor is not None and node is not None:
             self.visitor.show_error(node, message, error_code)
+
+    def get_error_node(self) -> ast.AST | None:
+        return self.node
 
     def get_name(self, node: ast.Name) -> Value:
         if self.visitor is not None:
