@@ -270,6 +270,20 @@ class TestTypedDict(TestNameCheckVisitorBase):
             )
             assert_is_value(y["a"], TypedValue(int))
 
+    @assert_passes()
+    def test_functional_syntax_validation(self):
+        from typing_extensions import TypedDict
+
+        T = TypedDict("T", {"a": int})
+        my_dict = {"a": int}
+        Bad1 = TypedDict("Bad1", my_dict)  # E: incompatible_call
+        Bad2 = TypedDict("Bad2", {1: int})  # E: incompatible_call
+        Bad3 = TypedDict("WrongName", {"a": int})  # E: incompatible_call
+
+        def capybara(x: T) -> None:
+            assert_is_value(x["a"], TypedValue(int))
+            print(Bad1, Bad2, Bad3)
+
     @skip_if_not_installed("mypy_extensions")
     @assert_passes()
     def test_mypy_extensions(self):
