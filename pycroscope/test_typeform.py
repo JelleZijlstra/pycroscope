@@ -93,6 +93,16 @@ class TestTypeForm(TestNameCheckVisitorBase):
             x5
 
     @assert_passes()
+    def test_explicit_typeform_call_with_typing_assert_type(self):
+        from typing_extensions import TypeForm, assert_type
+
+        x1 = TypeForm(str | None)
+        assert_type(x1, TypeForm[str | None])
+
+        x2 = TypeForm("list[int]")
+        assert_type(x2, TypeForm[list[int]])
+
+    @assert_passes()
     def test_assignability_examples(self):
         from typing import Any, Literal, Optional
 
