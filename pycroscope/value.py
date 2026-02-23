@@ -3117,7 +3117,7 @@ class AnnotationExpr:
         self,
         allowed_qualifiers: Container[Qualifier] = frozenset(),
         *,
-        mutually_exclusive_qualifiers: Collection[Container[Qualifier]] = (),
+        mutually_exclusive_qualifiers: Collection[Collection[Qualifier]] = (),
     ) -> tuple[Value, set[Qualifier]]:
         value, qualifiers = self.maybe_unqualify(
             allowed_qualifiers,
@@ -3133,7 +3133,7 @@ class AnnotationExpr:
         self,
         allowed_qualifiers: Container[Qualifier] = frozenset(),
         *,
-        mutually_exclusive_qualifiers: Collection[Container[Qualifier]] = (),
+        mutually_exclusive_qualifiers: Collection[Collection[Qualifier]] = (),
     ) -> tuple[Value | None, set[Qualifier]]:
         qualifiers = set()
         qualifier_counts: dict[Qualifier, int] = {}

@@ -1753,9 +1753,9 @@ class TestRequired(TestNameCheckVisitorBase):
 
     @assert_passes()
     def test_invalid_qualifiers_in_typeddict(self):
-        from typing import TYPE_CHECKING, ClassVar, NotRequired, Required, TypedDict
+        from typing import TYPE_CHECKING, ClassVar, TypedDict
 
-        from typing_extensions import ReadOnly
+        from typing_extensions import NotRequired, ReadOnly, Required
 
         if TYPE_CHECKING:
 
@@ -1769,9 +1769,10 @@ class TestRequired(TestNameCheckVisitorBase):
 
     @assert_passes()
     def test_duplicate_final_non_typeddict(self):
-        from typing import Final
+        from typing import TYPE_CHECKING, Final
 
-        x: Final[Final[int]] = 1  # E: invalid_annotation
+        if TYPE_CHECKING:
+            x: Final[Final[int]] = 1  # E: invalid_annotation
 
 
 class TestParamSpec(TestNameCheckVisitorBase):
