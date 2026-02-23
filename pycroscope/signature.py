@@ -85,7 +85,6 @@ from .value import (
     ParamSpecKwargsValue,
     SelfT,
     SequenceValue,
-    TypedDictEntry,
     TypedDictValue,
     TypedValue,
     TypeGuardExtension,
@@ -635,8 +634,38 @@ class Signature:
                     bounds_map = result1
                     used_any = False
             else:
+                value_to_check = composite.value
+                if (
+                    param.name == "self"
+                    and isinstance(param_typ, GenericValue)
+                    and param_typ.typ
+                    in {dict, collections.abc.Mapping, collections.abc.MutableMapping}
+                    and isinstance(composite.value, TypedDictValue)
+                ):
+                    # TypedDict instances support dict methods at runtime; when checking a
+                    # bound receiver argument, keep that behavior instead of applying
+                    # TypedDict-vs-dict assignment restrictions intended for user-facing
+                    # assignment/compatibility checks.
+                    kv_pairs = [
+                        KVPair(KnownValue(key), entry.typ, is_required=entry.required)
+                        for key, entry in composite.value.items.items()
+                        if not (not entry.required and entry.typ is NO_RETURN_VALUE)
+                    ]
+                    if (
+                        composite.value.extra_keys is not None
+                        and composite.value.extra_keys is not NO_RETURN_VALUE
+                    ):
+                        kv_pairs.append(
+                            KVPair(
+                                TypedValue(str),
+                                composite.value.extra_keys,
+                                is_many=True,
+                                is_required=False,
+                            )
+                        )
+                    value_to_check = DictIncompleteValue(dict, kv_pairs)
                 bounds_map, used_any = can_assign_and_used_any(
-                    param_typ, composite.value, ctx.can_assign_ctx
+                    param_typ, value_to_check, ctx.can_assign_ctx
                 )
             if composite.value is param.default:
                 used_any = False
@@ -1038,15 +1067,19 @@ class Signature:
                 bound_args[param.name] = position, Composite(star_args_value)
             elif param.kind is ParameterKind.VAR_KEYWORD:
                 star_kwargs_consumed = True
-                items = {}
+                kv_pairs = []
                 for key, (
                     definitely_provided,
                     composite,
                 ) in actual_args.keywords.items():
                     if key in keywords_consumed:
                         continue
-                    items[key] = TypedDictEntry(
-                        composite.value, required=definitely_provided
+                    kv_pairs.append(
+                        KVPair(
+                            KnownValue(key),
+                            composite.value,
+                            is_required=definitely_provided,
+                        )
                     )
                 position = KWARGS
                 if actual_args.ellipsis:
@@ -1055,20 +1088,17 @@ class Signature:
                     )
                 elif actual_args.star_kwargs is not None:
                     value_value = unite_values(
-                        *(entry.typ for entry in items.values()),
-                        actual_args.star_kwargs,
+                        *(pair.value for pair in kv_pairs), actual_args.star_kwargs
                     )
                     star_kwargs_value = GenericValue(
                         dict, [TypedValue(str), value_value]
                     )
                 else:
-                    if not items:
-                        star_kwargs_value = TypedDictValue(
-                            items, extra_keys=NO_RETURN_VALUE
-                        )
+                    if not kv_pairs:
+                        star_kwargs_value = DictIncompleteValue(dict, [])
                         position = DEFAULT
                     else:
-                        star_kwargs_value = TypedDictValue(items)
+                        star_kwargs_value = DictIncompleteValue(dict, kv_pairs)
                 bound_args[param.name] = position, Composite(star_kwargs_value)
             elif param.kind is ParameterKind.ELLIPSIS:
                 # just take it all
