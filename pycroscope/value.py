@@ -28,6 +28,7 @@ import textwrap
 from collections import deque
 from collections.abc import (
     Callable,
+    Collection,
     Container,
     Iterable,
     Iterator,
@@ -3134,9 +3135,15 @@ class AnnotationExpr:
         return self._value
 
     def unqualify(
-        self, allowed_qualifiers: Container[Qualifier] = frozenset()
+        self,
+        allowed_qualifiers: Container[Qualifier] = frozenset(),
+        *,
+        mutually_exclusive_qualifiers: Collection[Collection[Qualifier]] = (),
     ) -> tuple[Value, set[Qualifier]]:
-        value, qualifiers = self.maybe_unqualify(allowed_qualifiers)
+        value, qualifiers = self.maybe_unqualify(
+            allowed_qualifiers,
+            mutually_exclusive_qualifiers=mutually_exclusive_qualifiers,
+        )
         if value is None:
             innermost, node = self.qualifiers[-1]
             self.ctx.show_error(f"Invalid bare {innermost.name} annotation", node=node)
@@ -3144,16 +3151,44 @@ class AnnotationExpr:
         return value, qualifiers
 
     def maybe_unqualify(
-        self, allowed_qualifiers: Container[Qualifier] = frozenset()
+        self,
+        allowed_qualifiers: Container[Qualifier] = frozenset(),
+        *,
+        mutually_exclusive_qualifiers: Collection[Collection[Qualifier]] = (),
     ) -> tuple[Value | None, set[Qualifier]]:
         qualifiers = set()
+        qualifier_counts: dict[Qualifier, int] = {}
+        qualifier_nodes: dict[Qualifier, ast.AST | None] = {}
         for qualifier, node in self.qualifiers:
+            qualifier_counts[qualifier] = qualifier_counts.get(qualifier, 0) + 1
+            qualifier_nodes.setdefault(qualifier, node)
             if qualifier in allowed_qualifiers:
                 qualifiers.add(qualifier)
             else:
                 self.ctx.show_error(
                     f"Unexpected {qualifier.name} annotation", node=node
                 )
+        for qualifier, count in qualifier_counts.items():
+            if count > 1:
+                self.ctx.show_error(
+                    f"{qualifier.name}[] cannot be nested",
+                    node=qualifier_nodes.get(qualifier),
+                )
+        for qualifier_group in mutually_exclusive_qualifiers:
+            present = [
+                qualifier
+                for qualifier in qualifier_group
+                if qualifier_counts.get(qualifier, 0) > 0
+            ]
+            if len(present) > 1:
+                if len(present) == 2:
+                    message = (
+                        f"{present[0].name}[] and {present[1].name}[] cannot be nested"
+                    )
+                else:
+                    members = ", ".join(f"{qualifier.name}[]" for qualifier in present)
+                    message = f"{members} cannot be nested together"
+                self.ctx.show_error(message, node=qualifier_nodes[present[0]])
         if self._value is None:
             return None, qualifiers
         if self.metadata:

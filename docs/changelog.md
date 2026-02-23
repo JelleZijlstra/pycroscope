@@ -22,6 +22,7 @@
 - Allow constructor calls to TypedDict classes that are analyzed syntactically (for example when runtime class objects are unavailable), so `MyTypedDict(...)` is type-checked normally in those cases.
 - Report an error for `isinstance(obj, SomeTypedDict)` to match TypedDict runtime semantics.
 - Report an error when `TypedDict` is used as a `TypeVar` bound.
+- Report `invalid_annotation` for nested duplicate qualifiers (for example `Final[Final[int]]`) and for invalid `TypedDict` item qualifier combinations, including conflicting `Required[]`/`NotRequired[]`, nested `ReadOnly[]`, and unsupported qualifiers like `ClassVar[]`.
 - Improve TypedDict checking when runtime class objects are unavailable
   (for example after import-time failures or for function-local class
   definitions) by falling back to syntactic TypedDict analysis, so

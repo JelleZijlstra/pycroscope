@@ -1206,7 +1206,10 @@ class TypeshedFinder:
         required = total
         if isinstance(field, AnnotationExpr):
             field, qualifiers = field.unqualify(
-                {Qualifier.Required, Qualifier.ReadOnly, Qualifier.NotRequired}
+                {Qualifier.Required, Qualifier.ReadOnly, Qualifier.NotRequired},
+                mutually_exclusive_qualifiers=(
+                    (Qualifier.Required, Qualifier.NotRequired),
+                ),
             )
             if Qualifier.ReadOnly in qualifiers:
                 readonly = True

@@ -760,7 +760,8 @@ def _get_typeddict_value(
 ) -> TypedDictEntry:
     ann_expr = _annotation_expr_from_runtime(value, ctx)
     val, qualifiers = ann_expr.unqualify(
-        {Qualifier.ReadOnly, Qualifier.Required, Qualifier.NotRequired}
+        {Qualifier.ReadOnly, Qualifier.Required, Qualifier.NotRequired},
+        mutually_exclusive_qualifiers=((Qualifier.Required, Qualifier.NotRequired),),
     )
     if required_keys is None:
         required = total
