@@ -1062,7 +1062,9 @@ class Signature:
                         dict, [TypedValue(str), value_value]
                     )
                 else:
-                    star_kwargs_value = TypedDictValue(items)
+                    star_kwargs_value = TypedDictValue(
+                        items, extra_keys=NO_RETURN_VALUE
+                    )
                     if not items:
                         position = DEFAULT
                 bound_args[param.name] = position, Composite(star_kwargs_value)

@@ -461,8 +461,14 @@ def annotation_expr_from_value(
 
 
 def value_from_ast(
-    ast_node: ast.AST, ctx: Context, *, error_on_unrecognized: bool = True
+    ast_node: ast.AST,
+    ctx: Context | None = None,
+    *,
+    visitor: Optional["NameCheckVisitor"] = None,
+    error_on_unrecognized: bool = True,
 ) -> Value:
+    if ctx is None:
+        ctx = _DefaultContext(visitor, ast_node)
     val = _Visitor(ctx).visit(ast_node)
     if val is None:
         if error_on_unrecognized:

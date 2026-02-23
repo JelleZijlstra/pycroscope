@@ -144,6 +144,52 @@ class TestExtraKeys(TestNameCheckVisitorBase):
             for k in td2:
                 assert_type(k, Union[str, Literal["a"]])
 
+    @assert_passes()
+    def test_explicit_items_compatible_with_extra_items(self):
+        from typing_extensions import NotRequired, ReadOnly, TypedDict
+
+        class MovieBase2(TypedDict, extra_items=int | None):
+            name: str
+
+        class MovieDetails(TypedDict, extra_items=int | None):
+            name: str
+            year: NotRequired[int]
+
+        class MovieWithYear2(TypedDict, extra_items=int | None):
+            name: str
+            year: int | None
+
+        class MovieSI(TypedDict, extra_items=ReadOnly[str | int]):
+            name: str
+
+        class MovieDetails5(TypedDict, extra_items=int):
+            name: str
+            actors: list[str]
+
+        details2: MovieDetails = {"name": "Kill Bill Vol. 1", "year": 2003}
+        movie2: MovieBase2 = details2  # E: incompatible_assignment
+
+        details3: MovieWithYear2 = {"name": "Kill Bill Vol. 1", "year": 2003}
+        movie3: MovieBase2 = details3  # E: incompatible_assignment
+
+        details5: MovieDetails5 = {
+            "name": "Kill Bill Vol. 2",
+            "actors": ["Uma Thurman"],
+        }
+        movie5: MovieSI = details5  # E: incompatible_assignment
+        print(movie2, movie3, movie5)
+
+    @assert_passes()
+    def test_closed_constructor(self):
+        from typing_extensions import TypedDict
+
+        class ClosedMovie(TypedDict, closed=True):
+            name: str
+
+        ClosedMovie(name="No Country for Old Men")
+        # E: incompatible_argument
+        ClosedMovie(name="No Country for Old Men", year=2007)
+
 
 class TestTypedDict(TestNameCheckVisitorBase):
     @assert_passes()

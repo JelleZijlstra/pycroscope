@@ -68,6 +68,7 @@ class TestNameCheckVisitorBase(test_node_visitor.BaseNodeVisitorTester):
         check_attributes=True,
         apply_changes=False,
         settings=None,
+        allow_runtime_module_load_failure=False,
         **kwargs,
     ):
         # This can happen in Python 2.
@@ -77,22 +78,29 @@ class TestNameCheckVisitorBase(test_node_visitor.BaseNodeVisitorTester):
         if settings is not None:
             default_settings.update(settings)
         verbosity = int(os.environ.get("ANS_TEST_SCOPE_VERBOSITY", 0))
-        mod = _make_module(code_str)
+        try:
+            mod = _make_module(code_str)
+        except Exception:
+            if not allow_runtime_module_load_failure:
+                raise
+            mod = None
         kwargs["settings"] = default_settings
         kwargs = self.visitor_cls.prepare_constructor_kwargs(kwargs)
         new_code = ""
         with ClassAttributeChecker(
             enabled=check_attributes, options=kwargs["checker"].options
         ) as attribute_checker:
-            visitor = self.visitor_cls(
-                mod.__name__,
-                code_str,
-                tree,
-                module=mod,
-                attribute_checker=attribute_checker,
-                verbosity=verbosity,
-                **kwargs,
+            visitor_kwargs = dict(
+                attribute_checker=attribute_checker, verbosity=verbosity, **kwargs
             )
+            if mod is None:
+                visitor = self.visitor_cls(
+                    "<test input>", code_str, tree, **visitor_kwargs
+                )
+            else:
+                visitor = self.visitor_cls(
+                    mod.__name__, code_str, tree, module=mod, **visitor_kwargs
+                )
             result = visitor.check_for_test(apply_changes=apply_changes)
             if apply_changes:
                 result, new_code = result
@@ -265,67 +273,6 @@ class TestImportFailureHandling:
             for failure in failures
         )
 
-    def test_typeddict_extra_items_and_unpack_after_import_failure(self, tmp_path):
-        filename = tmp_path / "typeddict_extra_items_import_failure.py"
-        filename.write_text(
-            "from typing_extensions import TypedDict, Unpack\n"
-            "\n"
-            "class Movie(TypedDict, extra_items=bool):\n"
-            "    name: str\n"
-            "\n"
-            'MovieFunctional = TypedDict("MovieFunctional", {"name": str}, extra_items=bool)\n'
-            "\n"
-            "boom = {}.popitem()\n"
-            "\n"
-            'a: Movie = {"name": "Blade Runner", "year": 1982}\n'
-            'b: MovieFunctional = {"name": "Blade Runner", "year": 1982}\n'
-            "\n"
-            "class MovieNoExtra(TypedDict):\n"
-            "    name: str\n"
-            "\n"
-            "class MovieExtra(TypedDict, extra_items=int):\n"
-            "    name: str\n"
-            "\n"
-            "def unpack_no_extra(**kwargs: Unpack[MovieNoExtra]) -> None: ...\n"
-            "def unpack_extra(**kwargs: Unpack[MovieExtra]) -> None: ...\n"
-            "\n"
-            'unpack_no_extra(name="No Country for Old Men", year=2007)\n'
-            'unpack_extra(name="No Country for Old Men", year=2007)\n'
-        )
-        failures = self._check_file(str(filename))
-
-        assert any(
-            failure["code"] == ErrorCode.import_failed and failure["lineno"] == 8
-            for failure in failures
-        )
-        assert any(
-            failure["code"] == ErrorCode.incompatible_assignment
-            and failure["lineno"] == 10
-            for failure in failures
-        )
-        assert any(
-            failure["code"] == ErrorCode.incompatible_assignment
-            and failure["lineno"] == 11
-            for failure in failures
-        )
-        assert not any(
-            failure["code"] == ErrorCode.incompatible_call and failure["lineno"] == 6
-            for failure in failures
-        )
-        assert not any(
-            failure["code"] == ErrorCode.invalid_annotation
-            and failure["lineno"] in {19, 20}
-            for failure in failures
-        )
-        assert any(
-            failure["code"] == ErrorCode.incompatible_call and failure["lineno"] == 22
-            for failure in failures
-        )
-        assert not any(
-            failure["code"] == ErrorCode.incompatible_call and failure["lineno"] == 23
-            for failure in failures
-        )
-
     def test_nominal_class_fallback_after_import_failure(self, tmp_path):
         filename = tmp_path / "class_import_failure.py"
         code = (
@@ -445,6 +392,40 @@ class TestImportFailureHandling:
         assert module_vars["x"] == TypedValue(int)
         assert isinstance(module_vars["y"], AnyValue)
         assert isinstance(module_vars["z"], AnyValue)
+
+
+class TestImportFailureHandlingCodeSamples(TestNameCheckVisitorBase):
+    @assert_passes(allow_import_failures=True)
+    def test_typeddict_extra_items_and_unpack_after_import_failure(self):
+        boom = 1 / 0
+
+        from typing_extensions import TypedDict, Unpack
+
+        class Movie(TypedDict, extra_items=bool):
+            name: str
+
+        MovieFunctional = TypedDict("MovieFunctional", {"name": str}, extra_items=bool)
+
+        a: Movie = {"name": "Blade Runner", "year": 1982}  # E: incompatible_assignment
+        b: MovieFunctional = {
+            "name": "Blade Runner",
+            "year": 1982,
+        }  # E: incompatible_assignment
+
+        class MovieNoExtra(TypedDict):
+            name: str
+
+        class MovieExtra(TypedDict, extra_items=int):
+            name: str
+
+        def unpack_no_extra(**kwargs: Unpack[MovieNoExtra]) -> None: ...
+
+        def unpack_extra(**kwargs: Unpack[MovieExtra]) -> None: ...
+
+        unpack_no_extra(
+            name="No Country for Old Men", year=2007
+        )  # E: incompatible_call
+        unpack_extra(name="No Country for Old Men", year=2007)
 
 
 class TestNameCheckVisitor(TestNameCheckVisitorBase):

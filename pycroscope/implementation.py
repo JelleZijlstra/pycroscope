@@ -1006,6 +1006,91 @@ def _dict_pop_impl(ctx: CallContext) -> ImplReturn:
         return ImplReturn(AnyValue(AnySource.inference))
 
 
+def _dict_popitem_impl(ctx: CallContext) -> ImplReturn:
+    varname = ctx.visitor.varname_for_self_constraint(ctx.node)
+    self_value = replace_known_sequence_value(ctx.vars["self"])
+    if isinstance(self_value, TypedDictValue):
+        if self_value.extra_keys is None:
+            ctx.show_error(
+                "Cannot call popitem() on non-closed TypedDict",
+                ErrorCode.incompatible_call,
+                arg="self",
+            )
+            return ImplReturn(AnyValue(AnySource.error))
+        required_keys = [key for key, entry in self_value.items.items() if entry.required]
+        readonly_keys = [key for key, entry in self_value.items.items() if entry.readonly]
+        if required_keys:
+            key = required_keys[0]
+            ctx.show_error(
+                f"Cannot call popitem() on TypedDict with required key {key!r}",
+                ErrorCode.incompatible_call,
+                arg="self",
+            )
+            return ImplReturn(AnyValue(AnySource.error))
+        if readonly_keys:
+            key = readonly_keys[0]
+            ctx.show_error(
+                f"Cannot call popitem() on TypedDict with readonly key {key!r}",
+                ErrorCode.incompatible_call,
+                arg="self",
+            )
+            return ImplReturn(AnyValue(AnySource.error))
+        if self_value.extra_keys_readonly:
+            ctx.show_error(
+                "Cannot call popitem() on TypedDict with readonly extra keys",
+                ErrorCode.incompatible_call,
+                arg="self",
+            )
+            return ImplReturn(AnyValue(AnySource.error))
+        value_types = [entry.typ for entry in self_value.items.values()]
+        if self_value.extra_keys is not NO_RETURN_VALUE:
+            value_types.append(self_value.extra_keys)
+        if value_types:
+            value_type = unite_values(*value_types)
+        else:
+            value_type = AnyValue(AnySource.inference)
+        return ImplReturn(
+            SequenceValue(tuple, [(False, TypedValue(str)), (False, value_type)])
+        )
+    if isinstance(self_value, DictIncompleteValue):
+        value_types = [pair.value for pair in self_value.kv_pairs]
+        key_types = [pair.key for pair in self_value.kv_pairs]
+        if key_types and value_types:
+            key_type = unite_values(*key_types)
+            value_type = unite_values(*value_types)
+        else:
+            key_type = value_type = AnyValue(AnySource.inference)
+        if varname is not None:
+            constrained_value = DictIncompleteValue(
+                self_value.typ,
+                [
+                    KVPair(
+                        pair.key,
+                        pair.value,
+                        is_many=pair.is_many,
+                        is_required=False,
+                    )
+                    for pair in self_value.kv_pairs
+                ],
+            )
+            no_return_unless = Constraint(
+                varname, ConstraintType.is_value_object, True, constrained_value
+            )
+        else:
+            no_return_unless = NULL_CONSTRAINT
+        return ImplReturn(
+            SequenceValue(tuple, [(False, key_type), (False, value_type)]),
+            no_return_unless=no_return_unless,
+        )
+    if isinstance(self_value, TypedValue):
+        key_type = self_value.get_generic_arg_for_type(dict, ctx.visitor, 0)
+        value_type = self_value.get_generic_arg_for_type(dict, ctx.visitor, 1)
+        return ImplReturn(
+            SequenceValue(tuple, [(False, key_type), (False, value_type)])
+        )
+    return ImplReturn(AnyValue(AnySource.inference))
+
+
 def _maybe_unite(value: Value, default: Value) -> Value:
     if default is _NO_ARG_SENTINEL:
         return value
@@ -1713,19 +1798,6 @@ def _any_impl(ctx: CallContext) -> Value:
 _TYPEDDICT_OPTION_KEYWORDS = {"total", "closed", "extra_items"}
 _TYPEDDICT_UNKNOWN_RUNTIME = object()
 
-
-def _typeddict_option_value(ctx: CallContext, option_name: str) -> Value:
-    option_value = ctx.vars.get(option_name, _NO_ARG_SENTINEL)
-    if option_value is not _NO_ARG_SENTINEL:
-        return option_value
-    kwargs_value = ctx.vars.get("kwargs")
-    if isinstance(kwargs_value, TypedDictValue):
-        entry = kwargs_value.items.get(option_name)
-        if entry is not None:
-            return entry.typ
-    return _NO_ARG_SENTINEL
-
-
 def _typeddict_assignment_target_name(ctx: CallContext) -> str | None:
     if not isinstance(ctx.node, ast.Call):
         return None
@@ -1793,7 +1865,7 @@ def _typeddict_fields_from_keyword_args(value: Value) -> dict[str, object] | Non
 
 def _typeddict_runtime_options(ctx: CallContext) -> dict[str, object] | None:
     options: dict[str, object] = {}
-    total_value = _typeddict_option_value(ctx, "total")
+    total_value = ctx.vars.get("total", _NO_ARG_SENTINEL)
     if total_value is _NO_ARG_SENTINEL:
         total_value = KnownValue(True)
     total = _runtime_from_known_value(total_value)
@@ -1801,7 +1873,7 @@ def _typeddict_runtime_options(ctx: CallContext) -> dict[str, object] | None:
         return None
     options["total"] = total
     for option_name in ("closed", "extra_items"):
-        option_value = _typeddict_option_value(ctx, option_name)
+        option_value = ctx.vars.get(option_name, _NO_ARG_SENTINEL)
         if option_value is _NO_ARG_SENTINEL:
             continue
         runtime_value = _runtime_from_known_value(option_value)
@@ -1846,12 +1918,12 @@ def _typeddict_runtime_preserves_options(
     typeddict_cls = runtime_value.val
     if not safe_isinstance(typeddict_cls, type):
         return False
-    if _typeddict_option_value(
-        ctx, "extra_items"
+    if ctx.vars.get(
+        "extra_items", _NO_ARG_SENTINEL
     ) is not _NO_ARG_SENTINEL and not hasattr_static(typeddict_cls, "__extra_items__"):
         return False
-    if _typeddict_option_value(
-        ctx, "closed"
+    if ctx.vars.get(
+        "closed", _NO_ARG_SENTINEL
     ) is not _NO_ARG_SENTINEL and not hasattr_static(typeddict_cls, "__closed__"):
         return False
     return True
@@ -1864,7 +1936,7 @@ def _typeddict_synthetic_value(
     if not (isinstance(typename, KnownValue) and isinstance(typename.val, str)):
         return None
 
-    total_var = replace_fallback(_typeddict_option_value(ctx, "total"))
+    total_var = replace_fallback(ctx.vars.get("total", _NO_ARG_SENTINEL))
     if total_var is _NO_ARG_SENTINEL:
         total_var = KnownValue(True)
     total = (
@@ -1872,7 +1944,7 @@ def _typeddict_synthetic_value(
         if isinstance(total_var, KnownValue) and isinstance(total_var.val, bool)
         else True
     )
-    closed_var = replace_fallback(_typeddict_option_value(ctx, "closed"))
+    closed_var = replace_fallback(ctx.vars.get("closed", _NO_ARG_SENTINEL))
     closed = (
         closed_var.val
         if isinstance(closed_var, KnownValue) and isinstance(closed_var.val, bool)
@@ -1880,7 +1952,7 @@ def _typeddict_synthetic_value(
     )
 
     extra_keys: Value | None = None
-    extra_items = replace_fallback(_typeddict_option_value(ctx, "extra_items"))
+    extra_items = replace_fallback(ctx.vars.get("extra_items", _NO_ARG_SENTINEL))
     if extra_items is not _NO_ARG_SENTINEL:
         extra_keys = type_from_value(
             extra_items, ctx.visitor, ctx.ast_for_arg("extra_items")
@@ -1990,6 +2062,11 @@ def _typeddict_impl(ctx: CallContext) -> Value:
             has_qualifying_error = True
 
     if not has_qualifying_error:
+        synthetic_value = _typeddict_synthetic_value(
+            ctx, has_fields=has_fields, has_keyword_fields=has_keyword_fields
+        )
+        if synthetic_value is not None:
+            return synthetic_value
         runtime_value = _typeddict_runtime_value(
             ctx, has_fields=has_fields, has_keyword_fields=has_keyword_fields
         )
@@ -1997,11 +2074,6 @@ def _typeddict_impl(ctx: CallContext) -> Value:
             ctx, runtime_value
         ):
             return runtime_value
-        synthetic_value = _typeddict_synthetic_value(
-            ctx, has_fields=has_fields, has_keyword_fields=has_keyword_fields
-        )
-        if synthetic_value is not None:
-            return synthetic_value
         if runtime_value is not None:
             return runtime_value
     return ctx.inferred_return_value
@@ -2367,6 +2439,12 @@ def get_default_argspecs() -> dict[object, Signature]:
             return_annotation=KnownValue(None),
         ),
         Signature.make(
+            [SigParameter("self", _POS_ONLY, annotation=TypedValue(dict))],
+            callable=dict.popitem,
+            impl=_dict_popitem_impl,
+            return_annotation=AnyValue(AnySource.inference),
+        ),
+        Signature.make(
             [
                 SigParameter("self", _POS_ONLY, annotation=TypedValue(dict)),
                 SigParameter("key", _POS_ONLY),
@@ -2611,7 +2689,6 @@ def get_default_argspecs() -> dict[object, Signature]:
         except AttributeError:
             pass
         else:
-            supports_extra_keywords = hasattr(mod, "NoExtraItems")
             typed_dict_parameters = [
                 SigParameter("typename", _POS_ONLY, annotation=TypedValue(str)),
                 SigParameter(
@@ -2626,25 +2703,18 @@ def get_default_argspecs() -> dict[object, Signature]:
                     annotation=TypedValue(bool),
                     default=KnownValue(True),
                 ),
+                SigParameter(
+                    "closed",
+                    ParameterKind.KEYWORD_ONLY,
+                    default=_NO_ARG_SENTINEL,
+                ),
+                SigParameter(
+                    "extra_items",
+                    ParameterKind.KEYWORD_ONLY,
+                    default=_NO_ARG_SENTINEL,
+                ),
+                SigParameter("kwargs", ParameterKind.VAR_KEYWORD),
             ]
-            if supports_extra_keywords:
-                typed_dict_parameters.extend(
-                    [
-                        SigParameter(
-                            "closed",
-                            ParameterKind.KEYWORD_ONLY,
-                            default=_NO_ARG_SENTINEL,
-                        ),
-                        SigParameter(
-                            "extra_items",
-                            ParameterKind.KEYWORD_ONLY,
-                            default=_NO_ARG_SENTINEL,
-                        ),
-                    ]
-                )
-            typed_dict_parameters.append(
-                SigParameter("kwargs", ParameterKind.VAR_KEYWORD)
-            )
             sig = Signature.make(
                 typed_dict_parameters,
                 return_annotation=AnyValue(AnySource.unannotated),

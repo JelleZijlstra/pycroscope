@@ -79,6 +79,7 @@ from .annotations import (
     is_instance_of_typing_name,
     is_typing_name,
     type_from_value,
+    value_from_ast,
 )
 from .arg_spec import ArgSpecCache, IgnoredCallees, UnwrapClass, is_dot_asynq_function
 from .asynq_checker import AsynqChecker
@@ -5786,6 +5787,16 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     ) -> Value:
         value = root_composite.value
         index = index_composite.value
+
+        if (
+            self.in_annotation
+            and isinstance(node.ctx, ast.Load)
+            and isinstance(value, KnownValue)
+            and is_typing_name(value.val, "Unpack")
+        ):
+            # Preserve `Unpack[...]` structure in annotation mode instead of
+            # evaluating it through runtime dunder calls, which can collapse to `object`.
+            return value_from_ast(node, visitor=self, error_on_unrecognized=False)
 
         if isinstance(node.ctx, ast.Store):
             if self.ann_assign_type is not None:
