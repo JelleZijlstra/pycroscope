@@ -120,6 +120,22 @@ class TestSyntheticType(TestNameCheckVisitorBase):
             print(bad, ok, bad2)
 
     @assert_passes()
+    def test_paramspec_callable_protocol_equivalence(self):
+        from typing import Callable, ParamSpec, Protocol, TypeAlias
+
+        P = ParamSpec("P")
+
+        class ProtocolWithP(Protocol[P]):
+            def __call__(self, *args: P.args, **kwargs: P.kwargs) -> None: ...
+
+        TypeAliasWithP: TypeAlias = Callable[P, None]
+
+        def capybara(proto: ProtocolWithP[P], ta: TypeAliasWithP[P]) -> None:
+            as_callable: TypeAliasWithP[P] = proto
+            as_protocol: ProtocolWithP[P] = ta
+            print(as_callable, as_protocol)
+
+    @assert_passes()
     def test_functools(self):
         import functools
         import types

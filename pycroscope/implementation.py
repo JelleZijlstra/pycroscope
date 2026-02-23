@@ -15,7 +15,7 @@ import pycroscope
 from . import runtime
 from .analysis_lib import Sentinel
 from .annotated_types import MaxLen, MinLen
-from .annotations import type_from_value
+from .annotations import annotation_expr_from_value, type_from_value
 from .error_code import ErrorCode
 from .extensions import assert_type, reveal_locals, reveal_type
 from .format_strings import parse_format_string
@@ -75,6 +75,7 @@ from .value import (
     MultiValuedValue,
     ParameterTypeGuardExtension,
     PredicateValue,
+    Qualifier,
     SequenceValue,
     SubclassValue,
     SyntheticClassObjectValue,
@@ -1856,17 +1857,15 @@ def _typeddict_synthetic_value(
         extra_keys = NO_RETURN_VALUE
 
     items: dict[str, TypedDictEntry] = {}
+    fields_node = ctx.ast_for_arg("fields")
     if has_fields:
         fields = replace_fallback(ctx.vars["fields"])
         if isinstance(fields, KnownValue) and isinstance(fields.val, dict):
             for key, val in fields.val.items():
                 if not isinstance(key, str):
                     continue
-                items[key] = TypedDictEntry(
-                    type_from_value(
-                        KnownValue(val), ctx.visitor, ctx.ast_for_arg("fields")
-                    ),
-                    required=total,
+                items[key] = _typeddict_entry_from_field_value(
+                    KnownValue(val), required=total, ctx=ctx, node=fields_node
                 )
         elif isinstance(fields, DictIncompleteValue):
             for pair in fields.kv_pairs:
@@ -1874,20 +1873,36 @@ def _typeddict_synthetic_value(
                     continue
                 for key in flatten_values(pair.key):
                     if isinstance(key, KnownValue) and isinstance(key.val, str):
-                        items[key.val] = TypedDictEntry(
-                            type_from_value(
-                                pair.value, ctx.visitor, ctx.ast_for_arg("fields")
-                            ),
-                            required=total,
+                        items[key.val] = _typeddict_entry_from_field_value(
+                            pair.value, required=total, ctx=ctx, node=fields_node
                         )
     elif has_keyword_fields and isinstance(ctx.vars["kwargs"], TypedDictValue):
         for key, entry in ctx.vars["kwargs"].items.items():
             if key in _TYPEDDICT_OPTION_KEYWORDS:
                 continue
-            items[key] = TypedDictEntry(entry.typ, required=total)
+            items[key] = _typeddict_entry_from_field_value(
+                entry.typ, required=total, ctx=ctx, node=ctx.ast_for_arg("kwargs")
+            )
 
     return SyntheticClassObjectValue(
         typename.val, TypedDictValue(items, extra_keys=extra_keys)
+    )
+
+
+def _typeddict_entry_from_field_value(
+    field_value: Value, *, required: bool, ctx: CallContext, node: ast.AST | None
+) -> TypedDictEntry:
+    ann_expr = annotation_expr_from_value(field_value, visitor=ctx.visitor, node=node)
+    item_type, qualifiers = ann_expr.unqualify(
+        {Qualifier.ReadOnly, Qualifier.Required, Qualifier.NotRequired},
+        mutually_exclusive_qualifiers=((Qualifier.Required, Qualifier.NotRequired),),
+    )
+    if Qualifier.Required in qualifiers:
+        required = True
+    if Qualifier.NotRequired in qualifiers:
+        required = False
+    return TypedDictEntry(
+        typ=item_type, required=required, readonly=Qualifier.ReadOnly in qualifiers
     )
 
 

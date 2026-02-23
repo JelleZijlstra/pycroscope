@@ -342,6 +342,26 @@ class TestTypedDict(TestNameCheckVisitorBase):
         bad: Movie = {"name": "Blade Runner", "year": ""}  # E: incompatible_assignment
         print(ok, bad)
 
+    @assert_passes()
+    def test_functional_syntax_qualifiers(self):
+        from typing import NotRequired, Required, TypedDict
+
+        from typing_extensions import ReadOnly
+
+        Band = TypedDict("Band", {"name": str, "members": ReadOnly[list[str]]})
+        RecursiveMovie = TypedDict(
+            "RecursiveMovie",
+            {"title": Required[str], "predecessor": NotRequired["RecursiveMovie"]},
+        )
+
+        band: Band = {"name": "blur", "members": []}
+        band["members"] = ["Damon Albarn"]  # E: readonly_typeddict
+        movie: RecursiveMovie = {
+            "title": "Beethoven 3",
+            "predecessor": {"title": "Beethoven 2"},
+        }
+        print(movie)
+
     @skip_if_not_installed("mypy_extensions")
     @assert_passes()
     def test_mypy_extensions(self):
