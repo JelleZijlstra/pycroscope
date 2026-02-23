@@ -1296,11 +1296,13 @@ class _Visitor(ast.NodeVisitor):
                 else:
                     self.ctx.show_error(f"Unrecognized TypeVar kwarg {name}", node=node)
                     return None
-            kwargs = {"covariant": covariant, "contravariant": contravariant}
-            if infer_variance:
-                kwargs["infer_variance"] = True
             try:
-                tv = TypeVar(name_val.val, **kwargs)
+                kwargs = {"covariant": covariant, "contravariant": contravariant}
+                if infer_variance:
+                    kwargs_with_infer = {**kwargs, "infer_variance": True}
+                    tv = cast(Any, TypeVar)(name_val.val, **kwargs_with_infer)
+                else:
+                    tv = TypeVar(name_val.val, **kwargs)
             except Exception as e:
                 self.ctx.show_error(str(e), node=node)
                 return None
