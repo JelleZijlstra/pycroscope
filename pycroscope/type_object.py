@@ -173,13 +173,26 @@ class TypeObject:
         other_val: KnownValue | TypedValue | SubclassValue,
         ctx: CanAssignContext,
     ) -> CanAssign:
-        expected_sig = ctx.signature_from_value(self_val)
-        actual_sig = ctx.signature_from_value(other_val)
+        expected_sig = self._as_concrete_signature(
+            ctx.signature_from_value(self_val), ctx
+        )
+        actual_sig = self._as_concrete_signature(
+            ctx.signature_from_value(other_val), ctx
+        )
         if expected_sig is None or actual_sig is None:
             return CanAssignError(
                 f"Cannot assign protocol {other_val} to non-protocol {self}"
             )
         return expected_sig.can_assign(actual_sig, ctx)
+
+    @staticmethod
+    def _as_concrete_signature(
+        sig: Signature | BoundMethodSignature | OverloadedSignature | None,
+        ctx: CanAssignContext,
+    ) -> Signature | OverloadedSignature | None:
+        if isinstance(sig, BoundMethodSignature):
+            return sig.get_signature(ctx=ctx)
+        return sig
 
     def _is_compatible_with_protocol(
         self, self_val: Value, other_val: Value, ctx: CanAssignContext

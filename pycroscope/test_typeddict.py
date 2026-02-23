@@ -344,9 +344,7 @@ class TestTypedDict(TestNameCheckVisitorBase):
 
     @assert_passes()
     def test_functional_syntax_qualifiers(self):
-        from typing import NotRequired, Required, TypedDict
-
-        from typing_extensions import ReadOnly
+        from typing_extensions import NotRequired, ReadOnly, Required, TypedDict
 
         Band = TypedDict("Band", {"name": str, "members": ReadOnly[list[str]]})
         RecursiveMovie = TypedDict(
