@@ -480,6 +480,16 @@ def _typing_special_form_getitem_impl(ctx: CallContext) -> Value:
     if not isinstance(self_value, KnownValue):
         return AnyValue(AnySource.inference)
     parameters = ctx.vars["parameters"]
+    if ctx.node is not None and ctx.visitor.in_annotation:
+        if isinstance(parameters, SequenceValue):
+            members = parameters.get_member_sequence()
+            if members is not None:
+                return _SubscriptedValue(
+                    AnySource.inference, self_value, ctx.node, tuple(members)
+                )
+        return _SubscriptedValue(
+            AnySource.inference, self_value, ctx.node, (parameters,)
+        )
     runtime_arg = _runtime_subscript_argument(parameters)
     if runtime_arg is _UNKNOWN_SUBSCRIPT_ARGUMENT:
         if ctx.node is None:
