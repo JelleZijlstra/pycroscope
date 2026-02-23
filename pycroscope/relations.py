@@ -718,6 +718,16 @@ def _has_relation(
             return CanAssignError(f"{right} is not {relation.description} {left}")
 
     if isinstance(left, GenericValue):
+        if (
+            relation is Relation.ASSIGNABLE
+            and isinstance(right, DictIncompleteValue)
+            and not right.kv_pairs
+            and left.typ
+            in {dict, collections.abc.Mapping, collections.abc.MutableMapping}
+        ):
+            # An actually-empty dict literal has no key/value witnesses, so
+            # it is assignable regardless of concrete K/V parameters.
+            return {}
         if isinstance(right, TypedValue) and not isinstance(right.typ, super):
             generic_args = right.get_generic_args_for_type(left.typ, ctx)
             # If we don't think it's a generic base, try super;

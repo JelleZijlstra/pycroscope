@@ -1880,6 +1880,22 @@ def _typeddict_assignment_target_name(ctx: CallContext) -> str | None:
     return None
 
 
+def _get_known_kwargs_entries(kwargs_value: Value) -> dict[str, tuple[bool, Value]]:
+    kwargs_value = replace_known_sequence_value(kwargs_value)
+    entries: dict[str, tuple[bool, Value]] = {}
+    if isinstance(kwargs_value, TypedDictValue):
+        for key, entry in kwargs_value.items.items():
+            entries[key] = (entry.required, entry.typ)
+    elif isinstance(kwargs_value, DictIncompleteValue):
+        for pair in kwargs_value.kv_pairs:
+            if pair.is_many:
+                continue
+            key = replace_fallback(pair.key)
+            if isinstance(key, KnownValue) and isinstance(key.val, str):
+                entries[key.val] = (pair.is_required, pair.value)
+    return entries
+
+
 def _typeddict_synthetic_value(
     ctx: CallContext, *, has_fields: bool, has_keyword_fields: bool
 ) -> Value | None:
@@ -1931,12 +1947,12 @@ def _typeddict_synthetic_value(
                         items[key.val] = _typeddict_entry_from_field_value(
                             pair.value, required=total, ctx=ctx, node=fields_node
                         )
-    elif has_keyword_fields and isinstance(ctx.vars["kwargs"], TypedDictValue):
-        for key, entry in ctx.vars["kwargs"].items.items():
+    elif has_keyword_fields:
+        for key, (_, value) in _get_known_kwargs_entries(ctx.vars["kwargs"]).items():
             if key in _TYPEDDICT_OPTION_KEYWORDS:
                 continue
             items[key] = _typeddict_entry_from_field_value(
-                entry.typ, required=total, ctx=ctx, node=ctx.ast_for_arg("kwargs")
+                value, required=total, ctx=ctx, node=ctx.ast_for_arg("kwargs")
             )
 
     return SyntheticClassObjectValue(
@@ -1967,11 +1983,11 @@ def _typeddict_impl(ctx: CallContext) -> Value:
     has_fields = fields is not _NO_ARG_SENTINEL and fields != KnownValue(None)
     has_qualifying_error = False
 
-    keyword_field_names = []
-    if isinstance(kwargs, TypedDictValue):
-        keyword_field_names = [
-            key for key in kwargs.items if key not in _TYPEDDICT_OPTION_KEYWORDS
-        ]
+    keyword_field_names = [
+        key
+        for key in _get_known_kwargs_entries(kwargs)
+        if key not in _TYPEDDICT_OPTION_KEYWORDS
+    ]
     has_keyword_fields = bool(keyword_field_names)
     if has_fields and keyword_field_names:
         node = None
@@ -2038,10 +2054,7 @@ def _typeddict_impl(ctx: CallContext) -> Value:
 # Should not be necessary, but by default we pick up a wrong signature for
 # typing.NamedTuple
 def _namedtuple_impl(ctx: CallContext) -> Value:
-    has_kwargs = (
-        isinstance(ctx.vars["kwargs"], TypedDictValue)
-        and len(ctx.vars["kwargs"].items) > 0
-    )
+    has_kwargs = bool(_get_known_kwargs_entries(ctx.vars["kwargs"]))
     # Mirrors the runtime logic in typing.NamedTuple in 3.13
     if ctx.vars["fields"] is _NO_ARG_SENTINEL:
         if has_kwargs:
