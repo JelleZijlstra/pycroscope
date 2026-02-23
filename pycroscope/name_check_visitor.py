@@ -2125,6 +2125,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             return None
 
     def _get_synthetic_class_fq_name(self, node: ast.ClassDef) -> str:
+        return self._get_synthetic_class_fq_name_from_name(node.name)
+
+    def _get_synthetic_class_fq_name_from_name(self, name: str) -> str:
         if self.module is not None and hasattr(self.module, "__name__"):
             module_name = self.module.__name__
         else:
@@ -2138,8 +2141,8 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 qualname_parts.extend(("<lambda>", "<locals>"))
             elif isinstance(context, ast.ClassDef):
                 qualname_parts.append(context.name)
-        if not qualname_parts or qualname_parts[-1] != node.name:
-            qualname_parts.append(node.name)
+        if not qualname_parts or qualname_parts[-1] != name:
+            qualname_parts.append(name)
 
         if module_name:
             return ".".join((module_name, *qualname_parts))
@@ -6343,6 +6346,10 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                         )
                     return_value = KnownValue(result)
 
+        return_value = self._maybe_convert_local_namedtuple_class(
+            callee_wrapped, return_value
+        )
+
         if return_value is NO_RETURN_VALUE and node is not None:
             self._set_name_in_scope(LEAVES_SCOPE, node, AnyValue(AnySource.marker))
 
@@ -6375,6 +6382,44 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 if isinstance(task_cls, type):
                     return TypedValue(task_cls)
             return return_value
+
+    @staticmethod
+    def _is_namedtuple_class(value: object) -> bool:
+        return (
+            isinstance(value, type)
+            and safe_issubclass(value, tuple)
+            and isinstance(safe_getattr(value, "_fields", None), tuple)
+        )
+
+    def _is_namedtuple_factory(self, value: Value) -> bool:
+        return isinstance(value, KnownValue) and (
+            value.val is collections.namedtuple
+            or is_typing_name(value.val, "NamedTuple")
+        )
+
+    def _maybe_convert_local_namedtuple_class(
+        self, callee: Value, return_value: Value
+    ) -> Value:
+        if self.scopes.scope_type() == ScopeType.module_scope:
+            return return_value
+        if not self._is_namedtuple_factory(callee):
+            return return_value
+        if not isinstance(return_value, KnownValue):
+            return return_value
+        runtime_class = return_value.val
+        if not self._is_namedtuple_class(runtime_class):
+            return return_value
+        synthetic = SyntheticClassObjectValue(
+            runtime_class.__name__,
+            TypedValue(
+                self._get_synthetic_class_fq_name_from_name(runtime_class.__name__)
+            ),
+            base_classes=(TypedValue(tuple),),
+        )
+        synthetic.class_attributes["%runtime_class"] = return_value
+        for name, attr in runtime_class.__dict__.items():
+            synthetic.class_attributes[name] = KnownValue(attr)
+        return synthetic
 
     def signature_from_value(
         self, value: Value, node: ast.AST | None = None

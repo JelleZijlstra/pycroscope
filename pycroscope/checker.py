@@ -413,6 +413,13 @@ class Checker:
                         )
                     )
                 return Signature.make(params, value.class_type)
+            runtime_class = value.class_attributes.get("%runtime_class")
+            if isinstance(runtime_class, KnownValue) and isinstance(
+                runtime_class.val, type
+            ):
+                argspec = self.arg_spec_cache.get_argspec(runtime_class.val)
+                if argspec is not None:
+                    return argspec
             if value.class_type.typ is tuple:
                 # Probably an unknown namedtuple
                 return ANY_SIGNATURE
