@@ -528,7 +528,7 @@ class TestAnnotations(TestNameCheckVisitorBase):
 
     @assert_passes()
     def test_multiline_string_forward_ref(self):
-        from typing import assert_type
+        from typing_extensions import assert_type
 
         def f(
             x: """
