@@ -392,10 +392,10 @@ class TestTypedDict(TestNameCheckVisitorBase):
             movie: Movie
             movie = {"name": "Blade Runner"}  # E: incompatible_assignment
             print(movie)
-            movie = {
+            movie = {  # E: incompatible_assignment
                 "name": "Blade Runner",
                 "year": 1982.1,
-            }  # E: incompatible_assignment
+            }
             print(movie)
             movie = {"name": "", "year": 1900, "other": 2}  # E: incompatible_assignment
             print(movie)
