@@ -1016,9 +1016,17 @@ def _dict_popitem_impl(ctx: CallContext) -> ImplReturn:
                 ErrorCode.incompatible_call,
                 arg="self",
             )
-            return ImplReturn(AnyValue(AnySource.error))
-        required_keys = [key for key, entry in self_value.items.items() if entry.required]
-        readonly_keys = [key for key, entry in self_value.items.items() if entry.readonly]
+            return ImplReturn(
+                SequenceValue(
+                    tuple, [(False, TypedValue(str)), (False, TypedValue(object))]
+                )
+            )
+        required_keys = [
+            key for key, entry in self_value.items.items() if entry.required
+        ]
+        readonly_keys = [
+            key for key, entry in self_value.items.items() if entry.readonly
+        ]
         if required_keys:
             key = required_keys[0]
             ctx.show_error(
@@ -1048,7 +1056,7 @@ def _dict_popitem_impl(ctx: CallContext) -> ImplReturn:
         if value_types:
             value_type = unite_values(*value_types)
         else:
-            value_type = AnyValue(AnySource.inference)
+            value_type = NO_RETURN_VALUE
         return ImplReturn(
             SequenceValue(tuple, [(False, TypedValue(str)), (False, value_type)])
         )
@@ -1065,10 +1073,7 @@ def _dict_popitem_impl(ctx: CallContext) -> ImplReturn:
                 self_value.typ,
                 [
                     KVPair(
-                        pair.key,
-                        pair.value,
-                        is_many=pair.is_many,
-                        is_required=False,
+                        pair.key, pair.value, is_many=pair.is_many, is_required=False
                     )
                     for pair in self_value.kv_pairs
                 ],
@@ -1796,7 +1801,7 @@ def _any_impl(ctx: CallContext) -> Value:
 
 
 _TYPEDDICT_OPTION_KEYWORDS = {"total", "closed", "extra_items"}
-_TYPEDDICT_UNKNOWN_RUNTIME = object()
+
 
 def _typeddict_assignment_target_name(ctx: CallContext) -> str | None:
     if not isinstance(ctx.node, ast.Call):
@@ -1817,116 +1822,6 @@ def _typeddict_assignment_target_name(ctx: CallContext) -> str | None:
     ):
         return parent.target.id
     return None
-
-
-def _runtime_from_known_value(value: Value) -> object:
-    value = replace_fallback(value)
-    if isinstance(value, KnownValue):
-        return value.val
-    return _TYPEDDICT_UNKNOWN_RUNTIME
-
-
-def _typeddict_fields_from_runtime_mapping(value: Value) -> dict[str, object] | None:
-    value = replace_fallback(value)
-    if isinstance(value, KnownValue) and isinstance(value.val, dict):
-        fields: dict[str, object] = {}
-        for key, field_type in value.val.items():
-            if not isinstance(key, str):
-                return None
-            fields[key] = field_type
-        return fields
-    if isinstance(value, DictIncompleteValue):
-        fields = {}
-        for pair in value.kv_pairs:
-            if pair.is_many:
-                return None
-            key = _runtime_from_known_value(pair.key)
-            field_type = _runtime_from_known_value(pair.value)
-            if not isinstance(key, str) or field_type is _TYPEDDICT_UNKNOWN_RUNTIME:
-                return None
-            fields[key] = field_type
-        return fields
-    return None
-
-
-def _typeddict_fields_from_keyword_args(value: Value) -> dict[str, object] | None:
-    if not isinstance(value, TypedDictValue):
-        return None
-    fields: dict[str, object] = {}
-    for key, entry in value.items.items():
-        if key in _TYPEDDICT_OPTION_KEYWORDS:
-            continue
-        field_type = _runtime_from_known_value(entry.typ)
-        if field_type is _TYPEDDICT_UNKNOWN_RUNTIME:
-            return None
-        fields[key] = field_type
-    return fields
-
-
-def _typeddict_runtime_options(ctx: CallContext) -> dict[str, object] | None:
-    options: dict[str, object] = {}
-    total_value = ctx.vars.get("total", _NO_ARG_SENTINEL)
-    if total_value is _NO_ARG_SENTINEL:
-        total_value = KnownValue(True)
-    total = _runtime_from_known_value(total_value)
-    if not isinstance(total, bool):
-        return None
-    options["total"] = total
-    for option_name in ("closed", "extra_items"):
-        option_value = ctx.vars.get(option_name, _NO_ARG_SENTINEL)
-        if option_value is _NO_ARG_SENTINEL:
-            continue
-        runtime_value = _runtime_from_known_value(option_value)
-        if runtime_value is _TYPEDDICT_UNKNOWN_RUNTIME:
-            return None
-        options[option_name] = runtime_value
-    return options
-
-
-def _typeddict_runtime_value(
-    ctx: CallContext, *, has_fields: bool, has_keyword_fields: bool
-) -> Value | None:
-    typename = _runtime_from_known_value(ctx.vars["typename"])
-    if not isinstance(typename, str):
-        return None
-    callable_obj = ctx.sig.callable
-    if callable_obj is None or not callable(callable_obj):
-        return None
-    options = _typeddict_runtime_options(ctx)
-    if options is None:
-        return None
-    if has_fields:
-        fields = _typeddict_fields_from_runtime_mapping(ctx.vars["fields"])
-    elif has_keyword_fields:
-        fields = _typeddict_fields_from_keyword_args(ctx.vars["kwargs"])
-    else:
-        fields = {}
-    if fields is None:
-        return None
-    try:
-        typeddict_cls = callable_obj(typename, fields, **options)
-    except Exception:
-        return None
-    return KnownValue(typeddict_cls)
-
-
-def _typeddict_runtime_preserves_options(
-    ctx: CallContext, runtime_value: Value
-) -> bool:
-    if not isinstance(runtime_value, KnownValue):
-        return False
-    typeddict_cls = runtime_value.val
-    if not safe_isinstance(typeddict_cls, type):
-        return False
-    if ctx.vars.get(
-        "extra_items", _NO_ARG_SENTINEL
-    ) is not _NO_ARG_SENTINEL and not hasattr_static(typeddict_cls, "__extra_items__"):
-        return False
-    if ctx.vars.get(
-        "closed", _NO_ARG_SENTINEL
-    ) is not _NO_ARG_SENTINEL and not hasattr_static(typeddict_cls, "__closed__"):
-        return False
-    return True
 
 
 def _typeddict_synthetic_value(
@@ -2067,15 +1962,6 @@ def _typeddict_impl(ctx: CallContext) -> Value:
         )
         if synthetic_value is not None:
             return synthetic_value
-        runtime_value = _typeddict_runtime_value(
-            ctx, has_fields=has_fields, has_keyword_fields=has_keyword_fields
-        )
-        if runtime_value is not None and _typeddict_runtime_preserves_options(
-            ctx, runtime_value
-        ):
-            return runtime_value
-        if runtime_value is not None:
-            return runtime_value
     return ctx.inferred_return_value
 
 
@@ -2704,14 +2590,10 @@ def get_default_argspecs() -> dict[object, Signature]:
                     default=KnownValue(True),
                 ),
                 SigParameter(
-                    "closed",
-                    ParameterKind.KEYWORD_ONLY,
-                    default=_NO_ARG_SENTINEL,
+                    "closed", ParameterKind.KEYWORD_ONLY, default=_NO_ARG_SENTINEL
                 ),
                 SigParameter(
-                    "extra_items",
-                    ParameterKind.KEYWORD_ONLY,
-                    default=_NO_ARG_SENTINEL,
+                    "extra_items", ParameterKind.KEYWORD_ONLY, default=_NO_ARG_SENTINEL
                 ),
                 SigParameter("kwargs", ParameterKind.VAR_KEYWORD),
             ]
