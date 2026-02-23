@@ -11,6 +11,7 @@ import collections.abc
 import enum
 import inspect
 import itertools
+import warnings
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, field, replace
 from types import FunctionType, MethodType
@@ -1446,7 +1447,10 @@ class Signature:
                 return None
 
         try:
-            value = self.callable(*args, **kwargs)
+            # Runtime calls are speculative for inference, so suppress deprecations.
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", DeprecationWarning)
+                value = self.callable(*args, **kwargs)
         except Exception as e:
             message = f"Error calling {self}: {safe_str(e)}"
             ctx.on_error(message)
