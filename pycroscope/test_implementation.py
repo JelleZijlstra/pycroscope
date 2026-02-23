@@ -1030,6 +1030,44 @@ class TestGenericMutators(TestNameCheckVisitorBase):
             assert_is_value(strong_dict, expected)
 
     @assert_passes()
+    def test_dict_popitem(self):
+        from typing import Dict
+
+        def capybara(strong_dict: Dict[int, str]):
+            d = {"a": 1, "b": 2}
+            item = d.popitem()
+            assert_is_value(
+                item,
+                SequenceValue(
+                    tuple,
+                    [
+                        (False, KnownValue("a") | KnownValue("b")),
+                        (False, KnownValue(1) | KnownValue(2)),
+                    ],
+                ),
+            )
+            assert_is_value(
+                d,
+                DictIncompleteValue(
+                    dict,
+                    [
+                        KVPair(KnownValue("a"), KnownValue(1), is_required=False),
+                        KVPair(KnownValue("b"), KnownValue(2), is_required=False),
+                    ],
+                ),
+            )
+
+            expected = GenericValue(dict, [TypedValue(int), TypedValue(str)])
+            assert_is_value(strong_dict, expected)
+            assert_is_value(
+                strong_dict.popitem(),
+                SequenceValue(
+                    tuple, [(False, TypedValue(int)), (False, TypedValue(str))]
+                ),
+            )
+            assert_is_value(strong_dict, expected)
+
+    @assert_passes()
     def test_copy_and_update(self):
         from typing import Dict
 

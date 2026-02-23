@@ -485,6 +485,43 @@ class TestTypedDict(TestNameCheckVisitorBase):
             closed_readonly_extra.clear()  # E: incompatible_call
             closed_mutable_extra.clear()
 
+    @assert_passes()
+    def test_typeddict_popitem_variants(self):
+        from typing_extensions import NotRequired, ReadOnly, TypedDict
+
+        class NonClosed(TypedDict):
+            optional: NotRequired[int]
+
+        class ClosedRequired(TypedDict, closed=True):
+            required: int
+
+        class ClosedOptional(TypedDict, closed=True):
+            optional: NotRequired[int]
+
+        class ClosedReadonly(TypedDict, closed=True):
+            optional: ReadOnly[NotRequired[int]]
+
+        class ClosedReadonlyExtra(TypedDict, extra_items=ReadOnly[int]):
+            optional: NotRequired[int]
+
+        class ClosedMutableExtra(TypedDict, extra_items=int):
+            optional: NotRequired[int]
+
+        def capybara(
+            non_closed: NonClosed,
+            closed_required: ClosedRequired,
+            closed_optional: ClosedOptional,
+            closed_readonly: ClosedReadonly,
+            closed_readonly_extra: ClosedReadonlyExtra,
+            closed_mutable_extra: ClosedMutableExtra,
+        ) -> None:
+            non_closed.popitem()  # E: incompatible_call
+            closed_required.popitem()  # E: incompatible_call
+            closed_optional.popitem()
+            closed_readonly.popitem()  # E: incompatible_call
+            closed_readonly_extra.popitem()  # E: incompatible_call
+            closed_mutable_extra.popitem()
+
 
 class TestReadOnly(TestNameCheckVisitorBase):
     @assert_passes()
