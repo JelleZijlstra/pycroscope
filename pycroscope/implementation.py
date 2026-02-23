@@ -1767,7 +1767,7 @@ def _typeddict_runtime_value(
     if not isinstance(typename, str):
         return None
     callable_obj = ctx.sig.callable
-    if callable_obj is None:
+    if callable_obj is None or not callable(callable_obj):
         return None
     options = _typeddict_runtime_options(ctx)
     if options is None:

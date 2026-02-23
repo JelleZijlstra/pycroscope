@@ -104,12 +104,10 @@ specialtypes_type
 tuples_type_compat
 tuples_type_form
 tuples_unpacked
-typeddicts_alt_syntax
 typeddicts_class_syntax
 typeddicts_extra_items
 typeddicts_inheritance
 typeddicts_operations
 typeddicts_readonly_inheritance
 typeddicts_readonly_update
-typeddicts_required
 typeddicts_type_consistency
