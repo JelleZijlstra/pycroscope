@@ -359,6 +359,27 @@ class TestTypedDict(TestNameCheckVisitorBase):
             g({"c": 1.0})
             g({})  # E: incompatible_argument
 
+    @assert_passes()
+    def test_disallow_non_typeddict_base(self):
+        from typing import Generic, TypeVar
+
+        from typing_extensions import TypedDict
+
+        T = TypeVar("T")
+
+        def capybara() -> None:
+            class NonTypedDict:
+                pass
+
+            class BadTypedDict(TypedDict, NonTypedDict):  # E: invalid_base
+                x: int
+
+            class BadGenericTypedDict(TypedDict, Generic):  # E: invalid_base
+                x: int
+
+            class GenericTypedDict(TypedDict, Generic[T]):
+                x: T
+
 
 class TestReadOnly(TestNameCheckVisitorBase):
     @assert_passes()
