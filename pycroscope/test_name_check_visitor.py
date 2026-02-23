@@ -882,12 +882,22 @@ class TestNameCheckVisitor(TestNameCheckVisitorBase):
     def test_local_namedtuple(self):
         import collections
 
+        from pycroscope.value import KnownValue, SyntheticClassObjectValue, TypedValue
+
         def capybara():
             typ = collections.namedtuple("typ", "foo bar")
-            # For now just test that this produces no errors; if we
-            # add support for local namedtuples we can assert something
-            # more precise here.
-            print(typ(1, 2))
+            assert_is_value(
+                typ,
+                SyntheticClassObjectValue(
+                    "typ", TypedValue(f"{__name__}.capybara.<locals>.typ")
+                ),
+            )
+            t = typ(1, 2)
+            assert_is_value(t.foo, KnownValue(1))
+            assert_is_value(t.bar, KnownValue(2))
+            print(t.baz)  # E: undefined_attribute
+            typ(1, 2, 3)  # E: incompatible_call
+            typ(1)  # E: incompatible_call
 
     @assert_passes()
     def test_set_after_get(self):
