@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Preserve static typing-helper inference for module-scope assignments in importable modules when import-time runtime values would otherwise erase that typing information.
 - Avoid runtime deprecation warnings during analysis by using non-deprecated coroutine detection and suppressing speculative-call deprecation warnings, which speeds up large runs like self-check.
 - Speed up repeated analysis runs (including the test suite) by reusing typeshed resolvers across checker instances when stub search paths are the same.
 - Speed up checker setup by loading regex-related default argspecs only when regex functions are analyzed.

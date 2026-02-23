@@ -226,6 +226,7 @@ from .value import (
     TypedDictEntry,
     TypedDictValue,
     TypedValue,
+    TypeFormValue,
     TypeGuardExtension,
     TypeIsExtension,
     TypeVarValue,
@@ -1648,14 +1649,19 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 )
             if varname in current_scope.variables:
                 existing, _ = current_scope.get_local(varname, lookup_node, self.state)
-                if (
-                    self._is_checking()
-                    and value is not None
-                    and self.module is None
-                    and self._is_collect_placeholder_value(existing)
-                ):
-                    current_scope.variables[varname] = value
-                    return value, EMPTY_ORIGIN
+                if self._is_checking() and value is not None:
+                    if self.module is None and self._is_collect_placeholder_value(
+                        existing
+                    ):
+                        current_scope.variables[varname] = value
+                        return value, EMPTY_ORIGIN
+                    # Runtime module loading can populate values that differ from
+                    # static typing semantics for typing helper calls.
+                    if isinstance(existing, KnownValue) and isinstance(
+                        value, TypeFormValue
+                    ):
+                        current_scope.variables[varname] = value
+                        return value, EMPTY_ORIGIN
                 return existing, EMPTY_ORIGIN
         if scope_type == ScopeType.class_scope:
             if value is not None:
