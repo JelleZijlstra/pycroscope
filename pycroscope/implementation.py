@@ -1672,6 +1672,195 @@ def _any_impl(ctx: CallContext) -> Value:
     return AnyValue(AnySource.error)
 
 
+_TYPEDDICT_OPTION_KEYWORDS = {"total", "closed", "extra_items"}
+_TYPEDDICT_UNKNOWN_RUNTIME = object()
+
+
+def _typeddict_assignment_target_name(ctx: CallContext) -> str | None:
+    if not isinstance(ctx.node, ast.Call):
+        return None
+    parent = ctx.visitor.node_context.nth_parent(2)
+    if (
+        isinstance(parent, ast.Assign)
+        and parent.value is ctx.node
+        and len(parent.targets) == 1
+    ):
+        target = parent.targets[0]
+        if isinstance(target, ast.Name):
+            return target.id
+    if (
+        isinstance(parent, ast.AnnAssign)
+        and parent.value is ctx.node
+        and isinstance(parent.target, ast.Name)
+    ):
+        return parent.target.id
+    return None
+
+
+def _runtime_from_known_value(value: Value) -> object:
+    value = replace_fallback(value)
+    if isinstance(value, KnownValue):
+        return value.val
+    return _TYPEDDICT_UNKNOWN_RUNTIME
+
+
+def _typeddict_fields_from_runtime_mapping(value: Value) -> dict[str, object] | None:
+    value = replace_fallback(value)
+    if isinstance(value, KnownValue) and isinstance(value.val, dict):
+        fields: dict[str, object] = {}
+        for key, field_type in value.val.items():
+            if not isinstance(key, str):
+                return None
+            fields[key] = field_type
+        return fields
+    if isinstance(value, DictIncompleteValue):
+        fields = {}
+        for pair in value.kv_pairs:
+            if pair.is_many:
+                return None
+            key = _runtime_from_known_value(pair.key)
+            field_type = _runtime_from_known_value(pair.value)
+            if not isinstance(key, str) or field_type is _TYPEDDICT_UNKNOWN_RUNTIME:
+                return None
+            fields[key] = field_type
+        return fields
+    return None
+
+
+def _typeddict_fields_from_keyword_args(value: Value) -> dict[str, object] | None:
+    if not isinstance(value, TypedDictValue):
+        return None
+    fields: dict[str, object] = {}
+    for key, entry in value.items.items():
+        if key in _TYPEDDICT_OPTION_KEYWORDS:
+            continue
+        field_type = _runtime_from_known_value(entry.typ)
+        if field_type is _TYPEDDICT_UNKNOWN_RUNTIME:
+            return None
+        fields[key] = field_type
+    return fields
+
+
+def _typeddict_runtime_options(ctx: CallContext) -> dict[str, object] | None:
+    options: dict[str, object] = {}
+    total = _runtime_from_known_value(ctx.vars["total"])
+    if not isinstance(total, bool):
+        return None
+    options["total"] = total
+    for option_name in ("closed", "extra_items"):
+        if option_name not in ctx.vars:
+            continue
+        option_value = ctx.vars[option_name]
+        if option_value is _NO_ARG_SENTINEL:
+            continue
+        runtime_value = _runtime_from_known_value(option_value)
+        if runtime_value is _TYPEDDICT_UNKNOWN_RUNTIME:
+            return None
+        options[option_name] = runtime_value
+    return options
+
+
+def _typeddict_runtime_value(
+    ctx: CallContext, *, has_fields: bool, has_keyword_fields: bool
+) -> Value | None:
+    typename = _runtime_from_known_value(ctx.vars["typename"])
+    if not isinstance(typename, str):
+        return None
+    callable_obj = ctx.sig.callable
+    if callable_obj is None or not callable(callable_obj):
+        return None
+    options = _typeddict_runtime_options(ctx)
+    if options is None:
+        return None
+    if has_fields:
+        fields = _typeddict_fields_from_runtime_mapping(ctx.vars["fields"])
+    elif has_keyword_fields:
+        fields = _typeddict_fields_from_keyword_args(ctx.vars["kwargs"])
+    else:
+        fields = {}
+    if fields is None:
+        return None
+    try:
+        typeddict_cls = callable_obj(typename, fields, **options)
+    except Exception:
+        return None
+    return KnownValue(typeddict_cls)
+
+
+def _typeddict_impl(ctx: CallContext) -> Value:
+    fields = ctx.vars["fields"]
+    kwargs = ctx.vars["kwargs"]
+    has_fields = fields is not _NO_ARG_SENTINEL and fields != KnownValue(None)
+    has_qualifying_error = False
+
+    keyword_field_names = []
+    if isinstance(kwargs, TypedDictValue):
+        keyword_field_names = [
+            key for key in kwargs.items if key not in _TYPEDDICT_OPTION_KEYWORDS
+        ]
+    has_keyword_fields = bool(keyword_field_names)
+    if has_fields and keyword_field_names:
+        node = None
+        if isinstance(ctx.node, ast.Call):
+            for keyword in ctx.node.keywords:
+                if keyword.arg in keyword_field_names:
+                    node = keyword
+                    break
+        ctx.show_error(
+            "TypedDict takes either a dict or keyword arguments, but not both",
+            ErrorCode.incompatible_call,
+            node=node,
+        )
+        has_qualifying_error = True
+
+    fields_node = ctx.ast_for_arg("fields")
+    if has_fields:
+        if not isinstance(fields_node, ast.Dict):
+            ctx.show_error(
+                "TypedDict fields argument must be a dictionary literal",
+                ErrorCode.incompatible_call,
+                arg="fields",
+            )
+            has_qualifying_error = True
+        else:
+            for key in fields_node.keys:
+                if key is None:
+                    ctx.show_error(
+                        "TypedDict fields argument cannot use dictionary unpacking",
+                        ErrorCode.incompatible_call,
+                        node=fields_node,
+                    )
+                    has_qualifying_error = True
+                    break
+                if not (isinstance(key, ast.Constant) and isinstance(key.value, str)):
+                    ctx.show_error(
+                        "TypedDict field names must be string literals",
+                        ErrorCode.incompatible_call,
+                        node=key,
+                    )
+                    has_qualifying_error = True
+                    break
+
+    typename = ctx.vars["typename"]
+    if isinstance(typename, KnownValue) and isinstance(typename.val, str):
+        assigned_name = _typeddict_assignment_target_name(ctx)
+        if assigned_name is not None and assigned_name != typename.val:
+            ctx.show_error(
+                "TypedDict name argument must match the assignment target name",
+                ErrorCode.incompatible_call,
+                arg="typename",
+            )
+            has_qualifying_error = True
+
+    if not has_qualifying_error:
+        runtime_value = _typeddict_runtime_value(
+            ctx, has_fields=has_fields, has_keyword_fields=has_keyword_fields
+        )
+        if runtime_value is not None:
+            return runtime_value
+    return ctx.inferred_return_value
+
+
 # Should not be necessary, but by default we pick up a wrong signature for
 # typing.NamedTuple
 def _namedtuple_impl(ctx: CallContext) -> Value:
@@ -2263,6 +2452,52 @@ def get_default_argspecs() -> dict[object, Signature]:
                 return_annotation=TypeVarValue(T),
                 callable=assert_type_func,
                 impl=_assert_type_impl,
+            )
+            signatures.append(sig)
+        try:
+            typed_dict_func = getattr(mod, "TypedDict")
+        except AttributeError:
+            pass
+        else:
+            supports_extra_keywords = hasattr(mod, "NoExtraItems")
+            typed_dict_parameters = [
+                SigParameter("typename", _POS_ONLY, annotation=TypedValue(str)),
+                SigParameter(
+                    "fields",
+                    _POS_ONLY,
+                    annotation=AnyValue(AnySource.explicit) | KnownValue(None),
+                    default=_NO_ARG_SENTINEL,
+                ),
+                SigParameter(
+                    "total",
+                    ParameterKind.KEYWORD_ONLY,
+                    annotation=TypedValue(bool),
+                    default=KnownValue(True),
+                ),
+            ]
+            if supports_extra_keywords:
+                typed_dict_parameters.extend(
+                    [
+                        SigParameter(
+                            "closed",
+                            ParameterKind.KEYWORD_ONLY,
+                            default=_NO_ARG_SENTINEL,
+                        ),
+                        SigParameter(
+                            "extra_items",
+                            ParameterKind.KEYWORD_ONLY,
+                            default=_NO_ARG_SENTINEL,
+                        ),
+                    ]
+                )
+            typed_dict_parameters.append(
+                SigParameter("kwargs", ParameterKind.VAR_KEYWORD)
+            )
+            sig = Signature.make(
+                typed_dict_parameters,
+                return_annotation=AnyValue(AnySource.unannotated),
+                callable=typed_dict_func,
+                impl=_typeddict_impl,
             )
             signatures.append(sig)
         try:

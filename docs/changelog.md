@@ -30,6 +30,8 @@
   definitions) by falling back to syntactic TypedDict analysis, so
   `ReadOnly`/`Required`/`NotRequired` annotations and inheritance conflicts
   are still reported.
+- Validate functional `TypedDict(...)` declarations more strictly by reporting errors for non-literal field mappings, non-string field names, and mismatched type names in assignments.
+- Preserve functional `TypedDict(...)` type information even when runtime keyword-form construction is unavailable (for example on Python 3.13+), avoiding spurious call errors and follow-on annotation failures.
 - Improve handling of class objects that come from stubs or unimportable
   modules by tracking them as singleton class values, which improves
   compatibility checks for TypedDict class objects and type-expression
