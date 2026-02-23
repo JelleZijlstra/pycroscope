@@ -1394,6 +1394,10 @@ def _has_relation_typeddict_dict(
                                 children=[can_assign],
                             )
                         bounds_maps.append(can_assign)
+                    else:
+                        return CanAssignError(
+                            f"Key {key_type.val!r} is not allowed in TypedDict {left}"
+                        )
             else:
                 can_assign = has_relation(TypedValue(str), key_type, relation, ctx)
                 if isinstance(can_assign, CanAssignError):
@@ -1415,6 +1419,10 @@ def _has_relation_typeddict_dict(
                             children=[can_assign],
                         )
                     bounds_maps.append(can_assign)
+                else:
+                    return CanAssignError(
+                        f"Key {pair.key} must be a string literal in TypedDict {left}"
+                    )
     return unify_bounds_maps(bounds_maps)
 
 

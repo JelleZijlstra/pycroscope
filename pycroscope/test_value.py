@@ -457,8 +457,8 @@ def test_typeddict_value() -> None:
 
     # KnownValue of dict
     assert_can_assign(val, KnownValue({"a": 1, "b": "2"}))
-    # extra keys are ok
-    assert_can_assign(val, KnownValue({"a": 1, "b": "2", "c": 1}))
+    # extra keys in a dict literal are rejected for TypedDict construction
+    assert_cannot_assign(val, KnownValue({"a": 1, "b": "2", "c": 1}))
     # missing key
     assert_cannot_assign(val, KnownValue({"a": 1}))
     # wrong type
@@ -551,7 +551,7 @@ def test_typeddict_value() -> None:
             ],
         ),
     )
-    assert_can_assign(
+    assert_cannot_assign(
         val,
         value.DictIncompleteValue(
             dict,

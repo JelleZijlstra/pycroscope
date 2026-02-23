@@ -1584,16 +1584,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 extra_metadata=extra_metadata,
             )
 
-    def _is_collect_placeholder_value(self, value: Value) -> bool:
-        value = replace_fallback(value)
-        if isinstance(value, AnnotatedValue):
-            return self._is_collect_placeholder_value(value.value)
-        if isinstance(value, MultiValuedValue):
-            return all(
-                self._is_collect_placeholder_value(subval) for subval in value.vals
-            )
-        return isinstance(value, AnyValue)
-
     def _set_name_in_scope(
         self,
         varname: str,
@@ -1650,9 +1640,14 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             if varname in current_scope.variables:
                 existing, _ = current_scope.get_local(varname, lookup_node, self.state)
                 if self._is_checking() and value is not None:
-                    if self.module is None and self._is_collect_placeholder_value(
-                        existing
-                    ):
+                    if self.module is None:
+                        # If module import failed, collected module-scope values are
+                        # provisional. Prefer check-pass static inference, but keep
+                        # declared types for annotated names.
+                        declared_type = current_scope.get_declared_type(varname)
+                        if declared_type is not None:
+                            current_scope.variables[varname] = declared_type
+                            return declared_type, EMPTY_ORIGIN
                         current_scope.variables[varname] = value
                         return value, EMPTY_ORIGIN
                     # Runtime module loading can populate values that differ from
