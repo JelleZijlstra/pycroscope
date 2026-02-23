@@ -3128,7 +3128,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
 
     def _expr_of_annotation_type(self, val: Value, node: ast.AST) -> AnnotationExpr:
         """Given a value encountered in a type annotation, return a type."""
-        return annotation_expr_from_value(val, visitor=self, node=node)
+        return annotation_expr_from_value(
+            val, visitor=self, node=node, suppress_errors=self._is_collecting()
+        )
 
     def _check_method_first_arg(
         self, node: FunctionNode, function_info: FunctionInfo
@@ -5308,7 +5310,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             # Still visit the annotation node so ast_annotator can attach
             # inferred values to all annotation expressions.
             self._visit_annotation(node.annotation)
-            expr = annotation_expr_from_ast(node.annotation, visitor=self)
+            expr = annotation_expr_from_ast(
+                node.annotation, visitor=self, suppress_errors=self._is_collecting()
+            )
         if self.is_in_typeddict_definition():
             expected_type, qualifiers = expr.unqualify(
                 {Qualifier.Required, Qualifier.NotRequired, Qualifier.ReadOnly},

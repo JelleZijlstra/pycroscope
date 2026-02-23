@@ -518,6 +518,33 @@ class TestAnnotations(TestNameCheckVisitorBase):
             assert isinstance(val, AnyValue), annotation
 
     @assert_passes()
+    def test_forward_ref_errors_keep_annotation_lineno(self):
+        def invalid_annotations(
+            p1: "[int, str]",  # E: invalid_annotation
+            p2: "(lambda : int)()",  # E: invalid_annotation
+            p3: "1",  # E: invalid_annotation
+        ) -> None:
+            pass
+
+    @assert_passes()
+    def test_multiline_string_forward_ref(self):
+        from typing import assert_type
+
+        def f(
+            x: """
+                int |
+                str |
+                list[int]
+            """,
+        ) -> None:
+            assert_type(x, int | str | list[int])
+
+        f(1)
+        f("x")
+        f([1])
+        f(1.0)  # E: incompatible_argument
+
+    @assert_passes()
     def test_forward_ref_optional(self):
         import typing
         from typing import Optional

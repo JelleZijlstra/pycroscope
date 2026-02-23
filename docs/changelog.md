@@ -11,6 +11,7 @@
 - Speed up large analysis runs by memoizing repeated type-relation checks in assignability/subtyping logic.
 - Make implicit `TypeForm` checks side-effect-free so relation memoization stays safe and suppresses redundant work.
 - Suppress annotation errors while evaluating runtime forward references, so diagnostics are not misattributed to the current module.
+- Improve string forward-reference diagnostics by reporting errors on the original annotation lines rather than line 1, avoiding duplicate reports from the collect/check passes, and supporting multiline triple-quoted string annotations (parsed as implicitly parenthesized expressions).
 - Validate that overloaded implementations are compatible with their
   `@overload` signatures (including async/decorator-transformed signatures), and
   report overload/implementation mismatches with the new
