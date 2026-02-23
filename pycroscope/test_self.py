@@ -21,7 +21,9 @@ class PycroscopeVisitor(pycroscope.name_check_visitor.NameCheckVisitor):
 def _files_for_self_check() -> list[str]:
     files = ["pycroscope"]
     if sys.version_info >= (3, 11):
-        conformance_ci = Path(__file__).resolve().parent.parent / "tools" / "conformance_ci.py"
+        conformance_ci = (
+            Path(__file__).resolve().parent.parent / "tools" / "conformance_ci.py"
+        )
         files.append(str(conformance_ci))
     return files
 
