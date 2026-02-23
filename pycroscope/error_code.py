@@ -131,6 +131,7 @@ ErrorCode = ErrorRegistry(
         Error("incompatible_assignment", "Incompatible variable assignment"),
         Error("invalid_typeddict_key", "Invalid key in TypedDict"),
         Error("invalid_annotation", "Invalid type annotation"),
+        Error("invalid_base", "Invalid base class"),
         Error(
             "invalid_positional_only", "Invalid positional-only parameter declaration"
         ),

@@ -106,7 +106,6 @@ tuples_type_form
 tuples_unpacked
 typeddicts_class_syntax
 typeddicts_extra_items
-typeddicts_inheritance
 typeddicts_operations
 typeddicts_readonly_inheritance
 typeddicts_readonly_update

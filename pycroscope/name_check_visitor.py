@@ -2001,6 +2001,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     ) -> _SyntheticTypedDictContext | None:
         has_typeddict_base = False
         bases = []
+        invalid_non_typeddict_bases = []
         for base_node, base_value in zip(node.bases, base_values):
             if self._is_typeddict_marker_base(base_value):
                 has_typeddict_base = True
@@ -2009,8 +2010,18 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             if base_typed_dict is not None:
                 has_typeddict_base = True
                 bases.append(base_typed_dict)
+                continue
+            if self._is_typeddict_generic_base(base_value):
+                continue
+            invalid_non_typeddict_bases.append(base_node)
         if not has_typeddict_base:
             return None
+        for base_node in invalid_non_typeddict_bases:
+            self._show_error_if_checking(
+                base_node,
+                "TypedDict classes may only inherit from TypedDict types and Generic",
+                error_code=ErrorCode.invalid_base,
+            )
         total = True
         for keyword, value in keyword_values:
             if keyword.arg != "total":
@@ -2031,6 +2042,16 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         return isinstance(base_value, KnownValue) and is_typing_name(
             base_value.val, "TypedDict"
         )
+
+    def _is_typeddict_generic_base(self, base_value: Value) -> bool:
+        if isinstance(base_value, MultiValuedValue):
+            return all(
+                self._is_typeddict_generic_base(subval) for subval in base_value.vals
+            )
+        if isinstance(base_value, KnownValue):
+            origin = safe_getattr(base_value.val, "__origin__", None)
+            return origin is not None and is_typing_name(origin, "Generic")
+        return False
 
     def _typed_dict_base_value(
         self, base_value: Value, base_node: ast.AST
