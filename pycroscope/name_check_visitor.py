@@ -2035,7 +2035,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         closed: bool | None = None
         explicit_extra_keys: Value | None = None
         explicit_extra_keys_readonly = False
-        for keyword, value in keyword_values:
+        for keyword, _ in keyword_values:
             if keyword.arg == "total":
                 bool_value = self._get_bool_literal(keyword.value)
                 if bool_value is None:
@@ -4481,6 +4481,12 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 self.check_for_missing_generic_params(left_node, left)
                 self.check_for_missing_generic_params(right_node, right)
                 return KnownValue(Union[left.val, right.val])  # noqa: UP007
+            elif self._annotation_node_uses_unpack(source_node):
+                # Keep structural forms like `tuple[int, Unpack[...]] | ...`
+                # in annotation mode instead of forcing runtime `|` evaluation.
+                return value_from_ast(
+                    source_node, visitor=self, error_on_unrecognized=False
+                )
             else:
                 self._show_error_if_checking(
                     source_node,
@@ -5791,8 +5797,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         if (
             self.in_annotation
             and isinstance(node.ctx, ast.Load)
-            and isinstance(value, KnownValue)
-            and is_typing_name(value.val, "Unpack")
+            and self._annotation_subscript_uses_unpack(node)
         ):
             # Preserve `Unpack[...]` structure in annotation mode instead of
             # evaluating it through runtime dunder calls, which can collapse to `object`.
@@ -5910,6 +5915,21 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 ErrorCode.unexpected_node,
             )
             return AnyValue(AnySource.error)
+
+    @staticmethod
+    def _annotation_subscript_uses_unpack(node: ast.Subscript) -> bool:
+        return NameCheckVisitor._annotation_node_uses_unpack(node)
+
+    @staticmethod
+    def _annotation_node_uses_unpack(node: ast.AST) -> bool:
+        for subnode in ast.walk(node):
+            if isinstance(subnode, ast.Starred):
+                return True
+            if isinstance(subnode, ast.Name) and subnode.id == "Unpack":
+                return True
+            if isinstance(subnode, ast.Attribute) and subnode.attr == "Unpack":
+                return True
+        return False
 
     def _get_dunder(self, node: ast.AST, callee_val: Value, method_name: str) -> Value:
         lookup_val = callee_val.get_type_value()
