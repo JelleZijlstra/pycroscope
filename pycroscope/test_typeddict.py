@@ -330,6 +330,30 @@ class TestTypedDict(TestNameCheckVisitorBase):
             assert_is_value(x["a"], TypedValue(int))
             print(Bad1, Bad2, Bad3)
 
+    @assert_passes(allow_import_failures=True)
+    def test_class_syntax_method_validation(self):
+        from typing import Generic, TypedDict, TypeVar
+
+        class Movie(TypedDict):
+            director: "Person"
+
+        class Person(TypedDict):
+            name: str
+
+        class BadTypedDict(TypedDict):
+            name: str
+
+            def method(self):  # E: invalid_annotation
+                pass
+
+        T = TypeVar("T")
+
+        class GenericTypedDict(TypedDict, Generic[T]):
+            value: T
+
+        def capybara(movie: Movie) -> str:
+            return movie["director"]["name"]
+
     @assert_passes()
     def test_functional_syntax_keyword_fields(self):
         from typing_extensions import TypedDict
@@ -613,6 +637,63 @@ class TestReadOnly(TestNameCheckVisitorBase):
             want_td2(td3)
             want_td2(td4)  # E: incompatible_argument
             want_td2(anydict)  # E: incompatible_argument
+
+    @assert_passes(allow_import_failures=True)
+    def test_inheritance_validation_at_module_scope(self):
+        from typing_extensions import NotRequired, ReadOnly, Required, TypedDict
+
+        class F1(TypedDict):
+            a: Required[int]
+            b: ReadOnly[NotRequired[int]]
+            c: ReadOnly[Required[int]]
+
+        class F3(F1):
+            a: ReadOnly[int]  # E: invalid_annotation
+
+        class F4(F1):
+            a: NotRequired[int]  # E: invalid_annotation
+
+        class F5(F1):
+            b: ReadOnly[Required[int]]
+
+        class F6(F1):
+            c: ReadOnly[NotRequired[int]]  # E: invalid_annotation
+
+        class TD_A1(TypedDict):
+            x: int
+            y: ReadOnly[int]
+
+        class TD_A2(TypedDict):
+            x: float
+            y: ReadOnly[float]
+
+        class TD_A(TD_A1, TD_A2): ...  # E: invalid_annotation
+
+        class TD_B1(TypedDict):
+            x: ReadOnly[NotRequired[int]]
+            y: ReadOnly[Required[int]]
+
+        class TD_B2(TypedDict):
+            x: ReadOnly[Required[int]]
+            y: ReadOnly[NotRequired[int]]
+
+        class TD_B(TD_B1, TD_B2): ...  # E: invalid_annotation
+
+    @assert_passes()
+    def test_update_ignores_uninhabitable_optional_key(self):
+        from typing_extensions import Never, NotRequired, ReadOnly, TypedDict
+
+        class A(TypedDict):
+            x: ReadOnly[int]
+            y: int
+
+        class B(TypedDict):
+            x: NotRequired[Never]
+            y: ReadOnly[int]
+
+        def capybara(a: A, b: B) -> None:
+            a.update(a)  # E: readonly_typeddict
+            a.update(b)
 
     @assert_passes()
     def test_annotated_plus_qualifier(self):

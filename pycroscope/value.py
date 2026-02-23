@@ -2798,10 +2798,12 @@ def kv_pairs_from_mapping(
     if isinstance(value_val, DictIncompleteValue):
         return value_val.kv_pairs
     elif isinstance(value_val, TypedDictValue):
-        pairs = [
-            KVPair(KnownValue(key), entry.typ, is_required=entry.required)
-            for key, entry in value_val.items.items()
-        ]
+        pairs = []
+        for key, entry in value_val.items.items():
+            # Optional Never keys are uninhabitable and cannot be present.
+            if not entry.required and entry.typ is NO_RETURN_VALUE:
+                continue
+            pairs.append(KVPair(KnownValue(key), entry.typ, is_required=entry.required))
         if (
             value_val.extra_keys is not None
             and value_val.extra_keys is not NO_RETURN_VALUE
