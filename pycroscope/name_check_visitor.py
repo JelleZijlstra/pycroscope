@@ -42,16 +42,7 @@ from dataclasses import field as dataclass_field
 from itertools import chain
 from pathlib import Path
 from types import GenericAlias
-from typing import (
-    Annotated,
-    Any,
-    ClassVar,
-    Optional,
-    TypeVar,
-    Union,
-    get_args,
-    get_origin,
-)
+from typing import Annotated, Any, ClassVar, Optional, TypeVar, get_args, get_origin
 from unittest.mock import ANY
 
 import typeshed_client
@@ -4476,24 +4467,11 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         left = left_composite.value
         right = right_composite.value
         if self.in_annotation and isinstance(op, ast.BitOr):
-            # Accept PEP 604 (int | None) in annotations
-            if isinstance(left, KnownValue) and isinstance(right, KnownValue):
-                self.check_for_missing_generic_params(left_node, left)
-                self.check_for_missing_generic_params(right_node, right)
-                return KnownValue(Union[left.val, right.val])  # noqa: UP007
-            elif self._annotation_node_uses_unpack(source_node):
-                # Keep structural forms like `tuple[int, Unpack[...]] | ...`
-                # in annotation mode instead of forcing runtime `|` evaluation.
-                return value_from_ast(
-                    source_node, visitor=self, error_on_unrecognized=False
-                )
-            else:
-                self._show_error_if_checking(
-                    source_node,
-                    f"Unsupported operands for | in annotation: {left} and {right}",
-                    error_code=ErrorCode.unsupported_operation,
-                )
-                return AnyValue(AnySource.error)
+            # Parse the annotation AST directly so structural forms like
+            # `tuple[int, Unpack[...]] | ...` are preserved.
+            return value_from_ast(
+                source_node, visitor=self, error_on_unrecognized=False
+            )
 
         if (
             isinstance(op, ast.Mod)
@@ -5794,13 +5772,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         value = root_composite.value
         index = index_composite.value
 
-        if (
-            self.in_annotation
-            and isinstance(node.ctx, ast.Load)
-            and self._annotation_subscript_uses_unpack(node)
-        ):
-            # Preserve `Unpack[...]` structure in annotation mode instead of
-            # evaluating it through runtime dunder calls, which can collapse to `object`.
+        if self.in_annotation and isinstance(node.ctx, ast.Load):
+            # Parse annotation subscripts from AST to preserve structural forms
+            # (for example `Unpack[...]`) instead of runtime dunder evaluation.
             return value_from_ast(node, visitor=self, error_on_unrecognized=False)
 
         if isinstance(node.ctx, ast.Store):
@@ -5915,21 +5889,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 ErrorCode.unexpected_node,
             )
             return AnyValue(AnySource.error)
-
-    @staticmethod
-    def _annotation_subscript_uses_unpack(node: ast.Subscript) -> bool:
-        return NameCheckVisitor._annotation_node_uses_unpack(node)
-
-    @staticmethod
-    def _annotation_node_uses_unpack(node: ast.AST) -> bool:
-        for subnode in ast.walk(node):
-            if isinstance(subnode, ast.Starred):
-                return True
-            if isinstance(subnode, ast.Name) and subnode.id == "Unpack":
-                return True
-            if isinstance(subnode, ast.Attribute) and subnode.attr == "Unpack":
-                return True
-        return False
 
     def _get_dunder(self, node: ast.AST, callee_val: Value, method_name: str) -> Value:
         lookup_val = callee_val.get_type_value()
