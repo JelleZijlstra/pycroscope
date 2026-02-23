@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Remove the unused `requirements.txt` contributor setup file; local development setup now uses `uv sync` and `uv run`.
 - Improve inference for function-local `collections.namedtuple(...)` definitions by modeling the generated class as a synthetic local class object with a stable qualified name.
 - Tighten TypedDict operation checking: declared TypedDict variables now keep TypedDict semantics after reassignment, dict literals with unknown or non-literal keys are rejected when assigning to TypedDicts, and `TypedDict.clear()` now reports an error for non-closed TypedDicts or when required/readonly keys are possible.
 - Preserve static typing-helper inference for module-scope assignments in importable modules when import-time runtime values would otherwise erase that typing information.
@@ -12,6 +13,7 @@
 - Speed up large analysis runs by memoizing repeated type-relation checks in assignability/subtyping logic.
 - Make implicit `TypeForm` checks side-effect-free so relation memoization stays safe and suppresses redundant work.
 - Suppress annotation errors while evaluating runtime forward references, so diagnostics are not misattributed to the current module.
+- Improve string forward-reference diagnostics by reporting errors on the original annotation lines rather than line 1, avoiding duplicate reports from the collect/check passes, and supporting multiline triple-quoted string annotations (parsed as implicitly parenthesized expressions).
 - Validate that overloaded implementations are compatible with their
   `@overload` signatures (including async/decorator-transformed signatures), and
   report overload/implementation mismatches with the new
