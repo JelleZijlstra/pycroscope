@@ -15,7 +15,7 @@ import pycroscope
 from . import runtime
 from .analysis_lib import Sentinel
 from .annotated_types import MaxLen, MinLen
-from .annotations import type_from_value
+from .annotations import _SubscriptedValue, annotation_expr_from_value, type_from_value
 from .error_code import ErrorCode
 from .extensions import assert_type, reveal_locals, reveal_type
 from .format_strings import parse_format_string
@@ -75,9 +75,11 @@ from .value import (
     MultiValuedValue,
     ParameterTypeGuardExtension,
     PredicateValue,
+    Qualifier,
     SequenceValue,
     SubclassValue,
     SyntheticClassObjectValue,
+    TypedDictEntry,
     TypedDictValue,
     TypedValue,
     TypeFormValue,
@@ -450,6 +452,61 @@ def _list_append_impl(ctx: CallContext) -> ImplReturn:
             "list.append", "object", ctx.vars["self"], lst, element, ctx, list
         )
     return ImplReturn(KnownValue(None))
+
+
+_UNKNOWN_SUBSCRIPT_ARGUMENT = object()
+
+
+def _runtime_subscript_argument(value: Value) -> object:
+    """Convert a Value into a runtime subscript argument when possible."""
+    if isinstance(value, KnownValue):
+        return value.val
+    if isinstance(value, SequenceValue):
+        members = value.get_member_sequence()
+        if members is None:
+            return _UNKNOWN_SUBSCRIPT_ARGUMENT
+        runtime_members = []
+        for member in members:
+            runtime_member = _runtime_subscript_argument(member)
+            if runtime_member is _UNKNOWN_SUBSCRIPT_ARGUMENT:
+                return _UNKNOWN_SUBSCRIPT_ARGUMENT
+            runtime_members.append(runtime_member)
+        return tuple(runtime_members)
+    return _UNKNOWN_SUBSCRIPT_ARGUMENT
+
+
+def _typing_special_form_getitem_impl(ctx: CallContext) -> Value:
+    self_value = ctx.vars["self"]
+    if not isinstance(self_value, KnownValue):
+        return AnyValue(AnySource.inference)
+    parameters = ctx.vars["parameters"]
+    if ctx.node is not None:
+        if isinstance(parameters, SequenceValue):
+            members = parameters.get_member_sequence()
+            if members is not None:
+                return _SubscriptedValue(
+                    AnySource.inference, self_value, ctx.node, tuple(members)
+                )
+        return _SubscriptedValue(
+            AnySource.inference, self_value, ctx.node, (parameters,)
+        )
+    runtime_arg = _runtime_subscript_argument(parameters)
+    if runtime_arg is _UNKNOWN_SUBSCRIPT_ARGUMENT:
+        if ctx.node is None:
+            return AnyValue(AnySource.inference)
+        if isinstance(parameters, SequenceValue):
+            members = parameters.get_member_sequence()
+            if members is not None:
+                return _SubscriptedValue(
+                    AnySource.inference, self_value, ctx.node, tuple(members)
+                )
+        return _SubscriptedValue(
+            AnySource.inference, self_value, ctx.node, (parameters,)
+        )
+    try:
+        return KnownValue(self_value.val[runtime_arg])
+    except Exception:
+        return AnyValue(AnySource.error)
 
 
 def _sequence_common_getitem_impl(ctx: CallContext, typ: type) -> ImplReturn:
@@ -1003,6 +1060,96 @@ def _dict_pop_impl(ctx: CallContext) -> ImplReturn:
         return ImplReturn(_maybe_unite(value_type, default))
     else:
         return ImplReturn(AnyValue(AnySource.inference))
+
+
+def _dict_popitem_impl(ctx: CallContext) -> ImplReturn:
+    varname = ctx.visitor.varname_for_self_constraint(ctx.node)
+    self_value = replace_known_sequence_value(ctx.vars["self"])
+    if isinstance(self_value, TypedDictValue):
+        if self_value.extra_keys is None:
+            ctx.show_error(
+                "Cannot call popitem() on non-closed TypedDict",
+                ErrorCode.incompatible_call,
+                arg="self",
+            )
+            return ImplReturn(
+                SequenceValue(
+                    tuple, [(False, TypedValue(str)), (False, TypedValue(object))]
+                )
+            )
+        required_keys = [
+            key for key, entry in self_value.items.items() if entry.required
+        ]
+        readonly_keys = [
+            key for key, entry in self_value.items.items() if entry.readonly
+        ]
+        if required_keys:
+            key = required_keys[0]
+            ctx.show_error(
+                f"Cannot call popitem() on TypedDict with required key {key!r}",
+                ErrorCode.incompatible_call,
+                arg="self",
+            )
+            return ImplReturn(AnyValue(AnySource.error))
+        if readonly_keys:
+            key = readonly_keys[0]
+            ctx.show_error(
+                f"Cannot call popitem() on TypedDict with readonly key {key!r}",
+                ErrorCode.incompatible_call,
+                arg="self",
+            )
+            return ImplReturn(AnyValue(AnySource.error))
+        if self_value.extra_keys_readonly:
+            ctx.show_error(
+                "Cannot call popitem() on TypedDict with readonly extra keys",
+                ErrorCode.incompatible_call,
+                arg="self",
+            )
+            return ImplReturn(AnyValue(AnySource.error))
+        value_types = [entry.typ for entry in self_value.items.values()]
+        if self_value.extra_keys is not NO_RETURN_VALUE:
+            value_types.append(self_value.extra_keys)
+        if value_types:
+            value_type = unite_values(*value_types)
+        else:
+            value_type = NO_RETURN_VALUE
+        return ImplReturn(
+            SequenceValue(tuple, [(False, TypedValue(str)), (False, value_type)])
+        )
+    if isinstance(self_value, DictIncompleteValue):
+        value_types = [pair.value for pair in self_value.kv_pairs]
+        key_types = [pair.key for pair in self_value.kv_pairs]
+        if key_types and value_types:
+            key_type = unite_values(*key_types)
+            value_type = unite_values(*value_types)
+        else:
+            key_type = value_type = AnyValue(AnySource.inference)
+        if varname is not None:
+            constrained_value = DictIncompleteValue(
+                self_value.typ,
+                [
+                    KVPair(
+                        pair.key, pair.value, is_many=pair.is_many, is_required=False
+                    )
+                    for pair in self_value.kv_pairs
+                ],
+            )
+            no_return_unless = Constraint(
+                varname, ConstraintType.is_value_object, True, constrained_value
+            )
+        else:
+            no_return_unless = NULL_CONSTRAINT
+        return ImplReturn(
+            SequenceValue(tuple, [(False, key_type), (False, value_type)]),
+            no_return_unless=no_return_unless,
+        )
+    if isinstance(self_value, TypedValue):
+        key_type = self_value.get_generic_arg_for_type(dict, ctx.visitor, 0)
+        value_type = self_value.get_generic_arg_for_type(dict, ctx.visitor, 1)
+        return ImplReturn(
+            SequenceValue(tuple, [(False, key_type), (False, value_type)])
+        )
+    return ImplReturn(AnyValue(AnySource.inference))
 
 
 def _maybe_unite(value: Value, default: Value) -> Value:
@@ -1710,7 +1857,6 @@ def _any_impl(ctx: CallContext) -> Value:
 
 
 _TYPEDDICT_OPTION_KEYWORDS = {"total", "closed", "extra_items"}
-_TYPEDDICT_UNKNOWN_RUNTIME = object()
 
 
 def _typeddict_assignment_target_name(ctx: CallContext) -> str | None:
@@ -1734,94 +1880,85 @@ def _typeddict_assignment_target_name(ctx: CallContext) -> str | None:
     return None
 
 
-def _runtime_from_known_value(value: Value) -> object:
-    value = replace_fallback(value)
-    if isinstance(value, KnownValue):
-        return value.val
-    return _TYPEDDICT_UNKNOWN_RUNTIME
-
-
-def _typeddict_fields_from_runtime_mapping(value: Value) -> dict[str, object] | None:
-    value = replace_fallback(value)
-    if isinstance(value, KnownValue) and isinstance(value.val, dict):
-        fields: dict[str, object] = {}
-        for key, field_type in value.val.items():
-            if not isinstance(key, str):
-                return None
-            fields[key] = field_type
-        return fields
-    if isinstance(value, DictIncompleteValue):
-        fields = {}
-        for pair in value.kv_pairs:
-            if pair.is_many:
-                return None
-            key = _runtime_from_known_value(pair.key)
-            field_type = _runtime_from_known_value(pair.value)
-            if not isinstance(key, str) or field_type is _TYPEDDICT_UNKNOWN_RUNTIME:
-                return None
-            fields[key] = field_type
-        return fields
-    return None
-
-
-def _typeddict_fields_from_keyword_args(value: Value) -> dict[str, object] | None:
-    if not isinstance(value, TypedDictValue):
-        return None
-    fields: dict[str, object] = {}
-    for key, entry in value.items.items():
-        if key in _TYPEDDICT_OPTION_KEYWORDS:
-            continue
-        field_type = _runtime_from_known_value(entry.typ)
-        if field_type is _TYPEDDICT_UNKNOWN_RUNTIME:
-            return None
-        fields[key] = field_type
-    return fields
-
-
-def _typeddict_runtime_options(ctx: CallContext) -> dict[str, object] | None:
-    options: dict[str, object] = {}
-    total = _runtime_from_known_value(ctx.vars["total"])
-    if not isinstance(total, bool):
-        return None
-    options["total"] = total
-    for option_name in ("closed", "extra_items"):
-        if option_name not in ctx.vars:
-            continue
-        option_value = ctx.vars[option_name]
-        if option_value is _NO_ARG_SENTINEL:
-            continue
-        runtime_value = _runtime_from_known_value(option_value)
-        if runtime_value is _TYPEDDICT_UNKNOWN_RUNTIME:
-            return None
-        options[option_name] = runtime_value
-    return options
-
-
-def _typeddict_runtime_value(
+def _typeddict_synthetic_value(
     ctx: CallContext, *, has_fields: bool, has_keyword_fields: bool
 ) -> Value | None:
-    typename = _runtime_from_known_value(ctx.vars["typename"])
-    if not isinstance(typename, str):
+    typename = replace_fallback(ctx.vars["typename"])
+    if not (isinstance(typename, KnownValue) and isinstance(typename.val, str)):
         return None
-    callable_obj = ctx.sig.callable
-    if callable_obj is None or not callable(callable_obj):
-        return None
-    options = _typeddict_runtime_options(ctx)
-    if options is None:
-        return None
+
+    total_var = replace_fallback(ctx.vars.get("total", _NO_ARG_SENTINEL))
+    if total_var is _NO_ARG_SENTINEL:
+        total_var = KnownValue(True)
+    total = (
+        total_var.val
+        if isinstance(total_var, KnownValue) and isinstance(total_var.val, bool)
+        else True
+    )
+    closed_var = replace_fallback(ctx.vars.get("closed", _NO_ARG_SENTINEL))
+    closed = (
+        closed_var.val
+        if isinstance(closed_var, KnownValue) and isinstance(closed_var.val, bool)
+        else False
+    )
+
+    extra_keys: Value | None = None
+    extra_items = replace_fallback(ctx.vars.get("extra_items", _NO_ARG_SENTINEL))
+    if extra_items is not _NO_ARG_SENTINEL:
+        extra_keys = type_from_value(
+            extra_items, ctx.visitor, ctx.ast_for_arg("extra_items")
+        )
+    elif closed:
+        extra_keys = NO_RETURN_VALUE
+
+    items: dict[str, TypedDictEntry] = {}
+    fields_node = ctx.ast_for_arg("fields")
     if has_fields:
-        fields = _typeddict_fields_from_runtime_mapping(ctx.vars["fields"])
-    elif has_keyword_fields:
-        fields = _typeddict_fields_from_keyword_args(ctx.vars["kwargs"])
-    else:
-        fields = {}
-    if fields is None:
-        return None
-    try:
-        typeddict_cls = callable_obj(typename, fields, **options)
-    except Exception:
-        return None
-    return KnownValue(typeddict_cls)
+        fields = replace_fallback(ctx.vars["fields"])
+        if isinstance(fields, KnownValue) and isinstance(fields.val, dict):
+            for key, val in fields.val.items():
+                if not isinstance(key, str):
+                    continue
+                items[key] = _typeddict_entry_from_field_value(
+                    KnownValue(val), required=total, ctx=ctx, node=fields_node
+                )
+        elif isinstance(fields, DictIncompleteValue):
+            for pair in fields.kv_pairs:
+                if pair.is_many:
+                    continue
+                for key in flatten_values(pair.key):
+                    if isinstance(key, KnownValue) and isinstance(key.val, str):
+                        items[key.val] = _typeddict_entry_from_field_value(
+                            pair.value, required=total, ctx=ctx, node=fields_node
+                        )
+    elif has_keyword_fields and isinstance(ctx.vars["kwargs"], TypedDictValue):
+        for key, entry in ctx.vars["kwargs"].items.items():
+            if key in _TYPEDDICT_OPTION_KEYWORDS:
+                continue
+            items[key] = _typeddict_entry_from_field_value(
+                entry.typ, required=total, ctx=ctx, node=ctx.ast_for_arg("kwargs")
+            )
+
+    return SyntheticClassObjectValue(
+        typename.val, TypedDictValue(items, extra_keys=extra_keys)
+    )
+
+
+def _typeddict_entry_from_field_value(
+    field_value: Value, *, required: bool, ctx: CallContext, node: ast.AST | None
+) -> TypedDictEntry:
+    ann_expr = annotation_expr_from_value(field_value, visitor=ctx.visitor, node=node)
+    item_type, qualifiers = ann_expr.unqualify(
+        {Qualifier.ReadOnly, Qualifier.Required, Qualifier.NotRequired},
+        mutually_exclusive_qualifiers=((Qualifier.Required, Qualifier.NotRequired),),
+    )
+    if Qualifier.Required in qualifiers:
+        required = True
+    if Qualifier.NotRequired in qualifiers:
+        required = False
+    return TypedDictEntry(
+        typ=item_type, required=required, readonly=Qualifier.ReadOnly in qualifiers
+    )
 
 
 def _typeddict_impl(ctx: CallContext) -> Value:
@@ -1890,11 +2027,11 @@ def _typeddict_impl(ctx: CallContext) -> Value:
             has_qualifying_error = True
 
     if not has_qualifying_error:
-        runtime_value = _typeddict_runtime_value(
+        synthetic_value = _typeddict_synthetic_value(
             ctx, has_fields=has_fields, has_keyword_fields=has_keyword_fields
         )
-        if runtime_value is not None:
-            return runtime_value
+        if synthetic_value is not None:
+            return synthetic_value
     return ctx.inferred_return_value
 
 
@@ -1958,7 +2095,24 @@ V = TypeVar("V")
 
 
 def get_default_argspecs() -> dict[object, Signature]:
-    signatures = [
+    signatures = []
+    try:
+        special_form_getitem = getattr(typing, "_SpecialForm").__getitem__
+    except Exception:
+        pass
+    else:
+        signatures.append(
+            Signature.make(
+                [
+                    SigParameter("self", _POS_ONLY),
+                    SigParameter("parameters", _POS_ONLY),
+                ],
+                callable=special_form_getitem,
+                impl=_typing_special_form_getitem_impl,
+                return_annotation=AnyValue(AnySource.inference),
+            )
+        )
+    signatures += [
         # pycroscope helpers
         Signature.make(
             [
@@ -2258,6 +2412,12 @@ def get_default_argspecs() -> dict[object, Signature]:
             return_annotation=KnownValue(None),
         ),
         Signature.make(
+            [SigParameter("self", _POS_ONLY, annotation=TypedValue(dict))],
+            callable=dict.popitem,
+            impl=_dict_popitem_impl,
+            return_annotation=AnyValue(AnySource.inference),
+        ),
+        Signature.make(
             [
                 SigParameter("self", _POS_ONLY, annotation=TypedValue(dict)),
                 SigParameter("key", _POS_ONLY),
@@ -2502,7 +2662,6 @@ def get_default_argspecs() -> dict[object, Signature]:
         except AttributeError:
             pass
         else:
-            supports_extra_keywords = hasattr(mod, "NoExtraItems")
             typed_dict_parameters = [
                 SigParameter("typename", _POS_ONLY, annotation=TypedValue(str)),
                 SigParameter(
@@ -2517,25 +2676,14 @@ def get_default_argspecs() -> dict[object, Signature]:
                     annotation=TypedValue(bool),
                     default=KnownValue(True),
                 ),
+                SigParameter(
+                    "closed", ParameterKind.KEYWORD_ONLY, default=_NO_ARG_SENTINEL
+                ),
+                SigParameter(
+                    "extra_items", ParameterKind.KEYWORD_ONLY, default=_NO_ARG_SENTINEL
+                ),
+                SigParameter("kwargs", ParameterKind.VAR_KEYWORD),
             ]
-            if supports_extra_keywords:
-                typed_dict_parameters.extend(
-                    [
-                        SigParameter(
-                            "closed",
-                            ParameterKind.KEYWORD_ONLY,
-                            default=_NO_ARG_SENTINEL,
-                        ),
-                        SigParameter(
-                            "extra_items",
-                            ParameterKind.KEYWORD_ONLY,
-                            default=_NO_ARG_SENTINEL,
-                        ),
-                    ]
-                )
-            typed_dict_parameters.append(
-                SigParameter("kwargs", ParameterKind.VAR_KEYWORD)
-            )
             sig = Signature.make(
                 typed_dict_parameters,
                 return_annotation=AnyValue(AnySource.unannotated),

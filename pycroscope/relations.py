@@ -1334,6 +1334,32 @@ def _has_relation_typeddict(
                 )
             bounds_maps.append(can_assign)
 
+    for key, their_entry in right.items.items():
+        if key in left.items:
+            continue
+        if left.extra_keys is NO_RETURN_VALUE:
+            return CanAssignError(f"Extra key {key!r} is not allowed in {left}")
+        if left.extra_keys is None:
+            continue
+        if not left.extra_keys_readonly:
+            if their_entry.required:
+                return CanAssignError(f"Extra key {key!r} is required in {right}")
+            if their_entry.readonly:
+                return CanAssignError(f"Extra key {key!r} is readonly in {right}")
+            relation_to_use = _map_relation(relation)
+        else:
+            relation_to_use = relation
+        can_assign = has_relation(
+            left.extra_keys, their_entry.typ, relation_to_use, ctx
+        )
+        if isinstance(can_assign, CanAssignError):
+            return CanAssignError(
+                f"Type for key {key!r} is incompatible with extra keys type"
+                f" {left.extra_keys}",
+                children=[can_assign],
+            )
+        bounds_maps.append(can_assign)
+
     if not left.extra_keys_readonly and right.extra_keys_readonly:
         return CanAssignError(f"Extra keys are readonly in {right}")
     if left.extra_keys is not None:

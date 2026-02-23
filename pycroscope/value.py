@@ -2802,7 +2802,10 @@ def kv_pairs_from_mapping(
             KVPair(KnownValue(key), entry.typ, is_required=entry.required)
             for key, entry in value_val.items.items()
         ]
-        if value_val.extra_keys is not None:
+        if (
+            value_val.extra_keys is not None
+            and value_val.extra_keys is not NO_RETURN_VALUE
+        ):
             pairs.append(
                 KVPair(
                     TypedValue(str),

@@ -465,6 +465,10 @@ class _AttrContext(CheckerAttrContext):
 class _SyntheticTypedDictContext:
     total: bool
     bases: list[TypedDictValue]
+    inherited_extra_keys: Value | None
+    inherited_extra_keys_readonly: bool
+    extra_keys: Value | None
+    extra_keys_readonly: bool
     local_items: dict[str, tuple[TypedDictEntry, ast.AST]] = dataclass_field(
         default_factory=dict
     )
@@ -1980,6 +1984,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             class_obj is None
             and self._is_collecting()
             and self.scopes.scope_type() == ScopeType.module_scope
+            and synthetic_typeddict is None
         ):
             # In the collect phase we don't always visit top-level class bodies.
             # Avoid storing placeholder values that later get unioned with the
@@ -2017,20 +2022,126 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 "TypedDict classes may only inherit from TypedDict types and Generic",
                 error_code=ErrorCode.invalid_base,
             )
-        total = True
-        for keyword, value in keyword_values:
-            if keyword.arg != "total":
+        inherited_extra_keys: Value | None = None
+        inherited_extra_keys_readonly = False
+        for base in bases:
+            if base.extra_keys is None:
                 continue
-            bool_value = self._get_bool_literal(value)
-            if bool_value is None:
+            inherited_extra_keys = base.extra_keys
+            inherited_extra_keys_readonly = base.extra_keys_readonly
+            break
+        total = True
+        closed: bool | None = None
+        explicit_extra_keys: Value | None = None
+        explicit_extra_keys_readonly = False
+        for keyword, _ in keyword_values:
+            if keyword.arg == "total":
+                bool_value = self._get_bool_literal(keyword.value)
+                if bool_value is None:
+                    self._show_error_if_checking(
+                        keyword.value,
+                        "TypedDict total= argument must be a bool literal",
+                        error_code=ErrorCode.invalid_annotation,
+                    )
+                else:
+                    total = bool_value
+                continue
+            if keyword.arg == "closed":
+                bool_value = self._get_bool_literal(keyword.value)
+                if bool_value is None:
+                    self._show_error_if_checking(
+                        keyword.value,
+                        'Argument to "closed" must be a literal True or False',
+                        error_code=ErrorCode.invalid_annotation,
+                    )
+                else:
+                    closed = bool_value
+                continue
+            if keyword.arg == "extra_items":
+                extra_items_expr = annotation_expr_from_ast(keyword.value, visitor=self)
+                extra_items_value, qualifiers = extra_items_expr.unqualify(
+                    {Qualifier.ReadOnly, Qualifier.Required, Qualifier.NotRequired},
+                    mutually_exclusive_qualifiers=(
+                        (Qualifier.Required, Qualifier.NotRequired),
+                    ),
+                )
+                if Qualifier.Required in qualifiers:
+                    self._show_error_if_checking(
+                        keyword.value,
+                        "'extra_items' value cannot be 'Required[...]'",
+                        error_code=ErrorCode.invalid_annotation,
+                    )
+                if Qualifier.NotRequired in qualifiers:
+                    self._show_error_if_checking(
+                        keyword.value,
+                        "'extra_items' value cannot be 'NotRequired[...]'",
+                        error_code=ErrorCode.invalid_annotation,
+                    )
+                explicit_extra_keys = extra_items_value
+                explicit_extra_keys_readonly = Qualifier.ReadOnly in qualifiers
+
+        if closed is False and inherited_extra_keys is not None:
+            self._show_error_if_checking(
+                node,
+                "Cannot set 'closed=False' when superclass is closed or has 'extra_items'",
+                error_code=ErrorCode.invalid_annotation,
+            )
+
+        if (
+            closed is True
+            and inherited_extra_keys is not None
+            and inherited_extra_keys is not NO_RETURN_VALUE
+            and not inherited_extra_keys_readonly
+        ):
+            self._show_error_if_checking(
+                node,
+                "Cannot set 'closed=True' when superclass has non-read-only 'extra_items'",
+                error_code=ErrorCode.invalid_annotation,
+            )
+
+        if (
+            explicit_extra_keys is not None
+            and inherited_extra_keys is not None
+            and inherited_extra_keys is not NO_RETURN_VALUE
+            and not inherited_extra_keys_readonly
+        ):
+            left_to_right = has_relation(
+                inherited_extra_keys, explicit_extra_keys, Relation.ASSIGNABLE, self
+            )
+            right_to_left = has_relation(
+                explicit_extra_keys, inherited_extra_keys, Relation.ASSIGNABLE, self
+            )
+            if isinstance(left_to_right, CanAssignError) or isinstance(
+                right_to_left, CanAssignError
+            ):
                 self._show_error_if_checking(
-                    keyword.value,
-                    "TypedDict total= argument must be a bool literal",
+                    node,
+                    "Cannot change 'extra_items' type unless it is 'ReadOnly' in the superclass",
                     error_code=ErrorCode.invalid_annotation,
                 )
+
+        if explicit_extra_keys is None:
+            if closed is True:
+                extra_keys = NO_RETURN_VALUE
+                extra_keys_readonly = False
+            elif closed is False:
+                extra_keys = None
+                extra_keys_readonly = False
             else:
-                total = bool_value
-        return _SyntheticTypedDictContext(total=total, bases=bases)
+                extra_keys = inherited_extra_keys
+                extra_keys_readonly = inherited_extra_keys_readonly
+        else:
+            extra_keys = explicit_extra_keys
+            extra_keys_readonly = explicit_extra_keys_readonly
+
+        return _SyntheticTypedDictContext(
+            total=total,
+            bases=bases,
+            inherited_extra_keys=inherited_extra_keys,
+            inherited_extra_keys_readonly=inherited_extra_keys_readonly,
+            extra_keys=extra_keys,
+            extra_keys_readonly=extra_keys_readonly,
+        )
 
     @staticmethod
     def _is_typeddict_marker_base(base_value: Value) -> bool:
@@ -2079,9 +2190,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         return None
 
     @staticmethod
-    def _get_bool_literal(value: Value) -> bool | None:
-        if isinstance(value, KnownValue) and isinstance(value.val, bool):
-            return value.val
+    def _get_bool_literal(node: ast.AST) -> bool | None:
+        if isinstance(node, ast.Constant) and isinstance(node.value, bool):
+            return node.value
         return None
 
     def _get_local_object(self, name: str, node: ast.AST) -> Value:
@@ -2154,7 +2265,10 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         if self._is_collecting():
             # If this is a nested class, we need to run the collecting phase to get data
             # about names accessed from the class.
-            if len(self.scopes.scopes) > 2:
+            if (
+                len(self.scopes.scopes) > 2
+                or self.current_synthetic_typeddict is not None
+            ):
                 with (
                     self.scopes.add_scope(
                         ScopeType.class_scope,
@@ -2206,9 +2320,54 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     )
                 items[key] = entry
             else:
+                base_extra_keys = context.inherited_extra_keys
+                if base_extra_keys is NO_RETURN_VALUE:
+                    self._show_error_if_checking(
+                        entry_node,
+                        f'"{node.name}" is a closed TypedDict; extra key {key!r} not allowed',
+                        error_code=ErrorCode.invalid_annotation,
+                    )
+                elif base_extra_keys is not None:
+                    if context.inherited_extra_keys_readonly:
+                        can_assign = has_relation(
+                            base_extra_keys, entry.typ, Relation.ASSIGNABLE, self
+                        )
+                        if isinstance(can_assign, CanAssignError):
+                            self._show_error_if_checking(
+                                entry_node,
+                                f"{entry.typ} is not assignable to 'extra_items'"
+                                f" type {base_extra_keys}",
+                                error_code=ErrorCode.invalid_annotation,
+                            )
+                    else:
+                        if entry.required:
+                            self._show_error_if_checking(
+                                entry_node,
+                                f"Required key {key!r} is not known to base TypedDict",
+                                error_code=ErrorCode.invalid_annotation,
+                            )
+                        base_to_entry = has_relation(
+                            base_extra_keys, entry.typ, Relation.ASSIGNABLE, self
+                        )
+                        entry_to_base = has_relation(
+                            entry.typ, base_extra_keys, Relation.ASSIGNABLE, self
+                        )
+                        if isinstance(base_to_entry, CanAssignError) or isinstance(
+                            entry_to_base, CanAssignError
+                        ):
+                            self._show_error_if_checking(
+                                entry_node,
+                                f"{entry.typ} is not consistent with 'extra_items'"
+                                f" type {base_extra_keys}",
+                                error_code=ErrorCode.invalid_annotation,
+                            )
                 items[key] = entry
 
-        return TypedDictValue(items=items)
+        return TypedDictValue(
+            items=items,
+            extra_keys=context.extra_keys,
+            extra_keys_readonly=context.extra_keys_readonly,
+        )
 
     def _merge_typeddict_base_entries(
         self, key: str, left: TypedDictEntry, right: TypedDictEntry, node: ast.AST

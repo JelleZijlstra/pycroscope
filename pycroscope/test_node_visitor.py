@@ -50,9 +50,11 @@ class BaseNodeVisitorTester(object):
                 assert False, 'Expected check of "%s" to fail' % code_str
         return result
 
-    def assert_passes(self, code_str, **kwargs):
+    def assert_passes(self, code_str, allow_import_failures=False, **kwargs):
         """Asserts that running the given code_str throws no errors."""
         code_str = textwrap.dedent(code_str)
+        if allow_import_failures:
+            kwargs.setdefault("allow_runtime_module_load_failure", True)
         errors = self._run_str(
             code_str, expect_failure=False, fail_after_first=False, **kwargs
         )
@@ -70,6 +72,8 @@ class BaseNodeVisitorTester(object):
         for error in errors:
             lineno = error["lineno"]
             actual_code = error["code"].name
+            if allow_import_failures and actual_code == "import_failed":
+                continue
             if (
                 actual_code in expected_errors[lineno]
                 and expected_errors[lineno][actual_code] > 0
@@ -136,7 +140,7 @@ def assert_passes(**kwargs):
     """Decorator for test cases that assert that a code block contains no errors.
 
     The body of the decorated function is executed by the NodeVisitor. If the visitor finds any
-    error, the test fails.
+    error, the test fails unless explicitly allowed by decorator keyword arguments.
 
     """
 

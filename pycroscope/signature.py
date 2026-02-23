@@ -1062,9 +1062,13 @@ class Signature:
                         dict, [TypedValue(str), value_value]
                     )
                 else:
-                    star_kwargs_value = TypedDictValue(items)
                     if not items:
+                        star_kwargs_value = TypedDictValue(
+                            items, extra_keys=NO_RETURN_VALUE
+                        )
                         position = DEFAULT
+                    else:
+                        star_kwargs_value = TypedDictValue(items)
                 bound_args[param.name] = position, Composite(star_kwargs_value)
             elif param.kind is ParameterKind.ELLIPSIS:
                 # just take it all

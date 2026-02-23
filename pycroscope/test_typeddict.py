@@ -144,6 +144,52 @@ class TestExtraKeys(TestNameCheckVisitorBase):
             for k in td2:
                 assert_type(k, Union[str, Literal["a"]])
 
+    @assert_passes()
+    def test_explicit_items_compatible_with_extra_items(self):
+        from typing_extensions import NotRequired, ReadOnly, TypedDict
+
+        class MovieBase2(TypedDict, extra_items=int | None):
+            name: str
+
+        class MovieDetails(TypedDict, extra_items=int | None):
+            name: str
+            year: NotRequired[int]
+
+        class MovieWithYear2(TypedDict, extra_items=int | None):
+            name: str
+            year: int | None
+
+        class MovieSI(TypedDict, extra_items=ReadOnly[str | int]):
+            name: str
+
+        class MovieDetails5(TypedDict, extra_items=int):
+            name: str
+            actors: list[str]
+
+        details2: MovieDetails = {"name": "Kill Bill Vol. 1", "year": 2003}
+        movie2: MovieBase2 = details2  # E: incompatible_assignment
+
+        details3: MovieWithYear2 = {"name": "Kill Bill Vol. 1", "year": 2003}
+        movie3: MovieBase2 = details3  # E: incompatible_assignment
+
+        details5: MovieDetails5 = {
+            "name": "Kill Bill Vol. 2",
+            "actors": ["Uma Thurman"],
+        }
+        movie5: MovieSI = details5  # E: incompatible_assignment
+        print(movie2, movie3, movie5)
+
+    @assert_passes()
+    def test_closed_constructor(self):
+        from typing_extensions import TypedDict
+
+        class ClosedMovie(TypedDict, closed=True):
+            name: str
+
+        ClosedMovie(name="No Country for Old Men")
+        # E: incompatible_argument
+        ClosedMovie(name="No Country for Old Men", year=2007)
+
 
 class TestTypedDict(TestNameCheckVisitorBase):
     @assert_passes()
@@ -296,6 +342,24 @@ class TestTypedDict(TestNameCheckVisitorBase):
         bad: Movie = {"name": "Blade Runner", "year": ""}  # E: incompatible_assignment
         print(ok, bad)
 
+    @assert_passes()
+    def test_functional_syntax_qualifiers(self):
+        from typing_extensions import NotRequired, ReadOnly, Required, TypedDict
+
+        Band = TypedDict("Band", {"name": str, "members": ReadOnly[list[str]]})
+        RecursiveMovie = TypedDict(
+            "RecursiveMovie",
+            {"title": Required[str], "predecessor": NotRequired["RecursiveMovie"]},
+        )
+
+        band: Band = {"name": "blur", "members": []}
+        band["members"] = ["Damon Albarn"]  # E: readonly_typeddict
+        movie: RecursiveMovie = {
+            "title": "Beethoven 3",
+            "predecessor": {"title": "Beethoven 2"},
+        }
+        print(movie)
+
     @skip_if_not_installed("mypy_extensions")
     @assert_passes()
     def test_mypy_extensions(self):
@@ -438,6 +502,55 @@ class TestTypedDict(TestNameCheckVisitorBase):
             closed_readonly.clear()  # E: incompatible_call
             closed_readonly_extra.clear()  # E: incompatible_call
             closed_mutable_extra.clear()
+
+    @assert_passes()
+    def test_typeddict_popitem_variants(self):
+        from typing_extensions import (
+            Never,
+            NotRequired,
+            ReadOnly,
+            TypedDict,
+            assert_type,
+        )
+
+        class NonClosed(TypedDict):
+            optional: NotRequired[int]
+
+        class ClosedRequired(TypedDict, closed=True):
+            required: int
+
+        class ClosedOptional(TypedDict, closed=True):
+            optional: NotRequired[int]
+
+        class ClosedReadonly(TypedDict, closed=True):
+            optional: ReadOnly[NotRequired[int]]
+
+        class ClosedReadonlyExtra(TypedDict, extra_items=ReadOnly[int]):
+            optional: NotRequired[int]
+
+        class ClosedMutableExtra(TypedDict, extra_items=int):
+            optional: NotRequired[int]
+
+        class ClosedEmpty(TypedDict, closed=True):
+            pass
+
+        def capybara(
+            non_closed: NonClosed,
+            closed_required: ClosedRequired,
+            closed_optional: ClosedOptional,
+            closed_readonly: ClosedReadonly,
+            closed_readonly_extra: ClosedReadonlyExtra,
+            closed_mutable_extra: ClosedMutableExtra,
+            closed_empty: ClosedEmpty,
+        ) -> None:
+            # E: incompatible_call
+            assert_type(non_closed.popitem()[1], object)
+            closed_required.popitem()  # E: incompatible_call
+            closed_optional.popitem()
+            closed_readonly.popitem()  # E: incompatible_call
+            closed_readonly_extra.popitem()  # E: incompatible_call
+            closed_mutable_extra.popitem()
+            assert_type(closed_empty.popitem()[1], Never)
 
 
 class TestReadOnly(TestNameCheckVisitorBase):
