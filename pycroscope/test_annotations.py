@@ -1751,6 +1751,28 @@ class TestRequired(TestNameCheckVisitorBase):
             x: Required[int]  # E: invalid_annotation
             y: NotRequired[int]  # E: invalid_annotation
 
+    @assert_passes()
+    def test_invalid_qualifiers_in_typeddict(self):
+        from typing import TYPE_CHECKING, ClassVar, NotRequired, Required, TypedDict
+
+        from typing_extensions import ReadOnly
+
+        if TYPE_CHECKING:
+
+            class TD(TypedDict):
+                a: Required[Required[int]]  # E: invalid_annotation
+                b: Required[NotRequired[int]]  # E: invalid_annotation
+                c: NotRequired[Required[int]]  # E: invalid_annotation
+                d: NotRequired[NotRequired[int]]  # E: invalid_annotation
+                e: ReadOnly[ReadOnly[int]]  # E: invalid_annotation
+                f: ClassVar[int]  # E: invalid_annotation
+
+    @assert_passes()
+    def test_duplicate_final_non_typeddict(self):
+        from typing import Final
+
+        x: Final[Final[int]] = 1  # E: invalid_annotation
+
 
 class TestParamSpec(TestNameCheckVisitorBase):
     @assert_passes()

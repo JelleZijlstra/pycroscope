@@ -5279,7 +5279,12 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             self._visit_annotation(node.annotation)
             expr = annotation_expr_from_ast(node.annotation, visitor=self)
         if self.is_in_typeddict_definition():
-            qualifiers = {Qualifier.Required, Qualifier.NotRequired, Qualifier.ReadOnly}
+            expected_type, qualifiers = expr.unqualify(
+                {Qualifier.Required, Qualifier.NotRequired, Qualifier.ReadOnly},
+                mutually_exclusive_qualifiers=(
+                    (Qualifier.Required, Qualifier.NotRequired),
+                ),
+            )
         else:
             # TODO: validate these qualifiers more
             qualifiers = {
@@ -5288,7 +5293,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 Qualifier.TypeAlias,
                 Qualifier.InitVar,
             }
-        expected_type, qualifiers = expr.maybe_unqualify(qualifiers)
+            expected_type, qualifiers = expr.maybe_unqualify(qualifiers)
         if self.current_synthetic_typeddict is not None and isinstance(
             node.target, ast.Name
         ):
