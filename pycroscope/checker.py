@@ -146,8 +146,8 @@ class Checker:
     def perform_final_checks(self) -> list[Failure]:
         return self.callable_tracker.check()
 
-    def get_additional_bases(self, typ: type | super) -> set[type]:
-        bases = set()
+    def get_additional_bases(self, typ: type | super) -> set[type | str]:
+        bases: set[type | str] = set()
         for provider in self.options.get_value_for(AdditionalBaseProviders):
             bases |= provider(typ)
         return bases
@@ -559,7 +559,7 @@ class Checker:
         return get_attribute(ctx)
 
 
-EXCLUDED_PROTOCOL_MEMBERS = {
+EXCLUDED_PROTOCOL_MEMBERS: set[str] = {
     "__abstractmethods__",
     "__annotate__",
     "__annotate_func__",
@@ -603,7 +603,7 @@ def _extract_protocol_members(typ: type) -> set[str]:
         or is_typing_name(typ, "Protocol")
     ):
         return set()
-    members = set(typ.__dict__) - EXCLUDED_PROTOCOL_MEMBERS
+    members: set[str] = set(typ.__dict__) - EXCLUDED_PROTOCOL_MEMBERS
     # Starting in 3.10 __annotations__ always exists on types
     if sys.version_info >= (3, 10) or hasattr(typ, "__annotations__"):
         members |= set(typ.__annotations__)

@@ -147,12 +147,12 @@ def remove_redundant_solutions(
     if initial_count > 10:
         return solutions
 
-    temp_solutions = list(solutions)
-    for i in range(initial_count):
-        sol = temp_solutions[i]
-        for j, other in enumerate(temp_solutions):
-            if i == j or other is None:
+    removed_indexes: set[int] = set()
+    for i, sol in enumerate(solutions):
+        for j, other in enumerate(solutions):
+            if i == j or j in removed_indexes:
                 continue
             if sol.is_assignable(other, ctx) and not other.is_assignable(sol, ctx):
-                temp_solutions[i] = None
-    return [sol for sol in temp_solutions if sol is not None]
+                removed_indexes.add(i)
+                break
+    return [sol for i, sol in enumerate(solutions) if i not in removed_indexes]
