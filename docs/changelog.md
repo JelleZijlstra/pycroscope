@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Tighten TypedDict operation checking: declared TypedDict variables now keep TypedDict semantics after reassignment, dict literals with unknown or non-literal keys are rejected when assigning to TypedDicts, and `TypedDict.clear()` now reports an error for non-closed TypedDicts or when required/readonly keys are possible.
 - Preserve static typing-helper inference for module-scope assignments in importable modules when import-time runtime values would otherwise erase that typing information.
 - Avoid runtime deprecation warnings during analysis by using non-deprecated coroutine detection and suppressing speculative-call deprecation warnings, which speeds up large runs like self-check.
 - Add a Python 3.12 CI workflow for typing conformance that runs unit tests for the conformance tooling and then fails if pycroscope's conformance outcomes diverge from the known-failing case list.

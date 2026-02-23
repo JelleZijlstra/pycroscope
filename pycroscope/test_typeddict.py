@@ -380,6 +380,65 @@ class TestTypedDict(TestNameCheckVisitorBase):
             class GenericTypedDict(TypedDict, Generic[T]):
                 x: T
 
+    @assert_passes()
+    def test_typeddict_assignment_key_checks(self):
+        from typing_extensions import TypedDict
+
+        class Movie(TypedDict):
+            name: str
+            year: int
+
+        def capybara(variable_key: str) -> None:
+            movie: Movie
+            movie = {"name": "Blade Runner"}  # E: incompatible_assignment
+            print(movie)
+            movie = {
+                "name": "Blade Runner",
+                "year": 1982.1,
+            }  # E: incompatible_assignment
+            print(movie)
+            movie = {"name": "", "year": 1900, "other": 2}  # E: incompatible_assignment
+            print(movie)
+            movie = {variable_key: "", "year": 1900}  # E: incompatible_assignment
+            print(movie)
+
+    @assert_passes()
+    def test_typeddict_clear_variants(self):
+        from typing_extensions import NotRequired, ReadOnly, TypedDict
+
+        class NonClosed(TypedDict):
+            optional: NotRequired[int]
+
+        class ClosedRequired(TypedDict, closed=True):
+            required: int
+
+        class ClosedOptional(TypedDict, closed=True):
+            optional: NotRequired[int]
+
+        class ClosedReadonly(TypedDict, closed=True):
+            optional: ReadOnly[NotRequired[int]]
+
+        class ClosedReadonlyExtra(TypedDict, extra_items=ReadOnly[int]):
+            optional: NotRequired[int]
+
+        class ClosedMutableExtra(TypedDict, extra_items=int):
+            optional: NotRequired[int]
+
+        def capybara(
+            non_closed: NonClosed,
+            closed_required: ClosedRequired,
+            closed_optional: ClosedOptional,
+            closed_readonly: ClosedReadonly,
+            closed_readonly_extra: ClosedReadonlyExtra,
+            closed_mutable_extra: ClosedMutableExtra,
+        ) -> None:
+            non_closed.clear()  # E: incompatible_call
+            closed_required.clear()  # E: incompatible_call
+            closed_optional.clear()
+            closed_readonly.clear()  # E: incompatible_call
+            closed_readonly_extra.clear()  # E: incompatible_call
+            closed_mutable_extra.clear()
+
 
 class TestReadOnly(TestNameCheckVisitorBase):
     @assert_passes()
@@ -509,7 +568,7 @@ class TestClosed(TestNameCheckVisitorBase):
             open.update(anydict)  # E: invalid_typeddict_key
 
             x: Closed = {"a": 1, "b": "a", "c": "x"}  # E: incompatible_assignment
-            y: Open = {"a": 1, "b": "a", "c": "x"}
+            y: Open = {"a": 1, "b": "a"}
             print(x, y)
 
             want_closed(closed)

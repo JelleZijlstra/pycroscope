@@ -1098,6 +1098,43 @@ def _dict_setdefault_impl(ctx: CallContext) -> ImplReturn:
         return ImplReturn(AnyValue(AnySource.inference))
 
 
+def _dict_clear_impl(ctx: CallContext) -> ImplReturn:
+    varname = ctx.visitor.varname_for_self_constraint(ctx.node)
+    self_value = replace_known_sequence_value(ctx.vars["self"])
+    if isinstance(self_value, TypedDictValue):
+        if self_value.extra_keys is None:
+            msg = "Cannot call clear() on non-closed TypedDict"
+        else:
+            required_keys = [
+                key for key, entry in self_value.items.items() if entry.required
+            ]
+            readonly_keys = [
+                key for key, entry in self_value.items.items() if entry.readonly
+            ]
+            if required_keys:
+                key = required_keys[0]
+                msg = f"Cannot call clear() on TypedDict with required key {key!r}"
+            elif readonly_keys:
+                key = readonly_keys[0]
+                msg = f"Cannot call clear() on TypedDict with readonly key {key!r}"
+            elif self_value.extra_keys_readonly:
+                msg = "Cannot call clear() on TypedDict with readonly extra keys"
+            else:
+                msg = None
+        if msg is not None:
+            ctx.show_error(msg, ErrorCode.incompatible_call, arg="self")
+    elif isinstance(self_value, DictIncompleteValue):
+        if varname is not None:
+            no_return_unless = Constraint(
+                varname,
+                ConstraintType.is_value_object,
+                True,
+                DictIncompleteValue(self_value.typ, []),
+            )
+            return ImplReturn(KnownValue(None), no_return_unless=no_return_unless)
+    return ImplReturn(KnownValue(None))
+
+
 def _unpack_iterable_of_pairs(
     val: Value, ctx: CanAssignContext
 ) -> Sequence[KVPair] | CanAssignError:
@@ -2213,6 +2250,12 @@ def get_default_argspecs() -> dict[object, Signature]:
             callable=dict.pop,
             impl=_dict_pop_impl,
             return_annotation=AnyValue(AnySource.inference),
+        ),
+        Signature.make(
+            [SigParameter("self", _POS_ONLY, annotation=TypedValue(dict))],
+            callable=dict.clear,
+            impl=_dict_clear_impl,
+            return_annotation=KnownValue(None),
         ),
         Signature.make(
             [
