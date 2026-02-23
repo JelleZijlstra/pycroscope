@@ -407,10 +407,8 @@ class TestImportFailureHandlingCodeSamples(TestNameCheckVisitorBase):
         MovieFunctional = TypedDict("MovieFunctional", {"name": str}, extra_items=bool)
 
         a: Movie = {"name": "Blade Runner", "year": 1982}  # E: incompatible_assignment
-        b: MovieFunctional = {
-            "name": "Blade Runner",
-            "year": 1982,
-        }  # E: incompatible_assignment
+        # E: incompatible_assignment
+        b: MovieFunctional = {"name": "Blade Runner", "year": 1982}
 
         class MovieNoExtra(TypedDict):
             name: str
@@ -422,9 +420,8 @@ class TestImportFailureHandlingCodeSamples(TestNameCheckVisitorBase):
 
         def unpack_extra(**kwargs: Unpack[MovieExtra]) -> None: ...
 
-        unpack_no_extra(
-            name="No Country for Old Men", year=2007
-        )  # E: incompatible_call
+        # E: incompatible_call
+        unpack_no_extra(name="No Country for Old Men", year=2007)
         unpack_extra(name="No Country for Old Men", year=2007)
 
 
