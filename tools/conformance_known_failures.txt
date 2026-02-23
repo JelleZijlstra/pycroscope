@@ -104,7 +104,5 @@ specialtypes_type
 tuples_type_compat
 tuples_type_form
 tuples_unpacked
-typeddicts_class_syntax
 typeddicts_readonly_inheritance
-typeddicts_readonly_update
 typeddicts_type_consistency

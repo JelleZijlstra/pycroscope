@@ -1936,33 +1936,35 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 self.visit_type_param_values(node.type_params)
             base_values = self._generic_visit_list(node.bases)
             keyword_values = [(kw, self.visit(kw.value)) for kw in node.keywords]
-            synthetic_typeddict = None
+            synthetic_typeddict = self._make_synthetic_typeddict_context(
+                node, base_values, keyword_values
+            )
             synthetic_class = None
-            if class_obj is None:
-                synthetic_typeddict = self._make_synthetic_typeddict_context(
-                    node, base_values, keyword_values
+            if synthetic_typeddict is not None:
+                self._validate_typeddict_class_syntax(node)
+            elif class_obj is None:
+                synthetic_class = SyntheticClassObjectValue(
+                    node.name,
+                    TypedValue(self._get_synthetic_class_fq_name(node)),
+                    base_classes=tuple(base_values),
                 )
-                if synthetic_typeddict is None:
-                    synthetic_class = SyntheticClassObjectValue(
-                        node.name,
-                        TypedValue(self._get_synthetic_class_fq_name(node)),
-                        base_classes=tuple(base_values),
-                    )
-                    if self._is_checking():
-                        # Bind the class name while checking its body so references
-                        # like "return C.attr" or string annotations mentioning C
-                        # resolve even when no runtime class object exists.
-                        self.scopes.set(node.name, synthetic_class, node, self.state)
+                if self._is_checking():
+                    # Bind the class name while checking its body so references
+                    # like "return C.attr" or string annotations mentioning C
+                    # resolve even when no runtime class object exists.
+                    self.scopes.set(node.name, synthetic_class, node, self.state)
             with override(self, "current_synthetic_typeddict", synthetic_typeddict):
                 value, class_scope_values = self._visit_class_and_get_value(
                     node, class_obj
                 )
             if synthetic_typeddict is not None:
-                value = SyntheticClassObjectValue(
-                    node.name,
-                    self._build_synthetic_typeddict_value(synthetic_typeddict, node),
-                    base_classes=tuple(base_values),
+                typeddict_value = self._build_synthetic_typeddict_value(
+                    synthetic_typeddict, node
                 )
+                if class_obj is None:
+                    value = SyntheticClassObjectValue(
+                        node.name, typeddict_value, base_classes=tuple(base_values)
+                    )
             elif synthetic_class is not None:
                 if class_scope_values is None:
                     value = synthetic_class
@@ -2079,6 +2081,24 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     )
                 explicit_extra_keys = extra_items_value
                 explicit_extra_keys_readonly = Qualifier.ReadOnly in qualifiers
+                continue
+            if keyword.arg == "metaclass":
+                self._show_error_if_checking(
+                    keyword,
+                    "TypedDict definitions cannot specify a metaclass",
+                    error_code=ErrorCode.invalid_annotation,
+                )
+            else:
+                if keyword.arg is None:
+                    message = "TypedDict definitions do not support **kwargs"
+                else:
+                    message = (
+                        f"Unexpected keyword argument {keyword.arg!r}"
+                        " in TypedDict definition"
+                    )
+                self._show_error_if_checking(
+                    keyword, message, error_code=ErrorCode.invalid_annotation
+                )
 
         if closed is False and inherited_extra_keys is not None:
             self._show_error_if_checking(
@@ -2142,6 +2162,15 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             extra_keys=extra_keys,
             extra_keys_readonly=extra_keys_readonly,
         )
+
+    def _validate_typeddict_class_syntax(self, node: ast.ClassDef) -> None:
+        for statement in node.body:
+            if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                self._show_error_if_checking(
+                    statement,
+                    "Methods are not allowed in TypedDict definitions",
+                    error_code=ErrorCode.invalid_annotation,
+                )
 
     @staticmethod
     def _is_typeddict_marker_base(base_value: Value) -> bool:
@@ -2448,7 +2477,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         if base.required and not override_entry.required:
             return False
         if isinstance(
-            has_relation(base.typ, override_entry.typ, Relation.ASSIGNABLE, self),
+            has_relation(base.typ, override_entry.typ, Relation.SUBTYPE, self),
             CanAssignError,
         ):
             return False

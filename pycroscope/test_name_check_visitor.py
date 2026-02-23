@@ -457,6 +457,30 @@ class TestImportFailureHandling:
 
 class TestImportFailureHandlingCodeSamples(TestNameCheckVisitorBase):
     @assert_passes(allow_import_failures=True)
+    def test_typeddict_class_syntax_after_import_failure(self):
+        boom = 1 / 0
+
+        from typing import TypedDict
+
+        class Movie(TypedDict):
+            director: "Person"
+
+        class Person(TypedDict):
+            name: str
+
+        class BadTypedDict1(TypedDict):
+            name: str
+
+            def method(self):  # E: invalid_annotation
+                pass
+
+        class BadTypedDict2(TypedDict, metaclass=type):  # E: invalid_annotation
+            name: str
+
+        class BadTypedDict3(TypedDict, other=True):  # E: invalid_annotation
+            name: str
+
+    @assert_passes(allow_import_failures=True)
     def test_typeddict_extra_items_and_unpack_after_import_failure(self):
         boom = 1 / 0
 
