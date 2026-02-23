@@ -1714,6 +1714,18 @@ _TYPEDDICT_OPTION_KEYWORDS = {"total", "closed", "extra_items"}
 _TYPEDDICT_UNKNOWN_RUNTIME = object()
 
 
+def _typeddict_option_value(ctx: CallContext, option_name: str) -> Value:
+    option_value = ctx.vars.get(option_name, _NO_ARG_SENTINEL)
+    if option_value is not _NO_ARG_SENTINEL:
+        return option_value
+    kwargs_value = ctx.vars.get("kwargs")
+    if isinstance(kwargs_value, TypedDictValue):
+        entry = kwargs_value.items.get(option_name)
+        if entry is not None:
+            return entry.typ
+    return _NO_ARG_SENTINEL
+
+
 def _typeddict_assignment_target_name(ctx: CallContext) -> str | None:
     if not isinstance(ctx.node, ast.Call):
         return None
@@ -1781,14 +1793,15 @@ def _typeddict_fields_from_keyword_args(value: Value) -> dict[str, object] | Non
 
 def _typeddict_runtime_options(ctx: CallContext) -> dict[str, object] | None:
     options: dict[str, object] = {}
-    total = _runtime_from_known_value(ctx.vars["total"])
+    total_value = _typeddict_option_value(ctx, "total")
+    if total_value is _NO_ARG_SENTINEL:
+        total_value = KnownValue(True)
+    total = _runtime_from_known_value(total_value)
     if not isinstance(total, bool):
         return None
     options["total"] = total
     for option_name in ("closed", "extra_items"):
-        if option_name not in ctx.vars:
-            continue
-        option_value = ctx.vars[option_name]
+        option_value = _typeddict_option_value(ctx, option_name)
         if option_value is _NO_ARG_SENTINEL:
             continue
         runtime_value = _runtime_from_known_value(option_value)
@@ -1823,6 +1836,92 @@ def _typeddict_runtime_value(
     except Exception:
         return None
     return KnownValue(typeddict_cls)
+
+
+def _typeddict_runtime_preserves_options(
+    ctx: CallContext, runtime_value: Value
+) -> bool:
+    if not isinstance(runtime_value, KnownValue):
+        return False
+    typeddict_cls = runtime_value.val
+    if not safe_isinstance(typeddict_cls, type):
+        return False
+    if _typeddict_option_value(
+        ctx, "extra_items"
+    ) is not _NO_ARG_SENTINEL and not hasattr_static(typeddict_cls, "__extra_items__"):
+        return False
+    if _typeddict_option_value(
+        ctx, "closed"
+    ) is not _NO_ARG_SENTINEL and not hasattr_static(typeddict_cls, "__closed__"):
+        return False
+    return True
+
+
+def _typeddict_synthetic_value(
+    ctx: CallContext, *, has_fields: bool, has_keyword_fields: bool
+) -> Value | None:
+    typename = replace_fallback(ctx.vars["typename"])
+    if not (isinstance(typename, KnownValue) and isinstance(typename.val, str)):
+        return None
+
+    total_var = replace_fallback(_typeddict_option_value(ctx, "total"))
+    if total_var is _NO_ARG_SENTINEL:
+        total_var = KnownValue(True)
+    total = (
+        total_var.val
+        if isinstance(total_var, KnownValue) and isinstance(total_var.val, bool)
+        else True
+    )
+    closed_var = replace_fallback(_typeddict_option_value(ctx, "closed"))
+    closed = (
+        closed_var.val
+        if isinstance(closed_var, KnownValue) and isinstance(closed_var.val, bool)
+        else False
+    )
+
+    extra_keys: Value | None = None
+    extra_items = replace_fallback(_typeddict_option_value(ctx, "extra_items"))
+    if extra_items is not _NO_ARG_SENTINEL:
+        extra_keys = type_from_value(
+            extra_items, ctx.visitor, ctx.ast_for_arg("extra_items")
+        )
+    elif closed:
+        extra_keys = NO_RETURN_VALUE
+
+    items: dict[str, TypedDictEntry] = {}
+    if has_fields:
+        fields = replace_fallback(ctx.vars["fields"])
+        if isinstance(fields, KnownValue) and isinstance(fields.val, dict):
+            for key, val in fields.val.items():
+                if not isinstance(key, str):
+                    continue
+                items[key] = TypedDictEntry(
+                    type_from_value(
+                        KnownValue(val), ctx.visitor, ctx.ast_for_arg("fields")
+                    ),
+                    required=total,
+                )
+        elif isinstance(fields, DictIncompleteValue):
+            for pair in fields.kv_pairs:
+                if pair.is_many:
+                    continue
+                for key in flatten_values(pair.key):
+                    if isinstance(key, KnownValue) and isinstance(key.val, str):
+                        items[key.val] = TypedDictEntry(
+                            type_from_value(
+                                pair.value, ctx.visitor, ctx.ast_for_arg("fields")
+                            ),
+                            required=total,
+                        )
+    elif has_keyword_fields and isinstance(ctx.vars["kwargs"], TypedDictValue):
+        for key, entry in ctx.vars["kwargs"].items.items():
+            if key in _TYPEDDICT_OPTION_KEYWORDS:
+                continue
+            items[key] = TypedDictEntry(entry.typ, required=total)
+
+    return SyntheticClassObjectValue(
+        typename.val, TypedDictValue(items, extra_keys=extra_keys)
+    )
 
 
 def _typeddict_impl(ctx: CallContext) -> Value:
@@ -1894,6 +1993,15 @@ def _typeddict_impl(ctx: CallContext) -> Value:
         runtime_value = _typeddict_runtime_value(
             ctx, has_fields=has_fields, has_keyword_fields=has_keyword_fields
         )
+        if runtime_value is not None and _typeddict_runtime_preserves_options(
+            ctx, runtime_value
+        ):
+            return runtime_value
+        synthetic_value = _typeddict_synthetic_value(
+            ctx, has_fields=has_fields, has_keyword_fields=has_keyword_fields
+        )
+        if synthetic_value is not None:
+            return synthetic_value
         if runtime_value is not None:
             return runtime_value
     return ctx.inferred_return_value
@@ -1946,96 +2054,6 @@ def _namedtuple_impl(ctx: CallContext) -> Value:
         )
 
     return AnyValue(AnySource.inference)
-
-
-def _known_kwargs_from_var_keyword(value: Value) -> dict[str, Value]:
-    kwargs: dict[str, Value] = {}
-    if isinstance(value, TypedDictValue):
-        for key, entry in value.items.items():
-            kwargs[key] = entry.typ
-        return kwargs
-    if isinstance(value, DictIncompleteValue):
-        for pair in value.kv_pairs:
-            if pair.is_many:
-                continue
-            for key in flatten_values(pair.key):
-                if isinstance(key, KnownValue) and isinstance(key.val, str):
-                    kwargs[key.val] = pair.value
-        return kwargs
-    return kwargs
-
-
-def _typeddict_impl(ctx: CallContext) -> Value:
-    typename = ctx.vars["typename"]
-    if not (isinstance(typename, KnownValue) and isinstance(typename.val, str)):
-        return AnyValue(AnySource.inference)
-
-    kwargs = _known_kwargs_from_var_keyword(ctx.vars["kwargs"])
-    total = True
-    if "total" in kwargs:
-        total_value = kwargs["total"]
-        if isinstance(total_value, KnownValue) and isinstance(total_value.val, bool):
-            total = total_value.val
-        else:
-            ctx.show_error('Argument to "total" must be a literal True or False')
-
-    closed = False
-    if "closed" in kwargs:
-        closed_value = kwargs["closed"]
-        if isinstance(closed_value, KnownValue) and isinstance(closed_value.val, bool):
-            closed = closed_value.val
-        else:
-            ctx.show_error('Argument to "closed" must be a literal True or False')
-
-    extra_keys: Value | None = None
-    extra_keys_readonly = False
-    if "extra_items" in kwargs:
-        extra_keys = type_from_value(
-            kwargs["extra_items"], ctx.visitor, ctx.ast_for_arg("kwargs")
-        )
-    elif closed:
-        extra_keys = NO_RETURN_VALUE
-
-    fields = ctx.vars["fields"]
-    items: dict[str, TypedDictEntry] = {}
-    if fields is _NO_ARG_SENTINEL:
-        fields_from_kwargs = {
-            key: val
-            for key, val in kwargs.items()
-            if key not in {"total", "closed", "extra_items"}
-        }
-        for key, val in fields_from_kwargs.items():
-            items[key] = TypedDictEntry(
-                type_from_value(val, ctx.visitor, ctx.ast_for_arg("kwargs")),
-                required=total,
-            )
-    elif isinstance(fields, KnownValue) and isinstance(fields.val, dict):
-        for key, val in fields.val.items():
-            if not isinstance(key, str):
-                continue
-            items[key] = TypedDictEntry(
-                type_from_value(
-                    KnownValue(val), ctx.visitor, ctx.ast_for_arg("fields")
-                ),
-                required=total,
-            )
-    elif isinstance(fields, DictIncompleteValue):
-        for pair in fields.kv_pairs:
-            if pair.is_many:
-                continue
-            for key in flatten_values(pair.key):
-                if isinstance(key, KnownValue) and isinstance(key.val, str):
-                    items[key.val] = TypedDictEntry(
-                        type_from_value(
-                            pair.value, ctx.visitor, ctx.ast_for_arg("fields")
-                        ),
-                        required=total,
-                    )
-
-    class_type = TypedDictValue(
-        items, extra_keys=extra_keys, extra_keys_readonly=extra_keys_readonly
-    )
-    return SyntheticClassObjectValue(typename.val, class_type)
 
 
 _POS_ONLY = ParameterKind.POSITIONAL_ONLY
@@ -2666,22 +2684,6 @@ def get_default_argspecs() -> dict[object, Signature]:
                 callable=namedtuple_func,
                 impl=_namedtuple_impl,
                 allow_call=True,
-            )
-            signatures.append(sig)
-        try:
-            typeddict_func = getattr(mod, "TypedDict")
-        except AttributeError:
-            pass
-        else:
-            sig = Signature.make(
-                [
-                    SigParameter("typename", _POS_ONLY, annotation=TypedValue(str)),
-                    SigParameter("fields", _POS_ONLY, default=_NO_ARG_SENTINEL),
-                    SigParameter("kwargs", ParameterKind.VAR_KEYWORD),
-                ],
-                return_annotation=TypedValue(type),
-                callable=typeddict_func,
-                impl=_typeddict_impl,
             )
             signatures.append(sig)
     return {sig.callable: sig for sig in signatures}
