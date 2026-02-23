@@ -480,7 +480,7 @@ def _typing_special_form_getitem_impl(ctx: CallContext) -> Value:
     if not isinstance(self_value, KnownValue):
         return AnyValue(AnySource.inference)
     parameters = ctx.vars["parameters"]
-    if ctx.node is not None and ctx.visitor.in_annotation:
+    if ctx.node is not None:
         if isinstance(parameters, SequenceValue):
             members = parameters.get_member_sequence()
             if members is not None:
