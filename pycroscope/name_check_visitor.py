@@ -1885,15 +1885,22 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     def _check_for_class_variable_redefinition(
         self, varname: str, node: ast.AST
     ) -> None:
-        if varname not in self.scopes.current_scope().variables:
+        current_scope = self.scopes.current_scope()
+        if varname not in current_scope.variables:
             return
 
-        # exclude cases where we do @<property>.setter
-        # use __dict__ rather than getattr because properties override __get__
-        if self.current_class is not None and isinstance(
-            self.current_class.__dict__.get(varname), property
-        ):
-            return
+        # Exclude cases where we do @<property>.setter. During synthetic class
+        # analysis current_class can be a string, so inspect the existing scope
+        # value directly rather than accessing current_class.__dict__.
+        existing_value = replace_fallback(current_scope.variables[varname])
+        for subval in flatten_values(existing_value):
+            if isinstance(subval, KnownValue) and isinstance(subval.val, property):
+                return
+            if (
+                isinstance(subval, (GenericValue, TypedValue))
+                and subval.typ is property
+            ):
+                return
 
         # allow augmenting an attribute
         if isinstance(self.current_statement, ast.AugAssign):

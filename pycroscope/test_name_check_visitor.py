@@ -430,6 +430,31 @@ class TestImportFailureHandlingCodeSamples(TestNameCheckVisitorBase):
         unpack_extra(name="No Country for Old Men", year=2007)
 
     @assert_passes(allow_import_failures=True)
+    def test_property_setter_in_synthetic_class_after_import_failure(self):
+        boom = 1 / 0
+
+        class C:
+            @property
+            def value(self) -> int:
+                return 1
+
+            @value.setter
+            def value(self, new_value: int) -> None:
+                pass
+
+    @assert_passes(allow_import_failures=True)
+    def test_zero_arg_super_in_synthetic_class_after_import_failure(self):
+        boom = 1 / 0
+
+        class Base:
+            def method(self) -> int:
+                return 1
+
+        class Child(Base):
+            def other(self) -> int:
+                return super().method()
+
+    @assert_passes(allow_import_failures=True)
     def test_overloaded_override_and_final_after_import_failure(self):
         from typing import final, overload, override
 
