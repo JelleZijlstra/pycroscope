@@ -81,6 +81,28 @@ class TestPatma(TestNameCheckVisitorBase):
         )
 
     @skip_before((3, 10))
+    def test_sequence_length_narrowing(self):
+        self.assert_passes(
+            """
+            from typing import TypeAlias
+            from typing_extensions import Unpack, assert_type
+
+            Input: TypeAlias = (
+                tuple[int] | tuple[str, str] | tuple[int, Unpack[tuple[str, ...]], int]
+            )
+
+            def capybara(val: Input) -> None:
+                match val:
+                    case (x,):
+                        assert_type(val, tuple[int])
+                    case (x, y):
+                        assert_type(val, tuple[str, str] | tuple[int, int])
+                    case (x, y, z):
+                        assert_type(val, tuple[int, str, int])
+            """
+        )
+
+    @skip_before((3, 10))
     def test_or(self):
         self.assert_passes(
             """

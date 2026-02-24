@@ -620,8 +620,10 @@ def _type_from_runtime(val: Any, ctx: Context) -> Value:
     elif hasattr(val, "__supertype__"):
         supertype = _type_from_runtime(val.__supertype__, ctx)
         return NewTypeValue(val.__name__, supertype, val)
-    elif is_typing_name(type(val), "TypeVar"):
-        tv = cast(TypeVar, val)
+    elif is_typing_name(type(val), "TypeVar") or is_typing_name(
+        type(val), "TypeVarTuple"
+    ):
+        tv = cast(TypeVarLike, val)
         return make_type_var_value(tv, ctx)
     elif is_instance_of_typing_name(val, "ParamSpec"):
         return InputSigValue(ParamSpecSig(val))
@@ -932,11 +934,17 @@ def _type_from_subscripted_value(
             ctx.show_error(f"Arguments to Literal[] must be literals, not {members}")
             return AnyValue(AnySource.error)
     elif _is_tuple(root):
-        if len(members) == 2 and members[1] == KnownValue(Ellipsis):
+        if (
+            len(members) == 2
+            and members[1] == KnownValue(Ellipsis)
+            and not _is_unpack_annotation_member(members[0])
+        ):
             return GenericValue(tuple, [_type_from_value(members[0], ctx)])
         elif len(members) == 1 and members[0] == KnownValue(()):
             return SequenceValue(tuple, [])
         else:
+            if any(member == KnownValue(Ellipsis) for member in members):
+                ctx.show_error("Ellipsis can be used only in tuple[T, ...]")
             exprs = [_annotation_expr_from_value(arg, ctx) for arg in members]
             return _make_sequence_value(tuple, exprs, ctx)
     elif root is typing.Optional:
@@ -1359,6 +1367,24 @@ def _is_tuple(typ: object) -> bool:
     return typ is tuple or is_typing_name(typ, "Tuple")
 
 
+def _is_unpack_annotation_member(member: Value) -> bool:
+    if isinstance(member, KnownValue):
+        origin = get_origin(member.val)
+        return is_typing_name(origin, "Unpack")
+    if isinstance(member, _SubscriptedValue):
+        return isinstance(member.root, KnownValue) and is_typing_name(
+            member.root.val, "Unpack"
+        )
+    return False
+
+
+def _is_unpack_runtime_arg(arg: object) -> bool:
+    origin = get_origin(arg)
+    return is_typing_name(origin, "Unpack") or (
+        isinstance(arg, GenericAlias) and getattr(arg, "__unpacked__", False)
+    )
+
+
 def _annotation_expr_of_origin_args(
     origin: object, args: Sequence[object], val: object, ctx: Context
 ) -> AnnotationExpr:
@@ -1397,11 +1423,17 @@ def _value_of_origin_args(
     elif _is_tuple(origin):
         if not args:
             return SequenceValue(tuple, [])
-        elif len(args) == 2 and args[1] is Ellipsis:
+        elif (
+            len(args) == 2
+            and args[1] is Ellipsis
+            and not _is_unpack_runtime_arg(args[0])
+        ):
             return GenericValue(tuple, [_type_from_runtime(args[0], ctx)])
         elif len(args) == 1 and args[0] == ():
             return SequenceValue(tuple, [])
         else:
+            if any(arg is Ellipsis for arg in args):
+                ctx.show_error("Ellipsis can be used only in tuple[T, ...]")
             exprs = [_annotation_expr_from_runtime(arg, ctx) for arg in args]
             return _make_sequence_value(tuple, exprs, ctx)
     elif is_union(origin):
@@ -1501,6 +1533,8 @@ def _make_sequence_value(
             pairs += elements
         else:
             pairs.append((False, val))
+    if typ is tuple and sum(is_many for is_many, _ in pairs) > 1:
+        ctx.show_error("Only one unbounded tuple can be used inside a tuple type")
     return SequenceValue(typ, pairs)
 
 
@@ -1509,6 +1543,8 @@ def _unpack_value(value: Value) -> Sequence[tuple[bool, Value]] | None:
         return value.members
     elif isinstance(value, GenericValue) and value.typ is tuple:
         return [(True, value.args[0])]
+    elif isinstance(value, TypeVarValue) and value.is_typevartuple:
+        return [(True, value)]
     elif isinstance(value, TypedValue) and value.typ is tuple:
         return [(True, AnyValue(AnySource.generic_argument))]
     return None

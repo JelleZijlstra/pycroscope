@@ -56,6 +56,7 @@ from unittest.mock import ANY
 
 import typeshed_client
 from typing_extensions import Protocol, is_typeddict
+from typing_extensions import Unpack as TypingExtensionsUnpack
 
 from pycroscope.input_sig import InputSigValue, ParamSpecSig
 
@@ -4171,6 +4172,10 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         values = []
         for i, elt in enumerate(elts):
             if isinstance(elt, _StarredValue):
+                if self.in_annotation and typ is tuple:
+                    unpacked = self._make_annotation_unpack_value(elt.value)
+                    values.append((False, unpacked))
+                    continue
                 if isinstance(elt.value, KnownValue) and isinstance(
                     elt.value.val, GenericAlias
                 ):
@@ -4223,6 +4228,21 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 values.append((False, elt))
 
         return SequenceValue.make_or_known(typ, values)
+
+    def _make_annotation_unpack_value(self, value: Value) -> Value:
+        value = replace_fallback(value)
+        if isinstance(value, KnownValue):
+            runtime_value = value.val
+        elif isinstance(value, TypedValue) and isinstance(value.typ, type):
+            runtime_value = value.typ
+        elif isinstance(value, AnyValue):
+            runtime_value = Any
+        else:
+            return AnyValue(AnySource.error)
+        try:
+            return KnownValue(TypingExtensionsUnpack[runtime_value])
+        except Exception:
+            return AnyValue(AnySource.error)
 
     # Operations
 
@@ -5924,10 +5944,14 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                         # Special case to avoid "Unrecognized annotation types.GenericAlias" later;
                         # ideally we'd be more precise.
                         if return_value == TypedValue(GenericAlias):
+                            if self.in_annotation:
+                                fallback_index = self._fallback_annotation_index(index)
+                            else:
+                                fallback_index = KnownValue(Any)
                             return_value = self.check_call(
                                 node.value,
                                 cgi,
-                                [Composite(KnownValue(Any))],
+                                [Composite(fallback_index)],
                                 allow_call=True,
                             )
 
@@ -5964,6 +5988,27 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 ErrorCode.unexpected_node,
             )
             return AnyValue(AnySource.error)
+
+    def _fallback_annotation_index(self, index: Value) -> KnownValue:
+        """Best-effort runtime index when annotation subscript inference is imprecise."""
+        if isinstance(index, KnownValue):
+            return index
+        if isinstance(index, AnyValue):
+            return KnownValue(Any)
+        if isinstance(index, SequenceValue) and index.typ is tuple:
+            members = index.get_member_sequence()
+            if members is None:
+                return KnownValue(Any)
+            concrete = []
+            for member in members:
+                if isinstance(member, KnownValue):
+                    concrete.append(member.val)
+                elif isinstance(member, AnyValue):
+                    concrete.append(Any)
+                else:
+                    return KnownValue(Any)
+            return KnownValue(tuple(concrete))
+        return KnownValue(Any)
 
     def _get_dunder(self, node: ast.AST, callee_val: Value, method_name: str) -> Value:
         if isinstance(callee_val, AnnotatedValue):

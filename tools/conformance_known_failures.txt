@@ -99,7 +99,4 @@ qualifiers_final_annotation
 qualifiers_final_decorator
 specialtypes_never
 specialtypes_type
-tuples_type_compat
-tuples_type_form
-tuples_unpacked
 typeddicts_type_consistency

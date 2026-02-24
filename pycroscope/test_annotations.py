@@ -2113,6 +2113,59 @@ class TestUnpack(TestNameCheckVisitorBase):
             """
         )
 
+    def test_invalid_tuple_ellipsis_forms(self):
+        self.assert_passes(
+            """
+            t1: tuple[int, int, ...]  # E: invalid_annotation
+            t2: tuple[...]  # E: invalid_annotation
+            t3: tuple[..., int]  # E: invalid_annotation
+            t4: tuple[int, ..., int]  # E: invalid_annotation
+            """
+        )
+
+    @skip_before((3, 11))
+    def test_invalid_tuple_ellipsis_forms_with_unpack(self):
+        self.assert_passes(
+            """
+            t1: tuple[*tuple[str], ...]  # E: invalid_annotation
+            t2: tuple[*tuple[str, ...], ...]  # E: invalid_annotation
+            """
+        )
+
+    @skip_before((3, 11))
+    def test_only_one_unbounded_unpack_in_tuple(self):
+        self.assert_passes(
+            """
+            from typing import TypeVarTuple, Unpack
+
+            Ts = TypeVarTuple("Ts")
+
+            t1: tuple[*tuple[str], *tuple[str]]
+            t2: tuple[*tuple[str, *tuple[str, ...]]]
+            t3: tuple[*tuple[str, ...], *tuple[int, ...]]  # E: invalid_annotation
+            t6: tuple[Unpack[tuple[str]], Unpack[tuple[str]]]
+            t7: tuple[Unpack[tuple[str, ...]], Unpack[tuple[int, ...]]]  # E: invalid_annotation
+
+            def capybara() -> None:
+                t4: tuple[*tuple[str], *Ts]
+                t5: tuple[*tuple[str, ...], *Ts]  # E: invalid_annotation
+            """
+        )
+
+    @assert_passes(allow_import_failures=True)
+    def test_unresolved_tuple_member_preserves_ellipsis(self):
+        from typing import Any
+
+        from missing_module import SomeType  # type: ignore
+        from typing_extensions import assert_type
+
+        def capybara(
+            x: tuple[SomeType, ...], y: tuple[Any, ...], z: tuple[SomeType]
+        ) -> None:
+            assert_type(x, tuple[Any, ...])
+            assert_type(y, tuple[Any, ...])
+            assert_type(z, tuple[Any])
+
 
 class TestMissinGenericParameters(TestNameCheckVisitorBase):
     @assert_passes()
