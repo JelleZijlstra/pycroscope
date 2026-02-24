@@ -14,6 +14,7 @@ from contextlib import AbstractContextManager, contextmanager
 from dataclasses import InitVar, dataclass, field
 
 from .analysis_lib import override
+from .annotations import type_from_runtime
 from .arg_spec import ArgSpecCache, GenericBases
 from .attributes import AttrContext, get_attribute
 from .extensions import get_overloads as get_runtime_overloads
@@ -352,6 +353,24 @@ class Checker:
     ) -> MaybeSignature:
         value = replace_fallback(value)
         if isinstance(value, KnownValue):
+            origin = safe_getattr(value.val, "__origin__", None)
+            args = safe_getattr(value.val, "__args__", None)
+            if isinstance(origin, type) and isinstance(args, tuple):
+                origin_argspec = self.arg_spec_cache.get_argspec(origin)
+                if origin_argspec is not None:
+                    type_params = self.arg_spec_cache.get_type_parameters(origin)
+                    arg_values = [
+                        type_from_runtime(arg, visitor=self, suppress_errors=True)
+                        for arg in args
+                    ]
+                    typevar_map = {
+                        param.typevar: arg
+                        for param, arg in zip(type_params, arg_values)
+                        if isinstance(param, TypeVarValue)
+                    }
+                    if typevar_map:
+                        return origin_argspec.substitute_typevars(typevar_map)
+                    return origin_argspec
             argspec = self.arg_spec_cache.get_argspec(value.val)
             if argspec is None:
                 if get_call_attribute is not None:

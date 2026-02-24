@@ -9,7 +9,7 @@ import inspect
 import sys
 import types
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import Enum
 from typing import Any, ClassVar
 
@@ -347,7 +347,9 @@ def _get_attribute_from_synthetic_class_inner(
     seen: set[int],
 ) -> Value:
     if ctx.attr in self_value.class_attributes:
-        return self_value.class_attributes[ctx.attr]
+        return _normalize_synthetic_class_attribute(
+            self_value.class_attributes[ctx.attr]
+        )
 
     for base in self_value.base_classes:
         result = _get_attribute_from_synthetic_base(base, self_value, ctx, seen=seen)
@@ -356,6 +358,30 @@ def _get_attribute_from_synthetic_class_inner(
 
     result, _ = ctx.get_attribute_from_typeshed_recursively(fq_name, on_class=True)
     return result
+
+
+def _normalize_synthetic_class_attribute(value: Value) -> Value:
+    # Decorated methods in synthetic classes are stored as the descriptor objects.
+    # Mirror runtime attribute lookup for staticmethod by exposing the wrapped function.
+    if isinstance(value, GenericValue) and value.typ is staticmethod and value.args:
+        wrapped = value.args[0]
+        from .input_sig import FullSignature, InputSigValue
+
+        if isinstance(wrapped, InputSigValue):
+            if isinstance(wrapped.input_sig, FullSignature):
+                return_annotation = (
+                    value.args[1]
+                    if len(value.args) > 1
+                    else wrapped.input_sig.sig.return_value
+                )
+                return CallableValue(
+                    replace(wrapped.input_sig.sig, return_value=return_annotation)
+                )
+            return AnyValue(AnySource.inference)
+        return wrapped
+    if isinstance(value, KnownValue) and isinstance(value.val, staticmethod):
+        return KnownValue(value.val.__func__)
+    return value
 
 
 def _get_attribute_from_synthetic_base(

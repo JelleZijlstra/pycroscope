@@ -509,6 +509,61 @@ class TestImportFailureHandlingCodeSamples(TestNameCheckVisitorBase):
         unpack_no_extra(name="No Country for Old Men", year=2007)
         unpack_extra(name="No Country for Old Men", year=2007)
 
+    @assert_passes(allow_import_failures=True)
+    def test_namedtuple_after_import_failure(self):
+        boom = 1 / 0
+
+        from typing import Generic, NamedTuple, TypeVar
+
+        from typing_extensions import assert_type
+
+        T = TypeVar("T")
+
+        class Point(NamedTuple):
+            x: int
+            y: int
+            units: str = "meters"
+
+        p = Point(1, 2)
+        assert_type(p, Point)
+        assert_type(p.x, int)
+        assert_type(p[2], str)
+        a, b, c = p
+        assert_type(a, int)
+        assert_type(c, str)
+        p[3]  # E: incompatible_call
+        p[-4]  # E: incompatible_call
+        Point(1)  # E: incompatible_call
+
+        class Point3(NamedTuple):
+            _y: int  # E: invalid_annotation
+
+        class Location(NamedTuple):
+            altitude: float = 0.0
+            latitude: float  # E: invalid_annotation
+
+        class Property(NamedTuple, Generic[T]):
+            name: str
+            value: T
+
+        pr = Property("", 3.4)
+        assert_type(pr, Property[float])
+        assert_type(pr[1], float)
+        assert_type(pr.value, float)
+        Property[str]("", 3.1)  # E: incompatible_argument
+
+        class PointWithName(Point):
+            name: str = ""
+
+        pn = PointWithName(1, 2, "")
+        assert_type(pn.name, str)
+
+        class BadPointWithName(Point):
+            x: int = 0  # E: incompatible_override
+
+        class Unit(NamedTuple, object):  # E: invalid_base
+            name: str
+
 
 class TestNameCheckVisitor(TestNameCheckVisitorBase):
     @assert_passes()

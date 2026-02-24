@@ -56,6 +56,7 @@ from .safe import (
 from .signature import (
     ANY_SIGNATURE,
     ELLIPSIS_PARAM,
+    CallContext,
     ConcreteSignature,
     Impl,
     MaybeSignature,
@@ -68,6 +69,7 @@ from .signature import (
 from .stacked_scopes import Composite, uniq_chain
 from .typeshed import TypeshedFinder
 from .value import (
+    UNINITIALIZED_VALUE,
     AnySource,
     AnyValue,
     CanAssignContext,
@@ -76,6 +78,7 @@ from .value import (
     GenericValue,
     KnownValue,
     KVPair,
+    MultiValuedValue,
     NewTypeValue,
     ParamSpecArgsValue,
     ParamSpecKwargsValue,
@@ -86,6 +89,8 @@ from .value import (
     TypeVarValue,
     Value,
     make_coro_type,
+    replace_fallback,
+    unite_values,
 )
 
 _GET_OVERLOADS = []
@@ -781,8 +786,15 @@ class ArgSpecCache:
                 return sig
             return bound_sig
 
-        allow_call = FunctionsSafeToCall.contains(obj, self.options) or (
-            safe_isinstance(obj, type) and safe_issubclass(obj, self.safe_bases)
+        is_namedtuple_class = self._is_namedtuple_class(obj)
+        disable_namedtuple_runtime_call = False
+        if is_namedtuple_class and safe_isinstance(obj, type):
+            disable_namedtuple_runtime_call = (
+                self._should_disable_runtime_call_for_namedtuple_class(obj)
+            )
+        allow_call = not disable_namedtuple_runtime_call and (
+            FunctionsSafeToCall.contains(obj, self.options)
+            or (safe_isinstance(obj, type) and safe_issubclass(obj, self.safe_bases))
         )
         if safe_isinstance(obj, (type, str)):
             type_params = self.get_type_parameters(obj)
@@ -871,6 +883,8 @@ class ArgSpecCache:
 
         if inspect.isclass(obj):
             obj = UnwrapClass.unwrap(obj, self.options)
+            if self._is_namedtuple_class(obj):
+                return self._namedtuple_constructor_signature(obj, type_params)
             override = ConstructorHooks.get_constructor(obj, self.options)
             is_dunder_new = False
             if isinstance(override, Signature):
@@ -978,8 +992,118 @@ class ArgSpecCache:
             # the argspec for some builtin methods (e.g., dict.__init__), and no way to detect
             # these with inspect, so just give up.
             return self._make_any_sig(obj)
-
         return None
+
+    @staticmethod
+    def _is_namedtuple_class(obj: object) -> bool:
+        return (
+            safe_isinstance(obj, type)
+            and safe_issubclass(obj, tuple)
+            and isinstance(safe_getattr(obj, "_fields", None), tuple)
+        )
+
+    @staticmethod
+    def _should_disable_runtime_call_for_namedtuple_class(obj: type) -> bool:
+        module_name = safe_getattr(obj, "__module__", None)
+        if isinstance(module_name, str) and module_name.startswith("pycroscope"):
+            return False
+        annotations = safe_getattr(obj, "__annotations__", None)
+        if isinstance(annotations, dict) and annotations:
+            return True
+        type_params = safe_getattr(obj, "__parameters__", ())
+        return bool(type_params)
+
+    def _namedtuple_constructor_signature(
+        self, obj: type, type_params: Sequence[Value]
+    ) -> Signature:
+        fields = tuple(getattr(obj, "_fields", ()))
+        annotations = getattr(obj, "__annotations__", {})
+        defaults = tuple(getattr(obj.__new__, "__defaults__", ()) or ())
+        first_default_idx = len(fields) - len(defaults)
+        defaults_by_field = {
+            field: default
+            for field, default in zip(fields[first_default_idx:], defaults)
+        }
+
+        params = []
+        field_annotations: dict[str, Value] = {}
+        for field in fields:
+            annotation = type_from_runtime(
+                annotations.get(field, typing.Any), ctx=self.default_context
+            )
+            field_annotations[field] = annotation
+            default: Value | None
+            field_default = defaults_by_field.get(field, UNINITIALIZED_VALUE)
+            default = (
+                None
+                if field_default is UNINITIALIZED_VALUE
+                else KnownValue(field_default)
+            )
+            params.append(
+                SigParameter(
+                    field,
+                    ParameterKind.POSITIONAL_OR_KEYWORD,
+                    annotation=annotation,
+                    default=default,
+                )
+            )
+
+        class_type_params = tuple(getattr(obj, "__parameters__", ()))
+        if class_type_params:
+            return_type = GenericValue(
+                obj,
+                [
+                    type_from_runtime(type_param, ctx=self.default_context)
+                    for type_param in class_type_params
+                ],
+            )
+        elif type_params:
+            return_type = GenericValue(obj, type_params)
+        else:
+            return_type = TypedValue(obj)
+
+        field_by_typevar: dict[object, str] = {}
+        for field, annotation in field_annotations.items():
+            if isinstance(annotation, TypeVarValue):
+                field_by_typevar[annotation.typevar] = field
+
+        impl: Impl | None = None
+        if class_type_params and field_by_typevar:
+
+            def infer_return_type(ctx: CallContext) -> Value:
+                inferred_args = []
+                for type_param in class_type_params:
+                    field = field_by_typevar.get(type_param)
+                    if field is None:
+                        inferred_args.append(AnyValue(AnySource.generic_argument))
+                        continue
+                    inferred_args.append(
+                        self._widen_namedtuple_typevar_arg(ctx.vars[field])
+                    )
+                return GenericValue(obj, inferred_args)
+
+            impl = infer_return_type
+
+        allow_call = not self._should_disable_runtime_call_for_namedtuple_class(obj)
+        return Signature.make(
+            params, return_type, callable=obj, allow_call=allow_call, impl=impl
+        )
+
+    def _widen_namedtuple_typevar_arg(self, value: Value) -> Value:
+        value = replace_fallback(value)
+        if isinstance(value, KnownValue):
+            return type_from_runtime(type(value.val), ctx=self.default_context)
+        if isinstance(value, GenericValue):
+            return value
+        if isinstance(value, TypedValue):
+            return value
+        if isinstance(value, AnyValue):
+            return value
+        if isinstance(value, MultiValuedValue):
+            return unite_values(
+                *[self._widen_namedtuple_typevar_arg(subval) for subval in value.vals]
+            )
+        return AnyValue(AnySource.generic_argument)
 
     def _maybe_make_overloaded_signature(
         self, overloads: Sequence[Callable[..., Any]], impl: Impl | None, is_asynq: bool

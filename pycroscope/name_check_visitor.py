@@ -1940,6 +1940,18 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             synthetic_typeddict = self._make_synthetic_typeddict_context(
                 node, base_values, keyword_values
             )
+            fallback_runtime_class: type | None = None
+            if (
+                class_obj is None
+                and synthetic_typeddict is None
+                and self._is_checking()
+                and not node.keywords
+            ):
+                fallback_runtime_class = self._make_namedtuple_related_fallback_class(
+                    node, base_values
+                )
+                if fallback_runtime_class is not None:
+                    class_obj = fallback_runtime_class
             synthetic_class = None
             if synthetic_typeddict is not None:
                 self._validate_typeddict_class_syntax(node)
@@ -1957,6 +1969,10 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             with override(self, "current_synthetic_typeddict", synthetic_typeddict):
                 value, class_scope_values = self._visit_class_and_get_value(
                     node, class_obj
+                )
+            if fallback_runtime_class is not None and class_scope_values is not None:
+                self._populate_fallback_runtime_class(
+                    fallback_runtime_class, class_scope_values
                 )
             if synthetic_typeddict is not None:
                 typeddict_value = self._build_synthetic_typeddict_value(
@@ -2179,6 +2195,12 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             base_value.val, "TypedDict"
         )
 
+    @staticmethod
+    def _is_namedtuple_marker_base(base_value: Value) -> bool:
+        return isinstance(base_value, KnownValue) and is_typing_name(
+            base_value.val, "NamedTuple"
+        )
+
     def _is_typeddict_generic_base(self, base_value: Value) -> bool:
         if isinstance(base_value, MultiValuedValue):
             return all(
@@ -2188,6 +2210,191 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             origin = safe_getattr(base_value.val, "__origin__", None)
             return origin is not None and is_typing_name(origin, "Generic")
         return False
+
+    def _is_namedtuple_generic_base(self, base_value: Value) -> bool:
+        if isinstance(base_value, MultiValuedValue):
+            return all(
+                self._is_namedtuple_generic_base(subval) for subval in base_value.vals
+            )
+        if isinstance(base_value, GenericValue):
+            return is_typing_name(base_value.typ, "Generic")
+        if isinstance(base_value, KnownValue):
+            origin = safe_getattr(base_value.val, "__origin__", None)
+            return origin is not None and is_typing_name(origin, "Generic")
+        return False
+
+    def _make_namedtuple_related_fallback_class(
+        self, node: ast.ClassDef, base_values: Sequence[Value]
+    ) -> type | None:
+        has_namedtuple_marker_base = False
+        runtime_bases: list[object] = []
+        namedtuple_base_fields: set[str] = set()
+        invalid_non_generic_bases: list[ast.expr] = []
+        for base_node, base_value in zip(node.bases, base_values):
+            if self._is_namedtuple_marker_base(base_value):
+                has_namedtuple_marker_base = True
+                runtime_bases.append(typing.NamedTuple)
+                continue
+            base = replace_fallback(base_value)
+            if isinstance(base, KnownValue):
+                runtime_base = base.val
+            else:
+                runtime_base = self._runtime_annotation_from_value(base_value)
+                if runtime_base is typing.Any:
+                    return None
+            if isinstance(runtime_base, type) and self._is_namedtuple_class(
+                runtime_base
+            ):
+                namedtuple_base_fields.update(runtime_base._fields)
+            if has_namedtuple_marker_base and not self._is_namedtuple_generic_base(
+                base_value
+            ):
+                invalid_non_generic_bases.append(base_node)
+            runtime_bases.append(runtime_base)
+
+        if not has_namedtuple_marker_base and not namedtuple_base_fields:
+            return None
+
+        if invalid_non_generic_bases:
+            for base_node in invalid_non_generic_bases:
+                self._show_error_if_checking(
+                    base_node,
+                    "NamedTuple classes may only inherit from NamedTuple and Generic",
+                    error_code=ErrorCode.invalid_base,
+                )
+            return None
+
+        annotations: dict[str, object] = {}
+        defaults: dict[str, object] = {}
+        saw_default = False
+        has_namedtuple_field_error = False
+        for statement in node.body:
+            if not (
+                isinstance(statement, ast.AnnAssign)
+                and isinstance(statement.target, ast.Name)
+                and statement.simple
+            ):
+                continue
+            field_name = statement.target.id
+            annotation_expr = annotation_expr_from_ast(
+                statement.annotation, visitor=self
+            )
+            field_type, _ = annotation_expr.unqualify(
+                {
+                    Qualifier.ClassVar,
+                    Qualifier.InitVar,
+                    Qualifier.ReadOnly,
+                    Qualifier.Required,
+                    Qualifier.NotRequired,
+                },
+                mutually_exclusive_qualifiers=(
+                    (Qualifier.Required, Qualifier.NotRequired),
+                ),
+            )
+            annotations[field_name] = self._runtime_annotation_from_value(field_type)
+            if statement.value is not None:
+                defaults[field_name] = self._runtime_default_from_expr(statement.value)
+
+            if has_namedtuple_marker_base:
+                if field_name.startswith("_"):
+                    has_namedtuple_field_error = True
+                    self._show_error_if_checking(
+                        statement.target,
+                        "NamedTuple field names cannot start with an underscore",
+                        error_code=ErrorCode.invalid_annotation,
+                    )
+                has_default = statement.value is not None
+                if saw_default and not has_default:
+                    has_namedtuple_field_error = True
+                    self._show_error_if_checking(
+                        statement,
+                        "NamedTuple fields without defaults cannot follow fields with defaults",
+                        error_code=ErrorCode.invalid_annotation,
+                    )
+                saw_default = saw_default or has_default
+            elif field_name in namedtuple_base_fields:
+                self._show_error_if_checking(
+                    statement.target,
+                    f"Field {field_name!r} conflicts with base NamedTuple field",
+                    error_code=ErrorCode.incompatible_override,
+                )
+
+        if has_namedtuple_marker_base and has_namedtuple_field_error:
+            return None
+
+        module_name = self.module.__name__ if self.module is not None else self.filename
+        qualname = self._get_class_qualname_from_name(node.name)
+
+        def exec_body(ns: dict[str, object]) -> None:
+            ns["__module__"] = module_name
+            ns["__qualname__"] = qualname
+            if annotations:
+                ns["__annotations__"] = annotations
+            ns.update(defaults)
+
+        try:
+            return types.new_class(node.name, tuple(runtime_bases), {}, exec_body)
+        except Exception:
+            self.log(logging.INFO, "unable to synthesize runtime class", node.name)
+            return None
+
+    def _runtime_annotation_from_value(self, value: Value) -> object:
+        if isinstance(value, AnnotatedValue):
+            return self._runtime_annotation_from_value(value.value)
+        if isinstance(value, TypeVarValue):
+            return value.typevar
+        if isinstance(value, KnownValue):
+            return value.val
+        if isinstance(value, GenericValue):
+            if isinstance(value.typ, str):
+                return typing.Any
+            runtime_args = tuple(
+                self._runtime_annotation_from_value(arg) for arg in value.args
+            )
+            runtime_typ: Any = value.typ
+            try:
+                if len(runtime_args) == 1:
+                    return runtime_typ[runtime_args[0]]
+                return runtime_typ[runtime_args]
+            except Exception:
+                return typing.Any
+        if isinstance(value, TypedValue):
+            return value.typ if not isinstance(value.typ, str) else typing.Any
+        if isinstance(value, MultiValuedValue):
+            runtime_members = [
+                self._runtime_annotation_from_value(subval) for subval in value.vals
+            ]
+            if not runtime_members:
+                return typing.Any
+            result = runtime_members[0]
+            for member in runtime_members[1:]:
+                try:
+                    runtime_result: Any = result
+                    result = runtime_result | member
+                except Exception:
+                    return typing.Any
+            return result
+        return typing.Any
+
+    def _runtime_default_from_expr(self, expr: ast.expr) -> object:
+        value = self.visit(expr)
+        if isinstance(value, KnownValue):
+            return value.val
+        return object()
+
+    @staticmethod
+    def _populate_fallback_runtime_class(
+        runtime_class: type, class_scope_values: Mapping[str, Value]
+    ) -> None:
+        for name, value in class_scope_values.items():
+            if name.startswith("%") or name in runtime_class.__dict__:
+                continue
+            if not isinstance(value, KnownValue):
+                continue
+            try:
+                setattr(runtime_class, name, value.val)
+            except Exception:
+                continue
 
     def _typed_dict_base_value(
         self, base_value: Value, base_node: ast.AST
@@ -2274,6 +2481,12 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         else:
             module_name = self.filename
 
+        qualname = self._get_class_qualname_from_name(name)
+        if module_name:
+            return ".".join((module_name, qualname))
+        return qualname
+
+    def _get_class_qualname_from_name(self, name: str) -> str:
         qualname_parts = []
         for context in self.node_context.contexts:
             if isinstance(context, (ast.FunctionDef, ast.AsyncFunctionDef)):
@@ -2284,9 +2497,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 qualname_parts.append(context.name)
         if not qualname_parts or qualname_parts[-1] != name:
             qualname_parts.append(name)
-
-        if module_name:
-            return ".".join((module_name, *qualname_parts))
         return ".".join(qualname_parts)
 
     def _visit_class_and_get_value(
@@ -6565,7 +6775,11 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             if local is not None:
                 return_value = local
 
-        if allow_call and isinstance(callee_wrapped, KnownValue):
+        if (
+            allow_call
+            and isinstance(callee_wrapped, KnownValue)
+            and self._should_perform_runtime_call(callee_wrapped)
+        ):
             arg_values = [arg.value for arg in args]
             kw_values = [(kw, composite.value) for kw, composite in keywords]
             if self._can_perform_call(arg_values, kw_values):
@@ -6628,6 +6842,25 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             isinstance(value, type)
             and safe_issubclass(value, tuple)
             and isinstance(safe_getattr(value, "_fields", None), tuple)
+        )
+
+    @staticmethod
+    def _should_disable_runtime_call_for_namedtuple_class(value: type) -> bool:
+        module_name = safe_getattr(value, "__module__", None)
+        if isinstance(module_name, str) and module_name.startswith("pycroscope"):
+            return False
+        annotations = safe_getattr(value, "__annotations__", None)
+        if isinstance(annotations, dict) and annotations:
+            return True
+        type_params = safe_getattr(value, "__parameters__", ())
+        return bool(type_params)
+
+    def _should_perform_runtime_call(self, callee: KnownValue) -> bool:
+        callee_obj = callee.val
+        return not (
+            isinstance(callee_obj, type)
+            and self._is_namedtuple_class(callee_obj)
+            and self._should_disable_runtime_call_for_namedtuple_class(callee_obj)
         )
 
     def _is_namedtuple_factory(self, value: Value) -> bool:
