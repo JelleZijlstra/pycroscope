@@ -2047,6 +2047,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 if fallback_runtime_class is not None:
                     class_obj = fallback_runtime_class
             synthetic_class = None
+            synthetic_fq_name: str | None = None
             class_scope_object: type | str | None = class_obj
             if synthetic_typeddict is not None:
                 self._validate_typeddict_class_syntax(node)
@@ -2098,7 +2099,8 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     synthetic_class.class_attributes.clear()
                     synthetic_class.class_attributes.update(class_attributes)
                     value = synthetic_class
-                self._synthetic_classes_by_name[synthetic_fq_name] = synthetic_class
+                if synthetic_fq_name is not None:
+                    self._synthetic_classes_by_name[synthetic_fq_name] = synthetic_class
         value_to_store: Value | None = value
         if (
             class_obj is None
@@ -3417,12 +3419,11 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 error_code=ErrorCode.invalid_annotation,
             )
 
+        class_scope_object = pending_block.scope.scope_object
         in_protocol_class = (
             pending_block.scope.scope_type is ScopeType.class_scope
-            and pending_block.scope.scope_object is not None
-            and self.checker.make_type_object(
-                pending_block.scope.scope_object
-            ).is_protocol
+            and isinstance(class_scope_object, (type, str))
+            and self.checker.make_type_object(class_scope_object).is_protocol
         )
         needs_implementation = (
             not self.filename.endswith(".pyi")
@@ -3524,11 +3525,13 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             should_check_consistency = False
 
         representative_node = impl_node if impl_node is not None else overloads[0].node
-        class_context = (
-            pending_block.scope.scope_object
-            if pending_block.scope.scope_type is ScopeType.class_scope
-            else None
-        )
+        class_context: type | str | None
+        if pending_block.scope.scope_type is ScopeType.class_scope and isinstance(
+            pending_block.scope.scope_object, (type, str)
+        ):
+            class_context = pending_block.scope.scope_object
+        else:
+            class_context = None
         if effective_is_override:
             if class_context is None:
                 self._show_error_if_checking(
