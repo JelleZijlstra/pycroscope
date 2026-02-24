@@ -26,7 +26,7 @@ import traceback
 import types
 import typing
 from abc import abstractmethod
-from argparse import ArgumentParser
+from argparse import SUPPRESS, ArgumentParser
 from collections.abc import (
     Callable,
     Container,
@@ -498,6 +498,31 @@ class UnionSimplificationLimit(IntegerOption):
 
     default_value = 100
     name = "union_simplification_limit"
+
+
+class OutputFormatOption(ConfigOption[node_visitor.OutputFormat]):
+    """Output format for reported errors (`\"detailed\"` or `\"concise\"`)."""
+
+    default_value = "detailed"
+    name = "output_format"
+
+    @classmethod
+    def parse(cls, data: object, source_path: Path) -> node_visitor.OutputFormat:
+        if data == "concise":
+            return "concise"
+        if data == "detailed":
+            return "detailed"
+        raise InvalidConfigOption.from_parser(cls, "'concise' or 'detailed'", data)
+
+    @classmethod
+    def create_command_line_option(cls, parser: ArgumentParser) -> None:
+        parser.add_argument(
+            "--output-format",
+            choices=["concise", "detailed"],
+            default=SUPPRESS,
+            help=cls.__doc__,
+            action="store",
+        )
 
 
 class DisallowCallsToDunders(StringSequenceOption):
@@ -1230,7 +1255,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         add_ignores: bool = False,
         checker: Checker,
         is_code_only: bool = False,
-        output_format: node_visitor.OutputFormat = "detailed",
     ) -> None:
         super().__init__(
             filename,
@@ -1241,7 +1265,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             verbosity=verbosity,
             add_ignores=add_ignores,
             is_code_only=is_code_only,
-            output_format=output_format,
         )
         self.checker = checker
 
@@ -1277,6 +1300,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         if self.module is not None and hasattr(self.module, "__name__"):
             module_path = tuple(self.module.__name__.split("."))
             self.options = checker.options.for_module(module_path)
+        self.output_format = self.options.get_value_for(OutputFormatOption)
 
         # Data storage objects
         self.unused_finder = unused_finder
