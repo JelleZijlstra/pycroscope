@@ -69,6 +69,16 @@ _ROLE_NAME_TO_MYST_ROLE = {
     "obj": "py:obj",
     "term": "term",
 }
+_LINKABLE_INTERNAL_PREFIXES = (
+    "pycroscope.annotations.",
+    "pycroscope.ast_annotator.",
+    "pycroscope.extensions.",
+    "pycroscope.name_check_visitor.",
+    "pycroscope.runtime.",
+    "pycroscope.signature.",
+    "pycroscope.stacked_scopes.",
+    "pycroscope.value.",
+)
 
 
 def _format_docstring_for_configuration_docs(docstring: str) -> str:
@@ -80,6 +90,13 @@ def _format_docstring_for_configuration_docs(docstring: str) -> str:
         myst_role = _ROLE_NAME_TO_MYST_ROLE.get(role_name)
         if myst_role is None:
             return f"`{target}`"
+        if role_name != "term":
+            if "." not in target:
+                return f"`{target}`"
+            if target.startswith("pycroscope.") and not target.startswith(
+                _LINKABLE_INTERNAL_PREFIXES
+            ):
+                return f"`{target}`"
         return f"{{{myst_role}}}`{target}`"
 
     return _ROLE_REFERENCE_RE.sub(replace_role_reference, description)
