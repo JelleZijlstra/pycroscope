@@ -402,6 +402,8 @@ class Checker:
         get_return_override: Callable[[MaybeSignature], Value | None] = lambda _: None,
         get_call_attribute: Callable[[Value], Value] | None = None,
     ) -> MaybeSignature:
+        if value is UNINITIALIZED_VALUE:
+            return None
         value = replace_fallback(value)
         if isinstance(value, KnownValue):
             origin = safe_getattr(value.val, "__origin__", None)
