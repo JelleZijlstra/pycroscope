@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Improve enum analysis in import-failure fallback mode by preserving enum-member semantics for synthetic classes, validating declared enum `_value_` types, and avoiding false `unsafe_comparison` errors for enum identity checks.
 - Improve overload checks in import-failure fallback mode by preserving synthetic base-class relationships for override/final validation, fixing false `override_does_not_override` reports and missed final-method override errors.
 - Fix internal errors in static fallback analysis for unimportable modules involving zero-argument `super()` and property setters in synthetic classes.
 - Improve qualifier checking by rejecting calls to `Annotated` aliases, enforcing `Final` rules more consistently (including decorator semantics and class-member initialization), and preserving these checks when modules cannot be imported.

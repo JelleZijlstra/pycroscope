@@ -50,6 +50,7 @@ from .value import (
     Qualifier,
     SubclassValue,
     SyntheticClassObjectValue,
+    SyntheticEnumMember,
     SyntheticModuleValue,
     TypedDictValue,
     TypedValue,
@@ -60,6 +61,8 @@ from .value import (
     annotate_value,
     replace_fallback,
     set_self,
+    stringify_object,
+    unite_values,
 )
 
 # these don't appear to be in the standard types module
@@ -169,8 +172,11 @@ def get_attribute(ctx: AttrContext) -> Value:
                 root_value.class_type.typ, root_value, ctx
             )
         else:
-            attribute_value = _get_attribute_from_subclass(
-                root_value.class_type.typ, root_value, ctx
+            attribute_value = _get_attribute_from_synthetic_class(
+                stringify_object(root_value.class_type.typ),
+                root_value,
+                ctx,
+                runtime_type=root_value.class_type.typ,
             )
     else:
         assert_never(root_value)
@@ -352,7 +358,7 @@ def _get_attribute_from_synthetic_type_bases(
 
 
 def _get_attribute_from_synthetic_class(
-    fq_name: str, self_value: Value, ctx: AttrContext
+    fq_name: str, self_value: Value, ctx: AttrContext, runtime_type: type | None = None
 ) -> Value:
     # First check values that are special in Python.
     if ctx.attr == "__class__":
@@ -361,7 +367,7 @@ def _get_attribute_from_synthetic_class(
         return TypedValue(dict)
     assert isinstance(self_value, SyntheticClassObjectValue)
     result = _get_attribute_from_synthetic_class_inner(
-        fq_name, self_value, ctx, seen={id(self_value)}
+        fq_name, self_value, ctx, seen={id(self_value)}, runtime_type=runtime_type
     )
     if result is UNINITIALIZED_VALUE:
         if _synthetic_class_has_any_base(self_value):
@@ -377,11 +383,21 @@ def _get_attribute_from_synthetic_class_inner(
     ctx: AttrContext,
     *,
     seen: set[int],
+    runtime_type: type | None = None,
 ) -> Value:
-    if ctx.attr in self_value.class_attributes:
-        return _normalize_synthetic_class_attribute(
-            self_value.class_attributes[ctx.attr]
+    attr_name = ctx.attr
+    if attr_name not in self_value.class_attributes:
+        mangled = _maybe_mangle_private_name(attr_name, self_value.name)
+        if mangled is not None and mangled in self_value.class_attributes:
+            attr_name = mangled
+
+    if attr_name in self_value.class_attributes:
+        result = _normalize_synthetic_class_attribute(
+            self_value.class_attributes[attr_name]
         )
+        if _should_deliteralize_synthetic_enum_attr(self_value, attr_name):
+            return _deliteralize_value(result)
+        return result
 
     for base in self_value.base_classes:
         result = _get_attribute_from_synthetic_base(base, self_value, ctx, seen=seen)
@@ -389,6 +405,10 @@ def _get_attribute_from_synthetic_class_inner(
             return result
 
     result, _ = ctx.get_attribute_from_typeshed_recursively(fq_name, on_class=True)
+    if result is not UNINITIALIZED_VALUE:
+        return result
+    if runtime_type is not None:
+        return _get_attribute_from_subclass(runtime_type, self_value.class_type, ctx)
     return result
 
 
@@ -413,6 +433,35 @@ def _normalize_synthetic_class_attribute(value: Value) -> Value:
         return wrapped
     if isinstance(value, KnownValue) and isinstance(value.val, staticmethod):
         return KnownValue(value.val.__func__)
+    return value
+
+
+def _maybe_mangle_private_name(attr_name: str, class_name: str) -> str | None:
+    if not attr_name.startswith("__") or attr_name.endswith("__"):
+        return None
+    return f"_{class_name}{attr_name}"
+
+
+def _should_deliteralize_synthetic_enum_attr(
+    self_value: SyntheticClassObjectValue, attr_name: str
+) -> bool:
+    class_type = self_value.class_type
+    if not isinstance(class_type, TypedValue) or not isinstance(class_type.typ, type):
+        return False
+    if not safe_issubclass(class_type.typ, Enum):
+        return False
+    try:
+        return attr_name not in class_type.typ.__members__
+    except Exception:
+        return False
+
+
+def _deliteralize_value(value: Value) -> Value:
+    value = replace_fallback(value)
+    if isinstance(value, KnownValue):
+        if isinstance(value.val, SyntheticEnumMember):
+            return value
+        return TypedValue(type(value.val))
     return value
 
 
@@ -500,9 +549,32 @@ def _get_attribute_from_typed(
         result = _unwrap_value_from_typed(result, typ, ctx)
     ctx.record_usage(typ, result)
     result = set_self(result, ctx.root_value)
+    if ctx.attr in {"value", "_value_"} and safe_issubclass(typ, Enum):
+        enum_value_type = _enum_member_value_type(typ)
+        if enum_value_type is not None:
+            return enum_value_type
     if ctx.attr == "name" and safe_issubclass(typ, Enum) and result == TypedValue(str):
         return annotate_value(result, [CustomCheckExtension(EnumName(typ))])
     return result
+
+
+def _enum_member_value_type(typ: type[Enum]) -> Value | None:
+    values: list[Value] = []
+    try:
+        members = list(typ)
+    except Exception:
+        return None
+    for member in members:
+        if isinstance(member, SyntheticEnumMember):
+            values.append(KnownValue(member.value))
+            continue
+        try:
+            values.append(KnownValue(member.value))
+        except Exception:
+            return None
+    if not values:
+        return None
+    return unite_values(*values)
 
 
 def _substitute_typevars(

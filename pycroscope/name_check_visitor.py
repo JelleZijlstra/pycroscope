@@ -1133,6 +1133,12 @@ class _PendingOverloadBlock:
     overloads: list[_PendingOverload] = dataclass_field(default_factory=list)
 
 
+@dataclass
+class _EnumMemberTracker:
+    by_value: dict[object, str] = dataclass_field(default_factory=dict)
+    by_name: dict[str, object] = dataclass_field(default_factory=dict)
+
+
 @used  # exposed as an API
 class CallSiteCollector:
     """Class to record function calls with their origin."""
@@ -1175,7 +1181,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     collector: CallSiteCollector | None
     current_class: type | str | None
     current_class_key: type | str | None
-    current_enum_members: dict[object, str] | None
+    current_enum_members: _EnumMemberTracker | None
     current_function: object | None
     current_function_info: FunctionInfo | None
     current_function_name: str | None
@@ -1203,6 +1209,8 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     final_member_names_by_class: dict[type | str, set[str]]
     final_members_initialized_in_init: dict[type | str, set[str]]
     final_members_requiring_init: dict[type | str, dict[str, ast.AST]]
+    enum_class_keys: set[type | str]
+    enum_value_type_by_class: dict[type | str, Value]
     yield_checker: YieldChecker
 
     def __init__(
@@ -1321,6 +1329,8 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         self.final_member_names_by_class = {}
         self.final_members_initialized_in_init = {}
         self.final_members_requiring_init = {}
+        self.enum_class_keys = set()
+        self.enum_value_type_by_class = {}
         self._fill_method_cache()
 
     def get_local_return_value(self, sig: MaybeSignature) -> Value | None:
@@ -1700,6 +1710,20 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         if value is None:
             return AnyValue(AnySource.inference), EMPTY_ORIGIN
         origin = current_scope.set(varname, value, lookup_node, self.state)
+        if scope_type == ScopeType.class_scope and isinstance(self.current_class, str):
+            synthetic_class = self._synthetic_classes_by_name.get(self.current_class)
+            if synthetic_class is not None:
+                synthetic_name = varname
+                synthetic_value = value
+                if self._is_enum_class_key(self.current_class):
+                    class_name = self._current_class_name_from_context()
+                    if class_name is not None:
+                        mangled = self._mangle_private_enum_name(class_name, varname)
+                        if mangled is not None:
+                            synthetic_name = mangled
+                            if isinstance(synthetic_value, KnownValue):
+                                synthetic_value = TypedValue(type(synthetic_value.val))
+                synthetic_class.class_attributes[synthetic_name] = synthetic_value
         return value, origin
 
     def _get_base_class_attributes(
@@ -1797,14 +1821,19 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             return
         if varname.startswith("__") and not varname.endswith("__"):
             return
-        for base_class, base_value in self._get_base_class_attributes(varname, node):
+        base_attributes = list(self._get_base_class_attributes(varname, node))
+        saw_final_member = False
+        for base_class, base_value in base_attributes:
             if self._is_final_member(base_class, varname, base_value):
+                saw_final_member = True
                 self._show_error_if_checking(
                     node,
                     f"Cannot override final attribute {varname}",
                     ErrorCode.invalid_annotation,
                 )
-                continue
+        if saw_final_member:
+            return
+        for base_class, base_value in base_attributes:
             can_assign = self._can_assign_to_base(base_value, value, base_class, node)
             if isinstance(can_assign, CanAssignError):
                 error = CanAssignError(
@@ -1951,6 +1980,14 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         if isinstance(self.current_statement, ast.AugAssign):
             return
 
+        if isinstance(self.current_statement, ast.ClassDef):
+            for subval in flatten_values(existing_value):
+                if (
+                    isinstance(subval, SyntheticClassObjectValue)
+                    and subval.name == self.current_statement.name
+                ):
+                    return
+
         self.show_error(
             node,
             f"Name {varname} is already defined",
@@ -2045,10 +2082,53 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     def _is_read_ctx(self, ctx: ast.AST) -> bool:
         return isinstance(ctx, (ast.Load, ast.Del))
 
+    def _is_enum_class_key(self, class_key: type | str | None) -> bool:
+        if class_key is None:
+            return False
+        if class_key in self.enum_class_keys:
+            return True
+        if isinstance(class_key, type):
+            return safe_issubclass(class_key, enum.Enum)
+        return False
+
+    @staticmethod
+    def _is_enum_base_value(base_value: Value) -> bool:
+        base_value = replace_fallback(base_value)
+        if isinstance(base_value, SyntheticClassObjectValue):
+            class_type = base_value.class_type
+            if isinstance(class_type, TypedValue):
+                return NameCheckVisitor._is_enum_base_value(class_type)
+            return False
+        if isinstance(base_value, KnownValue):
+            return isinstance(base_value.val, type) and safe_issubclass(
+                base_value.val, enum.Enum
+            )
+        if isinstance(base_value, TypedValue):
+            return isinstance(base_value.typ, type) and safe_issubclass(
+                base_value.typ, enum.Enum
+            )
+        if isinstance(base_value, SubclassValue) and isinstance(
+            base_value.typ, TypedValue
+        ):
+            return isinstance(base_value.typ.typ, type) and safe_issubclass(
+                base_value.typ.typ, enum.Enum
+            )
+        if isinstance(base_value, MultiValuedValue):
+            return any(
+                NameCheckVisitor._is_enum_base_value(subval)
+                for subval in base_value.vals
+            )
+        return False
+
     @contextlib.contextmanager
     def _set_current_class(self, current_class: type | str | None) -> Iterator[None]:
-        if should_check_for_duplicate_values(current_class, self.options):
-            current_enum_members = {}
+        should_track_members = should_check_for_duplicate_values(
+            current_class, self.options
+        )
+        if not should_track_members and self._is_enum_class_key(current_class):
+            should_track_members = True
+        if should_track_members:
+            current_enum_members = _EnumMemberTracker()
         else:
             current_enum_members = None
         with (
@@ -2066,6 +2146,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             if class_obj is not None
             else self._get_synthetic_class_fq_name(node)
         )
+        self.enum_value_type_by_class.pop(class_key, None)
         if any(self._is_final_decorator_value(value) for value in decorator_values):
             self.final_class_keys.add(class_key)
         if sys.version_info >= (3, 12) and node.type_params:
@@ -2078,12 +2159,15 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             if sys.version_info >= (3, 12) and node.type_params:
                 self.visit_type_param_values(node.type_params)
             base_values = self._generic_visit_list(node.bases)
+            if any(self._is_enum_base_value(base) for base in base_values):
+                self.enum_class_keys.add(class_key)
             self._check_for_final_base_classes(node, base_values)
             keyword_values = [(kw, self.visit(kw.value)) for kw in node.keywords]
             synthetic_typeddict = self._make_synthetic_typeddict_context(
                 node, base_values, keyword_values
             )
             fallback_runtime_class: type | None = None
+            synthetic_enum_runtime_class: type | None = None
             if (
                 class_obj is None
                 and synthetic_typeddict is None
@@ -2098,7 +2182,10 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                         node, base_values
                     )
                 if fallback_runtime_class is not None:
-                    class_obj = fallback_runtime_class
+                    if safe_issubclass(fallback_runtime_class, enum.Enum):
+                        synthetic_enum_runtime_class = fallback_runtime_class
+                    else:
+                        class_obj = fallback_runtime_class
             synthetic_class = None
             synthetic_fq_name: str | None = None
             class_scope_object: type | str | None = class_obj
@@ -2106,15 +2193,21 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 self._validate_typeddict_class_syntax(node)
             elif class_obj is None:
                 synthetic_fq_name = self._get_synthetic_class_fq_name(node)
+                if synthetic_enum_runtime_class is not None:
+                    synthetic_class_type: TypedValue = TypedValue(
+                        synthetic_enum_runtime_class
+                    )
+                    class_scope_object = synthetic_enum_runtime_class
+                else:
+                    synthetic_class_type = TypedValue(synthetic_fq_name)
+                    class_scope_object = synthetic_fq_name
                 synthetic_class = SyntheticClassObjectValue(
-                    node.name,
-                    TypedValue(synthetic_fq_name),
-                    base_classes=tuple(base_values),
+                    node.name, synthetic_class_type, base_classes=tuple(base_values)
                 )
+                self._synthetic_classes_by_name[synthetic_fq_name] = synthetic_class
                 self.checker.register_synthetic_type_bases(
                     synthetic_fq_name, base_values
                 )
-                class_scope_object = synthetic_fq_name
                 if self._is_checking():
                     # Bind the class name while checking its body so references
                     # like "return C.attr" or string annotations mentioning C
@@ -2154,6 +2247,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     # of later synthetic classes) see the enriched attributes.
                     synthetic_class.class_attributes.clear()
                     synthetic_class.class_attributes.update(class_attributes)
+                    self._apply_synthetic_enum_semantics(
+                        node, synthetic_class, class_key
+                    )
                     value = synthetic_class
                 if synthetic_fq_name is not None:
                     self._synthetic_classes_by_name[synthetic_fq_name] = synthetic_class
@@ -2591,7 +2687,10 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 member_name = statement.targets[0].id
                 if member_name.startswith("_"):
                     continue
-                member_value = self.visit(statement.value)
+                with self.catch_errors() as errors:
+                    member_value = self.visit(statement.value)
+                if errors:
+                    return None
             elif isinstance(statement, ast.AnnAssign):
                 if (
                     not isinstance(statement.target, ast.Name)
@@ -2602,7 +2701,10 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 member_name = statement.target.id
                 if member_name.startswith("_"):
                     continue
-                member_value = self.visit(statement.value)
+                with self.catch_errors() as errors:
+                    member_value = self.visit(statement.value)
+                if errors:
+                    return None
             else:
                 return None
             if not isinstance(member_value, KnownValue):
@@ -2683,6 +2785,259 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 setattr(runtime_class, name, value.val)
             except Exception:
                 continue
+
+    def _apply_synthetic_enum_semantics(
+        self,
+        node: ast.ClassDef,
+        synthetic_class: SyntheticClassObjectValue,
+        class_key: type | str,
+    ) -> None:
+        if not self._is_enum_class_key(class_key):
+            return
+
+        class_attributes = synthetic_class.class_attributes
+        enum_value_type = self.enum_value_type_by_class.get(class_key)
+        ignore_names = self._enum_ignore_names(class_attributes.get("_ignore_"))
+        member_literal_values: dict[str, object] = {}
+        member_order: list[str] = []
+
+        for member_name, statement in self._iter_enum_assignment_candidates(node):
+            value = class_attributes.get(member_name, AnyValue(AnySource.inference))
+            unwrapped, forced_member, forced_nonmember = (
+                self._unwrap_enum_member_wrapper(value)
+            )
+
+            if member_name in ignore_names:
+                continue
+            if member_name.startswith("_"):
+                continue
+            if member_name.startswith("__") and not member_name.endswith("__"):
+                continue
+            if isinstance(statement, ast.AnnAssign) and statement.value is None:
+                continue
+            if forced_nonmember:
+                continue
+            if not forced_member and self._is_nonmember_enum_assignment_value(
+                unwrapped
+            ):
+                continue
+            if isinstance(statement, ast.AnnAssign):
+                self._show_error_if_checking(
+                    statement.target,
+                    "Enum members should not be explicitly annotated",
+                    error_code=ErrorCode.invalid_annotation,
+                )
+
+            if (
+                isinstance(statement, (ast.Assign, ast.AnnAssign))
+                and isinstance(statement.value, ast.Name)
+                and statement.value.id in member_literal_values
+            ):
+                literal_value = member_literal_values[statement.value.id]
+            else:
+                literal_value = self._runtime_object_for_enum_member(unwrapped)
+            if literal_value is Ellipsis:
+                literal_value = object()
+            member_literal_values[member_name] = literal_value
+            member_order.append(member_name)
+
+            if (
+                enum_value_type is not None
+                and isinstance(unwrapped, KnownValue)
+                and not isinstance(unwrapped.val, tuple)
+            ):
+                self._check_declared_enum_value_type(
+                    enum_value_type, unwrapped, statement
+                )
+
+        for attr_name in list(class_attributes):
+            mangled = self._mangle_private_enum_name(node.name, attr_name)
+            if mangled is None:
+                continue
+            class_attributes.setdefault(mangled, class_attributes[attr_name])
+            del class_attributes[attr_name]
+
+        runtime_enum = self._make_synthetic_enum_runtime_class(
+            node, synthetic_class.base_classes, member_literal_values, member_order
+        )
+        if runtime_enum is None:
+            return
+
+        object.__setattr__(synthetic_class, "class_type", TypedValue(runtime_enum))
+        for member_name in member_order:
+            try:
+                class_attributes[member_name] = KnownValue(
+                    getattr(runtime_enum, member_name)
+                )
+            except Exception:
+                continue
+
+    def _check_declared_enum_value_type(
+        self, expected_type: Value, actual_value: Value, node: ast.AST
+    ) -> None:
+        can_assign = has_relation(
+            expected_type, actual_value, Relation.ASSIGNABLE, self
+        )
+        if isinstance(can_assign, CanAssignError):
+            self._show_error_if_checking(
+                node,
+                f"Enum member value must be assignable to {expected_type}",
+                error_code=ErrorCode.invalid_annotation,
+                detail=can_assign.display(),
+            )
+
+    @staticmethod
+    def _mangle_private_enum_name(class_name: str, attr_name: str) -> str | None:
+        if not attr_name.startswith("__") or attr_name.endswith("__"):
+            return None
+        return f"_{class_name}{attr_name}"
+
+    @staticmethod
+    def _enum_ignore_names(value: Value | None) -> set[str]:
+        if value is None:
+            return set()
+        value = replace_fallback(value)
+        if isinstance(value, KnownValue):
+            if isinstance(value.val, str):
+                return set(value.val.split())
+            if isinstance(value.val, (list, tuple, set)):
+                return {elt for elt in value.val if isinstance(elt, str)}
+        return set()
+
+    @staticmethod
+    def _iter_enum_assignment_candidates(
+        node: ast.ClassDef,
+    ) -> Iterable[tuple[str, ast.AST]]:
+        for statement in node.body:
+            if isinstance(statement, ast.Assign):
+                for target in statement.targets:
+                    if isinstance(target, ast.Name):
+                        yield target.id, statement
+            elif isinstance(statement, ast.AnnAssign):
+                if isinstance(statement.target, ast.Name):
+                    yield statement.target.id, statement
+            elif isinstance(
+                statement, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
+            ):
+                yield statement.name, statement
+
+    @staticmethod
+    def _unwrap_enum_member_wrapper(value: Value) -> tuple[Value, bool, bool]:
+        value = replace_fallback(value)
+        member_cls = getattr(enum, "member", None)
+        nonmember_cls = getattr(enum, "nonmember", None)
+
+        if (
+            member_cls is not None
+            and isinstance(value, GenericValue)
+            and value.typ is member_cls
+        ):
+            if value.args:
+                return value.args[0], True, False
+            return AnyValue(AnySource.inference), True, False
+        if (
+            nonmember_cls is not None
+            and isinstance(value, GenericValue)
+            and value.typ is nonmember_cls
+        ):
+            if value.args:
+                return value.args[0], False, True
+            return AnyValue(AnySource.inference), False, True
+
+        if (
+            member_cls is not None
+            and isinstance(value, KnownValue)
+            and isinstance(value.val, member_cls)
+        ):
+            return KnownValue(value.val.value), True, False
+        if (
+            nonmember_cls is not None
+            and isinstance(value, KnownValue)
+            and isinstance(value.val, nonmember_cls)
+        ):
+            return KnownValue(value.val.value), False, True
+        return value, False, False
+
+    @staticmethod
+    def _is_nonmember_enum_assignment_value(value: Value) -> bool:
+        value = replace_fallback(value)
+        if isinstance(value, (CallableValue, InputSigValue, SyntheticClassObjectValue)):
+            return True
+        if isinstance(value, UnboundMethodValue):
+            return True
+        if isinstance(value, GenericValue):
+            if value.typ in {staticmethod, classmethod, property}:
+                return True
+            if isinstance(value.typ, type) and safe_issubclass(value.typ, type):
+                return True
+        if isinstance(value, KnownValue):
+            if isinstance(value.val, type):
+                return True
+            return _static_hasattr(value.val, "__get__")
+        if isinstance(value, TypedValue):
+            return isinstance(value.typ, type) and safe_issubclass(value.typ, type)
+        return False
+
+    @staticmethod
+    def _runtime_object_for_enum_member(value: Value) -> object:
+        value = replace_fallback(value)
+        if isinstance(value, KnownValue):
+            return value.val
+        return object()
+
+    def _make_synthetic_enum_runtime_class(
+        self,
+        node: ast.ClassDef,
+        base_values: Sequence[Value],
+        member_literal_values: Mapping[str, object],
+        member_order: Sequence[str],
+    ) -> type | None:
+        runtime_bases: list[type] = []
+        has_enum_base = False
+        for base_value in base_values:
+            base = replace_fallback(base_value)
+            if isinstance(base, SyntheticClassObjectValue):
+                class_type = base.class_type
+                if isinstance(class_type, TypedValue) and isinstance(
+                    class_type.typ, type
+                ):
+                    runtime_base = class_type.typ
+                else:
+                    return None
+            elif isinstance(base, KnownValue) and isinstance(base.val, type):
+                runtime_base = base.val
+            elif isinstance(base, TypedValue) and isinstance(base.typ, type):
+                runtime_base = base.typ
+            else:
+                runtime_annotation = self._runtime_annotation_from_value(base_value)
+                if not isinstance(runtime_annotation, type):
+                    return None
+                runtime_base = runtime_annotation
+            if safe_issubclass(runtime_base, enum.Enum):
+                has_enum_base = True
+            runtime_bases.append(runtime_base)
+
+        if not has_enum_base:
+            return None
+
+        members = {name: member_literal_values[name] for name in member_order}
+        module_name = self.module.__name__ if self.module is not None else self.filename
+        qualname = self._get_class_qualname_from_name(node.name)
+
+        def exec_body(ns: dict[str, object]) -> None:
+            ns["__module__"] = module_name
+            ns["__qualname__"] = qualname
+            ns.update(members)
+
+        try:
+            return types.new_class(node.name, tuple(runtime_bases), {}, exec_body)
+        except Exception:
+            self.log(
+                logging.INFO,
+                "unable to synthesize enum runtime class from static analysis",
+                node.name,
+            )
+            return None
 
     def _typed_dict_base_value(
         self, base_value: Value, base_node: ast.AST
@@ -2786,6 +3141,12 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         if not qualname_parts or qualname_parts[-1] != name:
             qualname_parts.append(name)
         return ".".join(qualname_parts)
+
+    def _current_class_name_from_context(self) -> str | None:
+        for context in reversed(self.node_context.contexts):
+            if isinstance(context, ast.ClassDef):
+                return context.name
+        return None
 
     def _visit_class_and_get_value(
         self, node: ast.ClassDef, current_class: type | str | None
@@ -3744,6 +4105,12 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         if base_key in self.final_class_keys:
             return True
         if isinstance(base_key, type):
+            if safe_issubclass(base_key, enum.Enum):
+                try:
+                    if bool(base_key.__members__):
+                        return True
+                except Exception:
+                    pass
             if getattr(base_key, "__final__", False):
                 return True
         try:
@@ -5365,6 +5732,10 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             mode = OverlapMode.IS
         else:
             return
+        if self._is_enum_value_for_unsafe_comparison(
+            lhs
+        ) and self._is_enum_value_for_unsafe_comparison(rhs):
+            return
         if KnownNone.is_assignable(lhs, self) or KnownNone.is_assignable(rhs, self):
             return
         error = lhs.can_overlap(rhs, self, mode)
@@ -5386,6 +5757,29 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             detail=str(error),
             node=parent_node,
         )
+
+    def _is_enum_value_for_unsafe_comparison(self, value: Value) -> bool:
+        value = replace_fallback(value)
+        if isinstance(value, AnnotatedValue):
+            return self._is_enum_value_for_unsafe_comparison(value.value)
+        if isinstance(value, MultiValuedValue):
+            return all(
+                self._is_enum_value_for_unsafe_comparison(subval)
+                for subval in value.vals
+            )
+        if isinstance(value, SyntheticClassObjectValue):
+            return self._is_enum_value_for_unsafe_comparison(value.class_type)
+        if isinstance(value, KnownValue):
+            return safe_isinstance(value.val, enum.Enum)
+        if isinstance(value, TypedValue):
+            if isinstance(value.typ, type):
+                return safe_issubclass(value.typ, enum.Enum)
+            if isinstance(value.typ, str):
+                return self._is_enum_class_key(value.typ)
+            return False
+        if isinstance(value, SubclassValue):
+            return self._is_enum_value_for_unsafe_comparison(value.typ)
+        return False
 
     def _visit_single_compare(
         self,
@@ -6540,7 +6934,15 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
 
     def visit_Assign(self, node: ast.Assign) -> None:
         is_yield = isinstance(node.value, ast.Yield)
-        value = self.visit(node.value)
+        if (
+            self.current_enum_members is not None
+            and self.current_function_name is None
+            and isinstance(node.value, ast.Name)
+            and node.value.id in self.current_enum_members.by_name
+        ):
+            value = KnownValue(self.current_enum_members.by_name[node.value.id])
+        else:
+            value = self.visit(node.value)
 
         with (
             override(self, "being_assigned", value),
@@ -6558,20 +6960,42 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             names = [
                 target.id for target in node.targets if isinstance(target, ast.Name)
             ]
-
-            if value.val in self.current_enum_members:
+            is_alias = isinstance(node.value, ast.Name) and (
+                node.value.id in self.current_enum_members.by_name
+            )
+            if value.val in self.current_enum_members.by_value and not is_alias:
                 self._show_error_if_checking(
                     node,
                     "Duplicate enum member: {} is used for both {} and {}".format(
                         value.val,
-                        self.current_enum_members[value.val],
+                        self.current_enum_members.by_value[value.val],
                         ", ".join(names),
                     ),
                     error_code=ErrorCode.duplicate_enum_member,
                 )
             else:
                 for name in names:
-                    self.current_enum_members[value.val] = name
+                    self.current_enum_members.by_name[name] = value.val
+                    self.current_enum_members.by_value.setdefault(value.val, name)
+
+        enum_value_type = (
+            self.enum_value_type_by_class.get(self.current_class_key)
+            if self.current_class_key is not None
+            else None
+        )
+        if (
+            enum_value_type is not None
+            and self.current_function_name is not None
+            and isinstance(value, Value)
+        ):
+            for target in node.targets:
+                if (
+                    isinstance(target, ast.Attribute)
+                    and target.attr == "_value_"
+                    and isinstance(target.value, ast.Name)
+                    and target.value.id in {"self", "cls"}
+                ):
+                    self._check_declared_enum_value_type(enum_value_type, value, node)
 
     def is_in_typeddict_definition(self) -> bool:
         return (
@@ -6612,6 +7036,14 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             self._record_synthetic_typeddict_item(
                 node.target.id, expected_type, qualifiers, node
             )
+        if (
+            isinstance(node.target, ast.Name)
+            and node.target.id == "_value_"
+            and self.current_class_key is not None
+            and self._is_enum_class_key(self.current_class_key)
+            and expected_type is not None
+        ):
+            self.enum_value_type_by_class[self.current_class_key] = expected_type
 
         if isinstance(expected_type, InputSigValue):
             if isinstance(expected_type.input_sig, ParamSpecSig):

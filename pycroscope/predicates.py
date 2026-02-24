@@ -114,7 +114,9 @@ class EqualsPredicate:
                 simplified = unannotate(value)
                 if isinstance(simplified, TypedValue) and simplified.typ is bool:
                     return KnownValue(not self.pattern_val)
-            elif safe_issubclass(pattern_type, enum.Enum):
+            elif safe_issubclass(pattern_type, enum.Enum) and not safe_issubclass(
+                pattern_type, enum.Flag
+            ):
                 simplified = unannotate(value)
                 if isinstance(simplified, TypedValue) and simplified.typ is type(
                     self.pattern_val
@@ -161,7 +163,9 @@ class InPredicate:
             else:
                 return None
         else:
-            if safe_issubclass(self.pattern_type, enum.Enum):
+            if safe_issubclass(self.pattern_type, enum.Enum) and not safe_issubclass(
+                self.pattern_type, enum.Flag
+            ):
                 simplified = unannotate(value)
                 if (
                     isinstance(simplified, TypedValue)
