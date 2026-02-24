@@ -457,6 +457,37 @@ class TestImportFailureHandling:
 
 class TestImportFailureHandlingCodeSamples(TestNameCheckVisitorBase):
     @assert_passes(allow_import_failures=True)
+    def test_overload_fallback_after_import_failure(self):
+        from typing import assert_type, overload
+
+        boom = 1 / 0
+
+        @overload
+        def f(x: int, /) -> int: ...
+
+        @overload
+        def f(x: str, /) -> str: ...
+
+        def f(x: int | str, /) -> int | str:
+            return x
+
+        class B:
+            @overload
+            def __getitem__(self, x: int, /) -> int: ...
+
+            @overload
+            def __getitem__(self, x: str, /) -> bytes: ...
+
+            def __getitem__(self, x: int | str, /) -> int | bytes:
+                raise NotImplementedError
+
+        b = B()
+        assert_type(f(1), int)
+        assert_type(f("x"), str)
+        assert_type(b[0], int)
+        assert_type(b["x"], bytes)
+
+    @assert_passes(allow_import_failures=True)
     def test_typeddict_class_syntax_after_import_failure(self):
         boom = 1 / 0
 

@@ -2453,6 +2453,10 @@ def decompose_union(
     expected_type: Value, parent_value: Value, ctx: CanAssignContext
 ) -> tuple[BoundsMap, bool, Value] | None:
     value = unannotate(parent_value)
+    if not isinstance(value, MultiValuedValue):
+        decomposed = value.decompose()
+        if decomposed is not None:
+            value = unite_values(*decomposed)
     if isinstance(value, MultiValuedValue):
         bounds_maps = []
         remaining_values = []

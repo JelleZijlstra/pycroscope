@@ -1131,6 +1131,35 @@ class TestOverload(TestNameCheckVisitorBase):
             overloaded("a", "b")  # E: incompatible_call
 
     @assert_passes()
+    def test_overload_decomposes_non_union_argument(self):
+        from typing import Literal, overload
+
+        @overload
+        def overloaded(x: Literal[True], /) -> Literal["a"]: ...
+
+        @overload
+        def overloaded(x: Literal[False], /) -> Literal["b"]: ...
+
+        def overloaded(x: bool, /) -> str:
+            return "a"
+
+        def capybara(v: bool):
+            assert_is_value(overloaded(v), KnownValue("a") | KnownValue("b"))
+
+    @assert_passes()
+    def test_overloaded_stub_implementation_missing_return(self):
+        from typing import overload
+
+        @overload
+        def overloaded(x: int, /) -> int: ...
+
+        @overload
+        def overloaded(x: str, /) -> str: ...
+
+        def overloaded(x: int | str, /) -> int | str:  # E: missing_return
+            pass
+
+    @assert_passes()
     def test_inconsistent_implementation(self):
         from typing import overload
 
