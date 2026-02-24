@@ -58,7 +58,6 @@ generics_scoping
 generics_self_advanced
 generics_self_attributes
 generics_self_basic
-generics_self_protocols
 generics_self_usage
 generics_syntax_compatibility
 generics_syntax_declarations
