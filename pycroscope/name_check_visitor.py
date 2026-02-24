@@ -1944,10 +1944,14 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             if synthetic_typeddict is not None:
                 self._validate_typeddict_class_syntax(node)
             elif class_obj is None:
+                synthetic_fq_name = self._get_synthetic_class_fq_name(node)
                 synthetic_class = SyntheticClassObjectValue(
                     node.name,
-                    TypedValue(self._get_synthetic_class_fq_name(node)),
+                    TypedValue(synthetic_fq_name),
                     base_classes=tuple(base_values),
+                )
+                self.checker.register_synthetic_type_bases(
+                    synthetic_fq_name, base_values
                 )
                 if self._is_checking():
                     # Bind the class name while checking its body so references
@@ -2808,8 +2812,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         if pending_block.name != node.name:
             return
         if not pending_block.overloads or signature is None:
-            return
-        if self.module is None:
             return
 
         for pending in pending_block.overloads:

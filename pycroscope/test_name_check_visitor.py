@@ -457,6 +457,44 @@ class TestImportFailureHandling:
 
 class TestImportFailureHandlingCodeSamples(TestNameCheckVisitorBase):
     @assert_passes(allow_import_failures=True)
+    def test_overload_consistency_after_import_failure(self):
+        from typing import overload
+
+        boom = 1 / 0
+
+        @overload
+        def return_type(x: int, /) -> int: ...
+
+        @overload
+        def return_type(x: str, /) -> str:  # E: inconsistent_overload
+            ...
+
+        def return_type(x: int | str, /) -> int:
+            return 1
+
+        @overload
+        def parameter_type(x: int, /) -> int: ...
+
+        @overload
+        def parameter_type(x: str, /) -> str:  # E: inconsistent_overload
+            ...
+
+        def parameter_type(x: int, /) -> int | str:
+            return 1
+
+    @assert_passes(allow_import_failures=True)
+    def test_dict_subclass_assignable_to_dict_after_import_failure(self):
+        boom = 1 / 0
+
+        class CustomDict(dict[str, int]):
+            pass
+
+        def takes_dict(x: dict[str, int]) -> None:
+            return None
+
+        takes_dict(CustomDict({"num": 1}))
+
+    @assert_passes(allow_import_failures=True)
     def test_overload_fallback_after_import_failure(self):
         from typing import assert_type, overload
 

@@ -2,7 +2,8 @@
 
 ## Unreleased
 
-- Preserve `@overload` behavior in static fallback mode when a module cannot be imported, including overload-aware inference for synthetic class dunder methods like `__getitem__`, and avoid false-positive overload/implementation mismatch errors in that mode.
+- Preserve `@overload` behavior in static fallback mode when a module cannot be imported, including overload-aware inference for synthetic class dunder methods like `__getitem__` and consistency checks against overload implementations.
+- Preserve generic base information for synthetic classes in static fallback mode, so subclasses like `class D(dict[str, int])` are assignable to `dict[str, int]`.
 - Replace internal `**kwargs` TypedDict special-casing with dictionary-entry modeling, so TypedDict dict/Mapping assignability rules stay consistent while dict-method calls on TypedDict values still type-check correctly.
 - Tighten TypedDict conformance by enforcing class-syntax and inheritance checks in importable modules (not only fallback analysis), and by ignoring uninhabitable `NotRequired[Never]` keys in `TypedDict.update()`.
 - Respect declared `TypeVar` variance in generic assignability and subtyping checks, so covariant, contravariant, and invariant type parameters are enforced correctly.

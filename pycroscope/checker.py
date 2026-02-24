@@ -66,6 +66,7 @@ from .value import (
 )
 
 _BaseProvider = Callable[[type | super], set[type]]
+_SyntheticGenericBases = dict[type | str, dict[object, Value]]
 
 
 class AdditionalBaseProviders(PyObjectSequenceOption[_BaseProvider]):
@@ -95,6 +96,12 @@ class Checker:
     reexport_tracker: ImplicitReexportTracker = field(init=False, repr=False)
     callable_tracker: CallableTracker = field(init=False, repr=False)
     type_object_cache: dict[type | super | str, TypeObject] = field(
+        default_factory=dict, init=False, repr=False
+    )
+    synthetic_type_bases: dict[str, set[type | str]] = field(
+        default_factory=dict, init=False, repr=False
+    )
+    synthetic_generic_bases: dict[str, _SyntheticGenericBases] = field(
         default_factory=dict, init=False, repr=False
     )
     _relation_cache: dict[object, object] = field(
@@ -166,7 +173,9 @@ class Checker:
     def _build_type_object(self, typ: type | super | str) -> TypeObject:
         if isinstance(typ, str):
             # Synthetic type
-            bases = self._get_typeshed_bases(typ)
+            bases = self._get_typeshed_bases(typ) | self.synthetic_type_bases.get(
+                typ, set()
+            )
             is_protocol = any(is_typing_name(base, "Protocol") for base in bases)
             if is_protocol:
                 protocol_members = self._get_protocol_members(bases)
@@ -239,7 +248,49 @@ class Checker:
     def get_generic_bases(
         self, typ: type | str, generic_args: Sequence[Value] = ()
     ) -> GenericBases:
-        return self.arg_spec_cache.get_generic_bases(typ, generic_args)
+        generic_bases = self.arg_spec_cache.get_generic_bases(typ, generic_args)
+        if not isinstance(typ, str):
+            return generic_bases
+
+        synthetic_bases = self.synthetic_generic_bases.get(typ)
+        if synthetic_bases is None:
+            return generic_bases
+
+        merged = {base: dict(tv_map) for base, tv_map in generic_bases.items()}
+        for base, tv_map in synthetic_bases.items():
+            merged.setdefault(base, {}).update(tv_map)
+        return merged
+
+    def register_synthetic_type_bases(
+        self, typ: str, base_values: Sequence[Value]
+    ) -> None:
+        base_types: set[type | str] = set()
+        merged_generic_bases: _SyntheticGenericBases = {typ: {}}
+        for base in base_values:
+            for subval in flatten_values(replace_fallback(base)):
+                converted: Value = subval
+                if isinstance(converted, KnownValue):
+                    converted = self.arg_spec_cache._type_from_base(converted.val)
+                elif isinstance(converted, SyntheticClassObjectValue):
+                    converted = converted.class_type
+                if not isinstance(converted, TypedValue):
+                    continue
+                base_typ = converted.typ
+                base_types.add(base_typ)
+                generic_args = (
+                    converted.args if isinstance(converted, GenericValue) else ()
+                )
+                for gb_typ, tv_map in self.arg_spec_cache.get_generic_bases(
+                    base_typ, generic_args
+                ).items():
+                    merged_generic_bases.setdefault(gb_typ, {}).update(tv_map)
+
+        if base_types:
+            self.synthetic_type_bases.setdefault(typ, set()).update(base_types)
+        existing = self.synthetic_generic_bases.setdefault(typ, {})
+        for gb_typ, tv_map in merged_generic_bases.items():
+            existing.setdefault(gb_typ, {}).update(tv_map)
+        self.type_object_cache.pop(typ, None)
 
     def get_signature(
         self, obj: object, is_asynq: bool = False
