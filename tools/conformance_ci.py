@@ -116,15 +116,23 @@ def parse_pycroscope_concise_errors(
 
 def parse_pycroscope_internal_error_cases(lines: Sequence[str]) -> set[str]:
     internal_error_cases: set[str] = set()
+    traceback_case_name: str | None = None
     for line in lines:
         match = CONCISE_OUTPUT_RE.match(line)
-        if match is None:
+        if match is not None:
+            case_name = Path(match.group(1)).stem
+            message = match.group(3)
+            if message.startswith("Traceback (most recent call last):"):
+                traceback_case_name = case_name
+            if "[internal_error]" in message or "Internal error" in message:
+                internal_error_cases.add(case_name)
+                traceback_case_name = None
             continue
-        message = match.group(3)
-        if "[internal_error]" not in message and "Internal error" not in message:
-            continue
-        case_name = Path(match.group(1)).stem
-        internal_error_cases.add(case_name)
+        if traceback_case_name is not None and (
+            "[internal_error]" in line or "Internal error" in line
+        ):
+            internal_error_cases.add(traceback_case_name)
+            traceback_case_name = None
     return internal_error_cases
 
 

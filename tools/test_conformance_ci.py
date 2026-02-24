@@ -90,6 +90,16 @@ def test_parse_pycroscope_internal_error_cases(tmp_path: Path) -> None:
     assert parse_pycroscope_internal_error_cases(output_lines) == {"dataclasses_order"}
 
 
+def test_parse_pycroscope_internal_error_cases_traceback_tail(tmp_path: Path) -> None:
+    test_case = tmp_path / "dataclasses_order.py"
+    output_lines = [
+        f"{test_case}:53:3: Traceback (most recent call last):",
+        '  File "/repo/pycroscope/name_check_visitor.py", line 1518, in visit',
+        "Internal error: NotAGradualType('...') [internal_error]",
+    ]
+    assert parse_pycroscope_internal_error_cases(output_lines) == {"dataclasses_order"}
+
+
 def test_check_conformance_fails_on_internal_error_in_known_failure(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
