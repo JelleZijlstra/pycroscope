@@ -2171,6 +2171,7 @@ class OverloadedSignature:
             for sig, bound_args in zip(self.signatures, bound_args_per_overload)
             if bound_args is not None
         ]
+        sigs = self._prefer_variadic_matches(sigs, actual_args)
         last = len(sigs) - 1
         for i, sig in enumerate(sigs):
             with visitor.catch_errors() as caught_errors:
@@ -2270,6 +2271,28 @@ class OverloadedSignature:
                     ErrorCode.deprecated,
                 )
         return unite_values(*[r.return_value for r in rets])
+
+    def _prefer_variadic_matches(
+        self, sigs: Sequence[Signature], actual_args: ActualArguments
+    ) -> list[Signature]:
+        filtered = list(sigs)
+        if actual_args.star_args is not None:
+            variadic = [
+                sig
+                for sig in filtered
+                if sig.get_param_of_kind(ParameterKind.VAR_POSITIONAL) is not None
+            ]
+            if variadic:
+                filtered = variadic
+        if actual_args.star_kwargs is not None:
+            variadic = [
+                sig
+                for sig in filtered
+                if sig.get_param_of_kind(ParameterKind.VAR_KEYWORD) is not None
+            ]
+            if variadic:
+                filtered = variadic
+        return filtered
 
     def _make_detail(
         self,

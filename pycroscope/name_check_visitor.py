@@ -1117,7 +1117,12 @@ class StackedContexts:
 @dataclass(frozen=True)
 class _PendingOverload:
     node: FunctionDefNode
-    signature: ConcreteSignature
+    signature: ConcreteSignature | None
+    is_classmethod: bool
+    is_staticmethod: bool
+    is_abstractmethod: bool
+    is_override: bool
+    is_final: bool
 
 
 @dataclass
@@ -1152,6 +1157,8 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
 
     _argspec_to_retval: dict[int, tuple[Value, MaybeSignature]]
     _pending_overload_blocks: dict[int, _PendingOverloadBlock]
+    _synthetic_classes_by_name: dict[str, SyntheticClassObjectValue]
+    _synthetic_final_methods: dict[str, set[str]]
     _method_cache: dict[type[ast.AST], Callable[[Any], Value | None]]
     _name_node_to_statement: dict[ast.AST, ast.AST | None] | None
     _should_exclude_any: bool
@@ -1165,7 +1172,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     being_assigned: Value | None
     checker: Checker
     collector: CallSiteCollector | None
-    current_class: type | None
+    current_class: type | str | None
     current_enum_members: dict[object, str] | None
     current_function: object | None
     current_function_info: FunctionInfo | None
@@ -1298,6 +1305,8 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         # deterministic because we'll start depending on the order modules are checked.
         self._argspec_to_retval = {}
         self._pending_overload_blocks = {}
+        self._synthetic_classes_by_name = {}
+        self._synthetic_final_methods = {}
         self._method_cache = {}
         self._statement_types = set()
         self._should_exclude_any = False
@@ -1475,6 +1484,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             self._pending_overload_blocks.clear()
             with override(self, "state", VisitorState.check_names):
                 self.visit(self.tree)
+                self._flush_pending_overload_blocks()
             self._pending_overload_blocks.clear()
             # This doesn't deal correctly with errors from the attribute checker. Therefore,
             # leaving this check disabled by default for now.
@@ -1684,12 +1694,76 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     def _get_base_class_attributes(
         self, varname: str, node: ast.AST
     ) -> Iterable[tuple[type | str, Value]]:
-        if self.current_class is None:
-            return
-        for base_class in self.get_generic_bases(self.current_class):
-            if base_class is self.current_class:
+        yield from self._get_base_class_attributes_for(
+            self.current_class, varname, node
+        )
+
+    def _has_base_attribute(self, varname: str, node: ast.AST) -> bool:
+        return self._has_base_attribute_for(self.current_class, varname, node)
+
+    def _has_base_attribute_for(
+        self, current_class: type | str | None, varname: str, node: ast.AST
+    ) -> bool:
+        for _, base_value in self._get_base_class_attributes_for(
+            current_class, varname, node
+        ):
+            if isinstance(replace_fallback(base_value), AnyValue):
                 continue
-            base_class_value = TypedValue(base_class)
+            return True
+        return False
+
+    def _get_base_class_attributes_for(
+        self, current_class: type | str | None, varname: str, node: ast.AST
+    ) -> Iterable[tuple[type | str, Value]]:
+        if current_class is None:
+            return
+        if isinstance(current_class, str):
+            synthetic_class = self._synthetic_classes_by_name.get(current_class)
+            if synthetic_class is not None:
+                for base in synthetic_class.base_classes:
+                    for base_class_value in flatten_values(base, unwrap_annotated=True):
+                        if isinstance(base_class_value, SyntheticClassObjectValue):
+                            base_class: type | str = base_class_value.class_type.typ
+                            root_value: Value = base_class_value
+                        elif isinstance(base_class_value, TypedValue):
+                            base_class = base_class_value.typ
+                            root_value = (
+                                self._synthetic_classes_by_name.get(
+                                    base_class, base_class_value
+                                )
+                                if isinstance(base_class, str)
+                                else TypedValue(base_class)
+                            )
+                        elif isinstance(base_class_value, KnownValue) and isinstance(
+                            base_class_value.val, type
+                        ):
+                            base_class = base_class_value.val
+                            root_value = TypedValue(base_class)
+                        else:
+                            continue
+                        if base_class is current_class:
+                            continue
+                        ctx = _AttrContext(
+                            Composite(root_value),
+                            varname,
+                            self,
+                            node=node,
+                            skip_mro=True,
+                            skip_unwrap=True,
+                            record_reads=False,
+                        )
+                        base_value = attributes.get_attribute(ctx)
+                        if base_value is not UNINITIALIZED_VALUE:
+                            yield base_class, base_value
+        for base_class in self.checker.get_generic_bases(current_class):
+            if base_class is current_class:
+                continue
+            if isinstance(base_class, str):
+                base_class_value: Value = self._synthetic_classes_by_name.get(
+                    base_class, TypedValue(base_class)
+                )
+            else:
+                base_class_value = TypedValue(base_class)
             ctx = _AttrContext(
                 Composite(base_class_value),
                 varname,
@@ -1920,7 +1994,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         return isinstance(ctx, (ast.Load, ast.Del))
 
     @contextlib.contextmanager
-    def _set_current_class(self, current_class: type | None) -> Iterator[None]:
+    def _set_current_class(self, current_class: type | str | None) -> Iterator[None]:
         if should_check_for_duplicate_values(current_class, self.options):
             current_enum_members = {}
         else:
@@ -1959,9 +2033,14 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 fallback_runtime_class = self._make_namedtuple_related_fallback_class(
                     node, base_values
                 )
+                if fallback_runtime_class is None:
+                    fallback_runtime_class = self._make_enum_related_fallback_class(
+                        node, base_values
+                    )
                 if fallback_runtime_class is not None:
                     class_obj = fallback_runtime_class
             synthetic_class = None
+            class_scope_object: type | str | None = class_obj
             if synthetic_typeddict is not None:
                 self._validate_typeddict_class_syntax(node)
             elif class_obj is None:
@@ -1974,6 +2053,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 self.checker.register_synthetic_type_bases(
                     synthetic_fq_name, base_values
                 )
+                class_scope_object = synthetic_fq_name
                 if self._is_checking():
                     # Bind the class name while checking its body so references
                     # like "return C.attr" or string annotations mentioning C
@@ -1981,7 +2061,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     self.scopes.set(node.name, synthetic_class, node, self.state)
             with override(self, "current_synthetic_typeddict", synthetic_typeddict):
                 value, class_scope_values = self._visit_class_and_get_value(
-                    node, class_obj
+                    node, class_scope_object
                 )
             if fallback_runtime_class is not None and class_scope_values is not None:
                 self._populate_fallback_runtime_class(
@@ -2011,6 +2091,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     synthetic_class.class_attributes.clear()
                     synthetic_class.class_attributes.update(class_attributes)
                     value = synthetic_class
+                self._synthetic_classes_by_name[synthetic_fq_name] = synthetic_class
         value_to_store: Value | None = value
         if (
             class_obj is None
@@ -2405,6 +2486,80 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             self.log(logging.INFO, "unable to synthesize runtime class", node.name)
             return None
 
+    def _make_enum_related_fallback_class(
+        self, node: ast.ClassDef, base_values: Sequence[Value]
+    ) -> type | None:
+        runtime_bases: list[type] = []
+        has_enum_base = False
+        for base_value in base_values:
+            base = replace_fallback(base_value)
+            if isinstance(base, KnownValue) and isinstance(base.val, type):
+                runtime_base = base.val
+            else:
+                runtime_annotation = self._runtime_annotation_from_value(base_value)
+                if not isinstance(runtime_annotation, type):
+                    return None
+                runtime_base = runtime_annotation
+            if safe_issubclass(runtime_base, enum.Enum):
+                has_enum_base = True
+            runtime_bases.append(runtime_base)
+
+        if not has_enum_base:
+            return None
+
+        members: dict[str, object] = {}
+        for statement in node.body:
+            if isinstance(statement, ast.Expr):
+                if isinstance(statement.value, ast.Constant) and isinstance(
+                    statement.value.value, str
+                ):
+                    continue
+                return None
+            if isinstance(statement, ast.Pass):
+                continue
+            if isinstance(statement, ast.Assign):
+                if len(statement.targets) != 1 or not isinstance(
+                    statement.targets[0], ast.Name
+                ):
+                    return None
+                member_name = statement.targets[0].id
+                if member_name.startswith("_"):
+                    continue
+                member_value = self.visit(statement.value)
+            elif isinstance(statement, ast.AnnAssign):
+                if (
+                    not isinstance(statement.target, ast.Name)
+                    or statement.value is None
+                    or not statement.simple
+                ):
+                    return None
+                member_name = statement.target.id
+                if member_name.startswith("_"):
+                    continue
+                member_value = self.visit(statement.value)
+            else:
+                return None
+            if not isinstance(member_value, KnownValue):
+                return None
+            members[member_name] = member_value.val
+
+        if not members:
+            return None
+
+        module_name = self.module.__name__ if self.module is not None else self.filename
+        qualname = self._get_class_qualname_from_name(node.name)
+
+        def exec_body(ns: dict[str, object]) -> None:
+            ns["__module__"] = module_name
+            ns["__qualname__"] = qualname
+            ns.update(members)
+
+        try:
+            return types.new_class(node.name, tuple(runtime_bases), {}, exec_body)
+        except Exception:
+            self.log(logging.INFO, "unable to synthesize enum runtime class", node.name)
+            return None
+
     def _runtime_annotation_from_value(self, value: Value) -> object:
         if isinstance(value, AnnotatedValue):
             return self._runtime_annotation_from_value(value.value)
@@ -2567,7 +2722,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         return ".".join(qualname_parts)
 
     def _visit_class_and_get_value(
-        self, node: ast.ClassDef, current_class: type | None
+        self, node: ast.ClassDef, current_class: type | str | None
     ) -> tuple[Value, Mapping[str, Value] | None]:
         if self._is_collecting():
             # If this is a nested class, we need to run the collecting phase to get data
@@ -2594,9 +2749,12 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 self._set_current_class(current_class),
             ):
                 self._generic_visit_list(node.body)
+                self._flush_pending_overload_block_for_scope(
+                    self.scopes.current_scope()
+                )
                 class_scope_values = dict(self.scopes.current_scope().variables)
 
-            if current_class is not None:
+            if isinstance(current_class, type):
                 return KnownValue(current_class), class_scope_values
             return AnyValue(AnySource.inference), class_scope_values
 
@@ -2780,6 +2938,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         is_staticmethod = False
         is_overload = False
         is_override = False
+        is_final = False
         is_abstractmethod = False
         is_evaluated = False
         decorators = []
@@ -2821,6 +2980,8 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                         is_evaluated = True
                     elif is_typing_name(val, "override"):
                         is_override = True
+                    elif is_typing_name(val, "final"):
+                        is_final = True
                 decorators.append((decorator_value, decorator_value, decorator))
         if (
             sys.version_info >= (3, 12)
@@ -2880,6 +3041,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 and not is_staticmethod,
                 is_overload=is_overload,
                 is_override=is_override,
+                is_final=is_final,
                 is_evaluated=is_evaluated,
                 decorators=decorators,
                 node=node,
@@ -2911,7 +3073,16 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     node, error_code=ErrorCode.missing_return_annotation
                 )
 
-            computed_function = compute_value_of_function(info, self)
+            info_for_computed_value = info
+            if info.is_overload:
+                decorators = [
+                    decorator
+                    for decorator in info.decorators
+                    if not self._is_overload_decorator(decorator[0])
+                ]
+                if len(decorators) != len(info.decorators):
+                    info_for_computed_value = replace(info, decorators=decorators)
+            computed_function = compute_value_of_function(info_for_computed_value, self)
             static_overload_signature: OverloadedSignature | None = None
             if not info.is_overload and not info.is_evaluated:
                 static_overload_signature = self._get_pending_overload_signature(node)
@@ -2964,7 +3135,10 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             and node.returns is not None
             and (
                 info.return_annotation is None
-                or not _is_known_none_annotation(info.return_annotation)
+                or self._return_annotation_has_invalid_error(node.returns)
+                or not self._return_annotation_allows_implicit_none(
+                    info.return_annotation
+                )
             )
         ):
             if info.return_annotation is NO_RETURN_VALUE:
@@ -2974,16 +3148,25 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             else:
                 self._show_error_if_checking(node, error_code=ErrorCode.missing_return)
 
-        if info.is_override:
-            if self.current_class is None:
+        if info.is_override and not info.is_overload:
+            if self.scopes.scope_type() is not ScopeType.class_scope:
                 self._show_error_if_checking(
                     node, error_code=ErrorCode.invalid_override_decorator
                 )
             else:
-                if not any(self._get_base_class_attributes(node.name, node)):
+                if not self._has_base_attribute(node.name, node):
                     self._show_error_if_checking(
                         node, error_code=ErrorCode.override_does_not_override
                     )
+        if (
+            info.is_final
+            and not info.is_overload
+            and isinstance(self.current_class, str)
+            and self.scopes.scope_type() is ScopeType.class_scope
+        ):
+            self._synthetic_final_methods.setdefault(self.current_class, set()).add(
+                node.name
+            )
 
         if info.return_annotation is not None:
             assert node.returns is not None
@@ -3059,6 +3242,8 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             return None
         signatures: list[Signature] = []
         for pending in pending_block.overloads:
+            if pending.signature is None:
+                continue
             if isinstance(pending.signature, Signature):
                 signatures.append(pending.signature)
             else:
@@ -3066,6 +3251,23 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         if signatures:
             return OverloadedSignature(signatures)
         return None
+
+    def _flush_pending_overload_blocks(self) -> None:
+        if not self._is_checking():
+            return
+        for scope_key, pending_block in list(self._pending_overload_blocks.items()):
+            self._finalize_pending_overload_block(pending_block, implementation=None)
+            self._pending_overload_blocks.pop(scope_key, None)
+
+    def _flush_pending_overload_block_for_scope(self, scope: Scope) -> None:
+        if not self._is_checking():
+            return
+        scope_key = id(scope)
+        pending_block = self._pending_overload_blocks.get(scope_key)
+        if pending_block is None or pending_block.scope is not scope:
+            return
+        self._pending_overload_blocks.pop(scope_key, None)
+        self._finalize_pending_overload_block(pending_block, implementation=None)
 
     def _check_overload_implementation_consistency(
         self, node: FunctionDefNode, info: FunctionInfo, computed_function: Value
@@ -3081,32 +3283,65 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             self._pending_overload_blocks.pop(scope_key, None)
             pending_block = None
         signature = self._signature_for_overload_consistency(info, computed_function)
-        if info.is_overload:
-            if pending_block is None or pending_block.name != node.name:
-                pending_block = _PendingOverloadBlock(node.name, current_scope)
-                self._pending_overload_blocks[scope_key] = pending_block
-            if signature is not None:
-                pending_block.overloads.append(
-                    _PendingOverload(node=node, signature=signature)
-                )
+
+        if pending_block is not None and (
+            pending_block.name != node.name or not info.is_overload
+        ):
+            self._pending_overload_blocks.pop(scope_key, None)
+            implementation = None
+            if pending_block.name == node.name and not info.is_overload:
+                implementation = (node, info, signature)
+            self._finalize_pending_overload_block(pending_block, implementation)
+            pending_block = None
+            if implementation is not None:
+                return
+
+        if not info.is_overload:
             return
 
-        # Overload consistency is checked only for a contiguous block of overloads
-        # followed by a non-overload function with the same name.
         if pending_block is None:
+            pending_block = _PendingOverloadBlock(node.name, current_scope)
+            self._pending_overload_blocks[scope_key] = pending_block
+        pending_block.overloads.append(
+            _PendingOverload(
+                node=node,
+                signature=signature,
+                is_classmethod=info.is_classmethod,
+                is_staticmethod=info.is_staticmethod,
+                is_abstractmethod=info.is_abstractmethod,
+                is_override=info.is_override,
+                is_final=info.is_final,
+            )
+        )
+
+    def _finalize_pending_overload_block(
+        self,
+        pending_block: _PendingOverloadBlock,
+        implementation: (
+            tuple[FunctionDefNode, FunctionInfo, ConcreteSignature | None] | None
+        ),
+    ) -> None:
+        if not pending_block.overloads:
             return
-        self._pending_overload_blocks.pop(scope_key, None)
-        if pending_block.name != node.name:
+        if implementation is None:
+            self._materialize_overload_block_value(pending_block)
+        should_check_consistency = self._validate_overload_block(
+            pending_block, implementation
+        )
+        if not should_check_consistency or implementation is None:
             return
-        if not pending_block.overloads or signature is None:
+        node, _, implementation_signature = implementation
+        if implementation_signature is None:
             return
 
         for pending in pending_block.overloads:
+            if pending.signature is None:
+                continue
             parameter_error = self._check_overload_parameter_compatibility(
-                pending.signature, signature
+                pending.signature, implementation_signature
             )
             return_error = self._check_overload_return_compatibility(
-                pending.signature, signature
+                pending.signature, implementation_signature
             )
             if parameter_error is not None or return_error is not None:
                 detail_lines = []
@@ -3127,6 +3362,222 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     error_code=ErrorCode.inconsistent_overload,
                     detail=detail,
                 )
+
+    def _materialize_overload_block_value(
+        self, pending_block: _PendingOverloadBlock
+    ) -> None:
+        signatures: list[Signature] = []
+        for pending in pending_block.overloads:
+            signature = pending.signature
+            if isinstance(signature, Signature):
+                signatures.append(signature)
+            elif isinstance(signature, OverloadedSignature):
+                signatures.extend(signature.signatures)
+        if signatures:
+            pending_block.scope.variables[pending_block.name] = CallableValue(
+                OverloadedSignature(signatures), types.FunctionType
+            )
+
+    def _validate_overload_block(
+        self,
+        pending_block: _PendingOverloadBlock,
+        implementation: (
+            tuple[FunctionDefNode, FunctionInfo, ConcreteSignature | None] | None
+        ),
+    ) -> bool:
+        overloads = pending_block.overloads
+        impl_node: FunctionDefNode | None
+        impl_info: FunctionInfo | None
+        impl_signature: ConcreteSignature | None
+        if implementation is None:
+            impl_node = None
+            impl_info = None
+            impl_signature = None
+        else:
+            impl_node, impl_info, impl_signature = implementation
+
+        should_check_consistency = (
+            implementation is not None
+            and impl_signature is not None
+            and any(pending.signature is not None for pending in overloads)
+        )
+
+        if len(overloads) < 2:
+            should_check_consistency = False
+            self._show_error_if_checking(
+                overloads[0].node,
+                "At least two overload signatures are required",
+                error_code=ErrorCode.invalid_annotation,
+            )
+
+        in_protocol_class = (
+            pending_block.scope.scope_type is ScopeType.class_scope
+            and pending_block.scope.scope_object is not None
+            and self.checker.make_type_object(
+                pending_block.scope.scope_object
+            ).is_protocol
+        )
+        needs_implementation = (
+            not self.filename.endswith(".pyi")
+            and not in_protocol_class
+            and not all(pending.is_abstractmethod for pending in overloads)
+        )
+        if implementation is None and needs_implementation:
+            should_check_consistency = False
+            self._show_error_if_checking(
+                overloads[0].node,
+                "Overloaded function is missing an implementation",
+                error_code=ErrorCode.invalid_annotation,
+            )
+
+        overload_kinds = {
+            self._method_decorator_kind(
+                is_classmethod=pending.is_classmethod,
+                is_staticmethod=pending.is_staticmethod,
+            )
+            for pending in overloads
+        }
+        kind_mismatch = False
+        if len(overload_kinds) > 1:
+            kind_mismatch = True
+            self._show_error_if_checking(
+                overloads[0].node,
+                "@staticmethod/@classmethod usage must be consistent across overloads",
+                error_code=ErrorCode.invalid_annotation,
+            )
+        elif impl_info is not None:
+            (overload_kind,) = overload_kinds
+            impl_kind = self._method_decorator_kind(
+                is_classmethod=impl_info.is_classmethod,
+                is_staticmethod=impl_info.is_staticmethod,
+            )
+            if impl_kind != overload_kind:
+                kind_mismatch = True
+                self._show_error_if_checking(
+                    impl_node if impl_node is not None else overloads[0].node,
+                    "Overload implementation has incompatible @staticmethod/@classmethod decorator",
+                    error_code=ErrorCode.invalid_annotation,
+                )
+        if kind_mismatch:
+            should_check_consistency = False
+
+        overload_final_positions = [
+            i for i, pending in enumerate(overloads) if pending.is_final
+        ]
+        overload_override_positions = [
+            i for i, pending in enumerate(overloads) if pending.is_override
+        ]
+
+        placement_error = False
+        effective_is_final = False
+        effective_is_override = False
+        if impl_info is not None:
+            effective_is_final = impl_info.is_final
+            effective_is_override = impl_info.is_override
+            if overload_final_positions:
+                placement_error = True
+                self._show_error_if_checking(
+                    overloads[overload_final_positions[0]].node,
+                    "@final should be applied only to the overload implementation",
+                    error_code=ErrorCode.invalid_annotation,
+                )
+            if overload_override_positions:
+                placement_error = True
+                self._show_error_if_checking(
+                    overloads[overload_override_positions[0]].node,
+                    error_code=ErrorCode.invalid_override_decorator,
+                )
+        else:
+            if overload_final_positions:
+                if overload_final_positions != [0]:
+                    placement_error = True
+                    idx = overload_final_positions[0]
+                    if idx == 0 and len(overload_final_positions) > 1:
+                        idx = overload_final_positions[1]
+                    self._show_error_if_checking(
+                        overloads[idx].node,
+                        "@final should appear only on the first overload",
+                        error_code=ErrorCode.invalid_annotation,
+                    )
+                else:
+                    effective_is_final = True
+            if overload_override_positions:
+                if overload_override_positions != [0]:
+                    placement_error = True
+                    idx = overload_override_positions[0]
+                    if idx == 0 and len(overload_override_positions) > 1:
+                        idx = overload_override_positions[1]
+                    self._show_error_if_checking(
+                        overloads[idx].node,
+                        error_code=ErrorCode.invalid_override_decorator,
+                    )
+                else:
+                    effective_is_override = True
+        if placement_error:
+            should_check_consistency = False
+
+        representative_node = impl_node if impl_node is not None else overloads[0].node
+        class_context = (
+            pending_block.scope.scope_object
+            if pending_block.scope.scope_type is ScopeType.class_scope
+            else None
+        )
+        if effective_is_override:
+            if class_context is None:
+                self._show_error_if_checking(
+                    representative_node, error_code=ErrorCode.invalid_override_decorator
+                )
+            elif not self._has_base_attribute_for(
+                class_context, pending_block.name, representative_node
+            ):
+                self._show_error_if_checking(
+                    representative_node, error_code=ErrorCode.override_does_not_override
+                )
+
+        if class_context is not None and self._is_final_base_method(
+            class_context, pending_block.name, representative_node
+        ):
+            self._show_error_if_checking(
+                representative_node,
+                "Cannot override a final method",
+                error_code=ErrorCode.invalid_annotation,
+            )
+
+        if effective_is_final and isinstance(class_context, str):
+            self._synthetic_final_methods.setdefault(class_context, set()).add(
+                pending_block.name
+            )
+        return should_check_consistency
+
+    @staticmethod
+    def _method_decorator_kind(*, is_classmethod: bool, is_staticmethod: bool) -> str:
+        if is_classmethod:
+            return "classmethod"
+        if is_staticmethod:
+            return "staticmethod"
+        return "instance"
+
+    def _is_final_base_method(
+        self, current_class: type | str, method_name: str, node: ast.AST
+    ) -> bool:
+        for base_class in self.checker.get_generic_bases(current_class):
+            if isinstance(
+                base_class, str
+            ) and method_name in self._synthetic_final_methods.get(base_class, set()):
+                return True
+        for base_class, base_value in self._get_base_class_attributes_for(
+            current_class, method_name, node
+        ):
+            if isinstance(
+                base_class, str
+            ) and method_name in self._synthetic_final_methods.get(base_class, set()):
+                return True
+            for subval in flatten_values(base_value, unwrap_annotated=True):
+                if isinstance(subval, KnownValue) and safe_getattr(
+                    subval.val, "__final__", False
+                ):
+                    return True
+        return False
 
     def _signature_for_overload_consistency(
         self, info: FunctionInfo, computed_function: Value
@@ -3192,6 +3643,18 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         return (
             self.current_class is not None
             and self.checker.make_type_object(self.current_class).is_protocol
+        )
+
+    def _return_annotation_allows_implicit_none(self, value: Value) -> bool:
+        if _is_known_none_annotation(value):
+            return True
+        can_assign = has_relation(value, KnownNone, Relation.ASSIGNABLE, self)
+        return not isinstance(can_assign, CanAssignError)
+
+    def _return_annotation_has_invalid_error(self, annotation: ast.expr) -> bool:
+        return any(
+            (subnode, ErrorCode.invalid_annotation) in self.seen_errors
+            for subnode in ast.walk(annotation)
         )
 
     def _has_only_docstring_and_stub(
@@ -3315,7 +3778,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         scope_type = self.scopes.scope_type()
         if scope_type == ScopeType.module_scope and self.module is not None:
             potential_function = safe_getattr(self.module, node.name, None)
-        elif scope_type == ScopeType.class_scope and self.current_class is not None:
+        elif scope_type == ScopeType.class_scope and isinstance(
+            self.current_class, type
+        ):
             potential_function = safe_getattr(self.current_class, node.name, None)
         else:
             potential_function = None
@@ -3648,7 +4113,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         self, node: FunctionNode, function_info: FunctionInfo
     ) -> None:
         """Makes sure the first argument to a method is self or cls."""
-        if self.current_class is None:
+        if not isinstance(self.current_class, type):
             return
         # staticmethods have no restrictions
         if function_info.is_staticmethod:

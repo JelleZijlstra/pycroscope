@@ -278,10 +278,14 @@ class Checker:
                     continue
                 base_typ = converted.typ
                 base_types.add(base_typ)
+                # Preserve direct synthetic bases even when we cannot infer a
+                # richer generic mapping for them (common for local synthetic
+                # classes with no typeshed entry).
+                merged_generic_bases.setdefault(base_typ, {})
                 generic_args = (
                     converted.args if isinstance(converted, GenericValue) else ()
                 )
-                for gb_typ, tv_map in self.arg_spec_cache.get_generic_bases(
+                for gb_typ, tv_map in self.get_generic_bases(
                     base_typ, generic_args
                 ).items():
                     merged_generic_bases.setdefault(gb_typ, {}).update(tv_map)

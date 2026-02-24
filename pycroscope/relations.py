@@ -1575,7 +1575,15 @@ def can_assign_and_used_any(
     if not isinstance(subtype_result, CanAssignError):
         return subtype_result, False
     assignability_result = is_assignable_with_reason(param_typ, var_value, ctx)
-    return assignability_result, True
+    if isinstance(assignability_result, CanAssignError):
+        return assignability_result, True
+    # For overload resolution, Any usage is relevant only when it appears
+    # on the argument (right-hand) side. If the parameter type itself
+    # contains Any, treat the match as clean.
+    used_any = not any(
+        isinstance(subval, AnyValue) for subval in param_typ.walk_values()
+    )
+    return assignability_result, used_any
 
 
 Irreducible = Sentinel("Irreducible")

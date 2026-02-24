@@ -430,6 +430,64 @@ class TestImportFailureHandlingCodeSamples(TestNameCheckVisitorBase):
         unpack_extra(name="No Country for Old Men", year=2007)
 
     @assert_passes(allow_import_failures=True)
+    def test_overloaded_override_and_final_after_import_failure(self):
+        from typing import final, overload, override
+
+        boom = 1 / 0
+
+        class Base:
+            @overload
+            @staticmethod
+            def final_method(x: int) -> int: ...
+
+            @overload
+            @staticmethod
+            def final_method(x: str) -> str: ...
+
+            @staticmethod
+            @final
+            def final_method(x: int | str) -> int | str:
+                return x
+
+            @overload
+            @staticmethod
+            def good_override(x: int) -> int: ...
+
+            @overload
+            @staticmethod
+            def good_override(x: str) -> str: ...
+
+            @staticmethod
+            def good_override(x: int | str) -> int | str:
+                return x
+
+        class Child(Base):
+            @overload
+            @staticmethod
+            def final_method(x: int) -> int: ...
+
+            @overload
+            @staticmethod
+            def final_method(x: str) -> str: ...
+
+            @staticmethod
+            def final_method(x: int | str) -> int | str:  # E: invalid_annotation
+                return x
+
+            @overload
+            @staticmethod
+            def good_override(x: int) -> int: ...
+
+            @overload
+            @staticmethod
+            def good_override(x: str) -> str: ...
+
+            @staticmethod
+            @override
+            def good_override(x: int | str) -> int | str:
+                return x
+
+    @assert_passes(allow_import_failures=True)
     def test_namedtuple_after_import_failure(self):
         boom = 1 / 0
 

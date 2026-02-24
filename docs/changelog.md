@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Improve overload checks in import-failure fallback mode by preserving synthetic base-class relationships for override/final validation, fixing false `override_does_not_override` reports and missed final-method override errors.
 - Fix an internal error on bare `ParamSpec` return annotations, and now report bare `ParamSpec` annotations as invalid in direct return/parameter/variable contexts instead of crashing.
 - Fix a crash in import-failure fallback mode when checking protocols that inherit generic bases (for example `Iterable[T]`), by resolving inherited protocol members statically instead of treating them as missing.
 - Annotate `match` pattern AST nodes in annotate mode, so `annotate_code()` and self-check no longer leave `Match*` nodes without `inferred_value`.

@@ -807,6 +807,35 @@ class TestGetGenericBases:
         )
 
 
+class TestCheckerGenericBases:
+    def test_register_synthetic_type_bases_tracks_direct_synthetic_base(self):
+        checker = Checker()
+        base = "test.Base"
+        child = "test.Child"
+        checker.register_synthetic_type_bases(base, [])
+        checker.register_synthetic_type_bases(
+            child, [SyntheticClassObjectValue("Base", TypedValue(base))]
+        )
+        assert checker.get_generic_bases(child) == {child: {}, base: {}}
+
+    def test_register_synthetic_type_bases_tracks_transitive_synthetic_bases(self):
+        checker = Checker()
+        grandparent = "test.Grandparent"
+        parent = "test.Parent"
+        child = "test.Child"
+        checker.register_synthetic_type_bases(
+            parent, [SyntheticClassObjectValue("Grandparent", TypedValue(grandparent))]
+        )
+        checker.register_synthetic_type_bases(
+            child, [SyntheticClassObjectValue("Parent", TypedValue(parent))]
+        )
+        assert checker.get_generic_bases(child) == {
+            child: {},
+            parent: {},
+            grandparent: {},
+        }
+
+
 class TestAttribute:
     def test_basic(self) -> None:
         tsf = TypeshedFinder(Checker(), verbose=True)
