@@ -17,6 +17,8 @@ from typing import TypeVar
 
 from typing_extensions import Protocol
 
+from pycroscope.input_sig import InputSigValue, ParamSpecSig
+
 from .analysis_lib import is_positional_only_arg_name
 from .error_code import ErrorCode
 from .maybe_asynq import asynq
@@ -308,20 +310,31 @@ def compute_parameters(
         )
         if arg.annotation is not None:
             value = ctx.expr_of_annotation(arg.annotation)
-            if default is not None:
-                inner_value, _ = value.maybe_unqualify(set(Qualifier))
-                if inner_value is not None:
-                    tv_map = has_relation(
-                        inner_value, default, Relation.ASSIGNABLE, ctx
+            inner_value, _ = value.maybe_unqualify(set(Qualifier))
+            if isinstance(inner_value, InputSigValue):
+                if isinstance(inner_value.input_sig, ParamSpecSig):
+                    ctx.show_error(
+                        arg,
+                        "ParamSpec cannot be used in this annotation context",
+                        error_code=ErrorCode.invalid_annotation,
                     )
-                    if isinstance(tv_map, CanAssignError):
-                        ctx.show_error(
-                            arg,
-                            f"Default value for argument {arg.arg} incompatible"
-                            f" with declared type {inner_value}",
-                            error_code=ErrorCode.incompatible_default,
-                            detail=tv_map.display(),
-                        )
+                else:
+                    ctx.show_error(
+                        arg,
+                        f"Unrecognized annotation {inner_value}",
+                        error_code=ErrorCode.invalid_annotation,
+                    )
+                value = AnyValue(AnySource.error)
+            elif default is not None and inner_value is not None:
+                tv_map = has_relation(inner_value, default, Relation.ASSIGNABLE, ctx)
+                if isinstance(tv_map, CanAssignError):
+                    ctx.show_error(
+                        arg,
+                        f"Default value for argument {arg.arg} incompatible"
+                        f" with declared type {inner_value}",
+                        error_code=ErrorCode.incompatible_default,
+                        detail=tv_map.display(),
+                    )
         elif is_self:
             assert enclosing_class is not None
             if is_classmethod or getattr(node, "name", None) in IMPLICIT_CLASSMETHODS:

@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Fix an internal error on bare `ParamSpec` return annotations, and now report bare `ParamSpec` annotations as invalid in direct return/parameter/variable contexts instead of crashing.
 - Fix an internal error when checking equality comparisons between dataclass instances in modules that fail at import time.
 - Preserve `@overload` behavior in static fallback mode when a module cannot be imported, including overload-aware inference for synthetic class dunder methods like `__getitem__` and consistency checks against overload implementations.
 - Preserve generic base information for synthetic classes in static fallback mode, so subclasses like `class D(dict[str, int])` are assignable to `dict[str, int]`.
