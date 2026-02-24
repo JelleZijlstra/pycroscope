@@ -1,5 +1,6 @@
 import sys
 from pathlib import Path
+from typing import final
 
 from . import importer
 
@@ -10,10 +11,16 @@ def test_import_module_pyi(tmp_path: Path) -> None:
         "from typing import final\n\n@final\nclass C:\n    ...\n", encoding="utf-8"
     )
     module_name = "final_stub_for_test"
+
+    # Python 3.10's typing.final does not set __final__; newer versions do.
+    @final
+    class _Probe: ...
+
+    expected_final_marker = getattr(_Probe, "__final__", False)
     try:
         module = importer.import_module(module_name, stub)
         assert module.__name__ == module_name
-        assert getattr(module.C, "__final__", False)
+        assert getattr(module.C, "__final__", False) is expected_final_marker
     finally:
         sys.modules.pop(module_name, None)
 
