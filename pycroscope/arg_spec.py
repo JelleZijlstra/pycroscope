@@ -7,7 +7,6 @@ Implementation of extended argument specifications used by test_scope.
 import ast
 import collections
 import contextlib
-import enum
 import inspect
 import sys
 import textwrap
@@ -47,7 +46,6 @@ from .safe import (
     is_bound_classmethod,
     is_newtype,
     is_typing_name,
-    safe_equals,
     safe_getattr,
     safe_hasattr,
     safe_isinstance,
@@ -108,8 +106,6 @@ if sys.version_info >= (3, 11):
 
 # types.MethodWrapperType in 3.7+
 MethodWrapperType = type(object().__str__)
-
-_ENUM_CALL = enum.Enum.__call__.__func__
 
 _SELF_PARAM = inspect.Parameter("__self", inspect.Parameter.POSITIONAL_ONLY)
 
@@ -763,15 +759,16 @@ class ArgSpecCache:
                     original_fn, impl, is_asynq, in_overload_resolution
                 )
 
-        # Special case for EnumMeta.__call__. Ideally this should be generalized.
+        # Handle Python-level metaclass __call__ implementations (for example EnumMeta.__call__)
+        class_call = safe_getattr(obj, "__call__", None)
+        call_func = safe_getattr(class_call, "__func__", None)
         if (
             safe_isinstance(obj, type)
-            and safe_issubclass(obj, enum.Enum)
-            and safe_isinstance(obj.__call__, MethodType)
-            and safe_equals(obj.__call__.__func__, _ENUM_CALL)
+            and safe_isinstance(class_call, MethodType)
+            and call_func is not None
         ):
             signature = self._cached_get_argspec(
-                _ENUM_CALL, impl, is_asynq, in_overload_resolution
+                call_func, impl, is_asynq, in_overload_resolution
             )
             self_value = SubclassValue(TypedValue(obj))
             bound_sig = make_bound_method(
