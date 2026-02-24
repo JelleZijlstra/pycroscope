@@ -75,6 +75,7 @@ from .annotations import (
     SyntheticEvaluator,
     annotation_expr_from_annotations,
     annotation_expr_from_ast,
+    annotation_expr_from_runtime,
     annotation_expr_from_value,
     is_context_manager_type,
     is_instance_of_typing_name,
@@ -1173,6 +1174,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     checker: Checker
     collector: CallSiteCollector | None
     current_class: type | str | None
+    current_class_key: type | str | None
     current_enum_members: dict[object, str] | None
     current_function: object | None
     current_function_info: FunctionInfo | None
@@ -1197,6 +1199,10 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     scopes: StackedScopes
     state: VisitorState
     unused_finder: UnusedObjectFinder
+    final_class_keys: set[type | str]
+    final_member_names_by_class: dict[type | str, set[str]]
+    final_members_initialized_in_init: dict[type | str, set[str]]
+    final_members_requiring_init: dict[type | str, dict[str, ast.AST]]
     yield_checker: YieldChecker
 
     def __init__(
@@ -1240,6 +1246,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         self.match_subject = Composite(AnyValue(AnySource.inference))
         # current class (for inferring the type of cls and self arguments)
         self.current_class = None
+        self.current_class_key = None
         self.current_synthetic_typeddict = None
         self.current_function_name = None
         self.current_function_info = None
@@ -1310,6 +1317,10 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         self._method_cache = {}
         self._statement_types = set()
         self._should_exclude_any = False
+        self.final_class_keys = set()
+        self.final_member_names_by_class = {}
+        self.final_members_initialized_in_init = {}
+        self.final_members_requiring_init = {}
         self._fill_method_cache()
 
     def get_local_return_value(self, sig: MaybeSignature) -> Value | None:
@@ -1784,7 +1795,16 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             return
         if varname in self.options.get_value_for(IgnoredForIncompatibleOverride):
             return
+        if varname.startswith("__") and not varname.endswith("__"):
+            return
         for base_class, base_value in self._get_base_class_attributes(varname, node):
+            if self._is_final_member(base_class, varname, base_value):
+                self._show_error_if_checking(
+                    node,
+                    f"Cannot override final attribute {varname}",
+                    ErrorCode.invalid_annotation,
+                )
+                continue
             can_assign = self._can_assign_to_base(base_value, value, base_class, node)
             if isinstance(can_assign, CanAssignError):
                 error = CanAssignError(
@@ -1800,6 +1820,31 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     ErrorCode.incompatible_override,
                     detail=str(error),
                 )
+
+    def _base_class_key_from_value(self, base_value: Value) -> type | str | None:
+        base_value = replace_fallback(base_value)
+        if isinstance(base_value, AnnotatedValue):
+            return self._base_class_key_from_value(base_value.value)
+        if isinstance(base_value, SubclassValue) and isinstance(
+            base_value.typ, TypedValue
+        ):
+            if isinstance(base_value.typ.typ, (type, str)):
+                return base_value.typ.typ
+            return None
+        if isinstance(base_value, SyntheticClassObjectValue):
+            class_type = base_value.class_type
+            if isinstance(class_type, TypedValue):
+                return class_type.typ
+            return None
+        if isinstance(base_value, TypedValue):
+            if isinstance(base_value.typ, (type, str)):
+                return base_value.typ
+            return None
+        if isinstance(base_value, KnownValue):
+            if isinstance(base_value.val, type):
+                return base_value.val
+            return None
+        return None
 
     def display_value(self, value: Value) -> str:
         return self.checker.display_value(value)
@@ -2014,8 +2059,15 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             yield
 
     def visit_ClassDef(self, node: ast.ClassDef) -> Value:
-        self._generic_visit_list(node.decorator_list)
+        decorator_values = self._generic_visit_list(node.decorator_list)
         class_obj = self._get_current_class_object(node)
+        class_key: type | str = (
+            class_obj
+            if class_obj is not None
+            else self._get_synthetic_class_fq_name(node)
+        )
+        if any(self._is_final_decorator_value(value) for value in decorator_values):
+            self.final_class_keys.add(class_key)
         if sys.version_info >= (3, 12) and node.type_params:
             ctx = self.scopes.add_scope(
                 ScopeType.annotation_scope, scope_node=node, scope_object=class_obj
@@ -2026,6 +2078,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             if sys.version_info >= (3, 12) and node.type_params:
                 self.visit_type_param_values(node.type_params)
             base_values = self._generic_visit_list(node.bases)
+            self._check_for_final_base_classes(node, base_values)
             keyword_values = [(kw, self.visit(kw.value)) for kw in node.keywords]
             synthetic_typeddict = self._make_synthetic_typeddict_context(
                 node, base_values, keyword_values
@@ -2067,7 +2120,10 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     # like "return C.attr" or string annotations mentioning C
                     # resolve even when no runtime class object exists.
                     self.scopes.set(node.name, synthetic_class, node, self.state)
-            with override(self, "current_synthetic_typeddict", synthetic_typeddict):
+            with (
+                override(self, "current_synthetic_typeddict", synthetic_typeddict),
+                override(self, "current_class_key", class_key),
+            ):
                 value, class_scope_values = self._visit_class_and_get_value(
                     node, class_scope_object
                 )
@@ -2113,6 +2169,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             # check-phase result.
             value_to_store = None
         value, _ = self._set_name_in_scope(node.name, node, value_to_store)
+        self._check_for_uninitialized_final_members(class_key)
         return value
 
     def _make_synthetic_typeddict_context(
@@ -3077,6 +3134,26 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         ) as info:
             self.yield_checker.reset_yield_checks()
 
+            if info.is_final:
+                in_class = self.node_context.includes(ast.ClassDef)
+                if not in_class:
+                    self._show_error_if_checking(
+                        node,
+                        "@final is not allowed on non-method functions",
+                        error_code=ErrorCode.invalid_annotation,
+                    )
+                elif info.is_overload and not self.filename.endswith(".pyi"):
+                    self._show_error_if_checking(
+                        node,
+                        "@final should be applied only to the overload implementation",
+                        error_code=ErrorCode.invalid_annotation,
+                    )
+                class_key = self.current_class_key
+                if class_key is not None and (
+                    not info.is_overload or self.filename.endswith(".pyi")
+                ):
+                    self._record_final_member(class_key, node.name)
+
             if node.returns is None:
                 self._show_error_if_checking(
                     node, error_code=ErrorCode.missing_return_annotation
@@ -3640,6 +3717,145 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     def _is_overload_decorator(self, value: Value) -> bool:
         return isinstance(value, KnownValue) and value.val in (real_overload, overload)
 
+    def _is_final_decorator_value(self, value: Value) -> bool:
+        return isinstance(value, KnownValue) and is_typing_name(value.val, "final")
+
+    def _record_final_member(self, class_key: type | str, member_name: str) -> None:
+        self.final_member_names_by_class.setdefault(class_key, set()).add(member_name)
+
+    def _check_for_final_base_classes(
+        self, node: ast.ClassDef, base_values: Sequence[Value]
+    ) -> None:
+        if not self._is_checking():
+            return
+        for base in base_values:
+            if self._is_final_base_value(base):
+                self._show_error_if_checking(
+                    node,
+                    "Cannot inherit from final class",
+                    ErrorCode.invalid_annotation,
+                )
+                return
+
+    def _is_final_base_value(self, base_value: Value) -> bool:
+        base_key = self._base_class_key_from_value(base_value)
+        if base_key is None:
+            return False
+        if base_key in self.final_class_keys:
+            return True
+        if isinstance(base_key, type):
+            if getattr(base_key, "__final__", False):
+                return True
+        try:
+            return self.checker.ts_finder.is_final(base_key)
+        except Exception:
+            return False
+
+    def _check_for_uninitialized_final_members(self, class_key: type | str) -> None:
+        if not self._is_checking():
+            self.final_members_requiring_init.pop(class_key, None)
+            self.final_members_initialized_in_init.pop(class_key, None)
+            return
+        required = self.final_members_requiring_init.pop(class_key, {})
+        initialized = self.final_members_initialized_in_init.pop(class_key, set())
+        for name, node in required.items():
+            if name in initialized:
+                continue
+            self._show_error_if_checking(
+                node,
+                "Final class attributes without initializers must be assigned in __init__",
+                error_code=ErrorCode.invalid_annotation,
+            )
+
+    def _is_allowed_instance_final_annotation_target(
+        self, target: ast.Attribute
+    ) -> bool:
+        return (
+            self.current_function_name == "__init__"
+            and isinstance(target.value, ast.Name)
+            and target.value.id == "self"
+        )
+
+    def _class_key_for_attribute_target(
+        self, node: ast.Attribute, root_value: Value
+    ) -> type | str | None:
+        if (
+            isinstance(node.value, ast.Name)
+            and node.value.id in {"self", "cls"}
+            and self.current_class_key is not None
+        ):
+            return self.current_class_key
+        return self._base_class_key_from_value(root_value)
+
+    def _is_assignment_to_final_attribute(
+        self, node: ast.Attribute, root_value: Value
+    ) -> bool:
+        if self.ann_assign_type is not None and self.ann_assign_type[1]:
+            return False
+        class_key = self._class_key_for_attribute_target(node, root_value)
+        if class_key is None:
+            return False
+        if not self._is_final_member(class_key, node.attr):
+            return False
+        required = self.final_members_requiring_init.get(class_key)
+        if self.current_function_name == "__init__" and required is not None:
+            if node.attr in required:
+                self.final_members_initialized_in_init.setdefault(class_key, set()).add(
+                    node.attr
+                )
+                return False
+        return True
+
+    def _is_final_member(
+        self, class_key: type | str, member_name: str, member_value: Value | None = None
+    ) -> bool:
+        if member_name in self.final_member_names_by_class.get(class_key, set()):
+            return True
+        if isinstance(class_key, type):
+            class_dict = safe_getattr(class_key, "__dict__", {})
+            if isinstance(class_dict, Mapping):
+                runtime_member = class_dict.get(member_name)
+                if getattr(runtime_member, "__final__", False):
+                    return True
+        if isinstance(member_value, KnownValue) and getattr(
+            member_value.val, "__final__", False
+        ):
+            return True
+        if isinstance(class_key, str):
+            try:
+                return self.checker.ts_finder.is_final_attribute(class_key, member_name)
+            except Exception:
+                return False
+        return False
+
+    def _is_final_imported_name(self, source_module: Value, alias_name: str) -> bool:
+        if not isinstance(source_module, KnownValue):
+            return False
+        module = source_module.val
+        if not isinstance(module, types.ModuleType):
+            return False
+        annotations = safe_getattr(module, "__annotations__", None)
+        if not isinstance(annotations, Mapping) or alias_name not in annotations:
+            return False
+        try:
+            expr = annotation_expr_from_runtime(
+                annotations[alias_name],
+                visitor=self,
+                globals=module.__dict__,
+                suppress_errors=True,
+            )
+        except Exception:
+            return False
+        _, qualifiers = expr.maybe_unqualify({Qualifier.Final})
+        return Qualifier.Final in qualifiers
+
+    def _is_forbidden_annotated_call(self, callee: Value) -> bool:
+        if not isinstance(callee, KnownValue):
+            return False
+        if is_typing_name(callee.val, "Annotated"):
+            return True
+        return is_typing_name(get_origin(callee.val), "Annotated")
+
     def _allow_missing_return(self, info: FunctionInfo) -> bool:
         if info.is_overload or info.is_evaluated:
             return True
@@ -4160,7 +4376,14 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 self.unused_finder.record(
                     module_scope.scope_object, name, module_scope.scope_object.__name__
                 )
-            self._set_name_in_scope(name, node, ReferencingValue(module_scope, name))
+            with (
+                override(self, "ann_assign_type", (None, True))
+                if module_scope.is_final(name)
+                else contextlib.nullcontext()
+            ):
+                self._set_name_in_scope(
+                    name, node, ReferencingValue(module_scope, name)
+                )
 
     def visit_Nonlocal(self, node: ast.Nonlocal) -> None:
         if self.scopes.scope_type() != ScopeType.function_scope:
@@ -4179,7 +4402,14 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     error_code=ErrorCode.bad_nonlocal,
                 )
                 defining_scope = self.scopes.module_scope()
-            self._set_name_in_scope(name, node, ReferencingValue(defining_scope, name))
+            with (
+                override(self, "ann_assign_type", (None, True))
+                if defining_scope.is_final(name)
+                else contextlib.nullcontext()
+            ):
+                self._set_name_in_scope(
+                    name, node, ReferencingValue(defining_scope, name)
+                )
 
     def check_deprecation(self, node: ast.AST, value: Value) -> bool:
         if isinstance(value, AnnotatedValue):
@@ -4262,21 +4492,28 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         value: Value,
         *,
         force_public: bool = False,
+        is_final: bool = False,
         node: ast.AST,
     ) -> None:
         if self.check_deprecation(alias, value):
             value = annotate_value(value, [SkipDeprecatedExtension()])
-        if alias.asname is not None:
-            self._set_name_in_scope(
-                alias.asname,
-                alias,
-                value,
-                private=not force_public and alias.asname != alias.name,
-            )
-        else:
-            self._set_name_in_scope(
-                alias.name.split(".")[0], alias, value, private=not force_public
-            )
+        annotation_ctx = (
+            override(self, "ann_assign_type", (None, True))
+            if is_final
+            else contextlib.nullcontext()
+        )
+        with annotation_ctx:
+            if alias.asname is not None:
+                self._set_name_in_scope(
+                    alias.asname,
+                    alias,
+                    value,
+                    private=not force_public and alias.asname != alias.name,
+                )
+            else:
+                self._set_name_in_scope(
+                    alias.name.split(".")[0], alias, value, private=not force_public
+                )
 
     def _get_module(self, name: str, node: ast.AST) -> Value:
         if name not in sys.modules:
@@ -4312,7 +4549,30 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         try:
             __import__(module_name)
         except Exception:
-            pass
+            self._try_to_import_stub(module_name)
+
+    def _try_to_import_stub(self, module_name: str) -> None:
+        parts = module_name.split(".")
+        search_paths = [
+            *[Path(path) for path in self.options.get_value_for(ImportPaths)],
+            Path.cwd(),
+        ]
+        for entry in sys.path:
+            try:
+                search_paths.append(Path(entry))
+            except TypeError:
+                continue
+        for base in search_paths:
+            module_file = base.joinpath(*parts).with_suffix(".pyi")
+            package_file = base.joinpath(*parts, "__init__.pyi")
+            for candidate in (module_file, package_file):
+                if not candidate.exists():
+                    continue
+                try:
+                    importer.import_module(module_name, candidate.resolve())
+                except Exception:
+                    continue
+                return
 
     def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
         self.generic_visit(node)
@@ -4382,9 +4642,14 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     for name, val in source_module.val.__dict__.items():
                         if name.startswith("_"):
                             continue
-                        self._set_name_in_scope(
-                            name, alias, KnownValue(val), private=False
-                        )
+                        with (
+                            override(self, "ann_assign_type", (None, True))
+                            if self._is_final_imported_name(source_module, name)
+                            else contextlib.nullcontext()
+                        ):
+                            self._set_name_in_scope(
+                                name, alias, KnownValue(val), private=False
+                            )
                 else:
                     self._show_error_if_checking(
                         node,
@@ -4394,7 +4659,11 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 continue
             val = self._get_import_from_value(source_module, alias.name, node)
             self._set_alias_in_scope(
-                alias, val, force_public=is_init and node.level == 1, node=node
+                alias,
+                val,
+                force_public=is_init and node.level == 1,
+                is_final=self._is_final_imported_name(source_module, alias.name),
+                node=node,
             )
 
     def _get_import_from_value(
@@ -6361,6 +6630,37 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
 
         # TODO: handle TypeAlias and ClassVar
         is_final = Qualifier.Final in qualifiers
+        if Qualifier.Final in qualifiers and Qualifier.ClassVar in qualifiers:
+            self._show_error_if_checking(
+                node.annotation,
+                "Final cannot be combined with ClassVar",
+                error_code=ErrorCode.invalid_annotation,
+            )
+        if is_final and node.value is None and expected_type is None:
+            self._show_error_if_checking(
+                node.annotation,
+                "Final annotation without assignment requires an explicit type",
+                error_code=ErrorCode.invalid_annotation,
+            )
+
+        if is_final and self.scopes.scope_type() == ScopeType.class_scope:
+            class_key = self.current_class_key
+            if class_key is not None and isinstance(node.target, ast.Name):
+                self._record_final_member(class_key, node.target.id)
+                if node.value is None:
+                    self.final_members_requiring_init.setdefault(class_key, {})[
+                        node.target.id
+                    ] = node
+
+        if is_final and isinstance(node.target, ast.Attribute):
+            if not self._is_allowed_instance_final_annotation_target(node.target):
+                self._show_error_if_checking(
+                    node.annotation,
+                    "Final instance attributes may be declared only in __init__",
+                    error_code=ErrorCode.invalid_annotation,
+                )
+            elif self.current_class_key is not None:
+                self._record_final_member(self.current_class_key, node.target.attr)
 
         if node.value is not None:
             is_yield = isinstance(node.value, ast.Yield)
@@ -6954,6 +7254,12 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     self.ann_assign_type is not None
                 ), "should only happen in AnnAssign"
                 return Composite(AnyValue(AnySource.inference), composite, node)
+            if self._is_assignment_to_final_attribute(node, root_composite.value):
+                self._show_error_if_checking(
+                    node,
+                    f"Cannot assign to final name {node.attr}",
+                    error_code=ErrorCode.incompatible_assignment,
+                )
             if (
                 composite is not None
                 and self.scopes.scope_type() == ScopeType.function_scope
@@ -7224,6 +7530,13 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             ]
         else:
             keywords = []
+        if self._is_forbidden_annotated_call(callee_wrapped):
+            self._show_error_if_checking(
+                node,
+                "Annotated cannot be called",
+                error_code=ErrorCode.invalid_annotation,
+            )
+            return AnyValue(AnySource.error)
 
         return_value = self.check_call(
             node, callee_wrapped, args, keywords, allow_call=self.in_annotation

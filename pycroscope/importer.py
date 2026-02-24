@@ -5,6 +5,7 @@ Module responsible for importing files.
 """
 
 import importlib
+import importlib.machinery
 import importlib.util
 import sys
 from collections.abc import Sequence
@@ -106,7 +107,12 @@ def load_module_from_file(
 def import_module(module_path: str, filename: Path) -> ModuleType:
     """Import a file under an arbitrary module name."""
     spec = importlib.util.spec_from_file_location(module_path, filename)
-    if spec is None:
+    if (spec is None or spec.loader is None) and filename.suffix == ".pyi":
+        loader = importlib.machinery.SourceFileLoader(module_path, str(filename))
+        spec = importlib.util.spec_from_loader(
+            module_path, loader, origin=str(filename)
+        )
+    if spec is None or spec.loader is None:
         raise ImportError(f"Cannot import {module_path} from {filename}: no spec found")
     module = importlib.util.module_from_spec(spec)
     sys.modules[module_path] = module

@@ -828,6 +828,18 @@ class TestAnnotated(TestNameCheckVisitorBase):
                 Child().attrs, GenericValue(list, [AnyValue(AnySource.from_another)])
             )
 
+    @assert_passes()
+    def test_annotated_requires_metadata_and_is_not_callable(self):
+        from typing import Annotated, TypeAlias
+
+        Alias: TypeAlias = Annotated[int, "meta"]
+        _bad: "Annotated[int]"  # E: invalid_annotation
+
+        def capybara() -> None:
+            Annotated()  # E: invalid_annotation
+            Annotated[int, "meta"]()  # E: invalid_annotation
+            Alias(1)  # E: invalid_annotation
+
 
 class TestCallable(TestNameCheckVisitorBase):
     @assert_passes()

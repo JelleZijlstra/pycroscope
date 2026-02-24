@@ -501,7 +501,7 @@ def _annotation_expr_from_runtime(val: object, ctx: Context) -> AnnotationExpr:
     elif is_typing_name(val, "Final"):
         return AnnotationExpr(ctx, None, [(Qualifier.Final, None)])
     elif is_typing_name(val, "ClassVar"):
-        return AnnotationExpr(ctx, None, [(Qualifier.Final, None)])
+        return AnnotationExpr(ctx, None, [(Qualifier.ClassVar, None)])
     elif is_typing_name(val, "TypeAlias"):
         return AnnotationExpr(ctx, None, [(Qualifier.TypeAlias, None)])
     elif isinstance(val, InitVar):
@@ -881,6 +881,9 @@ def _annotation_expr_from_subscripted_value(
         return AnnotationExpr(ctx, val)
     root_val = root.val
     if is_typing_name(root_val, "Annotated"):
+        if len(members) < 2:
+            ctx.show_error("Annotated[] requires at least two arguments")
+            return AnnotationExpr(ctx, AnyValue(AnySource.error))
         origin, *metadata = members
         origin_expr = _annotation_expr_from_value(origin, ctx)
         return origin_expr.add_metadata(translate_annotated_metadata(metadata, ctx))
@@ -888,6 +891,7 @@ def _annotation_expr_from_subscripted_value(
         Qualifier.Required,
         Qualifier.NotRequired,
         Qualifier.ReadOnly,
+        Qualifier.Final,
         Qualifier.ClassVar,
         Qualifier.InitVar,
         Qualifier.Unpack,
@@ -970,6 +974,9 @@ def _type_from_subscripted_value(
         argument = _type_from_value(members[0], ctx)
         return SubclassValue.make(argument)
     elif is_typing_name(root, "Annotated"):
+        if len(members) < 2:
+            ctx.show_error("Annotated[] requires at least two arguments")
+            return AnyValue(AnySource.error)
         origin, *metadata = members
         return _make_annotated(_type_from_value(origin, ctx), metadata, ctx)
     elif is_typing_name(root, "TypeGuard"):
@@ -1000,6 +1007,11 @@ def _type_from_subscripted_value(
     elif is_typing_name(root, "ReadOnly"):
         ctx.show_error("ReadOnly[] used in unsupported context")
         return AnyValue(AnySource.error)
+    elif is_typing_name(root, "Final"):
+        if len(members) != 1:
+            ctx.show_error("Final[] requires a single argument")
+            return AnyValue(AnySource.error)
+        return _type_from_value(members[0], ctx)
     elif is_typing_name(root, "Unpack"):
         ctx.show_error("Unpack[] used in unsupported context")
         return AnyValue(AnySource.error)
@@ -1400,6 +1412,9 @@ def _annotation_expr_of_origin_args(
     origin: object, args: Sequence[object], val: object, ctx: Context
 ) -> AnnotationExpr:
     if is_typing_name(origin, "Annotated"):
+        if len(args) < 2:
+            ctx.show_error("Annotated[] requires at least two arguments")
+            return AnnotationExpr(ctx, AnyValue(AnySource.error))
         origin, *metadata = args
         inner = _annotation_expr_from_runtime(origin, ctx)
         meta = translate_annotated_metadata(
@@ -1461,6 +1476,9 @@ def _value_of_origin_args(
         sig = Signature.make(params, _type_from_runtime(return_type, ctx))
         return CallableValue(sig)
     elif is_typing_name(origin, "Annotated"):
+        if len(args) < 2:
+            ctx.show_error("Annotated[] requires at least two arguments")
+            return AnyValue(AnySource.error)
         origin, *metadata = args
         return _make_annotated(
             _type_from_runtime(origin, ctx),
