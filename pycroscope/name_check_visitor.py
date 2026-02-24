@@ -208,6 +208,7 @@ from .value import (
     DictIncompleteValue,
     GenericBases,
     GenericValue,
+    HasAttrExtension,
     IntersectionValue,
     KnownValue,
     KVPair,
@@ -1944,10 +1945,14 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             if synthetic_typeddict is not None:
                 self._validate_typeddict_class_syntax(node)
             elif class_obj is None:
+                synthetic_fq_name = self._get_synthetic_class_fq_name(node)
                 synthetic_class = SyntheticClassObjectValue(
                     node.name,
-                    TypedValue(self._get_synthetic_class_fq_name(node)),
+                    TypedValue(synthetic_fq_name),
                     base_classes=tuple(base_values),
+                )
+                self.checker.register_synthetic_type_bases(
+                    synthetic_fq_name, base_values
                 )
                 if self._is_checking():
                     # Bind the class name while checking its body so references
@@ -2621,11 +2626,17 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 )
 
             computed_function = compute_value_of_function(info, self)
+            static_overload_signature: OverloadedSignature | None = None
+            if not info.is_overload and not info.is_evaluated:
+                static_overload_signature = self._get_pending_overload_signature(node)
             self._check_overload_implementation_consistency(
                 node, info, computed_function
             )
             if potential_function is None:
-                val = computed_function
+                if static_overload_signature is not None:
+                    val = CallableValue(static_overload_signature, types.FunctionType)
+                else:
+                    val = computed_function
             else:
                 val = KnownValue(potential_function)
             if not info.is_overload and not info.is_evaluated:
@@ -2746,6 +2757,29 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
 
         self._set_argspec_to_retval(val, info, result)
         return val
+
+    def _get_pending_overload_signature(
+        self, node: FunctionDefNode
+    ) -> OverloadedSignature | None:
+        if not self._is_checking():
+            return None
+        current_scope = self.scopes.current_scope()
+        scope_key = id(current_scope)
+        pending_block = self._pending_overload_blocks.get(scope_key)
+        if pending_block is not None and pending_block.scope is not current_scope:
+            self._pending_overload_blocks.pop(scope_key, None)
+            pending_block = None
+        if pending_block is None or pending_block.name != node.name:
+            return None
+        signatures: list[Signature] = []
+        for pending in pending_block.overloads:
+            if isinstance(pending.signature, Signature):
+                signatures.append(pending.signature)
+            else:
+                signatures.extend(pending.signature.signatures)
+        if signatures:
+            return OverloadedSignature(signatures)
+        return None
 
     def _check_overload_implementation_consistency(
         self, node: FunctionDefNode, info: FunctionInfo, computed_function: Value
@@ -5977,6 +6011,18 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         return KnownValue(Any)
 
     def _get_dunder(self, node: ast.AST, callee_val: Value, method_name: str) -> Value:
+        if isinstance(callee_val, AnnotatedValue):
+            has_explicit_method = any(
+                extension.attribute_name == KnownValue(method_name)
+                for extension in callee_val.get_metadata_of_type(HasAttrExtension)
+            )
+            if has_explicit_method:
+                return self.get_attribute(
+                    Composite(callee_val),
+                    method_name,
+                    node,
+                    ignore_none=self.options.get_value_for(IgnoreNoneAttributes),
+                )
         lookup_val = callee_val.get_type_value()
         method_object = self.get_attribute(
             Composite(lookup_val),

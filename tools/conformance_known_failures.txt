@@ -75,7 +75,6 @@ generics_typevartuple_unpack
 generics_upper_bound
 generics_variance
 generics_variance_inference
-historical_positional
 literals_interactions
 literals_literalstring
 literals_parameterizations

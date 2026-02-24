@@ -825,8 +825,10 @@ class TestAnnotated(TestNameCheckVisitorBase):
             class Child:
                 attrs: list[Base]
 
-            # Ideally should not be Any, but this is better than throwing a false positive error.
-            assert_is_value(Child().attrs, AnyValue(AnySource.from_another))
+            # TODO: ideally this should preserve list[Base] instead of falling back to Any.
+            assert_is_value(
+                Child().attrs, GenericValue(list, [AnyValue(AnySource.from_another)])
+            )
 
 
 class TestCallable(TestNameCheckVisitorBase):

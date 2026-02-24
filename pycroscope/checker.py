@@ -66,6 +66,7 @@ from .value import (
 )
 
 _BaseProvider = Callable[[type | super], set[type]]
+_SyntheticGenericBases = dict[type | str, dict[object, Value]]
 
 
 class AdditionalBaseProviders(PyObjectSequenceOption[_BaseProvider]):
@@ -95,6 +96,12 @@ class Checker:
     reexport_tracker: ImplicitReexportTracker = field(init=False, repr=False)
     callable_tracker: CallableTracker = field(init=False, repr=False)
     type_object_cache: dict[type | super | str, TypeObject] = field(
+        default_factory=dict, init=False, repr=False
+    )
+    synthetic_type_bases: dict[str, set[type | str]] = field(
+        default_factory=dict, init=False, repr=False
+    )
+    synthetic_generic_bases: dict[str, _SyntheticGenericBases] = field(
         default_factory=dict, init=False, repr=False
     )
     _relation_cache: dict[object, object] = field(
@@ -166,7 +173,9 @@ class Checker:
     def _build_type_object(self, typ: type | super | str) -> TypeObject:
         if isinstance(typ, str):
             # Synthetic type
-            bases = self._get_typeshed_bases(typ)
+            bases = self._get_typeshed_bases(typ) | self.synthetic_type_bases.get(
+                typ, set()
+            )
             is_protocol = any(is_typing_name(base, "Protocol") for base in bases)
             if is_protocol:
                 protocol_members = self._get_protocol_members(bases)
@@ -239,7 +248,49 @@ class Checker:
     def get_generic_bases(
         self, typ: type | str, generic_args: Sequence[Value] = ()
     ) -> GenericBases:
-        return self.arg_spec_cache.get_generic_bases(typ, generic_args)
+        generic_bases = self.arg_spec_cache.get_generic_bases(typ, generic_args)
+        if not isinstance(typ, str):
+            return generic_bases
+
+        synthetic_bases = self.synthetic_generic_bases.get(typ)
+        if synthetic_bases is None:
+            return generic_bases
+
+        merged = {base: dict(tv_map) for base, tv_map in generic_bases.items()}
+        for base, tv_map in synthetic_bases.items():
+            merged.setdefault(base, {}).update(tv_map)
+        return merged
+
+    def register_synthetic_type_bases(
+        self, typ: str, base_values: Sequence[Value]
+    ) -> None:
+        base_types: set[type | str] = set()
+        merged_generic_bases: _SyntheticGenericBases = {typ: {}}
+        for base in base_values:
+            for subval in flatten_values(replace_fallback(base)):
+                converted: Value = subval
+                if isinstance(converted, KnownValue):
+                    converted = self.arg_spec_cache._type_from_base(converted.val)
+                elif isinstance(converted, SyntheticClassObjectValue):
+                    converted = converted.class_type
+                if not isinstance(converted, TypedValue):
+                    continue
+                base_typ = converted.typ
+                base_types.add(base_typ)
+                generic_args = (
+                    converted.args if isinstance(converted, GenericValue) else ()
+                )
+                for gb_typ, tv_map in self.arg_spec_cache.get_generic_bases(
+                    base_typ, generic_args
+                ).items():
+                    merged_generic_bases.setdefault(gb_typ, {}).update(tv_map)
+
+        if base_types:
+            self.synthetic_type_bases.setdefault(typ, set()).update(base_types)
+        existing = self.synthetic_generic_bases.setdefault(typ, {})
+        for gb_typ, tv_map in merged_generic_bases.items():
+            existing.setdefault(gb_typ, {}).update(tv_map)
+        self.type_object_cache.pop(typ, None)
 
     def get_signature(
         self, obj: object, is_asynq: bool = False
@@ -427,12 +478,9 @@ class Checker:
                 value.class_type.typ, allow_synthetic_type=True
             )
             if argspec is None:
-                if self._synthetic_class_has_any_base(value):
-                    return Signature.make(
-                        [ELLIPSIS_PARAM],
-                        self._make_synthetic_any_base_instance_value(value),
-                    )
-                return ANY_SIGNATURE
+                return Signature.make(
+                    [ELLIPSIS_PARAM], self._make_synthetic_class_instance_value(value)
+                )
             return argspec
         elif isinstance(value, TypedValue):
             typ = value.typ
@@ -514,25 +562,55 @@ class Checker:
             return is_typing_name(base.typ, "Any")
         return False
 
-    def _make_synthetic_any_base_instance_value(
+    def _make_synthetic_class_instance_value(
         self, value: SyntheticClassObjectValue
     ) -> Value:
         metadata = [
-            HasAttrExtension(KnownValue(name), self._make_any_base_attribute(attr))
+            HasAttrExtension(
+                KnownValue(name), self._make_any_base_attribute(name, attr)
+            )
             for name, attr in value.class_attributes.items()
             if not name.startswith("%")
         ]
-        instance = AnyValue(AnySource.from_another)
+        if self._synthetic_class_has_any_base(value):
+            instance: Value = AnyValue(AnySource.from_another)
+        else:
+            instance = value.class_type
         if metadata:
             return annotate_value(instance, metadata)
         return instance
 
-    def _make_any_base_attribute(self, attr: Value) -> Value:
-        if isinstance(attr, CallableValue) and isinstance(attr.signature, Signature):
-            return CallableValue(
-                Signature.make([ELLIPSIS_PARAM], attr.signature.return_value)
-            )
-        return attr
+    def _make_any_base_attribute(self, name: str, attr: Value) -> Value:
+        if isinstance(attr, CallableValue):
+            if _is_dunder(name):
+                return attr
+            maybe_bound = self._bind_synthetic_method(attr.signature)
+            if maybe_bound is not None:
+                return CallableValue(maybe_bound)
+            return attr
+        return _normalize_synthetic_attribute(attr)
+
+    def _bind_synthetic_method(
+        self, signature: ConcreteSignature
+    ) -> ConcreteSignature | None:
+        def _first_parameter_name(sig: Signature) -> str | None:
+            return next(iter(sig.parameters.values())).name if sig.parameters else None
+
+        if isinstance(signature, Signature):
+            if _first_parameter_name(signature) not in {"self", "cls"}:
+                return None
+        elif isinstance(signature, OverloadedSignature):
+            if not all(
+                _first_parameter_name(sig) in {"self", "cls"}
+                for sig in signature.signatures
+            ):
+                return None
+        bound = make_bound_method(
+            signature, Composite(AnyValue(AnySource.from_another)), ctx=self
+        )
+        if bound is None:
+            return None
+        return bound.get_signature(ctx=self)
 
     def get_attribute_from_value(
         self, root_value: Value, attribute: str, *, prefer_typeshed: bool = False
@@ -557,6 +635,24 @@ class Checker:
             checker=self,
         )
         return get_attribute(ctx)
+
+
+def _is_dunder(name: str) -> bool:
+    return name.startswith("__") and name.endswith("__")
+
+
+def _normalize_synthetic_attribute(attr: Value) -> Value:
+    if isinstance(attr, AnyValue) and attr.source is AnySource.explicit:
+        return AnyValue(AnySource.from_another)
+    if isinstance(attr, GenericValue):
+        new_args = tuple(_normalize_synthetic_attribute(arg) for arg in attr.args)
+        if new_args != attr.args:
+            return GenericValue(attr.typ, new_args)
+    if isinstance(attr, MultiValuedValue):
+        new_vals = tuple(_normalize_synthetic_attribute(val) for val in attr.vals)
+        if new_vals != tuple(attr.vals):
+            return unite_values(*new_vals)
+    return attr
 
 
 EXCLUDED_PROTOCOL_MEMBERS: set[str] = {

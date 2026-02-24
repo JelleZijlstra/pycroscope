@@ -457,6 +457,75 @@ class TestImportFailureHandling:
 
 class TestImportFailureHandlingCodeSamples(TestNameCheckVisitorBase):
     @assert_passes(allow_import_failures=True)
+    def test_overload_consistency_after_import_failure(self):
+        from typing import overload
+
+        boom = 1 / 0
+
+        @overload
+        def return_type(x: int, /) -> int: ...
+
+        @overload
+        def return_type(x: str, /) -> str:  # E: inconsistent_overload
+            ...
+
+        def return_type(x: int | str, /) -> int:
+            return 1
+
+        @overload
+        def parameter_type(x: int, /) -> int: ...
+
+        @overload
+        def parameter_type(x: str, /) -> str:  # E: inconsistent_overload
+            ...
+
+        def parameter_type(x: int, /) -> int | str:
+            return 1
+
+    @assert_passes(allow_import_failures=True)
+    def test_dict_subclass_assignable_to_dict_after_import_failure(self):
+        boom = 1 / 0
+
+        class CustomDict(dict[str, int]):
+            pass
+
+        def takes_dict(x: dict[str, int]) -> None:
+            return None
+
+        takes_dict(CustomDict({"num": 1}))
+
+    @assert_passes(allow_import_failures=True)
+    def test_overload_fallback_after_import_failure(self):
+        from typing import assert_type, overload
+
+        boom = 1 / 0
+
+        @overload
+        def f(x: int, /) -> int: ...
+
+        @overload
+        def f(x: str, /) -> str: ...
+
+        def f(x: int | str, /) -> int | str:
+            return x
+
+        class B:
+            @overload
+            def __getitem__(self, x: int, /) -> int: ...
+
+            @overload
+            def __getitem__(self, x: str, /) -> bytes: ...
+
+            def __getitem__(self, x: int | str, /) -> int | bytes:
+                raise NotImplementedError
+
+        b = B()
+        assert_type(f(1), int)
+        assert_type(f("x"), str)
+        assert_type(b[0], int)
+        assert_type(b["x"], bytes)
+
+    @assert_passes(allow_import_failures=True)
     def test_typeddict_class_syntax_after_import_failure(self):
         boom = 1 / 0
 
