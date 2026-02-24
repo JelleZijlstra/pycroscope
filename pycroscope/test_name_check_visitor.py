@@ -633,6 +633,28 @@ class TestImportFailureHandlingCodeSamples(TestNameCheckVisitorBase):
         class Unit(NamedTuple, object):  # E: invalid_base
             name: str
 
+    @assert_passes(allow_import_failures=True)
+    def test_dataclass_comparison_after_import_failure(self):
+        boom = 1 / 0
+
+        from dataclasses import dataclass
+
+        @dataclass(order=True)
+        class DC1:
+            a: str
+            b: int
+
+        @dataclass(order=True)
+        class DC2:
+            a: str
+            b: int
+
+        dc1_1 = DC1("", 0)
+        dc2_1 = DC2("hi", 2)
+
+        if dc1_1 != dc2_1:
+            pass
+
 
 class TestNameCheckVisitor(TestNameCheckVisitorBase):
     @assert_passes()
