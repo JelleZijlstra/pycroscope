@@ -114,6 +114,28 @@ def parse_pycroscope_concise_errors(
     return errors_by_file
 
 
+def parse_pycroscope_internal_error_cases(lines: Sequence[str]) -> set[str]:
+    internal_error_cases: set[str] = set()
+    traceback_case_name: str | None = None
+    for line in lines:
+        match = CONCISE_OUTPUT_RE.match(line)
+        if match is not None:
+            case_name = Path(match.group(1)).stem
+            message = match.group(3)
+            if message.startswith("Traceback (most recent call last):"):
+                traceback_case_name = case_name
+            if "[internal_error]" in message or "Internal error" in message:
+                internal_error_cases.add(case_name)
+                traceback_case_name = None
+            continue
+        if traceback_case_name is not None and (
+            "[internal_error]" in line or "Internal error" in line
+        ):
+            internal_error_cases.add(traceback_case_name)
+            traceback_case_name = None
+    return internal_error_cases
+
+
 def diff_expected_errors(test_case: Path, errors: dict[int, list[str]]) -> list[str]:
     expected_errors, error_groups = get_expected_errors(test_case)
     differences: list[str] = []
@@ -152,7 +174,7 @@ def diff_expected_errors(test_case: Path, errors: dict[int, list[str]]) -> list[
     return differences
 
 
-def run_pycroscope(tests_dir: Path) -> dict[str, dict[int, list[str]]]:
+def run_pycroscope(tests_dir: Path) -> tuple[dict[str, dict[int, list[str]]], set[str]]:
     command = [
         sys.executable,
         "-m",
@@ -181,7 +203,10 @@ def run_pycroscope(tests_dir: Path) -> dict[str, dict[int, list[str]]]:
         raise RuntimeError(
             f"pycroscope failed with exit code {proc.returncode}:\n{summarized_output}"
         )
-    return parse_pycroscope_concise_errors(output_lines)
+    return (
+        parse_pycroscope_concise_errors(output_lines),
+        parse_pycroscope_internal_error_cases(output_lines),
+    )
 
 
 def _default_known_failures_path() -> Path:
@@ -218,7 +243,8 @@ def check_conformance(typing_repo: Path, known_failures: set[str]) -> int:
             print(f"  - {case}")
         return 1
 
-    errors_by_file = run_pycroscope(tests_dir)
+    errors_by_file, internal_error_cases = run_pycroscope(tests_dir)
+    internal_error_cases &= set(cases_by_name)
 
     actual_failures: set[str] = set()
     differences_by_case: dict[str, list[str]] = {}
@@ -238,7 +264,12 @@ def check_conformance(typing_repo: Path, known_failures: set[str]) -> int:
         f"{len(actual_failures)} fail."
     )
 
-    if not unexpected_passes and not unexpected_failures:
+    if internal_error_cases:
+        print("Cases with internal errors (always fail CI):")
+        for case in sorted(internal_error_cases):
+            print(f"  - {case}")
+
+    if not unexpected_passes and not unexpected_failures and not internal_error_cases:
         print("Conformance outcomes match the known-failure list.")
         return 0
 

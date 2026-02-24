@@ -12,9 +12,11 @@ pytestmark = pytest.mark.skipif(
 
 if sys.version_info >= (3, 11):
     from tools.conformance_ci import (
+        check_conformance,
         diff_expected_errors,
         get_expected_errors,
         parse_pycroscope_concise_errors,
+        parse_pycroscope_internal_error_cases,
     )
 
 
@@ -77,3 +79,76 @@ def test_diff_expected_errors_and_parse_output(tmp_path: Path) -> None:
     unexpected_errors = parse_pycroscope_concise_errors(unexpected_lines)
     differences = diff_expected_errors(test_case, unexpected_errors[test_case.name])
     assert differences == ["Lines 2, 3: Expected error (tag 'tag')"]
+
+
+def test_parse_pycroscope_internal_error_cases(tmp_path: Path) -> None:
+    test_case = tmp_path / "dataclasses_order.py"
+    output_lines = [
+        f"{test_case}:12:5: Internal error; please report this as a bug [internal_error]",
+        f"{test_case}:14:1: Some other error [incompatible_assignment]",
+    ]
+    assert parse_pycroscope_internal_error_cases(output_lines) == {"dataclasses_order"}
+
+
+def test_parse_pycroscope_internal_error_cases_traceback_tail(tmp_path: Path) -> None:
+    test_case = tmp_path / "dataclasses_order.py"
+    output_lines = [
+        f"{test_case}:53:3: Traceback (most recent call last):",
+        '  File "/repo/pycroscope/name_check_visitor.py", line 1518, in visit',
+        "Internal error: NotAGradualType('...') [internal_error]",
+    ]
+    assert parse_pycroscope_internal_error_cases(output_lines) == {"dataclasses_order"}
+
+
+def test_check_conformance_fails_on_internal_error_in_known_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    typing_repo = tmp_path / "typing"
+    case_path = typing_repo / "conformance" / "tests" / "dataclasses_order.py"
+    case_path.parent.mkdir(parents=True, exist_ok=True)
+    case_path.write_text("x = 1\n", encoding="utf-8")
+
+    monkeypatch.setattr(
+        "tools.conformance_ci.get_test_cases", lambda _typing_repo: [case_path]
+    )
+    monkeypatch.setattr(
+        "tools.conformance_ci.run_pycroscope",
+        lambda _tests_dir: (
+            {
+                case_path.name: {
+                    1: [f"{case_path}:1:1: Unexpected [incompatible_assignment]"]
+                }
+            },
+            {"dataclasses_order"},
+        ),
+    )
+
+    result = check_conformance(typing_repo, {"dataclasses_order"})
+    assert result == 1
+
+
+def test_check_conformance_passes_when_outcomes_match_known_failures(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    typing_repo = tmp_path / "typing"
+    case_path = typing_repo / "conformance" / "tests" / "dataclasses_order.py"
+    case_path.parent.mkdir(parents=True, exist_ok=True)
+    case_path.write_text("x = 1\n", encoding="utf-8")
+
+    monkeypatch.setattr(
+        "tools.conformance_ci.get_test_cases", lambda _typing_repo: [case_path]
+    )
+    monkeypatch.setattr(
+        "tools.conformance_ci.run_pycroscope",
+        lambda _tests_dir: (
+            {
+                case_path.name: {
+                    1: [f"{case_path}:1:1: Unexpected [incompatible_assignment]"]
+                }
+            },
+            set(),
+        ),
+    )
+
+    result = check_conformance(typing_repo, {"dataclasses_order"})
+    assert result == 0
