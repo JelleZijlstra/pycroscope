@@ -56,6 +56,7 @@ from unittest.mock import ANY
 
 import typeshed_client
 from typing_extensions import Protocol, is_typeddict
+from typing_extensions import Unpack as TypingExtensionsUnpack
 
 from pycroscope.input_sig import InputSigValue, ParamSpecSig
 
@@ -4205,7 +4206,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         else:
             return AnyValue(AnySource.error)
         try:
-            return KnownValue(typing.Unpack[runtime_value])
+            return KnownValue(TypingExtensionsUnpack[runtime_value])
         except Exception:
             return AnyValue(AnySource.error)
 
