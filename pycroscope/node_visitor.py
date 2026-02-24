@@ -960,13 +960,6 @@ class BaseNodeVisitor(ast.NodeVisitor):
             default=False,
         )
         parser.add_argument(
-            "--output-format",
-            choices=["concise", "detailed"],
-            default="detailed",
-            help="Output format for errors",
-            action="store",
-        )
-        parser.add_argument(
             "--markdown-output",
             help=(
                 "Write errors to this file in markdown format. "
