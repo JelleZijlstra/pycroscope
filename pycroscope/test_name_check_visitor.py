@@ -1244,6 +1244,15 @@ class TestReturn(TestNameCheckVisitorBase):
             return 42  # E: no_return_may_return
 
     @assert_passes()
+    def test_missing_return_with_invalid_paramspec_return(self):
+        from typing import ParamSpec
+
+        P = ParamSpec("P")
+
+        def f() -> P:  # E: invalid_annotation  # E: missing_return
+            ...
+
+    @assert_passes()
     def test_list_return(self):
         from typing import List
 

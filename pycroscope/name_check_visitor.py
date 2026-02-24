@@ -214,6 +214,7 @@ from .value import (
     KVPair,
     MultiValuedValue,
     NoReturnConstraintExtension,
+    NotAGradualType,
     OverlapMode,
     PredicateValue,
     ReferencingValue,
@@ -278,6 +279,13 @@ AwaitableValue = GenericValue(collections.abc.Awaitable, [TypeVarValue(T)])
 KnownNone = KnownValue(None)
 ExceptionValue = TypedValue(BaseException) | SubclassValue(TypedValue(BaseException))
 ExceptionOrNone = ExceptionValue | KnownNone
+
+
+def _is_known_none_annotation(value: Value) -> bool:
+    try:
+        return replace_fallback(value) == KnownNone
+    except NotAGradualType:
+        return False
 
 
 BINARY_OPERATION_TO_DESCRIPTION_AND_METHOD = {
@@ -2847,6 +2855,20 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 return_annotation = None
             else:
                 return_annotation = self.value_of_annotation(node.returns)
+                if isinstance(return_annotation, InputSigValue):
+                    if isinstance(return_annotation.input_sig, ParamSpecSig):
+                        self.show_error(
+                            node.returns,
+                            "ParamSpec cannot be used in this annotation context",
+                            error_code=ErrorCode.invalid_annotation,
+                        )
+                    else:
+                        self.show_error(
+                            node.returns,
+                            f"Unrecognized annotation {return_annotation}",
+                            error_code=ErrorCode.invalid_annotation,
+                        )
+                    return_annotation = AnyValue(AnySource.error)
             yield FunctionInfo(
                 async_kind=async_kind,
                 is_decorated_coroutine=is_decorated_coroutine,
@@ -2942,7 +2964,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             and node.returns is not None
             and (
                 info.return_annotation is None
-                or replace_fallback(info.return_annotation) != KnownNone
+                or not _is_known_none_annotation(info.return_annotation)
             )
         ):
             if info.return_annotation is NO_RETURN_VALUE:
@@ -5846,6 +5868,21 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             self._record_synthetic_typeddict_item(
                 node.target.id, expected_type, qualifiers, node
             )
+
+        if isinstance(expected_type, InputSigValue):
+            if isinstance(expected_type.input_sig, ParamSpecSig):
+                self._show_error_if_checking(
+                    node.annotation,
+                    "ParamSpec cannot be used in this annotation context",
+                    error_code=ErrorCode.invalid_annotation,
+                )
+            else:
+                self._show_error_if_checking(
+                    node.annotation,
+                    f"Unrecognized annotation {expected_type}",
+                    error_code=ErrorCode.invalid_annotation,
+                )
+            expected_type = AnyValue(AnySource.error)
 
         # TODO: handle TypeAlias and ClassVar
         is_final = Qualifier.Final in qualifiers

@@ -1804,6 +1804,17 @@ class TestRequired(TestNameCheckVisitorBase):
 
 class TestParamSpec(TestNameCheckVisitorBase):
     @assert_passes()
+    def test_invalid_annotation_contexts(self):
+        from typing_extensions import ParamSpec
+
+        P = ParamSpec("P")
+
+        _x: P  # E: invalid_annotation
+
+        def f(arg: P) -> None:  # E: invalid_annotation
+            pass
+
+    @assert_passes()
     def test_basic(self):
         from typing import Callable, List, TypeVar
 
