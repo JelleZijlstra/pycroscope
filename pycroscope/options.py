@@ -7,6 +7,7 @@ Structured configuration options.
 import argparse
 import functools
 import pathlib
+import re
 import sys
 from collections import defaultdict
 from collections.abc import Collection, Iterable, Mapping, Sequence
@@ -57,6 +58,31 @@ else:
 
 T = TypeVar("T")
 ModulePath = tuple[str, ...]
+_ROLE_REFERENCE_RE = re.compile(r":([a-zA-Z_]+):`([^`]+)`")
+_ROLE_NAME_TO_MYST_ROLE = {
+    "attr": "py:attr",
+    "class": "py:class",
+    "data": "py:data",
+    "func": "py:func",
+    "meth": "py:meth",
+    "mod": "py:mod",
+    "obj": "py:obj",
+    "term": "term",
+}
+
+
+def _format_docstring_for_configuration_docs(docstring: str) -> str:
+    description = " ".join(docstring.split())
+
+    def replace_role_reference(match: re.Match[str]) -> str:
+        role_name = match.group(1)
+        target = match.group(2)
+        myst_role = _ROLE_NAME_TO_MYST_ROLE.get(role_name)
+        if myst_role is None:
+            return f"`{target}`"
+        return f"{{{myst_role}}}`{target}`"
+
+    return _ROLE_REFERENCE_RE.sub(replace_role_reference, description)
 
 
 class InvalidConfigOption(Exception):
@@ -342,6 +368,42 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
         if not cls.should_create_command_line_option:
             continue
         cls.create_command_line_option(parser)
+
+
+@used  # used by docs/conf.py when generating Sphinx configuration docs
+def render_config_options_markdown(
+    *, excluded_options: Collection[str] = frozenset(), include_error_codes: bool = True
+) -> str:
+    """Render registered configuration options as a Markdown bullet list."""
+    all_excluded_options = set(excluded_options)
+    if not include_error_codes:
+        all_excluded_options.update(get_all_error_codes())
+
+    lines = []
+    for name, option_cls in sorted(ConfigOption.registry.items()):
+        if name in all_excluded_options:
+            continue
+        docstring = option_cls.__doc__
+        if docstring is None:
+            description = "No description."
+        else:
+            description = _format_docstring_for_configuration_docs(docstring)
+            if not description:
+                description = "No description."
+        default = repr(option_cls.default_value)
+        annotations = []
+        if option_cls.is_global:
+            annotations.append("global")
+        if not option_cls.should_create_command_line_option:
+            annotations.append("config-file only")
+        if annotations:
+            annotation_text = f"; {', '.join(annotations)}"
+        else:
+            annotation_text = ""
+        lines.append(
+            f"- `{name}` (default: `{default}`{annotation_text}): {description}"
+        )
+    return "\n".join(lines)
 
 
 def parse_config_file(
