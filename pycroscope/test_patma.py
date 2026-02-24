@@ -85,10 +85,10 @@ class TestPatma(TestNameCheckVisitorBase):
         self.assert_passes(
             """
             from typing import TypeAlias
-            from typing_extensions import assert_type
+            from typing_extensions import Unpack, assert_type
 
             Input: TypeAlias = (
-                tuple[int] | tuple[str, str] | tuple[int, *tuple[str, ...], int]
+                tuple[int] | tuple[str, str] | tuple[int, Unpack[tuple[str, ...]], int]
             )
 
             def capybara(val: Input) -> None:
