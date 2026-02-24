@@ -64,7 +64,7 @@ packages = ["pycroscope"]
 pycroscope = ["test.toml", "asynq_test.toml", "stubs/*/*.pyi", "py.typed"]
 
 [tool.black]
-target-version = ['py39']
+target-version = ['py310']
 include = '\.pyi?$'
 skip-magic-trailing-comma = true
 preview = true
