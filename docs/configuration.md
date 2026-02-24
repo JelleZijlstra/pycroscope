@@ -14,6 +14,9 @@ import_paths = ["."]
 possibly_undefined_name = true
 duplicate_dict_key = false
 
+# Output style for reported errors ("detailed" or "concise")
+output_format = "concise"
+
 # But re-enable it for a specific module
 [[tool.pycroscope.overrides]]
 module = "my_module.submodule"

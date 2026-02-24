@@ -3,6 +3,7 @@
 ## Unreleased
 
 - Generalize class-call signature inference to use Python-level metaclass `__call__` methods (not just enum classes), improving call checking for custom metaclasses.
+- Allow setting `output_format` in `pyproject.toml` so users can choose concise or detailed error output from config files.
 - Improve enum analysis in import-failure fallback mode by preserving enum-member semantics for synthetic classes, validating declared enum `_value_` types, and avoiding false `unsafe_comparison` errors for enum identity checks.
 - Improve overload checks in import-failure fallback mode by preserving synthetic base-class relationships for override/final validation, fixing false `override_does_not_override` reports and missed final-method override errors.
 - Fix internal errors in static fallback analysis for unimportable modules involving zero-argument `super()` and property setters in synthetic classes.
