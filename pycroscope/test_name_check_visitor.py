@@ -1237,6 +1237,20 @@ class TestSubclassValue(TestNameCheckVisitorBase):
             assert_is_value(enum["x"], TypedValue(bytes))
 
     @assert_passes()
+    def test_metaclass_call(self):
+        from typing import Type
+
+        class Meta(type):
+            def __call__(self, *args: object, **kwargs: object) -> bytes:
+                return b"hi"
+
+        class C(metaclass=Meta):
+            pass
+
+        def capybara(cls: Type[C]) -> None:
+            assert_is_value(cls("x"), TypedValue(bytes))
+
+    @assert_passes()
     def test_type_union(self):
         from typing import Type, Union
 
