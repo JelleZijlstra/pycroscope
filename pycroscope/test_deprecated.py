@@ -1,10 +1,9 @@
 # static analysis: ignore
 from .test_name_check_visitor import TestNameCheckVisitorBase
-from .test_node_visitor import assert_passes, skip_before
+from .test_node_visitor import assert_passes
 
 
 class TestStub(TestNameCheckVisitorBase):
-    @skip_before((3, 10))  # line number changed, don't care enough about 3.9
     @assert_passes()
     def test(self):
         def capybara():
@@ -27,7 +26,6 @@ class TestStub(TestNameCheckVisitorBase):
             DeprecatedCapybara()
             print(DeprecatedCapybara)
 
-    @skip_before((3, 10))
     @assert_passes()
     def test_multiline_import(self):
         def capybara():

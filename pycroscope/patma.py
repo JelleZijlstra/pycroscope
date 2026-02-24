@@ -36,6 +36,7 @@ from .stacked_scopes import (
 from .value import (
     NO_RETURN_VALUE,
     UNINITIALIZED_VALUE,
+    VOID,
     AnnotatedValue,
     AnySource,
     AnyValue,
@@ -204,6 +205,12 @@ class AlwaysMatching:
 @dataclass
 class PatmaVisitor(ast.NodeVisitor):
     visitor: "pycroscope.name_check_visitor.NameCheckVisitor"
+
+    def visit(self, node: ast.AST) -> AbstractConstraint:
+        constraint = super().visit(node)
+        if self.visitor.annotate:
+            node.inferred_value = VOID
+        return constraint
 
     def visit_MatchSingleton(self, node: MatchSingleton) -> AbstractConstraint:
         self.check_impossible_pattern(node, KnownValue(node.value))
