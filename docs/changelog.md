@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Fix an internal error on bare `ParamSpec` return annotations, and now report bare `ParamSpec` annotations as invalid in direct return/parameter/variable contexts instead of crashing.
+- Fix a crash in import-failure fallback mode when checking protocols that inherit generic bases (for example `Iterable[T]`), by resolving inherited protocol members statically instead of treating them as missing.
+- Annotate `match` pattern AST nodes in annotate mode, so `annotate_code()` and self-check no longer leave `Match*` nodes without `inferred_value`.
+- Fix an internal error when checking equality comparisons between dataclass instances in modules that fail at import time.
 - Preserve `@overload` behavior in static fallback mode when a module cannot be imported, including overload-aware inference for synthetic class dunder methods like `__getitem__` and consistency checks against overload implementations.
 - Preserve generic base information for synthetic classes in static fallback mode, so subclasses like `class D(dict[str, int])` are assignable to `dict[str, int]`.
 - Improve tuple typing behavior by validating invalid `tuple[..., ...]`/multi-unbounded-unpack forms, preserving `tuple[T, ...]` semantics when runtime imports fail, and improving tuple narrowing in sequence-pattern `match` cases.

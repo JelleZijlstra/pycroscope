@@ -314,9 +314,41 @@ def _get_attribute_from_synthetic_type(
     result, provider = ctx.get_attribute_from_typeshed_recursively(
         fq_name, on_class=False
     )
+    if result is UNINITIALIZED_VALUE:
+        result, provider = _get_attribute_from_synthetic_type_bases(
+            fq_name, generic_args, ctx
+        )
     result = _substitute_typevars(fq_name, generic_args, result, provider, ctx)
     result = set_self(result, ctx.root_value)
     return result
+
+
+def _get_attribute_from_synthetic_type_bases(
+    fq_name: str, generic_args: Sequence[Value], ctx: AttrContext
+) -> tuple[Value, object]:
+    generic_bases = ctx.get_generic_bases(fq_name, generic_args)
+    for base_typ in generic_bases:
+        if base_typ == fq_name:
+            continue
+        if isinstance(base_typ, str):
+            result, provider = ctx.get_attribute_from_typeshed_recursively(
+                base_typ, on_class=False
+            )
+            if result is not UNINITIALIZED_VALUE:
+                return result, provider
+            continue
+
+        result = ctx.get_attribute_from_typeshed(base_typ, on_class=False)
+        if result is UNINITIALIZED_VALUE:
+            result, _, should_unwrap = _get_attribute_from_mro(
+                base_typ, ctx, on_class=False
+            )
+            if should_unwrap:
+                result = _unwrap_value_from_typed(result, base_typ, ctx)
+        if result is not UNINITIALIZED_VALUE:
+            return result, base_typ
+
+    return UNINITIALIZED_VALUE, object
 
 
 def _get_attribute_from_synthetic_class(

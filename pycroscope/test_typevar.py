@@ -193,7 +193,6 @@ class TestTypeVar(TestNameCheckVisitorBase):
             inv_assign_bad_2: Inv[int] = inv_object  # E: incompatible_assignment
             print(inv_assign_bad_1, inv_assign_bad_2)
 
-    @skip_before((3, 10))
     @assert_passes()
     def test_typeshed(self):
         from typing import List
