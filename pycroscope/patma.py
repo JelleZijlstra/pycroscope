@@ -15,12 +15,13 @@ from typing import Any, TypeVar
 import pycroscope
 
 from .analysis_lib import override
+from .annotated_types import MaxLen, MinLen
 from .annotations import type_from_value
 from .error_code import ErrorCode
 from .extensions import CustomCheck
 from .implementation import len_of_value
 from .predicates import EqualsPredicate, IsAssignablePredicate
-from .relations import Relation, has_relation
+from .relations import Relation, has_relation, intersect_values
 from .signature import MappingValue
 from .stacked_scopes import (
     NULL_CONSTRAINT,
@@ -33,6 +34,7 @@ from .stacked_scopes import (
     constrain_value,
 )
 from .value import (
+    NO_RETURN_VALUE,
     UNINITIALIZED_VALUE,
     AnnotatedValue,
     AnySource,
@@ -45,6 +47,7 @@ from .value import (
     KnownValue,
     KVPair,
     OverlapMode,
+    PredicateValue,
     SequenceValue,
     SubclassValue,
     TypedValue,
@@ -52,7 +55,6 @@ from .value import (
     flatten_values,
     kv_pairs_from_mapping,
     replace_known_sequence_value,
-    unannotate,
     unite_values,
     unpack_values,
 )
@@ -154,18 +156,40 @@ class LenPredicate:
             else:
                 return None
 
-        cleaned = unannotate(value)
-        if (
-            not self.has_star
-            and isinstance(cleaned, TypedValue)
-            and cleaned.typ is tuple
-        ):
-            # Narrow Tuple[...] to a known length
-            arg = cleaned.get_generic_arg_for_type(tuple, self.ctx, 0)
-            return SequenceValue(
-                tuple, [(False, arg) for _ in range(self.expected_length)]
+        if self.has_star:
+            # We don't currently model negative sequence-length constraints from patterns,
+            # and positive star-pattern length checks are usually not very informative.
+            return value
+
+        if positive:
+            narrowed = self._narrow_with_bounds(
+                value, self.expected_length, self.expected_length
             )
-        return value
+            if narrowed is None:
+                return None
+        else:
+            # We currently cannot represent "len(value) != N" precisely in general.
+            narrowed = value
+
+        return narrowed
+
+    def _narrow_with_bounds(
+        self, value: Value, min_len: int | None, max_len: int | None
+    ) -> Value | None:
+        narrowed: Value = value
+        if min_len is not None:
+            narrowed = intersect_values(
+                narrowed, PredicateValue(MinLen(min_len)), self.ctx
+            )
+            if narrowed is NO_RETURN_VALUE:
+                return None
+        if max_len is not None:
+            narrowed = intersect_values(
+                narrowed, PredicateValue(MaxLen(max_len)), self.ctx
+            )
+            if narrowed is NO_RETURN_VALUE:
+                return None
+        return narrowed
 
 
 @dataclass
@@ -215,21 +239,30 @@ class PatmaVisitor(ast.NodeVisitor):
         constraints = [
             self.make_constraint(
                 ConstraintType.predicate,
-                IsAssignablePredicate(
-                    MatchableSequence,
-                    self.visitor,
-                    positive_only=len(node.patterns) > 1 or starred_index is None,
-                ),
-            ),
-            self.make_constraint(
-                ConstraintType.predicate,
                 LenPredicate(
                     len(node.patterns) - int(starred_index is not None),
                     starred_index is not None,
                     self.visitor,
                 ),
-            ),
+            )
         ]
+        can_assign_seq = has_relation(
+            MatchableSequence,
+            self.visitor.match_subject.value,
+            Relation.ASSIGNABLE,
+            self.visitor,
+        )
+        if isinstance(can_assign_seq, CanAssignError):
+            constraints.append(
+                self.make_constraint(
+                    ConstraintType.predicate,
+                    IsAssignablePredicate(
+                        MatchableSequence,
+                        self.visitor,
+                        positive_only=len(node.patterns) > 1 or starred_index is None,
+                    ),
+                )
+            )
         unpacked = unpack_values(
             constrain_value(
                 self.visitor.match_subject.value, AndConstraint.make(constraints)
