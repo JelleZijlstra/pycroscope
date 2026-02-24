@@ -43,6 +43,7 @@ from .input_sig import extract_type_params
 from .node_visitor import Failure
 from .options import Options, PathSequenceOption
 from .safe import hasattr_static, is_typing_name, safe_isinstance
+from .shared_options import ImportPaths
 from .signature import (
     ConcreteSignature,
     OverloadedSignature,
@@ -201,7 +202,14 @@ class TypeshedFinder:
         *,
         verbose: bool = False,
     ) -> "TypeshedFinder":
-        extra_paths = tuple(str(path) for path in options.get_value_for(StubPath))
+        extra_paths = tuple(
+            str(path)
+            for path in (
+                Path.cwd(),
+                *options.get_value_for(StubPath),
+                *options.get_value_for(ImportPaths),
+            )
+        )
         resolver = _get_resolver_for_stub_paths(extra_paths)
         return TypeshedFinder(can_assign_ctx, verbose, resolver)
 
@@ -319,6 +327,12 @@ class TypeshedFinder:
         mod, _ = fq_name.rsplit(".", maxsplit=1)
         return self._is_final_from_info(info, mod)
 
+    def is_final_attribute(self, class_fq_name: str, attr: str) -> bool:
+        """Return whether an attribute is marked as final in stubs."""
+        info = self._get_info_for_name(class_fq_name)
+        mod, _ = class_fq_name.rsplit(".", maxsplit=1)
+        return self._is_final_attribute_from_info(info, mod, attr)
+
     def _is_final_from_info(
         self, info: typeshed_client.resolver.ResolvedName, mod: str
     ) -> bool:
@@ -335,6 +349,44 @@ class TypeshedFinder:
                     deco_value.val, "final"
                 ):
                     return True
+        return False
+
+    def _is_final_attribute_from_info(
+        self, info: typeshed_client.resolver.ResolvedName, mod: str, attr: str
+    ) -> bool:
+        if info is None:
+            return False
+        if isinstance(info, typeshed_client.ImportedInfo):
+            return self._is_final_attribute_from_info(info.info, mod, attr)
+        if not (
+            isinstance(info, typeshed_client.NameInfo)
+            and isinstance(info.ast, ast.ClassDef)
+        ):
+            return False
+        for statement in info.ast.body:
+            if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                if statement.name != attr:
+                    continue
+                for deco in statement.decorator_list:
+                    deco_value = self._parse_expr(deco, mod)
+                    if isinstance(deco_value, KnownValue) and is_typing_name(
+                        deco_value.val, "final"
+                    ):
+                        return True
+                continue
+            if not (
+                isinstance(statement, ast.AnnAssign)
+                and isinstance(statement.target, ast.Name)
+                and statement.target.id == attr
+            ):
+                continue
+            try:
+                expr = self._parse_annotation(statement.annotation, mod)
+            except Exception:
+                continue
+            _, qualifiers = expr.maybe_unqualify({Qualifier.Final})
+            if Qualifier.Final in qualifiers:
+                return True
         return False
 
     def get_bases(self, typ: type) -> list[Value] | None:

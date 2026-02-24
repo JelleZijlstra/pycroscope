@@ -2430,6 +2430,48 @@ class TestAnnAssign(TestNameCheckVisitorBase):
             return y
 
     @assert_passes()
+    def test_final_class_attributes(self):
+        from typing_extensions import Final
+
+        class Capybara:
+            missing: Final[int]  # E: invalid_annotation
+            initialized_in_init: Final[int]
+            initialized_in_class: Final[int] = 0
+
+            def __init__(self) -> None:
+                self.initialized_in_init = 1
+                self.initialized_in_class = 1  # E: incompatible_assignment
+
+            def method(self) -> None:
+                self.initialized_in_init = 2  # E: incompatible_assignment
+
+    @assert_passes(allow_import_failures=True)
+    def test_final_decorator_in_unimportable_module(self):
+        from typing import final
+
+        import does_not_exist  # noqa: F401
+
+        @final
+        class FinalBase:
+            pass
+
+        class FinalChild(FinalBase):  # E: invalid_annotation
+            pass
+
+        class Parent:
+            @final
+            def method(self) -> None:
+                pass
+
+        class Child(Parent):
+            def method(self) -> None:  # E: invalid_annotation
+                pass
+
+        @final
+        def f() -> None:  # E: invalid_annotation
+            pass
+
+    @assert_passes()
     def test_inconsistent_type(self):
         def capybara():
             x: int = 1

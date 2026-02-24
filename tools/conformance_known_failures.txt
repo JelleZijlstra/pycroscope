@@ -90,8 +90,6 @@ protocols_runtime_checkable
 protocols_subtyping
 protocols_variance
 qualifiers_annotated
-qualifiers_final_annotation
-qualifiers_final_decorator
 specialtypes_never
 specialtypes_type
 typeddicts_type_consistency
