@@ -17,7 +17,7 @@ class TestUnsafeOverlap(TestNameCheckVisitorBase):
             DOG = 2
 
             def speak(self) -> None:
-                print("meow" if self is Pet.CAT else "woof")
+                print("meow" if self is Pet(1) else "woof")
 
         boom = 1 / 0
 

@@ -76,6 +76,7 @@ literals_semantics
 namedtuples_define_class
 namedtuples_usage
 overloads_definitions_stub
+overloads_basic
 protocols_class_objects
 protocols_definition
 protocols_explicit
