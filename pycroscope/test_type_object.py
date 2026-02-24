@@ -195,6 +195,23 @@ class TestSyntheticType(TestNameCheckVisitorBase):
             csv.writer(GoodWrite())
             csv.writer(BadArgKind())  # E: incompatible_argument
 
+    @assert_passes(allow_import_failures=True)
+    def test_protocol_generic_base_after_import_failure(self):
+        from typing import Hashable, Iterable, Protocol
+
+        class P0(Protocol):
+            pass
+
+        P0()
+
+        class HashableFloats(Iterable[float], Hashable, Protocol):
+            pass
+
+        def cached_func(args: HashableFloats) -> float:
+            return 0.0
+
+        cached_func((1, 2, 3))
+
     @assert_passes()
     def test_custom_subclasscheck(self):
         class _ThriftEnumMeta(type):
