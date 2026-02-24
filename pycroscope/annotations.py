@@ -560,10 +560,10 @@ def _type_from_runtime(val: Any, ctx: Context) -> Value:
         return AnyValue(AnySource.inference)
     origin = get_origin(val)
     if origin is None:
-        origin = getattr(val, "__origin__", None)
-        args = getattr(val, "__args__", None)
-        if origin is not None and isinstance(args, tuple):
-            return _value_of_origin_args(origin, args, val, ctx)
+        maybe_origin = getattr(val, "__origin__", None)
+        maybe_args = getattr(val, "__args__", None)
+        if maybe_origin is not None and isinstance(maybe_args, tuple):
+            return _value_of_origin_args(maybe_origin, maybe_args, val, ctx)
     if origin is not None:
         args = get_args(val)
         return _value_of_origin_args(origin, args, val, ctx)
