@@ -6171,13 +6171,24 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                         return_value = self.check_call(
                             node.value, cgi, [index_composite], allow_call=True
                         )
+                        fallback_index: KnownValue | None = None
+                        if (
+                            self.in_annotation
+                            and isinstance(return_value, AnyValue)
+                            and return_value.source is AnySource.error
+                        ):
+                            fallback_index = self._fallback_annotation_index(index)
                         # Special case to avoid "Unrecognized annotation types.GenericAlias" later;
                         # ideally we'd be more precise.
                         if return_value == TypedValue(GenericAlias):
-                            if self.in_annotation:
-                                fallback_index = self._fallback_annotation_index(index)
-                            else:
-                                fallback_index = KnownValue(Any)
+                            if fallback_index is None:
+                                if self.in_annotation:
+                                    fallback_index = self._fallback_annotation_index(
+                                        index
+                                    )
+                                else:
+                                    fallback_index = KnownValue(Any)
+                        if fallback_index is not None:
                             return_value = self.check_call(
                                 node.value,
                                 cgi,
