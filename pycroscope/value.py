@@ -894,6 +894,12 @@ class TypedValue(Value):
                 return super().can_overlap(other, ctx, mode)
         elif isinstance(other, KnownValue):
             if mode is OverlapMode.IS:
+                if (
+                    isinstance(self.typ, type)
+                    and safe_issubclass(self.typ, enum.Enum)
+                    and safe_isinstance(other.val, enum.Enum)
+                ):
+                    return None
                 if self_tobj.is_instance(other.val):
                     return None
                 return CanAssignError(f"{self} and {other} cannot overlap")
@@ -1498,8 +1504,45 @@ class SyntheticClassObjectValue(Value):
         for val in self.class_attributes.values():
             yield from val.walk_values()
 
+    def get_type_value(self) -> Value:
+        if isinstance(self.class_type, TypedValue) and isinstance(
+            self.class_type.typ, type
+        ):
+            return KnownValue(type(self.class_type.typ))
+        return TypedValue(type)
+
     def __str__(self) -> str:
         return self.name
+
+
+class SyntheticEnumMember:
+    """Represents an enum member for synthetic classes."""
+
+    __slots__ = ("enum_name", "member_name", "_value_")
+
+    enum_name: str
+    member_name: str
+    _value_: object
+
+    def __init__(self, enum_name: str, member_name: str, value: object) -> None:
+        self.enum_name = enum_name
+        self.member_name = member_name
+        self._value_ = value
+
+    @property
+    def name(self) -> str:
+        return self.member_name
+
+    @property
+    def value(self) -> object:
+        return self._value_
+
+    @property
+    def _name_(self) -> str:
+        return self.member_name
+
+    def __repr__(self) -> str:
+        return f"<{self.enum_name}.{self.member_name}: {self._value_!r}>"
 
 
 @dataclass(unsafe_hash=True, init=False)

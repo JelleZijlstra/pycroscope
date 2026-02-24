@@ -41,9 +41,6 @@ directives_deprecated
 directives_type_checking
 directives_type_ignore
 directives_type_ignore_file1
-enums_behaviors
-enums_expansion
-enums_member_values
 enums_members
 generics_base_class
 generics_basic
@@ -78,7 +75,6 @@ literals_parameterizations
 literals_semantics
 namedtuples_define_class
 namedtuples_usage
-overloads_basic
 overloads_definitions_stub
 protocols_class_objects
 protocols_definition
