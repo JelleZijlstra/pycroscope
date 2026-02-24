@@ -5,6 +5,7 @@
 - Preserve `@overload` behavior in static fallback mode when a module cannot be imported, including overload-aware inference for synthetic class dunder methods like `__getitem__` and consistency checks against overload implementations.
 - Preserve generic base information for synthetic classes in static fallback mode, so subclasses like `class D(dict[str, int])` are assignable to `dict[str, int]`.
 - Improve tuple typing behavior by validating invalid `tuple[..., ...]`/multi-unbounded-unpack forms, preserving `tuple[T, ...]` semantics when runtime imports fail, and improving tuple narrowing in sequence-pattern `match` cases.
+- Improve NamedTuple analysis in both normal and import-failure fallback modes: class-syntax NamedTuple definitions now enforce field/base-class rules, constructor/type inference is more precise (including generics), and tuple indexing/unpacking/type-compat checks now use NamedTuple field types instead of falling back to `Any`.
 - Replace internal `**kwargs` TypedDict special-casing with dictionary-entry modeling, so TypedDict dict/Mapping assignability rules stay consistent while dict-method calls on TypedDict values still type-check correctly.
 - Tighten TypedDict conformance by enforcing class-syntax and inheritance checks in importable modules (not only fallback analysis), and by ignoring uninhabitable `NotRequired[Never]` keys in `TypedDict.update()`.
 - Respect declared `TypeVar` variance in generic assignability and subtyping checks, so covariant, contravariant, and invariant type parameters are enforced correctly.

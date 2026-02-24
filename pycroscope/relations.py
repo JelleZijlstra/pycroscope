@@ -79,6 +79,7 @@ from pycroscope.value import (
     get_typevar_variance,
     gradualize,
     intersect_bounds_maps,
+    namedtuple_members_from_value,
     stringify_object,
     typify_literal,
     unify_bounds_maps,
@@ -362,6 +363,15 @@ def _has_relation(
                 return custom_can_assign
             bounds_maps.append(custom_can_assign)
         return unify_bounds_maps(bounds_maps)
+
+    if _tuple_members_from_value(left, ctx) is not None:
+        if (members := namedtuple_members_from_value(right, ctx)) is not None:
+            right = SequenceValue(tuple, members)
+            original_right = right
+    if _tuple_members_from_value(right, ctx) is not None:
+        if (members := namedtuple_members_from_value(left, ctx)) is not None:
+            left = SequenceValue(tuple, members)
+            original_left = left
 
     # PredicateValue
     if isinstance(left, PredicateValue):
@@ -1584,11 +1594,15 @@ def _iter_compositions(total: int, parts: int) -> Iterable[tuple[int, ...]]:
             yield (first, *rest)
 
 
-def _tuple_members_from_value(value: Value) -> tuple[tuple[bool, Value], ...] | None:
+def _tuple_members_from_value(
+    value: Value, ctx: CanAssignContext | None = None
+) -> tuple[tuple[bool, Value], ...] | None:
     if isinstance(value, SequenceValue) and value.typ is tuple:
         return value.members
     if isinstance(value, GenericValue) and value.typ is tuple and len(value.args) == 1:
         return ((True, value.args[0]),)
+    if ctx is not None:
+        return namedtuple_members_from_value(value, ctx)
     return None
 
 

@@ -25,6 +25,7 @@ import contextlib
 import enum
 import sys
 import textwrap
+import typing
 from collections import deque
 from collections.abc import (
     Callable,
@@ -43,7 +44,7 @@ from types import FunctionType, ModuleType
 from typing import Any, Optional, TypeVar, Union
 
 import typing_extensions
-from typing_extensions import ParamSpec, Protocol, assert_never
+from typing_extensions import Protocol, assert_never
 
 import pycroscope
 from pycroscope.error_code import Error
@@ -52,6 +53,7 @@ from pycroscope.safe import (
     all_of_type,
     is_instance_of_typing_name,
     safe_equals,
+    safe_getattr,
     safe_isinstance,
     safe_issubclass,
 )
@@ -1949,6 +1951,7 @@ class TypeVarValue(Value):
 
 
 SelfTVV = TypeVarValue(SelfT)
+ParamSpecLike = typing_extensions.ParamSpec | typing.ParamSpec
 
 
 def set_self(value: Value, self_value: Value) -> Value:
@@ -1957,7 +1960,7 @@ def set_self(value: Value, self_value: Value) -> Value:
 
 @dataclass(frozen=True)
 class ParamSpecArgsValue(Value):
-    param_spec: ParamSpec
+    param_spec: ParamSpecLike
 
     def __str__(self) -> str:
         return f"{self.param_spec}.args"
@@ -1968,7 +1971,7 @@ class ParamSpecArgsValue(Value):
 
 @dataclass(frozen=True)
 class ParamSpecKwargsValue(Value):
-    param_spec: ParamSpec
+    param_spec: ParamSpecLike
 
     def __str__(self) -> str:
         return f"{self.param_spec}.kwargs"
@@ -2890,6 +2893,8 @@ def unpack_values(
             )
         return [unite_values(*vals) for vals in zip(*good_subvals)]
     value = replace_known_sequence_value(value)
+    if (namedtuple_members := namedtuple_members_from_value(value, ctx)) is not None:
+        value = SequenceValue(tuple, namedtuple_members)
 
     # We treat the different sequence types differently here.
     # - Tuples are  immutable so we can always unpack and show
@@ -2927,6 +2932,48 @@ def is_iterable(value: Value, ctx: CanAssignContext) -> CanAssignError | Value:
     if isinstance(tv_map, CanAssignError):
         return tv_map
     return tv_map.get(T, AnyValue(AnySource.generic_argument))
+
+
+def namedtuple_members_from_value(
+    value: Value, ctx: CanAssignContext | None = None
+) -> tuple[tuple[bool, Value], ...] | None:
+    value = replace_fallback(value)
+    if isinstance(value, AnnotatedValue):
+        value = value.value
+
+    if isinstance(value, GenericValue) and isinstance(value.typ, type):
+        namedtuple_type = value.typ
+        type_parameters = tuple(getattr(namedtuple_type, "__parameters__", ()))
+        tv_map: TypeVarMap = {
+            typevar: arg for typevar, arg in zip(type_parameters, value.args)
+        }
+    elif isinstance(value, TypedValue) and isinstance(value.typ, type):
+        namedtuple_type = value.typ
+        tv_map = {}
+    else:
+        return None
+
+    if not (
+        safe_issubclass(namedtuple_type, tuple)
+        and isinstance(getattr(namedtuple_type, "_fields", None), tuple)
+    ):
+        return None
+
+    fields_obj = safe_getattr(namedtuple_type, "_fields", None)
+    if not isinstance(fields_obj, tuple):
+        return None
+    fields = tuple(fields_obj)
+
+    annotations = getattr(namedtuple_type, "__annotations__", {})
+    from .annotations import type_from_runtime
+
+    members: list[tuple[bool, Value]] = []
+    for field_name in fields:
+        annotation = annotations.get(field_name, typing.Any)
+        field_type = type_from_runtime(annotation, visitor=ctx, suppress_errors=True)
+        members.append((False, field_type.substitute_typevars(tv_map)))
+
+    return tuple(members)
 
 
 def is_async_iterable(value: Value, ctx: CanAssignContext) -> CanAssignError | Value:

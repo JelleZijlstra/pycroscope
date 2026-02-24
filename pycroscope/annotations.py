@@ -549,10 +549,21 @@ def _type_from_runtime(val: Any, ctx: Context) -> Value:
             final_value = _eval_forward_ref(val, ctx).to_value()
         return final_value
     elif is_instance_of_typing_name(val, "ParamSpecArgs"):
-        return ParamSpecArgsValue(get_origin(val))
+        origin = get_origin(val)
+        if is_instance_of_typing_name(origin, "ParamSpec"):
+            return ParamSpecArgsValue(origin)
+        return AnyValue(AnySource.inference)
     elif is_instance_of_typing_name(val, "ParamSpecKwargs"):
-        return ParamSpecKwargsValue(get_origin(val))
+        origin = get_origin(val)
+        if is_instance_of_typing_name(origin, "ParamSpec"):
+            return ParamSpecKwargsValue(origin)
+        return AnyValue(AnySource.inference)
     origin = get_origin(val)
+    if origin is None:
+        maybe_origin = getattr(val, "__origin__", None)
+        maybe_args = getattr(val, "__args__", None)
+        if maybe_origin is not None and isinstance(maybe_args, tuple):
+            return _value_of_origin_args(maybe_origin, maybe_args, val, ctx)
     if origin is not None:
         args = get_args(val)
         return _value_of_origin_args(origin, args, val, ctx)

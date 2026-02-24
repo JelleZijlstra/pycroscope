@@ -90,6 +90,7 @@ from .value import (
     dump_value,
     flatten_values,
     kv_pairs_from_mapping,
+    namedtuple_members_from_value,
     replace_fallback,
     replace_known_sequence_value,
     unite_values,
@@ -514,6 +515,10 @@ def _sequence_common_getitem_impl(ctx: CallContext, typ: type) -> ImplReturn:
         self_value = replace_known_sequence_value(ctx.vars["self"])
         if not isinstance(self_value, TypedValue):
             return AnyValue(AnySource.error)  # shouldn't happen
+        if typ is tuple and not isinstance(self_value, SequenceValue):
+            namedtuple_members = namedtuple_members_from_value(self_value, ctx.visitor)
+            if namedtuple_members is not None:
+                self_value = SequenceValue(tuple, namedtuple_members)
         type_arg = self_value.get_generic_arg_for_type(typ, ctx.visitor, 0)
         key = replace_known_sequence_value(key)
         if not TypedValue(slice).is_assignable(key, ctx.visitor):
