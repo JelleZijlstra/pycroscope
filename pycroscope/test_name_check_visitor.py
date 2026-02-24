@@ -2,7 +2,6 @@
 import ast
 import collections
 import os
-import sys
 import types
 
 from . import test_node_visitor
@@ -32,7 +31,6 @@ from .value import (
     ReferencingValue,
     SequenceValue,
     SubclassValue,
-    SyntheticClassObjectValue,
     TypedDictEntry,
     TypedDictValue,
     TypedValue,
@@ -169,290 +167,143 @@ def test_annotation():
     assert TypedValue(int) == tree.inferred_value
 
 
-class TestImportFailureHandling:
-    @staticmethod
-    def _check_file(filename: str):
-        settings = {code: code not in DISABLED_IN_TESTS for code in ErrorCode}
-        kwargs = ConfiguredNameCheckVisitor.prepare_constructor_kwargs(
-            {"settings": settings, "fail_after_first": False}
-        )
-        return ConfiguredNameCheckVisitor.check_file(filename, **kwargs)
+class TestImportFailureHandling(TestNameCheckVisitorBase):
+    @assert_passes(allow_import_failures=True)
+    def test_import_failure_points_to_failing_line_and_continues(self):
+        a = 1
+        b = 1 / 0
 
-    def test_import_failure_points_to_failing_line_and_continues(self, tmp_path):
-        filename = tmp_path / "broken_module.py"
-        filename.write_text(
-            "a = 1\n" "b = 1 / 0\n" "\n" "def f():\n" "    return missing_name\n"
-        )
-        failures = self._check_file(str(filename))
+        def f():
+            return missing_name  # E: undefined_name
 
-        assert any(
-            failure["code"] == ErrorCode.import_failed and failure["lineno"] == 2
-            for failure in failures
-        )
-        assert any(
-            failure["code"] == ErrorCode.undefined_name and failure["lineno"] == 5
-            for failure in failures
-        )
+    @assert_passes(allow_runtime_module_load_failure=True)
+    def test_import_failure_is_ignorable(self):
+        a = 1  # static analysis: ignore[import_failed]
+        b = 1 / 0
 
-    def test_import_failure_is_ignorable(self, tmp_path):
-        filename = tmp_path / "ignored_import_failure.py"
-        filename.write_text(
-            "a = 1\n"
-            "b = 1 / 0  # static analysis: ignore[import_failed]\n"
-            "\n"
-            "def f():\n"
-            "    return missing_name\n"
-        )
-        failures = self._check_file(str(filename))
+        def f():
+            return missing_name  # E: undefined_name
 
-        assert not any(
-            failure["code"] == ErrorCode.import_failed for failure in failures
-        )
-        assert any(failure["code"] == ErrorCode.undefined_name for failure in failures)
+    @assert_passes(allow_import_failures=True)
+    def test_typeddict_fallback_after_import_failure(self):
+        from typing import TypedDict
 
-    def test_typeddict_fallback_after_import_failure(self, tmp_path):
-        filename = tmp_path / "typeddict_import_failure.py"
-        filename.write_text(
-            "from typing import TypedDict\n"
-            "from typing_extensions import NotRequired, ReadOnly, Required\n"
-            "\n"
-            "class F1(TypedDict):\n"
-            "    a: Required[int]\n"
-            "    b: ReadOnly[NotRequired[int]]\n"
-            "    c: ReadOnly[Required[int]]\n"
-            "boom = 1 / 0\n"
-            "class F3(F1):\n"
-            "    a: ReadOnly[int]\n"
-            "\n"
-            "class F4(F1):\n"
-            "    a: NotRequired[int]\n"
-            "\n"
-            "class F5(F1):\n"
-            "    b: ReadOnly[Required[int]]\n"
-            "\n"
-            "class F6(F1):\n"
-            "    c: ReadOnly[NotRequired[int]]\n"
-            "\n"
-            "class TD_A1(TypedDict):\n"
-            "    x: int\n"
-            "    y: ReadOnly[int]\n"
-            "\n"
-            "class TD_A2(TypedDict):\n"
-            "    x: float\n"
-            "    y: ReadOnly[float]\n"
-            "\n"
-            "class TD_A(TD_A1, TD_A2): ...\n"
-            "\n"
-            "class TD_B1(TypedDict):\n"
-            "    x: ReadOnly[NotRequired[int]]\n"
-            "    y: ReadOnly[Required[int]]\n"
-            "\n"
-            "class TD_B2(TypedDict):\n"
-            "    x: ReadOnly[Required[int]]\n"
-            "    y: ReadOnly[NotRequired[int]]\n"
-            "\n"
-            "class TD_B(TD_B1, TD_B2): ...\n"
-        )
-        failures = self._check_file(str(filename))
+        from typing_extensions import NotRequired, ReadOnly, Required
 
-        assert any(
-            failure["code"] == ErrorCode.import_failed and failure["lineno"] == 8
-            for failure in failures
-        )
-        for lineno in (10, 13, 19, 29, 39):
-            assert any(
-                failure["code"] == ErrorCode.invalid_annotation
-                and failure["lineno"] == lineno
-                for failure in failures
-            )
+        class F1(TypedDict):
+            a: Required[int]
+            b: ReadOnly[NotRequired[int]]
+            c: ReadOnly[Required[int]]
 
-        allowed_annotation_lines = {16, 23, 27, 32, 33, 36, 37}
-        assert not any(
-            failure["code"] == ErrorCode.invalid_annotation
-            and failure["lineno"] in allowed_annotation_lines
-            for failure in failures
-        )
+        boom = 1 / 0
 
-    def test_typeddict_extra_items_and_unpack_after_import_failure(self, tmp_path):
-        filename = tmp_path / "typeddict_extra_items_import_failure.py"
-        filename.write_text(
-            "from typing_extensions import TypedDict, Unpack\n"
-            "\n"
-            "class Movie(TypedDict, extra_items=bool):\n"
-            "    name: str\n"
-            "\n"
-            'MovieFunctional = TypedDict("MovieFunctional", {"name": str}, extra_items=bool)\n'
-            "\n"
-            "boom = {}.popitem()\n"
-            "\n"
-            'a: Movie = {"name": "Blade Runner", "year": 1982}\n'
-            'b: MovieFunctional = {"name": "Blade Runner", "year": 1982}\n'
-            "\n"
-            "class MovieNoExtra(TypedDict):\n"
-            "    name: str\n"
-            "\n"
-            "class MovieExtra(TypedDict, extra_items=int):\n"
-            "    name: str\n"
-            "\n"
-            "def unpack_no_extra(**kwargs: Unpack[MovieNoExtra]) -> None: ...\n"
-            "def unpack_extra(**kwargs: Unpack[MovieExtra]) -> None: ...\n"
-            "\n"
-            'unpack_no_extra(name="No Country for Old Men", year=2007)\n'
-            'unpack_extra(name="No Country for Old Men", year=2007)\n'
-        )
-        failures = self._check_file(str(filename))
+        class F3(F1):
+            a: ReadOnly[int]  # E: invalid_annotation
 
-        assert any(
-            failure["code"] == ErrorCode.import_failed and failure["lineno"] == 8
-            for failure in failures
-        )
-        assert any(
-            failure["code"] == ErrorCode.incompatible_assignment
-            and failure["lineno"] == 10
-            for failure in failures
-        )
-        assert any(
-            failure["code"] == ErrorCode.incompatible_assignment
-            and failure["lineno"] == 11
-            for failure in failures
-        )
-        assert not any(
-            failure["code"] == ErrorCode.incompatible_call and failure["lineno"] == 6
-            for failure in failures
-        )
-        assert not any(
-            failure["code"] == ErrorCode.invalid_annotation
-            and failure["lineno"] in {19, 20}
-            for failure in failures
-        )
-        assert any(
-            failure["code"] == ErrorCode.incompatible_call and failure["lineno"] == 22
-            for failure in failures
-        )
-        assert not any(
-            failure["code"] == ErrorCode.incompatible_call and failure["lineno"] == 23
-            for failure in failures
-        )
+        class F4(F1):
+            a: NotRequired[int]  # E: invalid_annotation
 
-    def test_nominal_class_fallback_after_import_failure(self, tmp_path):
-        filename = tmp_path / "class_import_failure.py"
-        code = (
-            "from typing import Any, overload\n"
-            "boom = 1 / 0\n"
-            "\n"
-            "class Desc:\n"
-            "    value: int = 0\n"
-            "\n"
-            "    @overload\n"
-            '    def __get__(self, obj: None, owner: Any) -> "Desc":\n'
-            "        ...\n"
-            "\n"
-            "    @overload\n"
-            "    def __get__(self, obj: object, owner: Any) -> int:\n"
-            "        ...\n"
-            "\n"
-            '    def __get__(self, obj: object | None, owner: Any) -> "int | Desc":\n'
-            "        return Desc.value\n"
-        )
-        filename.write_text(code)
-        settings = {code: code not in DISABLED_IN_TESTS for code in ErrorCode}
-        kwargs = ConfiguredNameCheckVisitor.prepare_constructor_kwargs(
-            {"settings": settings, "fail_after_first": False}
-        )
-        tree = ast.parse(code, str(filename))
-        visitor = ConfiguredNameCheckVisitor(str(filename), code, tree, **kwargs)
-        failures = visitor.check()
+        class F5(F1):
+            b: ReadOnly[Required[int]]
 
-        assert any(
-            failure["code"] == ErrorCode.import_failed and failure["lineno"] == 2
-            for failure in failures
-        )
-        assert not any(
-            failure["code"] == ErrorCode.undefined_name
-            and failure["lineno"] in {8, 15, 16}
-            for failure in failures
-        )
+        class F6(F1):
+            c: ReadOnly[NotRequired[int]]  # E: invalid_annotation
 
-        class_value = visitor.scopes.module_scope().variables["Desc"]
-        assert isinstance(class_value, SyntheticClassObjectValue)
-        assert class_value == SyntheticClassObjectValue(
-            "Desc", TypedValue(f"{filename}.Desc")
-        )
+        class TD_A1(TypedDict):
+            x: int
+            y: ReadOnly[int]
 
-    def test_inherited_class_attribute_after_import_failure(self, tmp_path):
-        filename = tmp_path / "inherited_class_attr_import_failure.py"
-        code = (
-            "boom = 1 / 0\n"
-            "\n"
-            "class Base:\n"
-            "    @staticmethod\n"
-            "    def foo() -> int:\n"
-            "        return 1\n"
-            "\n"
-            "class Child(Base):\n"
-            "    pass\n"
-            "\n"
-            "x = Child.foo()\n"
-        )
-        filename.write_text(code)
-        settings = {code: code not in DISABLED_IN_TESTS for code in ErrorCode}
-        kwargs = ConfiguredNameCheckVisitor.prepare_constructor_kwargs(
-            {"settings": settings, "fail_after_first": False}
-        )
-        tree = ast.parse(code, str(filename))
-        visitor = ConfiguredNameCheckVisitor(str(filename), code, tree, **kwargs)
-        failures = visitor.check()
+        class TD_A2(TypedDict):
+            x: float
+            y: ReadOnly[float]
 
-        assert any(
-            failure["code"] == ErrorCode.import_failed and failure["lineno"] == 1
-            for failure in failures
-        )
-        assert not any(
-            failure["code"]
-            in {ErrorCode.undefined_attribute, ErrorCode.incompatible_call}
-            and failure["lineno"] == 11
-            for failure in failures
-        )
+        class TD_A(TD_A1, TD_A2): ...  # E: invalid_annotation
 
-    def test_any_base_class_after_import_failure(self, tmp_path):
-        filename = tmp_path / "any_base_class_import_failure.py"
-        code = (
-            "from typing import Any\n"
-            "\n"
-            "class ClassA(Any):\n"
-            "    def method1(self) -> int:\n"
-            "        return 1\n"
-            "\n"
-            "a = ClassA()\n"
-            "x = a.method1()\n"
-            "y = a.method2()\n"
-            "z = ClassA.method3()\n"
-        )
-        filename.write_text(code)
-        settings = {code: code not in DISABLED_IN_TESTS for code in ErrorCode}
-        kwargs = ConfiguredNameCheckVisitor.prepare_constructor_kwargs(
-            {"settings": settings, "fail_after_first": False}
-        )
-        tree = ast.parse(code, str(filename))
-        visitor = ConfiguredNameCheckVisitor(str(filename), code, tree, **kwargs)
-        failures = visitor.check()
-        expected_import_failed_lineno = 3 if sys.version_info < (3, 11) else 9
+        class TD_B1(TypedDict):
+            x: ReadOnly[NotRequired[int]]
+            y: ReadOnly[Required[int]]
 
-        assert any(
-            failure["code"] == ErrorCode.import_failed
-            and failure["lineno"] == expected_import_failed_lineno
-            for failure in failures
-        )
-        assert not any(
-            failure["code"] == ErrorCode.undefined_attribute
-            and failure["lineno"] in {9, 10}
-            for failure in failures
-        )
+        class TD_B2(TypedDict):
+            x: ReadOnly[Required[int]]
+            y: ReadOnly[NotRequired[int]]
 
-        module_vars = visitor.scopes.module_scope().variables
-        assert module_vars["x"] == TypedValue(int)
-        assert isinstance(module_vars["y"], AnyValue)
-        assert isinstance(module_vars["z"], AnyValue)
+        class TD_B(TD_B1, TD_B2): ...  # E: invalid_annotation
+
+    @assert_passes(allow_import_failures=True)
+    def test_typeddict_extra_items_and_unpack_after_import_failure(self):
+        from typing_extensions import TypedDict, Unpack
+
+        class Movie(TypedDict, extra_items=bool):
+            name: str
+
+        MovieFunctional = TypedDict("MovieFunctional", {"name": str}, extra_items=bool)
+
+        boom = {}.popitem()
+
+        a: Movie = {"name": "Blade Runner", "year": 1982}  # E: incompatible_assignment
+        # E: incompatible_assignment
+        b: MovieFunctional = {"name": "Blade Runner", "year": 1982}
+
+        class MovieNoExtra(TypedDict):
+            name: str
+
+        class MovieExtra(TypedDict, extra_items=int):
+            name: str
+
+        def unpack_no_extra(**kwargs: Unpack[MovieNoExtra]) -> None: ...
+
+        def unpack_extra(**kwargs: Unpack[MovieExtra]) -> None: ...
+
+        # E: incompatible_call
+        unpack_no_extra(name="No Country for Old Men", year=2007)
+        unpack_extra(name="No Country for Old Men", year=2007)
+
+    @assert_passes(allow_import_failures=True)
+    def test_nominal_class_fallback_after_import_failure(self):
+        from typing import Any, overload
+
+        boom = 1 / 0
+
+        class Desc:
+            value: int = 0
+
+            @overload
+            def __get__(self, obj: None, owner: Any) -> "Desc": ...
+
+            @overload
+            def __get__(self, obj: object, owner: Any) -> int: ...
+
+            def __get__(self, obj: object | None, owner: Any) -> "int | Desc":
+                return 1
+
+    @assert_passes(allow_import_failures=True)
+    def test_inherited_class_attribute_after_import_failure(self):
+        boom = 1 / 0
+
+        class Base:
+            @staticmethod
+            def foo() -> int:
+                return 1
+
+        class Child(Base):
+            pass
+
+        x: int = Child.foo()
+
+    @assert_passes(allow_import_failures=True)
+    def test_any_base_class_after_import_failure(self):
+        from typing import Any
+
+        class ClassA(Any):
+            def method1(self) -> int:
+                return 1
+
+        a = ClassA()
+        x: int = a.method1()
+        y = a.method2()
+        z = ClassA.method3()
+        y.nonexistent_attribute
+        z.nonexistent_attribute
 
 
 class TestImportFailureHandlingCodeSamples(TestNameCheckVisitorBase):
