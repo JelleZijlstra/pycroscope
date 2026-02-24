@@ -1203,12 +1203,16 @@ class SequenceValue(GenericValue):
                 SequenceValue(self.typ, [*self.members, (False, self.members[-1][1])]),
             ]
         else:
-            # For simplicity, only decompose the first member
-            first_decomposed = self.members[0][1].decompose()
-            if first_decomposed is not None:
+            # For simplicity, decompose a single fixed-position member.
+            for index, (_, member) in enumerate(self.members):
+                decomposed = member.decompose()
+                if decomposed is None:
+                    continue
+                prefix = list(self.members[:index])
+                suffix = list(self.members[index + 1 :])
                 return [
-                    SequenceValue(self.typ, [(False, val), *self.members[1:]])
-                    for val in first_decomposed
+                    SequenceValue(self.typ, [*prefix, (False, val), *suffix])
+                    for val in decomposed
                 ]
             return None
 

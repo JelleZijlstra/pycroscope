@@ -90,6 +90,7 @@ class FunctionInfo:
     is_decorated_coroutine: bool  # has @asyncio.coroutine
     is_overload: bool  # typing.overload or pycroscope.extensions.overload
     is_override: bool  # @typing.override
+    is_final: bool  # @typing.final
     is_evaluated: bool  # @pycroscope.extensions.evaluated
     is_abstractmethod: bool  # has @abstractmethod
     is_instancemethod: bool  # is an instance method

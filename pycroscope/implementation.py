@@ -332,7 +332,7 @@ def _super_impl(ctx: CallContext) -> Value:
                 ErrorCode.bad_super_call,
             )
         current_class = ctx.visitor.asynq_checker.current_class
-        if current_class is not None:
+        if isinstance(current_class, type):
             try:
                 first_arg = ctx.visitor.scopes.get(
                     "%first_arg", None, ctx.visitor.state
@@ -345,10 +345,15 @@ def _super_impl(ctx: CallContext) -> Value:
                 if isinstance(first_arg, SubclassValue) and isinstance(
                     first_arg.typ, TypedValue
                 ):
-                    return KnownValue(super(current_class, first_arg.typ.typ))
+                    typ = first_arg.typ.typ
+                    if isinstance(typ, str):
+                        return AnyValue(AnySource.inference)
+                    return KnownValue(super(current_class, typ))
                 elif isinstance(first_arg, KnownValue):
                     return KnownValue(super(current_class, first_arg.val))
                 elif isinstance(first_arg, TypedValue):
+                    if isinstance(first_arg.typ, str):
+                        return AnyValue(AnySource.inference)
                     return TypedValue(super(current_class, first_arg.typ))
                 else:
                     return AnyValue(AnySource.inference)
