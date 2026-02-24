@@ -2675,22 +2675,10 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     def _make_enum_related_fallback_class(
         self, node: ast.ClassDef, base_values: Sequence[Value]
     ) -> type | None:
-        runtime_bases: list[type] = []
-        has_enum_base = False
-        for base_value in base_values:
-            base = replace_fallback(base_value)
-            if isinstance(base, KnownValue) and isinstance(base.val, type):
-                runtime_base = base.val
-            else:
-                runtime_annotation = self._runtime_annotation_from_value(base_value)
-                if not isinstance(runtime_annotation, type):
-                    return None
-                runtime_base = runtime_annotation
-            if safe_issubclass(runtime_base, enum.Enum):
-                has_enum_base = True
-            runtime_bases.append(runtime_base)
-
-        if not has_enum_base:
+        runtime_bases = self._runtime_enum_bases_from_values(
+            base_values, allow_synthetic_class_base=False
+        )
+        if runtime_bases is None:
             return None
 
         members: dict[str, object] = {}
@@ -2751,6 +2739,42 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         except Exception:
             self.log(logging.INFO, "unable to synthesize enum runtime class", node.name)
             return None
+
+    def _runtime_enum_bases_from_values(
+        self, base_values: Sequence[Value], *, allow_synthetic_class_base: bool
+    ) -> list[type] | None:
+        runtime_bases: list[type] = []
+        has_enum_base = False
+        for base_value in base_values:
+            runtime_base = self._runtime_enum_base_from_value(
+                base_value, allow_synthetic_class_base=allow_synthetic_class_base
+            )
+            if runtime_base is None:
+                return None
+            if safe_issubclass(runtime_base, enum.Enum):
+                has_enum_base = True
+            runtime_bases.append(runtime_base)
+        if not has_enum_base:
+            return None
+        return runtime_bases
+
+    def _runtime_enum_base_from_value(
+        self, base_value: Value, *, allow_synthetic_class_base: bool
+    ) -> type | None:
+        base = replace_fallback(base_value)
+        if allow_synthetic_class_base and isinstance(base, SyntheticClassObjectValue):
+            class_type = base.class_type
+            if isinstance(class_type, TypedValue) and isinstance(class_type.typ, type):
+                return class_type.typ
+            return None
+        if isinstance(base, KnownValue) and isinstance(base.val, type):
+            return base.val
+        if isinstance(base, TypedValue) and isinstance(base.typ, type):
+            return base.typ
+        runtime_annotation = self._runtime_annotation_from_value(base_value)
+        if isinstance(runtime_annotation, type):
+            return runtime_annotation
+        return None
 
     def _runtime_annotation_from_value(self, value: Value) -> object:
         if isinstance(value, AnnotatedValue):
@@ -3016,32 +3040,10 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         member_literal_values: Mapping[str, object],
         member_order: Sequence[str],
     ) -> type | None:
-        runtime_bases: list[type] = []
-        has_enum_base = False
-        for base_value in base_values:
-            base = replace_fallback(base_value)
-            if isinstance(base, SyntheticClassObjectValue):
-                class_type = base.class_type
-                if isinstance(class_type, TypedValue) and isinstance(
-                    class_type.typ, type
-                ):
-                    runtime_base = class_type.typ
-                else:
-                    return None
-            elif isinstance(base, KnownValue) and isinstance(base.val, type):
-                runtime_base = base.val
-            elif isinstance(base, TypedValue) and isinstance(base.typ, type):
-                runtime_base = base.typ
-            else:
-                runtime_annotation = self._runtime_annotation_from_value(base_value)
-                if not isinstance(runtime_annotation, type):
-                    return None
-                runtime_base = runtime_annotation
-            if safe_issubclass(runtime_base, enum.Enum):
-                has_enum_base = True
-            runtime_bases.append(runtime_base)
-
-        if not has_enum_base:
+        runtime_bases = self._runtime_enum_bases_from_values(
+            base_values, allow_synthetic_class_base=True
+        )
+        if runtime_bases is None:
             return None
 
         members = {name: member_literal_values[name] for name in member_order}
