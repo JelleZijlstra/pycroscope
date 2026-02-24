@@ -75,7 +75,6 @@ class TestAnnotations(TestNameCheckVisitorBase):
             assert_is_value(p, GenericValue(_Pattern, [TypedValue(bytes)]))
             assert_is_value(m, GenericValue(_Match, [TypedValue(str)]))
 
-    @skip_before((3, 10))
     @assert_passes()
     def test_union_as_an_annotation(self):
         from types import UnionType
@@ -670,7 +669,6 @@ class TestAnnotations(TestNameCheckVisitorBase):
             """
         )
 
-    @skip_before((3, 10))
     @assert_passes()
     def test_pep604_runtime(self):
         def capybara(x: int | None, y: int | str) -> None:
@@ -2189,7 +2187,6 @@ class TestMissinGenericParameters(TestNameCheckVisitorBase):
         ) -> None:
             pass
 
-    @skip_before((3, 10))
     @assert_passes()
     def test_union_or(self):
         def capybara(

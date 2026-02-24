@@ -4,7 +4,7 @@ from .name_check_visitor import build_stacked_scopes
 from .options import Options
 from .stacked_scopes import ScopeType, uniq_chain
 from .test_name_check_visitor import TestNameCheckVisitorBase
-from .test_node_visitor import assert_passes, skip_before, skip_if_not_installed
+from .test_node_visitor import assert_passes, skip_if_not_installed
 from .value import (
     NO_RETURN_VALUE,
     UNINITIALIZED_VALUE,
@@ -1025,7 +1025,6 @@ class TestConstraints(TestNameCheckVisitorBase):
             else:
                 assert_type(x, A)
 
-    @skip_before((3, 10))
     @assert_passes()
     def test_isinstance_union(self):
         from typing import Union
