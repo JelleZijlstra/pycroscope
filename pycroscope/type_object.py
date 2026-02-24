@@ -28,6 +28,7 @@ from .value import (
     CanAssignContext,
     CanAssignError,
     KnownValue,
+    SelfT,
     SubclassValue,
     TypedValue,
     Value,
@@ -204,6 +205,7 @@ class TypeObject:
             expected = ctx.get_attribute_from_value(
                 self_val, member, prefer_typeshed=True
             )
+            expected = expected.substitute_typevars({SelfT: other_val})
             # For __call__, we check compatibility with the other object itself.
             if member == "__call__":
                 actual = other_val

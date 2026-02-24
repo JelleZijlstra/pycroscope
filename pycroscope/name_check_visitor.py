@@ -2233,7 +2233,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         for base_node, base_value in zip(node.bases, base_values):
             if self._is_namedtuple_marker_base(base_value):
                 has_namedtuple_marker_base = True
-                runtime_bases.append(typing.NamedTuple)
                 continue
             base = replace_fallback(base_value)
             if isinstance(base, KnownValue):
@@ -2324,6 +2323,61 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
 
         module_name = self.module.__name__ if self.module is not None else self.filename
         qualname = self._get_class_qualname_from_name(node.name)
+
+        if has_namedtuple_marker_base:
+            field_names = tuple(annotations.keys())
+            default_values = tuple(
+                defaults[field_name]
+                for field_name in field_names
+                if field_name in defaults
+            )
+            namedtuple_defaults: tuple[object, ...] | None = (
+                default_values if default_values else None
+            )
+            try:
+                namedtuple_base = collections.namedtuple(
+                    node.name,
+                    field_names,
+                    defaults=namedtuple_defaults,
+                    module=module_name,
+                )
+            except Exception:
+                self.log(
+                    logging.INFO,
+                    "unable to synthesize namedtuple runtime base",
+                    node.name,
+                )
+                return None
+            try:
+                namedtuple_base.__qualname__ = qualname
+                if annotations:
+                    namedtuple_base.__annotations__ = annotations
+            except Exception:
+                pass
+
+            if not runtime_bases:
+                return namedtuple_base
+
+            def exec_namedtuple_body(ns: dict[str, object]) -> None:
+                ns["__module__"] = module_name
+                ns["__qualname__"] = qualname
+                if annotations:
+                    ns["__annotations__"] = annotations
+
+            try:
+                return types.new_class(
+                    node.name,
+                    (namedtuple_base, *tuple(runtime_bases)),
+                    {},
+                    exec_namedtuple_body,
+                )
+            except Exception:
+                self.log(
+                    logging.INFO,
+                    "unable to synthesize generic namedtuple runtime class",
+                    node.name,
+                )
+                return None
 
         def exec_body(ns: dict[str, object]) -> None:
             ns["__module__"] = module_name
