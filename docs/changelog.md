@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Annotate `match` pattern AST nodes in annotate mode, so `annotate_code()` and self-check no longer leave `Match*` nodes without `inferred_value`.
 - Preserve `@overload` behavior in static fallback mode when a module cannot be imported, including overload-aware inference for synthetic class dunder methods like `__getitem__` and consistency checks against overload implementations.
 - Preserve generic base information for synthetic classes in static fallback mode, so subclasses like `class D(dict[str, int])` are assignable to `dict[str, int]`.
 - Improve tuple typing behavior by validating invalid `tuple[..., ...]`/multi-unbounded-unpack forms, preserving `tuple[T, ...]` semantics when runtime imports fail, and improving tuple narrowing in sequence-pattern `match` cases.
