@@ -835,6 +835,22 @@ class TestCheckerGenericBases:
             grandparent: {},
         }
 
+    def test_register_synthetic_type_bases_substitutes_declared_type_params(self):
+        checker = Checker()
+        base = "test.Base"
+        child = "test.Child"
+        checker.register_synthetic_type_bases(
+            base, [], declared_type_params=[TypeVarValue(T)]
+        )
+        checker.register_synthetic_type_bases(
+            child,
+            [SyntheticClassObjectValue("Base", GenericValue(base, [TypedValue(int)]))],
+        )
+        assert checker.get_generic_bases(child) == {
+            child: {},
+            base: {T: TypedValue(int)},
+        }
+
 
 class TestAttribute:
     def test_basic(self) -> None:

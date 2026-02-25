@@ -55,6 +55,7 @@ from .value import (
     TypeAliasValue,
     TypedDictValue,
     TypedValue,
+    TypeVarLike,
     TypeVarValue,
     UnboundMethodValue,
     Value,
@@ -67,7 +68,7 @@ from .value import (
 )
 
 _BaseProvider = Callable[[type | super], set[type]]
-_SyntheticGenericBases = dict[type | str, dict[object, Value]]
+_SyntheticGenericBases = dict[type | str, dict[TypeVarLike, Value]]
 
 
 class AdditionalBaseProviders(PyObjectSequenceOption[_BaseProvider]):
@@ -254,7 +255,7 @@ class Checker:
         if synthetic_bases is None:
             return generic_bases
 
-        substitution_map: dict[object, Value] = {}
+        substitution_map: dict[TypeVarLike, Value] = {}
         synthetic_type_params = synthetic_bases.get(typ, {})
         for i, type_param_value in enumerate(synthetic_type_params.values()):
             if not isinstance(type_param_value, TypeVarValue):

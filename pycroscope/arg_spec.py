@@ -1155,8 +1155,12 @@ class ArgSpecCache:
         if isinstance(typ, str):
             return []
         runtime_type_params = safe_getattr(typ, "__type_params__", ())
+        try:
+            runtime_type_params_iter = iter(runtime_type_params)
+        except TypeError:
+            return []
         wrapped: list[Value] = []
-        for type_param in runtime_type_params:
+        for type_param in runtime_type_params_iter:
             try:
                 wrapped.append(wrap_type_param(type_param))
             except TypeError:

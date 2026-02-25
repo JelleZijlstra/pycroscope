@@ -3236,7 +3236,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         if isinstance(value, SequenceValue):
             members = value.get_member_sequence()
             if members is not None:
-                for _, member in members:
+                for member in members:
                     self._collect_type_param_polarities_from_value(
                         member, type_param_polarities, polarity=polarity
                     )

@@ -627,6 +627,16 @@ class TestGenericClasses(TestNameCheckVisitorBase):
         """
         )
 
+    @skip_before((3, 12))
+    def test_infer_variance_ignores_bad_sequence_annotation_without_crashing(self):
+        self.assert_passes(
+            """
+            class C[T]:
+                def f(self, x: [T]) -> None:  # E: invalid_annotation
+                    raise NotImplementedError
+        """
+        )
+
 
 class TestIntegration(TestNameCheckVisitorBase):
     @assert_passes()

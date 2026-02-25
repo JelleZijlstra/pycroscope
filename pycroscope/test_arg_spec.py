@@ -37,6 +37,15 @@ def test_wrap_typevartuple_param() -> None:
     assert wrap_type_param(ts) == TypeVarValue(ts, is_typevartuple=True)
 
 
+def test_get_type_parameters_ignores_non_iterable_runtime_type_params() -> None:
+    checker = Checker()
+
+    class Weird:
+        __type_params__ = property(lambda self: ())
+
+    assert checker.arg_spec_cache.get_type_parameters(Weird) == []
+
+
 class ClassWithCall(object):
     def __init__(self, name):
         pass
