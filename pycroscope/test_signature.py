@@ -1542,6 +1542,52 @@ class TestUnpack(TestNameCheckVisitorBase):
         def bad_kwargs(**kwargs: Unpack[None]) -> None:  # E: invalid_annotation
             assert_is_value(kwargs, AnyValue(AnySource.error))
 
+    @assert_passes()
+    def test_kwargs_typed_dict_assignment_rules(self):
+        from typing import Protocol, TypeVar
+
+        from typing_extensions import NotRequired, Required, TypedDict, Unpack
+
+        class TD(TypedDict):
+            v1: Required[int]
+            v2: NotRequired[str]
+
+        class TDProto(Protocol):
+            def __call__(self, **kwargs: Unpack[TD]) -> None: ...
+
+        def accepts_td(**kwargs: Unpack[TD]) -> None: ...
+
+        def overlap(v1: int, **kwargs: Unpack[TD]) -> None:  # E: invalid_annotation
+            ...
+
+        T = TypeVar("T", bound=TD)
+
+        def bad_bound(**kwargs: Unpack[T]) -> None:  # E: invalid_annotation
+            ...
+
+        def missing_kwargs(*, v1: int, v2: str = "") -> None: ...
+
+        p: TDProto = accepts_td
+        p = missing_kwargs  # E: incompatible_assignment
+
+
+class TestCallableAnnotations(TestNameCheckVisitorBase):
+    @assert_passes()
+    def test_invalid_callable_forms(self):
+        from typing import Callable
+
+        def capybara() -> None:
+            bad1: Callable[int] = ...  # E: invalid_annotation
+            bad2: Callable[int, int] = ...  # E: invalid_annotation
+            bad3: Callable[[...], int] = ...  # E: invalid_annotation
+            good: Callable[[int], int]
+
+            def inner(x: int) -> int:
+                return x
+
+            good = inner
+            good(1)
+
 
 class TestTooManyPosArgs(TestNameCheckVisitorBase):
     def test_basic(self):

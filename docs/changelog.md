@@ -3,6 +3,7 @@
 ## Unreleased
 
 - Improve protocol checking in import-failure fallback mode by preserving synthetic protocol members and restoring protocol-merging checks (including invalid protocol bases and abstract-class instantiation diagnostics), which fixes conformance coverage for `protocols_merging.py`.
+- Improve static handling of `TypeForm` call arguments (including `cast()` and `assert_type()`), fix `InitVar` annotation interpretation, and avoid ParamSpec-substitution internal errors; this also removes several callable-related conformance failures.
 - Infer variance for PEP 695 class type parameters from class member usage and generic base classes, improving assignment checks for covariant and contravariant generics.
 - Accept union arguments for constrained `TypeVar` parameters when each union member matches at least one constraint, including calls like `re.compile(pattern)` where `pattern` is `str | bytes`.
 - Generalize class-call signature inference to use Python-level metaclass `__call__` methods (not just enum classes), improving call checking for custom metaclasses.

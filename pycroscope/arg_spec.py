@@ -31,7 +31,7 @@ from .annotations import (
     annotation_expr_from_runtime,
     type_from_runtime,
 )
-from .extensions import CustomCheck, TypeGuard, get_type_evaluations
+from .extensions import CustomCheck, get_type_evaluations
 from .extensions import get_overloads as pycroscope_get_overloads
 from .find_unused import used
 from .functions import translate_vararg_type
@@ -1283,7 +1283,7 @@ class ArgSpecCache:
             return typ.__bases__
 
 
-def _is_qcore_decorator(obj: object) -> TypeGuard[Any]:
+def _is_qcore_decorator(obj: object) -> typing_extensions.TypeGuard[Any]:
     try:
         return (
             hasattr_static(obj, "is_decorator")

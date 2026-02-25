@@ -22,6 +22,8 @@ else:
 
 from .annotated_types import EnumName
 from .annotations import Context, annotation_expr_from_annotations, type_from_runtime
+from .input_sig import ELLIPSIS as INPUT_SIG_ELLIPSIS
+from .input_sig import FullSignature, InputSigValue, ParamSpecSig
 from .options import Options, PyObjectSequenceOption
 from .safe import (
     is_async_fn,
@@ -30,7 +32,7 @@ from .safe import (
     safe_isinstance,
     safe_issubclass,
 )
-from .signature import MaybeSignature
+from .signature import MaybeSignature, Signature
 from .stacked_scopes import Composite
 from .value import (
     UNINITIALIZED_VALUE,
@@ -55,6 +57,8 @@ from .value import (
     TypedDictValue,
     TypedValue,
     TypeFormValue,
+    TypeVarLike,
+    TypeVarMap,
     TypeVarValue,
     UnboundMethodValue,
     Value,
@@ -577,6 +581,44 @@ def _enum_member_value_type(typ: type[Enum]) -> Value | None:
     return unite_values(*values)
 
 
+def _typevar_map_from_type_parameters(
+    type_params: Sequence[Value], generic_args: Sequence[Value]
+) -> TypeVarMap:
+    tv_map: dict[TypeVarLike, Value] = {}
+    arg_index_by_key: dict[tuple[str, str], int] = {}
+    next_arg_index = 0
+    for type_param in type_params:
+        if isinstance(type_param, TypeVarValue):
+            semantic_key = ("typevar", type_param.typevar.__name__)
+        elif isinstance(type_param, InputSigValue) and isinstance(
+            type_param.input_sig, ParamSpecSig
+        ):
+            semantic_key = ("paramspec", type_param.input_sig.param_spec.__name__)
+        else:
+            continue
+        if semantic_key not in arg_index_by_key:
+            if next_arg_index >= len(generic_args):
+                continue
+            arg_index_by_key[semantic_key] = next_arg_index
+            next_arg_index += 1
+        arg = generic_args[arg_index_by_key[semantic_key]]
+        if isinstance(type_param, TypeVarValue):
+            tv_map[type_param.typevar] = arg
+        elif isinstance(type_param, InputSigValue) and isinstance(
+            type_param.input_sig, ParamSpecSig
+        ):
+            if isinstance(arg, AnyValue):
+                normalized_arg: Value = InputSigValue(INPUT_SIG_ELLIPSIS)
+            elif isinstance(arg, CallableValue) and isinstance(
+                arg.signature, Signature
+            ):
+                normalized_arg = InputSigValue(FullSignature(arg.signature))
+            else:
+                normalized_arg = arg
+            tv_map[type_param.input_sig.param_spec] = normalized_arg
+    return tv_map
+
+
 def _substitute_typevars(
     typ: type | str,
     generic_args: Sequence[Value],
@@ -591,12 +633,9 @@ def _substitute_typevars(
     if provider in generic_bases:
         result = result.substitute_typevars(generic_bases[provider])
     if generic_args and typ in generic_bases:
-        typevars = [
-            val.typevar
-            for val in generic_bases[typ].values()
-            if isinstance(val, TypeVarValue)
-        ]
-        tv_map = dict(zip(typevars, generic_args))
+        tv_map = _typevar_map_from_type_parameters(
+            list(generic_bases[typ].values()), generic_args
+        )
         result = result.substitute_typevars(tv_map)
     return result
 

@@ -714,6 +714,17 @@ class TestAnnotations(TestNameCheckVisitorBase):
             Capybara(x=3)  # E: incompatible_argument
 
     @assert_passes()
+    def test_initvar_default(self):
+        from dataclasses import InitVar, dataclass
+        from typing import Optional
+
+        @dataclass
+        class Capybara:
+            x: InitVar[Optional[str]] = None
+
+        Capybara()
+
+    @assert_passes()
     def test_classvar(self):
         from typing import ClassVar
 
@@ -823,10 +834,14 @@ class TestAnnotated(TestNameCheckVisitorBase):
             class Child:
                 attrs: list[Base]
 
-            # TODO: ideally this should preserve list[Base] instead of falling back to Any.
-            assert_is_value(
-                Child().attrs, GenericValue(list, [AnyValue(AnySource.from_another)])
-            )
+            def takes_base(xs: list[Base]) -> None:
+                pass
+
+            def takes_int(xs: list[int]) -> None:
+                pass
+
+            takes_base(Child().attrs)
+            takes_int(Child().attrs)  # E: incompatible_argument
 
     @assert_passes()
     def test_annotated_requires_metadata_and_is_not_callable(self):
@@ -1887,6 +1902,52 @@ class TestParamSpec(TestNameCheckVisitorBase):
                 quoted_refined("x", 1), GenericValue(list, [TypedValue(str)])
             )
             quoted_refined(1)  # E: incompatible_call
+
+    @assert_passes()
+    def test_concatenate_ellipsis_specialization(self):
+        from typing import Callable, TypeAlias
+
+        from typing_extensions import Concatenate, ParamSpec
+
+        P = ParamSpec("P")
+
+        Callback1: TypeAlias = Callable[P, str]
+        Callback2: TypeAlias = Callable[Concatenate[int, P], str]
+
+        def capybara(
+            cb0: Callable[[], str],
+            cb1: Callable[[int], str],
+            cb2: Callable[[int, str], str],
+        ) -> None:
+            _ok1: Callback1[...] = cb0
+            _bad1: Callback2[...] = cb0  # E: incompatible_assignment
+            _ok2: Callback2[...] = cb1
+            _ok3: Callable[Concatenate[int, ...], str] = cb2
+            _bad2: Callable[Concatenate[str, ...], str] = (
+                cb2  # E: incompatible_assignment
+            )
+
+    @assert_passes()
+    def test_implicit_anysig_tail_rules(self):
+        from typing import Any, Protocol, TypeVar
+
+        T_contra = TypeVar("T_contra", contravariant=True)
+
+        class ProtoEllipsis(Protocol):
+            def __call__(self, a: int, *args: Any, k: str, **kwargs: Any) -> None: ...
+
+        class ProtoConcrete(Protocol):
+            def __call__(self, a: float, b: int, *, k: str, m: str) -> None: ...
+
+        class ProtoGeneric(Protocol[T_contra]):
+            def __call__(self, *args: T_contra, **kwargs: T_contra) -> None: ...
+
+        class ProtoNoArgs(Protocol):
+            def __call__(self) -> None: ...
+
+        def capybara(p_concrete: ProtoConcrete, p_noargs: ProtoNoArgs) -> None:
+            _ok: ProtoEllipsis = p_concrete
+            _bad: ProtoGeneric[Any] = p_noargs  # E: incompatible_assignment
 
     @assert_passes()
     def test_match_any(self):

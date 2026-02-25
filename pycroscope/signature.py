@@ -38,7 +38,7 @@ from .node_visitor import Replacement
 from .options import IntegerOption
 from .predicates import IsAssignablePredicate
 from .relations import Relation, can_assign_and_used_any, has_relation
-from .safe import safe_getattr, safe_str
+from .safe import is_instance_of_typing_name, safe_getattr, safe_str
 from .stacked_scopes import (
     NULL_CONSTRAINT,
     AbstractConstraint,
@@ -501,6 +501,38 @@ def _has_decomposable_argument(args: Sequence[Argument]) -> bool:
     return False
 
 
+def _is_implicit_anysig_value(value: Value) -> bool:
+    return isinstance(value, AnyValue) and value.source in (
+        AnySource.explicit,
+        AnySource.unannotated,
+    )
+
+
+def _is_implicit_anysig_var_positional(param: SigParameter) -> bool:
+    if param.kind is not ParameterKind.VAR_POSITIONAL:
+        return False
+    annotation = param.get_annotation()
+    return (
+        isinstance(annotation, GenericValue)
+        and annotation.typ is tuple
+        and len(annotation.args) == 1
+        and _is_implicit_anysig_value(annotation.args[0])
+    )
+
+
+def _is_implicit_anysig_var_keyword(param: SigParameter) -> bool:
+    if param.kind is not ParameterKind.VAR_KEYWORD:
+        return False
+    annotation = param.get_annotation()
+    return (
+        isinstance(annotation, GenericValue)
+        and annotation.typ is dict
+        and len(annotation.args) == 2
+        and annotation.args[0] == TypedValue(str)
+        and _is_implicit_anysig_value(annotation.args[1])
+    )
+
+
 @dataclass(frozen=True)
 class Signature:
     """Represents the signature of a Python callable.
@@ -516,6 +548,10 @@ class Signature:
     """An ordered mapping of the signature's parameters."""
     return_value: Value
     """What the callable returns."""
+    has_typed_dict_var_keyword: bool = field(default=False, compare=False)
+    """Whether this signature came from **kwargs: Unpack[TypedDict]."""
+    has_implicit_anysig_tail: bool = field(default=False, compare=False)
+    """Whether this signature has both *args and **kwargs typed as Any in source."""
     impl: Impl | None = field(default=None, compare=False)
     """:term:`impl` function for this signature."""
     callable: object | None = field(default=None, compare=False)
@@ -1627,14 +1663,136 @@ class Signature:
         return None
 
     def substitute_typevars(self, typevars: TypeVarMap) -> "Signature":
+        def _get_paramspec_replacement(param_spec: object) -> Value | None:
+            for key, candidate in typevars.items():
+                if key is param_spec:
+                    return candidate
+                if not (
+                    is_instance_of_typing_name(param_spec, "ParamSpec")
+                    and is_instance_of_typing_name(key, "ParamSpec")
+                ):
+                    continue
+                if safe_getattr(key, "__name__", None) == safe_getattr(
+                    param_spec, "__name__", None
+                ):
+                    return candidate
+            return None
+
+        def _get_input_sig_replacement(
+            param_spec: object,
+        ) -> InputSigValue | AnyValue | None:
+            replacement = _get_paramspec_replacement(param_spec)
+            if replacement is None:
+                return None
+            if isinstance(replacement, (InputSigValue, AnyValue)):
+                return replacement
+            return None
+
         params = []
         for name, param in self.parameters.items():
+            if param.kind is ParameterKind.VAR_POSITIONAL and isinstance(
+                param.annotation, ParamSpecArgsValue
+            ):
+                replacement_value = _get_input_sig_replacement(
+                    param.annotation.param_spec
+                )
+                if replacement_value is None:
+                    params.append((name, param))
+                    continue
+                replacement = assert_input_sig(replacement_value)
+                new_val = replacement.substitute_typevars(typevars)
+                if isinstance(new_val, FullSignature):
+                    params += list(new_val.sig.parameters.items())
+                    continue
+                if isinstance(new_val, AnySig):
+                    params.append(
+                        (
+                            name,
+                            SigParameter(
+                                param.name,
+                                param.kind,
+                                default=param.default,
+                                annotation=GenericValue(
+                                    tuple, [AnyValue(AnySource.ellipsis_callable)]
+                                ),
+                            ),
+                        )
+                    )
+                    continue
+                if isinstance(new_val, ParamSpecSig):
+                    params.append(
+                        (
+                            name,
+                            SigParameter(
+                                param.name,
+                                param.kind,
+                                default=param.default,
+                                annotation=ParamSpecArgsValue(new_val.param_spec),
+                            ),
+                        )
+                    )
+                    continue
+                if isinstance(new_val, ActualArguments):
+                    params.append((name, param))
+                    continue
+                assert_never(new_val)
+            if param.kind is ParameterKind.VAR_KEYWORD and isinstance(
+                param.annotation, ParamSpecKwargsValue
+            ):
+                replacement_value = _get_input_sig_replacement(
+                    param.annotation.param_spec
+                )
+                if replacement_value is None:
+                    params.append((name, param))
+                    continue
+                replacement = assert_input_sig(replacement_value)
+                new_val = replacement.substitute_typevars(typevars)
+                if isinstance(new_val, FullSignature):
+                    # FullSignature/AnySig replacements consume both P.args and P.kwargs.
+                    continue
+                if isinstance(new_val, AnySig):
+                    params.append(
+                        (
+                            name,
+                            SigParameter(
+                                param.name,
+                                param.kind,
+                                default=param.default,
+                                annotation=GenericValue(
+                                    dict,
+                                    [
+                                        TypedValue(str),
+                                        AnyValue(AnySource.ellipsis_callable),
+                                    ],
+                                ),
+                            ),
+                        )
+                    )
+                    continue
+                if isinstance(new_val, ParamSpecSig):
+                    params.append(
+                        (
+                            name,
+                            SigParameter(
+                                param.name,
+                                param.kind,
+                                default=param.default,
+                                annotation=ParamSpecKwargsValue(new_val.param_spec),
+                            ),
+                        )
+                    )
+                    continue
+                if isinstance(new_val, ActualArguments):
+                    params.append((name, param))
+                    continue
+                assert_never(new_val)
             if param.kind is ParameterKind.PARAM_SPEC:
                 input_sig = assert_input_sig(param.annotation)
                 if isinstance(input_sig, ParamSpecSig):
                     tv = input_sig.param_spec
-                    if tv in typevars:
-                        replacement = assert_input_sig(typevars[tv])
+                    replacement_value = _get_input_sig_replacement(tv)
+                    if replacement_value is not None:
+                        replacement = assert_input_sig(replacement_value)
                         new_val = replacement.substitute_typevars(typevars)
                         if isinstance(new_val, ParamSpecSig):
                             new_param = SigParameter(
@@ -1672,6 +1830,8 @@ class Signature:
         return Signature(
             params_dict,
             return_value,
+            has_typed_dict_var_keyword=self.has_typed_dict_var_keyword,
+            has_implicit_anysig_tail=self.has_implicit_anysig_tail,
             impl=self.impl,
             callable=self.callable,
             is_asynq=self.is_asynq,
@@ -1693,7 +1853,7 @@ class Signature:
         if not self.is_asynq:
             raise TypeError("get_asynq_value() is only supported for AsynqCallable")
         return_value = AsyncTaskIncompleteValue(asynq.AsyncTask, self.return_value)
-        return Signature.make(
+        signature = Signature.make(
             self.parameters.values(),
             return_value,
             impl=self.impl,
@@ -1703,6 +1863,11 @@ class Signature:
             allow_call=self.allow_call,
             evaluator=self.evaluator,
         )
+        if self.has_typed_dict_var_keyword and not signature.has_typed_dict_var_keyword:
+            signature = replace(signature, has_typed_dict_var_keyword=True)
+        if self.has_implicit_anysig_tail and not signature.has_implicit_anysig_tail:
+            signature = replace(signature, has_implicit_anysig_tail=True)
+        return signature
 
     @classmethod
     def make(
@@ -1729,8 +1894,16 @@ class Signature:
             return_annotation = AnyValue(AnySource.unannotated)
             has_return_annotation = False
         param_dict = {}
+        has_typed_dict_var_keyword = False
+        has_implicit_anysig_tail = False
+        saw_implicit_anysig_varargs = False
+        saw_implicit_anysig_kwargs = False
         i = 0
         for param in parameters:
+            if _is_implicit_anysig_var_positional(param):
+                saw_implicit_anysig_varargs = True
+            elif _is_implicit_anysig_var_keyword(param):
+                saw_implicit_anysig_kwargs = True
             if param.kind is ParameterKind.VAR_POSITIONAL and isinstance(
                 param.annotation, SequenceValue
             ):
@@ -1748,6 +1921,7 @@ class Signature:
             elif param.kind is ParameterKind.VAR_KEYWORD and isinstance(
                 param.annotation, TypedDictValue
             ):
+                has_typed_dict_var_keyword = True
                 for name, entry in param.annotation.items.items():
                     param_dict[name] = SigParameter(
                         name,
@@ -1769,11 +1943,15 @@ class Signature:
             else:
                 param_dict[param.name] = param
                 i += 1
+        if saw_implicit_anysig_varargs and saw_implicit_anysig_kwargs:
+            has_implicit_anysig_tail = True
         if deprecated is None and callable is not None:
             deprecated = safe_getattr(callable, "__deprecated__", None)
         return cls(
             param_dict,
             return_value=return_annotation,
+            has_typed_dict_var_keyword=has_typed_dict_var_keyword,
+            has_implicit_anysig_tail=has_implicit_anysig_tail,
             impl=impl,
             callable=callable,
             has_return_annotation=has_return_annotation,
@@ -1868,6 +2046,8 @@ class Signature:
         return Signature(
             new_params,
             return_value,
+            has_typed_dict_var_keyword=self.has_typed_dict_var_keyword,
+            has_implicit_anysig_tail=self.has_implicit_anysig_tail,
             # We don't carry over the implementation function by default, because it
             # may not work when passed different arguments.
             impl=self.impl if preserve_impl else None,
@@ -2705,13 +2885,21 @@ def signatures_have_relation(
         kwargs_annotation = their_kwargs.get_annotation()
     else:
         kwargs_annotation = None
+    if (
+        left.has_typed_dict_var_keyword
+        and not right.has_typed_dict_var_keyword
+        and their_kwargs is None
+        and right.get_param_of_kind(ParameterKind.PARAM_SPEC) is None
+        and right.get_param_of_kind(ParameterKind.ELLIPSIS) is None
+    ):
+        return CanAssignError("**kwargs are not accepted")
     their_ellipsis = right.get_param_of_kind(ParameterKind.ELLIPSIS)
     if their_ellipsis is not None:
         args_annotation = kwargs_annotation = AnyValue(AnySource.ellipsis_callable)
     consumed_positional = set()
     consumed_required_pos_only = set()
     consumed_keyword = set()
-    consumed_paramspec = False
+    consumed_paramspec = left.has_implicit_anysig_tail
     for i, my_param in enumerate(left.parameters.values()):
         my_annotation = my_param.get_annotation()
         if my_param.kind is ParameterKind.POSITIONAL_ONLY:
@@ -2817,6 +3005,8 @@ def signatures_have_relation(
             else:
                 return CanAssignError(f"parameter {my_param.name!r} is not accepted")
         elif my_param.kind is ParameterKind.VAR_POSITIONAL:
+            if left.has_implicit_anysig_tail:
+                continue
             if args_annotation is None:
                 return CanAssignError("*args are not accepted")
             tv_map = has_relation(args_annotation, my_annotation, relation, ctx)
@@ -2842,6 +3032,8 @@ def signatures_have_relation(
                     )
                 tv_maps.append(tv_map)
         elif my_param.kind is ParameterKind.VAR_KEYWORD:
+            if left.has_implicit_anysig_tail:
+                continue
             if kwargs_annotation is None:
                 return CanAssignError("**kwargs are not accepted")
             my_kwargs_value = _get_var_keyword_value_type(my_annotation, relation, ctx)

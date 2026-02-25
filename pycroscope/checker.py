@@ -9,7 +9,7 @@ import collections.abc
 import itertools
 import sys
 import types
-from collections.abc import Callable, Iterable, Iterator, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from contextlib import AbstractContextManager, contextmanager
 from dataclasses import InitVar, dataclass, field
 
@@ -18,6 +18,14 @@ from .annotations import type_from_runtime
 from .arg_spec import ArgSpecCache, GenericBases
 from .attributes import AttrContext, get_attribute
 from .extensions import get_overloads as get_runtime_overloads
+from .input_sig import ELLIPSIS as INPUT_SIG_ELLIPSIS
+from .input_sig import (
+    FullSignature,
+    InputSigValue,
+    ParamSpecSig,
+    extract_type_params,
+    wrap_type_param,
+)
 from .node_visitor import Failure
 from .options import Options, PyObjectSequenceOption
 from .reexport import ImplicitReexportTracker
@@ -41,6 +49,7 @@ from .type_object import TypeObject, get_mro
 from .typeshed import TypeshedFinder
 from .value import (
     UNINITIALIZED_VALUE,
+    AnnotatedValue,
     AnySource,
     AnyValue,
     CallableValue,
@@ -56,6 +65,7 @@ from .value import (
     TypedDictValue,
     TypedValue,
     TypeVarLike,
+    TypeVarMap,
     TypeVarValue,
     UnboundMethodValue,
     Value,
@@ -104,6 +114,9 @@ class Checker:
         default_factory=dict, init=False, repr=False
     )
     synthetic_generic_bases: dict[type | str, _SyntheticGenericBases] = field(
+        default_factory=dict, init=False, repr=False
+    )
+    synthetic_class_attributes: dict[str, dict[str, Value]] = field(
         default_factory=dict, init=False, repr=False
     )
     synthetic_protocol_members: dict[type | str, set[str]] = field(
@@ -246,13 +259,13 @@ class Checker:
         return {base.typ for base in base_values if isinstance(base, TypedValue)}
 
     def _get_protocol_members(self, bases: Iterable[type | str]) -> set[str]:
-        members = {
-            attr
-            for base in bases
-            for attr in self.ts_finder.get_all_attributes(base)
-            if attr != "__slots__"
-        }
+        members: set[str] = set()
         for base in bases:
+            members |= {
+                attr
+                for attr in self.ts_finder.get_all_attributes(base)
+                if attr != "__slots__"
+            }
             members |= self._get_synthetic_protocol_members(base)
         return members
 
@@ -315,6 +328,7 @@ class Checker:
         declared_type_params: Sequence[TypeVarValue] = (),
     ) -> None:
         base_types: set[type | str] = set()
+        own_type_params: list[TypeVarLike] = [tv.typevar for tv in declared_type_params]
         merged_generic_bases: _SyntheticGenericBases = {
             typ: {tv.typevar: tv for tv in declared_type_params}
         }
@@ -327,6 +341,9 @@ class Checker:
                     converted = converted.class_type
                 if not isinstance(converted, TypedValue):
                     continue
+                for type_param in extract_type_params(converted):
+                    if type_param not in own_type_params:
+                        own_type_params.append(type_param)
                 base_typ = converted.typ
                 base_types.add(base_typ)
                 # Preserve direct synthetic bases even when we cannot infer a
@@ -340,6 +357,13 @@ class Checker:
                     base_typ, generic_args
                 ).items():
                     merged_generic_bases.setdefault(gb_typ, {}).update(tv_map)
+        merged_generic_bases[typ].update(
+            {
+                tv: wrap_type_param(tv)
+                for tv in own_type_params
+                if tv not in merged_generic_bases[typ]
+            }
+        )
 
         if isinstance(typ, str) and base_types:
             self.synthetic_type_bases.setdefault(typ, set()).update(base_types)
@@ -349,9 +373,20 @@ class Checker:
         for key in self._iter_generic_override_keys(typ):
             self.synthetic_generic_bases[key] = merged_copy
         self.type_object_cache.pop(typ, None)
+        self._relation_cache.clear()
+
+    def _get_type_parameters_for_typ(self, typ: type | str) -> list[Value]:
+        type_params = self.arg_spec_cache.get_type_parameters(typ)
+        if type_params:
+            return type_params
+        if isinstance(typ, str):
+            synthetic_bases = self.synthetic_generic_bases.get(typ)
+            if synthetic_bases is not None:
+                return list(synthetic_bases.get(typ, {}).values())
+        return []
 
     def register_synthetic_protocol_members(
-        self, typ: type | str, members: set[str]
+        self, typ: type | str, members: Iterable[str]
     ) -> None:
         cleaned_members = {
             member
@@ -359,8 +394,22 @@ class Checker:
             if member not in EXCLUDED_PROTOCOL_MEMBERS and member != "__slots__"
         }
         for key in self._iter_generic_override_keys(typ):
-            self.synthetic_protocol_members[key] = set(cleaned_members)
+            self.synthetic_protocol_members.setdefault(key, set()).update(
+                cleaned_members
+            )
             self.type_object_cache.pop(key, None)
+        self._relation_cache.clear()
+
+    def register_synthetic_class_attributes(
+        self, typ: str, attributes: Mapping[str, Value]
+    ) -> None:
+        normalized = {
+            attr: _normalize_synthetic_attribute(value)
+            for attr, value in attributes.items()
+        }
+        self.synthetic_class_attributes.setdefault(typ, {}).update(normalized)
+        self.type_object_cache.pop(typ, None)
+        self._relation_cache.clear()
 
     @staticmethod
     def _runtime_type_generic_alias(typ: type) -> str:
@@ -507,6 +556,12 @@ class Checker:
     ) -> MaybeSignature:
         if value is UNINITIALIZED_VALUE:
             return None
+        if isinstance(value, AnnotatedValue):
+            return self.signature_from_value(
+                value.value,
+                get_return_override=get_return_override,
+                get_call_attribute=get_call_attribute,
+            )
         value = replace_fallback(value)
         if isinstance(value, KnownValue):
             origin = safe_getattr(value.val, "__origin__", None)
@@ -519,11 +574,9 @@ class Checker:
                         type_from_runtime(arg, visitor=self, suppress_errors=True)
                         for arg in args
                     ]
-                    typevar_map = {
-                        param.typevar: arg
-                        for param, arg in zip(type_params, arg_values)
-                        if isinstance(param, TypeVarValue)
-                    }
+                    typevar_map = self._make_typevar_map_from_type_parameters(
+                        type_params, arg_values
+                    )
                     if typevar_map:
                         return origin_argspec.substitute_typevars(typevar_map)
                     return origin_argspec
@@ -689,13 +742,16 @@ class Checker:
     def _make_synthetic_class_instance_value(
         self, value: SyntheticClassObjectValue
     ) -> Value:
-        metadata = [
-            HasAttrExtension(
-                KnownValue(name), self._make_any_base_attribute(name, attr)
-            )
-            for name, attr in value.class_attributes.items()
-            if not name.startswith("%")
-        ]
+        if self.make_type_object(value.class_type.typ).is_protocol:
+            metadata: list[HasAttrExtension] = []
+        else:
+            metadata = [
+                HasAttrExtension(
+                    KnownValue(name), self._make_any_base_attribute(name, attr)
+                )
+                for name, attr in value.class_attributes.items()
+                if not name.startswith("%")
+            ]
         if self._synthetic_class_has_any_base(value):
             instance: Value = AnyValue(AnySource.from_another)
         else:
@@ -749,6 +805,12 @@ class Checker:
                 for subval in flatten_values(root_value)
             ]
             return unite_values(*results)
+        if isinstance(root_value, TypedValue) and isinstance(root_value.typ, str):
+            synthetic = self._get_synthetic_instance_attribute(
+                root_value.typ, attribute, root_value=root_value
+            )
+            if synthetic is not None:
+                return synthetic
         ctx = CheckerAttrContext(
             Composite(root_value),
             attribute,
@@ -759,6 +821,86 @@ class Checker:
             checker=self,
         )
         return get_attribute(ctx)
+
+    def _make_typevar_map_from_type_parameters(
+        self, type_params: Sequence[Value], args: Sequence[Value]
+    ) -> TypeVarMap:
+        tv_map: dict[TypeVarLike, Value] = {}
+        arg_index_by_key: dict[tuple[str, str], int] = {}
+        next_arg_index = 0
+        for type_param in type_params:
+            if isinstance(type_param, TypeVarValue):
+                semantic_key = ("typevar", type_param.typevar.__name__)
+            elif isinstance(type_param, InputSigValue) and isinstance(
+                type_param.input_sig, ParamSpecSig
+            ):
+                semantic_key = ("paramspec", type_param.input_sig.param_spec.__name__)
+            else:
+                continue
+            if semantic_key not in arg_index_by_key:
+                if next_arg_index >= len(args):
+                    continue
+                arg_index_by_key[semantic_key] = next_arg_index
+                next_arg_index += 1
+            arg = args[arg_index_by_key[semantic_key]]
+            if isinstance(type_param, TypeVarValue):
+                tv_map[type_param.typevar] = arg
+            elif isinstance(type_param, InputSigValue) and isinstance(
+                type_param.input_sig, ParamSpecSig
+            ):
+                if isinstance(arg, AnyValue):
+                    normalized_arg: Value = InputSigValue(INPUT_SIG_ELLIPSIS)
+                elif isinstance(arg, CallableValue) and isinstance(
+                    arg.signature, Signature
+                ):
+                    normalized_arg = InputSigValue(FullSignature(arg.signature))
+                else:
+                    normalized_arg = arg
+                tv_map[type_param.input_sig.param_spec] = normalized_arg
+        return tv_map
+
+    def _get_synthetic_instance_attribute(
+        self, typ: str, attribute: str, *, root_value: TypedValue | None = None
+    ) -> Value | None:
+        seen: set[str] = set()
+        to_visit = [typ]
+        while to_visit:
+            current = to_visit.pop()
+            if current in seen:
+                continue
+            seen.add(current)
+            attrs = self.synthetic_class_attributes.get(current)
+            if attrs is not None and attribute in attrs:
+                value = attrs[attribute]
+                if isinstance(root_value, GenericValue) and root_value.typ == typ:
+                    type_params = self._get_type_parameters_for_typ(typ)
+                    tv_map = self._make_typevar_map_from_type_parameters(
+                        type_params, root_value.args
+                    )
+                    if tv_map:
+                        value = value.substitute_typevars(tv_map)
+                if isinstance(value, CallableValue) and (
+                    attribute == "__call__" or not _is_dunder(attribute)
+                ):
+                    bound = self._bind_synthetic_method(value.signature)
+                    if bound is not None:
+                        return CallableValue(bound)
+                return value
+            for base in self.synthetic_type_bases.get(current, ()):
+                if isinstance(base, str):
+                    to_visit.append(base)
+        return None
+
+    def get_synthetic_instance_attribute(
+        self, typ: str | TypedValue, attribute: str
+    ) -> Value | None:
+        if isinstance(typ, TypedValue):
+            if isinstance(typ.typ, str):
+                return self._get_synthetic_instance_attribute(
+                    typ.typ, attribute, root_value=typ
+                )
+            return None
+        return self._get_synthetic_instance_attribute(typ, attribute)
 
 
 def _is_dunder(name: str) -> bool:

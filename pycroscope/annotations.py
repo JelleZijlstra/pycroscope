@@ -48,7 +48,8 @@ import typing_extensions
 from typing_extensions import NoDefault, ParamSpec, TypedDict
 
 from pycroscope.annotated_types import get_annotated_types_extension
-from pycroscope.input_sig import InputSigValue, ParamSpecSig
+from pycroscope.input_sig import ELLIPSIS as INPUT_SIG_ELLIPSIS
+from pycroscope.input_sig import FullSignature, InputSigValue, ParamSpecSig
 from pycroscope.relations import HashableProtoValue
 
 from . import type_evaluation
@@ -68,7 +69,7 @@ from .extensions import (
 from .find_unused import used
 from .functions import FunctionDefNode
 from .node_visitor import ErrorContext
-from .safe import is_instance_of_typing_name, is_typing_name, is_union
+from .safe import is_instance_of_typing_name, is_typing_name, is_union, safe_getattr
 from .signature import (
     ANY_SIGNATURE,
     ELLIPSIS_PARAM,
@@ -772,19 +773,35 @@ def _callable_args_from_runtime(
 
 
 def _args_from_concatenate(concatenate: Any, ctx: Context) -> Sequence[SigParameter]:
-    types = [_type_from_runtime(arg, ctx) for arg in concatenate.__args__]
+    raw_args = concatenate.__args__
+    if not raw_args:
+        ctx.show_error(f"Invalid Concatenate arguments: {concatenate!r}")
+        return [ELLIPSIS_PARAM]
+
     params = [
         SigParameter(
             f"@{i}",
-            kind=(
-                ParameterKind.PARAM_SPEC
-                if i == len(types) - 1
-                else ParameterKind.POSITIONAL_ONLY
-            ),
-            annotation=annotation,
+            kind=ParameterKind.POSITIONAL_ONLY,
+            annotation=_type_from_runtime(arg, ctx),
         )
-        for i, annotation in enumerate(types)
+        for i, arg in enumerate(raw_args[:-1])
     ]
+
+    tail = raw_args[-1]
+    if tail is Ellipsis:
+        tail_annotation = InputSigValue(INPUT_SIG_ELLIPSIS)
+    elif is_instance_of_typing_name(tail, "ParamSpec"):
+        tail_annotation = InputSigValue(ParamSpecSig(tail))
+    else:
+        tail_annotation = _type_from_runtime(tail, ctx)
+        if not isinstance(tail_annotation, InputSigValue):
+            ctx.show_error(
+                "The final argument to Concatenate must be a ParamSpec or ..."
+            )
+            return [ELLIPSIS_PARAM]
+    params.append(
+        SigParameter("__P", kind=ParameterKind.PARAM_SPEC, annotation=tail_annotation)
+    )
     return params
 
 
@@ -896,7 +913,10 @@ def _annotation_expr_from_subscripted_value(
         Qualifier.InitVar,
         Qualifier.Unpack,
     ):
-        if is_typing_name(root_val, qualifier.name):
+        is_qualifier = is_typing_name(root_val, qualifier.name)
+        if qualifier is Qualifier.InitVar and root_val is InitVar:
+            is_qualifier = True
+        if is_qualifier:
             if len(members) != 1:
                 ctx.show_error(f"{qualifier.name}[] requires a single argument")
                 return AnnotationExpr(ctx, AnyValue(AnySource.error))
@@ -909,11 +929,160 @@ def _annotation_expr_from_subscripted_value(
 def _type_from_subscripted_value(
     root: Value | None, members: Sequence[Value], ctx: Context
 ) -> Value:
+    def _qualified_name(obj: object) -> str | None:
+        module = safe_getattr(obj, "__module__", None)
+        qualname = safe_getattr(obj, "__qualname__", None)
+        if isinstance(module, str) and isinstance(qualname, str):
+            return f"{module}.{qualname}"
+        return None
+
+    def _is_typeguard_name(obj: object) -> bool:
+        if isinstance(obj, str):
+            return obj in {
+                "typing.TypeGuard",
+                "typing_extensions.TypeGuard",
+                "pycroscope.extensions.TypeGuard",
+            }
+        return is_typing_name(obj, "TypeGuard") or _qualified_name(obj) == (
+            "pycroscope.extensions.TypeGuard"
+        )
+
+    def _is_typeis_name(obj: object) -> bool:
+        if isinstance(obj, str):
+            return obj in {"typing.TypeIs", "typing_extensions.TypeIs"}
+        return is_typing_name(obj, "TypeIs")
+
+    def _is_external_type_name(obj: object) -> bool:
+        if isinstance(obj, str):
+            return obj == "pycroscope.extensions.ExternalType"
+        return _qualified_name(obj) == "pycroscope.extensions.ExternalType"
+
+    def _external_type_from_member(member: Value) -> Value:
+        if not (isinstance(member, KnownValue) and isinstance(member.val, str)):
+            ctx.show_error("ExternalType requires a single string argument")
+            return AnyValue(AnySource.error)
+        try:
+            typ = object_from_string(member.val)
+        except Exception:
+            ctx.show_error(f"Cannot resolve type {member.val!r}")
+            return AnyValue(AnySource.error)
+        return _type_from_runtime(typ, ctx)
+
+    def _is_param_spec_type_param(param: object) -> bool:
+        if isinstance(param, InputSigValue):
+            return isinstance(param.input_sig, ParamSpecSig)
+        return is_instance_of_typing_name(param, "ParamSpec")
+
+    def _paramspec_input_sig_from_member(member: Value) -> Value:
+        if member == KnownValue(Ellipsis):
+            return InputSigValue(INPUT_SIG_ELLIPSIS)
+        if isinstance(member, InputSigValue):
+            return member
+        if isinstance(member, KnownValue) and is_instance_of_typing_name(
+            member.val, "ParamSpec"
+        ):
+            return InputSigValue(ParamSpecSig(member.val))
+
+        if isinstance(member, KnownValue) and isinstance(member.val, (list, tuple)):
+            members_seq = tuple(KnownValue(item) for item in member.val)
+        elif isinstance(member, SequenceValue):
+            values = member.get_member_sequence()
+            if values is None:
+                return AnyValue(AnySource.error)
+            members_seq = tuple(values)
+        else:
+            members_seq = None
+        if members_seq is not None:
+            params = [
+                SigParameter(
+                    f"@{i}",
+                    kind=ParameterKind.POSITIONAL_ONLY,
+                    annotation=_type_from_value(arg, ctx),
+                )
+                for i, arg in enumerate(members_seq)
+            ]
+            return InputSigValue(FullSignature(Signature.make(params)))
+
+        if (
+            isinstance(member, _SubscriptedValue)
+            and isinstance(member.root, KnownValue)
+            and is_typing_name(member.root.val, "Concatenate")
+        ):
+            if not member.members:
+                ctx.show_error("Concatenate requires at least one argument")
+                return AnyValue(AnySource.error)
+            params = [
+                SigParameter(
+                    f"@{i}",
+                    kind=ParameterKind.POSITIONAL_ONLY,
+                    annotation=_type_from_value(arg, ctx),
+                )
+                for i, arg in enumerate(member.members[:-1])
+            ]
+            tail = member.members[-1]
+            if tail == KnownValue(Ellipsis):
+                tail_annotation = InputSigValue(INPUT_SIG_ELLIPSIS)
+            elif isinstance(tail, KnownValue) and is_instance_of_typing_name(
+                tail.val, "ParamSpec"
+            ):
+                tail_annotation = InputSigValue(ParamSpecSig(tail.val))
+            else:
+                tail_annotation = _type_from_value(tail, ctx)
+                if not isinstance(tail_annotation, InputSigValue):
+                    ctx.show_error(
+                        "The final argument to Concatenate must be a ParamSpec or ..."
+                    )
+                    return AnyValue(AnySource.error)
+            params.append(
+                SigParameter(
+                    "__P", kind=ParameterKind.PARAM_SPEC, annotation=tail_annotation
+                )
+            )
+            return InputSigValue(FullSignature(Signature.make(params)))
+
+        return _type_from_value(member, ctx)
+
+    def _member_for_type_param(member: Value, type_param: object) -> Value:
+        if _is_param_spec_type_param(type_param):
+            return _paramspec_input_sig_from_member(member)
+        return _type_from_value(member, ctx)
+
+    def _get_type_params_for_root(typ: type | str) -> Sequence[Value] | None:
+        visitor = getattr(ctx, "visitor", None)
+        if visitor is None:
+            return None
+        checker = getattr(visitor, "checker", None)
+        if checker is not None:
+            generic_bases = checker.get_generic_bases(typ, ())
+            maybe_params = list(generic_bases.get(typ, {}).values())
+            if any(
+                isinstance(param, TypeVarValue)
+                or (
+                    isinstance(param, InputSigValue)
+                    and isinstance(param.input_sig, ParamSpecSig)
+                )
+                for param in maybe_params
+            ):
+                return maybe_params
+        arg_spec_cache = getattr(visitor, "arg_spec_cache", None)
+        if arg_spec_cache is None:
+            return None
+        try:
+            return arg_spec_cache.get_type_parameters(typ)
+        except Exception:
+            return None
+
     if isinstance(root, GenericValue):
         if len(root.args) == len(members):
-            return GenericValue(
-                root.typ, [_type_from_value(member, ctx) for member in members]
-            )
+            type_params = _get_type_params_for_root(root.typ)
+            if type_params is not None and len(type_params) == len(members):
+                member_values = [
+                    _member_for_type_param(member, type_param)
+                    for member, type_param in zip(members, type_params)
+                ]
+            else:
+                member_values = [_type_from_value(member, ctx) for member in members]
+            return GenericValue(root.typ, member_values)
     if isinstance(root, _SubscriptedValue):
         root_type = _type_from_value(root, ctx)
         return _type_from_subscripted_value(root_type, members, ctx)
@@ -927,12 +1096,46 @@ def _type_from_subscripted_value(
     if isinstance(root, SyntheticClassObjectValue) and isinstance(
         root.class_type, TypedValue
     ):
-        return GenericValue(
-            root.class_type.typ, [_type_from_value(elt, ctx) for elt in members]
-        )
+        type_params = _get_type_params_for_root(root.class_type.typ)
+        if type_params is not None and len(type_params) == len(members):
+            member_values = [
+                _member_for_type_param(member, type_param)
+                for member, type_param in zip(members, type_params)
+            ]
+        else:
+            member_values = [_type_from_value(elt, ctx) for elt in members]
+        return GenericValue(root.class_type.typ, member_values)
 
     if isinstance(root, TypedValue) and isinstance(root.typ, str):
-        return GenericValue(root.typ, [_type_from_value(elt, ctx) for elt in members])
+        if _is_typeguard_name(root.typ):
+            if len(members) != 1:
+                ctx.show_error("TypeGuard requires a single argument")
+                return AnyValue(AnySource.error)
+            return AnnotatedValue(
+                TypedValue(bool),
+                [TypeGuardExtension(_type_from_value(members[0], ctx))],
+            )
+        if _is_typeis_name(root.typ):
+            if len(members) != 1:
+                ctx.show_error("TypeIs requires a single argument")
+                return AnyValue(AnySource.error)
+            return AnnotatedValue(
+                TypedValue(bool), [TypeIsExtension(_type_from_value(members[0], ctx))]
+            )
+        if _is_external_type_name(root.typ):
+            if len(members) != 1:
+                ctx.show_error("ExternalType requires a single string argument")
+                return AnyValue(AnySource.error)
+            return _external_type_from_member(members[0])
+        type_params = _get_type_params_for_root(root.typ)
+        if type_params is not None and len(type_params) == len(members):
+            member_values = [
+                _member_for_type_param(member, type_param)
+                for member, type_param in zip(members, type_params)
+            ]
+        else:
+            member_values = [_type_from_value(elt, ctx) for elt in members]
+        return GenericValue(root.typ, member_values)
 
     assert isinstance(root, Value)
     if not isinstance(root, KnownValue):
@@ -979,20 +1182,25 @@ def _type_from_subscripted_value(
             return AnyValue(AnySource.error)
         origin, *metadata = members
         return _make_annotated(_type_from_value(origin, ctx), metadata, ctx)
-    elif is_typing_name(root, "TypeGuard"):
+    elif _is_typeguard_name(root):
         if len(members) != 1:
             ctx.show_error("TypeGuard requires a single argument")
             return AnyValue(AnySource.error)
         return AnnotatedValue(
             TypedValue(bool), [TypeGuardExtension(_type_from_value(members[0], ctx))]
         )
-    elif is_typing_name(root, "TypeIs"):
+    elif _is_typeis_name(root):
         if len(members) != 1:
             ctx.show_error("TypeIs requires a single argument")
             return AnyValue(AnySource.error)
         return AnnotatedValue(
             TypedValue(bool), [TypeIsExtension(_type_from_value(members[0], ctx))]
         )
+    elif _is_external_type_name(root):
+        if len(members) != 1:
+            ctx.show_error("ExternalType requires a single string argument")
+            return AnyValue(AnySource.error)
+        return _external_type_from_member(members[0])
     elif is_typing_name(root, "TypeForm"):
         if len(members) != 1:
             ctx.show_error("TypeForm requires a single argument")
@@ -1011,6 +1219,7 @@ def _type_from_subscripted_value(
         if len(members) != 1:
             ctx.show_error("Final[] requires a single argument")
             return AnyValue(AnySource.error)
+        ctx.show_error("Final[] used in unsupported context")
         return _type_from_value(members[0], ctx)
     elif is_typing_name(root, "Unpack"):
         ctx.show_error("Unpack[] used in unsupported context")
@@ -1035,11 +1244,46 @@ def _type_from_subscripted_value(
             tuple(_type_from_value(subval, ctx) for subval in members)
         )
     elif isinstance(root, type):
-        return GenericValue(root, [_type_from_value(elt, ctx) for elt in members])
+        runtime_type_params = safe_getattr(root, "__parameters__", ())
+        if (
+            isinstance(runtime_type_params, tuple)
+            and runtime_type_params
+            and len(runtime_type_params) == len(members)
+        ):
+            member_values = [
+                _member_for_type_param(member, type_param)
+                for member, type_param in zip(members, runtime_type_params)
+            ]
+        else:
+            member_values = [_type_from_value(elt, ctx) for elt in members]
+        return GenericValue(root, member_values)
     elif is_typing_name(root, "ClassVar"):
         ctx.show_error("ClassVar[] used in unsupported context")
         return AnyValue(AnySource.error)
     else:
+        runtime_type_params = safe_getattr(root, "__parameters__", ())
+        if (
+            isinstance(runtime_type_params, tuple)
+            and runtime_type_params
+            and len(runtime_type_params) == len(members)
+        ):
+            member_values = [
+                _member_for_type_param(member, type_param)
+                for member, type_param in zip(members, runtime_type_params)
+            ]
+            typevar_map = {
+                type_param: arg
+                for type_param, arg in zip(runtime_type_params, member_values)
+            }
+            root_value = _type_from_runtime(root, ctx)
+            if isinstance(root_value, TypeAliasValue):
+                return TypeAliasValue(
+                    root_value.name,
+                    root_value.module,
+                    root_value.alias,
+                    tuple(member_values),
+                )
+            return root_value.substitute_typevars(typevar_map)
         origin = get_origin(root)
         if isinstance(origin, type):
             return GenericValue(origin, [_type_from_value(elt, ctx) for elt in members])
@@ -1590,6 +1834,11 @@ def _make_callable_from_value(
             )
         )
     elif isinstance(args, SequenceValue):
+        if any(
+            not is_many and arg == KnownValue(Ellipsis) for is_many, arg in args.members
+        ):
+            ctx.show_error("Ellipsis can only be used in Callable[..., T]")
+            return AnyValue(AnySource.error)
         params = []
         for i, (is_many, arg) in enumerate(args.members):
             annotation = _type_from_value(arg, ctx)
@@ -1628,19 +1877,38 @@ def _make_callable_from_value(
         and isinstance(args.root, KnownValue)
         and is_typing_name(args.root.val, "Concatenate")
     ):
-        annotations = [_type_from_value(arg, ctx) for arg in args.members]
+        if not args.members:
+            ctx.show_error("Concatenate requires at least one argument")
+            return AnyValue(AnySource.error)
+
         params = [
             SigParameter(
                 f"@{i}",
-                kind=(
-                    ParameterKind.PARAM_SPEC
-                    if i == len(annotations) - 1
-                    else ParameterKind.POSITIONAL_ONLY
-                ),
-                annotation=annotation,
+                kind=ParameterKind.POSITIONAL_ONLY,
+                annotation=_type_from_value(arg, ctx),
             )
-            for i, annotation in enumerate(annotations)
+            for i, arg in enumerate(args.members[:-1])
         ]
+
+        tail = args.members[-1]
+        if tail == KnownValue(Ellipsis):
+            tail_annotation = InputSigValue(INPUT_SIG_ELLIPSIS)
+        elif isinstance(tail, KnownValue) and is_instance_of_typing_name(
+            tail.val, "ParamSpec"
+        ):
+            tail_annotation = InputSigValue(ParamSpecSig(tail.val))
+        else:
+            tail_annotation = _type_from_value(tail, ctx)
+            if not isinstance(tail_annotation, InputSigValue):
+                ctx.show_error(
+                    "The final argument to Concatenate must be a ParamSpec or ..."
+                )
+                return AnyValue(AnySource.error)
+        params.append(
+            SigParameter(
+                "__P", kind=ParameterKind.PARAM_SPEC, annotation=tail_annotation
+            )
+        )
         sig = Signature.make(params, return_annotation, is_asynq=is_asynq)
         return CallableValue(sig)
     else:

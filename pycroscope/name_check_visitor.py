@@ -73,6 +73,7 @@ from .annotations import (
     AnnotationExpr,
     Qualifier,
     SyntheticEvaluator,
+    _SubscriptedValue,
     annotation_expr_from_annotations,
     annotation_expr_from_ast,
     annotation_expr_from_runtime,
@@ -81,6 +82,7 @@ from .annotations import (
     is_instance_of_typing_name,
     is_typing_name,
     type_from_value,
+    value_from_ast,
 )
 from .arg_spec import ArgSpecCache, IgnoredCallees, UnwrapClass, is_dot_asynq_function
 from .asynq_checker import AsynqChecker
@@ -2325,6 +2327,17 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     # of later synthetic classes) see the enriched attributes.
                     synthetic_class.class_attributes.clear()
                     synthetic_class.class_attributes.update(class_attributes)
+                    if synthetic_fq_name is not None:
+                        self.checker.register_synthetic_class_attributes(
+                            synthetic_fq_name, class_attributes
+                        )
+                    if (
+                        synthetic_fq_name is not None
+                        and self.checker.make_type_object(synthetic_fq_name).is_protocol
+                    ):
+                        self.checker.register_synthetic_protocol_members(
+                            synthetic_fq_name, class_attributes
+                        )
                     self._apply_synthetic_enum_semantics(
                         node, synthetic_class, class_key
                     )
@@ -2831,6 +2844,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         return None
 
     def _runtime_annotation_from_value(self, value: Value) -> object:
+        if isinstance(value, _SubscriptedValue):
+            converted = type_from_value(value, visitor=self)
+            return self._runtime_annotation_from_value(converted)
         if isinstance(value, AnnotatedValue):
             return self._runtime_annotation_from_value(value.value)
         if isinstance(value, TypeVarValue):
@@ -6063,6 +6079,13 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
 
     def _make_annotation_unpack_value(self, value: Value) -> Value:
         value = replace_fallback(value)
+        if isinstance(value, _SubscriptedValue):
+            return _SubscriptedValue(
+                AnySource.inference,
+                KnownValue(TypingExtensionsUnpack),
+                value.root_node,
+                (value,),
+            )
         if isinstance(value, KnownValue):
             runtime_value = value.val
         elif isinstance(value, TypedValue) and isinstance(value.typ, type):
@@ -6070,7 +6093,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         elif isinstance(value, AnyValue):
             runtime_value = Any
         else:
-            return AnyValue(AnySource.error)
+            runtime_value = self._runtime_annotation_from_value(value)
         try:
             return KnownValue(TypingExtensionsUnpack[runtime_value])
         except Exception:
@@ -6424,17 +6447,13 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         right = right_composite.value
         if self.in_annotation and isinstance(op, ast.BitOr):
             # Accept PEP 604 (int | None) in annotations
-            if isinstance(left, KnownValue) and isinstance(right, KnownValue):
+            if isinstance(left, KnownValue):
                 self.check_for_missing_generic_params(left_node, left)
+            if isinstance(right, KnownValue):
                 self.check_for_missing_generic_params(right_node, right)
-                return KnownValue(Union[left.val, right.val])  # noqa: UP007
-            else:
-                self._show_error_if_checking(
-                    source_node,
-                    f"Unsupported operands for | in annotation: {left} and {right}",
-                    error_code=ErrorCode.unsupported_operation,
-                )
-                return AnyValue(AnySource.error)
+            return _SubscriptedValue(
+                AnySource.inference, KnownValue(Union), source_node, (left, right)
+            )
 
         if (
             isinstance(op, ast.Mod)
@@ -7844,6 +7863,19 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             )
             return self.being_assigned
         elif isinstance(node.ctx, ast.Load):
+            if self.in_annotation:
+                annotation_root = self._normalize_annotation_subscript_value(value)
+                annotation_index = self._normalize_annotation_subscript_value(index)
+                if isinstance(annotation_index, SequenceValue):
+                    members = annotation_index.get_member_sequence()
+                    if members is None:
+                        return AnyValue(AnySource.inference)
+                    member_tuple = tuple(members)
+                else:
+                    member_tuple = (annotation_index,)
+                return _SubscriptedValue(
+                    AnySource.inference, annotation_root, node.value, member_tuple
+                )
             if value == KnownValue(type):
                 # "type[int]" is legal, but neither
                 # type.__getitem__ nor type.__class_getitem__ exists at runtime. Support
@@ -7967,6 +7999,59 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     return KnownValue(Any)
             return KnownValue(tuple(concrete))
         return KnownValue(Any)
+
+    def _normalize_annotation_subscript_value(self, value: Value) -> Value:
+        if isinstance(value, SequenceValue):
+            return SequenceValue(
+                value.typ,
+                [
+                    (is_many, self._normalize_annotation_subscript_value(member))
+                    for is_many, member in value.members
+                ],
+            )
+        if isinstance(value, _SubscriptedValue):
+            normalized_root = (
+                None
+                if value.root is None
+                else self._normalize_annotation_subscript_value(value.root)
+            )
+            return _SubscriptedValue(
+                value.source,
+                normalized_root,
+                value.root_node,
+                tuple(
+                    self._normalize_annotation_subscript_value(member)
+                    for member in value.members
+                ),
+            )
+        if isinstance(value, KnownValue):
+            if isinstance(value.val, tuple):
+                return SequenceValue(
+                    tuple,
+                    [
+                        (
+                            False,
+                            self._normalize_annotation_subscript_value(
+                                KnownValue(member)
+                            ),
+                        )
+                        for member in value.val
+                    ],
+                )
+            if isinstance(value.val, list):
+                return SequenceValue(
+                    list,
+                    [
+                        (
+                            False,
+                            self._normalize_annotation_subscript_value(
+                                KnownValue(member)
+                            ),
+                        )
+                        for member in value.val
+                    ],
+                )
+        return value
 
     def _get_dunder(self, node: ast.AST, callee_val: Value, method_name: str) -> Value:
         if isinstance(callee_val, AnnotatedValue):
@@ -8133,6 +8218,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     f"Cannot assign to final name {node.attr}",
                     error_code=ErrorCode.incompatible_assignment,
                 )
+            self._check_protocol_attribute_assignment(node, root_composite, node.attr)
             if (
                 composite is not None
                 and self.scopes.scope_type() == ScopeType.function_scope
@@ -8186,6 +8272,51 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         else:
             self.show_error(node, "Unknown context", ErrorCode.unexpected_node)
             return Composite(AnyValue(AnySource.error), composite, node)
+
+    def _is_protocol_instance_value(self, value: Value) -> bool:
+        value = replace_fallback(value)
+        if isinstance(value, MultiValuedValue):
+            return all(
+                self._is_protocol_instance_value(subval) for subval in value.vals
+            )
+        if not isinstance(value, TypedValue):
+            return False
+        typ = value.typ
+        if not isinstance(typ, (type, str)):
+            return False
+        return self.make_type_object(typ).is_protocol
+
+    def _check_protocol_attribute_assignment(
+        self, node: ast.Attribute, root_composite: Composite, attr: str
+    ) -> None:
+        if self.being_assigned is None:
+            return
+        if not self._is_protocol_instance_value(root_composite.value):
+            return
+        expected = self.get_attribute(
+            root_composite,
+            attr,
+            node,
+            ignore_none=self.options.get_value_for(IgnoreNoneAttributes),
+            use_fallback=False,
+        )
+        if expected is UNINITIALIZED_VALUE:
+            self._show_error_if_checking(
+                node,
+                f"{root_composite.value} has no attribute {attr!r}",
+                error_code=ErrorCode.undefined_attribute,
+            )
+            return
+        can_assign = has_relation(
+            expected, self.being_assigned, Relation.ASSIGNABLE, self
+        )
+        if isinstance(can_assign, CanAssignError):
+            self._show_error_if_checking(
+                node,
+                f"Incompatible assignment: expected {expected}, got {self.being_assigned}",
+                error_code=ErrorCode.incompatible_assignment,
+                detail=can_assign.display(),
+            )
 
     def get_attribute(
         self,
@@ -8259,6 +8390,11 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     )
                 return UNINITIALIZED_VALUE
             return intersect_multi(results, self)
+        root_value = replace_fallback(root_composite.value)
+        if isinstance(root_value, TypedValue) and isinstance(root_value.typ, str):
+            synthetic = self.checker.get_synthetic_instance_attribute(root_value, attr)
+            if synthetic is not None:
+                return synthetic
         ctx = _AttrContext(
             root_composite,
             attr,
@@ -8275,6 +8411,12 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     def get_attribute_from_value(
         self, root_value: Value, attribute: str, *, prefer_typeshed: bool = False
     ) -> Value:
+        if isinstance(root_value, TypedValue) and isinstance(root_value.typ, str):
+            synthetic = self.checker.get_synthetic_instance_attribute(
+                root_value, attribute
+            )
+            if synthetic is not None:
+                return synthetic
         return self.get_attribute(
             Composite(root_value), attribute, prefer_typeshed=prefer_typeshed
         )
@@ -8394,12 +8536,111 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
 
     # Call nodes
 
+    def _is_type_form_parameter(self, param: SigParameter) -> bool:
+        annotation = param.get_annotation()
+        if isinstance(annotation, AnnotatedValue):
+            annotation = annotation.value
+        return isinstance(annotation, TypeFormValue)
+
+    def _get_type_form_call_args(
+        self, node: ast.Call, maybe_sig: MaybeSignature | None
+    ) -> tuple[set[int], set[str]]:
+        if maybe_sig is None:
+            return set(), set()
+        positional_indices: set[int] = set()
+        keyword_names: set[str] = set()
+        if hasattr(maybe_sig, "get_signatures"):
+            signatures = maybe_sig.get_signatures()
+        else:
+            signatures = [maybe_sig]
+        concrete_signatures: list[Signature] = []
+        for sig in signatures:
+            if isinstance(sig, Signature):
+                if sig.impl is not None:
+                    concrete_signatures.append(sig)
+            elif isinstance(sig, OverloadedSignature):
+                concrete_signatures.extend(
+                    sub_sig for sub_sig in sig.signatures if sub_sig.impl is not None
+                )
+            elif isinstance(sig, BoundMethodSignature):
+                bound = sig.get_signature(ctx=self)
+                if isinstance(bound, Signature):
+                    if bound.impl is not None:
+                        concrete_signatures.append(bound)
+                elif isinstance(bound, OverloadedSignature):
+                    concrete_signatures.extend(
+                        sub_sig
+                        for sub_sig in bound.signatures
+                        if sub_sig.impl is not None
+                    )
+
+        for sig in concrete_signatures:
+            params = list(sig.parameters.values())
+            param_index = 0
+            for arg_index, _ in enumerate(node.args):
+                while (
+                    param_index < len(params)
+                    and params[param_index].kind is ParameterKind.KEYWORD_ONLY
+                ):
+                    param_index += 1
+                if param_index >= len(params):
+                    break
+                param = params[param_index]
+                if param.kind is ParameterKind.VAR_KEYWORD:
+                    break
+                if self._is_type_form_parameter(param):
+                    positional_indices.add(arg_index)
+                if param.kind in (
+                    ParameterKind.VAR_POSITIONAL,
+                    ParameterKind.PARAM_SPEC,
+                    ParameterKind.ELLIPSIS,
+                ):
+                    continue
+                param_index += 1
+
+            for keyword in node.keywords:
+                if keyword.arg is None:
+                    continue
+                param = sig.parameters.get(keyword.arg)
+                if param is not None and self._is_type_form_parameter(param):
+                    keyword_names.add(keyword.arg)
+        return positional_indices, keyword_names
+
+    def _composite_from_type_form_node(self, node: ast.expr) -> Composite:
+        if self.annotate:
+            with self.catch_errors():
+                self.visit(node)
+        value = value_from_ast(node, visitor=self, error_on_unrecognized=False)
+        typ = type_from_value(value, visitor=self, node=node)
+        if typ == AnyValue(AnySource.error):
+            return Composite(AnyValue(AnySource.error), node=node)
+        return Composite(TypeFormValue(typ), node=node)
+
     def visit_Call(self, node: ast.Call) -> Value:
         callee_wrapped = self.visit(node.func)
-        args = [self.composite_from_node(arg) for arg in node.args]
+        maybe_sig = self.signature_from_value(callee_wrapped, node.func)
+        type_form_positions, type_form_keywords = self._get_type_form_call_args(
+            node, maybe_sig
+        )
+        args = [
+            (
+                self._composite_from_type_form_node(arg)
+                if i in type_form_positions
+                else self.composite_from_node(arg)
+            )
+            for i, arg in enumerate(node.args)
+        ]
         if node.keywords:
             keywords = [
-                (kw.arg, self.composite_from_node(kw.value)) for kw in node.keywords
+                (
+                    kw.arg,
+                    (
+                        self._composite_from_type_form_node(kw.value)
+                        if kw.arg is not None and kw.arg in type_form_keywords
+                        else self.composite_from_node(kw.value)
+                    ),
+                )
+                for kw in node.keywords
             ]
         else:
             keywords = []
@@ -8720,12 +8961,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         self, value: Value, node: ast.AST | None = None
     ) -> MaybeSignature:
         def get_call_attribute(value: Value) -> Value:
-            return self.get_attribute(
-                Composite(value),
-                "__call__",
-                node,
-                ignore_none=self.options.get_value_for(IgnoreNoneAttributes),
-            )
+            return self.get_attribute_from_value(value, "__call__")
 
         return self.checker.signature_from_value(
             value,

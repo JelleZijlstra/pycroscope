@@ -15,7 +15,12 @@ import pycroscope
 from . import runtime
 from .analysis_lib import Sentinel
 from .annotated_types import MaxLen, MinLen
-from .annotations import _SubscriptedValue, annotation_expr_from_value, type_from_value
+from .annotations import (
+    _SubscriptedValue,
+    annotation_expr_from_value,
+    type_from_value,
+    value_from_ast,
+)
 from .error_code import ErrorCode
 from .extensions import assert_type, reveal_locals, reveal_type
 from .format_strings import parse_format_string
@@ -1721,6 +1726,10 @@ def _str_format_impl(ctx: CallContext) -> Value:
 
 
 def _cast_impl(ctx: CallContext) -> Value:
+    typ_node = ctx.ast_for_arg("typ")
+    if typ_node is not None:
+        typ = value_from_ast(typ_node, visitor=ctx.visitor, error_on_unrecognized=False)
+        return type_from_value(typ, visitor=ctx.visitor, node=typ_node)
     typ = ctx.vars["typ"]
     return type_from_value(typ, visitor=ctx.visitor, node=ctx.node)
 
@@ -1747,6 +1756,8 @@ def _assert_type_impl(ctx: CallContext) -> Value:
     val = ctx.vars["val"]
     typ = ctx.vars["typ"]
     expected_type = type_from_value(typ, visitor=ctx.visitor, node=ctx.node)
+    if isinstance(val, KnownValue) and not isinstance(expected_type, KnownValue):
+        val = TypedValue(type(val.val))
     can_assign = is_equivalent_with_reason(val, expected_type, ctx.visitor)
     if isinstance(can_assign, CanAssignError):
         ctx.show_error(
@@ -2542,7 +2553,14 @@ def get_default_argspecs() -> dict[object, Signature]:
             return_annotation=TypedValue(str),
         ),
         Signature.make(
-            [SigParameter("typ", _POS_ONLY), SigParameter("val", _POS_ONLY)],
+            [
+                SigParameter(
+                    "typ",
+                    _POS_ONLY,
+                    annotation=TypeFormValue(AnyValue(AnySource.explicit)),
+                ),
+                SigParameter("val", _POS_ONLY),
+            ],
             callable=cast,
             impl=_cast_impl,
         ),

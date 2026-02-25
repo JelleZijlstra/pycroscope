@@ -41,6 +41,7 @@ from .value import (
     ParamSpecKwargsValue,
     Qualifier,
     SubclassValue,
+    TypedDictValue,
     TypedValue,
     TypeVarValue,
     Value,
@@ -312,6 +313,7 @@ def compute_parameters(
     tv_index = 1
 
     seen_paramspec_args: tuple[ast.arg, ParamSpecArgsValue] | None = None
+    unpacked_typed_dict_kwargs: tuple[ast.arg, TypedDictValue] | None = None
     value: Value | AnnotationExpr
     for idx, (param, default) in enumerate(zip_longest(args, defaults)):
         assert param is not None, "must have more args than defaults"
@@ -408,10 +410,35 @@ def compute_parameters(
                     f"ParamSpec.kwargs must be used on **kwargs, not {arg.arg}",
                     error_code=ErrorCode.invalid_annotation,
                 )
+        elif kind is ParameterKind.VAR_KEYWORD and isinstance(value, TypedDictValue):
+            unpacked_typed_dict_kwargs = (arg, value)
 
         param = SigParameter(arg.arg, kind, default, value)
         info = ParamInfo(param, arg, is_self)
         params.append(info)
+
+    if unpacked_typed_dict_kwargs is not None:
+        _, kwargs_typeddict = unpacked_typed_dict_kwargs
+        keyword_params = {
+            info.param.name
+            for info in params
+            if info.param.kind
+            in (ParameterKind.POSITIONAL_OR_KEYWORD, ParameterKind.KEYWORD_ONLY)
+        }
+        for key in kwargs_typeddict.items:
+            if key in keyword_params:
+                conflict = next(
+                    info.node
+                    for info in params
+                    if info.param.name == key
+                    and info.param.kind
+                    in (ParameterKind.POSITIONAL_OR_KEYWORD, ParameterKind.KEYWORD_ONLY)
+                )
+                ctx.show_error(
+                    conflict,
+                    f"Parameter {key!r} overlaps with **kwargs TypedDict key {key!r}",
+                    error_code=ErrorCode.invalid_annotation,
+                )
     return params
 
 
@@ -446,11 +473,11 @@ def translate_vararg_type(
             return GenericValue(tuple, [inner_typ])
     elif kind is ParameterKind.VAR_KEYWORD:
         if has_unpack:
-            if not TypedValue(dict).is_assignable(inner_typ, can_assign_ctx):
+            if not isinstance(inner_typ, TypedDictValue):
                 if error_ctx is not None and node is not None:
                     error_ctx.show_error(
                         node,
-                        "Expected dict type inside Unpack[]",
+                        "Expected TypedDict type inside Unpack[]",
                         error_code=ErrorCode.invalid_annotation,
                     )
                 return AnyValue(AnySource.error)
