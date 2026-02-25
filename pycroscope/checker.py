@@ -11,7 +11,7 @@ import sys
 import types
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from contextlib import AbstractContextManager, contextmanager
-from dataclasses import InitVar, dataclass, field
+from dataclasses import InitVar, dataclass, field, replace
 
 from .analysis_lib import override
 from .annotations import type_from_runtime
@@ -763,6 +763,9 @@ class Checker:
     def _make_any_base_attribute(self, name: str, attr: Value) -> Value:
         if isinstance(attr, CallableValue):
             if _is_dunder(name):
+                widened = _widen_synthetic_dunder_signature(attr.signature)
+                if widened is not attr.signature:
+                    return CallableValue(widened, attr.typ)
                 return attr
             maybe_bound = self._bind_synthetic_method(attr.signature)
             if maybe_bound is not None:
@@ -905,6 +908,35 @@ class Checker:
 
 def _is_dunder(name: str) -> bool:
     return name.startswith("__") and name.endswith("__")
+
+
+def _widen_synthetic_dunder_signature(
+    signature: ConcreteSignature,
+) -> ConcreteSignature:
+    def _widen(sig: Signature) -> Signature:
+        if not sig.parameters:
+            return sig
+        first_name = next(iter(sig.parameters))
+        first_param = sig.parameters[first_name]
+        if first_param.name not in {"self", "cls"}:
+            return sig
+        widened_first = replace(
+            first_param, annotation=AnyValue(AnySource.from_another)
+        )
+        if widened_first == first_param:
+            return sig
+        params = dict(sig.parameters)
+        params[first_name] = widened_first
+        return replace(sig, parameters=params)
+
+    if isinstance(signature, Signature):
+        return _widen(signature)
+    if isinstance(signature, OverloadedSignature):
+        widened = [_widen(sig) for sig in signature.signatures]
+        if all(new is old for new, old in zip(widened, signature.signatures)):
+            return signature
+        return OverloadedSignature(widened)
+    return signature
 
 
 def _normalize_synthetic_attribute(attr: Value) -> Value:

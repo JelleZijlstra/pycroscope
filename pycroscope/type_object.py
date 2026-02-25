@@ -29,6 +29,7 @@ from .value import (
     CanAssign,
     CanAssignContext,
     CanAssignError,
+    HasAttrExtension,
     KnownValue,
     NotAGradualType,
     SelfT,
@@ -224,6 +225,10 @@ class TypeObject:
                 # a retrievable attribute type. Keep enforcing member presence.
                 expected = AnyValue(AnySource.inference)
             expected = expected.substitute_typevars({SelfT: other_val})
+            if _is_synthetic_type_name(self.typ, ctx):
+                expected = _maybe_bind_dunder_protocol_member(
+                    expected, member, self_val, ctx
+                )
             # For __call__, we check compatibility with the other object itself.
             if member == "__call__":
                 actual = other_val
@@ -362,14 +367,31 @@ def _maybe_bind_dunder_protocol_member(
         unwrapped = replace_fallback(value)
     except NotAGradualType:
         return value
+    if isinstance(unwrapped, AnnotatedValue):
+        extension_value: Value | None = None
+        for extension in unwrapped.get_metadata_of_type(HasAttrExtension):
+            if extension.attribute_name == KnownValue(member):
+                extension_value = extension.attribute_type
+                break
+        if extension_value is None:
+            return value
+        value = extension_value
+        try:
+            unwrapped = replace_fallback(value)
+        except NotAGradualType:
+            return value
     if not isinstance(unwrapped, CallableValue):
         return value
     signature = unwrapped.signature
     if isinstance(signature, BoundMethodSignature):
         return value
     if isinstance(signature, (Signature, OverloadedSignature)):
+        try:
+            self_annotation_value = replace_fallback(self_value)
+        except NotAGradualType:
+            self_annotation_value = self_value
         bound = signature.bind_self(
-            self_value=self_value, self_annotation_value=self_value, ctx=ctx
+            self_value=self_value, self_annotation_value=self_annotation_value, ctx=ctx
         )
         if bound is not None:
             return CallableValue(bound, unwrapped.typ)
@@ -383,3 +405,26 @@ def _should_use_permissive_dunder_hash(val: Value) -> bool:
     elif isinstance(val, KnownValue) and safe_isinstance(val.val, type):
         return True
     return False
+
+
+def _is_synthetic_type_name(typ: object, ctx: CanAssignContext) -> bool:
+    if not isinstance(typ, str):
+        return False
+    if typ.startswith("_typeshed."):
+        return False
+    synthetic_protocol_members = getattr(ctx, "synthetic_protocol_members", None)
+    if (
+        isinstance(synthetic_protocol_members, dict)
+        and typ in synthetic_protocol_members
+    ):
+        return True
+    synthetic_type_bases = getattr(ctx, "synthetic_type_bases", None)
+    if isinstance(synthetic_type_bases, dict) and typ in synthetic_type_bases:
+        return True
+    synthetic_class_attributes = getattr(ctx, "synthetic_class_attributes", None)
+    if (
+        isinstance(synthetic_class_attributes, dict)
+        and typ in synthetic_class_attributes
+    ):
+        return True
+    return typ.startswith("<") or "/" in typ

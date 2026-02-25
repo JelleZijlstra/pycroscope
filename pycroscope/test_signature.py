@@ -1577,9 +1577,9 @@ class TestCallableAnnotations(TestNameCheckVisitorBase):
         from typing import Callable
 
         def capybara() -> None:
-            bad1: Callable[int] = ...  # E: invalid_annotation
-            bad2: Callable[int, int] = ...  # E: invalid_annotation
-            bad3: Callable[[...], int] = ...  # E: invalid_annotation
+            bad1: Callable[int]  # E: invalid_annotation  # noqa: F842
+            bad2: Callable[int, int]  # E: invalid_annotation  # noqa: F842
+            bad3: Callable[[...], int]  # E: invalid_annotation  # noqa: F842
             good: Callable[[int], int]
 
             def inner(x: int) -> int:

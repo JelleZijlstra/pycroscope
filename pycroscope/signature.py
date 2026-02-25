@@ -549,9 +549,9 @@ class Signature:
     return_value: Value
     """What the callable returns."""
     has_typed_dict_var_keyword: bool = field(default=False, compare=False)
-    """Whether this signature came from **kwargs: Unpack[TypedDict]."""
+    """Whether this signature came from ``**kwargs: Unpack[TypedDict]``."""
     has_implicit_anysig_tail: bool = field(default=False, compare=False)
-    """Whether this signature has both *args and **kwargs typed as Any in source."""
+    """Whether this signature has both ``*args`` and ``**kwargs`` typed as Any in source."""
     impl: Impl | None = field(default=None, compare=False)
     """:term:`impl` function for this signature."""
     callable: object | None = field(default=None, compare=False)
