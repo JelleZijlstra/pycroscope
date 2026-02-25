@@ -265,6 +265,10 @@ class CanAssignContext(Protocol):
         """
         return {}
 
+    def get_type_parameters(self, typ: type | str) -> Sequence["Value"]:
+        """Return declared generic parameters for `typ`, if available."""
+        return ()
+
     def get_signature(
         self, obj: object
     ) -> Optional["pycroscope.signature.ConcreteSignature"]:

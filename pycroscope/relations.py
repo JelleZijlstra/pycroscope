@@ -815,6 +815,18 @@ def _has_relation_for_generic_arg(
 def _get_generic_variances(
     typ: type | str, num_args: int, ctx: CanAssignContext
 ) -> tuple[Variance, ...]:
+    type_params = ctx.get_type_parameters(typ)
+    if len(type_params) == num_args:
+        variances = [
+            (
+                type_param.variance
+                if isinstance(type_param, TypeVarValue)
+                else Variance.INVARIANT
+            )
+            for type_param in type_params
+        ]
+        return tuple(variances)
+
     bases = ctx.get_generic_bases(typ)
     typevar_map = bases.get(typ)
     if typevar_map is None or len(typevar_map) != num_args:
