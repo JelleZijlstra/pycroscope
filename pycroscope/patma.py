@@ -272,7 +272,9 @@ class PatmaVisitor(ast.NodeVisitor):
             )
         unpacked = unpack_values(
             constrain_value(
-                self.visitor.match_subject.value, AndConstraint.make(constraints)
+                self.visitor.match_subject.value,
+                AndConstraint.make(constraints),
+                ctx=self.visitor,
             ),
             self.visitor,
             target_length,
@@ -294,7 +296,9 @@ class PatmaVisitor(ast.NodeVisitor):
             ),
         )
         constraints = [constraint]
-        subject = constrain_value(self.visitor.match_subject.value, constraint)
+        subject = constrain_value(
+            self.visitor.match_subject.value, constraint, ctx=self.visitor
+        )
         kv_pairs = kv_pairs_from_mapping(subject, self.visitor)
         if isinstance(kv_pairs, CanAssignError):
             kv_pairs = [
@@ -358,7 +362,9 @@ class PatmaVisitor(ast.NodeVisitor):
                 positive_only=not node.patterns and not node.kwd_patterns,
             ),
         )
-        subject = constrain_value(self.visitor.match_subject.value, constraint)
+        subject = constrain_value(
+            self.visitor.match_subject.value, constraint, ctx=self.visitor
+        )
         subject_composite = self.visitor.match_subject._replace(value=subject)
         patterns = [
             (attr, pattern) for attr, pattern in zip(node.kwd_attrs, node.kwd_patterns)
@@ -433,7 +439,7 @@ class PatmaVisitor(ast.NodeVisitor):
             constraint = self.visit(node.pattern)
 
         if node.name is not None:
-            val = constrain_value(val, constraint)
+            val = constrain_value(val, constraint, ctx=self.visitor)
             self.visitor._set_name_in_scope(node.name, node, val)
 
         return constraint

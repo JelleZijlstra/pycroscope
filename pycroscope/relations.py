@@ -1898,6 +1898,18 @@ def intersect_values(left: Value, right: Value, ctx: CanAssignContext) -> Gradua
     return value
 
 
+def subtract_values(left: Value, right: Value, ctx: CanAssignContext) -> GradualType:
+    vals = []
+    decomposed = left.decompose()
+    if decomposed is None:
+        decomposed = (left,)
+    for subval in decomposed:
+        if is_subtype(subval, right, ctx):
+            continue
+        vals.append(subval)
+    return gradualize(unite_values(*vals))
+
+
 def _intersect_values_inner(
     left: Value, right: Value, ctx: CanAssignContext
 ) -> TypeOrIrreducible:

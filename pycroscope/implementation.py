@@ -335,7 +335,7 @@ def _super_impl(ctx: CallContext) -> Value:
         if isinstance(current_class, type):
             try:
                 first_arg = ctx.visitor.scopes.get(
-                    "%first_arg", None, ctx.visitor.state
+                    "%first_arg", None, ctx.visitor.state, can_assign_ctx=ctx.visitor
                 )
             except KeyError:
                 # something weird with this function; give up
@@ -1762,16 +1762,14 @@ def _subclasses_impl(ctx: CallContext) -> Value:
 
 
 def _assert_is_impl(ctx: CallContext) -> ImplReturn:
-    return _qcore_assert_impl(ctx, ConstraintType.is_value, True)
+    return _qcore_assert_impl(ctx, True)
 
 
 def _assert_is_not_impl(ctx: CallContext) -> ImplReturn:
-    return _qcore_assert_impl(ctx, ConstraintType.is_value, False)
+    return _qcore_assert_impl(ctx, False)
 
 
-def _qcore_assert_impl(
-    ctx: CallContext, constraint_type: ConstraintType, positive: bool
-) -> ImplReturn:
+def _qcore_assert_impl(ctx: CallContext, positive: bool) -> ImplReturn:
     left_varname = ctx.varname_for_arg("expected")
     right_varname = ctx.varname_for_arg("actual")
     if left_varname is not None and isinstance(ctx.vars["actual"], KnownValue):
@@ -1783,7 +1781,9 @@ def _qcore_assert_impl(
     else:
         return ImplReturn(KnownValue(None))
 
-    no_return_unless = Constraint(varname, constraint_type, positive, constrained_to)
+    no_return_unless = Constraint(
+        varname, ConstraintType.intersect_with, positive, constrained_to
+    )
     return ImplReturn(KnownValue(None), no_return_unless=no_return_unless)
 
 

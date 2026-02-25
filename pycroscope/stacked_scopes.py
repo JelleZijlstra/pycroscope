@@ -30,7 +30,9 @@ from contextlib import AbstractContextManager
 from dataclasses import dataclass, field, replace
 from itertools import chain
 from types import ModuleType
-from typing import Any, NamedTuple, Optional, TypeVar
+from typing import Any, NamedTuple, Optional, TypeVar, assert_never
+
+from pycroscope.relations import intersect_values, subtract_values
 
 from .analysis_lib import Sentinel, override
 from .boolability import get_boolability
@@ -208,6 +210,7 @@ class _LookupContext:
     fallback_value: Value | None
     node: Node
     state: VisitorState
+    can_assign_ctx: CanAssignContext
 
 
 class ConstraintType(enum.Enum):
@@ -234,6 +237,8 @@ class ConstraintType(enum.Enum):
     """`constraint.value` is a `PredicateFunc`."""
     add_annotation = 8
     """`constraint.value` is an :class:`pycroscope.value.Extension` to annotate the value with."""
+    intersect_with = 9
+    """`constraint.value` is a :class:`pycroscope.value.Value` to intersect with."""
 
 
 class AbstractConstraint:
@@ -315,11 +320,13 @@ class Constraint(AbstractConstraint):
         object.__setattr__(self, "inverted", inverted)
         return inverted
 
-    def apply_to_values(self, values: Iterable[Value]) -> Iterable[Value]:
+    def apply_to_values(
+        self, values: Iterable[Value], ctx: CanAssignContext
+    ) -> Iterable[Value]:
         for value in values:
-            yield from self.apply_to_value(value)
+            yield from self.apply_to_value(value, ctx)
 
-    def apply_to_value(self, value: Value) -> Iterable[Value]:
+    def apply_to_value(self, value: Value, ctx: CanAssignContext) -> Iterable[Value]:
         """Yield values consistent with this constraint.
 
         Produces zero or more values consistent both with the given
@@ -431,16 +438,22 @@ class Constraint(AbstractConstraint):
 
         elif self.constraint_type == ConstraintType.one_of:
             for constraint in self.value:
-                yield from constraint.apply_to_value(value)
+                yield from constraint.apply_to_value(value, ctx)
 
         elif self.constraint_type == ConstraintType.all_of:
             vals = [value]
             for constraint in self.value:
-                vals = list(constraint.apply_to_values(vals))
+                vals = list(constraint.apply_to_values(vals, ctx))
             yield from vals
 
+        elif self.constraint_type == ConstraintType.intersect_with:
+            if self.positive:
+                yield intersect_values(value, self.value, ctx)
+            else:
+                yield subtract_values(value, self.value, ctx)
+
         else:
-            assert False, f"unknown constraint type {self.constraint_type}"
+            assert_never(self.constraint_type)
 
     def __str__(self) -> str:
         sign = "+" if self.positive else "-"
@@ -721,8 +734,10 @@ class Scope:
         varname: Varname,
         node: object,
         state: VisitorState,
+        *,
         from_parent_scope: bool = False,
         fallback_value: Value | None = None,
+        can_assign_ctx: CanAssignContext,
     ) -> tuple[Value, Optional["Scope"], VarnameOrigin]:
         local_value, origin = self.get_local(
             varname,
@@ -730,9 +745,14 @@ class Scope:
             state,
             from_parent_scope=from_parent_scope,
             fallback_value=fallback_value,
+            can_assign_ctx=can_assign_ctx,
         )
         if local_value is not UNINITIALIZED_VALUE:
-            return self.resolve_reference(local_value, state), self, origin
+            return (
+                self.resolve_reference(local_value, state, can_assign_ctx),
+                self,
+                origin,
+            )
         elif self.parent_scope is not None:
             # Parent scopes don't get the node to help local lookup.
             parent_node = (
@@ -744,6 +764,7 @@ class Scope:
                 state,
                 from_parent_scope=True,
                 fallback_value=fallback_value,
+                can_assign_ctx=can_assign_ctx,
             )
             # Tag lookups in the parent scope with this scope node, so we
             # don't carry over constraints across scopes.
@@ -756,8 +777,10 @@ class Scope:
         varname: Varname,
         node: Node,
         state: VisitorState,
+        *,
         from_parent_scope: bool = False,
         fallback_value: Value | None = None,
+        can_assign_ctx: CanAssignContext,
     ) -> tuple[Value, VarnameOrigin]:
         if varname in self.variables:
             return self.variables[varname], EMPTY_ORIGIN
@@ -848,9 +871,13 @@ class Scope:
     ) -> None:
         pass
 
-    def resolve_reference(self, value: Value, state: VisitorState) -> Value:
+    def resolve_reference(
+        self, value: Value, state: VisitorState, can_assign_ctx: CanAssignContext
+    ) -> Value:
         if isinstance(value, ReferencingValue):
-            referenced, _, _ = value.scope.get(value.name, None, state)
+            referenced, _, _ = value.scope.get(
+                value.name, None, state, can_assign_ctx=can_assign_ctx
+            )
             # globals that are None are probably set to something else later
             if safe_equals(referenced, KnownValue(None)):
                 return AnyValue(AnySource.inference)
@@ -1141,11 +1168,13 @@ class FunctionScope(Scope):
         varname: Varname,
         node: Node,
         state: VisitorState,
+        *,
         from_parent_scope: bool = False,
         fallback_value: Value | None = None,
+        can_assign_ctx: CanAssignContext,
     ) -> tuple[Value, VarnameOrigin]:
         self._add_composite(varname)
-        ctx = _LookupContext(varname, fallback_value, node, state)
+        ctx = _LookupContext(varname, fallback_value, node, state, can_assign_ctx)
         if from_parent_scope:
             self.accessed_from_special_nodes.add(varname)
         key = (node, varname)
@@ -1316,11 +1345,14 @@ class FunctionScope(Scope):
                 assert (
                     self.parent_scope
                 ), "constrained value must have definition nodes or parent scope"
-                parent_val, _, _ = self.parent_scope.get(ctx.varname, None, ctx.state)
+                parent_val, _, _ = self.parent_scope.get(
+                    ctx.varname, None, ctx.state, can_assign_ctx=ctx.can_assign_ctx
+                )
                 resolved = _constrain_value(
                     [parent_val],
                     val.constraints,
                     simplification_limit=self.simplification_limit,
+                    ctx=ctx.can_assign_ctx,
                 )
             val.resolution_cache[key] = resolved
             return resolved
@@ -1355,6 +1387,7 @@ class FunctionScope(Scope):
             constraints,
             fallback_value=ctx.fallback_value,
             simplification_limit=self.simplification_limit,
+            ctx=ctx.can_assign_ctx,
         )
 
     def _add_composite(self, varname: Varname) -> None:
@@ -1465,6 +1498,7 @@ class StackedScopes:
         state: VisitorState,
         *,
         fallback_value: Value | None = None,
+        can_assign_ctx: CanAssignContext,
     ) -> Value:
         """Gets a variable of the given name from the current scope stack.
 
@@ -1491,7 +1525,11 @@ class StackedScopes:
 
         """
         value, _, _ = self.get_with_scope(
-            varname, node, state, fallback_value=fallback_value
+            varname,
+            node,
+            state,
+            fallback_value=fallback_value,
+            can_assign_ctx=can_assign_ctx,
         )
         return value
 
@@ -1502,6 +1540,7 @@ class StackedScopes:
         state: VisitorState,
         *,
         fallback_value: Value | None = None,
+        can_assign_ctx: CanAssignContext,
     ) -> tuple[Value, Scope | None, VarnameOrigin]:
         """Like :meth:`get`, but also returns the scope object the name was found in.
 
@@ -1509,7 +1548,13 @@ class StackedScopes:
         :class:`Scope` is ``None`` if the name was not found.
 
         """
-        return self.scopes[-1].get(varname, node, state, fallback_value=fallback_value)
+        return self.scopes[-1].get(
+            varname,
+            node,
+            state,
+            fallback_value=fallback_value,
+            can_assign_ctx=can_assign_ctx,
+        )
 
     def get_nonlocal_scope(self, varname: Varname, using_scope: Scope) -> Scope | None:
         """Gets the defining scope of a non-local variable."""
@@ -1582,10 +1627,11 @@ def constrain_value(
     constraint: AbstractConstraint,
     *,
     simplification_limit: int | None = None,
+    ctx: CanAssignContext,
 ) -> Value:
     """Create a version of this :term:`value` with the :term:`constraint` applied."""
     return _constrain_value(
-        [value], constraint.apply(), simplification_limit=simplification_limit
+        [value], constraint.apply(), simplification_limit=simplification_limit, ctx=ctx
     )
 
 
@@ -1600,6 +1646,7 @@ def _constrain_value(
     *,
     fallback_value: Value | None = None,
     simplification_limit: int | None = None,
+    ctx: CanAssignContext,
 ) -> Value:
     # Flatten MultiValuedValue so that we can apply constraints.
     if not values and fallback_value is not None:
@@ -1607,7 +1654,7 @@ def _constrain_value(
     else:
         values = [val for val_or_mvv in values for val in flatten_values(val_or_mvv)]
     for constraint in constraints:
-        values = list(constraint.apply_to_values(values))
+        values = list(constraint.apply_to_values(values, ctx))
     if not values:
         return NO_RETURN_VALUE
     if simplification_limit is not None:
