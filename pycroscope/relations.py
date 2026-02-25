@@ -217,9 +217,7 @@ def is_assignable_with_reason(
 def is_subtype(left: Value, right: Value, ctx: CanAssignContext) -> bool:
     """Return whether ``right`` is a subtype of ``left``."""
     result = has_relation(left, right, Relation.SUBTYPE, ctx)
-    if isinstance(result, CanAssignError):
-        return False
-    return True
+    return not isinstance(result, CanAssignError)
 
 
 @used
@@ -243,23 +241,13 @@ def has_relation(
         if cached is not None:
             return cached
 
-    if relation is Relation.EQUIVALENT:
-        # A is equivalent to B if A is a subtype of B and B is a subtype of A.
-        result1 = _has_relation(left, right, Relation.SUBTYPE, ctx)
-        result2 = _has_relation(right, left, Relation.SUBTYPE, ctx)
-        if isinstance(result1, CanAssignError) or isinstance(result2, CanAssignError):
-            children = [
-                elt for elt in (result1, result2) if isinstance(elt, CanAssignError)
-            ]
-            result = CanAssignError(
-                f"{left} is not {relation.description} {right}", children=children
-            )
-        else:
-            result = unify_bounds_maps([result1, result2])
-    elif relation is Relation.CONSISTENT:
-        # A is consistent with B if A is assignable to B and B is assignable to A.
-        result1 = _has_relation(left, right, Relation.ASSIGNABLE, ctx)
-        result2 = _has_relation(right, left, Relation.ASSIGNABLE, ctx)
+    if relation in (Relation.EQUIVALENT, Relation.CONSISTENT):
+        # EQUIVALENT checks both subtype directions; CONSISTENT checks both assignable directions.
+        subrelation = (
+            Relation.SUBTYPE if relation is Relation.EQUIVALENT else Relation.ASSIGNABLE
+        )
+        result1 = _has_relation(left, right, subrelation, ctx)
+        result2 = _has_relation(right, left, subrelation, ctx)
         if isinstance(result1, CanAssignError) or isinstance(result2, CanAssignError):
             children = [
                 elt for elt in (result1, result2) if isinstance(elt, CanAssignError)
@@ -525,55 +513,45 @@ def _has_relation(
         if isinstance(right, AnyValue):
             # Any is a subtype etc. of itself
             return {}
-        else:
-            if relation is Relation.SUBTYPE:
-                return CanAssignError("No type is a subtype of Any")
-            elif relation is Relation.ASSIGNABLE:
-                return {}  # everything is assignable to Any
-            else:
-                assert_never(relation)
+        if relation is Relation.SUBTYPE:
+            return CanAssignError("No type is a subtype of Any")
+        return {}  # everything is assignable to Any
     if isinstance(right, AnyValue):
         if relation is Relation.SUBTYPE:
             return CanAssignError("Any is not a subtype of anything")
-        elif relation is Relation.ASSIGNABLE:
-            return {}  # Any is assignable to everything
-        else:
-            assert_never(relation)
+        return {}  # Any is assignable to everything
     assert not isinstance(left, NewTypeValue)
 
     # SyntheticModuleValue
-    if isinstance(left, SyntheticModuleValue):
-        if isinstance(right, SyntheticModuleValue):
-            if left.module_path == right.module_path:
-                return {}
-            else:
-                return CanAssignError(f"{right} is not {relation.description} {left}")
-        else:
-            return CanAssignError(f"{right} is not {relation.description} {left}")
-    if isinstance(right, SyntheticModuleValue):
+    if isinstance(left, SyntheticModuleValue) or isinstance(
+        right, SyntheticModuleValue
+    ):
+        if (
+            isinstance(left, SyntheticModuleValue)
+            and isinstance(right, SyntheticModuleValue)
+            and left.module_path == right.module_path
+        ):
+            return {}
         return CanAssignError(f"{right} is not {relation.description} {left}")
 
     # ParamSpecArgs and Kwargs
-    if isinstance(left, ParamSpecArgsValue):
-        if (
-            isinstance(right, ParamSpecArgsValue)
-            and left.param_spec is right.param_spec
-        ):
-            # TODO: This isn't quite right, the "same" ParamSpec may refer to a different scope.
-            return {}
-        else:
-            return CanAssignError(f"{right} is not {relation.description} {left}")
-    if isinstance(right, ParamSpecArgsValue):
-        return has_relation(left, right.get_fallback_value(), relation, ctx)
-    if isinstance(left, ParamSpecKwargsValue):
-        if (
-            isinstance(right, ParamSpecKwargsValue)
-            and left.param_spec is right.param_spec
-        ):
-            return {}
-        else:
-            return CanAssignError(f"{right} is not {relation.description} {left}")
-    if isinstance(right, ParamSpecKwargsValue):
+    if (
+        isinstance(left, ParamSpecArgsValue)
+        and isinstance(right, ParamSpecArgsValue)
+        and left.param_spec is right.param_spec
+    ):
+        # TODO: This isn't quite right, the "same" ParamSpec may refer to a different scope.
+        return {}
+    if (
+        isinstance(left, ParamSpecKwargsValue)
+        and isinstance(right, ParamSpecKwargsValue)
+        and left.param_spec is right.param_spec
+    ):
+        # TODO: This isn't quite right, the "same" ParamSpec may refer to a different scope.
+        return {}
+    if isinstance(left, (ParamSpecArgsValue, ParamSpecKwargsValue)):
+        return CanAssignError(f"{right} is not {relation.description} {left}")
+    if isinstance(right, (ParamSpecArgsValue, ParamSpecKwargsValue)):
         return has_relation(left, right.get_fallback_value(), relation, ctx)
 
     # UnboundMethodValue
@@ -673,14 +651,12 @@ def _has_relation(
         if isinstance(right, KnownValue):
             if left.val is right.val:
                 return {}
-            elif safe_equals(left.val, right.val) and type(left.val) is type(right.val):
+            if safe_equals(left.val, right.val) and type(left.val) is type(right.val):
                 return {}
-            else:
-                return CanAssignError(f"{right} is not {relation.description} {left}")
-        elif isinstance(right, TypedValue):
             return CanAssignError(f"{right} is not {relation.description} {left}")
-        else:
-            assert_never(right)
+        if isinstance(right, TypedValue):
+            return CanAssignError(f"{right} is not {relation.description} {left}")
+        assert_never(right)
 
     if isinstance(left, CallableValue):
         signature = ctx.signature_from_value(right)
@@ -699,35 +675,31 @@ def _has_relation(
     if isinstance(left, SequenceValue):
         if isinstance(right, SequenceValue):
             return _has_relation_sequence(left, right, relation, ctx)
-        elif relation is Relation.SUBTYPE:
+        if relation is Relation.SUBTYPE:
             return CanAssignError(f"{right} is not {relation.description} {left}")
-        elif relation is Relation.ASSIGNABLE:
-            if (
-                isinstance(right, TypedValue)
-                and left.typ is right.typ
-                and (
-                    type(right) is TypedValue
-                    or (
-                        isinstance(right, GenericValue)
-                        and all(
-                            is_equivalent(arg, AnyValue(AnySource.inference), ctx)
-                            for arg in right.args
-                        )
+        if (
+            isinstance(right, TypedValue)
+            and left.typ is right.typ
+            and (
+                type(right) is TypedValue
+                or (
+                    isinstance(right, GenericValue)
+                    and all(
+                        is_equivalent(arg, AnyValue(AnySource.inference), ctx)
+                        for arg in right.args
                     )
                 )
-            ):
-                return {}
-            else:
-                return CanAssignError(f"{right} is not {relation.description} {left}")
-        else:
-            assert_never(relation)
+            )
+        ):
+            return {}
+        return CanAssignError(f"{right} is not {relation.description} {left}")
+
     if isinstance(left, TypedDictValue):
         if isinstance(right, TypedDictValue):
             return _has_relation_typeddict(left, right, relation, ctx)
-        elif isinstance(right, DictIncompleteValue):
+        if isinstance(right, DictIncompleteValue):
             return _has_relation_typeddict_dict(left, right, relation, ctx)
-        else:
-            return CanAssignError(f"{right} is not {relation.description} {left}")
+        return CanAssignError(f"{right} is not {relation.description} {left}")
 
     if isinstance(left, GenericValue):
         if (
@@ -1931,6 +1903,13 @@ def _intersect_values_inner(
 ) -> TypeOrIrreducible:
     left = gradualize(left)
     right = gradualize(right)
+    wrapper_types = (
+        AnnotatedValue,
+        NewTypeValue,
+        ParamSpecArgsValue,
+        ParamSpecKwargsValue,
+        TypeVarValue,
+    )
 
     if (result := _simple_intersection(left, right, ctx)) is not None:
         return result
@@ -1940,27 +1919,9 @@ def _intersect_values_inner(
     if isinstance(right, TypeAliasValue):
         return _intersect_alias(right, left, ctx)
 
-    if isinstance(
-        left,
-        (
-            AnnotatedValue,
-            NewTypeValue,
-            ParamSpecArgsValue,
-            ParamSpecKwargsValue,
-            TypeVarValue,
-        ),
-    ):
+    if isinstance(left, wrapper_types):
         return _intersect_wrapper(left, right, ctx)
-    if isinstance(
-        right,
-        (
-            AnnotatedValue,
-            NewTypeValue,
-            ParamSpecArgsValue,
-            ParamSpecKwargsValue,
-            TypeVarValue,
-        ),
-    ):
+    if isinstance(right, wrapper_types):
         return _intersect_wrapper(right, left, ctx)
 
     return _intersect_basic_types(left, right, ctx)
