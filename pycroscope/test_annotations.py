@@ -1120,8 +1120,8 @@ class TestTypeVar(TestNameCheckVisitorBase):
             assert_is_value(f(b"x"), TypedValue(bytes))
             assert_is_value(f(s), TypedValue(str))
             assert_is_value(f(b), TypedValue(bytes))
-            result = f(sb)  # E: incompatible_argument
-            assert_is_value(result, AnyValue(AnySource.error))
+            result = f(sb)
+            assert_is_value(result, TypedValue(str) | TypedValue(bytes))
             f(3)  # E: incompatible_argument
             assert_is_value(f(unannotated), AnyValue(AnySource.unannotated))
 

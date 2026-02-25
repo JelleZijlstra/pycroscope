@@ -491,6 +491,16 @@ class SigParameter:
             assert False, self.kind
 
 
+def _has_decomposable_argument(args: Sequence[Argument]) -> bool:
+    for composite, _ in args:
+        value = unannotate(composite.value)
+        if isinstance(value, MultiValuedValue):
+            return True
+        if value.decompose() is not None:
+            return True
+    return False
+
+
 @dataclass(frozen=True)
 class Signature:
     """Represents the signature of a Python callable.
@@ -594,6 +604,86 @@ class Signature:
             seen_kinds.add(param.kind)
             if param.default is not None:
                 seen_with_default.add(param.kind)
+
+    def _get_constrained_typevars(self) -> dict[TypeVarLike, tuple[Value, ...]] | None:
+        constrained_typevars: dict[TypeVarLike, tuple[Value, ...]] = {}
+        for param_name in self.typevars_of_params:
+            if param_name == self._return_key:
+                continue
+            for subval in self.parameters[param_name].annotation.walk_values():
+                if not isinstance(subval, TypeVarValue) or not subval.constraints:
+                    continue
+                constraints = tuple(subval.constraints)
+                existing = constrained_typevars.get(subval.typevar)
+                if existing is not None and existing != constraints:
+                    return None
+                constrained_typevars[subval.typevar] = constraints
+        return constrained_typevars
+
+    def _specialize_constrained_typevars(self) -> "OverloadedSignature | None":
+        constrained_typevars = self._get_constrained_typevars()
+        if constrained_typevars is None or not constrained_typevars:
+            return None
+
+        typevars = list(constrained_typevars)
+        specialized: list[Signature] = []
+        for constraint_values in itertools.product(
+            *(constrained_typevars[typevar] for typevar in typevars)
+        ):
+            typevar_map: TypeVarMap = dict(zip(typevars, constraint_values))
+            signature = self.substitute_typevars(typevar_map)
+            if not any(existing == signature for existing in specialized):
+                specialized.append(signature)
+
+        if len(specialized) <= 1:
+            return None
+        return OverloadedSignature(specialized)
+
+    def _should_specialize_constrained_typevars_for_args(
+        self, args: Sequence[Argument], ctx: CanAssignContext
+    ) -> bool:
+        constrained_typevars = self._get_constrained_typevars()
+        if constrained_typevars is None or not constrained_typevars:
+            return False
+
+        check_ctx = _CanAssignBasedContext(ctx)
+        actual_args = preprocess_args(args, check_ctx)
+        if actual_args is None:
+            return False
+        bound_args = self.bind_arguments(actual_args, check_ctx)
+        if bound_args is None:
+            return False
+
+        solutions_by_tv: dict[TypeVarLike, list[Value]] = {
+            tv: [] for tv in constrained_typevars
+        }
+        for param_name, (_, composite) in bound_args.items():
+            annotation = self.parameters[param_name].annotation
+            if not any(
+                isinstance(subval, TypeVarValue)
+                and subval.typevar in constrained_typevars
+                for subval in annotation.walk_values()
+            ):
+                continue
+            value = unannotate(composite.value)
+            members = list(flatten_values(value, unwrap_annotated=True))
+            if len(members) <= 1:
+                continue
+            for member in members:
+                tv_map = get_tv_map(annotation, member, ctx)
+                if isinstance(tv_map, CanAssignError):
+                    return False
+                for tv, constraints in constrained_typevars.items():
+                    if tv not in tv_map:
+                        continue
+                    solution = tv_map[tv]
+                    if all(solution != constraint for constraint in constraints):
+                        return False
+                    existing = solutions_by_tv[tv]
+                    if not any(prior == solution for prior in existing):
+                        existing.append(solution)
+
+        return any(len(solutions) > 1 for solutions in solutions_by_tv.values())
 
     def _check_param_type_compatibility(
         self,
@@ -1219,6 +1309,12 @@ class Signature:
 
         """
         args = list(args)
+        if _has_decomposable_argument(
+            args
+        ) and self._should_specialize_constrained_typevars_for_args(args, visitor):
+            specialized = self._specialize_constrained_typevars()
+            if specialized is not None:
+                return specialized.check_call(args, visitor, node)
         ctx = _VisitorBasedContext(visitor, node)
         preprocessed = preprocess_args(args, ctx)
         if preprocessed is None:
@@ -2138,6 +2234,27 @@ class OverloadedSignature:
         union decomposition is called a "clean match".
 
         """
+        args = list(args)
+        signatures = self.signatures
+        if _has_decomposable_argument(args):
+            specialized_sigs: list[Signature] = []
+            for sig in signatures:
+                if not sig._should_specialize_constrained_typevars_for_args(
+                    args, visitor
+                ):
+                    specialized = None
+                else:
+                    specialized = sig._specialize_constrained_typevars()
+                if specialized is None:
+                    new_sigs = [sig]
+                else:
+                    new_sigs = specialized.signatures
+                for new_sig in new_sigs:
+                    if not any(existing == new_sig for existing in specialized_sigs):
+                        specialized_sigs.append(new_sig)
+            if specialized_sigs:
+                signatures = tuple(specialized_sigs)
+
         ctx = _VisitorBasedContext(visitor, node)
         actual_args = preprocess_args(args, ctx)
         if actual_args is None:
@@ -2146,14 +2263,14 @@ class OverloadedSignature:
         # out of the way first.
         errors_per_overload = []
         bound_args_per_overload = []
-        for sig in self.signatures:
+        for sig in signatures:
             with visitor.catch_errors() as caught_errors:
                 bound_args = sig.bind_arguments(actual_args, ctx)
             bound_args_per_overload.append(bound_args)
             errors_per_overload.append(caught_errors)
 
         if not any(bound_args is not None for bound_args in bound_args_per_overload):
-            detail = self._make_detail(errors_per_overload, self.signatures)
+            detail = self._make_detail(errors_per_overload, signatures)
             visitor.show_error(
                 node,
                 "Cannot call overloaded function",
@@ -2168,7 +2285,7 @@ class OverloadedSignature:
         union_and_any_rets: list[CallReturn] = []
         sigs = [
             sig
-            for sig, bound_args in zip(self.signatures, bound_args_per_overload)
+            for sig, bound_args in zip(signatures, bound_args_per_overload)
             if bound_args is not None
         ]
         sigs = self._prefer_variadic_matches(sigs, actual_args)

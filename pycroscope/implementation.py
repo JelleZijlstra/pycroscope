@@ -2753,11 +2753,7 @@ def get_default_argspecs() -> dict[object, Signature]:
 
 def check_regex(pattern: str | bytes) -> CanAssignError | None:
     try:
-        # TODO allow this without the useless isinstance()
-        if isinstance(pattern, str):
-            re.compile(pattern)
-        else:
-            re.compile(pattern)
+        re.compile(pattern)
     except re.error as e:
         return CanAssignError(
             f"Invalid regex pattern: {e}", error_code=ErrorCode.invalid_regex
