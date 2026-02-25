@@ -898,6 +898,39 @@ class TestIntegration(TestNameCheckVisitorBase):
             assert_type(open("x", mode, buffering=buffering), IO[Any])
 
     @assert_passes()
+    def test_os_walk_path_union_filter(self):
+        import os
+        from collections.abc import Callable
+        from pathlib import Path
+
+        def all_files(
+            root: str | Path, filter_function: Callable[[str], bool] | None = None
+        ) -> set[str]:
+            all_files = set()
+            for dirpath, _, filenames in os.walk(root):
+                for filename in filenames:
+                    if filter_function is not None and not filter_function(filename):
+                        continue
+                    all_files.add(os.path.join(dirpath, filename))
+            return all_files
+
+    @assert_passes()
+    def test_os_walk_bytes(self):
+        import os
+        from collections.abc import Callable
+
+        def all_files(
+            root: bytes, filter_function: Callable[[bytes], bool] | None = None
+        ) -> set[bytes]:
+            all_files = set()
+            for dirpath, _, filenames in os.walk(root):
+                for filename in filenames:
+                    if filter_function is not None and not filter_function(filename):
+                        continue
+                    all_files.add(os.path.join(dirpath, filename))
+            return all_files
+
+    @assert_passes()
     def test_itertools_count(self):
         import itertools
 

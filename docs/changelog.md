@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Accept union arguments for constrained `TypeVar` parameters when each union member matches at least one constraint, including calls like `re.compile(pattern)` where `pattern` is `str | bytes`.
 - Generalize class-call signature inference to use Python-level metaclass `__call__` methods (not just enum classes), improving call checking for custom metaclasses.
 - Allow setting `output_format` in `pyproject.toml` so users can choose concise or detailed error output from config files.
 - Improve enum analysis in import-failure fallback mode by preserving enum-member semantics for synthetic classes, validating declared enum `_value_` types, and avoiding false `unsafe_comparison` errors for enum identity checks.

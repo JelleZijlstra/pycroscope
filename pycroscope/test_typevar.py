@@ -290,7 +290,40 @@ class TestSolve(TestNameCheckVisitorBase):
             return seq
 
         def take_union(seq: Union[bytes, str]) -> None:
-            take_seq(seq)  # E: incompatible_argument
+            assert_is_value(take_seq(seq), TypedValue(bytes) | TypedValue(str))
+
+    @assert_passes()
+    def test_tv_union_list(self):
+        from typing import TypeVar, Union
+
+        AnyStr = TypeVar("AnyStr", str, bytes)
+
+        def take_list(seq: list[AnyStr]) -> list[AnyStr]:
+            return seq
+
+        def take_union(seq: Union[list[bytes], list[str]]) -> None:
+            assert_is_value(
+                take_list(seq),
+                GenericValue(list, [TypedValue(bytes)])
+                | GenericValue(list, [TypedValue(str)]),
+            )
+
+    @assert_passes()
+    def test_tv_multiple_params(self):
+        from typing import TypeVar, Union
+
+        AnyStr = TypeVar("AnyStr", str, bytes)
+
+        def pick_first(x: AnyStr, y: AnyStr) -> AnyStr:
+            return x
+
+        def capybara(u: Union[str, bytes]) -> None:
+            assert_is_value(pick_first("a", "b"), TypedValue(str))
+            assert_is_value(pick_first(b"a", b"b"), TypedValue(bytes))
+            pick_first(u, "b")  # E: incompatible_argument
+            pick_first(u, b"b")  # E: incompatible_argument
+            pick_first("a", b"b")  # E: incompatible_call
+            pick_first(b"a", "b")  # E: incompatible_call
 
     @assert_passes()
     def test_tv_sequence(self):

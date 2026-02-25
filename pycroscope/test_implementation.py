@@ -1794,10 +1794,12 @@ class TestRegex(TestNameCheckVisitorBase):
     @assert_passes()
     def test_compile(self):
         import re
+        from typing import Union
 
-        def capybara():
+        def capybara(pattern: Union[str, bytes]):
             re.compile("a")
             re.compile(b"a")
+            re.compile(pattern)
             re.compile("[")  # E: incompatible_call
             re.compile(b"[")  # E: incompatible_call
 
