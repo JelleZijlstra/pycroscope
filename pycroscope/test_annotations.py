@@ -1923,9 +1923,8 @@ class TestParamSpec(TestNameCheckVisitorBase):
             _bad1: Callback2[...] = cb0  # E: incompatible_assignment
             _ok2: Callback2[...] = cb1
             _ok3: Callable[Concatenate[int, ...], str] = cb2
-            _bad2: Callable[Concatenate[str, ...], str] = (
-                cb2  # E: incompatible_assignment
-            )
+            # E: incompatible_assignment
+            _bad2: Callable[Concatenate[str, ...], str] = cb2
 
     @assert_passes()
     def test_implicit_anysig_tail_rules(self):
