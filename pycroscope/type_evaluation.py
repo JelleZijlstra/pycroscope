@@ -446,13 +446,21 @@ class ConditionEvaluator(ast.NodeVisitor):
                         typ,
                         exclude_any=exclude_any,
                     ),
-                    left_varmap={varname_node.id: constrain_value(val, constraint)},
+                    left_varmap={
+                        varname_node.id: constrain_value(
+                            val, constraint, ctx=self.ctx.can_assign_context
+                        )
+                    },
                     right_varmap={varname_node.id: remaining},
                 )
             return ConditionReturn(right_varmap={}, condition=NotCondition(condition))
         else:
             return ConditionReturn(
-                left_varmap={varname_node.id: constrain_value(val, constraint)},
+                left_varmap={
+                    varname_node.id: constrain_value(
+                        val, constraint, ctx=self.ctx.can_assign_context
+                    )
+                },
                 condition=condition,
             )
 

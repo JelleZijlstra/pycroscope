@@ -1708,7 +1708,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     self.module.__name__, varname
                 )
             if varname in current_scope.variables:
-                existing, _ = current_scope.get_local(varname, lookup_node, self.state)
+                existing, _ = current_scope.get_local(
+                    varname, lookup_node, self.state, can_assign_ctx=self
+                )
                 if self._is_checking() and value is not None:
                     if self.module is None:
                         # If module import failed, collected module-scope values are
@@ -2042,7 +2044,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         if error_node is None:
             error_node = node
         value, defining_scope, origin = self.scopes.get_with_scope(
-            node.id, node, self.state
+            node.id, node, self.state, can_assign_ctx=self
         )
         if defining_scope is not None:
             if defining_scope.scope_type in (
@@ -3393,7 +3395,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
 
     def _get_local_object(self, name: str, node: ast.AST) -> Value:
         if self.scopes.scope_type() == ScopeType.module_scope:
-            return self.scopes.get(name, node, self.state)
+            return self.scopes.get(name, node, self.state, can_assign_ctx=self)
         elif (
             self.scopes.scope_type() == ScopeType.class_scope
             and self.current_class is not None
@@ -3970,7 +3972,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             ):
                 prepared = prepare_type(result.return_value)
                 if should_suggest_type(prepared):
-                    detail, metadata = display_suggested_type(prepared, self.scopes)
+                    detail, metadata = display_suggested_type(
+                        prepared, self.scopes, self
+                    )
                     self._show_error_if_checking(
                         node,
                         error_code=ErrorCode.suggested_return_type,
@@ -4812,7 +4816,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     self.visit(node.body)
                 else:
                     self._generic_visit_list(node.body)
-                scope.get_local(LEAVES_SCOPE, node, self.state)
+                scope.get_local(LEAVES_SCOPE, node, self.state, can_assign_ctx=self)
             if is_collecting:
                 return FunctionResult(is_generator=self.is_generator, parameters=params)
 
@@ -4831,7 +4835,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 else:
                     self._generic_visit_list(node.body)
                     return_values = self.return_values
-                return_set, _ = scope.get_local(LEAVES_SCOPE, node, self.state)
+                return_set, _ = scope.get_local(
+                    LEAVES_SCOPE, node, self.state, can_assign_ctx=self
+                )
 
             self._check_function_unused_vars(scope)
             return self._compute_return_type(
@@ -5749,7 +5755,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
 
     def _name_exists(self, name: str) -> bool:
         try:
-            val = self.scopes.get(name, None, VisitorState.check_names)
+            val = self.scopes.get(
+                name, None, VisitorState.check_names, can_assign_ctx=self
+            )
         except KeyError:
             return False
         else:
@@ -6012,9 +6020,13 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 if is_last:
                     values.append(new_value)
                 elif is_and:
-                    values.append(constrain_value(new_value, FALSY_CONSTRAINT))
+                    values.append(
+                        constrain_value(new_value, FALSY_CONSTRAINT, ctx=self)
+                    )
                 else:
-                    values.append(constrain_value(new_value, TRUTHY_CONSTRAINT))
+                    values.append(
+                        constrain_value(new_value, TRUTHY_CONSTRAINT, ctx=self)
+                    )
 
         self.scopes.combine_subscopes(scopes)
         out = unite_values(*values)
@@ -7973,7 +7985,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         return return_value, True
 
     def _get_composite(self, composite: Varname, node: ast.AST, value: Value) -> Value:
-        local_value = self.scopes.get(composite, node, self.state, fallback_value=value)
+        local_value = self.scopes.get(
+            composite, node, self.state, fallback_value=value, can_assign_ctx=self
+        )
         if isinstance(local_value, MultiValuedValue):
             vals = [val for val in local_value.vals if val is not UNINITIALIZED_VALUE]
             if vals:
@@ -8620,6 +8634,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                         value=constrain_value(
                             self.match_subject.value,
                             AndConstraint.make(constraints_to_apply),
+                            ctx=self,
                         )
                     )
 
@@ -8641,7 +8656,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
 
             self.match_subject = self.match_subject._replace(
                 value=constrain_value(
-                    self.match_subject.value, AndConstraint.make(constraints_to_apply)
+                    self.match_subject.value,
+                    AndConstraint.make(constraints_to_apply),
+                    ctx=self,
                 )
             )
 

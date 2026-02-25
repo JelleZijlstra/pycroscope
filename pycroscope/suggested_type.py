@@ -22,6 +22,7 @@ from .value import (
     AnySource,
     AnyValue,
     CallableValue,
+    CanAssignContext,
     CanAssignError,
     GenericValue,
     KnownValue,
@@ -49,7 +50,7 @@ class CallableData:
     scopes: StackedScopes
     calls: list[CallArgs] = field(default_factory=list)
 
-    def check(self) -> Iterator[Failure]:
+    def check(self, ctx: CanAssignContext) -> Iterator[Failure]:
         if not self.calls:
             return
         for param in _extract_params(self.node):
@@ -68,7 +69,7 @@ class CallableData:
             suggested = unite_values(*all_values)
             if not should_suggest_type(suggested):
                 continue
-            detail, metadata = display_suggested_type(suggested, self.scopes)
+            detail, metadata = display_suggested_type(suggested, self.scopes, ctx)
             failure = self.ctx.show_error(
                 param,
                 f"Suggested type for parameter {param.arg}",
@@ -106,18 +107,18 @@ class CallableTracker:
         """Record the actual arguments passed in in a call."""
         self.callable_to_calls[callable].append(arguments)
 
-    def check(self) -> list[Failure]:
+    def check(self, ctx: CanAssignContext) -> list[Failure]:
         failures = []
         for callable, calls in self.callable_to_calls.items():
             if callable in self.callable_to_data:
                 data = self.callable_to_data[callable]
                 data.calls += calls
-                failures += data.check()
+                failures += data.check(ctx)
         return failures
 
 
 def display_suggested_type(
-    value: Value, scopes: StackedScopes
+    value: Value, scopes: StackedScopes, ctx: CanAssignContext
 ) -> tuple[str, dict[str, Any] | None]:
     value = prepare_type(value)
     if isinstance(value, MultiValuedValue) and value.vals:
@@ -134,7 +135,9 @@ def display_suggested_type(
         else:
             typ_str = stringify_object(value.typ)
             typ_name = typ_str.split(".")[-1]
-            scope_value = scopes.get(typ_name, None, VisitorState.check_names)
+            scope_value = scopes.get(
+                typ_name, None, VisitorState.check_names, can_assign_ctx=ctx
+            )
             if isinstance(scope_value, KnownValue) and scope_value.val is value.typ:
                 metadata = {"suggested_type": typ_name, "imports": []}
             else:

@@ -153,7 +153,7 @@ class Checker:
         return self.type_alias_cache
 
     def perform_final_checks(self) -> list[Failure]:
-        return self.callable_tracker.check()
+        return self.callable_tracker.check(self)
 
     def get_additional_bases(self, typ: type | super) -> set[type | str]:
         bases: set[type | str] = set()

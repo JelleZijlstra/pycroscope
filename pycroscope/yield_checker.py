@@ -593,7 +593,10 @@ class YieldChecker:
             if name in self.used_varnames:
                 return False
             value = self.visitor.scopes.get(
-                name, node=None, state=VisitorState.check_names
+                name,
+                node=None,
+                state=VisitorState.check_names,
+                can_assign_ctx=self.visitor,
             )
             return value is UNINITIALIZED_VALUE
 
