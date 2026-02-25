@@ -30,7 +30,9 @@ from contextlib import AbstractContextManager
 from dataclasses import dataclass, field, replace
 from itertools import chain
 from types import ModuleType
-from typing import Any, NamedTuple, Optional, TypeVar, assert_never
+from typing import Any, NamedTuple, Optional, TypeVar
+
+from typing_extensions import assert_never
 
 from pycroscope.relations import intersect_values, subtract_values
 

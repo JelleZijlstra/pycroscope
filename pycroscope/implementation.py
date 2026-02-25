@@ -1608,11 +1608,13 @@ def _reveal_locals_impl(ctx: CallContext) -> Value:
     scope = ctx.visitor.scopes.current_scope()
     if ctx.visitor._is_collecting():
         for varname in scope.all_variables():
-            scope.get(varname, ctx.node, ctx.visitor.state)
+            scope.get(varname, ctx.node, ctx.visitor.state, can_assign_ctx=ctx.visitor)
     else:
         details = []
         for varname in scope.all_variables():
-            val, _, _ = scope.get(varname, ctx.node, ctx.visitor.state)
+            val, _, _ = scope.get(
+                varname, ctx.node, ctx.visitor.state, can_assign_ctx=ctx.visitor
+            )
             details.append(CanAssignError(f"{varname}: {val}"))
         ctx.show_error(
             "Revealed local types are:",
