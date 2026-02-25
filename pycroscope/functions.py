@@ -6,11 +6,12 @@ Code for understanding function definitions.
 
 import ast
 import asyncio
+import builtins
 import collections.abc
 import enum
 import sys
 import types
-from collections.abc import Iterable, Sequence
+from collections.abc import Container, Iterable, Sequence
 from dataclasses import dataclass, replace
 from itertools import zip_longest
 from typing import TypeVar
@@ -73,6 +74,25 @@ class AsyncFunctionKind(enum.Enum):
     pure = 3
 
 
+class FunctionDecorator(enum.Enum):
+    classmethod = enum.auto()
+    staticmethod = enum.auto()
+    decorated_coroutine = enum.auto()
+    overload = enum.auto()
+    override = enum.auto()
+    final = enum.auto()
+    evaluated = enum.auto()
+    abstractmethod = enum.auto()
+
+    @builtins.classmethod
+    def method_kind_for(cls, decorators: Container["FunctionDecorator"]) -> str:
+        if cls.classmethod in decorators:
+            return "classmethod"
+        if cls.staticmethod in decorators:
+            return "staticmethod"
+        return "instance"
+
+
 @dataclass(frozen=True)
 class ParamInfo:
     param: SigParameter
@@ -85,15 +105,8 @@ class FunctionInfo:
     """Computed before visiting a function."""
 
     async_kind: AsyncFunctionKind
-    is_classmethod: bool  # has @classmethod
-    is_staticmethod: bool  # has @staticmethod
-    is_decorated_coroutine: bool  # has @asyncio.coroutine
-    is_overload: bool  # typing.overload or pycroscope.extensions.overload
-    is_override: bool  # @typing.override
-    is_final: bool  # @typing.final
-    is_evaluated: bool  # @pycroscope.extensions.evaluated
-    is_abstractmethod: bool  # has @abstractmethod
-    is_instancemethod: bool  # is an instance method
+    decorator_kinds: frozenset[FunctionDecorator]
+    is_nested_in_class: bool
     # a list of tuples of (decorator function, applied decorator function, AST node). These are
     # different for decorators that take arguments, like @asynq(): the first element will be the
     # asynq function and the second will be the result of calling asynq().

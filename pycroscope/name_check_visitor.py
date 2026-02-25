@@ -101,6 +101,7 @@ from .functions import (
     AsyncFunctionKind,
     AsyncProxyDecorators,
     AsynqDecorators,
+    FunctionDecorator,
     FunctionDefNode,
     FunctionInfo,
     FunctionNode,
@@ -1144,11 +1145,7 @@ class StackedContexts:
 class _PendingOverload:
     node: FunctionDefNode
     signature: ConcreteSignature | None
-    is_classmethod: bool
-    is_staticmethod: bool
-    is_abstractmethod: bool
-    is_override: bool
-    is_final: bool
+    decorator_kinds: frozenset[FunctionDecorator]
 
 
 @dataclass
@@ -3386,14 +3383,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     ) -> Generator[FunctionInfo, None, None]:
         """Visits a function's decorator list."""
         async_kind = AsyncFunctionKind.non_async
-        is_classmethod = False
-        is_decorated_coroutine = False
-        is_staticmethod = False
-        is_overload = False
-        is_override = False
-        is_final = False
-        is_abstractmethod = False
-        is_evaluated = False
+        decorator_kinds: set[FunctionDecorator] = set()
         decorators = []
         for decorator in [] if isinstance(node, ast.Lambda) else node.decorator_list:
             # We have to descend into the Call node because the result of
@@ -3418,23 +3408,23 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 if isinstance(decorator_value, KnownValue):
                     val = decorator_value.val
                     if val is classmethod:
-                        is_classmethod = True
+                        decorator_kinds.add(FunctionDecorator.classmethod)
                     elif val is staticmethod:
-                        is_staticmethod = True
+                        decorator_kinds.add(FunctionDecorator.staticmethod)
                     elif sys.version_info < (3, 11) and val is (
                         asyncio.coroutine  # static analysis: ignore[undefined_attribute]
                     ):
-                        is_decorated_coroutine = True
+                        decorator_kinds.add(FunctionDecorator.decorated_coroutine)
                     elif val is real_overload or val is overload:
-                        is_overload = True
+                        decorator_kinds.add(FunctionDecorator.overload)
                     elif val is abstractmethod:
-                        is_abstractmethod = True
+                        decorator_kinds.add(FunctionDecorator.abstractmethod)
                     elif val is evaluated:
-                        is_evaluated = True
+                        decorator_kinds.add(FunctionDecorator.evaluated)
                     elif is_typing_name(val, "override"):
-                        is_override = True
+                        decorator_kinds.add(FunctionDecorator.override)
                     elif is_typing_name(val, "final"):
-                        is_final = True
+                        decorator_kinds.add(FunctionDecorator.final)
                 decorators.append((decorator_value, decorator_value, decorator))
         if (
             sys.version_info >= (3, 12)
@@ -3462,8 +3452,8 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 enclosing_class,
                 self,
                 is_nested_in_class=is_nested_in_class,
-                is_classmethod=is_classmethod,
-                is_staticmethod=is_staticmethod,
+                is_classmethod=FunctionDecorator.classmethod in decorator_kinds,
+                is_staticmethod=FunctionDecorator.staticmethod in decorator_kinds,
             )
             if isinstance(node, ast.Lambda) or node.returns is None:
                 return_annotation = None
@@ -3485,17 +3475,8 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     return_annotation = AnyValue(AnySource.error)
             yield FunctionInfo(
                 async_kind=async_kind,
-                is_decorated_coroutine=is_decorated_coroutine,
-                is_classmethod=is_classmethod,
-                is_staticmethod=is_staticmethod,
-                is_abstractmethod=is_abstractmethod,
-                is_instancemethod=is_nested_in_class
-                and not is_classmethod
-                and not is_staticmethod,
-                is_overload=is_overload,
-                is_override=is_override,
-                is_final=is_final,
-                is_evaluated=is_evaluated,
+                decorator_kinds=frozenset(decorator_kinds),
+                is_nested_in_class=is_nested_in_class,
                 decorators=decorators,
                 node=node,
                 params=params,
@@ -3521,7 +3502,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         ) as info:
             self.yield_checker.reset_yield_checks()
 
-            if info.is_final:
+            if FunctionDecorator.final in info.decorator_kinds:
                 in_class = self.node_context.includes(ast.ClassDef)
                 if not in_class:
                     self._show_error_if_checking(
@@ -3529,7 +3510,10 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                         "@final is not allowed on non-method functions",
                         error_code=ErrorCode.invalid_annotation,
                     )
-                elif info.is_overload and not self.filename.endswith(".pyi"):
+                elif (
+                    FunctionDecorator.overload in info.decorator_kinds
+                    and not self.filename.endswith(".pyi")
+                ):
                     self._show_error_if_checking(
                         node,
                         "@final should be applied only to the overload implementation",
@@ -3537,7 +3521,8 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     )
                 class_key = self.current_class_key
                 if class_key is not None and (
-                    not info.is_overload or self.filename.endswith(".pyi")
+                    FunctionDecorator.overload not in info.decorator_kinds
+                    or self.filename.endswith(".pyi")
                 ):
                     self._record_final_member(class_key, node.name)
 
@@ -3547,7 +3532,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 )
 
             info_for_computed_value = info
-            if info.is_overload:
+            if FunctionDecorator.overload in info.decorator_kinds:
                 decorators = [
                     decorator
                     for decorator in info.decorators
@@ -3557,7 +3542,10 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     info_for_computed_value = replace(info, decorators=decorators)
             computed_function = compute_value_of_function(info_for_computed_value, self)
             static_overload_signature: OverloadedSignature | None = None
-            if not info.is_overload and not info.is_evaluated:
+            if (
+                FunctionDecorator.overload not in info.decorator_kinds
+                and FunctionDecorator.evaluated not in info.decorator_kinds
+            ):
                 static_overload_signature = self._get_pending_overload_signature(node)
             self._check_overload_implementation_consistency(
                 node, info, computed_function
@@ -3569,7 +3557,10 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     val = computed_function
             else:
                 val = KnownValue(potential_function)
-            if not info.is_overload and not info.is_evaluated:
+            if (
+                FunctionDecorator.overload not in info.decorator_kinds
+                and FunctionDecorator.evaluated not in info.decorator_kinds
+            ):
                 self._set_name_in_scope(node.name, node, val)
 
             if (
@@ -3589,7 +3580,8 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 self.asynq_checker.set_func_name(
                     node.name,
                     async_kind=info.async_kind,
-                    is_classmethod=info.is_classmethod,
+                    is_classmethod=FunctionDecorator.classmethod
+                    in info.decorator_kinds,
                 ),
                 override(self, "yield_checker", YieldChecker(self)),
                 override(self, "is_async_def", isinstance(node, ast.AsyncFunctionDef)),
@@ -3621,7 +3613,10 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             else:
                 self._show_error_if_checking(node, error_code=ErrorCode.missing_return)
 
-        if info.is_override and not info.is_overload:
+        if (
+            FunctionDecorator.override in info.decorator_kinds
+            and FunctionDecorator.overload not in info.decorator_kinds
+        ):
             if self.scopes.scope_type() is not ScopeType.class_scope:
                 self._show_error_if_checking(
                     node, error_code=ErrorCode.invalid_override_decorator
@@ -3632,8 +3627,8 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                         node, error_code=ErrorCode.override_does_not_override
                     )
         if (
-            info.is_final
-            and not info.is_overload
+            FunctionDecorator.final in info.decorator_kinds
+            and FunctionDecorator.overload not in info.decorator_kinds
             and isinstance(self.current_class, str)
             and self.scopes.scope_type() is ScopeType.class_scope
         ):
@@ -3677,8 +3672,8 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         if node.returns is None:
             if (
                 result.has_return
-                and not info.is_overload
-                and not info.is_abstractmethod
+                and FunctionDecorator.overload not in info.decorator_kinds
+                and FunctionDecorator.abstractmethod not in info.decorator_kinds
             ):
                 prepared = prepare_type(result.return_value)
                 if should_suggest_type(prepared):
@@ -3758,18 +3753,22 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         signature = self._signature_for_overload_consistency(info, computed_function)
 
         if pending_block is not None and (
-            pending_block.name != node.name or not info.is_overload
+            pending_block.name != node.name
+            or FunctionDecorator.overload not in info.decorator_kinds
         ):
             self._pending_overload_blocks.pop(scope_key, None)
             implementation = None
-            if pending_block.name == node.name and not info.is_overload:
+            if (
+                pending_block.name == node.name
+                and FunctionDecorator.overload not in info.decorator_kinds
+            ):
                 implementation = (node, info, signature)
             self._finalize_pending_overload_block(pending_block, implementation)
             pending_block = None
             if implementation is not None:
                 return
 
-        if not info.is_overload:
+        if FunctionDecorator.overload not in info.decorator_kinds:
             return
 
         if pending_block is None:
@@ -3777,13 +3776,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             self._pending_overload_blocks[scope_key] = pending_block
         pending_block.overloads.append(
             _PendingOverload(
-                node=node,
-                signature=signature,
-                is_classmethod=info.is_classmethod,
-                is_staticmethod=info.is_staticmethod,
-                is_abstractmethod=info.is_abstractmethod,
-                is_override=info.is_override,
-                is_final=info.is_final,
+                node=node, signature=signature, decorator_kinds=info.decorator_kinds
             )
         )
 
@@ -3892,7 +3885,10 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         needs_implementation = (
             not self.filename.endswith(".pyi")
             and not in_protocol_class
-            and not all(pending.is_abstractmethod for pending in overloads)
+            and not all(
+                FunctionDecorator.abstractmethod in pending.decorator_kinds
+                for pending in overloads
+            )
         )
         if implementation is None and needs_implementation:
             should_check_consistency = False
@@ -3903,10 +3899,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             )
 
         overload_kinds = {
-            self._method_decorator_kind(
-                is_classmethod=pending.is_classmethod,
-                is_staticmethod=pending.is_staticmethod,
-            )
+            self._method_decorator_kind(decorator_kinds=pending.decorator_kinds)
             for pending in overloads
         }
         kind_mismatch = False
@@ -3920,8 +3913,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         elif impl_info is not None:
             (overload_kind,) = overload_kinds
             impl_kind = self._method_decorator_kind(
-                is_classmethod=impl_info.is_classmethod,
-                is_staticmethod=impl_info.is_staticmethod,
+                decorator_kinds=impl_info.decorator_kinds
             )
             if impl_kind != overload_kind:
                 kind_mismatch = True
@@ -3934,18 +3926,24 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             should_check_consistency = False
 
         overload_final_positions = [
-            i for i, pending in enumerate(overloads) if pending.is_final
+            i
+            for i, pending in enumerate(overloads)
+            if FunctionDecorator.final in pending.decorator_kinds
         ]
         overload_override_positions = [
-            i for i, pending in enumerate(overloads) if pending.is_override
+            i
+            for i, pending in enumerate(overloads)
+            if FunctionDecorator.override in pending.decorator_kinds
         ]
 
         placement_error = False
         effective_is_final = False
         effective_is_override = False
         if impl_info is not None:
-            effective_is_final = impl_info.is_final
-            effective_is_override = impl_info.is_override
+            effective_is_final = FunctionDecorator.final in impl_info.decorator_kinds
+            effective_is_override = (
+                FunctionDecorator.override in impl_info.decorator_kinds
+            )
             if overload_final_positions:
                 placement_error = True
                 self._show_error_if_checking(
@@ -4024,12 +4022,8 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         return should_check_consistency
 
     @staticmethod
-    def _method_decorator_kind(*, is_classmethod: bool, is_staticmethod: bool) -> str:
-        if is_classmethod:
-            return "classmethod"
-        if is_staticmethod:
-            return "staticmethod"
-        return "instance"
+    def _method_decorator_kind(*, decorator_kinds: Container[FunctionDecorator]) -> str:
+        return FunctionDecorator.method_kind_for(decorator_kinds)
 
     def _is_final_base_method(
         self, current_class: type | str, method_name: str, node: ast.AST
@@ -4056,7 +4050,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     def _signature_for_overload_consistency(
         self, info: FunctionInfo, computed_function: Value
     ) -> ConcreteSignature | None:
-        if info.is_overload:
+        if FunctionDecorator.overload in info.decorator_kinds:
             decorators = [
                 decorator
                 for decorator in info.decorators
@@ -4250,14 +4244,17 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         return is_typing_name(get_origin(callee.val), "Annotated")
 
     def _allow_missing_return(self, info: FunctionInfo) -> bool:
-        if info.is_overload or info.is_evaluated:
+        if (
+            FunctionDecorator.overload in info.decorator_kinds
+            or FunctionDecorator.evaluated in info.decorator_kinds
+        ):
             return True
         node = info.node
         if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             return False
         if not self._has_only_docstring_and_stub(node):
             return False
-        if info.is_abstractmethod:
+        if FunctionDecorator.abstractmethod in info.decorator_kinds:
             return True
         return (
             self.current_class is not None
@@ -4341,7 +4338,11 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
 
     def _get_typeis_parameter(self, info: FunctionInfo) -> SigParameter | None:
         index = 0
-        if info.is_classmethod or info.is_instancemethod:
+        if FunctionDecorator.classmethod in info.decorator_kinds or (
+            info.is_nested_in_class
+            and FunctionDecorator.classmethod not in info.decorator_kinds
+            and FunctionDecorator.staticmethod not in info.decorator_kinds
+        ):
             index = 1
         if len(info.params) <= index:
             return None
@@ -4379,7 +4380,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             task_cls = _get_task_cls(info.potential_function)
             return_value = AsyncTaskIncompleteValue(task_cls, return_value)
 
-        if isinstance(info.node, ast.AsyncFunctionDef) or info.is_decorated_coroutine:
+        if isinstance(info.node, ast.AsyncFunctionDef) or (
+            FunctionDecorator.decorated_coroutine in info.decorator_kinds
+        ):
             return_value = make_coro_type(return_value)
 
         if isinstance(val, KnownValue) and isinstance(val.val, property):
@@ -4449,7 +4452,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         ):
             return FunctionResult(parameters=params)
 
-        if function_info.is_evaluated:
+        if FunctionDecorator.evaluated in function_info.decorator_kinds:
             if self._is_collecting() or isinstance(node, ast.Lambda):
                 return FunctionResult(parameters=params)
             with self.scopes.allow_only_module_scope():
@@ -4735,14 +4738,18 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         if not isinstance(self.current_class, type):
             return
         # staticmethods have no restrictions
-        if function_info.is_staticmethod:
+        if FunctionDecorator.staticmethod in function_info.decorator_kinds:
             return
         # try to confirm that it's actually a method
         if isinstance(node, ast.Lambda) or not hasattr(self.current_class, node.name):
             return
         if node.name in IMPLICIT_CLASSMETHODS:
             return
-        first_must_be = "cls" if function_info.is_classmethod else "self"
+        first_must_be = (
+            "cls"
+            if FunctionDecorator.classmethod in function_info.decorator_kinds
+            else "self"
+        )
 
         if len(node.args.args) < 1 or len(node.args.defaults) == len(node.args.args):
             self.show_error(
