@@ -55,6 +55,7 @@ from .value import (
     TypeAliasValue,
     TypedDictValue,
     TypedValue,
+    TypeVarLike,
     TypeVarValue,
     UnboundMethodValue,
     Value,
@@ -67,7 +68,7 @@ from .value import (
 )
 
 _BaseProvider = Callable[[type | super], set[type]]
-_SyntheticGenericBases = dict[type | str, dict[object, Value]]
+_SyntheticGenericBases = dict[type | str, dict[TypeVarLike, Value]]
 
 
 class AdditionalBaseProviders(PyObjectSequenceOption[_BaseProvider]):
@@ -102,7 +103,7 @@ class Checker:
     synthetic_type_bases: dict[str, set[type | str]] = field(
         default_factory=dict, init=False, repr=False
     )
-    synthetic_generic_bases: dict[str, _SyntheticGenericBases] = field(
+    synthetic_generic_bases: dict[type | str, _SyntheticGenericBases] = field(
         default_factory=dict, init=False, repr=False
     )
     _relation_cache: dict[object, object] = field(
@@ -250,23 +251,64 @@ class Checker:
         self, typ: type | str, generic_args: Sequence[Value] = ()
     ) -> GenericBases:
         generic_bases = self.arg_spec_cache.get_generic_bases(typ, generic_args)
-        if not isinstance(typ, str):
-            return generic_bases
-
-        synthetic_bases = self.synthetic_generic_bases.get(typ)
+        synthetic_bases = self._get_synthetic_generic_bases(typ)
         if synthetic_bases is None:
             return generic_bases
 
+        substitution_map: dict[TypeVarLike, Value] = {}
+        synthetic_type_params = synthetic_bases.get(typ, {})
+        for i, type_param_value in enumerate(synthetic_type_params.values()):
+            if not isinstance(type_param_value, TypeVarValue):
+                continue
+            try:
+                concrete_arg = generic_args[i]
+            except IndexError:
+                concrete_arg = AnyValue(AnySource.generic_argument)
+            substitution_map[type_param_value.typevar] = concrete_arg
+
         merged = {base: dict(tv_map) for base, tv_map in generic_bases.items()}
         for base, tv_map in synthetic_bases.items():
-            merged.setdefault(base, {}).update(tv_map)
+            substituted_tv_map = {
+                tv: value.substitute_typevars(substitution_map)
+                for tv, value in tv_map.items()
+            }
+            merged.setdefault(base, {}).update(substituted_tv_map)
+        if isinstance(typ, type) and typ not in merged:
+            alias = self._runtime_type_generic_alias(typ)
+            for base, tv_map in merged.items():
+                if (
+                    isinstance(base, type)
+                    and self._runtime_type_generic_alias(base) == alias
+                ):
+                    merged[typ] = dict(tv_map)
+                    break
         return merged
 
+    def get_type_parameters(self, typ: type | str) -> list[Value]:
+        synthetic_bases = self._get_synthetic_generic_bases(typ)
+        if synthetic_bases is not None and typ in synthetic_bases:
+            return list(synthetic_bases[typ].values())
+        if synthetic_bases is not None and isinstance(typ, type):
+            alias = self._runtime_type_generic_alias(typ)
+            for base, tv_map in synthetic_bases.items():
+                if (
+                    isinstance(base, type)
+                    and self._runtime_type_generic_alias(base) == alias
+                ):
+                    return list(tv_map.values())
+        return self.arg_spec_cache.get_type_parameters(typ)
+
     def register_synthetic_type_bases(
-        self, typ: str, base_values: Sequence[Value]
+        self,
+        typ: type | str,
+        base_values: Sequence[Value],
+        *,
+        declared_type_params: Sequence[TypeVarValue] = (),
     ) -> None:
         base_types: set[type | str] = set()
-        merged_generic_bases: _SyntheticGenericBases = {typ: {}}
+        merged_generic_bases: _SyntheticGenericBases = {
+            typ: {tv.typevar: tv for tv in declared_type_params}
+        }
         for base in base_values:
             for subval in flatten_values(replace_fallback(base)):
                 converted: Value = subval
@@ -290,12 +332,38 @@ class Checker:
                 ).items():
                     merged_generic_bases.setdefault(gb_typ, {}).update(tv_map)
 
-        if base_types:
+        if isinstance(typ, str) and base_types:
             self.synthetic_type_bases.setdefault(typ, set()).update(base_types)
-        existing = self.synthetic_generic_bases.setdefault(typ, {})
-        for gb_typ, tv_map in merged_generic_bases.items():
-            existing.setdefault(gb_typ, {}).update(tv_map)
+        merged_copy = {
+            gb_typ: dict(tv_map) for gb_typ, tv_map in merged_generic_bases.items()
+        }
+        for key in self._iter_generic_override_keys(typ):
+            self.synthetic_generic_bases[key] = merged_copy
         self.type_object_cache.pop(typ, None)
+
+    @staticmethod
+    def _runtime_type_generic_alias(typ: type) -> str:
+        return f"{typ.__module__}.{typ.__qualname__}"
+
+    def _iter_generic_override_keys(self, typ: type | str) -> Iterator[type | str]:
+        yield typ
+        if isinstance(typ, type):
+            yield self._runtime_type_generic_alias(typ)
+
+    def _get_synthetic_generic_bases(
+        self, typ: type | str
+    ) -> _SyntheticGenericBases | None:
+        for key in self._iter_generic_override_keys(typ):
+            bases = self.synthetic_generic_bases.get(key)
+            if bases is not None:
+                if isinstance(typ, type) and isinstance(key, str):
+                    declared = bases.get(key)
+                    if not declared or not any(
+                        isinstance(val, TypeVarValue) for val in declared.values()
+                    ):
+                        continue
+                return bases
+        return None
 
     def get_signature(
         self, obj: object, is_asynq: bool = False
@@ -755,3 +823,6 @@ class CheckerAttrContext(AttrContext):
         self, typ: type | str, generic_args: Sequence[Value]
     ) -> GenericBases:
         return self.checker.get_generic_bases(typ, generic_args)
+
+    def get_type_parameters(self, typ: type | str) -> list[Value]:
+        return self.checker.get_type_parameters(typ)

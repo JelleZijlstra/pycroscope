@@ -506,6 +506,137 @@ class TestGenericClasses(TestNameCheckVisitorBase):
         """
         )
 
+    @skip_before((3, 12))
+    def test_infer_variance_from_member_annotations(self):
+        self.assert_passes(
+            """
+            from typing import Iterator
+
+            class C[T]:
+                def __iter__(self) -> Iterator[T]:
+                    raise NotImplementedError
+
+            x: C[float] = C[int]()
+            y: C[int] = C[float]()  # E: incompatible_assignment
+        """
+        )
+
+    @skip_before((3, 12))
+    def test_infer_variance_from_generic_base(self):
+        self.assert_passes(
+            """
+            from typing import Generic, TypeVar
+
+            T_co = TypeVar("T_co", covariant=True)
+            T_contra = TypeVar("T_contra", contravariant=True)
+
+            class ParentCo(Generic[T_co]):
+                pass
+
+            class ChildCo[T](ParentCo[T]):
+                pass
+
+            class ParentContra(Generic[T_contra]):
+                pass
+
+            class ChildContra[T](ParentContra[T]):
+                pass
+
+            a: ChildCo[int] = ChildCo[float]()  # E: incompatible_assignment
+            b: ChildCo[float] = ChildCo[int]()
+            c: ChildContra[int] = ChildContra[float]()
+            d: ChildContra[float] = ChildContra[int]()  # E: incompatible_assignment
+        """
+        )
+
+    @skip_before((3, 12))
+    def test_infer_variance_mixed_input_and_output_is_invariant(self):
+        self.assert_passes(
+            """
+            class Box[T]:
+                def get(self) -> T:
+                    raise NotImplementedError
+
+                def put(self, value: T) -> None:
+                    raise NotImplementedError
+
+            a: Box[int] = Box[float]()  # E: incompatible_assignment
+            b: Box[float] = Box[int]()  # E: incompatible_assignment
+        """
+        )
+
+    @skip_before((3, 12))
+    def test_infer_variance_frozen_and_mutable_dataclasses(self):
+        self.assert_passes(
+            """
+            from dataclasses import dataclass
+
+            @dataclass
+            class MutableBox[T]:
+                value: T
+
+            @dataclass(frozen=True)
+            class FrozenBox[T]:
+                value: T
+
+            m1: MutableBox[float] = MutableBox[int](1)  # E: incompatible_assignment
+            m2: MutableBox[int] = MutableBox[float](1.0)  # E: incompatible_assignment
+
+            f1: FrozenBox[float] = FrozenBox[int](1)
+            f2: FrozenBox[int] = FrozenBox[float](1.0)  # E: incompatible_assignment
+        """
+        )
+
+    @skip_before((3, 12))
+    def test_infer_variance_property_setter_makes_type_param_invariant(self):
+        self.assert_passes(
+            """
+            class PropBox[T]:
+                @property
+                def value(self) -> T:
+                    raise NotImplementedError
+
+                @value.setter
+                def value(self, new_value: T) -> None:
+                    raise NotImplementedError
+
+            a: PropBox[int] = PropBox[float]()  # E: incompatible_assignment
+            b: PropBox[float] = PropBox[int]()  # E: incompatible_assignment
+        """
+        )
+
+    @skip_before((3, 12))
+    def test_infer_variance_with_nested_callable_positions(self):
+        self.assert_passes(
+            """
+            from typing import Callable
+
+            class CallableArgBox[T]:
+                def consume_callable(self, cb: Callable[[T], int]) -> None:
+                    raise NotImplementedError
+
+            class CallableReturnBox[T]:
+                def produce_callable(self) -> Callable[[T], int]:
+                    raise NotImplementedError
+
+            c1: CallableArgBox[float] = CallableArgBox[int]()
+            c2: CallableArgBox[int] = CallableArgBox[float]()  # E: incompatible_assignment
+
+            r1: CallableReturnBox[int] = CallableReturnBox[float]()
+            r2: CallableReturnBox[float] = CallableReturnBox[int]()  # E: incompatible_assignment
+        """
+        )
+
+    @skip_before((3, 12))
+    def test_infer_variance_ignores_bad_sequence_annotation_without_crashing(self):
+        self.assert_passes(
+            """
+            class C[T]:
+                def f(self, x: [T]) -> None:  # E: invalid_annotation
+                    raise NotImplementedError
+        """
+        )
+
 
 class TestIntegration(TestNameCheckVisitorBase):
     @assert_passes()

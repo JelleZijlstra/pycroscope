@@ -1150,7 +1150,22 @@ class ArgSpecCache:
     def get_type_parameters(self, typ: type | str) -> list[Value]:
         bases = self.get_generic_bases(typ, substitute_typevars=False)
         tv_map = bases.get(typ, {})
-        return [tv for tv in tv_map.values()]
+        if tv_map:
+            return [tv for tv in tv_map.values()]
+        if isinstance(typ, str):
+            return []
+        runtime_type_params = safe_getattr(typ, "__type_params__", ())
+        try:
+            runtime_type_params_iter = iter(runtime_type_params)
+        except TypeError:
+            return []
+        wrapped: list[Value] = []
+        for type_param in runtime_type_params_iter:
+            try:
+                wrapped.append(wrap_type_param(type_param))
+            except TypeError:
+                continue
+        return wrapped
 
     def get_generic_bases(
         self,

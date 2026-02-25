@@ -237,6 +237,7 @@ from .value import (
     TypeVarValue,
     UnboundMethodValue,
     Value,
+    Variance,
     annotate_value,
     concrete_values_from_iterable,
     flatten_values,
@@ -1405,7 +1406,10 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     def get_generic_bases(
         self, typ: type | str, generic_args: Sequence[Value] = ()
     ) -> GenericBases:
-        return self.arg_spec_cache.get_generic_bases(typ, generic_args)
+        return self.checker.get_generic_bases(typ, generic_args)
+
+    def get_type_parameters(self, typ: type | str) -> Sequence[Value]:
+        return self.checker.get_type_parameters(typ)
 
     def get_signature(
         self, obj: object, is_asynq: bool = False
@@ -1797,7 +1801,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                             root_value = TypedValue(base_class)
                         else:
                             continue
-                        if base_class is current_class:
+                        if base_class == current_class:
                             continue
                         ctx = _AttrContext(
                             Composite(root_value),
@@ -1812,7 +1816,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                         if base_value is not UNINITIALIZED_VALUE:
                             yield base_class, base_value
         for base_class in self.checker.get_generic_bases(current_class):
-            if base_class is current_class:
+            if base_class == current_class:
                 continue
             if isinstance(base_class, str):
                 base_class_value: Value = self._synthetic_classes_by_name.get(
@@ -2178,7 +2182,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             ctx = contextlib.nullcontext()
         with ctx:
             if sys.version_info >= (3, 12) and node.type_params:
-                self.visit_type_param_values(node.type_params)
+                type_param_values = list(self.visit_type_param_values(node.type_params))
+            else:
+                type_param_values = []
             base_values = self._generic_visit_list(node.bases)
             if any(self._is_enum_base_value(base) for base in base_values):
                 self.enum_class_keys.add(class_key)
@@ -2226,20 +2232,56 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     node.name, synthetic_class_type, base_classes=tuple(base_values)
                 )
                 self._synthetic_classes_by_name[synthetic_fq_name] = synthetic_class
-                self.checker.register_synthetic_type_bases(
-                    synthetic_fq_name, base_values
-                )
                 if self._is_checking():
                     # Bind the class name while checking its body so references
                     # like "return C.attr" or string annotations mentioning C
                     # resolve even when no runtime class object exists.
                     self.scopes.set(node.name, synthetic_class, node, self.state)
+            generic_class_key = (
+                class_scope_object
+                if isinstance(class_scope_object, (type, str))
+                else class_key
+            )
+            runtime_class_for_type_params = (
+                class_scope_object if isinstance(class_scope_object, type) else None
+            )
+            effective_type_param_values = (
+                type_param_values
+                if type_param_values
+                else self._type_params_from_base_values(base_values)
+            )
+            registered_type_param_values = self._align_type_params_with_runtime_class(
+                runtime_class_for_type_params, effective_type_param_values
+            )
+            should_register_generic_bases = synthetic_typeddict is None and (
+                isinstance(generic_class_key, str) or bool(registered_type_param_values)
+            )
+            if should_register_generic_bases:
+                self.checker.register_synthetic_type_bases(
+                    generic_class_key,
+                    base_values,
+                    declared_type_params=registered_type_param_values,
+                )
             with (
                 override(self, "current_synthetic_typeddict", synthetic_typeddict),
                 override(self, "current_class_key", class_key),
             ):
                 value, class_scope_values = self._visit_class_and_get_value(
                     node, class_scope_object
+                )
+            if type_param_values and synthetic_typeddict is None:
+                inferred_type_params = self._infer_class_type_param_variances(
+                    node, type_param_values, base_values
+                )
+                registered_inferred_type_params = (
+                    self._align_type_params_with_runtime_class(
+                        runtime_class_for_type_params, inferred_type_params
+                    )
+                )
+                self.checker.register_synthetic_type_bases(
+                    generic_class_key,
+                    base_values,
+                    declared_type_params=registered_inferred_type_params,
                 )
             if fallback_runtime_class is not None and class_scope_values is not None:
                 self._populate_fallback_runtime_class(
@@ -3097,6 +3139,257 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         if isinstance(node, ast.Constant) and isinstance(node.value, bool):
             return node.value
         return None
+
+    @staticmethod
+    def _compose_variance_polarity(polarity: int, variance: Variance) -> int:
+        if polarity == 0 or variance is Variance.INVARIANT:
+            return 0
+        if variance is Variance.COVARIANT:
+            return polarity
+        return -polarity
+
+    @staticmethod
+    def _record_variance_polarity(used_polarities: set[int], polarity: int) -> None:
+        if polarity == 0:
+            used_polarities.update({-1, 1})
+        else:
+            used_polarities.add(polarity)
+
+    def _value_for_variance_annotation(self, annotation: ast.expr) -> Value:
+        annotation_expr = annotation_expr_from_ast(
+            annotation, self, suppress_errors=True
+        )
+        value, _ = annotation_expr.maybe_unqualify(
+            {
+                Qualifier.ClassVar,
+                Qualifier.Final,
+                Qualifier.ReadOnly,
+                Qualifier.Required,
+                Qualifier.NotRequired,
+                Qualifier.Unpack,
+                Qualifier.InitVar,
+                Qualifier.TypeAlias,
+            }
+        )
+        if value is None:
+            return AnyValue(AnySource.inference)
+        return value
+
+    def _collect_type_param_polarities_from_value(
+        self,
+        value: Value,
+        type_param_polarities: Mapping[object, set[int]],
+        *,
+        polarity: int,
+    ) -> None:
+        if isinstance(value, TypeVarValue):
+            used_polarities = type_param_polarities.get(value.typevar)
+            if used_polarities is not None:
+                self._record_variance_polarity(used_polarities, polarity)
+            return
+        if isinstance(value, GenericValue):
+            type_parameters = self.get_type_parameters(value.typ)
+            if len(type_parameters) == len(value.args):
+                for arg, type_param in zip(value.args, type_parameters):
+                    if isinstance(type_param, TypeVarValue):
+                        param_variance = type_param.variance
+                    else:
+                        param_variance = Variance.INVARIANT
+                    self._collect_type_param_polarities_from_value(
+                        arg,
+                        type_param_polarities,
+                        polarity=self._compose_variance_polarity(
+                            polarity, param_variance
+                        ),
+                    )
+            else:
+                for arg in value.args:
+                    self._collect_type_param_polarities_from_value(
+                        arg, type_param_polarities, polarity=0
+                    )
+            return
+        if isinstance(value, AnnotatedValue):
+            self._collect_type_param_polarities_from_value(
+                value.value, type_param_polarities, polarity=polarity
+            )
+            return
+        if isinstance(value, MultiValuedValue):
+            for subval in value.vals:
+                self._collect_type_param_polarities_from_value(
+                    subval, type_param_polarities, polarity=polarity
+                )
+            return
+        if isinstance(value, TypeAliasValue):
+            for type_argument in value.type_arguments:
+                self._collect_type_param_polarities_from_value(
+                    type_argument, type_param_polarities, polarity=polarity
+                )
+            return
+        if isinstance(value, SubclassValue):
+            self._collect_type_param_polarities_from_value(
+                value.typ, type_param_polarities, polarity=polarity
+            )
+            return
+        if isinstance(value, SequenceValue):
+            members = value.get_member_sequence()
+            if members is not None:
+                for member in members:
+                    self._collect_type_param_polarities_from_value(
+                        member, type_param_polarities, polarity=polarity
+                    )
+            return
+        if isinstance(value, CallableValue):
+            signature = value.signature
+            signatures = (
+                signature.signatures
+                if isinstance(signature, OverloadedSignature)
+                else [signature]
+            )
+            for sig in signatures:
+                if not isinstance(sig, Signature):
+                    continue
+                for param in sig.parameters.values():
+                    self._collect_type_param_polarities_from_value(
+                        param.annotation,
+                        type_param_polarities,
+                        polarity=-polarity if polarity else 0,
+                    )
+                self._collect_type_param_polarities_from_value(
+                    sig.return_value, type_param_polarities, polarity=polarity
+                )
+            return
+
+    def _is_frozen_dataclass(self, node: ast.ClassDef) -> bool:
+        for decorator in node.decorator_list:
+            if isinstance(decorator, ast.Call):
+                target = decorator.func
+            else:
+                target = decorator
+            if not (
+                isinstance(target, ast.Name)
+                and target.id == "dataclass"
+                or isinstance(target, ast.Attribute)
+                and target.attr == "dataclass"
+            ):
+                continue
+            if not isinstance(decorator, ast.Call):
+                return False
+            for kw in decorator.keywords:
+                if kw.arg == "frozen":
+                    value = self._get_bool_literal(kw.value)
+                    if value is not None:
+                        return value
+            return False
+        return False
+
+    def _infer_class_type_param_variances(
+        self,
+        node: ast.ClassDef,
+        type_params: Sequence[TypeVarValue],
+        base_values: Sequence[Value],
+    ) -> Sequence[TypeVarValue]:
+        if not type_params:
+            return type_params
+        type_param_polarities = {tp.typevar: set() for tp in type_params}
+        for base_node in node.bases:
+            base = self._value_for_variance_annotation(base_node)
+            self._collect_type_param_polarities_from_value(
+                base, type_param_polarities, polarity=1
+            )
+
+        frozen_dataclass = self._is_frozen_dataclass(node)
+        for statement in node.body:
+            if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                if statement.name in {"__init__", "__new__"}:
+                    continue
+                all_args = [
+                    *statement.args.posonlyargs,
+                    *statement.args.args,
+                    *statement.args.kwonlyargs,
+                ]
+                if statement.args.vararg is not None:
+                    all_args.append(statement.args.vararg)
+                if statement.args.kwarg is not None:
+                    all_args.append(statement.args.kwarg)
+                for arg in all_args:
+                    if arg.annotation is None:
+                        continue
+                    annotation_value = self._value_for_variance_annotation(
+                        arg.annotation
+                    )
+                    self._collect_type_param_polarities_from_value(
+                        annotation_value, type_param_polarities, polarity=-1
+                    )
+                if statement.returns is not None:
+                    return_value = self._value_for_variance_annotation(
+                        statement.returns
+                    )
+                    self._collect_type_param_polarities_from_value(
+                        return_value, type_param_polarities, polarity=1
+                    )
+            elif (
+                isinstance(statement, ast.AnnAssign)
+                and statement.annotation is not None
+            ):
+                if not isinstance(statement.target, ast.Name):
+                    continue
+                annotation_expr = self.expr_of_annotation(statement.annotation)
+                value, qualifiers = annotation_expr.maybe_unqualify(
+                    {Qualifier.ClassVar, Qualifier.Final, Qualifier.ReadOnly}
+                )
+                if value is None or Qualifier.ClassVar in qualifiers:
+                    continue
+                attribute_polarity = (
+                    1
+                    if frozen_dataclass
+                    or Qualifier.Final in qualifiers
+                    or Qualifier.ReadOnly in qualifiers
+                    else 0
+                )
+                self._collect_type_param_polarities_from_value(
+                    value, type_param_polarities, polarity=attribute_polarity
+                )
+
+        inferred_type_params = []
+        for type_param in type_params:
+            polarities = type_param_polarities[type_param.typevar]
+            if polarities == {1}:
+                variance = Variance.COVARIANT
+            elif polarities == {-1}:
+                variance = Variance.CONTRAVARIANT
+            else:
+                variance = Variance.INVARIANT
+            inferred_type_params.append(replace(type_param, variance=variance))
+        return inferred_type_params
+
+    def _align_type_params_with_runtime_class(
+        self, class_obj: type | None, type_params: Sequence[TypeVarValue]
+    ) -> Sequence[TypeVarValue]:
+        if class_obj is None:
+            return type_params
+        runtime_type_params = safe_getattr(class_obj, "__type_params__", ())
+        if len(runtime_type_params) != len(type_params):
+            return type_params
+        aligned = []
+        for type_param, runtime_type_param in zip(type_params, runtime_type_params):
+            aligned.append(replace(type_param, typevar=runtime_type_param))
+        return aligned
+
+    def _type_params_from_base_values(
+        self, base_values: Sequence[Value]
+    ) -> Sequence[TypeVarValue]:
+        seen: set[object] = set()
+        type_params: list[TypeVarValue] = []
+        for base in base_values:
+            for subval in flatten_values(base):
+                for walked in subval.walk_values():
+                    if not isinstance(walked, TypeVarValue):
+                        continue
+                    if walked.typevar in seen:
+                        continue
+                    seen.add(walked.typevar)
+                    type_params.append(walked)
+        return type_params
 
     def _get_local_object(self, name: str, node: ast.AST) -> Value:
         if self.scopes.scope_type() == ScopeType.module_scope:
