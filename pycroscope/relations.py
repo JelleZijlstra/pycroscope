@@ -749,9 +749,18 @@ def _has_relation(
         if isinstance(right, TypedValue):
             if left.literal_only and not right.literal_only:
                 return CanAssignError(f"{right} is not a literal")
-            return left_tobj.can_assign(left, right, ctx)
+            right_for_check: TypedValue | KnownValue | SubclassValue | AnnotatedValue
+            if isinstance(original_right, AnnotatedValue):
+                right_for_check = original_right
+            else:
+                right_for_check = right
+            return left_tobj.can_assign(left, right_for_check, ctx)
         elif isinstance(right, KnownValue):
-            can_assign = left_tobj.can_assign(left, right, ctx)
+            if isinstance(original_right, AnnotatedValue):
+                right_for_check = original_right
+            else:
+                right_for_check = right
+            can_assign = left_tobj.can_assign(left, right_for_check, ctx)
             if isinstance(can_assign, CanAssignError):
                 if left_tobj.is_instance(right.val):
                     return {}

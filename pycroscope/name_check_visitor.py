@@ -85,7 +85,7 @@ from .annotations import (
 from .arg_spec import ArgSpecCache, IgnoredCallees, UnwrapClass, is_dot_asynq_function
 from .asynq_checker import AsynqChecker
 from .boolability import Boolability, get_boolability
-from .checker import Checker, CheckerAttrContext
+from .checker import EXCLUDED_PROTOCOL_MEMBERS, Checker, CheckerAttrContext
 from .error_code import Error, ErrorCode
 from .extensions import (
     ParameterTypeGuard,
@@ -1188,6 +1188,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     _argspec_to_retval: dict[int, tuple[Value, MaybeSignature]]
     _pending_overload_blocks: dict[int, _PendingOverloadBlock]
     _synthetic_classes_by_name: dict[str, SyntheticClassObjectValue]
+    _synthetic_abstract_methods: dict[str, set[str]]
     _synthetic_final_methods: dict[str, set[str]]
     _method_cache: dict[type[ast.AST], Callable[[Any], Value | None]]
     _name_node_to_statement: dict[ast.AST, ast.AST | None] | None
@@ -1343,6 +1344,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         self._argspec_to_retval = {}
         self._pending_overload_blocks = {}
         self._synthetic_classes_by_name = {}
+        self._synthetic_abstract_methods = {}
         self._synthetic_final_methods = {}
         self._method_cache = {}
         self._statement_types = set()
@@ -2188,6 +2190,8 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             else:
                 type_param_values = []
             base_values = self._generic_visit_list(node.bases)
+            if self._is_checking():
+                self._check_protocol_base_validity(node, base_values)
             if any(self._is_enum_base_value(base) for base in base_values):
                 self.enum_class_keys.add(class_key)
             self._check_for_final_base_classes(node, base_values)
@@ -2235,6 +2239,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 )
                 self._synthetic_classes_by_name[synthetic_fq_name] = synthetic_class
                 if self._is_checking():
+                    self._synthetic_abstract_methods[synthetic_fq_name] = set()
                     # Bind the class name while checking its body so references
                     # like "return C.attr" or string annotations mentioning C
                     # resolve even when no runtime class object exists.
@@ -2270,6 +2275,14 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             ):
                 value, class_scope_values = self._visit_class_and_get_value(
                     node, class_scope_object
+                )
+            if (
+                self._is_checking()
+                and isinstance(class_scope_object, str)
+                and class_scope_values is not None
+            ):
+                self._register_synthetic_protocol_members(
+                    node, class_scope_object, base_values, class_scope_values
                 )
             if type_param_values and synthetic_typeddict is None:
                 inferred_type_params = self._infer_class_type_param_variances(
@@ -3393,6 +3406,82 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     type_params.append(walked)
         return type_params
 
+    def _check_protocol_base_validity(
+        self, node: ast.ClassDef, base_values: Sequence[Value]
+    ) -> None:
+        if not any(self._is_protocol_base(base_value) for base_value in base_values):
+            return
+        for base_node, base_value in zip(node.bases, base_values):
+            if self._is_protocol_base(base_value):
+                continue
+            if self._is_valid_non_protocol_base_for_protocol(base_value):
+                continue
+            self._show_error_if_checking(
+                base_node,
+                "Protocols can only inherit from protocol bases",
+                error_code=ErrorCode.invalid_base,
+            )
+
+    def _is_valid_non_protocol_base_for_protocol(self, base_value: Value) -> bool:
+        for subval in flatten_values(replace_fallback(base_value)):
+            if isinstance(subval, SyntheticClassObjectValue):
+                subval = subval.class_type
+            if isinstance(subval, TypedValue):
+                typ = subval.typ
+                if is_typing_name(typ, "Generic"):
+                    return True
+                if isinstance(typ, str):
+                    return self.checker.make_type_object(typ).is_protocol
+                if isinstance(typ, type):
+                    # For runtime classes, let runtime semantics decide.
+                    return True
+                continue
+            if isinstance(subval, KnownValue):
+                if is_typing_name(subval.val, "Generic"):
+                    return True
+                if isinstance(subval.val, type):
+                    # For runtime classes, let runtime semantics decide.
+                    return True
+        return True
+
+    def _register_synthetic_protocol_members(
+        self,
+        node: ast.ClassDef,
+        class_key: str,
+        base_values: Sequence[Value],
+        class_scope_values: Mapping[str, Value],
+    ) -> None:
+        if not any(self._is_protocol_base(base_value) for base_value in base_values):
+            return
+        protocol_members = {
+            name
+            for name in class_scope_values
+            if not name.startswith("%") and name not in EXCLUDED_PROTOCOL_MEMBERS
+        }
+        for stmt in node.body:
+            if (
+                isinstance(stmt, ast.AnnAssign)
+                and isinstance(stmt.target, ast.Name)
+                and stmt.target.id not in EXCLUDED_PROTOCOL_MEMBERS
+            ):
+                protocol_members.add(stmt.target.id)
+        self.checker.register_synthetic_protocol_members(class_key, protocol_members)
+
+    @staticmethod
+    def _is_protocol_base(base_value: Value) -> bool:
+        for subval in flatten_values(replace_fallback(base_value)):
+            if isinstance(subval, SyntheticClassObjectValue):
+                subval = subval.class_type
+            if isinstance(subval, KnownValue):
+                typ: object = subval.val
+            elif isinstance(subval, TypedValue):
+                typ = subval.typ
+            else:
+                continue
+            if is_typing_name(typ, "Protocol"):
+                return True
+        return False
+
     def _get_local_object(self, name: str, node: ast.AST) -> Value:
         if self.scopes.scope_type() == ScopeType.module_scope:
             return self.scopes.get(name, node, self.state, can_assign_ctx=self)
@@ -3930,6 +4019,18 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             self._synthetic_final_methods.setdefault(self.current_class, set()).add(
                 node.name
             )
+        if (
+            self._is_checking()
+            and isinstance(self.current_class, str)
+            and self.scopes.scope_type() is ScopeType.class_scope
+        ):
+            abstract_methods = self._synthetic_abstract_methods.setdefault(
+                self.current_class, set()
+            )
+            if FunctionDecorator.abstractmethod in info.decorator_kinds:
+                abstract_methods.add(node.name)
+            else:
+                abstract_methods.discard(node.name)
 
         if info.return_annotation is not None:
             assert node.returns is not None
@@ -8444,6 +8545,20 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             return AnyValue(AnySource.error)
 
         self._check_invalid_typevar_bound(callee_wrapped, keywords, node=node)
+
+        if (
+            isinstance(callee_wrapped, SyntheticClassObjectValue)
+            and isinstance(callee_wrapped.class_type, TypedValue)
+            and isinstance(callee_wrapped.class_type.typ, str)
+            and self._synthetic_abstract_methods.get(callee_wrapped.class_type.typ)
+        ):
+            if node is not None:
+                self._show_error_if_checking(
+                    node,
+                    f"Cannot instantiate abstract class {callee_wrapped.name}",
+                    error_code=ErrorCode.incompatible_call,
+                )
+            return AnyValue(AnySource.error)
 
         extended_argspec = self.signature_from_value(callee_wrapped, node)
         if extended_argspec is ANY_SIGNATURE:
