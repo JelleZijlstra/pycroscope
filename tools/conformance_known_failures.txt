@@ -80,7 +80,6 @@ protocols_class_objects
 protocols_definition
 protocols_explicit
 protocols_generic
-protocols_merging
 protocols_recursive
 protocols_runtime_checkable
 protocols_subtyping

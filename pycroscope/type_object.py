@@ -21,13 +21,16 @@ from pycroscope.signature import (
 from .safe import safe_getattr, safe_in, safe_isinstance, safe_issubclass
 from .value import (
     UNINITIALIZED_VALUE,
+    AnnotatedValue,
     AnySource,
     AnyValue,
     BoundsMap,
+    CallableValue,
     CanAssign,
     CanAssignContext,
     CanAssignError,
     KnownValue,
+    NotAGradualType,
     SelfT,
     SubclassValue,
     TypedValue,
@@ -107,10 +110,13 @@ class TypeObject:
     def can_assign(
         self,
         self_val: Value,
-        other_val: KnownValue | TypedValue | SubclassValue,
+        other_val: KnownValue | TypedValue | SubclassValue | AnnotatedValue,
         ctx: CanAssignContext,
     ) -> CanAssign:
-        other = other_val.get_type_object(ctx)
+        other_basic = replace_fallback(other_val)
+        if not isinstance(other_basic, (KnownValue, TypedValue, SubclassValue)):
+            return CanAssignError(f"Cannot assign {other_val} to {self}")
+        other = other_basic.get_type_object(ctx)
         if other.is_universally_assignable:
             return {}
         if isinstance(self.typ, super):
@@ -142,9 +148,11 @@ class TypeObject:
                 return CanAssignError(
                     f"Cannot assign super object {other_val} to protocol {self}"
                 )
-            bounds_map = self._protocol_positive_cache.get(other_val)
-            if bounds_map is not None:
-                return bounds_map
+            use_cache = not isinstance(other_val, AnnotatedValue)
+            if use_cache:
+                bounds_map = self._protocol_positive_cache.get(other_basic)
+                if bounds_map is not None:
+                    return bounds_map
             # This is a guard against infinite recursion if the Protocol is recursive
             if ctx.can_assume_compatibility(self, other):
                 return {}
@@ -158,8 +166,8 @@ class TypeObject:
                         if not isinstance(subresult, CanAssignError):
                             result = subresult
                             break
-            if not isinstance(result, CanAssignError):
-                self._protocol_positive_cache[other_val] = result
+            if use_cache and not isinstance(result, CanAssignError):
+                self._protocol_positive_cache[other_basic] = result
             return result
 
     def _is_callable_protocol_assignment_target(self, other: "TypeObject") -> bool:
@@ -171,7 +179,7 @@ class TypeObject:
     def _can_assign_callable_protocol(
         self,
         self_val: Value,
-        other_val: KnownValue | TypedValue | SubclassValue,
+        other_val: KnownValue | TypedValue | SubclassValue | AnnotatedValue,
         ctx: CanAssignContext,
     ) -> CanAssign:
         expected_sig = self._as_concrete_signature(
@@ -200,11 +208,21 @@ class TypeObject:
     ) -> CanAssign:
         from .relations import Relation, has_relation
 
+        other_basic = replace_fallback(other_val)
+        if isinstance(other_basic, (KnownValue, TypedValue, SubclassValue)):
+            other_type_obj = other_basic.get_type_object(ctx)
+        else:
+            other_type_obj = None
+
         bounds_maps = []
         for member in self.protocol_members:
             expected = ctx.get_attribute_from_value(
                 self_val, member, prefer_typeshed=True
             )
+            if expected is UNINITIALIZED_VALUE:
+                # In static fallback mode, synthetic protocol members may not have
+                # a retrievable attribute type. Keep enforcing member presence.
+                expected = AnyValue(AnySource.inference)
             expected = expected.substitute_typevars({SelfT: other_val})
             # For __call__, we check compatibility with the other object itself.
             if member == "__call__":
@@ -223,6 +241,16 @@ class TypeObject:
                 actual = AnyValue(AnySource.inference)
             else:
                 actual = ctx.get_attribute_from_value(other_val, member)
+                actual = _maybe_bind_dunder_protocol_member(
+                    actual, member, other_val, ctx
+                )
+                if (
+                    actual is UNINITIALIZED_VALUE
+                    and other_type_obj is not None
+                    and other_type_obj.is_protocol
+                    and member in other_type_obj.protocol_members
+                ):
+                    actual = AnyValue(AnySource.inference)
             if actual is UNINITIALIZED_VALUE:
                 can_assign = CanAssignError(f"{other_val} has no attribute {member!r}")
             else:
@@ -321,6 +349,31 @@ class TypeObject:
         if len(seen) == len(self.protocol_members):
             return members
         return [*members, *sorted(self.protocol_members - seen)]
+
+
+def _maybe_bind_dunder_protocol_member(
+    value: Value, member: str, self_value: Value, ctx: CanAssignContext
+) -> Value:
+    if not (member.startswith("__") and member.endswith("__")):
+        return value
+    if value is UNINITIALIZED_VALUE:
+        return value
+    try:
+        unwrapped = replace_fallback(value)
+    except NotAGradualType:
+        return value
+    if not isinstance(unwrapped, CallableValue):
+        return value
+    signature = unwrapped.signature
+    if isinstance(signature, BoundMethodSignature):
+        return value
+    if isinstance(signature, (Signature, OverloadedSignature)):
+        bound = signature.bind_self(
+            self_value=self_value, self_annotation_value=self_value, ctx=ctx
+        )
+        if bound is not None:
+            return CallableValue(bound, unwrapped.typ)
+    return value
 
 
 def _should_use_permissive_dunder_hash(val: Value) -> bool:

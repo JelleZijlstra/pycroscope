@@ -106,6 +106,9 @@ class Checker:
     synthetic_generic_bases: dict[type | str, _SyntheticGenericBases] = field(
         default_factory=dict, init=False, repr=False
     )
+    synthetic_protocol_members: dict[type | str, set[str]] = field(
+        default_factory=dict, init=False, repr=False
+    )
     _relation_cache: dict[object, object] = field(
         default_factory=dict, init=False, repr=False
     )
@@ -180,7 +183,9 @@ class Checker:
             )
             is_protocol = any(is_typing_name(base, "Protocol") for base in bases)
             if is_protocol:
-                protocol_members = self._get_protocol_members(bases)
+                protocol_members = self._get_protocol_members(
+                    bases
+                ) | self._get_synthetic_protocol_members(typ)
             else:
                 protocol_members = set()
             return TypeObject(
@@ -214,6 +219,7 @@ class Checker:
                         _extract_protocol_members(base) for base in bases
                     )
                 )
+                members |= self._get_synthetic_protocol_members(typ)
                 return TypeObject(
                     typ, additional_bases, is_protocol=True, protocol_members=members
                 )
@@ -240,12 +246,15 @@ class Checker:
         return {base.typ for base in base_values if isinstance(base, TypedValue)}
 
     def _get_protocol_members(self, bases: Iterable[type | str]) -> set[str]:
-        return {
+        members = {
             attr
             for base in bases
             for attr in self.ts_finder.get_all_attributes(base)
             if attr != "__slots__"
         }
+        for base in bases:
+            members |= self._get_synthetic_protocol_members(base)
+        return members
 
     def get_generic_bases(
         self, typ: type | str, generic_args: Sequence[Value] = ()
@@ -341,6 +350,18 @@ class Checker:
             self.synthetic_generic_bases[key] = merged_copy
         self.type_object_cache.pop(typ, None)
 
+    def register_synthetic_protocol_members(
+        self, typ: type | str, members: set[str]
+    ) -> None:
+        cleaned_members = {
+            member
+            for member in members
+            if member not in EXCLUDED_PROTOCOL_MEMBERS and member != "__slots__"
+        }
+        for key in self._iter_generic_override_keys(typ):
+            self.synthetic_protocol_members[key] = set(cleaned_members)
+            self.type_object_cache.pop(key, None)
+
     @staticmethod
     def _runtime_type_generic_alias(typ: type) -> str:
         return f"{typ.__module__}.{typ.__qualname__}"
@@ -364,6 +385,16 @@ class Checker:
                         continue
                 return bases
         return None
+
+    def _get_synthetic_protocol_members(self, typ: type | str) -> set[str]:
+        members: set[str] = set()
+        if isinstance(typ, type):
+            members |= self.synthetic_protocol_members.get(typ, set())
+            members |= self.synthetic_protocol_members.get(
+                self._runtime_type_generic_alias(typ), set()
+            )
+            return members
+        return self.synthetic_protocol_members.get(typ, set())
 
     def get_signature(
         self, obj: object, is_asynq: bool = False

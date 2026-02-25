@@ -2485,6 +2485,76 @@ class TestAnnAssign(TestNameCheckVisitorBase):
         def f() -> None:  # E: invalid_annotation
             pass
 
+    @assert_passes(allow_import_failures=True)
+    def test_protocol_merging_in_unimportable_module(self):
+        from abc import abstractmethod
+        from collections.abc import Sized
+        from typing import Protocol
+
+        import does_not_exist  # noqa: F401
+
+        class SizedAndClosable1(Sized, Protocol):
+            def close(self) -> None: ...
+
+        class SizedAndClosable2(Protocol):
+            def __len__(self) -> int: ...
+
+            def close(self) -> None: ...
+
+        class SCConcrete1:
+            def __len__(self) -> int:
+                return 0
+
+            def close(self) -> None:
+                pass
+
+        class SCConcrete2:
+            def close(self) -> None:
+                pass
+
+        s1: SizedAndClosable1 = SCConcrete1()
+        s2: SizedAndClosable2 = SCConcrete1()
+
+        bad1: SizedAndClosable1 = SCConcrete2()  # E: incompatible_assignment
+        bad2: SizedAndClosable2 = SCConcrete2()  # E: incompatible_assignment
+
+        def accepts_both(p1: SizedAndClosable1, p2: SizedAndClosable2) -> None:
+            merged1: SizedAndClosable2 = p1
+            merged2: SizedAndClosable1 = p2
+            print(merged1, merged2)
+
+        class SizedClosableFlush(SizedAndClosable2, Protocol):
+            def flush(self) -> None: ...
+
+        class NotAProtocol(SizedAndClosable1):
+            pass
+
+        class BadProto(NotAProtocol, Protocol):  # E: invalid_base
+            ...
+
+        class FlushOnly:
+            def flush(self) -> None:
+                pass
+
+        class WithFlush:
+            def __len__(self) -> int:
+                return 0
+
+            def close(self) -> None:
+                pass
+
+            def flush(self) -> None:
+                pass
+
+        class AbstractSized(SizedAndClosable1):
+            @abstractmethod
+            def close(self) -> None:  # E: incompatible_override
+                raise NotImplementedError
+
+        x = AbstractSized()  # E: incompatible_call
+        f1: SizedClosableFlush = WithFlush()
+        f2: SizedClosableFlush = FlushOnly()  # E: incompatible_assignment
+
     @assert_passes()
     def test_inconsistent_type(self):
         def capybara():
