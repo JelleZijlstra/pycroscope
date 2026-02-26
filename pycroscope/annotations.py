@@ -99,6 +99,8 @@ from .value import (
     ParameterTypeGuardExtension,
     ParamSpecArgsValue,
     ParamSpecKwargsValue,
+    PartialValue,
+    PartialValueOperation,
     Qualifier,
     SelfTVV,
     SequenceValue,
@@ -130,6 +132,9 @@ ASYNC_CONTEXT_MANAGER_TYPES = (
     typing.AsyncContextManager,
     contextlib.AbstractAsyncContextManager,
 )
+_SUBSCRIPT_RUNTIME_TYPE = TypedValue(type(list[int]))
+_UNION_RUNTIME_TYPE = TypedValue(type(int | str))
+_UNPACK_RUNTIME_TYPE = TypedValue(type(typing_extensions.Unpack[int]))
 
 
 @dataclass
@@ -839,10 +844,12 @@ def _eval_forward_ref(val: str, ctx: Context) -> AnnotationExpr:
 def _annotation_expr_from_value(value: Value, ctx: Context) -> AnnotationExpr:
     if isinstance(value, KnownValue):
         return _annotation_expr_from_runtime(value.val, ctx)
-    elif isinstance(value, _SubscriptedValue):
-        return _annotation_expr_from_subscripted_value(
-            value.root, value.root_node, value.members, ctx
-        )
+    elif isinstance(value, PartialValue):
+        if value.operation is PartialValueOperation.SUBSCRIPT:
+            return _annotation_expr_from_subscripted_value(
+                value.root, value.node, value.members, ctx
+            )
+        return AnnotationExpr(ctx, _type_from_value(value, ctx))
     else:
         return AnnotationExpr(ctx, _type_from_value(value, ctx))
 
@@ -862,8 +869,10 @@ def _type_from_value(value: Value, ctx: Context) -> Value:
         return value
     elif isinstance(value, AnnotatedValue):
         return _type_from_value(value.value, ctx)
-    elif isinstance(value, _SubscriptedValue):
-        return _type_from_subscripted_value(value.root, value.members, ctx)
+    elif isinstance(value, PartialValue):
+        if value.operation is PartialValueOperation.SUBSCRIPT:
+            return _type_from_subscripted_value(value.root, value.members, ctx)
+        return value.get_fallback_value()
     elif isinstance(value, AnyValue):
         return value
     elif isinstance(value, InputSigValue):
@@ -874,7 +883,7 @@ def _type_from_value(value: Value, ctx: Context) -> Value:
 
 
 def _annotation_expr_from_subscripted_value(
-    root: Value | None, root_node: ast.AST, members: Sequence[Value], ctx: Context
+    root: Value, node: ast.AST, members: Sequence[Value], ctx: Context
 ) -> AnnotationExpr:
     if not isinstance(root, KnownValue):
         val = _type_from_subscripted_value(root, members, ctx)
@@ -901,20 +910,20 @@ def _annotation_expr_from_subscripted_value(
                 ctx.show_error(f"{qualifier.name}[] requires a single argument")
                 return AnnotationExpr(ctx, AnyValue(AnySource.error))
             inner = _annotation_expr_from_value(members[0], ctx)
-            return inner.add_qualifier(qualifier, root_node)
+            return inner.add_qualifier(qualifier, node)
     val = _type_from_subscripted_value(root, members, ctx)
     return AnnotationExpr(ctx, val)
 
 
 def _type_from_subscripted_value(
-    root: Value | None, members: Sequence[Value], ctx: Context
+    root: Value, members: Sequence[Value], ctx: Context
 ) -> Value:
     if isinstance(root, GenericValue):
         if len(root.args) == len(members):
             return GenericValue(
                 root.typ, [_type_from_value(member, ctx) for member in members]
             )
-    if isinstance(root, _SubscriptedValue):
+    if isinstance(root, PartialValue):
         root_type = _type_from_value(root, ctx)
         return _type_from_subscripted_value(root_type, members, ctx)
     elif isinstance(root, MultiValuedValue):
@@ -1150,19 +1159,6 @@ class _DefaultContext(Context):
 
 
 @dataclass(frozen=True)
-class _SubscriptedValue(AnyValue):
-    """Represents certain values encountered while parsing an AST directly, primarily in stubs.
-
-    Ideally should not exist but currently it helps support some use cases.
-
-    """
-
-    root: Value | None
-    root_node: ast.AST
-    members: tuple[Value, ...]
-
-
-@dataclass(frozen=True)
 class DecoratorValue(Value):
     decorator: object
     args: tuple[Value, ...]
@@ -1193,7 +1189,13 @@ class _Visitor(ast.NodeVisitor):
             members = tuple(members)
         else:
             members = (index,)
-        return _SubscriptedValue(AnySource.inference, value, node.value, members)
+        return PartialValue(
+            PartialValueOperation.SUBSCRIPT,
+            value,
+            node.value,
+            members,
+            _SUBSCRIPT_RUNTIME_TYPE,
+        )
 
     def visit_Attribute(self, node: ast.Attribute) -> Value | None:
         root_value = self.visit(node.value)
@@ -1233,19 +1235,24 @@ class _Visitor(ast.NodeVisitor):
 
     def visit_BinOp(self, node: ast.BinOp) -> Value | None:
         if isinstance(node.op, ast.BitOr):
-            return _SubscriptedValue(
-                AnySource.inference,
+            return PartialValue(
+                PartialValueOperation.SUBSCRIPT,
                 KnownValue(Union),
                 node,
                 (self.visit(node.left), self.visit(node.right)),
+                _UNION_RUNTIME_TYPE,
             )
         else:
             return None
 
     def visit_Starred(self, node: ast.Starred) -> Value:
         value = self.visit(node.value)
-        return _SubscriptedValue(
-            AnySource.inference, KnownValue(typing_extensions.Unpack), node, (value,)
+        return PartialValue(
+            PartialValueOperation.SUBSCRIPT,
+            KnownValue(typing_extensions.Unpack),
+            node,
+            (value,),
+            _UNPACK_RUNTIME_TYPE,
         )
 
     def visit_UnaryOp(self, node: ast.UnaryOp) -> Value | None:
@@ -1394,9 +1401,11 @@ def _is_unpack_annotation_member(member: Value) -> bool:
     if isinstance(member, KnownValue):
         origin = get_origin(member.val)
         return is_typing_name(origin, "Unpack")
-    if isinstance(member, _SubscriptedValue):
-        return isinstance(member.root, KnownValue) and is_typing_name(
-            member.root.val, "Unpack"
+    if isinstance(member, PartialValue):
+        return (
+            member.operation is PartialValueOperation.SUBSCRIPT
+            and isinstance(member.root, KnownValue)
+            and is_typing_name(member.root.val, "Unpack")
         )
     return False
 
@@ -1624,7 +1633,8 @@ def _make_callable_from_value(
         sig = Signature.make(params, return_annotation, is_asynq=is_asynq)
         return CallableValue(sig)
     elif (
-        isinstance(args, _SubscriptedValue)
+        isinstance(args, PartialValue)
+        and args.operation is PartialValueOperation.SUBSCRIPT
         and isinstance(args.root, KnownValue)
         and is_typing_name(args.root.val, "Concatenate")
     ):

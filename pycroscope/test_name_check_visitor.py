@@ -306,6 +306,36 @@ class TestImportFailureHandling(TestNameCheckVisitorBase):
         z.nonexistent_attribute
 
 
+class TestPartialValueInference(TestNameCheckVisitorBase):
+    @assert_passes()
+    def test_specialform_getitem_infers_partial_value(self):
+        import ast
+        import typing
+
+        from pycroscope.value import (
+            AnySource,
+            AnyValue,
+            KnownValue,
+            PartialValue,
+            PartialValueOperation,
+            SubclassValue,
+            TypedValue,
+        )
+
+        expected = PartialValue(
+            PartialValueOperation.SUBSCRIPT,
+            KnownValue(typing.Union),
+            ast.parse("typing.Union", mode="eval").body,
+            (SubclassValue(TypedValue(int)),),
+            AnyValue(AnySource.inference),
+        )
+
+        def f(x: type[int]):
+            y = typing._SpecialForm.__getitem__(typing.Union, x)
+            assert_is_value(y, expected)
+            return y
+
+
 class TestImportFailureHandlingCodeSamples(TestNameCheckVisitorBase):
     @assert_passes(allow_import_failures=True)
     def test_overload_consistency_after_import_failure(self):

@@ -55,6 +55,7 @@ from pycroscope.value import (
     NotAGradualType,
     ParamSpecArgsValue,
     ParamSpecKwargsValue,
+    PartialValue,
     PredicateValue,
     SelfT,
     SequenceValue,
@@ -323,6 +324,14 @@ def _has_relation(
     if isinstance(right, TypeAliasValue):
         right_inner = gradualize(right.get_value())
         return _has_relation(left, right_inner, relation, ctx)
+
+    # PartialValue
+    if isinstance(left, PartialValue):
+        left_inner = gradualize(left.get_fallback_value())
+        return _has_relation(left_inner, right, relation, ctx)
+    if isinstance(right, PartialValue):
+        right_inner = gradualize(right.get_fallback_value())
+        return _has_relation(left, right_inner, relation, ctx, original_right=right)
 
     # AnnotatedValue
     if isinstance(left, AnnotatedValue):
@@ -880,6 +889,13 @@ def _extract_type_form(value: Value, ctx: CanAssignContext) -> Value | CanAssign
     if isinstance(value, AnnotatedValue):
         # Annotated metadata is ignored for implicit TypeForm extraction.
         return _extract_type_form(value.value, ctx)
+    if isinstance(value, PartialValue):
+        from pycroscope.annotations import type_from_value
+
+        extracted = type_from_value(value, visitor=ctx, suppress_errors=True)
+        if extracted != AnyValue(AnySource.error):
+            return _extract_type_form(extracted, ctx)
+        return _extract_type_form(value.get_fallback_value(), ctx)
     if isinstance(value, MultiValuedValue):
         vals: list[Value] = []
         for subval in value.vals:
@@ -1939,6 +1955,7 @@ def _intersect_values_inner(
     wrapper_types = (
         AnnotatedValue,
         NewTypeValue,
+        PartialValue,
         ParamSpecArgsValue,
         ParamSpecKwargsValue,
         TypeVarValue,
@@ -1964,6 +1981,7 @@ def _intersect_wrapper(
     left: (
         NewTypeValue
         | AnnotatedValue
+        | PartialValue
         | ParamSpecArgsValue
         | ParamSpecKwargsValue
         | TypeVarValue

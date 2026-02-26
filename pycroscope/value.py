@@ -479,6 +479,46 @@ class AnyValue(Value):
         return None  # always overlaps
 
 
+class PartialValueOperation(enum.Enum):
+    SUBSCRIPT = 1
+
+
+@dataclass(frozen=True)
+class PartialValue(Value):
+    """Represents a partially evaluated expression."""
+
+    operation: PartialValueOperation
+    root: Value
+    node: ast.AST = field(compare=False, hash=False)
+    members: tuple[Value, ...]
+    runtime_value: Value
+
+    def __str__(self) -> str:
+        members = ", ".join(str(member) for member in self.members)
+        return f"{self.runtime_value} (partial from {self.root}[{members}])"
+
+    def get_fallback_value(self) -> Value:
+        return self.runtime_value
+
+    def substitute_typevars(self, typevars: TypeVarMap) -> Value:
+        return PartialValue(
+            operation=self.operation,
+            root=self.root.substitute_typevars(typevars),
+            node=self.node,
+            members=tuple(
+                member.substitute_typevars(typevars) for member in self.members
+            ),
+            runtime_value=self.runtime_value.substitute_typevars(typevars),
+        )
+
+    def walk_values(self) -> Iterable[Value]:
+        yield self
+        yield from self.root.walk_values()
+        for member in self.members:
+            yield from member.walk_values()
+        yield from self.runtime_value.walk_values()
+
+
 UNRESOLVED_VALUE = AnyValue(AnySource.default)
 """The default instance of :class:`AnyValue`.
 
@@ -2521,6 +2561,7 @@ GradualType: typing_extensions.TypeAlias = (
     | ParamSpecArgsValue
     | ParamSpecKwargsValue
     | AnnotatedValue
+    | PartialValue
 )
 
 GRADUAL_TYPE = GradualType.__args__

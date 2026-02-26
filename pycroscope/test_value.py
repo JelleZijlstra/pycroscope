@@ -15,7 +15,7 @@ from pycroscope.test_node_visitor import skip_if_not_installed
 from . import tests, value
 from .checker import Checker
 from .name_check_visitor import NameCheckVisitor
-from .relations import intersect_values
+from .relations import _extract_type_form, intersect_values
 from .signature import ELLIPSIS_PARAM, Signature
 from .stacked_scopes import Composite
 from .value import (
@@ -64,6 +64,38 @@ def test_any_value() -> None:
     assert_can_assign(any, MultiValuedValue([KnownValue(1), TypedValue(int)]))
     assert str(any) == "Any[unannotated]"
     assert str(AnyValue(AnySource.default)) == "Any"
+
+
+def test_partial_value_fallback() -> None:
+    node = ast.parse("list[int]", mode="eval").body
+    assert isinstance(node, ast.Subscript)
+    partial = value.PartialValue(
+        operation=value.PartialValueOperation.SUBSCRIPT,
+        root=KnownValue(list),
+        node=node.value,
+        members=(TypedValue(int),),
+        runtime_value=KnownValue(list[int]),
+    )
+
+    assert partial.get_fallback_value() == KnownValue(list[int])
+    assert_can_assign(TypedValue(types.GenericAlias), partial)
+    assert_cannot_assign(TypedValue(int), partial)
+
+
+def test_extract_type_form_from_partial_value() -> None:
+    from typing_extensions import TypeForm
+
+    node = ast.parse("TypeForm[int]", mode="eval").body
+    assert isinstance(node, ast.Subscript)
+    partial = value.PartialValue(
+        operation=value.PartialValueOperation.SUBSCRIPT,
+        root=KnownValue(TypeForm),
+        node=node.value,
+        members=(KnownValue(int),),
+        runtime_value=AnyValue(AnySource.inference),
+    )
+    extracted = _extract_type_form(partial, CTX)
+    assert extracted == TypedValue(int)
 
 
 def test_known_value() -> None:
