@@ -144,6 +144,17 @@ class TestTypeForm(TestNameCheckVisitorBase):
         bad1, bad2, bad3, bad4, bad5, bad6, bad7, bad8, bad9, bad10, bad11
 
     @assert_passes()
+    def test_union_typevar_typeform_assignment(self):
+        from typing import TypeVar, Union
+
+        from typing_extensions import TypeForm
+
+        T = TypeVar("T")
+
+        bad: TypeForm[int] = Union[T, str]  # E: incompatible_assignment
+        assert bad
+
+    @assert_passes()
     def test_typeform_any_parameter(self):
         from typing import Any
 

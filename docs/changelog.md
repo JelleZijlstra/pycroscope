@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Replace the internal `_SubscriptedValue` with a public `PartialValue` type that records partial expression evaluation details (including operation kind and runtime fallback value), improving extensibility for partially evaluated type expressions.
 - Improve protocol checking in import-failure fallback mode by preserving synthetic protocol members and restoring protocol-merging checks (including invalid protocol bases and abstract-class instantiation diagnostics), which fixes conformance coverage for `protocols_merging.py`.
 - Infer variance for PEP 695 class type parameters from class member usage and generic base classes, improving assignment checks for covariant and contravariant generics.
 - Accept union arguments for constrained `TypeVar` parameters when each union member matches at least one constraint, including calls like `re.compile(pattern)` where `pattern` is `str | bytes`.

@@ -15,7 +15,7 @@ import pycroscope
 from . import runtime
 from .analysis_lib import Sentinel
 from .annotated_types import MaxLen, MinLen
-from .annotations import _SubscriptedValue, annotation_expr_from_value, type_from_value
+from .annotations import annotation_expr_from_value, type_from_value
 from .error_code import ErrorCode
 from .extensions import assert_type, reveal_locals, reveal_type
 from .format_strings import parse_format_string
@@ -74,6 +74,8 @@ from .value import (
     KVPair,
     MultiValuedValue,
     ParameterTypeGuardExtension,
+    PartialValue,
+    PartialValueOperation,
     PredicateValue,
     Qualifier,
     SequenceValue,
@@ -481,34 +483,40 @@ def _runtime_subscript_argument(value: Value) -> object:
     return _UNKNOWN_SUBSCRIPT_ARGUMENT
 
 
+def _subscript_members(value: Value) -> tuple[Value, ...]:
+    if isinstance(value, SequenceValue):
+        members = value.get_member_sequence()
+        if members is not None:
+            return tuple(members)
+    return (value,)
+
+
+def _runtime_subscript_value(root: KnownValue, parameters: Value) -> Value:
+    runtime_arg = _runtime_subscript_argument(parameters)
+    if runtime_arg is _UNKNOWN_SUBSCRIPT_ARGUMENT:
+        return AnyValue(AnySource.inference)
+    try:
+        return KnownValue(root.val[runtime_arg])
+    except Exception:
+        return AnyValue(AnySource.inference)
+
+
 def _typing_special_form_getitem_impl(ctx: CallContext) -> Value:
     self_value = ctx.vars["self"]
     if not isinstance(self_value, KnownValue):
         return AnyValue(AnySource.inference)
     parameters = ctx.vars["parameters"]
     if ctx.node is not None:
-        if isinstance(parameters, SequenceValue):
-            members = parameters.get_member_sequence()
-            if members is not None:
-                return _SubscriptedValue(
-                    AnySource.inference, self_value, ctx.node, tuple(members)
-                )
-        return _SubscriptedValue(
-            AnySource.inference, self_value, ctx.node, (parameters,)
+        return PartialValue(
+            PartialValueOperation.SUBSCRIPT,
+            self_value,
+            ctx.node,
+            _subscript_members(parameters),
+            _runtime_subscript_value(self_value, parameters),
         )
     runtime_arg = _runtime_subscript_argument(parameters)
     if runtime_arg is _UNKNOWN_SUBSCRIPT_ARGUMENT:
-        if ctx.node is None:
-            return AnyValue(AnySource.inference)
-        if isinstance(parameters, SequenceValue):
-            members = parameters.get_member_sequence()
-            if members is not None:
-                return _SubscriptedValue(
-                    AnySource.inference, self_value, ctx.node, tuple(members)
-                )
-        return _SubscriptedValue(
-            AnySource.inference, self_value, ctx.node, (parameters,)
-        )
+        return AnyValue(AnySource.inference)
     try:
         return KnownValue(self_value.val[runtime_arg])
     except Exception:
