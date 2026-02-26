@@ -68,11 +68,38 @@ class TestIntersections(TestNameCheckVisitorBase):
                 assert_type(x, Never)
 
                 assert_type(y, Intersection[A, B])
-                # TODO: fix this
-                assert_type(
-                    y.x,  # E: undefined_attribute  # E: inference_failure
-                    Intersection[int, Any],
-                )
+                assert_type(y.x, Intersection[int, Any])
+
+    @assert_passes()
+    def test_nested_annotation_only_attribute(self):
+        from typing_extensions import assert_type
+
+        def func() -> None:
+            class A:
+                x: int
+
+            a = A()
+            assert_type(a.x, int)
+
+    @assert_passes()
+    def test_nested_protocol_with_annotation_only_member(self):
+        from typing import Protocol
+
+        def func() -> None:
+            class P(Protocol):
+                x: int
+
+            class Good:
+                x: int
+
+            class Bad:
+                pass
+
+            def takes_p(arg: P) -> None:
+                pass
+
+            takes_p(Good())
+            takes_p(Bad())  # E: incompatible_argument
 
     @assert_passes()
     def test_typed_value_intersections(self):

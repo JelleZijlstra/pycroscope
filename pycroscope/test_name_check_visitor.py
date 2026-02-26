@@ -773,6 +773,22 @@ class TestNameCheckVisitor(TestNameCheckVisitorBase):
             TypedValue(Local)
 
     @assert_passes()
+    def test_function_local_generic_class_subscript(self):
+        from typing import Generic, Literal, TypeVar
+
+        from typing_extensions import assert_type
+
+        A = TypeVar("A", bound=int)
+        B = TypeVar("B", bound=int)
+
+        def outer() -> None:
+            class Matrix(Generic[A, B]):
+                pass
+
+            def func(a: Matrix[Literal[2], Literal[3]]) -> None:
+                assert_type(a, Matrix[Literal[2], Literal[3]])
+
+    @assert_passes()
     def test_function_scope_typeddict_readonly_inheritance(self):
         from typing import TypedDict
 

@@ -85,7 +85,7 @@ from .annotations import (
 from .arg_spec import ArgSpecCache, IgnoredCallees, UnwrapClass, is_dot_asynq_function
 from .asynq_checker import AsynqChecker
 from .boolability import Boolability, get_boolability
-from .checker import EXCLUDED_PROTOCOL_MEMBERS, Checker, CheckerAttrContext
+from .checker import Checker, CheckerAttrContext
 from .error_code import Error, ErrorCode
 from .extensions import (
     ParameterTypeGuard,
@@ -213,6 +213,7 @@ from .value import (
     HasAttrExtension,
     IntersectionValue,
     KnownValue,
+    KnownValueWithTypeVars,
     KVPair,
     MultiValuedValue,
     NoReturnConstraintExtension,
@@ -236,6 +237,7 @@ from .value import (
     TypeFormValue,
     TypeGuardExtension,
     TypeIsExtension,
+    TypeVarMap,
     TypeVarValue,
     UnboundMethodValue,
     Value,
@@ -1207,6 +1209,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     collector: CallSiteCollector | None
     current_class: type | str | None
     current_class_key: type | str | None
+    current_class_type_params: Sequence[TypeVarValue] | None
     current_enum_members: _EnumMemberTracker | None
     current_function: object | None
     current_function_info: FunctionInfo | None
@@ -1279,6 +1282,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         # current class (for inferring the type of cls and self arguments)
         self.current_class = None
         self.current_class_key = None
+        self.current_class_type_params = None
         self.current_synthetic_typeddict = None
         self.current_function_name = None
         self.current_function_info = None
@@ -1741,21 +1745,27 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         if value is None:
             return AnyValue(AnySource.inference), EMPTY_ORIGIN
         origin = current_scope.set(varname, value, lookup_node, self.state)
-        if scope_type == ScopeType.class_scope and isinstance(self.current_class, str):
-            synthetic_class = self._synthetic_classes_by_name.get(self.current_class)
-            if synthetic_class is not None:
-                synthetic_name = varname
-                synthetic_value = value
-                if self._is_enum_class_key(self.current_class):
-                    class_name = self._current_class_name_from_context()
-                    if class_name is not None:
-                        mangled = self._mangle_private_enum_name(class_name, varname)
-                        if mangled is not None:
-                            synthetic_name = mangled
-                            if isinstance(synthetic_value, KnownValue):
-                                synthetic_value = TypedValue(type(synthetic_value.val))
-                synthetic_class.class_attributes[synthetic_name] = synthetic_value
+        if scope_type == ScopeType.class_scope:
+            self._set_synthetic_class_attribute(varname, value)
         return value, origin
+
+    def _set_synthetic_class_attribute(self, name: str, value: Value) -> None:
+        if not isinstance(self.current_class, str):
+            return
+        synthetic_class = self._synthetic_classes_by_name.get(self.current_class)
+        if synthetic_class is None:
+            return
+        synthetic_name = name
+        synthetic_value = value
+        if self._is_enum_class_key(self.current_class):
+            class_name = self._current_class_name_from_context()
+            if class_name is not None:
+                mangled = self._mangle_private_enum_name(class_name, name)
+                if mangled is not None:
+                    synthetic_name = mangled
+                    if isinstance(synthetic_value, KnownValue):
+                        synthetic_value = TypedValue(type(synthetic_value.val))
+        synthetic_class.class_attributes[synthetic_name] = synthetic_value
 
     def _get_base_class_attributes(
         self, varname: str, node: ast.AST
@@ -2240,6 +2250,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     node.name, synthetic_class_type, base_classes=tuple(base_values)
                 )
                 self._synthetic_classes_by_name[synthetic_fq_name] = synthetic_class
+                self.checker.register_synthetic_class(synthetic_class)
                 if self._is_checking():
                     self._synthetic_abstract_methods[synthetic_fq_name] = set()
                     # Bind the class name while checking its body so references
@@ -2262,6 +2273,14 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             registered_type_param_values = self._align_type_params_with_runtime_class(
                 runtime_class_for_type_params, effective_type_param_values
             )
+            method_type_param_values = self._align_type_params_with_runtime_class(
+                runtime_class_for_type_params,
+                (
+                    type_param_values
+                    if type_param_values
+                    else self._type_params_from_base_values_for_methods(base_values)
+                ),
+            )
             should_register_generic_bases = synthetic_typeddict is None and (
                 isinstance(generic_class_key, str) or bool(registered_type_param_values)
             )
@@ -2274,17 +2293,12 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             with (
                 override(self, "current_synthetic_typeddict", synthetic_typeddict),
                 override(self, "current_class_key", class_key),
+                override(
+                    self, "current_class_type_params", tuple(method_type_param_values)
+                ),
             ):
                 value, class_scope_values = self._visit_class_and_get_value(
                     node, class_scope_object
-                )
-            if (
-                self._is_checking()
-                and isinstance(class_scope_object, str)
-                and class_scope_values is not None
-            ):
-                self._register_synthetic_protocol_members(
-                    node, class_scope_object, base_values, class_scope_values
                 )
             if type_param_values and synthetic_typeddict is None:
                 inferred_type_params = self._infer_class_type_param_variances(
@@ -2312,6 +2326,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     value = SyntheticClassObjectValue(
                         node.name, typeddict_value, base_classes=tuple(base_values)
                     )
+                    self.checker.register_synthetic_class(value)
             elif synthetic_class is not None:
                 if class_scope_values is None:
                     value = synthetic_class
@@ -2325,11 +2340,15 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     # discovered class attributes on that same object so
                     # references captured during class analysis (including bases
                     # of later synthetic classes) see the enriched attributes.
-                    synthetic_class.class_attributes.clear()
                     synthetic_class.class_attributes.update(class_attributes)
+                    synthetic_class.method_attributes.clear()
+                    synthetic_class.method_attributes.update(
+                        self._get_synthetic_method_attributes(node)
+                    )
                     self._apply_synthetic_enum_semantics(
                         node, synthetic_class, class_key
                     )
+                    self.checker.register_synthetic_class(synthetic_class)
                     value = synthetic_class
                 if synthetic_fq_name is not None:
                     self._synthetic_classes_by_name[synthetic_fq_name] = synthetic_class
@@ -3408,6 +3427,32 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     type_params.append(walked)
         return type_params
 
+    def _type_params_from_base_values_for_methods(
+        self, base_values: Sequence[Value]
+    ) -> Sequence[TypeVarValue]:
+        seen: set[object] = set()
+        type_params: list[TypeVarValue] = []
+        for type_param in self._type_params_from_base_values(base_values):
+            if type_param.typevar in seen:
+                continue
+            seen.add(type_param.typevar)
+            type_params.append(type_param)
+        for base in base_values:
+            for subval in flatten_values(base):
+                runtime_annotation = self._runtime_annotation_from_value(subval)
+                for runtime_arg in typing.get_args(runtime_annotation):
+                    if not (
+                        is_instance_of_typing_name(runtime_arg, "TypeVar")
+                        or is_instance_of_typing_name(runtime_arg, "TypeVarTuple")
+                        or is_instance_of_typing_name(runtime_arg, "ParamSpec")
+                    ):
+                        continue
+                    if runtime_arg in seen:
+                        continue
+                    seen.add(runtime_arg)
+                    type_params.append(TypeVarValue(runtime_arg))
+        return type_params
+
     def _check_protocol_base_validity(
         self, node: ast.ClassDef, base_values: Sequence[Value]
     ) -> None:
@@ -3445,29 +3490,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     # For runtime classes, let runtime semantics decide.
                     return True
         return True
-
-    def _register_synthetic_protocol_members(
-        self,
-        node: ast.ClassDef,
-        class_key: str,
-        base_values: Sequence[Value],
-        class_scope_values: Mapping[str, Value],
-    ) -> None:
-        if not any(self._is_protocol_base(base_value) for base_value in base_values):
-            return
-        protocol_members = {
-            name
-            for name in class_scope_values
-            if not name.startswith("%") and name not in EXCLUDED_PROTOCOL_MEMBERS
-        }
-        for stmt in node.body:
-            if (
-                isinstance(stmt, ast.AnnAssign)
-                and isinstance(stmt.target, ast.Name)
-                and stmt.target.id not in EXCLUDED_PROTOCOL_MEMBERS
-            ):
-                protocol_members.add(stmt.target.id)
-        self.checker.register_synthetic_protocol_members(class_key, protocol_members)
 
     @staticmethod
     def _is_protocol_base(base_value: Value) -> bool:
@@ -3550,6 +3572,21 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         if not qualname_parts or qualname_parts[-1] != name:
             qualname_parts.append(name)
         return ".".join(qualname_parts)
+
+    @staticmethod
+    def _mangle_class_attribute_name(class_name: str, attribute_name: str) -> str:
+        if attribute_name.startswith("__") and not attribute_name.endswith("__"):
+            return f"_{class_name}{attribute_name}"
+        return attribute_name
+
+    def _get_synthetic_method_attributes(self, node: ast.ClassDef) -> set[str]:
+        method_attributes = set()
+        for stmt in node.body:
+            if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                method_attributes.add(
+                    self._mangle_class_attribute_name(node.name, stmt.name)
+                )
+        return method_attributes
 
     def _current_class_name_from_context(self) -> str | None:
         for context in reversed(self.node_context.contexts):
@@ -3878,11 +3915,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             # If we set the current_class in the collecting phase,
             # the self argument of nested methods with an unannotated
             # first argument is incorrectly inferred.
-            enclosing_class=(
-                TypedValue(self.current_class)
-                if self.current_class is not None and self._is_checking()
-                else None
-            ),
+            enclosing_class=self._get_enclosing_class_value_for_method(),
             is_nested_in_class=self.node_context.includes(ast.ClassDef),
             potential_function=potential_function,
         ) as info:
@@ -4094,6 +4127,26 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
 
         self._set_argspec_to_retval(val, info, result)
         return val
+
+    def _get_enclosing_class_value_for_method(self) -> TypedValue | None:
+        if self.current_class is None or not self._is_checking():
+            return None
+        class_value: TypedValue = TypedValue(self.current_class)
+        type_params = (
+            list(self.current_class_type_params)
+            if self.current_class_type_params
+            else []
+        )
+        if not type_params:
+            generic_bases = self.checker.get_generic_bases(self.current_class, ())
+            declared = generic_bases.get(self.current_class)
+            if declared:
+                type_params = [
+                    val for val in declared.values() if isinstance(val, TypeVarValue)
+                ]
+        if type_params:
+            return GenericValue(self.current_class, type_params)
+        return class_value
 
     def _get_pending_overload_signature(
         self, node: FunctionDefNode
@@ -7507,6 +7560,15 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             elif self.current_class_key is not None:
                 self._record_final_member(self.current_class_key, node.target.attr)
 
+        if (
+            node.value is None
+            and self.current_synthetic_typeddict is None
+            and isinstance(node.target, ast.Name)
+        ):
+            self._set_synthetic_class_attribute(
+                node.target.id, expected_type or AnyValue(AnySource.error)
+            )
+
         if node.value is not None:
             is_yield = isinstance(node.value, ast.Yield)
             value = self.visit(node.value)
@@ -7841,43 +7903,51 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                         stripped_value, root_composite.varname, root_composite.node
                     )
                 )
-                with self.catch_errors():
-                    getitem = self._get_dunder(
-                        node.value, stripped_root.value, "__getitem__"
-                    )
-                if getitem is not UNINITIALIZED_VALUE:
-                    return_value = self.check_call(
-                        node.value,
-                        getitem,
-                        [stripped_root, index_composite],
-                        allow_call=True,
-                    )
+                synthetic_subscript = self._maybe_subscript_synthetic_class(
+                    stripped_root.value, index, node
+                )
+                if synthetic_subscript is not None:
+                    return_value = synthetic_subscript
                 else:
-                    # If there was no __getitem__, try __class_getitem__ in 3.7+
-                    cgi = self.get_attribute(
-                        Composite(stripped_root.value), "__class_getitem__", node.value
-                    )
-                    if cgi is UNINITIALIZED_VALUE:
-                        self._show_error_if_checking(
-                            node,
-                            f"Object {value} does not support subscripting",
-                            error_code=ErrorCode.unsupported_operation,
+                    with self.catch_errors():
+                        getitem = self._get_dunder(
+                            node.value, stripped_root.value, "__getitem__"
                         )
-                        return_value = AnyValue(AnySource.error)
+                    if getitem is not UNINITIALIZED_VALUE:
+                        return_value = self.check_call(
+                            node.value,
+                            getitem,
+                            [stripped_root, index_composite],
+                            allow_call=True,
+                        )
                     else:
-                        runtime_return_value = self.check_call(
-                            node.value, cgi, [index_composite], allow_call=True
+                        # If there was no __getitem__, try __class_getitem__ in 3.7+
+                        cgi = self.get_attribute(
+                            Composite(stripped_root.value),
+                            "__class_getitem__",
+                            node.value,
                         )
-                        if isinstance(runtime_return_value, KnownValue):
-                            return_value = runtime_return_value
-                        else:
-                            return_value = PartialValue(
-                                PartialValueOperation.SUBSCRIPT,
-                                value,
+                        if cgi is UNINITIALIZED_VALUE:
+                            self._show_error_if_checking(
                                 node,
-                                self._maybe_unpack_tuple(index),
-                                runtime_return_value,
+                                f"Object {value} does not support subscripting",
+                                error_code=ErrorCode.unsupported_operation,
                             )
+                            return_value = AnyValue(AnySource.error)
+                        else:
+                            runtime_return_value = self.check_call(
+                                node.value, cgi, [index_composite], allow_call=True
+                            )
+                            if isinstance(runtime_return_value, KnownValue):
+                                return_value = runtime_return_value
+                            else:
+                                return_value = PartialValue(
+                                    PartialValueOperation.SUBSCRIPT,
+                                    value,
+                                    node,
+                                    self._maybe_unpack_tuple(index),
+                                    runtime_return_value,
+                                )
 
                 if (
                     self._should_use_varname_value(return_value)
@@ -7924,6 +7994,35 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             return tuple(KnownValue(member) for member in value.val)
         return (value,)
 
+    def _maybe_subscript_synthetic_class(
+        self, value: Value, index: Value, node: ast.Subscript
+    ) -> Value | None:
+        synthetic_typ: str | None
+        if isinstance(value, SyntheticClassObjectValue):
+            class_type = value.class_type
+            if not isinstance(class_type, TypedValue) or not isinstance(
+                class_type.typ, str
+            ):
+                return None
+            synthetic_typ = class_type.typ
+        elif isinstance(value, TypedValue) and isinstance(value.typ, str):
+            synthetic_typ = value.typ
+        else:
+            return None
+        if self.checker.get_synthetic_class(synthetic_typ) is None:
+            return None
+        generic_bases = self.checker.get_generic_bases(synthetic_typ, ())
+        if not generic_bases.get(synthetic_typ):
+            return None
+        members = self._maybe_unpack_tuple(index)
+        return PartialValue(
+            PartialValueOperation.SUBSCRIPT,
+            value,
+            node,
+            members,
+            GenericValue(synthetic_typ, list(members)),
+        )
+
     def _get_dunder(self, node: ast.AST, callee_val: Value, method_name: str) -> Value:
         if isinstance(callee_val, AnnotatedValue):
             has_explicit_method = any(
@@ -7937,9 +8036,33 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     node,
                     ignore_none=self.options.get_value_for(IgnoreNoneAttributes),
                 )
-        lookup_val = callee_val.get_type_value()
+        fallback_lookup_val = callee_val.get_type_value()
+        if isinstance(callee_val, TypedValue) and isinstance(callee_val.typ, str):
+            synthetic_class = self.checker.get_synthetic_class(callee_val.typ)
+            if synthetic_class is not None:
+                method_object = self.get_attribute(
+                    Composite(synthetic_class),
+                    method_name,
+                    node,
+                    ignore_none=self.options.get_value_for(IgnoreNoneAttributes),
+                )
+                if method_object is not UNINITIALIZED_VALUE:
+                    synthetic_typevars = self._get_synthetic_instance_typevars(
+                        callee_val
+                    )
+                    if synthetic_typevars:
+                        if isinstance(method_object, KnownValue):
+                            method_object = KnownValueWithTypeVars(
+                                method_object.val, synthetic_typevars
+                            )
+                        else:
+                            method_object = method_object.substitute_typevars(
+                                synthetic_typevars
+                            )
+                    return method_object
+
         method_object = self.get_attribute(
-            Composite(lookup_val),
+            Composite(fallback_lookup_val),
             method_name,
             node,
             ignore_none=self.options.get_value_for(IgnoreNoneAttributes),
@@ -7951,6 +8074,23 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 error_code=ErrorCode.unsupported_operation,
             )
         return method_object
+
+    def _get_synthetic_instance_typevars(self, value: TypedValue) -> TypeVarMap:
+        if not isinstance(value.typ, str):
+            return {}
+        generic_args: Sequence[Value]
+        if isinstance(value, GenericValue):
+            generic_args = value.args
+        else:
+            generic_args = ()
+        generic_bases = self.checker.get_generic_bases(value.typ, generic_args)
+        declared = generic_bases.get(value.typ)
+        if not declared or not generic_args:
+            return {}
+        typevars = [
+            val.typevar for val in declared.values() if isinstance(val, TypeVarValue)
+        ]
+        return dict(zip(typevars, generic_args))
 
     def _check_dunder_call_or_catch(
         self,
@@ -8761,8 +8901,14 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             base_classes=(TypedValue(tuple),),
         )
         synthetic.class_attributes["%runtime_class"] = return_value
+        synthetic.method_attributes.update(
+            name
+            for name, attr in runtime_class.__dict__.items()
+            if callable(attr) or isinstance(attr, (staticmethod, classmethod, property))
+        )
         for name, attr in runtime_class.__dict__.items():
             synthetic.class_attributes[name] = KnownValue(attr)
+        self.checker.register_synthetic_class(synthetic)
         return synthetic
 
     def signature_from_value(
