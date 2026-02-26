@@ -70,8 +70,9 @@ class TestIntersections(TestNameCheckVisitorBase):
                 assert_type(y, Intersection[A, B])
                 # TODO: fix this
                 assert_type(
-                    y.x, Intersection[int, Any]
-                )  # E: undefined_attribute  # E: inference_failure
+                    y.x,  # E: undefined_attribute  # E: inference_failure
+                    Intersection[int, Any],
+                )
 
     @assert_passes()
     def test_typed_value_intersections(self):
