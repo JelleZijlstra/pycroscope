@@ -8216,7 +8216,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                         f"Intersection value {root_composite.value} has no attribute {attr!r}",
                         ErrorCode.undefined_attribute,
                     )
-                return UNINITIALIZED_VALUE
+                return AnyValue(AnySource.error)
             return intersect_multi(results, self)
         ctx = _AttrContext(
             root_composite,

@@ -1562,7 +1562,7 @@ class SyntheticClassObjectValue(Value):
         return TypedValue(type)
 
     def __str__(self) -> str:
-        return self.name
+        return f"<class {self.name!r}>"
 
 
 class SyntheticEnumMember:

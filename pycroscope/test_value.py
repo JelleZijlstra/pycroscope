@@ -632,7 +632,7 @@ def test_synthetic_class_object_value_typeddict() -> None:
     movie_cls = value.SyntheticClassObjectValue("Movie", movie_td)
     other_movie_cls = value.SyntheticClassObjectValue("OtherMovie", movie_td)
 
-    assert str(movie_cls) == "Movie"
+    assert str(movie_cls) == "<class 'Movie'>"
 
     # Synthetic TypedDict class values are singleton-like.
     assert_can_assign(movie_cls, movie_cls)
@@ -654,7 +654,7 @@ def test_synthetic_class_object_value_nominal_class() -> None:
     int_cls = value.SyntheticClassObjectValue("int", TypedValue(int))
     other_int_cls = value.SyntheticClassObjectValue("other_int", TypedValue(int))
 
-    assert str(int_cls) == "int"
+    assert str(int_cls) == "<class 'int'>"
     assert_can_assign(int_cls, int_cls)
     assert_cannot_assign(int_cls, other_int_cls)
 

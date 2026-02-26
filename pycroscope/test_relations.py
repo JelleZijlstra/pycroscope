@@ -50,6 +50,30 @@ class TestIntersections(TestNameCheckVisitorBase):
             assert_type(y.x, Intersection[int, Any])
 
     @assert_passes()
+    def test_nested(self):
+        from typing_extensions import Any, Literal, Never, assert_type
+
+        from pycroscope.extensions import Intersection
+
+        def func() -> None:
+            class A:
+                x: Any
+
+            class B:
+                x: int
+
+            def capybara(
+                x: Intersection[Literal[1], Literal[2]], y: Intersection[A, B]
+            ) -> None:
+                assert_type(x, Never)
+
+                assert_type(y, Intersection[A, B])
+                # TODO: fix this
+                assert_type(
+                    y.x, Intersection[int, Any]
+                )  # E: undefined_attribute  # E: inference_failure
+
+    @assert_passes()
     def test_typed_value_intersections(self):
         from typing_extensions import Never, assert_type, final
 
