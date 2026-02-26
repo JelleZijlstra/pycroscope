@@ -7827,43 +7827,51 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                         stripped_value, root_composite.varname, root_composite.node
                     )
                 )
-                with self.catch_errors():
-                    getitem = self._get_dunder(
-                        node.value, stripped_root.value, "__getitem__"
-                    )
-                if getitem is not UNINITIALIZED_VALUE:
-                    return_value = self.check_call(
-                        node.value,
-                        getitem,
-                        [stripped_root, index_composite],
-                        allow_call=True,
-                    )
+                synthetic_subscript = self._maybe_subscript_synthetic_class(
+                    stripped_root.value, index, node
+                )
+                if synthetic_subscript is not None:
+                    return_value = synthetic_subscript
                 else:
-                    # If there was no __getitem__, try __class_getitem__ in 3.7+
-                    cgi = self.get_attribute(
-                        Composite(stripped_root.value), "__class_getitem__", node.value
-                    )
-                    if cgi is UNINITIALIZED_VALUE:
-                        self._show_error_if_checking(
-                            node,
-                            f"Object {value} does not support subscripting",
-                            error_code=ErrorCode.unsupported_operation,
+                    with self.catch_errors():
+                        getitem = self._get_dunder(
+                            node.value, stripped_root.value, "__getitem__"
                         )
-                        return_value = AnyValue(AnySource.error)
+                    if getitem is not UNINITIALIZED_VALUE:
+                        return_value = self.check_call(
+                            node.value,
+                            getitem,
+                            [stripped_root, index_composite],
+                            allow_call=True,
+                        )
                     else:
-                        runtime_return_value = self.check_call(
-                            node.value, cgi, [index_composite], allow_call=True
+                        # If there was no __getitem__, try __class_getitem__ in 3.7+
+                        cgi = self.get_attribute(
+                            Composite(stripped_root.value),
+                            "__class_getitem__",
+                            node.value,
                         )
-                        if isinstance(runtime_return_value, KnownValue):
-                            return_value = runtime_return_value
-                        else:
-                            return_value = PartialValue(
-                                PartialValueOperation.SUBSCRIPT,
-                                value,
+                        if cgi is UNINITIALIZED_VALUE:
+                            self._show_error_if_checking(
                                 node,
-                                self._maybe_unpack_tuple(index),
-                                runtime_return_value,
+                                f"Object {value} does not support subscripting",
+                                error_code=ErrorCode.unsupported_operation,
                             )
+                            return_value = AnyValue(AnySource.error)
+                        else:
+                            runtime_return_value = self.check_call(
+                                node.value, cgi, [index_composite], allow_call=True
+                            )
+                            if isinstance(runtime_return_value, KnownValue):
+                                return_value = runtime_return_value
+                            else:
+                                return_value = PartialValue(
+                                    PartialValueOperation.SUBSCRIPT,
+                                    value,
+                                    node,
+                                    self._maybe_unpack_tuple(index),
+                                    runtime_return_value,
+                                )
 
                 if (
                     self._should_use_varname_value(return_value)
@@ -7909,6 +7917,35 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         elif isinstance(value, KnownValue) and isinstance(value.val, tuple):
             return tuple(KnownValue(member) for member in value.val)
         return (value,)
+
+    def _maybe_subscript_synthetic_class(
+        self, value: Value, index: Value, node: ast.Subscript
+    ) -> Value | None:
+        synthetic_typ: str | None
+        if isinstance(value, SyntheticClassObjectValue):
+            class_type = value.class_type
+            if not isinstance(class_type, TypedValue) or not isinstance(
+                class_type.typ, str
+            ):
+                return None
+            synthetic_typ = class_type.typ
+        elif isinstance(value, TypedValue) and isinstance(value.typ, str):
+            synthetic_typ = value.typ
+        else:
+            return None
+        if self.checker.get_synthetic_class(synthetic_typ) is None:
+            return None
+        generic_bases = self.checker.get_generic_bases(synthetic_typ, ())
+        if not generic_bases.get(synthetic_typ):
+            return None
+        members = self._maybe_unpack_tuple(index)
+        return PartialValue(
+            PartialValueOperation.SUBSCRIPT,
+            value,
+            node,
+            members,
+            GenericValue(synthetic_typ, list(members)),
+        )
 
     def _get_dunder(self, node: ast.AST, callee_val: Value, method_name: str) -> Value:
         if isinstance(callee_val, AnnotatedValue):

@@ -11,7 +11,7 @@ import types
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field, replace
 from enum import Enum
-from typing import Any, ClassVar
+from typing import Any, ClassVar, get_origin
 
 from typing_extensions import assert_never
 
@@ -519,8 +519,12 @@ def _get_attribute_from_synthetic_base(
             base.class_type.typ, self_value.class_type, ctx
         )
 
-    if isinstance(base, KnownValue) and isinstance(base.val, type):
-        return _get_attribute_from_subclass(base.val, self_value.class_type, ctx)
+    if isinstance(base, KnownValue):
+        if isinstance(base.val, type):
+            return _get_attribute_from_subclass(base.val, self_value.class_type, ctx)
+        origin = get_origin(base.val)
+        if isinstance(origin, type):
+            return _get_attribute_from_subclass(origin, self_value.class_type, ctx)
 
     if isinstance(base, TypedValue):
         if isinstance(base.typ, str):
