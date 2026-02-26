@@ -49,6 +49,7 @@ from typing import (
     Optional,
     TypeVar,
     Union,
+    cast,
     get_args,
     get_origin,
 )
@@ -6401,17 +6402,13 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         right = right_composite.value
         if self.in_annotation and isinstance(op, ast.BitOr):
             # Accept PEP 604 (int | None) in annotations
+            self.check_for_missing_generic_params(left_node, left)
+            self.check_for_missing_generic_params(right_node, right)
             if isinstance(left, KnownValue) and isinstance(right, KnownValue):
-                self.check_for_missing_generic_params(left_node, left)
-                self.check_for_missing_generic_params(right_node, right)
                 return KnownValue(Union[left.val, right.val])  # noqa: UP007
-            else:
-                self._show_error_if_checking(
-                    source_node,
-                    f"Unsupported operands for | in annotation: {left} and {right}",
-                    error_code=ErrorCode.unsupported_operation,
-                )
-                return AnyValue(AnySource.error)
+            # In static fallback mode class objects may be synthetic and cannot
+            # be OR'd at runtime. Preserve both sides for annotation evaluation.
+            return unite_values(left, right)
 
         if (
             isinstance(op, ast.Mod)
@@ -8259,13 +8256,15 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 ):
                     return AnyValue(AnySource.inference)
 
-            # Ignore objects that override __getattr__
+            # Ignore objects that override __getattr__.
+            # typing alias objects expose __getattr__ but still should not be
+            # treated as having arbitrary attributes.
+            has_dynamic_getattr = _static_hasattr(root_value.val, "__getattr__")
+            if has_dynamic_getattr and _is_typing_alias_value(root_value.val):
+                has_dynamic_getattr = False
             if not _has_only_known_attributes(
                 self.checker.ts_finder, root_value.val
-            ) and (
-                _static_hasattr(root_value.val, "__getattr__")
-                or self._should_ignore_val(node)
-            ):
+            ) and (has_dynamic_getattr or self._should_ignore_val(node)):
                 return AnyValue(AnySource.inference)
         elif isinstance(root_value, TypedValue):
             root_type = root_value.typ
@@ -8449,6 +8448,81 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     error_code=ErrorCode.invalid_annotation,
                 )
 
+    def _maybe_build_typevar_call_value(
+        self,
+        callee: Value,
+        args: Iterable[Composite],
+        keywords: Sequence[tuple[str | None, Composite]],
+    ) -> TypeVarValue | None:
+        if not (
+            isinstance(callee, KnownValue) and is_typing_name(callee.val, "TypeVar")
+        ):
+            return None
+
+        args = tuple(args)
+        if not args:
+            return None
+        name_arg = args[0].value
+        if not (isinstance(name_arg, KnownValue) and isinstance(name_arg.val, str)):
+            return None
+
+        constraints = [type_from_value(arg.value, self, arg.node) for arg in args[1:]]
+        bound = default = None
+        covariant = False
+        contravariant = False
+        infer_variance = False
+        for keyword, composite in keywords:
+            if keyword is None:
+                return None
+            kwarg_value = composite.value
+            if keyword in ("covariant", "contravariant", "infer_variance"):
+                if not (
+                    isinstance(kwarg_value, KnownValue)
+                    and isinstance(kwarg_value.val, bool)
+                ):
+                    return None
+                if keyword == "covariant":
+                    covariant = kwarg_value.val
+                elif keyword == "contravariant":
+                    contravariant = kwarg_value.val
+                else:
+                    infer_variance = kwarg_value.val
+            elif keyword == "bound":
+                bound = type_from_value(kwarg_value, self, composite.node)
+            elif keyword == "default":
+                default = type_from_value(kwarg_value, self, composite.node)
+            else:
+                return None
+
+        try:
+            if infer_variance:
+                kwargs_with_infer = {
+                    "covariant": covariant,
+                    "contravariant": contravariant,
+                    "infer_variance": True,
+                }
+                typevar = cast(Any, TypeVar)(name_arg.val, **kwargs_with_infer)
+            else:
+                typevar = TypeVar(
+                    name_arg.val, covariant=covariant, contravariant=contravariant
+                )
+        except Exception:
+            return None
+
+        if covariant:
+            variance = Variance.COVARIANT
+        elif contravariant:
+            variance = Variance.CONTRAVARIANT
+        else:
+            variance = Variance.INVARIANT
+        return TypeVarValue(
+            typevar,
+            bound=bound,
+            constraints=tuple(constraints),
+            default=default,
+            variance=variance,
+        )
+
     def check_call(
         self,
         node: ast.AST | None,
@@ -8556,6 +8630,22 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             local = self.get_local_return_value(extended_argspec)
             if local is not None:
                 return_value = local
+
+        synthesized_typevar = self._maybe_build_typevar_call_value(
+            callee_wrapped, args, keywords
+        )
+        if synthesized_typevar is not None and (
+            isinstance(return_value, AnyValue)
+            or (
+                isinstance(return_value, KnownValue)
+                and is_typing_name(return_value.val, "TypeVar")
+            )
+            or (
+                isinstance(return_value, TypedValue)
+                and is_typing_name(return_value.typ, "TypeVar")
+            )
+        ):
+            return_value = synthesized_typevar
 
         if (
             allow_call
@@ -9088,6 +9178,20 @@ def _has_annotation_for_attr(typ: type, attr: str) -> bool:
     except Exception:
         # __annotations__ doesn't exist or isn't a dict
         return False
+
+
+def _is_typing_alias_value(value: object) -> bool:
+    typ = type(value)
+    if safe_getattr(typ, "__module__", None) != "typing":
+        return False
+    name = safe_getattr(typ, "__name__", None)
+    return isinstance(name, str) and name in {
+        "_GenericAlias",
+        "_SpecialGenericAlias",
+        "_SpecialForm",
+        "_AnnotatedAlias",
+        "TypeAliasType",
+    }
 
 
 def _is_asynq_future(value: Value) -> bool:

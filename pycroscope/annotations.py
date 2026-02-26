@@ -1451,9 +1451,12 @@ def _annotation_expr_of_origin_args(
 def _value_of_origin_args(
     origin: object, args: Sequence[object], val: object, ctx: Context
 ) -> Value:
-    if origin is type or origin is type:
+    if origin is type:
         if not args:
             return TypedValue(type)
+        if len(args) != 1:
+            ctx.show_error("Type[] takes only one argument")
+            return AnyValue(AnySource.error)
         return SubclassValue.make(_type_from_runtime(args[0], ctx))
     elif _is_tuple(origin):
         if not args:
