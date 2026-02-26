@@ -774,7 +774,9 @@ class TestNameCheckVisitor(TestNameCheckVisitorBase):
 
     @assert_passes()
     def test_function_local_generic_class_subscript(self):
-        from typing import Generic, Literal, TypeVar, assert_type
+        from typing import Generic, Literal, TypeVar
+
+        from typing_extensions import assert_type
 
         A = TypeVar("A", bound=int)
         B = TypeVar("B", bound=int)
