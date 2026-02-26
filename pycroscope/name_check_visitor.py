@@ -8017,26 +8017,37 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     node,
                     ignore_none=self.options.get_value_for(IgnoreNoneAttributes),
                 )
-        lookup_val = callee_val.get_type_value()
-        synthetic_typevars: TypeVarMap | None = None
+        fallback_lookup_val = callee_val.get_type_value()
         if isinstance(callee_val, TypedValue) and isinstance(callee_val.typ, str):
             synthetic_class = self.checker.get_synthetic_class(callee_val.typ)
             if synthetic_class is not None:
-                lookup_val = synthetic_class
-                synthetic_typevars = self._get_synthetic_instance_typevars(callee_val)
+                method_object = self.get_attribute(
+                    Composite(synthetic_class),
+                    method_name,
+                    node,
+                    ignore_none=self.options.get_value_for(IgnoreNoneAttributes),
+                )
+                if method_object is not UNINITIALIZED_VALUE:
+                    synthetic_typevars = self._get_synthetic_instance_typevars(
+                        callee_val
+                    )
+                    if synthetic_typevars:
+                        if isinstance(method_object, KnownValue):
+                            method_object = KnownValueWithTypeVars(
+                                method_object.val, synthetic_typevars
+                            )
+                        else:
+                            method_object = method_object.substitute_typevars(
+                                synthetic_typevars
+                            )
+                    return method_object
+
         method_object = self.get_attribute(
-            Composite(lookup_val),
+            Composite(fallback_lookup_val),
             method_name,
             node,
             ignore_none=self.options.get_value_for(IgnoreNoneAttributes),
         )
-        if synthetic_typevars and method_object is not UNINITIALIZED_VALUE:
-            if isinstance(method_object, KnownValue):
-                method_object = KnownValueWithTypeVars(
-                    method_object.val, synthetic_typevars
-                )
-            else:
-                method_object = method_object.substitute_typevars(synthetic_typevars)
         if method_object is UNINITIALIZED_VALUE:
             self.show_error(
                 node,
