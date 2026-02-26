@@ -327,7 +327,7 @@ def _get_attribute_from_synthetic_type(
     synthetic_class = ctx.get_synthetic_class(fq_name)
     if synthetic_class is not None:
         result = _get_direct_attribute_from_synthetic_class(synthetic_class, ctx.attr)
-        if result is not UNINITIALIZED_VALUE:
+        if result is not UNINITIALIZED_VALUE and not isinstance(result, CallableValue):
             result = _substitute_typevars(fq_name, generic_args, result, fq_name, ctx)
             return set_self(result, ctx.root_value)
     result, provider = ctx.get_attribute_from_typeshed_recursively(
@@ -355,7 +355,9 @@ def _get_attribute_from_synthetic_type_bases(
                 result = _get_direct_attribute_from_synthetic_class(
                     synthetic_class, ctx.attr
                 )
-                if result is not UNINITIALIZED_VALUE:
+                if result is not UNINITIALIZED_VALUE and not isinstance(
+                    result, CallableValue
+                ):
                     return result, base_typ
             result, provider = ctx.get_attribute_from_typeshed_recursively(
                 base_typ, on_class=False
