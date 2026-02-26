@@ -208,6 +208,10 @@ def _get_attribute_from_subclass(
         return TypedValue(dict)
     elif ctx.attr == "__bases__":
         return GenericValue(tuple, [SubclassValue(TypedValue(object))])
+    elif ctx.attr in {"__name__", "__qualname__", "__module__"}:
+        # type[T] represents an arbitrary subclass of T, so class identity
+        # attributes should be widened from base-class literals.
+        return TypedValue(str)
     result, _, should_unwrap = _get_attribute_from_mro(typ, ctx, on_class=True)
     if should_unwrap:
         result = _unwrap_value_from_subclass(result, ctx)

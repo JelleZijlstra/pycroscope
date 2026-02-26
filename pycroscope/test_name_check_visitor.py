@@ -305,6 +305,64 @@ class TestImportFailureHandling(TestNameCheckVisitorBase):
         y.nonexistent_attribute
         z.nonexistent_attribute
 
+    @assert_passes(allow_import_failures=True)
+    def test_typevar_annotations_after_import_failure(self):
+        from typing import TypeVar
+
+        from typing_extensions import assert_type
+
+        class User: ...
+
+        class TeamUser(User): ...
+
+        U = TypeVar("U", bound=User)
+
+        def func3(user_class: type[U]) -> U:
+            return user_class()
+
+        assert_type(func3(TeamUser), TeamUser)
+        type.unknown  # E: undefined_attribute
+
+    @assert_passes(allow_import_failures=True)
+    def test_type_union_annotation_after_import_failure(self):
+        class User: ...
+
+        class BasicUser(User): ...
+
+        class ProUser(User): ...
+
+        class TeamUser(User): ...
+
+        def func4(user_class: type[BasicUser | ProUser]) -> User:
+            return user_class()
+
+        func4(TeamUser)  # E: incompatible_argument
+        type.unknown  # E: undefined_attribute
+
+    @assert_passes(allow_import_failures=True)
+    def test_type_arity_and_typing_alias_attrs_after_import_failure(self):
+        from typing import Any, Type, TypeAlias
+
+        _bad_type1: type[int, str]  # E: invalid_annotation
+
+        TA1: TypeAlias = Type
+        TA2: TypeAlias = Type[Any]
+        TA1.unknown  # E: undefined_attribute
+        TA2.unknown  # E: undefined_attribute
+        type.unknown  # E: undefined_attribute
+
+    @assert_passes(allow_import_failures=True)
+    def test_type_object_name_attribute_after_import_failure(self):
+        from typing import Type
+
+        from typing_extensions import assert_type
+
+        def f(a: type[object], b: Type[object]) -> None:
+            assert_type(a.__name__, str)
+            assert_type(b.__name__, str)
+
+        type.unknown  # E: undefined_attribute
+
 
 class TestPartialValueInference(TestNameCheckVisitorBase):
     @assert_passes()

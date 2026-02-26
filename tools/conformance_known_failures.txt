@@ -86,5 +86,4 @@ protocols_subtyping
 protocols_variance
 qualifiers_annotated
 specialtypes_never
-specialtypes_type
 typeddicts_type_consistency
