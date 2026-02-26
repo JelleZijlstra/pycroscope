@@ -100,13 +100,7 @@ class Checker:
     type_object_cache: dict[type | super | str, TypeObject] = field(
         default_factory=dict, init=False, repr=False
     )
-    synthetic_type_bases: dict[str, set[type | str]] = field(
-        default_factory=dict, init=False, repr=False
-    )
-    synthetic_generic_bases: dict[type | str, _SyntheticGenericBases] = field(
-        default_factory=dict, init=False, repr=False
-    )
-    synthetic_protocol_members: dict[type | str, set[str]] = field(
+    synthetic_classes: dict[type | str, SyntheticClassObjectValue] = field(
         default_factory=dict, init=False, repr=False
     )
     _relation_cache: dict[object, object] = field(
@@ -178,9 +172,10 @@ class Checker:
     def _build_type_object(self, typ: type | super | str) -> TypeObject:
         if isinstance(typ, str):
             # Synthetic type
-            bases = self._get_typeshed_bases(typ) | self.synthetic_type_bases.get(
-                typ, set()
-            )
+            bases = self._get_typeshed_bases(typ)
+            synthetic_class = self.get_synthetic_class(typ)
+            if synthetic_class is not None:
+                bases |= self._get_type_bases_from_synthetic_class(synthetic_class)
             is_protocol = any(is_typing_name(base, "Protocol") for base in bases)
             if is_protocol:
                 protocol_members = self._get_protocol_members(
@@ -256,6 +251,21 @@ class Checker:
             members |= self._get_synthetic_protocol_members(base)
         return members
 
+    def _get_type_bases_from_synthetic_class(
+        self, synthetic_class: SyntheticClassObjectValue
+    ) -> set[type | str]:
+        base_types: set[type | str] = set()
+        for base in synthetic_class.base_classes:
+            for subval in flatten_values(replace_fallback(base)):
+                converted: Value = subval
+                if isinstance(converted, KnownValue):
+                    converted = self.arg_spec_cache._type_from_base(converted.val)
+                elif isinstance(converted, SyntheticClassObjectValue):
+                    converted = converted.class_type
+                if isinstance(converted, TypedValue):
+                    base_types.add(converted.typ)
+        return base_types
+
     def get_generic_bases(
         self, typ: type | str, generic_args: Sequence[Value] = ()
     ) -> GenericBases:
@@ -266,6 +276,14 @@ class Checker:
 
         substitution_map: dict[TypeVarLike, Value] = {}
         synthetic_type_params = synthetic_bases.get(typ, {})
+        if not synthetic_type_params and isinstance(typ, str):
+            synthetic_class = self.get_synthetic_class(typ)
+            if synthetic_class is not None and isinstance(
+                synthetic_class.class_type, TypedValue
+            ):
+                synthetic_type_params = synthetic_bases.get(
+                    synthetic_class.class_type.typ, {}
+                )
         for i, type_param_value in enumerate(synthetic_type_params.values()):
             if not isinstance(type_param_value, TypeVarValue):
                 continue
@@ -282,30 +300,55 @@ class Checker:
                 for tv, value in tv_map.items()
             }
             merged.setdefault(base, {}).update(substituted_tv_map)
-        if isinstance(typ, type) and typ not in merged:
-            alias = self._runtime_type_generic_alias(typ)
-            for base, tv_map in merged.items():
-                if (
-                    isinstance(base, type)
-                    and self._runtime_type_generic_alias(base) == alias
-                ):
-                    merged[typ] = dict(tv_map)
-                    break
         return merged
 
     def get_type_parameters(self, typ: type | str) -> list[Value]:
         synthetic_bases = self._get_synthetic_generic_bases(typ)
         if synthetic_bases is not None and typ in synthetic_bases:
             return list(synthetic_bases[typ].values())
-        if synthetic_bases is not None and isinstance(typ, type):
-            alias = self._runtime_type_generic_alias(typ)
-            for base, tv_map in synthetic_bases.items():
-                if (
-                    isinstance(base, type)
-                    and self._runtime_type_generic_alias(base) == alias
-                ):
-                    return list(tv_map.values())
+        if synthetic_bases is not None and isinstance(typ, str):
+            synthetic_class = self.get_synthetic_class(typ)
+            if synthetic_class is not None and isinstance(
+                synthetic_class.class_type, TypedValue
+            ):
+                declared = synthetic_bases.get(synthetic_class.class_type.typ)
+                if declared is not None:
+                    return list(declared.values())
         return self.arg_spec_cache.get_type_parameters(typ)
+
+    def register_synthetic_class(
+        self, synthetic_class: SyntheticClassObjectValue
+    ) -> None:
+        class_type = synthetic_class.class_type
+        if not isinstance(class_type, TypedValue):
+            return
+        typ = class_type.typ
+        for key in self._iter_generic_override_keys(typ):
+            self.synthetic_classes[key] = synthetic_class
+            self.type_object_cache.pop(key, None)
+
+    def get_synthetic_class(self, typ: type | str) -> SyntheticClassObjectValue | None:
+        for key in self._iter_generic_override_keys(typ):
+            synthetic_class = self.synthetic_classes.get(key)
+            if synthetic_class is not None:
+                return synthetic_class
+        return None
+
+    def _ensure_synthetic_class(
+        self, typ: type | str, *, base_values: Sequence[Value] = ()
+    ) -> SyntheticClassObjectValue:
+        synthetic_class = self.get_synthetic_class(typ)
+        if synthetic_class is not None:
+            return synthetic_class
+        if isinstance(typ, str):
+            name = typ.rsplit(".", 1)[-1]
+        else:
+            name = typ.__name__
+        synthetic_class = SyntheticClassObjectValue(
+            name, TypedValue(typ), base_classes=tuple(base_values)
+        )
+        self.register_synthetic_class(synthetic_class)
+        return synthetic_class
 
     def register_synthetic_type_bases(
         self,
@@ -314,7 +357,6 @@ class Checker:
         *,
         declared_type_params: Sequence[TypeVarValue] = (),
     ) -> None:
-        base_types: set[type | str] = set()
         merged_generic_bases: _SyntheticGenericBases = {
             typ: {tv.typevar: tv for tv in declared_type_params}
         }
@@ -328,7 +370,6 @@ class Checker:
                 if not isinstance(converted, TypedValue):
                     continue
                 base_typ = converted.typ
-                base_types.add(base_typ)
                 # Preserve direct synthetic bases even when we cannot infer a
                 # richer generic mapping for them (common for local synthetic
                 # classes with no typeshed entry).
@@ -341,14 +382,14 @@ class Checker:
                 ).items():
                     merged_generic_bases.setdefault(gb_typ, {}).update(tv_map)
 
-        if isinstance(typ, str) and base_types:
-            self.synthetic_type_bases.setdefault(typ, set()).update(base_types)
+        synthetic_class = self._ensure_synthetic_class(typ, base_values=base_values)
         merged_copy = {
             gb_typ: dict(tv_map) for gb_typ, tv_map in merged_generic_bases.items()
         }
+        synthetic_class.generic_bases.clear()
+        synthetic_class.generic_bases.update(merged_copy)
         for key in self._iter_generic_override_keys(typ):
-            self.synthetic_generic_bases[key] = merged_copy
-        self.type_object_cache.pop(typ, None)
+            self.type_object_cache.pop(key, None)
 
     def register_synthetic_protocol_members(
         self, typ: type | str, members: set[str]
@@ -358,8 +399,14 @@ class Checker:
             for member in members
             if member not in EXCLUDED_PROTOCOL_MEMBERS and member != "__slots__"
         }
+        synthetic_class = self.get_synthetic_class(typ)
+        if synthetic_class is None:
+            return
+        for member in cleaned_members:
+            synthetic_class.class_attributes.setdefault(
+                member, AnyValue(AnySource.inference)
+            )
         for key in self._iter_generic_override_keys(typ):
-            self.synthetic_protocol_members[key] = set(cleaned_members)
             self.type_object_cache.pop(key, None)
 
     @staticmethod
@@ -374,27 +421,25 @@ class Checker:
     def _get_synthetic_generic_bases(
         self, typ: type | str
     ) -> _SyntheticGenericBases | None:
-        for key in self._iter_generic_override_keys(typ):
-            bases = self.synthetic_generic_bases.get(key)
-            if bases is not None:
-                if isinstance(typ, type) and isinstance(key, str):
-                    declared = bases.get(key)
-                    if not declared or not any(
-                        isinstance(val, TypeVarValue) for val in declared.values()
-                    ):
-                        continue
-                return bases
+        synthetic_class = self.get_synthetic_class(typ)
+        if synthetic_class is not None and synthetic_class.generic_bases:
+            return {
+                base_typ: dict(tv_map)
+                for base_typ, tv_map in synthetic_class.generic_bases.items()
+            }
         return None
 
     def _get_synthetic_protocol_members(self, typ: type | str) -> set[str]:
-        members: set[str] = set()
-        if isinstance(typ, type):
-            members |= self.synthetic_protocol_members.get(typ, set())
-            members |= self.synthetic_protocol_members.get(
-                self._runtime_type_generic_alias(typ), set()
-            )
-            return members
-        return self.synthetic_protocol_members.get(typ, set())
+        synthetic_class = self.get_synthetic_class(typ)
+        if synthetic_class is None:
+            return set()
+        return {
+            member
+            for member in synthetic_class.class_attributes
+            if member not in EXCLUDED_PROTOCOL_MEMBERS
+            and member != "__slots__"
+            and not member.startswith("%")
+        }
 
     def get_signature(
         self, obj: object, is_asynq: bool = False
@@ -857,3 +902,6 @@ class CheckerAttrContext(AttrContext):
 
     def get_type_parameters(self, typ: type | str) -> list[Value]:
         return self.checker.get_type_parameters(typ)
+
+    def get_synthetic_class(self, typ: type | str) -> SyntheticClassObjectValue | None:
+        return self.checker.get_synthetic_class(typ)

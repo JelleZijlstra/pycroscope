@@ -85,7 +85,7 @@ from .annotations import (
 from .arg_spec import ArgSpecCache, IgnoredCallees, UnwrapClass, is_dot_asynq_function
 from .asynq_checker import AsynqChecker
 from .boolability import Boolability, get_boolability
-from .checker import EXCLUDED_PROTOCOL_MEMBERS, Checker, CheckerAttrContext
+from .checker import Checker, CheckerAttrContext
 from .error_code import Error, ErrorCode
 from .extensions import (
     ParameterTypeGuard,
@@ -1741,21 +1741,27 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         if value is None:
             return AnyValue(AnySource.inference), EMPTY_ORIGIN
         origin = current_scope.set(varname, value, lookup_node, self.state)
-        if scope_type == ScopeType.class_scope and isinstance(self.current_class, str):
-            synthetic_class = self._synthetic_classes_by_name.get(self.current_class)
-            if synthetic_class is not None:
-                synthetic_name = varname
-                synthetic_value = value
-                if self._is_enum_class_key(self.current_class):
-                    class_name = self._current_class_name_from_context()
-                    if class_name is not None:
-                        mangled = self._mangle_private_enum_name(class_name, varname)
-                        if mangled is not None:
-                            synthetic_name = mangled
-                            if isinstance(synthetic_value, KnownValue):
-                                synthetic_value = TypedValue(type(synthetic_value.val))
-                synthetic_class.class_attributes[synthetic_name] = synthetic_value
+        if scope_type == ScopeType.class_scope:
+            self._set_synthetic_class_attribute(varname, value)
         return value, origin
+
+    def _set_synthetic_class_attribute(self, name: str, value: Value) -> None:
+        if not isinstance(self.current_class, str):
+            return
+        synthetic_class = self._synthetic_classes_by_name.get(self.current_class)
+        if synthetic_class is None:
+            return
+        synthetic_name = name
+        synthetic_value = value
+        if self._is_enum_class_key(self.current_class):
+            class_name = self._current_class_name_from_context()
+            if class_name is not None:
+                mangled = self._mangle_private_enum_name(class_name, name)
+                if mangled is not None:
+                    synthetic_name = mangled
+                    if isinstance(synthetic_value, KnownValue):
+                        synthetic_value = TypedValue(type(synthetic_value.val))
+        synthetic_class.class_attributes[synthetic_name] = synthetic_value
 
     def _get_base_class_attributes(
         self, varname: str, node: ast.AST
@@ -2240,6 +2246,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     node.name, synthetic_class_type, base_classes=tuple(base_values)
                 )
                 self._synthetic_classes_by_name[synthetic_fq_name] = synthetic_class
+                self.checker.register_synthetic_class(synthetic_class)
                 if self._is_checking():
                     self._synthetic_abstract_methods[synthetic_fq_name] = set()
                     # Bind the class name while checking its body so references
@@ -2278,14 +2285,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 value, class_scope_values = self._visit_class_and_get_value(
                     node, class_scope_object
                 )
-            if (
-                self._is_checking()
-                and isinstance(class_scope_object, str)
-                and class_scope_values is not None
-            ):
-                self._register_synthetic_protocol_members(
-                    node, class_scope_object, base_values, class_scope_values
-                )
             if type_param_values and synthetic_typeddict is None:
                 inferred_type_params = self._infer_class_type_param_variances(
                     node, type_param_values, base_values
@@ -2312,6 +2311,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     value = SyntheticClassObjectValue(
                         node.name, typeddict_value, base_classes=tuple(base_values)
                     )
+                    self.checker.register_synthetic_class(value)
             elif synthetic_class is not None:
                 if class_scope_values is None:
                     value = synthetic_class
@@ -2325,11 +2325,11 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     # discovered class attributes on that same object so
                     # references captured during class analysis (including bases
                     # of later synthetic classes) see the enriched attributes.
-                    synthetic_class.class_attributes.clear()
                     synthetic_class.class_attributes.update(class_attributes)
                     self._apply_synthetic_enum_semantics(
                         node, synthetic_class, class_key
                     )
+                    self.checker.register_synthetic_class(synthetic_class)
                     value = synthetic_class
                 if synthetic_fq_name is not None:
                     self._synthetic_classes_by_name[synthetic_fq_name] = synthetic_class
@@ -3445,29 +3445,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     # For runtime classes, let runtime semantics decide.
                     return True
         return True
-
-    def _register_synthetic_protocol_members(
-        self,
-        node: ast.ClassDef,
-        class_key: str,
-        base_values: Sequence[Value],
-        class_scope_values: Mapping[str, Value],
-    ) -> None:
-        if not any(self._is_protocol_base(base_value) for base_value in base_values):
-            return
-        protocol_members = {
-            name
-            for name in class_scope_values
-            if not name.startswith("%") and name not in EXCLUDED_PROTOCOL_MEMBERS
-        }
-        for stmt in node.body:
-            if (
-                isinstance(stmt, ast.AnnAssign)
-                and isinstance(stmt.target, ast.Name)
-                and stmt.target.id not in EXCLUDED_PROTOCOL_MEMBERS
-            ):
-                protocol_members.add(stmt.target.id)
-        self.checker.register_synthetic_protocol_members(class_key, protocol_members)
 
     @staticmethod
     def _is_protocol_base(base_value: Value) -> bool:
@@ -7507,6 +7484,15 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             elif self.current_class_key is not None:
                 self._record_final_member(self.current_class_key, node.target.attr)
 
+        if (
+            node.value is None
+            and self.current_synthetic_typeddict is None
+            and isinstance(node.target, ast.Name)
+        ):
+            self._set_synthetic_class_attribute(
+                node.target.id, expected_type or AnyValue(AnySource.error)
+            )
+
         if node.value is not None:
             is_yield = isinstance(node.value, ast.Yield)
             value = self.visit(node.value)
@@ -8763,6 +8749,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         synthetic.class_attributes["%runtime_class"] = return_value
         for name, attr in runtime_class.__dict__.items():
             synthetic.class_attributes[name] = KnownValue(attr)
+        self.checker.register_synthetic_class(synthetic)
         return synthetic
 
     def signature_from_value(

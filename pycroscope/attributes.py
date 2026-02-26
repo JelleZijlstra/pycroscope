@@ -115,6 +115,9 @@ class AttrContext:
     ) -> GenericBases:
         return {}
 
+    def get_synthetic_class(self, typ: type | str) -> SyntheticClassObjectValue | None:
+        return None
+
 
 def get_attribute(ctx: AttrContext) -> Value:
     root_value = replace_fallback(ctx.root_value)
@@ -321,6 +324,12 @@ def _get_attribute_from_synthetic_type(
         return AnyValue(AnySource.inference)
     elif ctx.attr == "__dict__":
         return TypedValue(dict)
+    synthetic_class = ctx.get_synthetic_class(fq_name)
+    if synthetic_class is not None:
+        result = _get_direct_attribute_from_synthetic_class(synthetic_class, ctx.attr)
+        if result is not UNINITIALIZED_VALUE:
+            result = _substitute_typevars(fq_name, generic_args, result, fq_name, ctx)
+            return set_self(result, ctx.root_value)
     result, provider = ctx.get_attribute_from_typeshed_recursively(
         fq_name, on_class=False
     )
@@ -341,6 +350,13 @@ def _get_attribute_from_synthetic_type_bases(
         if base_typ == fq_name:
             continue
         if isinstance(base_typ, str):
+            synthetic_class = ctx.get_synthetic_class(base_typ)
+            if synthetic_class is not None:
+                result = _get_direct_attribute_from_synthetic_class(
+                    synthetic_class, ctx.attr
+                )
+                if result is not UNINITIALIZED_VALUE:
+                    return result, base_typ
             result, provider = ctx.get_attribute_from_typeshed_recursively(
                 base_typ, on_class=False
             )
@@ -389,19 +405,9 @@ def _get_attribute_from_synthetic_class_inner(
     seen: set[int],
     runtime_type: type | None = None,
 ) -> Value:
-    attr_name = ctx.attr
-    if attr_name not in self_value.class_attributes:
-        mangled = _maybe_mangle_private_name(attr_name, self_value.name)
-        if mangled is not None and mangled in self_value.class_attributes:
-            attr_name = mangled
-
-    if attr_name in self_value.class_attributes:
-        result = _normalize_synthetic_class_attribute(
-            self_value.class_attributes[attr_name]
-        )
-        if _should_deliteralize_synthetic_enum_attr(self_value, attr_name):
-            return _deliteralize_value(result)
-        return result
+    direct = _get_direct_attribute_from_synthetic_class(self_value, ctx.attr)
+    if direct is not UNINITIALIZED_VALUE:
+        return direct
 
     for base in self_value.base_classes:
         result = _get_attribute_from_synthetic_base(base, self_value, ctx, seen=seen)
@@ -413,6 +419,24 @@ def _get_attribute_from_synthetic_class_inner(
         return result
     if runtime_type is not None:
         return _get_attribute_from_subclass(runtime_type, self_value.class_type, ctx)
+    return result
+
+
+def _get_direct_attribute_from_synthetic_class(
+    self_value: SyntheticClassObjectValue, attr_name: str
+) -> Value:
+    selected_name = attr_name
+    if selected_name not in self_value.class_attributes:
+        mangled = _maybe_mangle_private_name(selected_name, self_value.name)
+        if mangled is not None and mangled in self_value.class_attributes:
+            selected_name = mangled
+    if selected_name not in self_value.class_attributes:
+        return UNINITIALIZED_VALUE
+    result = _normalize_synthetic_class_attribute(
+        self_value.class_attributes[selected_name]
+    )
+    if _should_deliteralize_synthetic_enum_attr(self_value, selected_name):
+        return _deliteralize_value(result)
     return result
 
 

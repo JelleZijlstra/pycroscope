@@ -851,6 +851,20 @@ class TestCheckerGenericBases:
             base: {T: TypedValue(int)},
         }
 
+    def test_register_synthetic_type_bases_updates_synthetic_class(self):
+        checker = Checker()
+        base = "test.Base"
+        child = "test.Child"
+        checker.register_synthetic_type_bases(
+            child, [SyntheticClassObjectValue("Base", TypedValue(base))]
+        )
+        synthetic = checker.get_synthetic_class(child)
+        assert synthetic is not None
+        assert synthetic.base_classes == (
+            SyntheticClassObjectValue("Base", TypedValue(base)),
+        )
+        assert synthetic.generic_bases == {child: {}, base: {}}
+
 
 class TestAttribute:
     def test_basic(self) -> None:
