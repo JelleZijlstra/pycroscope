@@ -56,7 +56,6 @@ from unittest.mock import ANY
 
 import typeshed_client
 from typing_extensions import Protocol, is_typeddict
-from typing_extensions import Unpack as TypingExtensionsUnpack
 
 from pycroscope.input_sig import InputSigValue, ParamSpecSig
 
@@ -6004,15 +6003,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         values = []
         for i, elt in enumerate(elts):
             if isinstance(elt, _StarredValue):
-                if self.in_annotation and typ is tuple:
-                    unpacked = self._make_annotation_unpack_value(elt.value)
-                    values.append((False, unpacked))
-                    continue
-                if isinstance(elt.value, KnownValue) and isinstance(
-                    elt.value.val, GenericAlias
-                ):
-                    values.append((False, KnownValue((*elt.value.val,)[0])))
-                    continue
                 vals = concrete_values_from_iterable(elt.value, self)
                 if isinstance(vals, CanAssignError):
                     self.show_error(
@@ -6060,21 +6050,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 values.append((False, elt))
 
         return SequenceValue.make_or_known(typ, values)
-
-    def _make_annotation_unpack_value(self, value: Value) -> Value:
-        value = replace_fallback(value)
-        if isinstance(value, KnownValue):
-            runtime_value = value.val
-        elif isinstance(value, TypedValue) and isinstance(value.typ, type):
-            runtime_value = value.typ
-        elif isinstance(value, AnyValue):
-            runtime_value = Any
-        else:
-            return AnyValue(AnySource.error)
-        try:
-            return KnownValue(TypingExtensionsUnpack[runtime_value])
-        except Exception:
-            return AnyValue(AnySource.error)
 
     # Operations
 

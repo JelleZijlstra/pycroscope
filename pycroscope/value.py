@@ -25,6 +25,7 @@ import contextlib
 import enum
 import sys
 import textwrap
+import types
 import typing
 from collections import deque
 from collections.abc import (
@@ -2783,6 +2784,8 @@ class GetItemProto(Protocol[T]):
 
 GetItemProtoValue = GenericValue(GetItemProto, [TypeVarValue(T)])
 
+TypingGenericAlias = type(list[int])
+
 
 def concrete_values_from_iterable(
     value: Value, ctx: CanAssignContext
@@ -2845,6 +2848,11 @@ def concrete_values_from_iterable(
             if len(value.val) < ITERATION_LIMIT:
                 return [KnownValue(c) for c in value.val]
             is_nonempty = True
+        if (
+            sys.version_info >= (3, 11)
+            and isinstance(value.val, (types.GenericAlias, TypingGenericAlias))
+        ) or is_instance_of_typing_name(value.val, "TypeVarTuple"):
+            return [KnownValue(c) for c in value.val]
     iterable_type = is_iterable(value, ctx)
     if isinstance(iterable_type, Value):
         val = iterable_type
