@@ -2341,6 +2341,10 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     # references captured during class analysis (including bases
                     # of later synthetic classes) see the enriched attributes.
                     synthetic_class.class_attributes.update(class_attributes)
+                    synthetic_class.method_attributes.clear()
+                    synthetic_class.method_attributes.update(
+                        self._get_synthetic_method_attributes(node)
+                    )
                     self._apply_synthetic_enum_semantics(
                         node, synthetic_class, class_key
                     )
@@ -3568,6 +3572,21 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         if not qualname_parts or qualname_parts[-1] != name:
             qualname_parts.append(name)
         return ".".join(qualname_parts)
+
+    @staticmethod
+    def _mangle_class_attribute_name(class_name: str, attribute_name: str) -> str:
+        if attribute_name.startswith("__") and not attribute_name.endswith("__"):
+            return f"_{class_name}{attribute_name}"
+        return attribute_name
+
+    def _get_synthetic_method_attributes(self, node: ast.ClassDef) -> set[str]:
+        method_attributes = set()
+        for stmt in node.body:
+            if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                method_attributes.add(
+                    self._mangle_class_attribute_name(node.name, stmt.name)
+                )
+        return method_attributes
 
     def _current_class_name_from_context(self) -> str | None:
         for context in reversed(self.node_context.contexts):
@@ -8882,6 +8901,11 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             base_classes=(TypedValue(tuple),),
         )
         synthetic.class_attributes["%runtime_class"] = return_value
+        synthetic.method_attributes.update(
+            name
+            for name, attr in runtime_class.__dict__.items()
+            if callable(attr) or isinstance(attr, (staticmethod, classmethod, property))
+        )
         for name, attr in runtime_class.__dict__.items():
             synthetic.class_attributes[name] = KnownValue(attr)
         self.checker.register_synthetic_class(synthetic)

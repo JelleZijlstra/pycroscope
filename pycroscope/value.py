@@ -1532,6 +1532,9 @@ class SyntheticClassObjectValue(Value):
     class_attributes: MutableMapping[str, Value] = field(
         default_factory=dict, compare=False, hash=False, repr=False
     )
+    method_attributes: set[str] = field(
+        default_factory=set, compare=False, hash=False, repr=False
+    )
     generic_bases: MutableMapping[type | str, dict[TypeVarLike, Value]] = field(
         default_factory=dict, compare=False, hash=False, repr=False
     )
@@ -1547,6 +1550,7 @@ class SyntheticClassObjectValue(Value):
                 key: val.substitute_typevars(typevars)
                 for key, val in self.class_attributes.items()
             },
+            set(self.method_attributes),
             {
                 base_typ: {
                     typevar: value.substitute_typevars(typevars)

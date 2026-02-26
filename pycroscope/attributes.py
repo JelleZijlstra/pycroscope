@@ -327,7 +327,9 @@ def _get_attribute_from_synthetic_type(
     synthetic_class = ctx.get_synthetic_class(fq_name)
     if synthetic_class is not None:
         result = _get_direct_attribute_from_synthetic_class(synthetic_class, ctx.attr)
-        if result is not UNINITIALIZED_VALUE and not isinstance(result, CallableValue):
+        if result is not UNINITIALIZED_VALUE and not _is_synthetic_method_attribute(
+            synthetic_class, ctx.attr
+        ):
             result = _substitute_typevars(fq_name, generic_args, result, fq_name, ctx)
             return set_self(result, ctx.root_value)
     result, provider = ctx.get_attribute_from_typeshed_recursively(
@@ -355,8 +357,9 @@ def _get_attribute_from_synthetic_type_bases(
                 result = _get_direct_attribute_from_synthetic_class(
                     synthetic_class, ctx.attr
                 )
-                if result is not UNINITIALIZED_VALUE and not isinstance(
-                    result, CallableValue
+                if (
+                    result is not UNINITIALIZED_VALUE
+                    and not _is_synthetic_method_attribute(synthetic_class, ctx.attr)
                 ):
                     return result, base_typ
             result, provider = ctx.get_attribute_from_typeshed_recursively(
@@ -440,6 +443,17 @@ def _get_direct_attribute_from_synthetic_class(
     if _should_deliteralize_synthetic_enum_attr(self_value, selected_name):
         return _deliteralize_value(result)
     return result
+
+
+def _is_synthetic_method_attribute(
+    self_value: SyntheticClassObjectValue, attr_name: str
+) -> bool:
+    selected_name = attr_name
+    if selected_name not in self_value.method_attributes:
+        mangled = _maybe_mangle_private_name(selected_name, self_value.name)
+        if mangled is not None:
+            selected_name = mangled
+    return selected_name in self_value.method_attributes
 
 
 def _normalize_synthetic_class_attribute(value: Value) -> Value:
