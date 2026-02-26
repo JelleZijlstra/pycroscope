@@ -217,6 +217,8 @@ from .value import (
     NoReturnConstraintExtension,
     NotAGradualType,
     OverlapMode,
+    PartialValue,
+    PartialValueOperation,
     PredicateValue,
     ReferencingValue,
     SequenceValue,
@@ -7826,7 +7828,13 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 if isinstance(index, KnownValue):
                     return_value = KnownValue(type[index.val])
                 else:
-                    return_value = AnyValue(AnySource.inference)
+                    return_value = PartialValue(
+                        PartialValueOperation.SUBSCRIPT,
+                        value,
+                        node,
+                        (index,),
+                        TypedValue(types.GenericAlias),
+                    )
             else:
                 stripped_value = _strip_predicate_intersection(value)
                 stripped_root = (
@@ -7860,32 +7868,18 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                         )
                         return_value = AnyValue(AnySource.error)
                     else:
-                        return_value = self.check_call(
+                        runtime_return_value = self.check_call(
                             node.value, cgi, [index_composite], allow_call=True
                         )
-                        fallback_index: KnownValue | None = None
-                        if (
-                            self.in_annotation
-                            and isinstance(return_value, AnyValue)
-                            and return_value.source is AnySource.error
-                        ):
-                            fallback_index = self._fallback_annotation_index(index)
-                        # Special case to avoid "Unrecognized annotation types.GenericAlias" later;
-                        # ideally we'd be more precise.
-                        if return_value == TypedValue(GenericAlias):
-                            if fallback_index is None:
-                                if self.in_annotation:
-                                    fallback_index = self._fallback_annotation_index(
-                                        index
-                                    )
-                                else:
-                                    fallback_index = KnownValue(Any)
-                        if fallback_index is not None:
-                            return_value = self.check_call(
-                                node.value,
-                                cgi,
-                                [Composite(fallback_index)],
-                                allow_call=True,
+                        if isinstance(runtime_return_value, KnownValue):
+                            return_value = runtime_return_value
+                        else:
+                            return_value = PartialValue(
+                                PartialValueOperation.SUBSCRIPT,
+                                value,
+                                node,
+                                self._maybe_unpack_tuple(index),
+                                runtime_return_value,
                             )
 
                 if (
@@ -7922,26 +7916,16 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             )
             return AnyValue(AnySource.error)
 
-    def _fallback_annotation_index(self, index: Value) -> KnownValue:
-        """Best-effort runtime index when annotation subscript inference is imprecise."""
-        if isinstance(index, KnownValue):
-            return index
-        if isinstance(index, AnyValue):
-            return KnownValue(Any)
-        if isinstance(index, SequenceValue) and index.typ is tuple:
-            members = index.get_member_sequence()
-            if members is None:
-                return KnownValue(Any)
-            concrete = []
-            for member in members:
-                if isinstance(member, KnownValue):
-                    concrete.append(member.val)
-                elif isinstance(member, AnyValue):
-                    concrete.append(Any)
-                else:
-                    return KnownValue(Any)
-            return KnownValue(tuple(concrete))
-        return KnownValue(Any)
+    def _maybe_unpack_tuple(self, value: Value) -> tuple[Value, ...]:
+        if isinstance(value, SequenceValue) and value.typ is tuple:
+            members = value.get_member_sequence()
+            if members is not None:
+                return tuple(members)
+            else:
+                return (AnyValue(AnySource.inference),)
+        elif isinstance(value, KnownValue) and isinstance(value.val, tuple):
+            return tuple(KnownValue(member) for member in value.val)
+        return (value,)
 
     def _get_dunder(self, node: ast.AST, callee_val: Value, method_name: str) -> Value:
         if isinstance(callee_val, AnnotatedValue):

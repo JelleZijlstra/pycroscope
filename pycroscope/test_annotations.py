@@ -816,17 +816,17 @@ class TestAnnotated(TestNameCheckVisitorBase):
 
     @assert_passes()
     def test_genericalias_nested_class(self):
+        from typing_extensions import assert_type
+
         def capybara():
+
             class Base:
                 pass
 
             class Child:
                 attrs: list[Base]
 
-            # TODO: ideally this should preserve list[Base] instead of falling back to Any.
-            assert_is_value(
-                Child().attrs, GenericValue(list, [AnyValue(AnySource.from_another)])
-            )
+            assert_type(Child().attrs, list[Base])
 
     @assert_passes()
     def test_annotated_requires_metadata_and_is_not_callable(self):

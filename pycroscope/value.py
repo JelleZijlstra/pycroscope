@@ -503,6 +503,9 @@ class PartialValue(Value):
     def get_fallback_value(self) -> Value:
         return self.runtime_value
 
+    def get_type_value(self) -> Value:
+        return self.runtime_value.get_type_value()
+
     def substitute_typevars(self, typevars: TypeVarMap) -> Value:
         return PartialValue(
             operation=self.operation,
