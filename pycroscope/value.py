@@ -589,8 +589,8 @@ class TypeAliasValue(Value):
 
     def get_value(self) -> Value:
         val = self.alias.get_value()
+        type_params = self.alias.get_type_params()
         if self.type_arguments:
-            type_params = self.alias.get_type_params()
             if len(type_params) != len(self.type_arguments):
                 # TODO this should be an error
                 return AnyValue(AnySource.inference)
@@ -599,6 +599,14 @@ class TypeAliasValue(Value):
                 for type_param, arg in zip(type_params, self.type_arguments)
             }
             val = val.substitute_typevars(typevars)
+        elif type_params:
+            # Unsubscripted aliases default type parameters to Any.
+            val = val.substitute_typevars(
+                {
+                    type_param: AnyValue(AnySource.generic_argument)
+                    for type_param in type_params
+                }
+            )
         return val
 
     def get_fallback_value(self) -> Value:

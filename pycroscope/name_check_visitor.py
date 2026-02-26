@@ -1737,6 +1737,16 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     ):
                         current_scope.variables[varname] = value
                         return value, EMPTY_ORIGIN
+                    # Generic aliases like list[int]() evaluate at runtime to plain
+                    # instances (e.g. []), so preserve static generic information.
+                    if isinstance(existing, KnownValue) and isinstance(
+                        value, GenericValue
+                    ):
+                        if isinstance(value.typ, type) and isinstance(
+                            existing.val, value.typ
+                        ):
+                            current_scope.variables[varname] = value
+                            return value, EMPTY_ORIGIN
                 return existing, EMPTY_ORIGIN
         if scope_type == ScopeType.class_scope:
             if value is not None:
@@ -8811,6 +8821,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                         )
                     return_value = KnownValue(result)
 
+        return_value = self._specialize_generic_alias_call_return(
+            callee_wrapped, return_value, node
+        )
         return_value = self._maybe_convert_local_namedtuple_class(
             callee_wrapped, return_value
         )
@@ -8874,6 +8887,45 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             and self._is_namedtuple_class(callee_obj)
             and self._should_disable_runtime_call_for_namedtuple_class(callee_obj)
         )
+
+    def _specialize_generic_alias_call_return(
+        self, callee: Value, return_value: Value, node: ast.AST | None
+    ) -> Value:
+        if isinstance(callee, KnownValue):
+            origin = get_origin(callee.val)
+            if not isinstance(origin, type):
+                return return_value
+            runtime_args = get_args(callee.val)
+            if not runtime_args:
+                return return_value
+            type_args = [
+                type_from_value(KnownValue(arg), self, node, suppress_errors=True)
+                for arg in runtime_args
+            ]
+        elif (
+            isinstance(callee, PartialValue)
+            and callee.operation is PartialValueOperation.SUBSCRIPT
+            and isinstance(callee.root, KnownValue)
+            and isinstance(callee.root.val, type)
+        ):
+            origin = callee.root.val
+            if not callee.members:
+                return return_value
+            type_args = [
+                type_from_value(member, self, node, suppress_errors=True)
+                for member in callee.members
+            ]
+        else:
+            return return_value
+        if isinstance(return_value, KnownValue):
+            if not isinstance(return_value.val, origin):
+                return return_value
+        elif isinstance(return_value, TypedValue):
+            if return_value.typ is not origin:
+                return return_value
+        else:
+            return return_value
+        return GenericValue(origin, type_args)
 
     def _is_namedtuple_factory(self, value: Value) -> bool:
         return isinstance(value, KnownValue) and (

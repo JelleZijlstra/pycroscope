@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Preserve generic type arguments more consistently: unsubscripted generic aliases now default their parameters to `Any`, and constructor calls through generic aliases (for example `ListAlias[int]()`) keep static type arguments instead of erasing them to bare runtime container types.
 - Unify synthetic class handling by storing synthetic generic/protocol metadata on each synthetic class object, and fix nested local-class intersections so annotation-only members (for example `x: int`) are recognized in attribute checks.
 - Improve static fallback analysis for unimportable modules: `TypeVar(...)` results are now preserved in annotations, `type[A | B]` unions are analyzed without runtime `|`, `type[...]` now enforces single-argument arity, and `typing.Type` alias values now report undefined attributes correctly.
 - Replace the internal `_SubscriptedValue` with a public `PartialValue` type that records partial expression evaluation details (including operation kind and runtime fallback value), improving extensibility for partially evaluated type expressions.
