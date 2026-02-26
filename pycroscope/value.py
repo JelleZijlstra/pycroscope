@@ -480,6 +480,8 @@ class AnyValue(Value):
 
 
 class PartialValueOperation(enum.Enum):
+    """Kinds of partially evaluated operations represented by :class:`PartialValue`."""
+
     SUBSCRIPT = 1
 
 
