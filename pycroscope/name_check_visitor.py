@@ -248,6 +248,7 @@ from .value import (
     concrete_values_from_iterable,
     flatten_values,
     get_tv_map,
+    has_any_base_value,
     is_async_iterable,
     is_iterable,
     is_union,
@@ -1800,12 +1801,58 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     def _has_base_attribute_for(
         self, current_class: type | str | None, varname: str, node: ast.AST
     ) -> bool:
-        for _, base_value in self._get_base_class_attributes_for(
+        for base_class, base_value in self._get_base_class_attributes_for(
             current_class, varname, node
         ):
-            if isinstance(replace_fallback(base_value), AnyValue):
+            base_value = replace_fallback(base_value)
+            if isinstance(base_value, AnyValue):
+                if self._base_class_has_any_base(base_class, set()):
+                    return True
                 continue
             return True
+        if current_class is None:
+            return False
+        return self._base_class_has_any_base(current_class, set())
+
+    def _base_class_has_any_base(
+        self, base_class: type | str, seen: set[type | str]
+    ) -> bool:
+        if isinstance(base_class, type):
+            return has_any_base_value(TypedValue(base_class))
+        if base_class in seen:
+            return False
+        seen.add(base_class)
+
+        synthetic_class = self._synthetic_classes_by_name.get(base_class)
+        if synthetic_class is not None and any(
+            self._base_value_has_any_base(base, seen)
+            for base in synthetic_class.base_classes
+        ):
+            return True
+
+        for ancestor in self.checker.get_generic_bases(base_class):
+            if ancestor != base_class and self._base_class_has_any_base(ancestor, seen):
+                return True
+        return False
+
+    def _base_value_has_any_base(
+        self, base_value: Value, seen: set[type | str]
+    ) -> bool:
+        if has_any_base_value(base_value):
+            return True
+        base_value = replace_fallback(base_value)
+        if isinstance(base_value, SyntheticClassObjectValue):
+            class_type = base_value.class_type
+            if isinstance(class_type, TypedValue) and isinstance(class_type.typ, str):
+                return self._base_class_has_any_base(class_type.typ, seen)
+            return False
+        if isinstance(base_value, GenericValue):
+            if isinstance(base_value.typ, str):
+                return self._base_class_has_any_base(base_value.typ, seen)
+            return False
+        if isinstance(base_value, TypedValue):
+            if isinstance(base_value.typ, str):
+                return self._base_class_has_any_base(base_value.typ, seen)
         return False
 
     def _get_base_class_attributes_for(
@@ -5195,6 +5242,48 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 )
                 return False
         return True
+
+    def _namedtuple_fields_for_attribute_root(self, value: Value) -> set[str] | None:
+        value = replace_fallback(value)
+        if isinstance(value, AnnotatedValue):
+            return self._namedtuple_fields_for_attribute_root(value.value)
+        if isinstance(value, MultiValuedValue):
+            shared_fields: set[str] | None = None
+            for subval in value.vals:
+                subval_fields = self._namedtuple_fields_for_attribute_root(subval)
+                if subval_fields is None:
+                    return None
+                if shared_fields is None:
+                    shared_fields = set(subval_fields)
+                else:
+                    shared_fields &= subval_fields
+            return shared_fields
+        typ: type | None = None
+        if isinstance(value, KnownValue) and not isinstance(value.val, type):
+            typ = type(value.val)
+        elif isinstance(value, GenericValue) and isinstance(value.typ, type):
+            typ = value.typ
+        elif isinstance(value, TypedValue) and isinstance(value.typ, type):
+            typ = value.typ
+        if typ is None or not self._is_namedtuple_class(typ):
+            return None
+        fields = safe_getattr(typ, "_fields", None)
+        if not isinstance(fields, tuple):
+            return None
+        if not all(isinstance(field, str) for field in fields):
+            return None
+        return set(fields)
+
+    def _is_namedtuple_field_attribute(self, root_value: Value, attr_name: str) -> bool:
+        fields = self._namedtuple_fields_for_attribute_root(root_value)
+        return fields is not None and attr_name in fields
+
+    def _show_namedtuple_attribute_mutation_error(self, node: ast.Attribute) -> None:
+        self._show_error_if_checking(
+            node,
+            f"Cannot mutate NamedTuple field {node.attr!r}",
+            error_code=ErrorCode.incompatible_assignment,
+        )
 
     def _is_final_member(
         self, class_key: type | str, member_name: str, member_value: Value | None = None
@@ -9034,17 +9123,29 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     f"Cannot assign to final name {node.attr}",
                     error_code=ErrorCode.incompatible_assignment,
                 )
-            if (
+            is_frozen_dataclass_assignment = (
                 not is_final_assignment
                 and self._is_assignment_to_frozen_dataclass_attribute(
                     root_composite.value
                 )
-            ):
+            )
+            if is_frozen_dataclass_assignment:
                 self._show_error_if_checking(
                     node,
                     "Dataclass is frozen",
                     error_code=ErrorCode.incompatible_assignment,
                 )
+            is_namedtuple_field = self._is_namedtuple_field_attribute(
+                root_composite.value, node.attr
+            )
+            if is_namedtuple_field:
+                self._show_namedtuple_attribute_mutation_error(node)
+            if (
+                not is_final_assignment
+                and not is_frozen_dataclass_assignment
+                and not is_namedtuple_field
+            ):
+                self._check_attribute_assignment_type(node, root_composite)
             if (
                 composite is not None
                 and self.scopes.scope_type() == ScopeType.function_scope
@@ -9089,6 +9190,10 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 use_fallback=True,
                 ignore_none=self.options.get_value_for(IgnoreNoneAttributes),
             )
+            if isinstance(node.ctx, ast.Del) and self._is_namedtuple_field_attribute(
+                root_composite.value, node.attr
+            ):
+                self._show_namedtuple_attribute_mutation_error(node)
             self.check_deprecation(node, value)
             if self._should_use_varname_value(value):
                 varname_value = self.checker.maybe_get_variable_name_value(node.attr)
@@ -9110,6 +9215,96 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         else:
             self.show_error(node, "Unknown context", ErrorCode.unexpected_node)
             return Composite(AnyValue(AnySource.error), composite, node)
+
+    def _get_attribute_value_for_assignment(
+        self, root_composite: Composite, attr: str, node: ast.Attribute
+    ) -> Value:
+        lookup_composite = root_composite
+        root_value = replace_fallback(root_composite.value)
+        if isinstance(root_value, KnownValue) and not isinstance(root_value.val, type):
+            lookup_composite = Composite(
+                TypedValue(type(root_value.val)),
+                root_composite.varname,
+                root_composite.node,
+            )
+            root_value = lookup_composite.value
+        if isinstance(root_value, (MultiValuedValue, IntersectionValue)):
+            return UNINITIALIZED_VALUE
+        ctx = _AttrContext(
+            lookup_composite,
+            attr,
+            self,
+            node=node,
+            ignore_none=self.options.get_value_for(IgnoreNoneAttributes),
+            record_reads=False,
+        )
+        return attributes.get_attribute(ctx)
+
+    def _normalize_expected_attribute_type_for_assignment(
+        self, value: Value
+    ) -> Value | None:
+        if value is UNINITIALIZED_VALUE:
+            return None
+        try:
+            value = replace_fallback(value)
+        except NotAGradualType:
+            return None
+        if isinstance(value, AnyValue):
+            return None
+        if isinstance(value, AnnotatedValue):
+            normalized = self._normalize_expected_attribute_type_for_assignment(
+                value.value
+            )
+            if normalized is None:
+                return None
+            return annotate_value(normalized, value.metadata)
+        if isinstance(value, MultiValuedValue):
+            normalized_vals: list[Value] = []
+            saw_non_known = False
+            for subval in value.vals:
+                subval = replace_fallback(subval)
+                if isinstance(subval, KnownValue):
+                    normalized_vals.append(TypedValue(type(subval.val)))
+                    continue
+                normalized_subval = (
+                    self._normalize_expected_attribute_type_for_assignment(subval)
+                )
+                if normalized_subval is not None:
+                    normalized_vals.append(normalized_subval)
+                    saw_non_known = True
+            if not normalized_vals or not saw_non_known:
+                return None
+            return unite_values(*normalized_vals)
+        if isinstance(value, KnownValue):
+            return None
+        if isinstance(value, SequenceValue):
+            return TypedValue(value.typ)
+        return value
+
+    def _check_attribute_assignment_type(
+        self, node: ast.Attribute, root_composite: Composite
+    ) -> None:
+        if self.being_assigned is None:
+            return
+        if isinstance(node.value, ast.Name) and node.value.id in {"self", "cls"}:
+            return
+        expected = self._get_attribute_value_for_assignment(
+            root_composite, node.attr, node
+        )
+        expected_type = self._normalize_expected_attribute_type_for_assignment(expected)
+        if expected_type is None:
+            return
+        can_assign = has_relation(
+            expected_type, self.being_assigned, Relation.ASSIGNABLE, self
+        )
+        if isinstance(can_assign, CanAssignError):
+            self._show_error_if_checking(
+                node,
+                f"Incompatible assignment: expected {expected_type}, got"
+                f" {self.being_assigned}",
+                error_code=ErrorCode.incompatible_assignment,
+                detail=can_assign.display(),
+            )
 
     def get_attribute(
         self,

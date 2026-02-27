@@ -41,6 +41,7 @@ from .value import (
     ParamSpecKwargsValue,
     Qualifier,
     SubclassValue,
+    TypedDictValue,
     TypedValue,
     TypeVarValue,
     Value,
@@ -48,6 +49,7 @@ from .value import (
     is_async_iterable,
     is_iterable,
     make_coro_type,
+    replace_fallback,
     unite_values,
 )
 
@@ -408,6 +410,19 @@ def compute_parameters(
                     f"ParamSpec.kwargs must be used on **kwargs, not {arg.arg}",
                     error_code=ErrorCode.invalid_annotation,
                 )
+        elif kind is ParameterKind.VAR_KEYWORD and isinstance(value, TypedDictValue):
+            overlapping_params = [
+                existing.param.name
+                for existing in params
+                if existing.param.kind is not ParameterKind.POSITIONAL_ONLY
+                and existing.param.name in value.items
+            ]
+            for name in overlapping_params:
+                ctx.show_error(
+                    arg,
+                    f"Parameter {name} overlaps with TypedDict key in **kwargs",
+                    error_code=ErrorCode.invalid_annotation,
+                )
 
         param = SigParameter(arg.arg, kind, default, value)
         info = ParamInfo(param, arg, is_self)
@@ -446,11 +461,20 @@ def translate_vararg_type(
             return GenericValue(tuple, [inner_typ])
     elif kind is ParameterKind.VAR_KEYWORD:
         if has_unpack:
-            if not TypedValue(dict).is_assignable(inner_typ, can_assign_ctx):
+            if isinstance(inner_typ, TypeVarValue):
                 if error_ctx is not None and node is not None:
                     error_ctx.show_error(
                         node,
-                        "Expected dict type inside Unpack[]",
+                        "Expected TypedDict type inside Unpack[] for **kwargs",
+                        error_code=ErrorCode.invalid_annotation,
+                    )
+                return AnyValue(AnySource.error)
+            inner_typ = replace_fallback(inner_typ)
+            if not isinstance(inner_typ, TypedDictValue):
+                if error_ctx is not None and node is not None:
+                    error_ctx.show_error(
+                        node,
+                        "Expected TypedDict type inside Unpack[] for **kwargs",
                         error_code=ErrorCode.invalid_annotation,
                     )
                 return AnyValue(AnySource.error)

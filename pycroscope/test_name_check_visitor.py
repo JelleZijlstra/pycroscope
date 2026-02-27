@@ -782,6 +782,43 @@ class TestImportFailureHandlingCodeSamples(TestNameCheckVisitorBase):
         c = C()
         c.x = 2  # E: incompatible_assignment
 
+    @assert_passes()
+    def test_namedtuple_attribute_is_immutable(self):
+        from typing import NamedTuple
+
+        class Point(NamedTuple):
+            x: int
+
+        p = Point(1)
+
+        def mutate() -> None:
+            p.x = 2  # E: incompatible_assignment
+            del p.x  # E: incompatible_assignment
+
+    @assert_passes(allow_import_failures=True)
+    def test_namedtuple_attribute_is_immutable_after_import_failure(self):
+        boom = 1 / 0
+
+        from typing import NamedTuple
+
+        class Point(NamedTuple):
+            x: int
+
+        p = Point(1)
+        p.x = 2  # E: incompatible_assignment
+        del p.x  # E: incompatible_assignment
+
+    @assert_passes()
+    def test_incompatible_annotated_attribute_assignment(self):
+        class C:
+            x: int
+
+            def __init__(self) -> None:
+                self.x = 1
+
+        c = C()
+        c.x = "x"  # E: incompatible_assignment
+
 
 class TestNameCheckVisitor(TestNameCheckVisitorBase):
     @assert_passes(allow_import_failures=True)

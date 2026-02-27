@@ -11,10 +11,8 @@ annotations_forward_refs
 annotations_generators
 annotations_typeexpr
 callables_annotation
-callables_kwargs
 callables_protocol
 classes_classvar
-classes_override
 constructors_call_init
 constructors_call_metaclass
 constructors_call_new
@@ -47,7 +45,6 @@ generics_paramspec_semantics
 generics_paramspec_specialization
 generics_scoping
 generics_self_advanced
-generics_self_attributes
 generics_self_basic
 generics_self_usage
 generics_syntax_declarations
@@ -65,7 +62,6 @@ literals_literalstring
 literals_parameterizations
 literals_semantics
 namedtuples_define_class
-namedtuples_usage
 overloads_definitions_stub
 overloads_basic
 protocols_class_objects
