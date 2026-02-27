@@ -35,6 +35,7 @@
 - Tighten TypedDict conformance by enforcing class-syntax and inheritance checks in importable modules (not only fallback analysis), and by ignoring uninhabitable `NotRequired[Never]` keys in `TypedDict.update()`.
 - Respect declared `TypeVar` variance in generic assignability and subtyping checks, so covariant, contravariant, and invariant type parameters are enforced correctly.
 - Fix callable subtyping checks for `**kwargs` so callable protocols compare keyword value types correctly even with invariant generic relation checking.
+- Tighten `**kwargs: Unpack[...]` callable handling: pycroscope now requires a concrete `TypedDict` inside `Unpack` for `**kwargs`, rejects overlapping named parameters, and disallows assigning plain keyword-only callables to protocols that require unpacked `TypedDict` kwargs.
 - Remove the unused `requirements.txt` contributor setup file; local development setup now uses `uv sync` and `uv run`.
 - Improve inference for function-local `collections.namedtuple(...)` definitions by modeling the generated class as a synthetic local class object with a stable qualified name.
 - Tighten TypedDict operation checking: declared TypedDict variables now keep TypedDict semantics after reassignment, dict literals with unknown or non-literal keys are rejected when assigning to TypedDicts, and `TypedDict.clear()`/`TypedDict.popitem()` now report errors for non-closed TypedDicts or when required/readonly keys are possible.

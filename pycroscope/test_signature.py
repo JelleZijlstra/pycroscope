@@ -410,6 +410,14 @@ class TestCanAssign:
             Signature.make([P("a", annotation=bad_td, kind=K.VAR_KEYWORD)]),
         )
 
+    def test_typed_dict_var_keyword_not_erased(self) -> None:
+        kwargs_td = TypedDictValue({"a": TypedDictEntry(TypedValue(int))})
+        sig = Signature.make([P("kwargs", annotation=kwargs_td, kind=K.VAR_KEYWORD)])
+        assert list(sig.parameters) == ["kwargs"]
+        kwargs_param = sig.get_param_of_kind(K.VAR_KEYWORD)
+        assert kwargs_param is not None
+        assert kwargs_param.annotation == kwargs_td
+
     def test_overloads(self) -> None:
         sig1 = Signature.make([], TypedValue(str))
         sig2 = Signature.make([P("x", annotation=TypedValue(int))], TypedValue(int))
@@ -514,6 +522,27 @@ class TestCalls(TestNameCheckVisitorBase):
             ok2: StrKwargs6 = int_str_kwargs
             ok3: IntKwargs6 = int_str_kwargs
             print(ok1, ok2, ok3)
+
+    @assert_passes()
+    def test_callable_subtyping_unpack_kwargs_requires_kwargs(self):
+        from typing import Protocol
+
+        from typing_extensions import NotRequired, Required, TypedDict, Unpack
+
+        class TD(TypedDict):
+            v1: Required[int]
+            v2: NotRequired[str]
+
+        class WantsTypedDictKwargs(Protocol):
+            def __call__(self, **kwargs: Unpack[TD]) -> None: ...
+
+        def with_unpack(**kwargs: Unpack[TD]) -> None: ...
+
+        def explicit_only(*, v1: int, v2: str = "") -> None: ...
+
+        ok: WantsTypedDictKwargs = with_unpack
+        bad: WantsTypedDictKwargs = explicit_only  # E: incompatible_assignment
+        print(ok, bad)
 
     @assert_passes()
     def test_error_location(self):
@@ -1541,6 +1570,35 @@ class TestUnpack(TestNameCheckVisitorBase):
 
         def bad_kwargs(**kwargs: Unpack[None]) -> None:  # E: invalid_annotation
             assert_is_value(kwargs, AnyValue(AnySource.error))
+
+    @assert_passes()
+    def test_kwargs_unpack_requires_concrete_typeddict(self):
+        from typing import TypeVar
+
+        from typing_extensions import TypedDict, Unpack
+
+        class TD(TypedDict):
+            v1: int
+
+        T = TypeVar("T", bound=TD)
+
+        def bad_kwargs(**kwargs: Unpack[T]) -> None:  # E: invalid_annotation
+            ...
+
+    @assert_passes()
+    def test_kwargs_unpack_disallows_overlapping_parameters(self):
+        from typing_extensions import NotRequired, Required, TypedDict, Unpack
+
+        class TD(TypedDict):
+            v1: Required[int]
+            v2: NotRequired[str]
+
+        def ok(v1: int, /, **kwargs: Unpack[TD]) -> None: ...
+
+        def bad(v1: int, **kwargs: Unpack[TD]) -> None:  # E: invalid_annotation
+            ...
+
+        print(ok, bad)
 
 
 class TestTooManyPosArgs(TestNameCheckVisitorBase):
