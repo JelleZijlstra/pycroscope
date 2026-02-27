@@ -953,6 +953,55 @@ class TestCallable(TestNameCheckVisitorBase):
             takes_callable(wrong_callable)  # E: incompatible_argument
 
     @assert_passes()
+    def test_invalid_literal_check_disabled_by_default(self):
+        from enum import Enum
+
+        from typing_extensions import Literal
+
+        class Animal(Enum):
+            CAT = 1
+            helper = lambda x: str(x)
+
+            @property
+            def species(self) -> str:
+                return "mammal"
+
+        def accepts(
+            member: Literal[Animal.CAT],
+            helper: Literal[Animal.helper],
+            species: Literal[Animal.species],
+            obj_type: Literal[object],
+            pi: Literal[3.14],
+        ) -> None:
+            pass
+
+        def capybara() -> None:
+            accepts(Animal.CAT, Animal.helper, Animal.species, object, 3.14)
+
+    @assert_passes(settings={ErrorCode.invalid_literal: True})
+    def test_invalid_literal_check_enabled(self):
+        from enum import Enum
+
+        from typing_extensions import Literal
+
+        class Animal(Enum):
+            CAT = 1
+            helper = lambda x: str(x)
+
+            @property
+            def species(self) -> str:
+                return "mammal"
+
+        def accepts(
+            member: Literal[Animal.CAT],
+            helper: Literal[Animal.helper],  # E: invalid_literal
+            species: Literal[Animal.species],  # E: invalid_literal
+            obj_type: Literal[object],  # E: invalid_literal
+            pi: Literal[3.14],  # E: invalid_literal
+        ) -> None:
+            pass
+
+    @assert_passes()
     def test_known_value_error(self):
         from typing_extensions import Literal
 

@@ -27,6 +27,7 @@ show errors.
 import ast
 import builtins
 import contextlib
+import enum
 import typing
 from collections.abc import Callable, Container, Generator, Hashable, Mapping, Sequence
 from contextlib import AbstractContextManager
@@ -107,6 +108,7 @@ from .value import (
     SequenceValue,
     SubclassValue,
     SyntheticClassObjectValue,
+    SyntheticEnumMember,
     TypeAlias,
     TypeAliasValue,
     TypedDictEntry,
@@ -136,6 +138,16 @@ ASYNC_CONTEXT_MANAGER_TYPES = (
 _SUBSCRIPT_RUNTIME_TYPE = TypedValue(type(list[int]))
 _UNION_RUNTIME_TYPE = TypedValue(type(int | str))
 _UNPACK_RUNTIME_TYPE = TypedValue(type(typing_extensions.Unpack[int]))
+
+
+def _is_valid_pep586_literal_value(value: object) -> bool:
+    if value is None:
+        return True
+    if type(value) in (int, bool, str, bytes):
+        return True
+    if isinstance(value, (enum.Enum, SyntheticEnumMember)):
+        return True
+    return isinstance(type(value), enum.EnumType)
 
 
 @dataclass
@@ -1076,11 +1088,23 @@ def _type_from_subscripted_value(
     if root is typing.Union:
         return unite_values(*[_type_from_value(elt, ctx) for elt in members])
     elif is_typing_name(root, "Literal"):
-        if all(isinstance(elt, KnownValue) for elt in members):
-            return unite_values(*members)
-        else:
-            ctx.show_error(f"Arguments to Literal[] must be literals, not {members}")
+        if not all(isinstance(elt, KnownValue) for elt in members):
+            ctx.show_error(
+                f"Arguments to Literal[] must be literals, not {members}",
+                error_code=ErrorCode.invalid_literal,
+            )
             return AnyValue(AnySource.error)
+        invalid_members = [
+            elt for elt in members if not _is_valid_pep586_literal_value(elt.val)
+        ]
+        if invalid_members:
+            invalid_values = ", ".join(repr(elt.val) for elt in invalid_members)
+            ctx.show_error(
+                "Arguments to Literal[] must be None, bool, int, str, bytes, or enum"
+                f" members; got {invalid_values}",
+                error_code=ErrorCode.invalid_literal,
+            )
+        return unite_values(*members)
     elif _is_tuple(root):
         if (
             len(members) == 2
@@ -1640,10 +1664,17 @@ def _value_of_origin_args(
         else:
             return _maybe_typed_value(origin)
     if is_typing_name(origin, "Literal"):
+        invalid_args = [arg for arg in args if not _is_valid_pep586_literal_value(arg)]
+        if invalid_args:
+            invalid_values = ", ".join(repr(arg) for arg in invalid_args)
+            ctx.show_error(
+                "Arguments to Literal[] must be None, bool, int, str, bytes, or enum"
+                f" members; got {invalid_values}",
+                error_code=ErrorCode.invalid_literal,
+            )
         if len(args) == 1:
             return KnownValue(args[0])
-        else:
-            return unite_values(*[KnownValue(arg) for arg in args])
+        return unite_values(*[KnownValue(arg) for arg in args])
     elif is_typing_name(origin, "TypeGuard"):
         if len(args) != 1:
             ctx.show_error("TypeGuard requires a single argument")
