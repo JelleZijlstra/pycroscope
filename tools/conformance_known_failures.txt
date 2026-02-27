@@ -72,7 +72,6 @@ protocols_generic
 protocols_recursive
 protocols_runtime_checkable
 protocols_subtyping
-protocols_variance
 qualifiers_annotated
 specialtypes_never
 typeddicts_type_consistency

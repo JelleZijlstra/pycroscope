@@ -284,6 +284,8 @@ def _strip_predicate_intersection(value: Value) -> Value:
 
 T = TypeVar("T")
 U = TypeVar("U")
+T_co = TypeVar("T_co", covariant=True)
+U_co = TypeVar("U_co", covariant=True)
 AwaitableValue = GenericValue(collections.abc.Awaitable, [TypeVarValue(T)])
 KnownNone = KnownValue(None)
 ExceptionValue = TypedValue(BaseException) | SubclassValue(TypedValue(BaseException))
@@ -389,8 +391,8 @@ if asynq is not None:
     SAFE_DECORATORS_FOR_ARGSPEC_TO_RETVAL.append(KnownValue(asynq.asynq))
 
 
-class CustomContextManager(Protocol[T, U]):
-    def __enter__(self) -> T:
+class CustomContextManager(Protocol[T_co, U_co]):
+    def __enter__(self) -> T_co:
         raise NotImplementedError
 
     def __exit__(
@@ -398,12 +400,12 @@ class CustomContextManager(Protocol[T, U]):
         __exc_type: type[BaseException] | None,
         __exc_value: BaseException | None,
         __traceback: types.TracebackType | None,
-    ) -> U:
+    ) -> U_co:
         raise NotImplementedError
 
 
-class AsyncCustomContextManager(Protocol[T, U]):
-    async def __aenter__(self) -> T:
+class AsyncCustomContextManager(Protocol[T_co, U_co]):
+    async def __aenter__(self) -> T_co:
         raise NotImplementedError
 
     async def __aexit__(
@@ -411,7 +413,7 @@ class AsyncCustomContextManager(Protocol[T, U]):
         __exc_type: type[BaseException] | None,
         __exc_value: BaseException | None,
         __traceback: types.TracebackType | None,
-    ) -> U:
+    ) -> U_co:
         raise NotImplementedError
 
 
@@ -1196,6 +1198,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     _synthetic_classes_by_name: dict[str, SyntheticClassObjectValue]
     _synthetic_abstract_methods: dict[str, set[str]]
     _synthetic_final_methods: dict[str, set[str]]
+    _function_decorator_kinds_by_node: dict[
+        ast.FunctionDef | ast.AsyncFunctionDef, frozenset[FunctionDecorator]
+    ]
     _type_alias_first_definition_by_scope: dict[int, dict[str, ast.AST]]
     _type_alias_unguarded_refs_by_scope: dict[int, dict[str, set[str]]]
     _method_cache: dict[type[ast.AST], Callable[[Any], Value | None]]
@@ -1360,6 +1365,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         self._synthetic_classes_by_name = {}
         self._synthetic_abstract_methods = {}
         self._synthetic_final_methods = {}
+        self._function_decorator_kinds_by_node = {}
         self._type_alias_first_definition_by_scope = {}
         self._type_alias_unguarded_refs_by_scope = {}
         self._method_cache = {}
@@ -2452,6 +2458,15 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     generic_class_key,
                     base_values,
                     declared_type_params=registered_inferred_type_params,
+                )
+            if self._is_checking() and synthetic_typeddict is None:
+                declared_type_params = (
+                    type_param_values
+                    if type_param_values
+                    else effective_type_param_values
+                )
+                self._check_protocol_type_param_variances(
+                    node, declared_type_params, base_values, class_scope_object
                 )
             if fallback_runtime_class is not None and class_scope_values is not None:
                 self._populate_fallback_runtime_class(
@@ -3642,12 +3657,16 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         node: ast.ClassDef,
         type_params: Sequence[TypeVarValue],
         base_values: Sequence[Value],
+        *,
+        is_protocol: bool = False,
     ) -> Sequence[TypeVarValue]:
         if not type_params:
             return type_params
         type_param_polarities = {tp.typevar: set() for tp in type_params}
         for base_node in node.bases:
             base = self._value_for_variance_annotation(base_node)
+            if is_protocol and self._is_protocol_base(base):
+                continue
             self._collect_type_param_polarities_from_value(
                 base, type_param_polarities, polarity=1
             )
@@ -3657,6 +3676,10 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 if statement.name in {"__init__", "__new__"}:
                     continue
+                decorator_kinds = self._function_decorator_kinds_by_node.get(
+                    statement, frozenset()
+                )
+                is_staticmethod = FunctionDecorator.staticmethod in decorator_kinds
                 all_args = [
                     *statement.args.posonlyargs,
                     *statement.args.args,
@@ -3666,7 +3689,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     all_args.append(statement.args.vararg)
                 if statement.args.kwarg is not None:
                     all_args.append(statement.args.kwarg)
-                for arg in all_args:
+                for i, arg in enumerate(all_args):
+                    if is_protocol and i == 0 and not is_staticmethod:
+                        continue
                     if arg.annotation is None:
                         continue
                     annotation_value = self._value_for_variance_annotation(
@@ -3708,7 +3733,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         inferred_type_params = []
         for type_param in type_params:
             polarities = type_param_polarities[type_param.typevar]
-            if polarities == {1}:
+            if polarities == {1} or (is_protocol and not polarities):
                 variance = Variance.COVARIANT
             elif polarities == {-1}:
                 variance = Variance.CONTRAVARIANT
@@ -3716,6 +3741,58 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 variance = Variance.INVARIANT
             inferred_type_params.append(replace(type_param, variance=variance))
         return inferred_type_params
+
+    def _check_protocol_type_param_variances(
+        self,
+        node: ast.ClassDef,
+        type_params: Sequence[TypeVarValue],
+        base_values: Sequence[Value],
+        class_scope_object: type | str | None,
+    ) -> None:
+        if not self._is_protocol_class(base_values, class_scope_object):
+            return
+        if not type_params and isinstance(class_scope_object, (type, str)):
+            type_params = tuple(
+                type_param
+                for type_param in self.get_type_parameters(class_scope_object)
+                if isinstance(type_param, TypeVarValue)
+            )
+        if not type_params:
+            return
+        checked_type_params = [
+            type_param
+            for type_param in type_params
+            if is_instance_of_typing_name(type_param.typevar, "TypeVar")
+        ]
+        if not checked_type_params:
+            return
+        inferred_type_params = self._infer_class_type_param_variances(
+            node, checked_type_params, base_values, is_protocol=True
+        )
+        for declared_type_param, inferred_type_param in zip(
+            checked_type_params, inferred_type_params
+        ):
+            if declared_type_param.variance is inferred_type_param.variance:
+                continue
+            type_param_name = safe_getattr(
+                declared_type_param.typevar,
+                "__name__",
+                str(declared_type_param.typevar),
+            )
+            self._show_error_if_checking(
+                node,
+                f"{type_param_name} should be "
+                f"{inferred_type_param.variance.display_name()}",
+                error_code=ErrorCode.invalid_annotation,
+            )
+
+    def _is_protocol_class(
+        self, base_values: Sequence[Value], class_scope_object: type | str | None
+    ) -> bool:
+        if isinstance(class_scope_object, (type, str)):
+            if self.checker.make_type_object(class_scope_object).is_protocol:
+                return True
+        return any(self._is_protocol_base(base_value) for base_value in base_values)
 
     def _align_type_params_with_runtime_class(
         self, class_obj: type | None, type_params: Sequence[TypeVarValue]
@@ -4286,6 +4363,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             is_nested_in_class=self.node_context.includes(ast.ClassDef),
             potential_function=potential_function,
         ) as info:
+            self._function_decorator_kinds_by_node[node] = info.decorator_kinds
             self.yield_checker.reset_yield_checks()
 
             if FunctionDecorator.final in info.decorator_kinds:
@@ -7565,7 +7643,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             protocol = AsyncCustomContextManager
         else:
             protocol = CustomContextManager
-        val = GenericValue(protocol, [TypeVarValue(T), TypeVarValue(U)])
+        val = GenericValue(protocol, [TypeVarValue(T_co), TypeVarValue(U_co)])
         can_assign = get_tv_map(val, context, self)
         if isinstance(can_assign, CanAssignError):
             self._show_error_if_checking(
@@ -7577,8 +7655,8 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             assigned = AnyValue(AnySource.error)
             can_suppress = False
         else:
-            assigned = can_assign.get(T, AnyValue(AnySource.generic_argument))
-            exit_assigned = can_assign.get(U, AnyValue(AnySource.generic_argument))
+            assigned = can_assign.get(T_co, AnyValue(AnySource.generic_argument))
+            exit_assigned = can_assign.get(U_co, AnyValue(AnySource.generic_argument))
             exit_boolability = get_boolability(exit_assigned)
             exit_is_bool_subtype = not isinstance(
                 has_relation(
