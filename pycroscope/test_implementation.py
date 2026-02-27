@@ -1629,6 +1629,8 @@ class TestIssubclass(TestNameCheckVisitorBase):
 
     @assert_passes()
     def test_rejects_invalid_classinfo(self) -> None:
+        from typing import Mapping
+
         from typing_extensions import (
             Protocol,
             TypeAliasType,
@@ -1659,6 +1661,8 @@ class TestIssubclass(TestNameCheckVisitorBase):
             issubclass(cls, list[int])  # E: incompatible_argument
             isinstance(obj, RP)
             issubclass(cls, RP)
+            isinstance(obj, Mapping)
+            issubclass(cls, Mapping)
 
 
 class TestCallableGuards(TestNameCheckVisitorBase):

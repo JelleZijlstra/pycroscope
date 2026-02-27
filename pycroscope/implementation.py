@@ -200,8 +200,6 @@ def _invalid_classinfo_kind(value: Value) -> str | None:
         return None
     if isinstance(value, TypedDictValue):
         return "a TypedDict"
-    if isinstance(value, GenericValue):
-        return "a parameterized generic"
     if not isinstance(value, KnownValue):
         return None
     return _invalid_classinfo_kind_runtime(value.val)
@@ -233,7 +231,9 @@ def _invalid_classinfo_kind_runtime(val: object) -> str | None:
         return None
     if safe_isinstance(origin, type) and _is_non_runtime_checkable_protocol(origin):
         return "a protocol that is not @runtime_checkable"
-    return "a parameterized generic"
+    if typing_extensions.get_args(val):
+        return "a parameterized generic"
+    return None
 
 
 def _is_non_runtime_checkable_protocol(typ: type) -> bool:
