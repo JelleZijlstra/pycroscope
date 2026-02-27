@@ -1212,6 +1212,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     current_class: type | str | None
     current_class_key: type | str | None
     current_class_type_params: Sequence[TypeVarValue] | None
+    _active_pep695_type_params: list[set[object]]
     current_enum_members: _EnumMemberTracker | None
     current_function: object | None
     current_function_info: FunctionInfo | None
@@ -1285,6 +1286,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         self.current_class = None
         self.current_class_key = None
         self.current_class_type_params = None
+        self._active_pep695_type_params = []
         self.current_synthetic_typeddict = None
         self.current_function_name = None
         self.current_function_info = None
@@ -2237,6 +2239,22 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 type_param_values = list(self.visit_type_param_values(node.type_params))
             else:
                 type_param_values = []
+            if self._is_checking() and type_param_values:
+                legacy_typevars = self._legacy_typevars_in_nodes(
+                    [
+                        *node.type_params,
+                        *node.bases,
+                        *(kw.value for kw in node.keywords),
+                    ],
+                    type_param_values,
+                )
+                if legacy_typevars:
+                    self._show_error_if_checking(
+                        node,
+                        "Class definition cannot combine old-style TypeVar declarations"
+                        " with type parameter syntax",
+                        error_code=ErrorCode.invalid_annotation,
+                    )
             base_values = self._generic_visit_list(node.bases)
             if self._is_checking():
                 self._check_protocol_base_validity(node, base_values)
@@ -2340,6 +2358,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     declared_type_params=registered_type_param_values,
                 )
             with (
+                self._active_pep695_type_param_scope(type_param_values),
                 override(self, "current_synthetic_typeddict", synthetic_typeddict),
                 override(self, "current_class_key", class_key),
                 override(
@@ -3919,6 +3938,39 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 type_params = self.visit_type_param_values(node.type_params)
             else:
                 type_params = []
+            if type_params and not isinstance(node, ast.Lambda):
+                annotation_nodes: list[ast.AST] = [*node.type_params]
+                annotation_nodes.extend(
+                    arg.annotation
+                    for arg in (
+                        *node.args.posonlyargs,
+                        *node.args.args,
+                        *node.args.kwonlyargs,
+                    )
+                    if arg.annotation is not None
+                )
+                if (
+                    node.args.vararg is not None
+                    and node.args.vararg.annotation is not None
+                ):
+                    annotation_nodes.append(node.args.vararg.annotation)
+                if (
+                    node.args.kwarg is not None
+                    and node.args.kwarg.annotation is not None
+                ):
+                    annotation_nodes.append(node.args.kwarg.annotation)
+                if node.returns is not None:
+                    annotation_nodes.append(node.returns)
+                legacy_typevars = self._legacy_typevars_in_nodes(
+                    annotation_nodes, type_params
+                )
+                if legacy_typevars:
+                    self._show_error_if_checking(
+                        node,
+                        "Function definition cannot combine old-style TypeVar"
+                        " declarations with type parameter syntax",
+                        error_code=ErrorCode.invalid_annotation,
+                    )
             params = compute_parameters(
                 node,
                 enclosing_class,
@@ -4051,6 +4103,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     is_classmethod=FunctionDecorator.classmethod
                     in info.decorator_kinds,
                 ),
+                self._active_pep695_type_param_scope(info.type_params),
                 override(self, "yield_checker", YieldChecker(self)),
                 override(self, "is_async_def", isinstance(node, ast.AsyncFunctionDef)),
                 override(self, "current_function_name", node.name),
@@ -7737,6 +7790,20 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     def _current_scope_key(self) -> int:
         return id(self.scopes.current_scope())
 
+    @contextlib.contextmanager
+    def _active_pep695_type_param_scope(
+        self, type_params: Sequence[TypeVarValue]
+    ) -> Iterator[None]:
+        if not type_params:
+            yield
+            return
+        type_param_identities = {param.typevar for param in type_params}
+        self._active_pep695_type_params.append(type_param_identities)
+        try:
+            yield
+        finally:
+            self._active_pep695_type_params.pop()
+
     def _record_type_alias_structure(
         self, name: str, alias_node: ast.AST, value_node: ast.AST
     ) -> None:
@@ -7811,27 +7878,41 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             return value.val
         return None
 
+    def _legacy_typevars_in_nodes(
+        self,
+        nodes: Iterable[ast.AST],
+        declared_type_params: Sequence[TypeVarValue],
+        *,
+        include_active_type_params: bool = True,
+    ) -> set[str]:
+        declared = {param.typevar for param in declared_type_params}
+        if include_active_type_params:
+            declared.update(chain.from_iterable(self._active_pep695_type_params))
+        legacy: set[str] = set()
+        for node in nodes:
+            for subnode in ast.walk(node):
+                if not isinstance(subnode, ast.Name) or not isinstance(
+                    subnode.ctx, ast.Load
+                ):
+                    continue
+                resolved, _ = self.resolve_name(
+                    subnode, error_node=subnode, suppress_errors=True
+                )
+                for subval in flatten_values(resolved, unwrap_annotated=True):
+                    identity = self._type_param_identity(subval)
+                    if identity is None:
+                        continue
+                    if identity not in declared:
+                        legacy.add(subnode.id)
+                    break
+        return legacy
+
     def _legacy_typevars_in_alias_expr(
         self, value_node: ast.AST, declared_type_params: Sequence[TypeVarValue]
     ) -> set[str]:
-        declared = {param.typevar for param in declared_type_params}
-        legacy: set[str] = set()
-        for subnode in ast.walk(value_node):
-            if not isinstance(subnode, ast.Name) or not isinstance(
-                subnode.ctx, ast.Load
-            ):
-                continue
-            resolved, _ = self.resolve_name(
-                subnode, error_node=subnode, suppress_errors=True
-            )
-            for subval in flatten_values(resolved, unwrap_annotated=True):
-                identity = self._type_param_identity(subval)
-                if identity is None:
-                    continue
-                if identity not in declared:
-                    legacy.add(subnode.id)
-                break
-        return legacy
+        return self._legacy_typevars_in_nodes(
+            [value_node], declared_type_params, include_active_type_params=False
+        )
 
     if sys.version_info >= (3, 12):
 
