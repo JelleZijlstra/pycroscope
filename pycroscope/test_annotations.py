@@ -2101,6 +2101,47 @@ class TestTypeAlias(TestNameCheckVisitorBase):
             assert_is_value(y_quoted, TypedValue(int))
             assert_is_value(z, TypedValue(int))
 
+    @assert_passes()
+    def test_unspecialized_typevar_alias_defaults_to_any(self):
+        from typing import Any, TypeVar
+
+        from typing_extensions import assert_type
+
+        T = TypeVar("T")
+        Alias = list[T]
+
+        def capybara(x: Alias) -> None:
+            assert_type(x, list[Any])
+
+    @assert_passes()
+    def test_generic_alias_constructor_call_preserves_type_args(self):
+        from typing_extensions import assert_type
+
+        ListAlias = list
+        x = ListAlias[int]()
+        assert_type(x, list[int])
+
+    @assert_passes()
+    def test_generic_alias_object_constructor_call_preserves_type_args(self):
+        from typing_extensions import assert_type
+
+        GenericCtor = list[int]
+        x = GenericCtor()
+        assert_type(x, list[int])
+
+    @assert_passes()
+    def test_unspecialized_two_param_alias_defaults_type_params_to_any(self):
+        from typing import Any, TypeVar
+
+        from typing_extensions import assert_type
+
+        K = TypeVar("K")
+        V = TypeVar("V")
+        Alias = dict[K, V]
+
+        def capybara(x: Alias) -> None:
+            assert_type(x, dict[Any, Any])
+
 
 class TestUnpack(TestNameCheckVisitorBase):
     @assert_passes()
