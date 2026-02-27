@@ -38,3 +38,15 @@ class TestOverride(TestNameCheckVisitorBase):
             @override
             def no_base_method(self):  # E: override_does_not_override
                 pass
+
+    @assert_passes()
+    def test_any_derived_base(self):
+        from typing_extensions import Any, override
+
+        class Base(Any):
+            pass
+
+        class Capybara(Base):
+            @override
+            def method(self):
+                pass

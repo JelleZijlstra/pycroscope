@@ -247,6 +247,7 @@ from .value import (
     concrete_values_from_iterable,
     flatten_values,
     get_tv_map,
+    has_any_base_value,
     is_async_iterable,
     is_iterable,
     is_union,
@@ -1799,12 +1800,58 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     def _has_base_attribute_for(
         self, current_class: type | str | None, varname: str, node: ast.AST
     ) -> bool:
-        for _, base_value in self._get_base_class_attributes_for(
+        for base_class, base_value in self._get_base_class_attributes_for(
             current_class, varname, node
         ):
-            if isinstance(replace_fallback(base_value), AnyValue):
+            base_value = replace_fallback(base_value)
+            if isinstance(base_value, AnyValue):
+                if self._base_class_has_any_base(base_class, set()):
+                    return True
                 continue
             return True
+        if current_class is None:
+            return False
+        return self._base_class_has_any_base(current_class, set())
+
+    def _base_class_has_any_base(
+        self, base_class: type | str, seen: set[type | str]
+    ) -> bool:
+        if isinstance(base_class, type):
+            return safe_issubclass(base_class, typing.Any)
+        if base_class in seen:
+            return False
+        seen.add(base_class)
+
+        synthetic_class = self._synthetic_classes_by_name.get(base_class)
+        if synthetic_class is not None and any(
+            self._base_value_has_any_base(base, seen)
+            for base in synthetic_class.base_classes
+        ):
+            return True
+
+        for ancestor in self.checker.get_generic_bases(base_class):
+            if ancestor != base_class and self._base_class_has_any_base(ancestor, seen):
+                return True
+        return False
+
+    def _base_value_has_any_base(
+        self, base_value: Value, seen: set[type | str]
+    ) -> bool:
+        if has_any_base_value(base_value):
+            return True
+        base_value = replace_fallback(base_value)
+        if isinstance(base_value, SyntheticClassObjectValue):
+            class_type = base_value.class_type
+            if isinstance(class_type, TypedValue) and isinstance(class_type.typ, str):
+                return self._base_class_has_any_base(class_type.typ, seen)
+            return False
+        if isinstance(base_value, GenericValue):
+            if isinstance(base_value.typ, str):
+                return self._base_class_has_any_base(base_value.typ, seen)
+            return False
+        if isinstance(base_value, TypedValue):
+            if isinstance(base_value.typ, str):
+                return self._base_class_has_any_base(base_value.typ, seen)
         return False
 
     def _get_base_class_attributes_for(

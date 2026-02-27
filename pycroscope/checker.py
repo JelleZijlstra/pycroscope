@@ -62,6 +62,7 @@ from .value import (
     VariableNameValue,
     annotate_value,
     flatten_values,
+    has_any_base_value,
     is_union,
     replace_fallback,
     unite_values,
@@ -745,19 +746,7 @@ class Checker:
             return None
 
     def _synthetic_class_has_any_base(self, value: SyntheticClassObjectValue) -> bool:
-        return any(self._synthetic_base_is_any(base) for base in value.base_classes)
-
-    def _synthetic_base_is_any(self, base: Value) -> bool:
-        base = replace_fallback(base)
-        if isinstance(base, MultiValuedValue):
-            return any(self._synthetic_base_is_any(subval) for subval in base.vals)
-        if isinstance(base, AnyValue):
-            return True
-        if isinstance(base, KnownValue):
-            return is_typing_name(base.val, "Any")
-        if isinstance(base, TypedValue):
-            return is_typing_name(base.typ, "Any")
-        return False
+        return any(has_any_base_value(base) for base in value.base_classes)
 
     def _make_synthetic_class_instance_value(
         self, value: SyntheticClassObjectValue

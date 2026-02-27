@@ -53,6 +53,7 @@ from pycroscope.extensions import CustomCheck, ExternalType, PredicateCheck
 from pycroscope.safe import (
     all_of_type,
     is_instance_of_typing_name,
+    is_typing_name,
     safe_equals,
     safe_getattr,
     safe_isinstance,
@@ -2628,6 +2629,37 @@ def replace_fallback(val: Value) -> BasicType:
     if not isinstance(val, BASIC_TYPE):
         raise NotAGradualType(f"Encountered non-basic type {val!r}")
     return val
+
+
+def has_any_base_value(val: Value, *, _seen: set[int] | None = None) -> bool:
+    """Whether a base-class value implies dynamic ``Any``-base behavior."""
+    val = replace_fallback(val)
+    if isinstance(val, MultiValuedValue):
+        return any(has_any_base_value(subval, _seen=_seen) for subval in val.vals)
+    if isinstance(val, AnyValue):
+        return True
+    if isinstance(val, SyntheticClassObjectValue):
+        seen = set() if _seen is None else _seen
+        val_id = id(val)
+        if val_id in seen:
+            return False
+        seen.add(val_id)
+        return any(has_any_base_value(base, _seen=seen) for base in val.base_classes)
+    if isinstance(val, GenericValue):
+        return _is_any_base_type(val.typ)
+    if isinstance(val, TypedValue):
+        return _is_any_base_type(val.typ)
+    if isinstance(val, KnownValue):
+        return _is_any_base_type(val.val)
+    return False
+
+
+def _is_any_base_type(typ: object) -> bool:
+    if is_typing_name(typ, "Any"):
+        return True
+    if isinstance(typ, type):
+        return safe_issubclass(typ, typing.Any)
+    return False
 
 
 def is_union(val: Value) -> bool:
