@@ -31,6 +31,7 @@
 - Preserve generic base information for synthetic classes in static fallback mode, so subclasses like `class D(dict[str, int])` are assignable to `dict[str, int]`.
 - Improve tuple typing behavior by validating invalid `tuple[..., ...]`/multi-unbounded-unpack forms, preserving `tuple[T, ...]` semantics when runtime imports fail, and improving tuple narrowing in sequence-pattern `match` cases.
 - Improve NamedTuple analysis in both normal and import-failure fallback modes: class-syntax NamedTuple definitions now enforce field/base-class rules, constructor/type inference is more precise (including generics), and tuple indexing/unpacking/type-compat checks now use NamedTuple field types instead of falling back to `Any`.
+- Tighten attribute-store checks: assigning to or deleting `NamedTuple` fields through attribute syntax now reports errors, and assignments to existing annotated attributes now report `incompatible_assignment` when types do not match.
 - Replace internal `**kwargs` TypedDict special-casing with dictionary-entry modeling, so TypedDict dict/Mapping assignability rules stay consistent while dict-method calls on TypedDict values still type-check correctly.
 - Tighten TypedDict conformance by enforcing class-syntax and inheritance checks in importable modules (not only fallback analysis), and by ignoring uninhabitable `NotRequired[Never]` keys in `TypedDict.update()`.
 - Respect declared `TypeVar` variance in generic assignability and subtyping checks, so covariant, contravariant, and invariant type parameters are enforced correctly.
