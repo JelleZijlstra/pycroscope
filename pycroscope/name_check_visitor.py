@@ -3255,6 +3255,8 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
 
     @staticmethod
     def _is_dataclass_decorator_value(value: Value) -> bool:
+        if value is UNINITIALIZED_VALUE:
+            return False
         value = replace_fallback(value)
         if isinstance(value, AnnotatedValue):
             return NameCheckVisitor._is_dataclass_decorator_value(value.value)
