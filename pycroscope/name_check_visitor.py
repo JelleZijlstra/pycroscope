@@ -1817,7 +1817,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         self, base_class: type | str, seen: set[type | str]
     ) -> bool:
         if isinstance(base_class, type):
-            return safe_issubclass(base_class, typing.Any)
+            return has_any_base_value(TypedValue(base_class))
         if base_class in seen:
             return False
         seen.add(base_class)

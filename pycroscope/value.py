@@ -2658,7 +2658,8 @@ def _is_any_base_type(typ: object) -> bool:
     if is_typing_name(typ, "Any"):
         return True
     if isinstance(typ, type):
-        return safe_issubclass(typ, typing.Any)
+        mro = safe_getattr(typ, "__mro__", ())
+        return any(is_typing_name(base, "Any") for base in mro)
     return False
 
 
