@@ -61,7 +61,6 @@ generics_typevartuple_callable
 generics_typevartuple_concat
 generics_typevartuple_specialization
 generics_typevartuple_unpack
-generics_upper_bound
 generics_variance
 literals_literalstring
 literals_parameterizations
