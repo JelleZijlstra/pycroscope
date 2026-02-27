@@ -248,6 +248,8 @@ def compute_parameters(
     is_classmethod: bool = False,
 ) -> Sequence[ParamInfo]:
     """Visits and checks the arguments to a function."""
+    from .annotations import has_invalid_paramspec_usage
+
     defaults = [_visit_default(node, ctx) for node in node.args.defaults]
     kw_defaults = [
         None if kw_default is None else _visit_default(kw_default, ctx)
@@ -341,16 +343,28 @@ def compute_parameters(
                         error_code=ErrorCode.invalid_annotation,
                     )
                 value = AnyValue(AnySource.error)
-            elif default is not None and inner_value is not None:
-                tv_map = has_relation(inner_value, default, Relation.ASSIGNABLE, ctx)
-                if isinstance(tv_map, CanAssignError):
+            else:
+                if inner_value is not None and has_invalid_paramspec_usage(
+                    inner_value, ctx
+                ):
                     ctx.show_error(
                         arg,
-                        f"Default value for argument {arg.arg} incompatible"
-                        f" with declared type {inner_value}",
-                        error_code=ErrorCode.incompatible_default,
-                        detail=tv_map.display(),
+                        "ParamSpec cannot be used in this annotation context",
+                        error_code=ErrorCode.invalid_annotation,
                     )
+                    value = AnyValue(AnySource.error)
+                elif default is not None and inner_value is not None:
+                    tv_map = has_relation(
+                        inner_value, default, Relation.ASSIGNABLE, ctx
+                    )
+                    if isinstance(tv_map, CanAssignError):
+                        ctx.show_error(
+                            arg,
+                            f"Default value for argument {arg.arg} incompatible"
+                            f" with declared type {inner_value}",
+                            error_code=ErrorCode.incompatible_default,
+                            detail=tv_map.display(),
+                        )
         elif is_self:
             assert enclosing_class is not None
             if is_classmethod or getattr(node, "name", None) in IMPLICIT_CLASSMETHODS:

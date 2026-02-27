@@ -1,6 +1,8 @@
 # static analysis: ignore
+from .annotations import has_invalid_paramspec_usage
 from .error_code import ErrorCode
 from .implementation import assert_is_value
+from .signature import OverloadedSignature, Signature, SigParameter
 from .test_name_check_visitor import TestNameCheckVisitorBase
 from .test_node_visitor import assert_passes, skip_before, skip_if_not_installed
 from .tests import make_simple_sequence
@@ -1929,6 +1931,17 @@ class TestParamSpec(TestNameCheckVisitorBase):
             pass
 
     @assert_passes()
+    def test_additional_invalid_annotation_contexts(self):
+        from typing import Callable
+
+        from typing_extensions import ParamSpec
+
+        P = ParamSpec("P")
+
+        _x: list[P]  # E: invalid_annotation
+        _y: Callable[[int, str], P]  # E: invalid_annotation
+
+    @assert_passes()
     def test_basic(self):
         from typing import Callable, List, TypeVar
 
@@ -2164,6 +2177,22 @@ class TestParamSpec(TestNameCheckVisitorBase):
             func(*args, **kwargs, **kwargs)  # E: incompatible_call
             func(*args, **kwargs)
 
+    def test_invalid_paramspec_usage_on_overloaded_signature(self):
+        overloaded = OverloadedSignature(
+            [
+                Signature.make(
+                    [SigParameter("x", annotation=TypedValue(int))],
+                    return_annotation=TypedValue(int),
+                ),
+                Signature.make(
+                    [SigParameter("x", annotation=TypedValue(str))],
+                    return_annotation=TypedValue(str),
+                ),
+            ]
+        )
+        value = CallableValue(overloaded)
+        assert not has_invalid_paramspec_usage(value, can_assign_ctx=None)
+
 
 class TestTypeAlias(TestNameCheckVisitorBase):
     @assert_passes()
@@ -2180,6 +2209,16 @@ class TestTypeAlias(TestNameCheckVisitorBase):
             assert_is_value(x_quoted, TypedValue(int))
             assert_is_value(y_quoted, TypedValue(int))
             assert_is_value(z, TypedValue(int))
+
+    @assert_passes()
+    def test_bare_paramspec_is_invalid(self):
+        from typing import Callable
+
+        from typing_extensions import ParamSpec, TypeAlias
+
+        P = ParamSpec("P")
+        Bad: TypeAlias = P  # E: invalid_annotation
+        Good: TypeAlias = Callable[P, int]
 
     @assert_passes()
     def test_unspecialized_typevar_alias_defaults_to_any(self):

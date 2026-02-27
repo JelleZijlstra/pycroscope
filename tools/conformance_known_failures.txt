@@ -39,7 +39,6 @@ generics_basic
 generics_defaults
 generics_defaults_referential
 generics_defaults_specialization
-generics_paramspec_basic
 generics_paramspec_components
 generics_paramspec_semantics
 generics_paramspec_specialization

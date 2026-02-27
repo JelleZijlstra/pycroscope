@@ -1908,27 +1908,6 @@ def _any_impl(ctx: CallContext) -> Value:
 _TYPEDDICT_OPTION_KEYWORDS = {"total", "closed", "extra_items"}
 
 
-def _call_assignment_target_name(ctx: CallContext) -> str | None:
-    if not isinstance(ctx.node, ast.Call):
-        return None
-    parent = ctx.visitor.node_context.nth_parent(2)
-    if (
-        isinstance(parent, ast.Assign)
-        and parent.value is ctx.node
-        and len(parent.targets) == 1
-    ):
-        target = parent.targets[0]
-        if isinstance(target, ast.Name):
-            return target.id
-    if (
-        isinstance(parent, ast.AnnAssign)
-        and parent.value is ctx.node
-        and isinstance(parent.target, ast.Name)
-    ):
-        return parent.target.id
-    return None
-
-
 def _get_known_kwargs_entries(kwargs_value: Value) -> dict[str, tuple[bool, Value]]:
     kwargs_value = replace_known_sequence_value(kwargs_value)
     entries: dict[str, tuple[bool, Value]] = {}
@@ -2079,17 +2058,6 @@ def _typeddict_impl(ctx: CallContext) -> Value:
                     )
                     has_qualifying_error = True
                     break
-
-    typename = ctx.vars["typename"]
-    if isinstance(typename, KnownValue) and isinstance(typename.val, str):
-        assigned_name = _call_assignment_target_name(ctx)
-        if assigned_name is not None and assigned_name != typename.val:
-            ctx.show_error(
-                "TypedDict name argument must match the assignment target name",
-                ErrorCode.incompatible_call,
-                arg="typename",
-            )
-            has_qualifying_error = True
 
     if not has_qualifying_error:
         synthetic_value = _typeddict_synthetic_value(
@@ -2257,14 +2225,6 @@ def _newtype_impl(ctx: CallContext) -> Value:
         return ctx.inferred_return_value
 
     has_qualifying_error = False
-    assigned_name = _call_assignment_target_name(ctx)
-    if assigned_name is not None and assigned_name != name_value.val:
-        ctx.show_error(
-            "NewType name argument must match the assignment target name",
-            ErrorCode.incompatible_call,
-            arg="name",
-        )
-        has_qualifying_error = True
 
     supertype = type_from_value(ctx.vars["tp"], ctx.visitor, ctx.ast_for_arg("tp"))
     if (
