@@ -910,6 +910,7 @@ class ArgSpecCache:
                 else:
                     if override is not None:
                         constructor = override
+                        inspect_sig = self._safe_get_signature(constructor)
 
                     # We pick __new__ if it is implemented as a Python function only;
                     # if we picked it whenever it was overridden we'd get too many C
@@ -921,9 +922,13 @@ class ArgSpecCache:
                     elif isinstance(obj.__new__, FunctionType):
                         is_dunder_new = True
                         constructor = obj.__new__
+                        inspect_sig = self._safe_get_signature(constructor)
+                    elif self._is_plain_object_constructor(obj):
+                        constructor = obj.__init__
+                        inspect_sig = inspect.Signature(parameters=[_SELF_PARAM])
                     else:
                         constructor = obj.__init__
-                    inspect_sig = self._safe_get_signature(constructor)
+                        inspect_sig = self._safe_get_signature(constructor)
                 if inspect_sig is None:
                     return Signature.make(
                         [ELLIPSIS_PARAM],
@@ -1009,6 +1014,13 @@ class ArgSpecCache:
             return True
         type_params = safe_getattr(obj, "__parameters__", ())
         return bool(type_params)
+
+    @staticmethod
+    def _is_plain_object_constructor(obj: type) -> bool:
+        return (
+            safe_getattr(obj, "__init__", None) is object.__init__
+            and safe_getattr(obj, "__new__", None) is object.__new__
+        )
 
     def _namedtuple_constructor_signature(
         self, obj: type, type_params: Sequence[Value]

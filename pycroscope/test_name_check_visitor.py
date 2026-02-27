@@ -1355,6 +1355,41 @@ class TestSubclassValue(TestNameCheckVisitorBase):
             assert_is_value(cls("x"), TypedValue(bytes))
 
     @assert_passes()
+    def test_default_constructor_call(self):
+        class C:
+            pass
+
+        def capybara(cls: type[C]) -> None:
+            cls()
+            cls(1)  # E: incompatible_call
+
+    @assert_passes()
+    def test_unbounded_typevar_constructor_call(self):
+        from typing import TypeVar
+
+        T = TypeVar("T")
+
+        def capybara(cls: type[T]) -> None:
+            cls()
+            cls(1)  # E: incompatible_call
+
+    @assert_passes()
+    def test_bound_typevar_constructor_call(self):
+        from typing import TypeVar
+
+        class Base:
+            def __init__(self, x: int, y: str) -> None:
+                pass
+
+        T = TypeVar("T", bound=Base)
+
+        def capybara(cls: type[T]) -> None:
+            cls(x=1, y="")
+            cls()  # E: incompatible_call
+            cls(1)  # E: incompatible_call
+            cls(1, 2)  # E: incompatible_argument
+
+    @assert_passes()
     def test_type_union(self):
         from typing import Type, Union
 
@@ -1685,6 +1720,45 @@ class TestNewType(TestNameCheckVisitorBase):
             assert_type(nt, NT)
             assert_type(nt * 2, tuple[int, ...])
             assert_type(nt[0], int)
+
+    @assert_passes(allow_import_failures=True)
+    def test_static_fallback_behavior(self):
+        from typing import Any, Hashable, Literal, NewType, TypedDict, TypeVar
+
+        from typing_extensions import assert_type
+
+        UserId = NewType("UserId", int)
+
+        UserId("user")  # E: incompatible_argument
+        u1: UserId = 42  # E: incompatible_assignment
+        u2: UserId = UserId(42)
+        assert_type(UserId(5) + 1, int)
+        _: type = UserId  # E: incompatible_assignment
+        isinstance(u2, UserId)  # E: incompatible_argument
+
+        class UserIdDerived(UserId):  # E: invalid_base
+            pass
+
+        GoodName = NewType("BadName", int)  # E: incompatible_call
+
+        GoodNewType1 = NewType("GoodNewType1", list)
+        GoodNewType2 = NewType("GoodNewType2", GoodNewType1)
+        _nt1: GoodNewType1[int]  # E: unsupported_operation
+        TypeAlias1 = dict[str, str]
+        GoodNewType3 = NewType("GoodNewType3", TypeAlias1)
+
+        BadNewType1 = NewType("BadNewType1", int | str)  # E: incompatible_call
+        T = TypeVar("T")
+        BadNewType2 = NewType("BadNewType2", list[T])  # E: incompatible_call
+        BadNewType3 = NewType("BadNewType3", Hashable)  # E: incompatible_call
+        BadNewType4 = NewType("BadNewType4", Literal[7])  # E: incompatible_call
+
+        class TD1(TypedDict):
+            a: int
+
+        BadNewType5 = NewType("BadNewType5", TD1)  # E: incompatible_call
+        BadNewType6 = NewType("BadNewType6", int, int)  # E: incompatible_call
+        BadNewType7 = NewType("BadNewType7", Any)  # E: incompatible_call
 
 
 class TestImports(TestNameCheckVisitorBase):
