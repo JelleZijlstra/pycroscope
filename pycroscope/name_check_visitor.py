@@ -133,6 +133,7 @@ from .safe import (
     all_of_type,
     is_dataclass_type,
     is_hashable,
+    is_typing_name,
     safe_getattr,
     safe_hasattr,
     safe_isinstance,
@@ -2990,12 +2991,32 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         ignore_names = self._enum_ignore_names(class_attributes.get("_ignore_"))
         member_literal_values: dict[str, object] = {}
         member_order: list[str] = []
+        missing: Value | None = None
 
         for member_name, statement in self._iter_enum_assignment_candidates(node):
-            value = class_attributes.get(member_name, AnyValue(AnySource.inference))
-            unwrapped, forced_member, forced_nonmember = (
-                self._unwrap_enum_member_wrapper(value)
+            stmt_forced_member, stmt_forced_nonmember = (
+                self._enum_statement_member_decorators(statement)
             )
+            value = class_attributes.get(member_name, missing)
+            if value is missing:
+                if stmt_forced_nonmember:
+                    continue
+                if (
+                    isinstance(
+                        statement, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
+                    )
+                    and not stmt_forced_member
+                ):
+                    continue
+                value = AnyValue(AnySource.inference)
+                unwrapped = value
+                forced_member = stmt_forced_member
+                forced_nonmember = False
+            else:
+                assert value is not None
+                unwrapped, forced_member, forced_nonmember = (
+                    self._unwrap_enum_member_wrapper(value)
+                )
 
             if member_name in ignore_names:
                 continue
@@ -3004,6 +3025,15 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             if member_name.startswith("__") and not member_name.endswith("__"):
                 continue
             if isinstance(statement, ast.AnnAssign) and statement.value is None:
+                continue
+            if stmt_forced_nonmember:
+                continue
+            if (
+                isinstance(
+                    statement, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
+                )
+                and not stmt_forced_member
+            ):
                 continue
             if forced_nonmember:
                 continue
@@ -3110,6 +3140,35 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 statement, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
             ):
                 yield statement.name, statement
+
+    @staticmethod
+    def _enum_statement_member_decorators(statement: ast.AST) -> tuple[bool, bool]:
+        if not isinstance(
+            statement, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
+        ):
+            return False, False
+
+        forced_member = False
+        forced_nonmember = False
+        for decorator in statement.decorator_list:
+            target = decorator
+            if isinstance(target, ast.Call):
+                target = target.func
+            if isinstance(target, ast.Name):
+                if target.id == "member":
+                    forced_member = True
+                elif target.id == "nonmember":
+                    forced_nonmember = True
+            elif (
+                isinstance(target, ast.Attribute)
+                and isinstance(target.value, ast.Name)
+                and target.value.id == "enum"
+            ):
+                if target.attr == "member":
+                    forced_member = True
+                elif target.attr == "nonmember":
+                    forced_nonmember = True
+        return forced_member, forced_nonmember
 
     @staticmethod
     def _unwrap_enum_member_wrapper(value: Value) -> tuple[Value, bool, bool]:
@@ -5777,6 +5836,11 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             val = self.get_attribute_from_value(source_module, alias_name)
             if val is not UNINITIALIZED_VALUE:
                 return val
+            self._try_to_import_stub(source_module.val.__name__)
+            refreshed_source_module = self._get_module(source_module.val.__name__, node)
+            val = self.get_attribute_from_value(refreshed_source_module, alias_name)
+            if val is not UNINITIALIZED_VALUE:
+                return val
 
         self._show_error_if_checking(
             node,
@@ -8327,6 +8391,11 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                             stripped_root.value.val, "TypeAliasType"
                         )
                     )
+                    or (
+                        isinstance(stripped_root.value, KnownValue)
+                        and is_typing_name(stripped_root.value.val, "Literal")
+                        and not self._is_runtime_literal_index(index)
+                    )
                 ):
                     return_value = PartialValue(
                         PartialValueOperation.SUBSCRIPT,
@@ -8426,6 +8495,17 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         elif isinstance(value, KnownValue) and isinstance(value.val, tuple):
             return tuple(KnownValue(member) for member in value.val)
         return (value,)
+
+    @staticmethod
+    def _is_runtime_literal_index(value: Value) -> bool:
+        if isinstance(value, KnownValue):
+            return True
+        if isinstance(value, SequenceValue) and value.typ is tuple:
+            members = value.get_member_sequence()
+            return members is not None and all(
+                isinstance(member, KnownValue) for member in members
+            )
+        return False
 
     def _maybe_subscript_synthetic_class(
         self, value: Value, index: Value, node: ast.Subscript

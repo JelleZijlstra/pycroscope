@@ -21,6 +21,8 @@ They are explained in more detail below.
 
 Literal types are specified by [PEP 586](https://www.python.org/dev/peps/pep-0586/). The PEP only supports Literals of int, str, bytes, bool, Enum, and None objects, but pycroscope accepts Literals over all Python objects.
 
+If you want strict PEP 586 validation, enable the `invalid_literal` error code. It is off by default.
+
 As an extension, pycroscope accepts any compatible callable for a Literal over a function type. This allows more flexible callable types.
 
 For example:

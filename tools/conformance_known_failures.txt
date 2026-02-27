@@ -37,7 +37,6 @@ directives_deprecated
 directives_type_checking
 directives_type_ignore
 directives_type_ignore_file1
-enums_members
 generics_base_class
 generics_basic
 generics_defaults
