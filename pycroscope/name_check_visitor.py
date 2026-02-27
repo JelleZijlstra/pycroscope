@@ -1197,6 +1197,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     _synthetic_classes_by_name: dict[str, SyntheticClassObjectValue]
     _synthetic_abstract_methods: dict[str, set[str]]
     _synthetic_final_methods: dict[str, set[str]]
+    _function_decorator_kinds_by_node: dict[
+        ast.FunctionDef | ast.AsyncFunctionDef, frozenset[FunctionDecorator]
+    ]
     _type_alias_first_definition_by_scope: dict[int, dict[str, ast.AST]]
     _type_alias_unguarded_refs_by_scope: dict[int, dict[str, set[str]]]
     _method_cache: dict[type[ast.AST], Callable[[Any], Value | None]]
@@ -1361,6 +1364,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         self._synthetic_classes_by_name = {}
         self._synthetic_abstract_methods = {}
         self._synthetic_final_methods = {}
+        self._function_decorator_kinds_by_node = {}
         self._type_alias_first_definition_by_scope = {}
         self._type_alias_unguarded_refs_by_scope = {}
         self._method_cache = {}
@@ -2410,7 +2414,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 )
             if self._is_checking() and synthetic_typeddict is None:
                 declared_type_params = (
-                    type_param_values if type_param_values else effective_type_param_values
+                    type_param_values
+                    if type_param_values
+                    else effective_type_param_values
                 )
                 self._check_protocol_type_param_variances(
                     node, declared_type_params, base_values, class_scope_object
@@ -3623,10 +3629,10 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 if statement.name in {"__init__", "__new__"}:
                     continue
-                is_staticmethod = any(
-                    self._is_staticmethod_decorator(decorator)
-                    for decorator in statement.decorator_list
+                decorator_kinds = self._function_decorator_kinds_by_node.get(
+                    statement, frozenset()
                 )
+                is_staticmethod = FunctionDecorator.staticmethod in decorator_kinds
                 all_args = [
                     *statement.args.posonlyargs,
                     *statement.args.args,
@@ -3722,7 +3728,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             if declared_type_param.variance is inferred_type_param.variance:
                 continue
             type_param_name = safe_getattr(
-                declared_type_param.typevar, "__name__", str(declared_type_param.typevar)
+                declared_type_param.typevar,
+                "__name__",
+                str(declared_type_param.typevar),
             )
             self._show_error_if_checking(
                 node,
@@ -3732,34 +3740,12 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             )
 
     def _is_protocol_class(
-        self,
-        base_values: Sequence[Value],
-        class_scope_object: type | str | None,
+        self, base_values: Sequence[Value], class_scope_object: type | str | None
     ) -> bool:
         if isinstance(class_scope_object, (type, str)):
             if self.checker.make_type_object(class_scope_object).is_protocol:
                 return True
         return any(self._is_protocol_base(base_value) for base_value in base_values)
-
-    def _is_staticmethod_decorator(self, decorator: ast.expr) -> bool:
-        decorator_expr = decorator.func if isinstance(decorator, ast.Call) else decorator
-        if isinstance(decorator_expr, ast.Name):
-            decorator_value = self.visit_expression(decorator_expr)
-        else:
-            decorator_value = self._value_for_variance_annotation(decorator_expr)
-        return self._is_staticmethod_decorator_value(decorator_value)
-
-    @staticmethod
-    def _is_staticmethod_decorator_value(value: Value) -> bool:
-        value = replace_fallback(value)
-        if isinstance(value, AnnotatedValue):
-            return NameCheckVisitor._is_staticmethod_decorator_value(value.value)
-        if isinstance(value, MultiValuedValue):
-            return any(
-                NameCheckVisitor._is_staticmethod_decorator_value(subval)
-                for subval in value.vals
-            )
-        return isinstance(value, KnownValue) and value.val is staticmethod
 
     def _align_type_params_with_runtime_class(
         self, class_obj: type | None, type_params: Sequence[TypeVarValue]
@@ -4330,6 +4316,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             is_nested_in_class=self.node_context.includes(ast.ClassDef),
             potential_function=potential_function,
         ) as info:
+            self._function_decorator_kinds_by_node[node] = info.decorator_kinds
             self.yield_checker.reset_yield_checks()
 
             if FunctionDecorator.final in info.decorator_kinds:
