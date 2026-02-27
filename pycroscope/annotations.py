@@ -138,6 +138,7 @@ ASYNC_CONTEXT_MANAGER_TYPES = (
 _SUBSCRIPT_RUNTIME_TYPE = TypedValue(type(list[int]))
 _UNION_RUNTIME_TYPE = TypedValue(type(int | str))
 _UNPACK_RUNTIME_TYPE = TypedValue(type(typing_extensions.Unpack[int]))
+_ENUM_TYPE = getattr(enum, "EnumType", enum.EnumMeta)
 
 
 def _is_valid_pep586_literal_value(value: object) -> bool:
@@ -147,7 +148,7 @@ def _is_valid_pep586_literal_value(value: object) -> bool:
         return True
     if isinstance(value, (enum.Enum, SyntheticEnumMember)):
         return True
-    return isinstance(type(value), enum.EnumType)
+    return isinstance(type(value), _ENUM_TYPE)
 
 
 @dataclass
