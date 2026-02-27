@@ -48,7 +48,6 @@ generics_paramspec_semantics
 generics_paramspec_specialization
 generics_scoping
 generics_self_advanced
-generics_self_attributes
 generics_self_basic
 generics_self_usage
 generics_syntax_declarations
@@ -61,7 +60,6 @@ generics_typevartuple_callable
 generics_typevartuple_concat
 generics_typevartuple_specialization
 generics_typevartuple_unpack
-generics_upper_bound
 generics_variance
 literals_literalstring
 literals_parameterizations
