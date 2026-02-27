@@ -2304,8 +2304,8 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     node, base_values
                 )
                 if fallback_runtime_class is None:
-                    fallback_runtime_class = self._make_namedtuple_related_fallback_class(
-                        node, base_values
+                    fallback_runtime_class = (
+                        self._make_namedtuple_related_fallback_class(node, base_values)
                     )
                 if fallback_runtime_class is None:
                     fallback_runtime_class = self._make_enum_related_fallback_class(
@@ -2874,9 +2874,8 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             ):
                 continue
             field_name = statement.target.id
-            if (
-                marker is not None
-                and self._is_dataclass_kw_only_marker_annotation(statement.annotation)
+            if marker is not None and self._is_dataclass_kw_only_marker_annotation(
+                statement.annotation
             ):
                 annotations[field_name] = marker
                 continue
@@ -2919,9 +2918,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             return dataclass(**options)(runtime_class)
         except Exception:
             self.log(
-                logging.INFO,
-                "unable to synthesize dataclass runtime class",
-                node.name,
+                logging.INFO, "unable to synthesize dataclass runtime class", node.name
             )
             return None
 
