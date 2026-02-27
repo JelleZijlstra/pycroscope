@@ -2449,13 +2449,7 @@ def get_default_argspecs() -> dict[object, Signature]:
         Signature.make(
             [
                 SigParameter("cls", _POS_ONLY, annotation=TypedValue(type)),
-                SigParameter(
-                    "class_or_tuple",
-                    _POS_ONLY,
-                    annotation=MultiValuedValue(
-                        [TypedValue(type), GenericValue(tuple, [TypedValue(type)])]
-                    ),
-                ),
+                SigParameter("class_or_tuple", _POS_ONLY),
             ],
             impl=_issubclass_impl,
             callable=issubclass,
@@ -2470,13 +2464,7 @@ def get_default_argspecs() -> dict[object, Signature]:
         Signature.make(
             [
                 SigParameter("cls", _POS_ONLY, annotation=TypedValue(type)),
-                SigParameter(
-                    "class_or_tuple",
-                    _POS_ONLY,
-                    annotation=MultiValuedValue(
-                        [TypedValue(type), GenericValue(tuple, [TypedValue(type)])]
-                    ),
-                ),
+                SigParameter("class_or_tuple", _POS_ONLY),
             ],
             impl=_issubclass_impl,
             callable=safe_issubclass,
