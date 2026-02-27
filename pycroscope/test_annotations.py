@@ -1835,6 +1835,37 @@ class TestRequired(TestNameCheckVisitorBase):
         if TYPE_CHECKING:
             x: Final[Final[int]] = 1  # E: invalid_annotation
 
+    @assert_passes()
+    def test_dataclass_final_fields(self):
+        from dataclasses import dataclass
+        from typing import TYPE_CHECKING, ClassVar
+
+        from typing_extensions import Final
+
+        if TYPE_CHECKING:
+
+            @dataclass
+            class D:
+                final_no_default: Final[int]
+                final_with_default: Final[str] = "foo"
+                final_classvar: ClassVar[Final[int]] = 4
+
+            D.final_no_default = 10  # E: incompatible_assignment
+            D.final_with_default = "baz"  # E: incompatible_assignment
+            D.final_classvar = 10  # E: incompatible_assignment
+
+    @assert_passes()
+    def test_non_dataclass_still_rejects_classvar_final(self):
+        from typing import TYPE_CHECKING, ClassVar
+
+        from typing_extensions import Final
+
+        if TYPE_CHECKING:
+
+            class C:
+                x: ClassVar[Final[int]] = 1  # E: invalid_annotation
+                y: Final[ClassVar[int]] = 1  # E: invalid_annotation
+
 
 class TestParamSpec(TestNameCheckVisitorBase):
     @assert_passes()
