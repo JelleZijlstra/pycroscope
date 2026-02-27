@@ -3,7 +3,6 @@
 # the conformance CI workflow should fail and this file should be updated.
 aliases_explicit
 aliases_implicit
-aliases_newtype
 aliases_recursive
 aliases_type_statement
 aliases_typealiastype
@@ -19,7 +18,6 @@ classes_override
 constructors_call_init
 constructors_call_metaclass
 constructors_call_new
-constructors_call_type
 constructors_callable
 dataclasses_descriptors
 dataclasses_final

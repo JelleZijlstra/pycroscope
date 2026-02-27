@@ -11,7 +11,7 @@ import types
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field, replace
 from enum import Enum
-from typing import Any, ClassVar, get_origin
+from typing import Any, ClassVar, cast, get_origin
 
 from typing_extensions import assert_never
 
@@ -52,6 +52,7 @@ from .value import (
     SyntheticClassObjectValue,
     SyntheticEnumMember,
     SyntheticModuleValue,
+    TypeAliasValue,
     TypedDictValue,
     TypedValue,
     TypeFormValue,
@@ -120,7 +121,14 @@ class AttrContext:
 
 
 def get_attribute(ctx: AttrContext) -> Value:
+    if isinstance(ctx.root_value, TypeAliasValue) and _is_type_alias_symbol(ctx):
+        return _get_attribute_from_type_alias(ctx.root_value, ctx)
+
     root_value = replace_fallback(ctx.root_value)
+    if isinstance(root_value, KnownValue) and is_typing_name(
+        type(root_value.val), "TypeAliasType"
+    ):
+        return _get_attribute_from_runtime_type_alias(root_value.val, ctx)
     if isinstance(root_value, KnownValue):
         attribute_value = _get_attribute_from_known(root_value.val, ctx)
     elif isinstance(root_value, TypedValue):
@@ -190,6 +198,53 @@ def get_attribute(ctx: AttrContext) -> Value:
             if guard.attribute_name == KnownValue(ctx.attr):
                 return guard.attribute_type
     return attribute_value
+
+
+def _is_type_alias_symbol(ctx: AttrContext) -> bool:
+    varname = ctx.root_composite.varname
+    if varname is None or not isinstance(ctx.root_value, TypeAliasValue):
+        return False
+    if varname.varname != ctx.root_value.name:
+        return False
+    if all(origin is None for origin in varname.origin):
+        # In import-failure fallback mode origins may not carry the source node.
+        return True
+    type_alias_node = getattr(ast, "TypeAlias", None)
+    import_nodes: tuple[type[ast.AST], ...] = (ast.Import, ast.ImportFrom, ast.alias)
+    for origin in varname.origin:
+        if type_alias_node is not None and isinstance(origin, type_alias_node):
+            return True
+        if isinstance(origin, import_nodes):
+            return True
+    return False
+
+
+def _get_attribute_from_type_alias(value: TypeAliasValue, ctx: AttrContext) -> Value:
+    type_params = tuple(
+        param.typevar if isinstance(param, TypeVarValue) else param
+        for param in value.alias.get_type_params()
+    )
+    if ctx.attr == "__value__":
+        return value.get_value()
+    if ctx.attr == "__type_params__":
+        return KnownValue(type_params)
+    if ctx.attr == "__name__":
+        return KnownValue(value.name)
+    if ctx.attr == "__module__":
+        return KnownValue(value.module)
+    return UNINITIALIZED_VALUE
+
+
+def _get_attribute_from_runtime_type_alias(value: object, ctx: AttrContext) -> Value:
+    if ctx.attr == "__value__":
+        return KnownValue(cast(Any, value).__value__)
+    if ctx.attr == "__type_params__":
+        return KnownValue(tuple(cast(Any, value).__type_params__))
+    if ctx.attr == "__name__":
+        return KnownValue(cast(Any, value).__name__)
+    if ctx.attr == "__module__":
+        return KnownValue(cast(Any, value).__module__)
+    return UNINITIALIZED_VALUE
 
 
 def may_have_dynamic_attributes(typ: type) -> bool:

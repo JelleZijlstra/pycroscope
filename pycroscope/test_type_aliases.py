@@ -77,7 +77,7 @@ class TestTypeAliasType(TestNameCheckVisitorBase):
         P = ParamSpec("P")
         Alias = TypeAliasType("Alias", Callable[P, int], type_params=(P,))
 
-        def f(x: Alias[[int, str]]) -> None:  # E: invalid_annotation
+        def f(x: Alias[[int, str]]) -> None:
             pass
 
     @skip_before((3, 12))
@@ -128,16 +128,8 @@ class TestTypeAliasType(TestNameCheckVisitorBase):
     def test_312_local_alias(self):
         self.assert_passes(
             """
-            from typing_extensions import assert_type
-
             def capybara():
-                type MyType = int
-                def f(x: MyType):
-                    assert_type(x, MyType)
-                    assert_type(x + 1, int)
-
-                f(1)
-                f("x")  # E: incompatible_argument
+                type MyType = int  # E: invalid_annotation
         """
         )
 
@@ -154,6 +146,75 @@ class TestTypeAliasType(TestNameCheckVisitorBase):
 
             def pacarana(x: MyType):
                 capybara(x)
+        """
+        )
+
+    @skip_before((3, 12))
+    def test_312_alias_object_semantics(self):
+        self.assert_passes(
+            """
+            type Alias = int
+
+            Alias.bit_count  # E: undefined_attribute
+            Alias()  # E: not_callable
+            print(Alias.__value__)
+            print(Alias.__type_params__)
+
+            def ok(x: Alias):
+                print(x.bit_count())
+
+            class C(Alias):  # E: invalid_base
+                pass
+
+            def f(x: object):
+                if isinstance(x, Alias):  # E: incompatible_argument
+                    pass
+        """,
+            allow_import_failures=True,
+        )
+
+    @skip_before((3, 12))
+    def test_312_reject_old_typevars(self):
+        self.assert_passes(
+            """
+            from typing import TypeVar
+
+            V = TypeVar("V")
+            type TA1[K] = dict[K, V]  # E: invalid_annotation
+
+            T1 = TypeVar("T1")
+            type TA2 = list[T1]  # E: invalid_annotation
+        """
+        )
+
+    @skip_before((3, 12))
+    def test_312_alias_bounds_and_circularity(self):
+        self.assert_passes(
+            """
+            from typing import Callable
+
+            type RecursiveAlias[T] = T | list[RecursiveAlias[T]]
+            good: RecursiveAlias[int]
+
+            type RecursiveWithBounds[S: int, T: str, **P] = (
+                Callable[P, T] | list[S] | list[RecursiveWithBounds[S, T, P]]
+            )
+            bad_s: RecursiveWithBounds[str, str, ...]  # E: invalid_annotation
+            bad_t: RecursiveWithBounds[int, int, ...]  # E: invalid_annotation
+
+            type Circular1 = Circular1  # E: invalid_annotation
+            type Circular2[T] = T | Circular2[str]  # E: invalid_annotation
+            type Circular3 = Circular4  # E: invalid_annotation
+            type Circular4 = Circular3  # E: invalid_annotation
+        """
+        )
+
+    @skip_before((3, 12))
+    def test_312_alias_redeclaration(self):
+        self.assert_passes(
+            """
+            type Alias = int
+            type Alias = int  # E: invalid_annotation
         """
         )
 

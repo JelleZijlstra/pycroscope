@@ -543,6 +543,20 @@ class Checker:
             return root.val
         return None
 
+    @staticmethod
+    def _replace_signature_return(
+        signature: MaybeSignature, return_value: Value
+    ) -> MaybeSignature:
+        if isinstance(signature, (Signature, OverloadedSignature)):
+            return signature.replace_return_value(return_value)
+        if isinstance(signature, BoundMethodSignature):
+            return BoundMethodSignature(
+                signature.signature.replace_return_value(return_value),
+                signature.self_composite,
+                return_override=signature.return_override,
+            )
+        return signature
+
     def signature_from_value(
         self,
         value: Value,
@@ -695,8 +709,22 @@ class Checker:
                     return ANY_SIGNATURE
                 return argspec
             else:
-                # TODO generic SubclassValue
-                return ANY_SIGNATURE
+                typevar_bound = value.typ.bound
+                if isinstance(typevar_bound, TypeVarValue):
+                    typevar_bound = typevar_bound.get_fallback_value()
+                if typevar_bound is None:
+                    typevar_bound = TypedValue(object)
+                bound_subclass = SubclassValue.make(typevar_bound)
+                if not isinstance(bound_subclass, SubclassValue):
+                    return ANY_SIGNATURE
+                argspec = self.signature_from_value(
+                    bound_subclass,
+                    get_return_override=get_return_override,
+                    get_call_attribute=get_call_attribute,
+                )
+                if argspec is None:
+                    return ANY_SIGNATURE
+                return self._replace_signature_return(argspec, value.typ)
         elif isinstance(value, AnyValue):
             return ANY_SIGNATURE
         elif isinstance(value, MultiValuedValue):

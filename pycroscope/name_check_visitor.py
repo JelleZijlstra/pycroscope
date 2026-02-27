@@ -1194,6 +1194,8 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     _synthetic_classes_by_name: dict[str, SyntheticClassObjectValue]
     _synthetic_abstract_methods: dict[str, set[str]]
     _synthetic_final_methods: dict[str, set[str]]
+    _type_alias_first_definition_by_scope: dict[int, dict[str, ast.AST]]
+    _type_alias_unguarded_refs_by_scope: dict[int, dict[str, set[str]]]
     _method_cache: dict[type[ast.AST], Callable[[Any], Value | None]]
     _name_node_to_statement: dict[ast.AST, ast.AST | None] | None
     _should_exclude_any: bool
@@ -1352,6 +1354,8 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         self._synthetic_classes_by_name = {}
         self._synthetic_abstract_methods = {}
         self._synthetic_final_methods = {}
+        self._type_alias_first_definition_by_scope = {}
+        self._type_alias_unguarded_refs_by_scope = {}
         self._method_cache = {}
         self._statement_types = set()
         self._should_exclude_any = False
@@ -2171,6 +2175,28 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             )
         return False
 
+    @staticmethod
+    def _is_newtype_base_value(base_value: Value) -> bool:
+        for subval in flatten_values(replace_fallback(base_value)):
+            if not isinstance(subval, KnownValue):
+                continue
+            if isinstance(subval.val, type):
+                continue
+            if safe_hasattr(subval.val, "__supertype__"):
+                return True
+        return False
+
+    @staticmethod
+    def _is_type_alias_base_value(base_value: Value) -> bool:
+        for subval in flatten_values(base_value, unwrap_annotated=True):
+            if isinstance(subval, TypeAliasValue):
+                return True
+            if isinstance(subval, KnownValue) and is_instance_of_typing_name(
+                subval.val, "TypeAliasType"
+            ):
+                return True
+        return False
+
     @contextlib.contextmanager
     def _set_current_class(self, current_class: type | str | None) -> Iterator[None]:
         should_track_members = should_check_for_duplicate_values(
@@ -2214,6 +2240,19 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             base_values = self._generic_visit_list(node.bases)
             if self._is_checking():
                 self._check_protocol_base_validity(node, base_values)
+                for base_node, base_value in zip(node.bases, base_values):
+                    if self._is_type_alias_base_value(base_value):
+                        self._show_error_if_checking(
+                            base_node,
+                            "Type aliases cannot be used as base classes",
+                            error_code=ErrorCode.invalid_base,
+                        )
+                    if self._is_newtype_base_value(base_value):
+                        self._show_error_if_checking(
+                            base_node,
+                            "NewType types cannot be used as base classes",
+                            error_code=ErrorCode.invalid_base,
+                        )
             if any(self._is_enum_base_value(base) for base in base_values):
                 self.enum_class_keys.add(class_key)
             self._check_for_final_base_classes(node, base_values)
@@ -7481,8 +7520,14 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
 
     def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
         if self.current_synthetic_typeddict is None:
-            annotation = self._visit_annotation(node.annotation)
-            expr = self._expr_of_annotation_type(annotation, node.annotation)
+            if self._is_subscripted_type_alias_annotation(node.annotation):
+                self._visit_annotation(node.annotation)
+                expr = annotation_expr_from_ast(
+                    node.annotation, visitor=self, suppress_errors=self._is_collecting()
+                )
+            else:
+                annotation = self._visit_annotation(node.annotation)
+                expr = self._expr_of_annotation_type(annotation, node.annotation)
         else:
             # Still visit the annotation node so ast_annotator can attach
             # inferred values to all annotation expressions.
@@ -7635,6 +7680,23 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             node,
         )
 
+    def _is_subscripted_type_alias_annotation(self, node: ast.expr) -> bool:
+        if not isinstance(node, ast.Subscript):
+            return False
+        if not isinstance(node.value, ast.Name):
+            return False
+        resolved, _ = self.resolve_name(
+            node.value, error_node=node.value, suppress_errors=True
+        )
+        for subval in flatten_values(resolved, unwrap_annotated=True):
+            if isinstance(subval, TypeAliasValue):
+                return True
+            if isinstance(subval, KnownValue) and is_instance_of_typing_name(
+                subval.val, "TypeAliasType"
+            ):
+                return True
+        return False
+
     def visit_AugAssign(self, node: ast.AugAssign) -> None:
         is_yield = isinstance(node.value, ast.Yield)
         rhs = self.composite_from_node(node.value)
@@ -7672,11 +7734,112 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         assert all_of_type(type_param_values, TypeVarValue)
         return type_param_values
 
+    def _current_scope_key(self) -> int:
+        return id(self.scopes.current_scope())
+
+    def _record_type_alias_structure(
+        self, name: str, alias_node: ast.AST, value_node: ast.AST
+    ) -> None:
+        scope_key = self._current_scope_key()
+        first_by_name = self._type_alias_first_definition_by_scope.setdefault(
+            scope_key, {}
+        )
+        first_by_name.setdefault(name, alias_node)
+        refs_by_name = self._type_alias_unguarded_refs_by_scope.setdefault(
+            scope_key, {}
+        )
+        refs_by_name.setdefault(name, set()).update(
+            self._collect_unguarded_type_alias_refs(value_node)
+        )
+
+    @staticmethod
+    def _collect_unguarded_type_alias_refs(value_node: ast.AST) -> set[str]:
+        refs: set[str] = set()
+
+        def walk(node: ast.AST, guarded: bool) -> None:
+            if isinstance(node, ast.Subscript):
+                walk(node.value, guarded)
+                walk(node.slice, True)
+                return
+            if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load):
+                if not guarded:
+                    refs.add(node.id)
+                return
+            for child in ast.iter_child_nodes(node):
+                walk(child, guarded)
+
+        walk(value_node, False)
+        return refs
+
+    def _type_alias_has_unguarded_cycle(self, name: str) -> bool:
+        scope_refs = self._type_alias_unguarded_refs_by_scope.get(
+            self._current_scope_key(), {}
+        )
+        if name not in scope_refs:
+            return False
+        visited: set[str] = set()
+
+        def reaches_target(current: str) -> bool:
+            if current == name:
+                return True
+            if current in visited:
+                return False
+            visited.add(current)
+            for dep in scope_refs.get(current, ()):
+                if dep in scope_refs and reaches_target(dep):
+                    return True
+            return False
+
+        return any(
+            dep in scope_refs and reaches_target(dep)
+            for dep in scope_refs.get(name, ())
+        )
+
+    @staticmethod
+    def _type_param_identity(value: Value) -> object | None:
+        if isinstance(value, TypeVarValue):
+            return value.typevar
+        if isinstance(value, InputSigValue) and isinstance(
+            value.input_sig, ParamSpecSig
+        ):
+            return value.input_sig.param_spec
+        if isinstance(value, KnownValue) and (
+            is_instance_of_typing_name(value.val, "TypeVar")
+            or is_instance_of_typing_name(value.val, "TypeVarTuple")
+            or is_instance_of_typing_name(value.val, "ParamSpec")
+        ):
+            return value.val
+        return None
+
+    def _legacy_typevars_in_alias_expr(
+        self, value_node: ast.AST, declared_type_params: Sequence[TypeVarValue]
+    ) -> set[str]:
+        declared = {param.typevar for param in declared_type_params}
+        legacy: set[str] = set()
+        for subnode in ast.walk(value_node):
+            if not isinstance(subnode, ast.Name) or not isinstance(
+                subnode.ctx, ast.Load
+            ):
+                continue
+            resolved, _ = self.resolve_name(
+                subnode, error_node=subnode, suppress_errors=True
+            )
+            for subval in flatten_values(resolved, unwrap_annotated=True):
+                identity = self._type_param_identity(subval)
+                if identity is None:
+                    continue
+                if identity not in declared:
+                    legacy.add(subnode.id)
+                break
+        return legacy
+
     if sys.version_info >= (3, 12):
 
         def visit_TypeAlias(self, node: ast.TypeAlias) -> Value:
             assert isinstance(node.name, ast.Name)
             name = node.name.id
+            if self._is_collecting():
+                self._record_type_alias_structure(name, node, node.value)
             alias_val = self._get_local_object(name, node)
             if isinstance(alias_val, KnownValue) and isinstance(
                 alias_val.val, typing.TypeAliasType
@@ -7685,7 +7848,30 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             else:
                 alias_obj = None
             type_param_values = []
+            disallow_in_function = self.scopes.scope_type() == ScopeType.function_scope
             if self._is_checking():
+                if disallow_in_function:
+                    self._show_error_if_checking(
+                        node,
+                        "Type alias statements are not allowed inside functions",
+                        error_code=ErrorCode.invalid_annotation,
+                    )
+                first_by_name = self._type_alias_first_definition_by_scope.get(
+                    self._current_scope_key(), {}
+                )
+                first_definition = first_by_name.get(name)
+                if first_definition is not None and first_definition is not node:
+                    self._show_error_if_checking(
+                        node,
+                        f"Type alias {name} is already defined",
+                        error_code=ErrorCode.invalid_annotation,
+                    )
+                if self._type_alias_has_unguarded_cycle(name):
+                    self._show_error_if_checking(
+                        node,
+                        f"Type alias {name} has a circular definition",
+                        error_code=ErrorCode.invalid_annotation,
+                    )
                 with self.scopes.add_scope(
                     ScopeType.annotation_scope, scope_node=node, scope_object=alias_obj
                 ):
@@ -7701,10 +7887,27 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                             value = self.visit(node.value)
                     else:
                         value = self.visit(node.value)
+                legacy_typevars = self._legacy_typevars_in_alias_expr(
+                    node.value, type_param_values
+                )
+                if legacy_typevars:
+                    if node.type_params:
+                        message = (
+                            "Type alias cannot combine old-style TypeVar declarations"
+                            " with type statement parameters"
+                        )
+                    else:
+                        message = (
+                            "Type alias must declare type parameters in the"
+                            " type statement"
+                        )
+                    self._show_error_if_checking(
+                        node, message, error_code=ErrorCode.invalid_annotation
+                    )
             else:
                 value = None
             if alias_obj is None:
-                if value is None:
+                if value is None or disallow_in_function:
                     alias_val = AnyValue(AnySource.inference)
                 else:
                     alias_val = TypeAliasValue(
@@ -7712,7 +7915,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                         self.module.__name__ if self.module is not None else "",
                         TypeAlias(
                             lambda: type_from_value(value, self, node),
-                            lambda: tuple(val.typevar for val in type_param_values),
+                            lambda: tuple(type_param_values),
                         ),
                     )
             set_value, _ = self._set_name_in_scope(name, node, alias_val)
@@ -7913,51 +8116,68 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                         stripped_value, root_composite.varname, root_composite.node
                     )
                 )
-                synthetic_subscript = self._maybe_subscript_synthetic_class(
-                    stripped_root.value, index, node
-                )
-                if synthetic_subscript is not None:
-                    return_value = synthetic_subscript
+                if self.in_annotation and (
+                    isinstance(stripped_root.value, TypeAliasValue)
+                    or (
+                        isinstance(stripped_root.value, KnownValue)
+                        and is_instance_of_typing_name(
+                            stripped_root.value.val, "TypeAliasType"
+                        )
+                    )
+                ):
+                    return_value = PartialValue(
+                        PartialValueOperation.SUBSCRIPT,
+                        stripped_root.value,
+                        node,
+                        self._maybe_unpack_tuple(index),
+                        TypedValue(types.GenericAlias),
+                    )
                 else:
-                    with self.catch_errors():
-                        getitem = self._get_dunder(
-                            node.value, stripped_root.value, "__getitem__"
-                        )
-                    if getitem is not UNINITIALIZED_VALUE:
-                        return_value = self.check_call(
-                            node.value,
-                            getitem,
-                            [stripped_root, index_composite],
-                            allow_call=True,
-                        )
+                    synthetic_subscript = self._maybe_subscript_synthetic_class(
+                        stripped_root.value, index, node
+                    )
+                    if synthetic_subscript is not None:
+                        return_value = synthetic_subscript
                     else:
-                        # If there was no __getitem__, try __class_getitem__ in 3.7+
-                        cgi = self.get_attribute(
-                            Composite(stripped_root.value),
-                            "__class_getitem__",
-                            node.value,
-                        )
-                        if cgi is UNINITIALIZED_VALUE:
-                            self._show_error_if_checking(
-                                node,
-                                f"Object {value} does not support subscripting",
-                                error_code=ErrorCode.unsupported_operation,
+                        with self.catch_errors():
+                            getitem = self._get_dunder(
+                                node.value, stripped_root.value, "__getitem__"
                             )
-                            return_value = AnyValue(AnySource.error)
+                        if getitem is not UNINITIALIZED_VALUE:
+                            return_value = self.check_call(
+                                node.value,
+                                getitem,
+                                [stripped_root, index_composite],
+                                allow_call=True,
+                            )
                         else:
-                            runtime_return_value = self.check_call(
-                                node.value, cgi, [index_composite], allow_call=True
+                            # If there was no __getitem__, try __class_getitem__ in 3.7+
+                            cgi = self.get_attribute(
+                                Composite(stripped_root.value),
+                                "__class_getitem__",
+                                node.value,
                             )
-                            if isinstance(runtime_return_value, KnownValue):
-                                return_value = runtime_return_value
-                            else:
-                                return_value = PartialValue(
-                                    PartialValueOperation.SUBSCRIPT,
-                                    value,
+                            if cgi is UNINITIALIZED_VALUE:
+                                self._show_error_if_checking(
                                     node,
-                                    self._maybe_unpack_tuple(index),
-                                    runtime_return_value,
+                                    f"Object {value} does not support subscripting",
+                                    error_code=ErrorCode.unsupported_operation,
                                 )
+                                return_value = AnyValue(AnySource.error)
+                            else:
+                                runtime_return_value = self.check_call(
+                                    node.value, cgi, [index_composite], allow_call=True
+                                )
+                                if isinstance(runtime_return_value, KnownValue):
+                                    return_value = runtime_return_value
+                                else:
+                                    return_value = PartialValue(
+                                        PartialValueOperation.SUBSCRIPT,
+                                        value,
+                                        node,
+                                        self._maybe_unpack_tuple(index),
+                                        runtime_return_value,
+                                    )
 
                 if (
                     self._should_use_varname_value(return_value)

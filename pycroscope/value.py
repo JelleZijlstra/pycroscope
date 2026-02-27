@@ -555,11 +555,11 @@ VOID = VoidValue()
 class TypeAlias:
     evaluator: Callable[[], Value]
     """Callable that evaluates the value."""
-    evaluate_type_params: Callable[[], Sequence[TypeVarLike]]
+    evaluate_type_params: Callable[[], Sequence[TypeVarLike | "TypeVarValue"]]
     """Callable that evaluates the type parameters."""
     evaluated_value: Value | None = None
     """Value that the type alias evaluates to."""
-    type_params: Sequence[TypeVarLike] | None = None
+    type_params: Sequence[TypeVarLike | "TypeVarValue"] | None = None
     """Type parameters of the type alias."""
 
     def get_value(self) -> Value:
@@ -567,7 +567,7 @@ class TypeAlias:
             self.evaluated_value = self.evaluator()
         return self.evaluated_value
 
-    def get_type_params(self) -> Sequence[TypeVarLike]:
+    def get_type_params(self) -> Sequence[TypeVarLike | "TypeVarValue"]:
         if self.type_params is None:
             self.type_params = self.evaluate_type_params()
         return self.type_params
@@ -590,21 +590,25 @@ class TypeAliasValue(Value):
     def get_value(self) -> Value:
         val = self.alias.get_value()
         type_params = self.alias.get_type_params()
+        substitution_keys = [
+            type_param.typevar if isinstance(type_param, TypeVarValue) else type_param
+            for type_param in type_params
+        ]
         if self.type_arguments:
-            if len(type_params) != len(self.type_arguments):
+            if len(substitution_keys) != len(self.type_arguments):
                 # TODO this should be an error
                 return AnyValue(AnySource.inference)
             typevars = {
                 type_param: arg
-                for type_param, arg in zip(type_params, self.type_arguments)
+                for type_param, arg in zip(substitution_keys, self.type_arguments)
             }
             val = val.substitute_typevars(typevars)
-        elif type_params:
+        elif substitution_keys:
             # Unsubscripted aliases default type parameters to Any.
             val = val.substitute_typevars(
                 {
                     type_param: AnyValue(AnySource.generic_argument)
-                    for type_param in type_params
+                    for type_param in substitution_keys
                 }
             )
         return val

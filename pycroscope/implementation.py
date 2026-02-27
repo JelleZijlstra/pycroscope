@@ -6,7 +6,7 @@ import re
 import typing
 from collections.abc import Callable, Iterable, Sequence
 from itertools import product
-from typing import NewType, TypeVar, cast
+from typing import Any, NewType, TypeVar, cast
 
 import typing_extensions
 
@@ -30,8 +30,10 @@ from .relations import (
 )
 from .safe import (
     hasattr_static,
+    is_instance_of_typing_name,
     is_typing_name,
     is_union,
+    safe_getattr,
     safe_isinstance,
     safe_issubclass,
 )
@@ -73,6 +75,7 @@ from .value import (
     KnownValue,
     KVPair,
     MultiValuedValue,
+    NewTypeValue,
     ParameterTypeGuardExtension,
     PartialValue,
     PartialValueOperation,
@@ -81,6 +84,7 @@ from .value import (
     SequenceValue,
     SubclassValue,
     SyntheticClassObjectValue,
+    TypeAliasValue,
     TypedDictEntry,
     TypedDictValue,
     TypedValue,
@@ -131,51 +135,45 @@ def flatten_unions(
 
 
 def _issubclass_impl(ctx: CallContext) -> Value:
-    class_or_tuple = ctx.vars["class_or_tuple"]
-    varname = ctx.varname_for_arg("cls")
-    if varname is None or not isinstance(class_or_tuple, KnownValue):
-        return TypedValue(bool)
-    try:
-        narrowed_types = list(_resolve_isinstance_arg(class_or_tuple.val))
-    except _CannotResolve as e:
-        ctx.show_error(
-            f'Second argument to "issubclass" must be a type, union,'
-            f' or tuple of types, not "{e.args[0]!r}"',
-            ErrorCode.incompatible_argument,
-            arg="class_or_tuple",
-        )
-        return TypedValue(bool)
-    narrowed_type = unite_values(
-        *[SubclassValue(TypedValue(typ)) for typ in narrowed_types]
-    )
-    predicate = IsAssignablePredicate(narrowed_type, ctx.visitor, positive_only=False)
-    constraint = Constraint(varname, ConstraintType.predicate, True, predicate)
-    return annotate_with_constraint(TypedValue(bool), constraint)
+    return _isinstance_or_issubclass_impl(ctx, is_subclass_check=True)
 
 
 def _isinstance_impl(ctx: CallContext) -> Value:
+    return _isinstance_or_issubclass_impl(ctx, is_subclass_check=False)
+
+
+def _isinstance_or_issubclass_impl(
+    ctx: CallContext, *, is_subclass_check: bool
+) -> Value:
     class_or_tuple = ctx.vars["class_or_tuple"]
-    if _contains_typeddict_classinfo(class_or_tuple):
+    function_name = "issubclass" if is_subclass_check else "isinstance"
+    invalid_kind = _invalid_classinfo_kind(class_or_tuple)
+    if invalid_kind is not None:
         ctx.show_error(
-            'Second argument to "isinstance" cannot be a TypedDict',
+            f'Second argument to "{function_name}" cannot be {invalid_kind}',
             ErrorCode.incompatible_argument,
             arg="class_or_tuple",
         )
         return TypedValue(bool)
-    varname = ctx.varname_for_arg("obj")
+    varname = ctx.varname_for_arg("cls" if is_subclass_check else "obj")
     if varname is None or not isinstance(class_or_tuple, KnownValue):
         return TypedValue(bool)
     try:
         narrowed_types = list(_resolve_isinstance_arg(class_or_tuple.val))
     except _CannotResolve as e:
         ctx.show_error(
-            f'Second argument to "isinstance" must be a type, union,'
+            f'Second argument to "{function_name}" must be a type, union,'
             f' or tuple of types, not "{e.args[0]!r}"',
             ErrorCode.incompatible_argument,
             arg="class_or_tuple",
         )
         return TypedValue(bool)
-    narrowed_type = unite_values(*[TypedValue(typ) for typ in narrowed_types])
+    if is_subclass_check:
+        narrowed_type = unite_values(
+            *[SubclassValue(TypedValue(typ)) for typ in narrowed_types]
+        )
+    else:
+        narrowed_type = unite_values(*[TypedValue(typ) for typ in narrowed_types])
     predicate = IsAssignablePredicate(narrowed_type, ctx.visitor, positive_only=False)
     constraint = Constraint(varname, ConstraintType.predicate, True, predicate)
     return annotate_with_constraint(TypedValue(bool), constraint)
@@ -185,32 +183,63 @@ class _CannotResolve(Exception):
     pass
 
 
-def _contains_typeddict_classinfo(value: Value) -> bool:
+def _invalid_classinfo_kind(value: Value) -> str | None:
     if isinstance(value, MultiValuedValue):
-        return any(_contains_typeddict_classinfo(subval) for subval in value.vals)
+        for subval in value.vals:
+            invalid_kind = _invalid_classinfo_kind(subval)
+            if invalid_kind is not None:
+                return invalid_kind
+        return None
+    if isinstance(value, AnnotatedValue):
+        return _invalid_classinfo_kind(value.value)
+    if isinstance(value, TypeAliasValue):
+        return "a type alias"
     if isinstance(value, SyntheticClassObjectValue):
-        return isinstance(value.class_type, TypedDictValue)
+        if isinstance(value.class_type, TypedDictValue):
+            return "a TypedDict"
+        return None
     if isinstance(value, TypedDictValue):
-        return True
+        return "a TypedDict"
+    if isinstance(value, GenericValue):
+        return "a parameterized generic"
     if not isinstance(value, KnownValue):
-        return False
-    return _contains_typeddict_classinfo_runtime(value.val)
+        return None
+    return _invalid_classinfo_kind_runtime(value.val)
 
 
-def _contains_typeddict_classinfo_runtime(val: object) -> bool:
+def _invalid_classinfo_kind_runtime(val: object) -> str | None:
+    if is_instance_of_typing_name(val, "TypeAliasType"):
+        return "a type alias"
     if is_typing_name(val, "TypedDict"):
-        return True
+        return "a TypedDict"
     if typing_extensions.is_typeddict(val):
-        return True
+        return "a TypedDict"
     if safe_isinstance(val, tuple):
-        return any(_contains_typeddict_classinfo_runtime(elt) for elt in val)
+        for elt in val:
+            invalid_kind = _invalid_classinfo_kind_runtime(elt)
+            if invalid_kind is not None:
+                return invalid_kind
+        return None
     origin = typing_extensions.get_origin(val)
     if is_union(origin):
-        return any(
-            _contains_typeddict_classinfo_runtime(arg)
-            for arg in typing_extensions.get_args(val)
-        )
-    return False
+        for arg in typing_extensions.get_args(val):
+            invalid_kind = _invalid_classinfo_kind_runtime(arg)
+            if invalid_kind is not None:
+                return invalid_kind
+        return None
+    if safe_isinstance(val, type) and _is_non_runtime_checkable_protocol(val):
+        return "a protocol that is not @runtime_checkable"
+    if origin is None:
+        return None
+    if safe_isinstance(origin, type) and _is_non_runtime_checkable_protocol(origin):
+        return "a protocol that is not @runtime_checkable"
+    return "a parameterized generic"
+
+
+def _is_non_runtime_checkable_protocol(typ: type) -> bool:
+    if not safe_getattr(typ, "_is_protocol", False):
+        return False
+    return not safe_getattr(typ, "_is_runtime_protocol", False)
 
 
 def _resolve_isinstance_arg(val: object) -> Iterable[type]:
@@ -1879,7 +1908,7 @@ def _any_impl(ctx: CallContext) -> Value:
 _TYPEDDICT_OPTION_KEYWORDS = {"total", "closed", "extra_items"}
 
 
-def _typeddict_assignment_target_name(ctx: CallContext) -> str | None:
+def _call_assignment_target_name(ctx: CallContext) -> str | None:
     if not isinstance(ctx.node, ast.Call):
         return None
     parent = ctx.visitor.node_context.nth_parent(2)
@@ -2053,7 +2082,7 @@ def _typeddict_impl(ctx: CallContext) -> Value:
 
     typename = ctx.vars["typename"]
     if isinstance(typename, KnownValue) and isinstance(typename.val, str):
-        assigned_name = _typeddict_assignment_target_name(ctx)
+        assigned_name = _call_assignment_target_name(ctx)
         if assigned_name is not None and assigned_name != typename.val:
             ctx.show_error(
                 "TypedDict name argument must match the assignment target name",
@@ -2069,6 +2098,218 @@ def _typeddict_impl(ctx: CallContext) -> Value:
         if synthetic_value is not None:
             return synthetic_value
     return ctx.inferred_return_value
+
+
+def _newtype_contains_any(value: Value) -> bool:
+    value = replace_fallback(value)
+    for subval in value.walk_values():
+        subval = replace_fallback(subval)
+        if isinstance(subval, AnyValue) and subval.source is AnySource.explicit:
+            return True
+    return False
+
+
+def _newtype_contains_typevar(value: Value) -> bool:
+    value = replace_fallback(value)
+    if isinstance(value, AnyValue):
+        return value.source is AnySource.generic_argument
+    if isinstance(value, KnownValue):
+        return (
+            is_instance_of_typing_name(value.val, "TypeVar")
+            or is_instance_of_typing_name(value.val, "TypeVarTuple")
+            or is_instance_of_typing_name(value.val, "ParamSpec")
+        )
+    if isinstance(value, TypeVarValue):
+        return True
+    if isinstance(value, TypeFormValue):
+        return _newtype_contains_typevar(value.inner_type)
+    if isinstance(value, NewTypeValue):
+        return _newtype_contains_typevar(value.value)
+    if isinstance(value, AnnotatedValue):
+        return _newtype_contains_typevar(value.value)
+    if isinstance(value, GenericValue):
+        return any(_newtype_contains_typevar(arg) for arg in value.args)
+    if isinstance(value, SequenceValue):
+        return any(_newtype_contains_typevar(member) for _, member in value.members)
+    if isinstance(value, MultiValuedValue):
+        return any(_newtype_contains_typevar(subval) for subval in value.vals)
+    if isinstance(value, SubclassValue):
+        return _newtype_contains_typevar(value.typ)
+    if isinstance(value, TypeAliasValue):
+        return _newtype_contains_typevar(value.get_value()) or any(
+            _newtype_contains_typevar(arg) for arg in value.type_arguments
+        )
+    return False
+
+
+def _newtype_is_protocol(value: Value, ctx: CallContext) -> bool:
+    value = replace_fallback(value)
+    if isinstance(value, AnnotatedValue):
+        return _newtype_is_protocol(value.value, ctx)
+    if isinstance(value, GenericValue):
+        return (
+            isinstance(value.typ, type)
+            and ctx.visitor.checker.make_type_object(value.typ).is_protocol
+        )
+    if isinstance(value, TypedValue):
+        return (
+            isinstance(value.typ, type)
+            and ctx.visitor.checker.make_type_object(value.typ).is_protocol
+        )
+    if isinstance(value, SubclassValue):
+        return _newtype_is_protocol(value.typ, ctx)
+    if isinstance(value, TypeAliasValue):
+        return _newtype_is_protocol(value.get_value(), ctx)
+    if isinstance(value, MultiValuedValue):
+        return any(_newtype_is_protocol(subval, ctx) for subval in value.vals)
+    return False
+
+
+def _newtype_is_typed_dict(value: Value) -> bool:
+    value = replace_fallback(value)
+    if isinstance(value, TypedDictValue):
+        return True
+    if isinstance(value, AnnotatedValue):
+        return _newtype_is_typed_dict(value.value)
+    if isinstance(value, MultiValuedValue):
+        return any(_newtype_is_typed_dict(subval) for subval in value.vals)
+    if isinstance(value, TypeAliasValue):
+        return _newtype_is_typed_dict(value.get_value())
+    return False
+
+
+def _newtype_is_literal(value: Value) -> bool:
+    value = replace_fallback(value)
+    if isinstance(value, AnnotatedValue):
+        return _newtype_is_literal(value.value)
+    if isinstance(value, KnownValue):
+        return not isinstance(value.val, type)
+    if isinstance(value, MultiValuedValue):
+        vals = list(value.vals)
+        return bool(vals) and all(_newtype_is_literal(subval) for subval in vals)
+    if isinstance(value, TypeAliasValue):
+        return _newtype_is_literal(value.get_value())
+    return False
+
+
+def _newtype_runtime_has_type_parameters(value: Value) -> bool:
+    value = replace_fallback(value)
+    if isinstance(value, AnnotatedValue):
+        return _newtype_runtime_has_type_parameters(value.value)
+    if isinstance(value, MultiValuedValue):
+        return any(
+            _newtype_runtime_has_type_parameters(subval) for subval in value.vals
+        )
+    if not isinstance(value, KnownValue):
+        return False
+    params = safe_getattr(value.val, "__parameters__", ())
+    return bool(params)
+
+
+def _newtype_runtime_is_union(value: Value) -> bool:
+    value = replace_fallback(value)
+    if isinstance(value, AnnotatedValue):
+        return _newtype_runtime_is_union(value.value)
+    if isinstance(value, MultiValuedValue):
+        return any(_newtype_runtime_is_union(subval) for subval in value.vals)
+    if not isinstance(value, KnownValue):
+        return False
+    return is_union(value.val) or is_union(typing.get_origin(value.val))
+
+
+def _runtime_type_from_value(value: Value) -> object | None:
+    value = replace_fallback(value)
+    if isinstance(value, KnownValue):
+        return value.val
+    if isinstance(value, NewTypeValue):
+        return value.newtype
+    if isinstance(value, AnyValue) and value.source is AnySource.explicit:
+        return typing.Any
+    if isinstance(value, TypeAliasValue):
+        return _runtime_type_from_value(value.get_value())
+    if isinstance(value, AnnotatedValue):
+        return _runtime_type_from_value(value.value)
+    if isinstance(value, TypedValue):
+        if isinstance(value.typ, type):
+            return value.typ
+        return None
+    if isinstance(value, GenericValue):
+        if not isinstance(value.typ, type):
+            return None
+        args: list[object] = []
+        for arg in value.args:
+            runtime_arg = _runtime_type_from_value(arg)
+            if runtime_arg is None:
+                return None
+            args.append(runtime_arg)
+        try:
+            if len(args) == 1:
+                return value.typ[args[0]]
+            return value.typ[tuple(args)]
+        except Exception:
+            return None
+    return None
+
+
+def _newtype_impl(ctx: CallContext) -> Value:
+    name_value = replace_fallback(ctx.vars["name"])
+    if not (isinstance(name_value, KnownValue) and isinstance(name_value.val, str)):
+        return ctx.inferred_return_value
+
+    has_qualifying_error = False
+    assigned_name = _call_assignment_target_name(ctx)
+    if assigned_name is not None and assigned_name != name_value.val:
+        ctx.show_error(
+            "NewType name argument must match the assignment target name",
+            ErrorCode.incompatible_call,
+            arg="name",
+        )
+        has_qualifying_error = True
+
+    supertype = type_from_value(ctx.vars["tp"], ctx.visitor, ctx.ast_for_arg("tp"))
+    if (
+        _newtype_runtime_has_type_parameters(ctx.vars["tp"])
+        or _newtype_runtime_is_union(ctx.vars["tp"])
+        or _newtype_contains_typevar(supertype)
+    ):
+        ctx.show_error(
+            "NewType base type cannot be generic", ErrorCode.incompatible_call, arg="tp"
+        )
+        has_qualifying_error = True
+    elif _newtype_contains_any(supertype):
+        ctx.show_error(
+            "NewType base type cannot be Any", ErrorCode.incompatible_call, arg="tp"
+        )
+        has_qualifying_error = True
+    elif _newtype_is_typed_dict(supertype):
+        ctx.show_error(
+            "NewType base type cannot be a TypedDict",
+            ErrorCode.incompatible_call,
+            arg="tp",
+        )
+        has_qualifying_error = True
+    elif _newtype_is_protocol(supertype, ctx):
+        ctx.show_error(
+            "NewType base type cannot be a protocol",
+            ErrorCode.incompatible_call,
+            arg="tp",
+        )
+        has_qualifying_error = True
+    elif _newtype_is_literal(supertype):
+        ctx.show_error(
+            "NewType base type cannot be a literal type",
+            ErrorCode.incompatible_call,
+            arg="tp",
+        )
+        has_qualifying_error = True
+
+    if has_qualifying_error:
+        return ctx.inferred_return_value
+
+    runtime_supertype = _runtime_type_from_value(supertype)
+    if runtime_supertype is None:
+        return ctx.inferred_return_value
+    return KnownValue(cast(Any, NewType)(name_value.val, runtime_supertype))
 
 
 # Should not be necessary, but by default we pick up a wrong signature for
@@ -2567,6 +2808,7 @@ def get_default_argspecs() -> dict[object, Signature]:
         Signature.make(
             [SigParameter("name", annotation=TypedValue(str)), SigParameter(name="tp")],
             callable=NewType,
+            impl=_newtype_impl,
         ),
         Signature.make(
             [

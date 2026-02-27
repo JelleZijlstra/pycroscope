@@ -85,6 +85,7 @@ from .value import (
     AnyValue,
     CallableValue,
     CanAssignContext,
+    CanAssignError,
     CustomCheckExtension,
     DictIncompleteValue,
     Extension,
@@ -731,6 +732,99 @@ def make_type_var_value(tv: TypeVarLike, ctx: Context) -> TypeVarValue:
     )
 
 
+def _get_can_assign_context(ctx: Context) -> CanAssignContext | None:
+    visitor = getattr(ctx, "visitor", None)
+    if visitor is None:
+        return None
+    return cast(CanAssignContext, visitor)
+
+
+def _is_assignable_for_alias_arg(expected: Value, actual: Value, ctx: Context) -> bool:
+    can_assign_ctx = _get_can_assign_context(ctx)
+    if can_assign_ctx is None:
+        return True
+    from .relations import Relation, has_relation
+
+    result = has_relation(expected, actual, Relation.ASSIGNABLE, can_assign_ctx)
+    return not isinstance(result, CanAssignError)
+
+
+def _is_paramspec_type_param(type_param: TypeVarLike | TypeVarValue) -> bool:
+    if isinstance(type_param, TypeVarValue):
+        return is_instance_of_typing_name(type_param.typevar, "ParamSpec")
+    return is_instance_of_typing_name(type_param, "ParamSpec")
+
+
+def _type_from_runtime_type_alias_arg(
+    arg: object, type_param: TypeVarLike | TypeVarValue, ctx: Context
+) -> Value:
+    if _is_paramspec_type_param(type_param):
+        if isinstance(arg, tuple):
+            return SequenceValue(
+                tuple, [(False, _type_from_runtime(member, ctx)) for member in arg]
+            )
+        if isinstance(arg, list):
+            return SequenceValue(
+                list, [(False, _type_from_runtime(member, ctx)) for member in arg]
+            )
+    return _type_from_runtime(arg, ctx)
+
+
+def _type_from_value_type_alias_arg(
+    arg: Value, type_param: TypeVarLike | TypeVarValue, ctx: Context
+) -> Value:
+    if _is_paramspec_type_param(type_param):
+        if isinstance(arg, SequenceValue) and arg.typ in (list, tuple):
+            members = arg.get_member_sequence()
+            if members is not None:
+                return SequenceValue(
+                    arg.typ,
+                    [(False, _type_from_value(member, ctx)) for member in members],
+                )
+        return arg
+    return _type_from_value(arg, ctx)
+
+
+def _validate_type_alias_arg_values(
+    type_params: Sequence[TypeVarLike | TypeVarValue],
+    args_vals: Sequence[Value],
+    ctx: Context,
+) -> None:
+    validated_type_params = tuple(
+        tv if isinstance(tv, TypeVarValue) else make_type_var_value(tv, ctx)
+        for tv in type_params
+    )
+    if len(type_params) != len(args_vals):
+        ctx.show_error(
+            f"Expected {len(type_params)} type arguments for type alias,"
+            f" got {len(args_vals)}"
+        )
+        return
+    for arg, type_param in zip(args_vals, validated_type_params):
+        if type_param.bound is not None and not _is_assignable_for_alias_arg(
+            type_param.bound, arg, ctx
+        ):
+            ctx.show_error(f"Type argument {arg} is not compatible with {type_param}")
+        elif type_param.constraints and not any(
+            _is_assignable_for_alias_arg(constraint, arg, ctx)
+            for constraint in type_param.constraints
+        ):
+            constraint_list = ", ".join(
+                str(constraint) for constraint in type_param.constraints
+            )
+            ctx.show_error(
+                f"Type argument {arg} is not compatible with constraints ({constraint_list})"
+            )
+
+
+def _validate_type_alias_args(
+    alias_object: object, args_vals: Sequence[Value], ctx: Context
+) -> None:
+    _validate_type_alias_arg_values(
+        cast(Any, alias_object).__type_params__, args_vals, ctx
+    )
+
+
 def _callable_args_from_runtime(
     arg_types: Any, label: str, ctx: Context
 ) -> Sequence[SigParameter]:
@@ -942,6 +1036,17 @@ def _type_from_subscripted_value(
 
     if isinstance(root, TypedValue) and isinstance(root.typ, str):
         return GenericValue(root.typ, [_type_from_value(elt, ctx) for elt in members])
+    if isinstance(root, TypeAliasValue):
+        type_params = tuple(root.alias.get_type_params())
+        if len(members) == len(type_params):
+            args_vals = [
+                _type_from_value_type_alias_arg(member, type_param, ctx)
+                for member, type_param in zip(members, type_params)
+            ]
+        else:
+            args_vals = [_type_from_value(member, ctx) for member in members]
+        _validate_type_alias_arg_values(type_params, args_vals, ctx)
+        return TypeAliasValue(root.name, root.module, root.alias, tuple(args_vals))
 
     assert isinstance(root, Value)
     if not isinstance(root, KnownValue):
@@ -949,6 +1054,25 @@ def _type_from_subscripted_value(
             ctx.show_error(f"Cannot resolve subscripted annotation: {root}")
         return AnyValue(AnySource.error)
     root = root.val
+    if is_instance_of_typing_name(root, "TypeAliasType"):
+        alias_object = cast(Any, root)
+        type_params = tuple(alias_object.__type_params__)
+        if len(members) == len(type_params):
+            args_vals = [
+                _type_from_value_type_alias_arg(member, type_param, ctx)
+                for member, type_param in zip(members, type_params)
+            ]
+        else:
+            args_vals = [_type_from_value(member, ctx) for member in members]
+        _validate_type_alias_arg_values(type_params, args_vals, ctx)
+        alias = ctx.get_type_alias(
+            root,
+            lambda: type_from_runtime(alias_object.__value__, ctx=ctx),
+            lambda: alias_object.__type_params__,
+        )
+        return TypeAliasValue(
+            alias_object.__name__, alias_object.__module__, alias, tuple(args_vals)
+        )
     if root is typing.Union:
         return unite_values(*[_type_from_value(elt, ctx) for elt in members])
     elif is_typing_name(root, "Literal"):
@@ -1540,8 +1664,16 @@ def _value_of_origin_args(
             return AnyValue(AnySource.error)
         return TypeFormValue(_type_from_runtime(args[0], ctx))
     elif is_instance_of_typing_name(origin, "TypeAliasType"):
-        args_vals = [_type_from_runtime(val, ctx) for val in args]
         alias_object = cast(Any, origin)
+        type_params = tuple(alias_object.__type_params__)
+        if len(args) == len(type_params):
+            args_vals = [
+                _type_from_runtime_type_alias_arg(arg, type_param, ctx)
+                for arg, type_param in zip(args, type_params)
+            ]
+        else:
+            args_vals = [_type_from_runtime(val, ctx) for val in args]
+        _validate_type_alias_arg_values(type_params, args_vals, ctx)
         alias = ctx.get_type_alias(
             val,
             lambda: type_from_runtime(alias_object.__value__, ctx=ctx),

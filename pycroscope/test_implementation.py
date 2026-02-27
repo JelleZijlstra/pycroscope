@@ -1627,6 +1627,39 @@ class TestIssubclass(TestNameCheckVisitorBase):
             else:
                 assert_is_value(x, SubclassValue(TypedValue(int)))
 
+    @assert_passes()
+    def test_rejects_invalid_classinfo(self) -> None:
+        from typing_extensions import (
+            Protocol,
+            TypeAliasType,
+            TypedDict,
+            runtime_checkable,
+        )
+
+        Alias = TypeAliasType("Alias", int)
+
+        class TD(TypedDict):
+            x: int
+
+        class P(Protocol):
+            def f(self) -> int: ...
+
+        @runtime_checkable
+        class RP(Protocol):
+            def f(self) -> int: ...
+
+        def capybara(obj: object, cls: type[object]) -> None:
+            isinstance(obj, Alias)  # E: incompatible_argument
+            issubclass(cls, Alias)  # E: incompatible_argument
+            isinstance(obj, TD)  # E: incompatible_argument
+            issubclass(cls, TD)  # E: incompatible_argument
+            isinstance(obj, P)  # E: incompatible_argument
+            issubclass(cls, P)  # E: incompatible_argument
+            isinstance(obj, list[int])  # E: incompatible_argument
+            issubclass(cls, list[int])  # E: incompatible_argument
+            isinstance(obj, RP)
+            issubclass(cls, RP)
+
 
 class TestCallableGuards(TestNameCheckVisitorBase):
     @assert_passes()
