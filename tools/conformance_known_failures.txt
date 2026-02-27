@@ -22,7 +22,6 @@ constructors_callable
 dataclasses_descriptors
 dataclasses_hash
 dataclasses_inheritance
-dataclasses_kwonly
 dataclasses_match_args
 dataclasses_order
 dataclasses_postinit

@@ -713,6 +713,66 @@ class TestImportFailureHandlingCodeSamples(TestNameCheckVisitorBase):
             pass
 
     @assert_passes()
+    def test_dataclass_kw_only_marker_is_allowed(self):
+        from dataclasses import KW_ONLY, dataclass
+
+        @dataclass
+        class DC:
+            a: str
+            _: KW_ONLY
+            b: int = 0
+
+        DC("hi")
+        DC("hi", b=1)
+
+    @assert_passes(allow_import_failures=True)
+    def test_dataclass_kw_only_checks_after_import_failure(self):
+        boom = 1 / 0
+
+        from dataclasses import KW_ONLY, dataclass, field
+
+        @dataclass
+        class DC1:
+            a: str
+            _: KW_ONLY
+            b: int = 0
+
+        DC1("hi")
+        DC1(a="hi")
+        DC1(a="hi", b=1)
+        DC1("hi", b=1)
+        DC1("hi", 1)  # E: incompatible_call
+
+        @dataclass
+        class DC2:
+            b: int = field(kw_only=True, default=3)
+            a: str
+
+        DC2("hi")
+        DC2(a="hi")
+        DC2(a="hi", b=1)
+        DC2("hi", b=1)
+        DC2("hi", 1)  # E: incompatible_call
+
+        @dataclass(kw_only=True)
+        class DC3:
+            a: str = field(kw_only=False)
+            b: int = 0
+
+        DC3("hi")
+        DC3(a="hi")
+        DC3(a="hi", b=1)
+        DC3("hi", b=1)
+        DC3("hi", 1)  # E: incompatible_call
+
+        @dataclass
+        class DC4(DC3):
+            c: float
+
+        DC4("", 0.2, b=3)
+        DC4(a="", b=3, c=0.2)
+
+    @assert_passes()
     def test_final_attribute_assignment_on_instance(self):
         from typing import Final
 
