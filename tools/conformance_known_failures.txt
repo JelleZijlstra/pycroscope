@@ -67,7 +67,6 @@ literals_literalstring
 literals_parameterizations
 literals_semantics
 namedtuples_define_class
-namedtuples_usage
 overloads_definitions_stub
 overloads_basic
 protocols_class_objects
