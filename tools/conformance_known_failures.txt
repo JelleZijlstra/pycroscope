@@ -11,7 +11,6 @@ annotations_forward_refs
 annotations_generators
 annotations_typeexpr
 callables_annotation
-callables_kwargs
 callables_protocol
 classes_classvar
 constructors_call_init

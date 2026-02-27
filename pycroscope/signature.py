@@ -1373,6 +1373,15 @@ class Signature:
         original_args: Sequence[Argument] | None = None,
         node: ast.AST | None = None,
     ) -> CallReturn:
+        expanded = self._expand_typed_dict_kwargs()
+        if expanded is not self:
+            return expanded.check_call_preprocessed(
+                preprocessed,
+                ctx,
+                is_overload=is_overload,
+                original_args=original_args,
+                node=node,
+            )
         bound_args = self.bind_arguments(preprocessed, ctx)
         if bound_args is None:
             return self.get_default_return()
@@ -1599,26 +1608,74 @@ class Signature:
     def can_assign_through_check_call(
         self, other: "Signature", ctx: CanAssignContext
     ) -> CanAssign:
-        args = [param.to_argument() for param in self.parameters.values()]
+        left = self._expand_typed_dict_kwargs()
+        right = other._expand_typed_dict_kwargs()
+        args = [param.to_argument() for param in left.parameters.values()]
         check_ctx = _CanAssignBasedContext(ctx)
         actual_args = preprocess_args(args, check_ctx)
         if actual_args is None:
             return CanAssignError(
                 "Invalid callable", [CanAssignError(e) for e in check_ctx.errors]
             )
-        return_value = other.check_call_preprocessed(actual_args, check_ctx)
+        return_value = right.check_call_preprocessed(actual_args, check_ctx)
         if check_ctx.errors:
             return CanAssignError(
                 "Incompatible callable", [CanAssignError(e) for e in check_ctx.errors]
             )
         return_tv_map = has_relation(
-            self.return_value, return_value.return_value, Relation.ASSIGNABLE, ctx
+            left.return_value, return_value.return_value, Relation.ASSIGNABLE, ctx
         )
         if isinstance(return_tv_map, CanAssignError):
             return CanAssignError(
                 "Return annotation is not compatible", [return_tv_map]
             )
         return return_tv_map
+
+    def _expand_typed_dict_kwargs(self) -> "Signature":
+        params: list[SigParameter] = []
+        expanded = False
+        for param in self.parameters.values():
+            annotation = param.get_annotation()
+            if param.kind is ParameterKind.VAR_KEYWORD and isinstance(
+                annotation, TypedDictValue
+            ):
+                expanded = True
+                for name, entry in annotation.items.items():
+                    params.append(
+                        SigParameter(
+                            name,
+                            ParameterKind.KEYWORD_ONLY,
+                            default=(
+                                None if entry.required else AnyValue(AnySource.marker)
+                            ),
+                            annotation=entry.typ,
+                        )
+                    )
+                if annotation.extra_keys is not None:
+                    params.append(
+                        SigParameter(
+                            param.name,
+                            ParameterKind.VAR_KEYWORD,
+                            annotation=GenericValue(
+                                dict, [TypedValue(str), annotation.extra_keys]
+                            ),
+                        )
+                    )
+            else:
+                params.append(param)
+        if not expanded:
+            return self
+        return Signature.make(
+            params,
+            self.return_value,
+            impl=self.impl,
+            callable=self.callable,
+            has_return_annotation=self.has_return_annotation,
+            is_asynq=self.is_asynq,
+            allow_call=self.allow_call,
+            evaluator=self.evaluator,
+            deprecated=self.deprecated,
+        )
 
     def get_param_of_kind(self, kind: ParameterKind) -> SigParameter | None:
         for param in self.parameters.values():
@@ -1745,27 +1802,6 @@ class Signature:
                             name, ParameterKind.POSITIONAL_ONLY, annotation=member
                         )
                         i += 1
-            elif param.kind is ParameterKind.VAR_KEYWORD and isinstance(
-                param.annotation, TypedDictValue
-            ):
-                for name, entry in param.annotation.items.items():
-                    param_dict[name] = SigParameter(
-                        name,
-                        ParameterKind.KEYWORD_ONLY,
-                        annotation=entry.typ,
-                        default=None if entry.required else AnyValue(AnySource.marker),
-                    )
-                    i += 1
-                if param.annotation.extra_keys is not None:
-                    name = f"%kwargs{i}"
-                    param_dict[name] = SigParameter(
-                        name,
-                        ParameterKind.VAR_KEYWORD,
-                        annotation=GenericValue(
-                            dict, [TypedValue(str), param.annotation.extra_keys]
-                        ),
-                    )
-                    i += 1
             else:
                 param_dict[param.name] = param
                 i += 1
@@ -2685,6 +2721,22 @@ def signatures_have_relation(
         )
     ):
         return CanAssignError("callable is not asynq")
+
+    my_kwargs = left.get_param_of_kind(ParameterKind.VAR_KEYWORD)
+    their_kwargs = right.get_param_of_kind(ParameterKind.VAR_KEYWORD)
+    their_ellipsis = right.get_param_of_kind(ParameterKind.ELLIPSIS)
+    if my_kwargs is not None and isinstance(my_kwargs.get_annotation(), TypedDictValue):
+        accepts_arbitrary_keywords = (
+            their_kwargs is not None
+            or their_ellipsis is not None
+            or right.get_param_of_kind(ParameterKind.PARAM_SPEC) is not None
+        )
+        if not accepts_arbitrary_keywords:
+            return CanAssignError(
+                f"{right} does not accept arbitrary keyword arguments"
+            )
+    left = left._expand_typed_dict_kwargs()
+    right = right._expand_typed_dict_kwargs()
 
     their_return = right.return_value
     my_return = left.return_value
