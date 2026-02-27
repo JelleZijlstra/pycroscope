@@ -99,6 +99,13 @@ class Variance(enum.Enum):
     CONTRAVARIANT = 2
     INVARIANT = 3
 
+    def display_name(self) -> str:
+        if self is Variance.COVARIANT:
+            return "covariant"
+        if self is Variance.CONTRAVARIANT:
+            return "contravariant"
+        return "invariant"
+
 
 def get_typevar_variance(typevar: TypeVarLike) -> Variance:
     if not is_instance_of_typing_name(typevar, "TypeVar"):
@@ -2811,16 +2818,17 @@ def unite_values(*values: Value) -> Value:
 
 
 T = TypeVar("T")
+T_co = TypeVar("T_co", covariant=True)
 IterableValue = GenericValue(collections.abc.Iterable, [TypeVarValue(T)])
 AsyncIterableValue = GenericValue(collections.abc.AsyncIterable, [TypeVarValue(T)])
 
 
-class GetItemProto(Protocol[T]):
-    def __getitem__(self, __i: int) -> T:
+class GetItemProto(Protocol[T_co]):
+    def __getitem__(self, __i: int) -> T_co:
         raise NotImplementedError
 
 
-GetItemProtoValue = GenericValue(GetItemProto, [TypeVarValue(T)])
+GetItemProtoValue = GenericValue(GetItemProto, [TypeVarValue(T_co)])
 
 TypingGenericAlias = type(list[int])
 
@@ -2897,7 +2905,7 @@ def concrete_values_from_iterable(
     else:
         getitem_tv_map = get_tv_map(GetItemProtoValue, value, ctx)
         if not isinstance(getitem_tv_map, CanAssignError):
-            val = getitem_tv_map.get(T, AnyValue(AnySource.generic_argument))
+            val = getitem_tv_map.get(T_co, AnyValue(AnySource.generic_argument))
         # Hack to support iteration over StrEnum. A better solution would have to
         # handle descriptors better in attribute assignment and Protocol compatibility.
         elif (
@@ -2918,23 +2926,26 @@ def concrete_values_from_iterable(
 
 K = TypeVar("K")
 V = TypeVar("V")
+V_co = TypeVar("V_co", covariant=True)
 
 EMPTY_DICTS = (KnownValue({}), DictIncompleteValue(dict, []))
 
 
 # This is all the runtime requires in places like {**k}
-class CustomMapping(Protocol[K, V]):
+class CustomMapping(Protocol[K, V_co]):
     def keys(self) -> Iterable[K]:
         raise NotImplementedError
 
-    def __getitem__(self, __key: K) -> V:
+    def __getitem__(self, __key: K) -> V_co:
         raise NotImplementedError
 
 
 NominalMappingValue = GenericValue(
     collections.abc.Mapping, [TypeVarValue(K), TypeVarValue(V)]
 )
-ProtocolMappingValue = GenericValue(CustomMapping, [TypeVarValue(K), TypeVarValue(V)])
+ProtocolMappingValue = GenericValue(
+    CustomMapping, [TypeVarValue(K), TypeVarValue(V_co)]
+)
 
 
 def kv_pairs_from_mapping(
@@ -2990,7 +3001,9 @@ def kv_pairs_from_mapping(
             if isinstance(can_assign, CanAssignError):
                 return can_assign
         key_type = can_assign.get(K, AnyValue(AnySource.generic_argument))
-        value_type = can_assign.get(V, AnyValue(AnySource.generic_argument))
+        value_type = can_assign.get(
+            V, can_assign.get(V_co, AnyValue(AnySource.generic_argument))
+        )
         return [KVPair(key_type, value_type, is_many=True)]
 
 
