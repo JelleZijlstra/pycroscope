@@ -14,6 +14,7 @@ import asyncio
 import collections
 import collections.abc
 import contextlib
+import dataclasses
 import enum
 import itertools
 import logging
@@ -2352,9 +2353,13 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 and self._is_checking()
                 and not node.keywords
             ):
-                fallback_runtime_class = self._make_namedtuple_related_fallback_class(
+                fallback_runtime_class = self._make_dataclass_related_fallback_class(
                     node, base_values
                 )
+                if fallback_runtime_class is None:
+                    fallback_runtime_class = (
+                        self._make_namedtuple_related_fallback_class(node, base_values)
+                    )
                 if fallback_runtime_class is None:
                     fallback_runtime_class = self._make_enum_related_fallback_class(
                         node, base_values
@@ -2790,6 +2795,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             field_type, _ = annotation_expr.unqualify(
                 {
                     Qualifier.ClassVar,
+                    Qualifier.Final,
                     Qualifier.InitVar,
                     Qualifier.ReadOnly,
                     Qualifier.Required,
@@ -2901,6 +2907,83 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             self.log(logging.INFO, "unable to synthesize runtime class", node.name)
             return None
 
+    def _make_dataclass_related_fallback_class(
+        self, node: ast.ClassDef, base_values: Sequence[Value]
+    ) -> type | None:
+        is_dataclass_class, options = self._get_dataclass_decorator_options(node)
+        if not is_dataclass_class or options is None:
+            return None
+        if not self._should_build_dataclass_kw_only_fallback(node, options):
+            return None
+
+        runtime_bases = []
+        for base_value in base_values:
+            runtime_base = self._runtime_base_from_value(
+                base_value, allow_synthetic_class_base=True
+            )
+            if runtime_base is None:
+                return None
+            runtime_bases.append(runtime_base)
+
+        annotations: dict[str, object] = {}
+        defaults: dict[str, object] = {}
+        marker = getattr(dataclasses, "KW_ONLY", None)
+        for statement in node.body:
+            if not (
+                isinstance(statement, ast.AnnAssign)
+                and isinstance(statement.target, ast.Name)
+                and statement.simple
+            ):
+                continue
+            field_name = statement.target.id
+            if marker is not None and self._is_dataclass_kw_only_marker_annotation(
+                statement.annotation
+            ):
+                annotations[field_name] = marker
+                continue
+            annotation_expr = annotation_expr_from_ast(
+                statement.annotation, visitor=self, suppress_errors=True
+            )
+            field_type, _ = annotation_expr.unqualify(
+                {
+                    Qualifier.ClassVar,
+                    Qualifier.Final,
+                    Qualifier.InitVar,
+                    Qualifier.ReadOnly,
+                    Qualifier.Required,
+                    Qualifier.NotRequired,
+                },
+                mutually_exclusive_qualifiers=(
+                    (Qualifier.Required, Qualifier.NotRequired),
+                ),
+            )
+            annotations[field_name] = self._runtime_annotation_from_value(field_type)
+            if statement.value is not None:
+                defaults[field_name] = self._runtime_dataclass_default_from_expr(
+                    statement.value
+                )
+
+        module_name = self.module.__name__ if self.module is not None else self.filename
+        qualname = self._get_class_qualname_from_name(node.name)
+
+        def exec_body(ns: dict[str, object]) -> None:
+            ns["__module__"] = module_name
+            ns["__qualname__"] = qualname
+            ns["__annotations__"] = annotations
+            for name, default in defaults.items():
+                ns[name] = default
+
+        try:
+            runtime_class = types.new_class(
+                node.name, tuple(runtime_bases), {}, exec_body
+            )
+            return dataclass(**options)(runtime_class)
+        except Exception:
+            self.log(
+                logging.INFO, "unable to synthesize dataclass runtime class", node.name
+            )
+            return None
+
     def _make_enum_related_fallback_class(
         self, node: ast.ClassDef, base_values: Sequence[Value]
     ) -> type | None:
@@ -2969,6 +3052,29 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             self.log(logging.INFO, "unable to synthesize enum runtime class", node.name)
             return None
 
+    def _runtime_base_from_value(
+        self, base_value: Value, *, allow_synthetic_class_base: bool
+    ) -> type | None:
+        base = replace_fallback(base_value)
+        if allow_synthetic_class_base and isinstance(base, SyntheticClassObjectValue):
+            runtime_class = base.class_attributes.get("%runtime_class")
+            if isinstance(runtime_class, KnownValue) and isinstance(
+                runtime_class.val, type
+            ):
+                return runtime_class.val
+            class_type = base.class_type
+            if isinstance(class_type, TypedValue) and isinstance(class_type.typ, type):
+                return class_type.typ
+            return None
+        if isinstance(base, KnownValue) and isinstance(base.val, type):
+            return base.val
+        if isinstance(base, TypedValue) and isinstance(base.typ, type):
+            return base.typ
+        runtime_annotation = self._runtime_annotation_from_value(base_value)
+        if isinstance(runtime_annotation, type):
+            return runtime_annotation
+        return None
+
     def _runtime_enum_bases_from_values(
         self, base_values: Sequence[Value], *, allow_synthetic_class_base: bool
     ) -> list[type] | None:
@@ -2990,20 +3096,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     def _runtime_enum_base_from_value(
         self, base_value: Value, *, allow_synthetic_class_base: bool
     ) -> type | None:
-        base = replace_fallback(base_value)
-        if allow_synthetic_class_base and isinstance(base, SyntheticClassObjectValue):
-            class_type = base.class_type
-            if isinstance(class_type, TypedValue) and isinstance(class_type.typ, type):
-                return class_type.typ
-            return None
-        if isinstance(base, KnownValue) and isinstance(base.val, type):
-            return base.val
-        if isinstance(base, TypedValue) and isinstance(base.typ, type):
-            return base.typ
-        runtime_annotation = self._runtime_annotation_from_value(base_value)
-        if isinstance(runtime_annotation, type):
-            return runtime_annotation
-        return None
+        return self._runtime_base_from_value(
+            base_value, allow_synthetic_class_base=allow_synthetic_class_base
+        )
 
     def _runtime_annotation_from_value(self, value: Value) -> object:
         if isinstance(value, AnnotatedValue):
@@ -3048,6 +3143,36 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         if isinstance(value, KnownValue):
             return value.val
         return object()
+
+    def _maybe_make_runtime_dataclass_field_default(
+        self, expr: ast.expr
+    ) -> object | None:
+        if not isinstance(expr, ast.Call):
+            return None
+        callee = self.visit(expr.func)
+        if not (isinstance(callee, KnownValue) and callee.val is dataclass_field):
+            return None
+        if expr.args:
+            return None
+        kwargs: dict[str, object] = {}
+        for kw in expr.keywords:
+            if kw.arg is None:
+                return None
+            value = self.visit(kw.value)
+            if not isinstance(value, KnownValue):
+                return None
+            kwargs[kw.arg] = value.val
+        try:
+            return cast(Any, dataclass_field)(**kwargs)
+        except Exception:
+            return None
+
+    def _runtime_dataclass_default_from_expr(self, expr: ast.expr) -> object:
+        if (
+            field_default := self._maybe_make_runtime_dataclass_field_default(expr)
+        ) is not None:
+            return field_default
+        return self._runtime_default_from_expr(expr)
 
     @staticmethod
     def _populate_fallback_runtime_class(
@@ -3412,23 +3537,86 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             )
         return isinstance(value, KnownValue) and value.val is dataclass
 
-    def _get_dataclass_decorator_status(
+    def _get_dataclass_decorator_options(
         self, node: ast.ClassDef
-    ) -> tuple[bool, bool | None]:
+    ) -> tuple[bool, dict[str, bool] | None]:
         for decorator in node.decorator_list:
             if isinstance(decorator, ast.Call):
                 if not self._is_dataclass_decorator_target(decorator.func):
                     continue
-                frozen = False
+                options: dict[str, bool] = {}
                 for kw in decorator.keywords:
-                    if kw.arg != "frozen":
-                        continue
-                    frozen = self._get_bool_literal(kw.value)
-                    break
-                return True, frozen
+                    if kw.arg is None:
+                        return True, None
+                    value = self._get_bool_literal(kw.value)
+                    if value is None:
+                        return True, None
+                    options[kw.arg] = value
+                return True, options
             if self._is_dataclass_decorator_target(decorator):
-                return True, False
+                return True, {}
         return False, None
+
+    def _get_dataclass_decorator_status(
+        self, node: ast.ClassDef
+    ) -> tuple[bool, bool | None]:
+        is_dataclass_class, options = self._get_dataclass_decorator_options(node)
+        if not is_dataclass_class:
+            return False, None
+        if options is None:
+            return True, None
+        return True, options.get("frozen", False)
+
+    @staticmethod
+    def _is_dataclass_kw_only_marker_value(value: Value) -> bool:
+        marker = getattr(dataclasses, "KW_ONLY", None)
+        if marker is None:
+            return False
+        value = replace_fallback(value)
+        if isinstance(value, AnnotatedValue):
+            return NameCheckVisitor._is_dataclass_kw_only_marker_value(value.value)
+        if isinstance(value, MultiValuedValue):
+            return any(
+                NameCheckVisitor._is_dataclass_kw_only_marker_value(subval)
+                for subval in value.vals
+            )
+        return isinstance(value, KnownValue) and value.val is marker
+
+    def _is_dataclass_kw_only_marker_annotation(self, node: ast.expr) -> bool:
+        if isinstance(node, ast.Name):
+            value = self.scopes.get(node.id, node, self.state, can_assign_ctx=self)
+            return self._is_dataclass_kw_only_marker_value(value)
+        if isinstance(node, ast.Attribute):
+            with self.catch_errors():
+                value = self.visit(node)
+            return self._is_dataclass_kw_only_marker_value(value)
+        return False
+
+    def _is_dataclass_field_call(self, expr: ast.expr) -> bool:
+        if not isinstance(expr, ast.Call):
+            return False
+        with self.catch_errors():
+            callee = self.visit(expr.func)
+        return isinstance(callee, KnownValue) and callee.val is dataclass_field
+
+    def _should_build_dataclass_kw_only_fallback(
+        self, node: ast.ClassDef, options: Mapping[str, bool]
+    ) -> bool:
+        if options.get("kw_only", False):
+            return True
+        for statement in node.body:
+            if not isinstance(statement, ast.AnnAssign):
+                continue
+            if self._is_dataclass_kw_only_marker_annotation(statement.annotation):
+                return True
+            value_expr = statement.value
+            if (
+                isinstance(value_expr, ast.Call)
+                and self._is_dataclass_field_call(value_expr)
+                and any(kw.arg == "kw_only" for kw in value_expr.keywords)
+            ):
+                return True
+        return False
 
     def _get_dataclass_status_for_type(
         self, typ: type | str
@@ -8005,13 +8193,25 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
 
     def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
         if self.current_synthetic_typeddict is None:
+            annotation = self._visit_annotation(node.annotation)
+            if (
+                self._is_current_class_dataclass()
+                and self._is_dataclass_kw_only_marker_value(annotation)
+            ):
+                if node.value is not None:
+                    self._show_error_if_checking(
+                        node,
+                        "dataclasses.KW_ONLY marker cannot have a default value",
+                        error_code=ErrorCode.invalid_annotation,
+                    )
+                if self.annotate:
+                    node.target.inferred_value = AnyValue(AnySource.inference)
+                return
             if self._is_subscripted_type_alias_annotation(node.annotation):
-                self._visit_annotation(node.annotation)
                 expr = annotation_expr_from_ast(
                     node.annotation, visitor=self, suppress_errors=self._is_collecting()
                 )
             else:
-                annotation = self._visit_annotation(node.annotation)
                 expr = self._expr_of_annotation_type(annotation, node.annotation)
         else:
             # Still visit the annotation node so ast_annotator can attach

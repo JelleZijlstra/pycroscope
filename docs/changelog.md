@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Improve static fallback analysis for dataclasses with keyword-only fields: `KW_ONLY` pseudo-fields no longer raise `invalid_annotation`, and kw-only constructor arguments are now checked correctly even when modules fail at import time.
 - Allow `@override` methods in subclasses of `Any`-derived base classes (for example `class Parent(Any): ...`) instead of incorrectly reporting `override_does_not_override`.
 - Enforce PEP 695 generic-syntax compatibility rules for classes and generic functions/methods: pycroscope now reports `invalid_annotation` when old-style `TypeVar`/`ParamSpec`/`TypeVarTuple` declarations are mixed into new `class C[T]` or `def f[T](...)` annotation contexts.
 - Add protocol variance validation for both legacy `Protocol[T]` and PEP 695 generic syntax: pycroscope now reports `invalid_annotation` when declared protocol type-variable variance does not match inferred usage (including unused protocol type variables, which default to covariant).
