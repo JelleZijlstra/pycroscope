@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Enforce PEP 695 generic-syntax compatibility rules for classes and generic functions/methods: pycroscope now reports `invalid_annotation` when old-style `TypeVar`/`ParamSpec`/`TypeVarTuple` declarations are mixed into new `class C[T]` or `def f[T](...)` annotation contexts.
 - Add a new `invalid_literal` error code (disabled by default) to flag `Literal[...]` arguments that are outside the typing-spec allowed set, and enable this check in conformance CI runs.
 - Tighten `type`-statement alias semantics: type aliases are no longer accepted as class bases or `isinstance`/`issubclass` classinfo arguments, alias metadata attributes like `__value__`/`__type_params__` are handled consistently, `type` statements are rejected inside function scope, and pycroscope now reports alias redeclarations/invalid unguarded alias cycles plus bound/constraint violations when specializing `TypeAliasType` aliases (including ParamSpec list-form arguments); `isinstance`/`issubclass` now also reject TypedDicts, non-`@runtime_checkable` protocols, and parameterized generics in classinfo arguments.
 - Improve constructor-call checking through `type[T]`: pycroscope now validates constructor arguments for both unbounded and bounded `TypeVar` class objects, and rejects extra arguments for classes that use the default no-argument object constructor.

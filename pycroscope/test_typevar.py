@@ -637,6 +637,47 @@ class TestGenericClasses(TestNameCheckVisitorBase):
         """
         )
 
+    @skip_before((3, 12))
+    def test_reject_legacy_typevar_in_generic_class_bases(self):
+        self.assert_passes(
+            """
+            from typing import TypeVar
+
+            K = TypeVar("K")
+
+            class ClassA[V](dict[K, V]):  # E: invalid_annotation
+                pass
+        """,
+            allow_import_failures=True,
+        )
+
+    @skip_before((3, 12))
+    def test_reject_legacy_typevar_in_generic_function_annotations(self):
+        self.assert_passes(
+            """
+            from typing import TypeVar
+
+            K = TypeVar("K")
+
+            class ClassC[V]:
+                def method1(self, a: V, b: K) -> V | K:
+                    raise NotImplementedError
+
+                def method2[M](self, a: M, b: K) -> M | K:  # E: invalid_annotation
+                    raise NotImplementedError
+        """
+        )
+
+    @skip_before((3, 12))
+    def test_allow_outer_pep695_type_params_in_nested_generic_function(self):
+        self.assert_passes(
+            """
+            class Box[T]:
+                def wrap[U](self, x: T, y: U) -> tuple[T, U]:
+                    return x, y
+        """
+        )
+
 
 class TestIntegration(TestNameCheckVisitorBase):
     @assert_passes()
