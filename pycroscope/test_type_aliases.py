@@ -82,8 +82,7 @@ class TestTypeAliasType(TestNameCheckVisitorBase):
 
     @skip_before((3, 12))
     def test_312(self):
-        self.assert_passes(
-            """
+        self.assert_passes("""
             from typing_extensions import assert_type
             type MyType = int
 
@@ -94,13 +93,11 @@ class TestTypeAliasType(TestNameCheckVisitorBase):
             def capybara(i: int, s: str):
                 f(i)
                 f(s)  # E: incompatible_argument
-        """
-        )
+        """)
 
     @skip_before((3, 12))
     def test_312_generic(self):
-        self.assert_passes(
-            """
+        self.assert_passes("""
             from typing_extensions import assert_type
             type MyType[T] = list[T] | set[T]
 
@@ -111,32 +108,26 @@ class TestTypeAliasType(TestNameCheckVisitorBase):
             def capybara(i: int, s: str):
                 f([i])
                 f([s])  # E: incompatible_argument
-        """
-        )
+        """)
 
     @skip_before((3, 12))
     def test_312_generic_paramspec(self):
-        self.assert_passes(
-            """
+        self.assert_passes("""
             from typing import Callable
 
             type Alias[**P] = Callable[P, int]
-        """
-        )
+        """)
 
     @skip_before((3, 12))
     def test_312_local_alias(self):
-        self.assert_passes(
-            """
+        self.assert_passes("""
             def capybara():
                 type MyType = int  # E: invalid_annotation
-        """
-        )
+        """)
 
     @skip_before((3, 12))
     def test_312_literal(self):
-        self.assert_passes(
-            """
+        self.assert_passes("""
             from typing import assert_type, Literal
 
             type MyType = Literal[1, 2, 3]
@@ -146,8 +137,7 @@ class TestTypeAliasType(TestNameCheckVisitorBase):
 
             def pacarana(x: MyType):
                 capybara(x)
-        """
-        )
+        """)
 
     @skip_before((3, 12))
     def test_312_alias_object_semantics(self):
@@ -175,8 +165,7 @@ class TestTypeAliasType(TestNameCheckVisitorBase):
 
     @skip_before((3, 12))
     def test_312_reject_old_typevars(self):
-        self.assert_passes(
-            """
+        self.assert_passes("""
             from typing import TypeVar
 
             V = TypeVar("V")
@@ -184,13 +173,11 @@ class TestTypeAliasType(TestNameCheckVisitorBase):
 
             T1 = TypeVar("T1")
             type TA2 = list[T1]  # E: invalid_annotation
-        """
-        )
+        """)
 
     @skip_before((3, 12))
     def test_312_alias_bounds_and_circularity(self):
-        self.assert_passes(
-            """
+        self.assert_passes("""
             from typing import Callable
 
             type RecursiveAlias[T] = T | list[RecursiveAlias[T]]
@@ -206,22 +193,18 @@ class TestTypeAliasType(TestNameCheckVisitorBase):
             type Circular2[T] = T | Circular2[str]  # E: invalid_annotation
             type Circular3 = Circular4  # E: invalid_annotation
             type Circular4 = Circular3  # E: invalid_annotation
-        """
-        )
+        """)
 
     @skip_before((3, 12))
     def test_312_alias_redeclaration(self):
-        self.assert_passes(
-            """
+        self.assert_passes("""
             type Alias = int
             type Alias = int  # E: invalid_annotation
-        """
-        )
+        """)
 
     @skip_before((3, 12))
     def test_312_iteration(self):
-        self.assert_passes(
-            """
+        self.assert_passes("""
             from typing import assert_type, Literal
 
             type MyType = tuple[int, str, float]
@@ -234,5 +217,4 @@ class TestTypeAliasType(TestNameCheckVisitorBase):
 
             def pacarana(x: MyType):
                 capybara(x)
-        """
-        )
+        """)

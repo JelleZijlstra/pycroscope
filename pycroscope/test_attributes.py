@@ -240,16 +240,14 @@ class TestAttributes(TestNameCheckVisitorBase):
 
     @skip_before((3, 12))
     def test_annotated_plus_alias(self):
-        self.assert_passes(
-            """
+        self.assert_passes("""
             from typing import Annotated, Literal, assert_type
 
             type X = Annotated[str, "hi"]
 
             def capybara(x: X):
                 assert_type(x.isnumeric(), bool)
-            """
-        )
+            """)
 
     @assert_passes()
     def test_optional_operation(self):

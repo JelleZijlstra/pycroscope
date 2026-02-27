@@ -7,8 +7,7 @@ from pycroscope.test_node_visitor import assert_passes, skip_before
 class TestRelations(TestNameCheckVisitorBase):
     @skip_before((3, 12))
     def test_unbounded_tuple_unions(self):
-        self.assert_passes(
-            """
+        self.assert_passes("""
             from typing import assert_type
 
             type Eq0 = tuple[()]
@@ -24,8 +23,7 @@ class TestRelations(TestNameCheckVisitorBase):
                 print(eq0_ge1__eq0, eq0_ge1__eq1, eq0_ge1__ge0, eq0_ge1__ge1)
 
                 assert_type(ge0, Eq0 | Ge1)
-            """
-        )
+            """)
 
 
 class TestIntersections(TestNameCheckVisitorBase):

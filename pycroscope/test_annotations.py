@@ -445,8 +445,7 @@ class TestAnnotations(TestNameCheckVisitorBase):
                 assert_is_value(elt, t_str_int)
 
     def test_builtin_tuples_string(self):
-        self.assert_passes(
-            """
+        self.assert_passes("""
             from __future__ import annotations
             from collections.abc import Iterable
             from typing import Union
@@ -472,8 +471,7 @@ class TestAnnotations(TestNameCheckVisitorBase):
                     assert_is_value(t, t_str_int)
                 for elt in returner():
                     assert_is_value(elt, t_str_int)
-            """
-        )
+            """)
 
     @assert_passes()
     def test_invalid_annotation(self):
@@ -529,13 +527,11 @@ class TestAnnotations(TestNameCheckVisitorBase):
     def test_multiline_string_forward_ref(self):
         from typing_extensions import assert_type
 
-        def f(
-            x: """
+        def f(x: """
                 int |
                 str |
                 list[int]
-            """,
-        ) -> None:
+            """) -> None:
             assert_type(x, int | str | list[int])
 
         f(1)
@@ -581,16 +577,14 @@ class TestAnnotations(TestNameCheckVisitorBase):
             assert_is_value(x, GenericValue(_Pattern, [TypedValue(str)]))
 
     def test_future_annotations(self):
-        self.assert_passes(
-            """
+        self.assert_passes("""
             from __future__ import annotations
             from typing import List
 
             def f(x: int, y: List[str]):
                 assert_is_value(x, TypedValue(int))
                 assert_is_value(y, GenericValue(list, [TypedValue(str)]))
-            """
-        )
+            """)
 
     @assert_passes()
     def test_final(self):
@@ -655,8 +649,7 @@ class TestAnnotations(TestNameCheckVisitorBase):
             assert_is_value(z, GenericValue(tuple, [TypedValue(int)]))
 
     def test_pep604(self):
-        self.assert_passes(
-            """
+        self.assert_passes("""
             from __future__ import annotations
 
             def capybara(x: int | None, y: int | str) -> None:
@@ -666,8 +659,7 @@ class TestAnnotations(TestNameCheckVisitorBase):
             def caller():
                 capybara(1, 2)
                 capybara(None, "x")
-            """
-        )
+            """)
 
     @assert_passes()
     def test_pep604_runtime(self):
@@ -2249,8 +2241,7 @@ class TestUnpack(TestNameCheckVisitorBase):
 
     @skip_before((3, 11))
     def test_native_unpack(self):
-        self.assert_passes(
-            """
+        self.assert_passes("""
             obj: tuple[int, *tuple[str, ...]] = (1, "x", "y")
 
             def capybara(
@@ -2274,32 +2265,26 @@ class TestUnpack(TestNameCheckVisitorBase):
                         tuple, [(False, TypedValue(int)), (True, TypedValue(str))]
                     ),
                 )
-            """
-        )
+            """)
 
     def test_invalid_tuple_ellipsis_forms(self):
-        self.assert_passes(
-            """
+        self.assert_passes("""
             t1: tuple[int, int, ...]  # E: invalid_annotation
             t2: tuple[...]  # E: invalid_annotation
             t3: tuple[..., int]  # E: invalid_annotation
             t4: tuple[int, ..., int]  # E: invalid_annotation
-            """
-        )
+            """)
 
     @skip_before((3, 11))
     def test_invalid_tuple_ellipsis_forms_with_unpack(self):
-        self.assert_passes(
-            """
+        self.assert_passes("""
             t1: tuple[*tuple[str], ...]  # E: invalid_annotation
             t2: tuple[*tuple[str, ...], ...]  # E: invalid_annotation
-            """
-        )
+            """)
 
     @skip_before((3, 11))
     def test_only_one_unbounded_unpack_in_tuple(self):
-        self.assert_passes(
-            """
+        self.assert_passes("""
             from typing import TypeVarTuple, Unpack
 
             Ts = TypeVarTuple("Ts")
@@ -2313,8 +2298,7 @@ class TestUnpack(TestNameCheckVisitorBase):
             def capybara() -> None:
                 t4: tuple[*tuple[str], *Ts]
                 t5: tuple[*tuple[str, ...], *Ts]  # E: invalid_annotation
-            """
-        )
+            """)
 
     @assert_passes(allow_import_failures=True)
     def test_unresolved_tuple_member_preserves_ellipsis(self):

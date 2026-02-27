@@ -1441,7 +1441,7 @@ class Signature:
         new_args = None
         for name, (position, composite) in bound_args.items():
             param = self.parameters[name]
-            (tv_map, param_used_any, remaining_value) = (
+            tv_map, param_used_any, remaining_value = (
                 self._check_param_type_compatibility(
                     param,
                     composite,

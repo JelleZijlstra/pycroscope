@@ -1911,13 +1911,11 @@ class TestNewType(TestNameCheckVisitorBase):
 
 class TestImports(TestNameCheckVisitorBase):
     def test_star_import(self):
-        self.assert_passes(
-            """
+        self.assert_passes("""
             from typing import *
 
             get_args(42)
-            """
-        )
+            """)
 
     @assert_passes()
     def test_local_import(self):
@@ -2396,8 +2394,7 @@ class TestCallSiteCollection(TestNameCheckVisitorBase):
         return collector.map
 
     def test_member_function_call(self):
-        call_map = self.run_and_get_call_map(
-            """
+        call_map = self.run_and_get_call_map("""
             class TestClass(object):
                 def __init__(self):
                     self.first_function(5)
@@ -2408,8 +2405,7 @@ class TestCallSiteCollection(TestNameCheckVisitorBase):
 
                 def second_function(self, y, z):
                     print(y + z)
-            """
-        )
+            """)
 
         assert "TestClass.first_function" in call_map["TestClass.second_function"]
         assert "TestClass.__init__" in call_map["TestClass.first_function"]
