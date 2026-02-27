@@ -14,6 +14,7 @@ import asyncio
 import collections
 import collections.abc
 import contextlib
+import dataclasses
 import enum
 import itertools
 import logging
@@ -1210,6 +1211,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     checker: Checker
     collector: CallSiteCollector | None
     current_class: type | str | None
+    current_class_is_dataclass: bool
     current_class_key: type | str | None
     current_class_type_params: Sequence[TypeVarValue] | None
     current_enum_members: _EnumMemberTracker | None
@@ -1283,6 +1285,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         self.match_subject = Composite(AnyValue(AnySource.inference))
         # current class (for inferring the type of cls and self arguments)
         self.current_class = None
+        self.current_class_is_dataclass = False
         self.current_class_key = None
         self.current_class_type_params = None
         self.current_synthetic_typeddict = None
@@ -2339,9 +2342,16 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     base_values,
                     declared_type_params=registered_type_param_values,
                 )
+            class_is_dataclass = (
+                isinstance(class_obj, type) and is_dataclass_type(class_obj)
+            ) or any(
+                self._is_dataclass_decorator(decorator)
+                for decorator in node.decorator_list
+            )
             with (
                 override(self, "current_synthetic_typeddict", synthetic_typeddict),
                 override(self, "current_class_key", class_key),
+                override(self, "current_class_is_dataclass", class_is_dataclass),
                 override(
                     self, "current_class_type_params", tuple(method_type_param_values)
                 ),
@@ -3346,16 +3356,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
 
     def _is_frozen_dataclass(self, node: ast.ClassDef) -> bool:
         for decorator in node.decorator_list:
-            if isinstance(decorator, ast.Call):
-                target = decorator.func
-            else:
-                target = decorator
-            if not (
-                isinstance(target, ast.Name)
-                and target.id == "dataclass"
-                or isinstance(target, ast.Attribute)
-                and target.attr == "dataclass"
-            ):
+            if not self._is_dataclass_decorator(decorator):
                 continue
             if not isinstance(decorator, ast.Call):
                 return False
@@ -3642,6 +3643,18 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             if isinstance(context, ast.ClassDef):
                 return context.name
         return None
+
+    def _is_current_class_dataclass(self) -> bool:
+        return self.current_class_is_dataclass
+
+    @staticmethod
+    def _is_dataclass_classvar_final(expr: AnnotationExpr) -> bool:
+        qualifier_order = [
+            qualifier
+            for qualifier, _ in expr.qualifiers
+            if qualifier in {Qualifier.Final, Qualifier.ClassVar}
+        ]
+        return qualifier_order == [Qualifier.Final, Qualifier.ClassVar]
 
     def _visit_class_and_get_value(
         self, node: ast.ClassDef, current_class: type | str | None
@@ -4602,6 +4615,14 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
 
     def _is_final_decorator_value(self, value: Value) -> bool:
         return isinstance(value, KnownValue) and is_typing_name(value.val, "final")
+
+    @staticmethod
+    def _is_dataclass_decorator_value(value: Value) -> bool:
+        return isinstance(value, KnownValue) and value.val is dataclasses.dataclass
+
+    def _is_dataclass_decorator(self, decorator: ast.expr) -> bool:
+        target = decorator.func if isinstance(decorator, ast.Call) else decorator
+        return self._is_dataclass_decorator_value(self.visit(target))
 
     def _record_final_member(self, class_key: type | str, member_name: str) -> None:
         self.final_member_names_by_class.setdefault(class_key, set()).add(member_name)
@@ -7583,7 +7604,15 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
 
         # TODO: handle TypeAlias and ClassVar
         is_final = Qualifier.Final in qualifiers
-        if Qualifier.Final in qualifiers and Qualifier.ClassVar in qualifiers:
+        has_classvar = Qualifier.ClassVar in qualifiers
+        is_current_class_dataclass = self._is_current_class_dataclass()
+        if (
+            has_classvar
+            and is_final
+            and not (
+                is_current_class_dataclass and self._is_dataclass_classvar_final(expr)
+            )
+        ):
             self._show_error_if_checking(
                 node.annotation,
                 "Final cannot be combined with ClassVar",
@@ -7600,7 +7629,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             class_key = self.current_class_key
             if class_key is not None and isinstance(node.target, ast.Name):
                 self._record_final_member(class_key, node.target.id)
-                if node.value is None:
+                if node.value is None and (
+                    has_classvar or not is_current_class_dataclass
+                ):
                     self.final_members_requiring_init.setdefault(class_key, {})[
                         node.target.id
                     ] = node

@@ -20,7 +20,6 @@ constructors_call_metaclass
 constructors_call_new
 constructors_callable
 dataclasses_descriptors
-dataclasses_final
 dataclasses_frozen
 dataclasses_hash
 dataclasses_inheritance
