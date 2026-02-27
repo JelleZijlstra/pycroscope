@@ -200,12 +200,10 @@ class TestTypeVar(TestNameCheckVisitorBase):
         T = TypeVar("T")
 
         class ReturnsT(Protocol[T]):  # E: invalid_annotation
-            def get(self) -> T:
-                ...
+            def get(self) -> T: ...
 
         class TakesT(Protocol[T]):  # E: invalid_annotation
-            def put(self, value: T) -> None:
-                ...
+            def put(self, value: T) -> None: ...
 
     @assert_passes()
     def test_protocol_explicit_variance_mismatch(self):
@@ -215,12 +213,10 @@ class TestTypeVar(TestNameCheckVisitorBase):
         T_contra = TypeVar("T_contra", contravariant=True)
 
         class BadCovariant(Protocol[T_co]):  # E: invalid_annotation
-            def put(self, value: T_co) -> None:
-                ...
+            def put(self, value: T_co) -> None: ...
 
         class BadContravariant(Protocol[T_contra]):  # E: invalid_annotation
-            def get(self) -> T_contra:
-                ...
+            def get(self) -> T_contra: ...
 
     @assert_passes()
     def test_protocol_unused_typevar_is_covariant(self):
@@ -230,12 +226,10 @@ class TestTypeVar(TestNameCheckVisitorBase):
         T_co = TypeVar("T_co", covariant=True)
 
         class InvariantByDefault(Protocol[T]):  # E: invalid_annotation
-            def __init__(self, value: T) -> None:
-                ...
+            def __init__(self, value: T) -> None: ...
 
         class CovariantIsOkay(Protocol[T_co]):
-            def __init__(self, value: T_co) -> None:
-                ...
+            def __init__(self, value: T_co) -> None: ...
 
     @assert_passes()
     def test_protocol_paramspec_is_ignored_for_variance_check(self):
@@ -245,8 +239,7 @@ class TestTypeVar(TestNameCheckVisitorBase):
         R = TypeVar("R", covariant=True)
 
         class Callback(Protocol[P, R]):
-            def __call__(self, *args: P.args, **kwargs: P.kwargs) -> R:
-                ...
+            def __call__(self, *args: P.args, **kwargs: P.kwargs) -> R: ...
 
     @assert_passes()
     def test_protocol_output_only_covariant_typevar_is_valid(self):
@@ -255,8 +248,7 @@ class TestTypeVar(TestNameCheckVisitorBase):
         T_co = TypeVar("T_co", covariant=True)
 
         class Reader(Protocol[T_co]):
-            def get(self) -> T_co:
-                ...
+            def get(self) -> T_co: ...
 
     @assert_passes()
     def test_protocol_mapping_value_type_can_be_covariant(self):
@@ -266,11 +258,9 @@ class TestTypeVar(TestNameCheckVisitorBase):
         V_co = TypeVar("V_co", covariant=True)
 
         class MappingLike(Protocol[K, V_co]):
-            def keys(self) -> Iterable[K]:
-                ...
+            def keys(self) -> Iterable[K]: ...
 
-            def __getitem__(self, key: K) -> V_co:
-                ...
+            def __getitem__(self, key: K) -> V_co: ...
 
     @assert_passes()
     def test_protocol_staticmethod_alias_participates_in_variance(self):
@@ -282,13 +272,11 @@ class TestTypeVar(TestNameCheckVisitorBase):
 
         class BadAliasStaticMethod(Protocol[T]):  # E: invalid_annotation
             @my_staticmethod
-            def put(value: T) -> None:
-                ...
+            def put(value: T) -> None: ...
 
         class GoodAliasStaticMethod(Protocol[T_contra]):
             @my_staticmethod
-            def put(value: T_contra) -> None:
-                ...
+            def put(value: T_contra) -> None: ...
 
     @assert_passes()
     def test_typeshed(self):
