@@ -2235,14 +2235,19 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         else:
             ctx = contextlib.nullcontext()
         with ctx:
-            if sys.version_info >= (3, 12) and node.type_params:
-                type_param_values = list(self.visit_type_param_values(node.type_params))
+            declared_type_params = cast(
+                Sequence[ast.AST], getattr(node, "type_params", ())
+            )
+            if sys.version_info >= (3, 12) and declared_type_params:
+                type_param_values = list(
+                    self.visit_type_param_values(declared_type_params)
+                )
             else:
                 type_param_values = []
             if self._is_checking() and type_param_values:
                 legacy_typevars = self._legacy_typevars_in_nodes(
                     [
-                        *node.type_params,
+                        *declared_type_params,
                         *node.bases,
                         *(kw.value for kw in node.keywords),
                     ],
@@ -3930,16 +3935,19 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         else:
             ctx = contextlib.nullcontext()
         with ctx:
+            declared_type_params = cast(
+                Sequence[ast.AST], getattr(node, "type_params", ())
+            )
             if (
                 sys.version_info >= (3, 12)
                 and not isinstance(node, ast.Lambda)
-                and node.type_params
+                and declared_type_params
             ):
-                type_params = self.visit_type_param_values(node.type_params)
+                type_params = self.visit_type_param_values(declared_type_params)
             else:
                 type_params = []
             if type_params and not isinstance(node, ast.Lambda):
-                annotation_nodes: list[ast.AST] = [*node.type_params]
+                annotation_nodes: list[ast.AST] = [*declared_type_params]
                 annotation_nodes.extend(
                     arg.annotation
                     for arg in (
