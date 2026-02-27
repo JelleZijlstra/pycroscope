@@ -1102,6 +1102,28 @@ class TestTypeVar(TestNameCheckVisitorBase):
             assert_is_value(x, AnyValue(AnySource.error))
 
     @assert_passes()
+    def test_bound_string_forward_ref(self):
+        from typing import TypeVar
+
+        T = TypeVar("T", bound="ForwardRef | str")
+
+        class ForwardRef:
+            pass
+
+        def f(x: T) -> T:
+            return x
+
+        def capybara() -> None:
+            assert_is_value(f("x"), KnownValue("x"))
+
+    @assert_passes()
+    def test_bound_cannot_contain_typevars(self):
+        from typing import TypeVar
+
+        T = TypeVar("T")
+        TypeVar("Bad", bound=list[T])  # E: invalid_annotation
+
+    @assert_passes()
     def test_constraint(self):
         from typing import TypeVar, Union
 

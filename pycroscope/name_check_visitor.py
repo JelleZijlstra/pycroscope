@@ -8574,7 +8574,11 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         if isinstance(value, MultiValuedValue):
             return any(self._is_invalid_typevar_bound(subval) for subval in value.vals)
         if isinstance(value, KnownValue):
-            return is_typing_name(value.val, "TypedDict")
+            if is_typing_name(value.val, "TypedDict"):
+                return True
+            value = type_from_value(value, self, suppress_errors=True)
+        if any(isinstance(subval, TypeVarValue) for subval in value.walk_values()):
+            return True
         return False
 
     def _check_invalid_typevar_bound(
@@ -8588,15 +8592,21 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         ):
             return
         for keyword, composite in keywords:
-            if keyword == "bound" and self._is_invalid_typevar_bound(composite.value):
-                error_node = composite.node if composite.node is not None else node
-                if error_node is None:
-                    continue
-                self._show_error_if_checking(
-                    error_node,
-                    "TypedDict cannot be used as a TypeVar bound",
-                    error_code=ErrorCode.invalid_annotation,
-                )
+            if keyword != "bound":
+                continue
+            bound = composite.value
+            if not self._is_invalid_typevar_bound(bound):
+                continue
+            if isinstance(bound, KnownValue) and is_typing_name(bound.val, "TypedDict"):
+                message = "TypedDict cannot be used as a TypeVar bound"
+            else:
+                message = "TypeVar bound cannot be parameterized by type variables"
+            error_node = composite.node if composite.node is not None else node
+            if error_node is None:
+                continue
+            self._show_error_if_checking(
+                error_node, message, error_code=ErrorCode.invalid_annotation
+            )
 
     def _maybe_build_typevar_call_value(
         self,
@@ -8616,7 +8626,16 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         if not (isinstance(name_arg, KnownValue) and isinstance(name_arg.val, str)):
             return None
 
-        constraints = [type_from_value(arg.value, self, arg.node) for arg in args[1:]]
+        def _typevar_arg_to_type(composite: Composite) -> Value:
+            value = composite.value
+            suppress_errors = isinstance(value, KnownValue) and isinstance(
+                value.val, str
+            )
+            return type_from_value(
+                value, self, composite.node, suppress_errors=suppress_errors
+            )
+
+        constraints = [_typevar_arg_to_type(arg) for arg in args[1:]]
         bound = default = None
         covariant = False
         contravariant = False
@@ -8638,9 +8657,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 else:
                     infer_variance = kwarg_value.val
             elif keyword == "bound":
-                bound = type_from_value(kwarg_value, self, composite.node)
+                bound = _typevar_arg_to_type(composite)
             elif keyword == "default":
-                default = type_from_value(kwarg_value, self, composite.node)
+                default = _typevar_arg_to_type(composite)
             else:
                 return None
 

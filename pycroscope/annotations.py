@@ -1305,9 +1305,20 @@ class _Visitor(ast.NodeVisitor):
             if not isinstance(name_val, KnownValue):
                 self.ctx.show_error("TypeVar name must be a literal", node=node.args[0])
                 return None
+
+            def _typevar_arg_to_type(arg_value: Value) -> Value:
+                # String bounds/constraints may contain forward refs to names that
+                # are defined later in the file.
+                suppress_errors = isinstance(arg_value, KnownValue) and isinstance(
+                    arg_value.val, str
+                )
+                return type_from_value(
+                    arg_value, ctx=self.ctx, suppress_errors=suppress_errors
+                )
+
             constraints = []
             for arg_value in arg_values[1:]:
-                constraints.append(_type_from_value(arg_value, self.ctx))
+                constraints.append(_typevar_arg_to_type(arg_value))
             bound = default = None
             covariant = False
             contravariant = False
@@ -1328,9 +1339,9 @@ class _Visitor(ast.NodeVisitor):
                     elif name == "infer_variance":
                         infer_variance = kwarg_value.val
                 elif name == "bound":
-                    bound = _type_from_value(kwarg_value, self.ctx)
+                    bound = _typevar_arg_to_type(kwarg_value)
                 elif name == "default":
-                    default = _type_from_value(kwarg_value, self.ctx)
+                    default = _typevar_arg_to_type(kwarg_value)
                 else:
                     self.ctx.show_error(f"Unrecognized TypeVar kwarg {name}", node=node)
                     return None
