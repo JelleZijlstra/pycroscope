@@ -1550,6 +1550,10 @@ class SyntheticClassObjectValue(Value):
     generic_bases: MutableMapping[type | str, dict[TypeVarLike, Value]] = field(
         default_factory=dict, compare=False, hash=False, repr=False
     )
+    is_dataclass: bool = field(default=False, compare=False, hash=False, repr=False)
+    dataclass_frozen: bool | None = field(
+        default=None, compare=False, hash=False, repr=False
+    )
 
     def substitute_typevars(self, typevars: TypeVarMap) -> Value:
         substituted = self.class_type.substitute_typevars(typevars)
@@ -1570,6 +1574,8 @@ class SyntheticClassObjectValue(Value):
                 }
                 for base_typ, tv_map in self.generic_bases.items()
             },
+            self.is_dataclass,
+            self.dataclass_frozen,
         )
 
     def walk_values(self) -> Iterable[Value]:

@@ -131,6 +131,7 @@ ErrorCode = ErrorRegistry(
         Error("incompatible_assignment", "Incompatible variable assignment"),
         Error("invalid_typeddict_key", "Invalid key in TypedDict"),
         Error("invalid_annotation", "Invalid type annotation"),
+        Error("invalid_literal", "Invalid argument to Literal[]"),
         Error("invalid_base", "Invalid base class"),
         Error(
             "invalid_positional_only", "Invalid positional-only parameter declaration"
@@ -190,6 +191,7 @@ DISABLED_IN_TESTS = {
     ErrorCode.suggested_return_type,
     ErrorCode.suggested_parameter_type,
     ErrorCode.implicit_any,
+    ErrorCode.invalid_literal,
 }
 
 
@@ -202,6 +204,7 @@ DISABLED_BY_DEFAULT = {
     ErrorCode.missing_f,
     ErrorCode.bare_ignore,
     ErrorCode.too_many_positional_args,
+    ErrorCode.invalid_literal,
     # TODO: turn this on
     ErrorCode.implicit_reexport,
     ErrorCode.incompatible_override,

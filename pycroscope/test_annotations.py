@@ -953,6 +953,55 @@ class TestCallable(TestNameCheckVisitorBase):
             takes_callable(wrong_callable)  # E: incompatible_argument
 
     @assert_passes()
+    def test_invalid_literal_check_disabled_by_default(self):
+        from enum import Enum
+
+        from typing_extensions import Literal
+
+        class Animal(Enum):
+            CAT = 1
+            helper = lambda x: str(x)
+
+            @property
+            def species(self) -> str:
+                return "mammal"
+
+        def accepts(
+            member: Literal[Animal.CAT],
+            helper: Literal[Animal.helper],
+            species: Literal[Animal.species],
+            obj_type: Literal[object],
+            pi: Literal[3.14],
+        ) -> None:
+            pass
+
+        def capybara() -> None:
+            accepts(Animal.CAT, Animal.helper, Animal.species, object, 3.14)
+
+    @assert_passes(settings={ErrorCode.invalid_literal: True})
+    def test_invalid_literal_check_enabled(self):
+        from enum import Enum
+
+        from typing_extensions import Literal
+
+        class Animal(Enum):
+            CAT = 1
+            helper = lambda x: str(x)
+
+            @property
+            def species(self) -> str:
+                return "mammal"
+
+        def accepts(
+            member: Literal[Animal.CAT],
+            helper: Literal[Animal.helper],  # E: invalid_literal
+            species: Literal[Animal.species],  # E: invalid_literal
+            obj_type: Literal[object],  # E: invalid_literal
+            pi: Literal[3.14],  # E: invalid_literal
+        ) -> None:
+            pass
+
+    @assert_passes()
     def test_known_value_error(self):
         from typing_extensions import Literal
 
@@ -1834,6 +1883,37 @@ class TestRequired(TestNameCheckVisitorBase):
 
         if TYPE_CHECKING:
             x: Final[Final[int]] = 1  # E: invalid_annotation
+
+    @assert_passes()
+    def test_dataclass_final_fields(self):
+        from dataclasses import dataclass
+        from typing import TYPE_CHECKING, ClassVar
+
+        from typing_extensions import Final
+
+        if TYPE_CHECKING:
+
+            @dataclass
+            class D:
+                final_no_default: Final[int]
+                final_with_default: Final[str] = "foo"
+                final_classvar: ClassVar[Final[int]] = 4
+
+            D.final_no_default = 10  # E: incompatible_assignment
+            D.final_with_default = "baz"  # E: incompatible_assignment
+            D.final_classvar = 10  # E: incompatible_assignment
+
+    @assert_passes()
+    def test_non_dataclass_still_rejects_classvar_final(self):
+        from typing import TYPE_CHECKING, ClassVar
+
+        from typing_extensions import Final
+
+        if TYPE_CHECKING:
+
+            class C:
+                x: ClassVar[Final[int]] = 1  # E: invalid_annotation
+                y: Final[ClassVar[int]] = 1  # E: invalid_annotation
 
 
 class TestParamSpec(TestNameCheckVisitorBase):

@@ -133,6 +133,7 @@ from .safe import (
     all_of_type,
     is_dataclass_type,
     is_hashable,
+    is_typing_name,
     safe_getattr,
     safe_hasattr,
     safe_isinstance,
@@ -1210,6 +1211,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     checker: Checker
     collector: CallSiteCollector | None
     current_class: type | str | None
+    current_class_is_dataclass: bool
     current_class_key: type | str | None
     current_class_type_params: Sequence[TypeVarValue] | None
     _active_pep695_type_params: list[set[object]]
@@ -1284,6 +1286,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         self.match_subject = Composite(AnyValue(AnySource.inference))
         # current class (for inferring the type of cls and self arguments)
         self.current_class = None
+        self.current_class_is_dataclass = False
         self.current_class_key = None
         self.current_class_type_params = None
         self._active_pep695_type_params = []
@@ -2219,6 +2222,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
 
     def visit_ClassDef(self, node: ast.ClassDef) -> Value:
         decorator_values = self._generic_visit_list(node.decorator_list)
+        is_dataclass_class, frozen_dataclass = self._get_dataclass_decorator_status(
+            node
+        )
         class_obj = self._get_current_class_object(node)
         class_key: type | str = (
             class_obj
@@ -2261,6 +2267,8 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                         error_code=ErrorCode.invalid_annotation,
                     )
             base_values = self._generic_visit_list(node.bases)
+            if self._is_checking() and is_dataclass_class:
+                self._check_dataclass_inheritance(node, base_values, frozen_dataclass)
             if self._is_checking():
                 self._check_protocol_base_validity(node, base_values)
                 for base_node, base_value in zip(node.bases, base_values):
@@ -2319,7 +2327,11 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     synthetic_class_type = TypedValue(synthetic_fq_name)
                     class_scope_object = synthetic_fq_name
                 synthetic_class = SyntheticClassObjectValue(
-                    node.name, synthetic_class_type, base_classes=tuple(base_values)
+                    node.name,
+                    synthetic_class_type,
+                    base_classes=tuple(base_values),
+                    is_dataclass=is_dataclass_class,
+                    dataclass_frozen=frozen_dataclass if is_dataclass_class else None,
                 )
                 self._synthetic_classes_by_name[synthetic_fq_name] = synthetic_class
                 self.checker.register_synthetic_class(synthetic_class)
@@ -2362,10 +2374,17 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     base_values,
                     declared_type_params=registered_type_param_values,
                 )
+            class_is_dataclass = (
+                isinstance(class_obj, type) and is_dataclass_type(class_obj)
+            ) or any(
+                self._is_dataclass_decorator(decorator)
+                for decorator in node.decorator_list
+            )
             with (
                 self._active_pep695_type_param_scope(type_param_values),
                 override(self, "current_synthetic_typeddict", synthetic_typeddict),
                 override(self, "current_class_key", class_key),
+                override(self, "current_class_is_dataclass", class_is_dataclass),
                 override(
                     self, "current_class_type_params", tuple(method_type_param_values)
                 ),
@@ -2996,12 +3015,32 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         ignore_names = self._enum_ignore_names(class_attributes.get("_ignore_"))
         member_literal_values: dict[str, object] = {}
         member_order: list[str] = []
+        missing: Value | None = None
 
         for member_name, statement in self._iter_enum_assignment_candidates(node):
-            value = class_attributes.get(member_name, AnyValue(AnySource.inference))
-            unwrapped, forced_member, forced_nonmember = (
-                self._unwrap_enum_member_wrapper(value)
+            stmt_forced_member, stmt_forced_nonmember = (
+                self._enum_statement_member_decorators(statement)
             )
+            value = class_attributes.get(member_name, missing)
+            if value is missing:
+                if stmt_forced_nonmember:
+                    continue
+                if (
+                    isinstance(
+                        statement, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
+                    )
+                    and not stmt_forced_member
+                ):
+                    continue
+                value = AnyValue(AnySource.inference)
+                unwrapped = value
+                forced_member = stmt_forced_member
+                forced_nonmember = False
+            else:
+                assert value is not None
+                unwrapped, forced_member, forced_nonmember = (
+                    self._unwrap_enum_member_wrapper(value)
+                )
 
             if member_name in ignore_names:
                 continue
@@ -3010,6 +3049,15 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             if member_name.startswith("__") and not member_name.endswith("__"):
                 continue
             if isinstance(statement, ast.AnnAssign) and statement.value is None:
+                continue
+            if stmt_forced_nonmember:
+                continue
+            if (
+                isinstance(
+                    statement, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
+                )
+                and not stmt_forced_member
+            ):
                 continue
             if forced_nonmember:
                 continue
@@ -3116,6 +3164,35 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 statement, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
             ):
                 yield statement.name, statement
+
+    @staticmethod
+    def _enum_statement_member_decorators(statement: ast.AST) -> tuple[bool, bool]:
+        if not isinstance(
+            statement, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
+        ):
+            return False, False
+
+        forced_member = False
+        forced_nonmember = False
+        for decorator in statement.decorator_list:
+            target = decorator
+            if isinstance(target, ast.Call):
+                target = target.func
+            if isinstance(target, ast.Name):
+                if target.id == "member":
+                    forced_member = True
+                elif target.id == "nonmember":
+                    forced_nonmember = True
+            elif (
+                isinstance(target, ast.Attribute)
+                and isinstance(target.value, ast.Name)
+                and target.value.id == "enum"
+            ):
+                if target.attr == "member":
+                    forced_member = True
+                elif target.attr == "nonmember":
+                    forced_nonmember = True
+        return forced_member, forced_nonmember
 
     @staticmethod
     def _unwrap_enum_member_wrapper(value: Value) -> tuple[Value, bool, bool]:
@@ -3249,6 +3326,147 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             return node.value
         return None
 
+    def _is_dataclass_decorator_target(self, target: ast.expr) -> bool:
+        if isinstance(target, ast.Attribute):
+            return target.attr == "dataclass"
+        if not isinstance(target, ast.Name):
+            return False
+        if target.id == "dataclass":
+            return True
+        value = self.scopes.get(target.id, target, self.state, can_assign_ctx=self)
+        return self._is_dataclass_decorator_value(value)
+
+    @staticmethod
+    def _is_dataclass_decorator_value(value: Value) -> bool:
+        if value is UNINITIALIZED_VALUE:
+            return False
+        value = replace_fallback(value)
+        if isinstance(value, AnnotatedValue):
+            return NameCheckVisitor._is_dataclass_decorator_value(value.value)
+        if isinstance(value, MultiValuedValue):
+            return any(
+                NameCheckVisitor._is_dataclass_decorator_value(subval)
+                for subval in value.vals
+            )
+        return isinstance(value, KnownValue) and value.val is dataclass
+
+    def _get_dataclass_decorator_status(
+        self, node: ast.ClassDef
+    ) -> tuple[bool, bool | None]:
+        for decorator in node.decorator_list:
+            if isinstance(decorator, ast.Call):
+                if not self._is_dataclass_decorator_target(decorator.func):
+                    continue
+                frozen = False
+                for kw in decorator.keywords:
+                    if kw.arg != "frozen":
+                        continue
+                    frozen = self._get_bool_literal(kw.value)
+                    break
+                return True, frozen
+            if self._is_dataclass_decorator_target(decorator):
+                return True, False
+        return False, None
+
+    def _get_dataclass_status_for_type(
+        self, typ: type | str
+    ) -> tuple[bool, bool | None]:
+        if isinstance(typ, str):
+            synthetic_class = self.checker.get_synthetic_class(typ)
+            if synthetic_class is None or not synthetic_class.is_dataclass:
+                return False, None
+            return True, synthetic_class.dataclass_frozen
+        if not is_dataclass_type(typ):
+            return False, None
+        dataclass_params = safe_getattr(typ, "__dataclass_params__", None)
+        frozen = safe_getattr(dataclass_params, "frozen", None)
+        if not isinstance(frozen, bool):
+            frozen = None
+        return True, frozen
+
+    def _get_dataclass_status_for_class_value(
+        self, value: Value
+    ) -> tuple[bool, bool | None]:
+        value = replace_fallback(value)
+        if isinstance(value, AnnotatedValue):
+            return self._get_dataclass_status_for_class_value(value.value)
+        if isinstance(value, MultiValuedValue):
+            statuses = {
+                self._get_dataclass_status_for_class_value(subval)
+                for subval in value.vals
+            }
+            if len(statuses) == 1:
+                return next(iter(statuses))
+            return False, None
+        if isinstance(value, SyntheticClassObjectValue):
+            if value.is_dataclass:
+                return True, value.dataclass_frozen
+            if isinstance(value.class_type, TypedValue) and isinstance(
+                value.class_type.typ, (type, str)
+            ):
+                return self._get_dataclass_status_for_type(value.class_type.typ)
+            return False, None
+        if isinstance(value, SubclassValue) and isinstance(value.typ, TypedValue):
+            if isinstance(value.typ.typ, (type, str)):
+                return self._get_dataclass_status_for_type(value.typ.typ)
+            return False, None
+        if isinstance(value, KnownValue):
+            if isinstance(value.val, type):
+                return self._get_dataclass_status_for_type(value.val)
+            return False, None
+        if isinstance(value, (TypedValue, GenericValue)):
+            if isinstance(value.typ, (type, str)):
+                return self._get_dataclass_status_for_type(value.typ)
+        return False, None
+
+    def _get_dataclass_status_for_instance_value(
+        self, value: Value
+    ) -> tuple[bool, bool | None]:
+        value = replace_fallback(value)
+        if isinstance(value, AnnotatedValue):
+            return self._get_dataclass_status_for_instance_value(value.value)
+        if isinstance(value, MultiValuedValue):
+            statuses = {
+                self._get_dataclass_status_for_instance_value(subval)
+                for subval in value.vals
+            }
+            if len(statuses) == 1:
+                return next(iter(statuses))
+            return False, None
+        if isinstance(value, KnownValue):
+            if isinstance(value.val, type):
+                return False, None
+            return self._get_dataclass_status_for_type(type(value.val))
+        if isinstance(value, (TypedValue, GenericValue)):
+            if isinstance(value.typ, (type, str)):
+                return self._get_dataclass_status_for_type(value.typ)
+        return False, None
+
+    def _check_dataclass_inheritance(
+        self,
+        node: ast.ClassDef,
+        base_values: Sequence[Value],
+        frozen_dataclass: bool | None,
+    ) -> None:
+        if frozen_dataclass is None:
+            return
+        for base_value in base_values:
+            is_base_dataclass, base_frozen = self._get_dataclass_status_for_class_value(
+                base_value
+            )
+            if not is_base_dataclass or base_frozen is None:
+                continue
+            if base_frozen == frozen_dataclass:
+                continue
+            if frozen_dataclass:
+                message = "Frozen dataclass cannot inherit from a non-frozen dataclass"
+            else:
+                message = "Non-frozen dataclass cannot inherit from a frozen dataclass"
+            self._show_error_if_checking(
+                node, message, error_code=ErrorCode.invalid_base
+            )
+            return
+
     @staticmethod
     def _compose_variance_polarity(polarity: int, variance: Variance) -> int:
         if polarity == 0 or variance is Variance.INVARIANT:
@@ -3369,27 +3587,8 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             return
 
     def _is_frozen_dataclass(self, node: ast.ClassDef) -> bool:
-        for decorator in node.decorator_list:
-            if isinstance(decorator, ast.Call):
-                target = decorator.func
-            else:
-                target = decorator
-            if not (
-                isinstance(target, ast.Name)
-                and target.id == "dataclass"
-                or isinstance(target, ast.Attribute)
-                and target.attr == "dataclass"
-            ):
-                continue
-            if not isinstance(decorator, ast.Call):
-                return False
-            for kw in decorator.keywords:
-                if kw.arg == "frozen":
-                    value = self._get_bool_literal(kw.value)
-                    if value is not None:
-                        return value
-            return False
-        return False
+        is_dataclass_class, frozen = self._get_dataclass_decorator_status(node)
+        return is_dataclass_class and frozen is True
 
     def _infer_class_type_param_variances(
         self,
@@ -3666,6 +3865,18 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             if isinstance(context, ast.ClassDef):
                 return context.name
         return None
+
+    def _is_current_class_dataclass(self) -> bool:
+        return self.current_class_is_dataclass
+
+    @staticmethod
+    def _is_dataclass_classvar_final(expr: AnnotationExpr) -> bool:
+        qualifier_order = [
+            qualifier
+            for qualifier, _ in expr.qualifiers
+            if qualifier in {Qualifier.Final, Qualifier.ClassVar}
+        ]
+        return qualifier_order == [Qualifier.Final, Qualifier.ClassVar]
 
     def _visit_class_and_get_value(
         self, node: ast.ClassDef, current_class: type | str | None
@@ -4664,6 +4875,10 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     def _is_final_decorator_value(self, value: Value) -> bool:
         return isinstance(value, KnownValue) and is_typing_name(value.val, "final")
 
+    def _is_dataclass_decorator(self, decorator: ast.expr) -> bool:
+        target = decorator.func if isinstance(decorator, ast.Call) else decorator
+        return self._is_dataclass_decorator_target(target)
+
     def _record_final_member(self, class_key: type | str, member_name: str) -> None:
         self.final_member_names_by_class.setdefault(class_key, set()).add(member_name)
 
@@ -4735,7 +4950,44 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             and self.current_class_key is not None
         ):
             return self.current_class_key
+        return self._class_key_from_attribute_root_value(root_value)
+
+    def _class_key_from_attribute_root_value(
+        self, root_value: Value
+    ) -> type | str | None:
+        root_value = replace_fallback(root_value)
+        if isinstance(root_value, AnnotatedValue):
+            return self._class_key_from_attribute_root_value(root_value.value)
+        if isinstance(root_value, KnownValue):
+            if isinstance(root_value.val, type):
+                return root_value.val
+            return type(root_value.val)
+        if isinstance(root_value, GenericValue):
+            if isinstance(root_value.typ, (type, str)):
+                return root_value.typ
+            return None
+        if isinstance(root_value, MultiValuedValue):
+            class_keys = {
+                class_key
+                for subval in root_value.vals
+                if (class_key := self._class_key_from_attribute_root_value(subval))
+                is not None
+            }
+            if len(class_keys) == 1:
+                return next(iter(class_keys))
+            return None
         return self._base_class_key_from_value(root_value)
+
+    def _frozen_dataclass_instance_status(self, value: Value) -> bool | None:
+        is_dataclass_class, frozen = self._get_dataclass_status_for_instance_value(
+            value
+        )
+        if not is_dataclass_class:
+            return False
+        return frozen
+
+    def _is_assignment_to_frozen_dataclass_attribute(self, root_value: Value) -> bool:
+        return self._frozen_dataclass_instance_status(root_value) is True
 
     def _is_assignment_to_final_attribute(
         self, node: ast.Attribute, root_value: Value
@@ -5643,6 +5895,11 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             name = f"{source_module.val.__name__}.{alias_name}"
             self._try_to_import(name)
             val = self.get_attribute_from_value(source_module, alias_name)
+            if val is not UNINITIALIZED_VALUE:
+                return val
+            self._try_to_import_stub(source_module.val.__name__)
+            refreshed_source_module = self._get_module(source_module.val.__name__, node)
+            val = self.get_attribute_from_value(refreshed_source_module, alias_name)
             if val is not UNINITIALIZED_VALUE:
                 return val
 
@@ -7644,7 +7901,15 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
 
         # TODO: handle TypeAlias and ClassVar
         is_final = Qualifier.Final in qualifiers
-        if Qualifier.Final in qualifiers and Qualifier.ClassVar in qualifiers:
+        has_classvar = Qualifier.ClassVar in qualifiers
+        is_current_class_dataclass = self._is_current_class_dataclass()
+        if (
+            has_classvar
+            and is_final
+            and not (
+                is_current_class_dataclass and self._is_dataclass_classvar_final(expr)
+            )
+        ):
             self._show_error_if_checking(
                 node.annotation,
                 "Final cannot be combined with ClassVar",
@@ -7661,7 +7926,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             class_key = self.current_class_key
             if class_key is not None and isinstance(node.target, ast.Name):
                 self._record_final_member(class_key, node.target.id)
-                if node.value is None:
+                if node.value is None and (
+                    has_classvar or not is_current_class_dataclass
+                ):
                     self.final_members_requiring_init.setdefault(class_key, {})[
                         node.target.id
                     ] = node
@@ -8213,6 +8480,11 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                             stripped_root.value.val, "TypeAliasType"
                         )
                     )
+                    or (
+                        isinstance(stripped_root.value, KnownValue)
+                        and is_typing_name(stripped_root.value.val, "Literal")
+                        and not self._is_runtime_literal_index(index)
+                    )
                 ):
                     return_value = PartialValue(
                         PartialValueOperation.SUBSCRIPT,
@@ -8312,6 +8584,17 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         elif isinstance(value, KnownValue) and isinstance(value.val, tuple):
             return tuple(KnownValue(member) for member in value.val)
         return (value,)
+
+    @staticmethod
+    def _is_runtime_literal_index(value: Value) -> bool:
+        if isinstance(value, KnownValue):
+            return True
+        if isinstance(value, SequenceValue) and value.typ is tuple:
+            members = value.get_member_sequence()
+            return members is not None and all(
+                isinstance(member, KnownValue) for member in members
+            )
+        return False
 
     def _maybe_subscript_synthetic_class(
         self, value: Value, index: Value, node: ast.Subscript
@@ -8542,10 +8825,24 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     self.ann_assign_type is not None
                 ), "should only happen in AnnAssign"
                 return Composite(AnyValue(AnySource.inference), composite, node)
-            if self._is_assignment_to_final_attribute(node, root_composite.value):
+            is_final_assignment = self._is_assignment_to_final_attribute(
+                node, root_composite.value
+            )
+            if is_final_assignment:
                 self._show_error_if_checking(
                     node,
                     f"Cannot assign to final name {node.attr}",
+                    error_code=ErrorCode.incompatible_assignment,
+                )
+            if (
+                not is_final_assignment
+                and self._is_assignment_to_frozen_dataclass_attribute(
+                    root_composite.value
+                )
+            ):
+                self._show_error_if_checking(
+                    node,
+                    "Dataclass is frozen",
                     error_code=ErrorCode.incompatible_assignment,
                 )
             if (
@@ -8562,6 +8859,18 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     self._record_type_attr_set(
                         typ, node.attr, node, self.being_assigned
                     )
+            elif isinstance(root_composite.value, GenericValue):
+                typ = root_composite.value.typ
+                if isinstance(typ, type):
+                    self._record_type_attr_set(
+                        typ, node.attr, node, self.being_assigned
+                    )
+            elif isinstance(root_composite.value, KnownValue) and not isinstance(
+                root_composite.value.val, type
+            ):
+                self._record_type_attr_set(
+                    type(root_composite.value.val), node.attr, node, self.being_assigned
+                )
             return Composite(self.being_assigned, composite, node)
         elif self._is_read_ctx(node.ctx):
             if self._is_checking():

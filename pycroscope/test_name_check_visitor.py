@@ -677,8 +677,59 @@ class TestImportFailureHandlingCodeSamples(TestNameCheckVisitorBase):
         if dc1_1 != dc2_1:
             pass
 
+    @assert_passes()
+    def test_frozen_dataclass_disallows_instance_attribute_assignment(self):
+        from dataclasses import dataclass
+
+        @dataclass(frozen=True)
+        class Frozen:
+            value: int
+
+        def mutate() -> None:
+            frozen = Frozen(1)
+            frozen.value = 2  # E: incompatible_assignment
+
+    @assert_passes(allow_import_failures=True)
+    def test_frozen_dataclass_checks_after_import_failure(self):
+        from dataclasses import dataclass
+
+        @dataclass(frozen=True)
+        class Frozen:
+            value: int
+
+        frozen = Frozen(1)
+        frozen.value = 2  # E: incompatible_assignment
+
+        @dataclass
+        class NonFrozenChild(Frozen):  # E: invalid_base
+            pass
+
+        @dataclass
+        class Mutable:
+            value: int
+
+        @dataclass(frozen=True)
+        class FrozenChild(Mutable):  # E: invalid_base
+            pass
+
+    @assert_passes()
+    def test_final_attribute_assignment_on_instance(self):
+        from typing import Final
+
+        class C:
+            x: Final[int] = 1
+
+        c = C()
+        c.x = 2  # E: incompatible_assignment
+
 
 class TestNameCheckVisitor(TestNameCheckVisitorBase):
+    @assert_passes(allow_import_failures=True)
+    def test_undefined_class_decorator_does_not_internal_error(self):
+        @decorator1(0)  # E: undefined_name
+        class C:
+            pass
+
     @assert_passes()
     def test_synthetic_class_methods_from_stub_import(self):
         def run():
