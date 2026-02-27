@@ -250,8 +250,7 @@ class TestAsyncGenerator(TestNameCheckVisitorBase):
 class TestGenericFunctions(TestNameCheckVisitorBase):
     @skip_before((3, 12))
     def test_generic(self):
-        self.assert_passes(
-            """
+        self.assert_passes("""
             from typing_extensions import assert_type
 
             def func[T](x: T) -> T:
@@ -259,13 +258,11 @@ class TestGenericFunctions(TestNameCheckVisitorBase):
 
             def capybara(i: int):
                 assert_type(func(i), int)
-        """
-        )
+        """)
 
     @skip_before((3, 12))
     def test_generic_with_bound(self):
-        self.assert_passes(
-            """
+        self.assert_passes("""
             from typing_extensions import assert_type
 
             def func[T: int](x: T) -> T:
@@ -275,13 +272,11 @@ class TestGenericFunctions(TestNameCheckVisitorBase):
                 assert_type(func(i), int)
                 assert_type(func(b), bool)
                 func(s)  # E: incompatible_argument
-        """
-        )
+        """)
 
     @skip_before((3, 12))
     def test_generic_with_paramspec(self):
-        self.assert_passes(
-            """
+        self.assert_passes("""
             from typing import Callable
 
             def decorator[T, **P, R](
@@ -291,5 +286,4 @@ class TestGenericFunctions(TestNameCheckVisitorBase):
                     return func
 
                 return apply
-        """
-        )
+        """)

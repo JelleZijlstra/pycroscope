@@ -334,8 +334,7 @@ class TestLen(TestNameCheckVisitorBase):
 
     @skip_before((3, 11))
     def test_tuple_narrowing(self):
-        self.assert_passes(
-            """
+        self.assert_passes("""
             from typing_extensions import assert_type
 
             def capybara(
@@ -361,8 +360,7 @@ class TestLen(TestNameCheckVisitorBase):
                 if len(variadic) >= 2:
                     if len(variadic) <= 2:
                         assert_type(variadic, tuple[int, int])
-            """
-        )
+            """)
 
     @assert_passes()
     def test_narrowed_sequence_ops(self):
