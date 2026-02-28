@@ -877,6 +877,17 @@ class TestCallable(TestNameCheckVisitorBase):
             assert_is_value(two_args(1, "x"), TypedValue(bytes))
 
     @assert_passes()
+    def test_invalid_callable_annotations(self):
+        from typing import Callable
+
+        def capybara() -> None:
+            _v1: Callable[int]  # E: invalid_annotation
+            _v2: Callable[int, int]  # E: invalid_annotation
+            _v3: Callable[[], [int]]  # E: invalid_annotation
+            _v4: Callable[int, int, int]  # E: invalid_annotation
+            _v5: Callable[[...], int]  # E: invalid_annotation
+
+    @assert_passes()
     def test_abc_callable(self):
         from collections.abc import Callable, Sequence
         from typing import TypeVar

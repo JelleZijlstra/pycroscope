@@ -1836,7 +1836,27 @@ def _make_callable_from_value(
                 [ELLIPSIS_PARAM], return_annotation=return_annotation, is_asynq=is_asynq
             )
         )
+    elif isinstance(args, KnownValue) and args.val == [Ellipsis]:
+        ctx.show_error(
+            "Ellipsis must be used directly in Callable[..., T], not in Callable[[...], T]"
+        )
+        return AnyValue(AnySource.error)
+    elif isinstance(args, KnownValue):
+        params = _callable_args_from_runtime(args.val, "Callable", ctx)
+        sig = Signature.make(params, return_annotation, is_asynq=is_asynq)
+        return CallableValue(sig)
     elif isinstance(args, SequenceValue):
+        members = args.get_member_sequence()
+        if (
+            args.typ is list
+            and members is not None
+            and len(members) == 1
+            and members[0] == KnownValue(Ellipsis)
+        ):
+            ctx.show_error(
+                "Ellipsis must be used directly in Callable[..., T], not in Callable[[...], T]"
+            )
+            return AnyValue(AnySource.error)
         params = []
         for i, (is_many, arg) in enumerate(args.members):
             annotation = _type_from_value(arg, ctx)

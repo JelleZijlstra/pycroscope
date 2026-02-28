@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Tighten `Callable[...]` annotation validation to match the typing spec: pycroscope now correctly rejects invalid forms like `Callable[int]`, `Callable[int, int]`, `Callable[int, int, int]`, and `Callable[[...], T]`.
 - Improve dataclass and `@dataclass_transform` constructor/comparison checking: synthetic dataclass constructors no longer inherit non-dataclass base `__init__` parameters, generic transform bases now propagate correctly (including `Base[T]` forms), and `<`/`<=`/`>`/`>=` comparisons now enforce dataclass ordering rules.
 - Add initial PEP 681 `@dataclass_transform` support: classes transformed by marked decorators, base classes, or metaclasses now get dataclass-like constructor/frozen semantics in both normal analysis and static fallback mode when imports fail.
 - Improve `ParamSpec` handling by rejecting invalid annotation locations more consistently (including bare `ParamSpec` type aliases, `list[P]`, and `Callable[..., P]` return positions), and enforce assignment-target name matching for `TypeVar`, `TypeVarTuple`, `ParamSpec`, `NewType`, and functional `NamedTuple`/`TypedDict` declarations.

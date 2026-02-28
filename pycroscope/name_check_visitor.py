@@ -90,6 +90,7 @@ from .boolability import Boolability, get_boolability
 from .checker import Checker, CheckerAttrContext
 from .error_code import Error, ErrorCode
 from .extensions import (
+    AsynqCallable,
     ParameterTypeGuard,
     assert_error,
     evaluated,
@@ -9931,6 +9932,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                         and is_typing_name(stripped_root.value.val, "Literal")
                         and not self._is_runtime_literal_index(index)
                     )
+                    or self._should_use_static_annotation_subscript(stripped_root.value)
                 ):
                     return_value = PartialValue(
                         PartialValueOperation.SUBSCRIPT,
@@ -10041,6 +10043,18 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 isinstance(member, KnownValue) for member in members
             )
         return False
+
+    @staticmethod
+    def _should_use_static_annotation_subscript(value: Value) -> bool:
+        if not isinstance(value, KnownValue):
+            return False
+        root = value.val
+        return (
+            root is typing.Callable
+            or root is collections.abc.Callable
+            or is_typing_name(root, "Callable")
+            or root is AsynqCallable
+        )
 
     def _maybe_subscript_synthetic_class(
         self, value: Value, index: Value, node: ast.Subscript
