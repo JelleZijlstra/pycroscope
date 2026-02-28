@@ -779,6 +779,41 @@ class TestImportFailureHandlingCodeSamples(TestNameCheckVisitorBase):
         DC("hi")
         DC("hi", b=1)
 
+    @assert_passes()
+    def test_dataclass_slots_semantics(self):
+        from dataclasses import dataclass
+
+        @dataclass(slots=True)
+        class Slotted:
+            x: int
+
+            def set_bad(self) -> None:
+                self.y = 3  # E: incompatible_assignment
+
+        Slotted.__slots__
+        Slotted(1).__slots__
+
+        @dataclass
+        class NotSlotted:
+            x: int
+
+        @dataclass(slots=False)
+        class ExplicitSlots:
+            x: int
+            __slots__ = ("x",)
+
+            def set_bad(self) -> None:
+                self.y = 3  # E: incompatible_assignment
+
+        def check_errors() -> None:
+            NotSlotted.__slots__  # E: undefined_attribute
+            NotSlotted(1).__slots__  # E: undefined_attribute
+
+            @dataclass(slots=True)
+            class DataclassWithSlotsAttribute:  # E: invalid_annotation
+                x: int
+                __slots__ = ()
+
     @assert_passes(allow_import_failures=True)
     def test_dataclass_kw_only_checks_after_import_failure(self):
         boom = 1 / 0

@@ -144,6 +144,54 @@ class TestDataclassTransform(TestNameCheckVisitorBase):
         meta_derived = MetaDerived(b=1)
         meta_derived.b = 2  # E: incompatible_assignment
 
+    @assert_passes(allow_import_failures=True)
+    def test_dataclass_transform_slots_semantics_after_import_failure(self):
+        boom = 1 / 0
+
+        from typing import Callable, TypeVar
+
+        from typing_extensions import dataclass_transform
+
+        T = TypeVar("T")
+
+        @dataclass_transform()
+        def model(*, slots: bool = False) -> Callable[[type[T]], type[T]]:
+            def decorator(cls: type[T]) -> type[T]:
+                return cls
+
+            return decorator
+
+        @model(slots=True)
+        class Slotted:
+            x: int
+
+        Slotted.__slots__
+        Slotted(1).__slots__
+        slotted = Slotted(1)
+        slotted.y = 3  # E: incompatible_assignment
+
+        @model()
+        class NotSlotted:
+            x: int
+
+        NotSlotted.__slots__  # E: undefined_attribute
+        NotSlotted(1).__slots__  # E: undefined_attribute
+
+        @model(slots=True)
+        class BadModel:  # E: invalid_annotation
+            x: int
+            __slots__ = ()
+
+        @dataclass_transform()
+        class BaseModel:
+            pass
+
+        class FromBase(BaseModel, slots=True):
+            y: int
+
+        FromBase.__slots__
+        FromBase(1).__slots__
+
     @assert_passes()
     def test_dataclass_transform_fully_imported_providers(self):
         import sys

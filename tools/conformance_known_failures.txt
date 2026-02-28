@@ -17,7 +17,6 @@ constructors_call_new
 dataclasses_descriptors
 dataclasses_inheritance
 dataclasses_match_args
-dataclasses_slots
 dataclasses_transform_converter
 dataclasses_transform_field
 dataclasses_usage

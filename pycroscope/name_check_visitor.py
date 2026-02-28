@@ -553,6 +553,7 @@ class _DataclassTransformInfo:
     unsafe_hash_default: bool | None = None
     kw_only_default: bool | None = None
     order_default: bool | None = None
+    slots_default: bool | None = None
     field_specifiers: tuple[Value, ...] = ()
 
 
@@ -563,6 +564,7 @@ class _ClassDataclassSemantics:
     frozen: bool | None
     unsafe_hash: bool | None
     order: bool | None
+    slots: bool | None
     kw_only_default: bool
     field_specifiers: tuple[Value, ...]
     is_transform_provider: bool
@@ -2692,6 +2694,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 self._check_dataclass_inheritance(
                     node, base_values, dataclass_semantics.frozen
                 )
+                self._check_dataclass_slots_definition(node, dataclass_semantics)
             synthetic_typeddict = self._make_synthetic_typeddict_context(
                 node, base_values, keyword_values
             )
@@ -2792,6 +2795,12 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                         synthetic_class.class_attributes[
                             "%dataclass_transform_order_default"
                         ] = KnownValue(dataclass_semantics.transform_info.order_default)
+                    if dataclass_semantics.transform_info is not None and isinstance(
+                        dataclass_semantics.transform_info.slots_default, bool
+                    ):
+                        synthetic_class.class_attributes[
+                            "%dataclass_transform_slots_default"
+                        ] = KnownValue(dataclass_semantics.transform_info.slots_default)
                     if (
                         dataclass_semantics.transform_info is not None
                         and dataclass_semantics.transform_info.field_specifiers
@@ -2801,6 +2810,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                         ] = KnownValue(
                             tuple(dataclass_semantics.transform_info.field_specifiers)
                         )
+                self._record_dataclass_slots_flag(synthetic_class, dataclass_semantics)
                 self._synthetic_classes_by_name[synthetic_fq_name] = synthetic_class
                 self.checker.register_synthetic_class(synthetic_class)
                 dataclass_metadata_class = synthetic_class
@@ -2888,6 +2898,12 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                         existing.class_attributes[
                             "%dataclass_transform_order_default"
                         ] = KnownValue(dataclass_semantics.transform_info.order_default)
+                    if dataclass_semantics.transform_info is not None and isinstance(
+                        dataclass_semantics.transform_info.slots_default, bool
+                    ):
+                        existing.class_attributes[
+                            "%dataclass_transform_slots_default"
+                        ] = KnownValue(dataclass_semantics.transform_info.slots_default)
                     if (
                         dataclass_semantics.transform_info is not None
                         and dataclass_semantics.transform_info.field_specifiers
@@ -2915,8 +2931,12 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                         "%dataclass_transform_order_default", None
                     )
                     existing.class_attributes.pop(
+                        "%dataclass_transform_slots_default", None
+                    )
+                    existing.class_attributes.pop(
                         "%dataclass_transform_field_specifiers", None
                     )
+                self._record_dataclass_slots_flag(existing, dataclass_semantics)
                 dataclass_metadata_class = existing
             generic_class_key = (
                 class_scope_object
@@ -3051,6 +3071,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     synthetic_class.method_attributes.update(
                         self._get_synthetic_method_attributes(node)
                     )
+                    self._apply_dataclass_slots_semantics(
+                        synthetic_class, dataclass_semantics
+                    )
                     self._apply_dataclass_hash_semantics(
                         synthetic_class, dataclass_semantics
                     )
@@ -3094,6 +3117,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 dataclass_metadata_class.method_attributes.clear()
                 dataclass_metadata_class.method_attributes.update(
                     self._get_synthetic_method_attributes(node)
+                )
+                self._apply_dataclass_slots_semantics(
+                    dataclass_metadata_class, dataclass_semantics
                 )
                 self._apply_dataclass_hash_semantics(
                     dataclass_metadata_class, dataclass_semantics
@@ -4212,6 +4238,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             ),
             kw_only_default=_merge_bool([info.kw_only_default for info in filtered]),
             order_default=_merge_bool([info.order_default for info in filtered]),
+            slots_default=_merge_bool([info.slots_default for info in filtered]),
             field_specifiers=tuple(field_specifiers),
         )
 
@@ -4281,6 +4308,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     unsafe_hash_default=False,
                     kw_only_default=False,
                     order_default=False,
+                    slots_default=None,
                     field_specifiers=(),
                 )
                 for kw in decorator.keywords:
@@ -4306,6 +4334,10 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                         bool_value = self._get_bool_literal(kw.value)
                         if bool_value is not None:
                             info = replace(info, order_default=bool_value)
+                    elif kw.arg == "slots_default":
+                        bool_value = self._get_bool_literal(kw.value)
+                        if bool_value is not None:
+                            info = replace(info, slots_default=bool_value)
                     elif kw.arg == "field_specifiers":
                         with self.catch_errors() as errors:
                             field_specifier_value = self.visit(kw.value)
@@ -4325,6 +4357,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                         unsafe_hash_default=False,
                         kw_only_default=False,
                         order_default=False,
+                        slots_default=None,
                         field_specifiers=(),
                     )
                 )
@@ -4354,6 +4387,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         order_default = raw.get("order_default", False)
         if not isinstance(order_default, bool):
             order_default = None
+        slots_default = raw.get("slots_default")
+        if not isinstance(slots_default, bool):
+            slots_default = None
 
         field_specifier_values: list[Value] = []
         raw_field_specifiers = raw.get("field_specifiers", ())
@@ -4369,6 +4405,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             unsafe_hash_default=unsafe_hash_default,
             kw_only_default=kw_only_default,
             order_default=order_default,
+            slots_default=slots_default,
             field_specifiers=tuple(field_specifier_values),
         )
 
@@ -4424,6 +4461,15 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         ):
             order_default = raw_order_default.val
 
+        slots_default: bool | None = None
+        raw_slots_default = value.class_attributes.get(
+            "%dataclass_transform_slots_default"
+        )
+        if isinstance(raw_slots_default, KnownValue) and isinstance(
+            raw_slots_default.val, bool
+        ):
+            slots_default = raw_slots_default.val
+
         field_specifiers: tuple[Value, ...] = ()
         raw_field_specifiers = value.class_attributes.get(
             "%dataclass_transform_field_specifiers"
@@ -4442,6 +4488,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             unsafe_hash_default=unsafe_hash_default,
             kw_only_default=kw_only_default,
             order_default=order_default,
+            slots_default=slots_default,
             field_specifiers=field_specifiers,
         )
 
@@ -4580,12 +4627,14 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             frozen = None
             unsafe_hash = None
             order = None
+            slots = None
             kw_only_default = False
             if dataclass_options is not None:
                 eq = dataclass_options.get("eq", True)
                 frozen = dataclass_options.get("frozen", False)
                 unsafe_hash = dataclass_options.get("unsafe_hash", False)
                 order = dataclass_options.get("order", False)
+                slots = dataclass_options.get("slots", False)
                 kw_only_default = dataclass_options.get("kw_only", False)
             return _ClassDataclassSemantics(
                 is_dataclass=True,
@@ -4593,6 +4642,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 frozen=frozen,
                 unsafe_hash=unsafe_hash,
                 order=order,
+                slots=slots,
                 kw_only_default=kw_only_default,
                 field_specifiers=(KnownValue(dataclass_field),),
                 is_transform_provider=is_transform_provider,
@@ -4646,6 +4696,14 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     ),
                     None,
                 )
+                slots_override = next(
+                    (
+                        self._get_bool_literal(kw.value)
+                        for kw in decorator.keywords
+                        if kw.arg == "slots"
+                    ),
+                    None,
+                )
                 if eq_override is not None:
                     info = replace(info, eq_default=eq_override)
                 if frozen_override is not None:
@@ -4656,6 +4714,8 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     info = replace(info, kw_only_default=kw_only_override)
                 if order_override is not None:
                     info = replace(info, order_default=order_override)
+                if slots_override is not None:
+                    info = replace(info, slots_default=slots_override)
             transform_infos.append(info)
 
         hierarchy_transform_infos = list(base_transform_infos)
@@ -4712,6 +4772,14 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 ),
                 None,
             )
+            slots_override = next(
+                (
+                    self._get_bool_literal(keyword.value)
+                    for keyword in node.keywords
+                    if keyword.arg == "slots"
+                ),
+                None,
+            )
             if eq_override is not None:
                 merged_hierarchy_info = replace(
                     merged_hierarchy_info, eq_default=eq_override
@@ -4732,6 +4800,10 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 merged_hierarchy_info = replace(
                     merged_hierarchy_info, order_default=order_override
                 )
+            if slots_override is not None:
+                merged_hierarchy_info = replace(
+                    merged_hierarchy_info, slots_default=slots_override
+                )
             transform_infos.append(merged_hierarchy_info)
 
         if transform_infos:
@@ -4744,6 +4816,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 frozen=merged_transform_info.frozen_default,
                 unsafe_hash=merged_transform_info.unsafe_hash_default,
                 order=merged_transform_info.order_default,
+                slots=merged_transform_info.slots_default,
                 kw_only_default=bool(merged_transform_info.kw_only_default),
                 field_specifiers=merged_transform_info.field_specifiers,
                 is_transform_provider=is_transform_provider,
@@ -4768,12 +4841,14 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             order = safe_getattr(dataclass_params, "order", None)
             if not isinstance(order, bool):
                 order = None
+            slots = "__slots__" in class_obj.__dict__
             return _ClassDataclassSemantics(
                 is_dataclass=True,
                 eq=eq,
                 frozen=frozen,
                 unsafe_hash=unsafe_hash,
                 order=order,
+                slots=slots,
                 kw_only_default=False,
                 field_specifiers=(KnownValue(dataclass_field),),
                 is_transform_provider=is_transform_provider,
@@ -4786,6 +4861,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             frozen=None,
             unsafe_hash=None,
             order=None,
+            slots=None,
             kw_only_default=False,
             field_specifiers=(),
             is_transform_provider=is_transform_provider,
@@ -4826,6 +4902,132 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         synthesized_hash = self._synthesize_dataclass_hash_attribute(semantics)
         if synthesized_hash is not None:
             synthetic_class.class_attributes["__hash__"] = synthesized_hash
+
+    @staticmethod
+    def _class_body_defines_slots(node: ast.ClassDef) -> bool:
+        for statement in node.body:
+            if isinstance(statement, ast.Assign):
+                for target in statement.targets:
+                    if isinstance(target, ast.Name) and target.id == "__slots__":
+                        return True
+            elif isinstance(statement, ast.AnnAssign) and isinstance(
+                statement.target, ast.Name
+            ):
+                if statement.target.id == "__slots__":
+                    return True
+        return False
+
+    def _check_dataclass_slots_definition(
+        self, node: ast.ClassDef, semantics: _ClassDataclassSemantics
+    ) -> None:
+        if semantics.slots is not True:
+            return
+        if not self._class_body_defines_slots(node):
+            return
+        self._show_error_if_checking(
+            node,
+            "Class cannot define __slots__ when dataclass slots=True",
+            error_code=ErrorCode.invalid_annotation,
+        )
+
+    @staticmethod
+    def _known_string_sequence_values(value: Value | None) -> tuple[str, ...] | None:
+        if value is None:
+            return None
+        value = replace_fallback(value)
+        if isinstance(value, KnownValue):
+            raw = value.val
+            if isinstance(raw, str):
+                return (raw,)
+            if isinstance(raw, (tuple, list, set, frozenset)):
+                return tuple(item for item in raw if isinstance(item, str))
+            return None
+        if isinstance(value, SequenceValue):
+            members = value.get_member_sequence()
+            if members is None:
+                return None
+            output: list[str] = []
+            for member in members:
+                member = replace_fallback(member)
+                if isinstance(member, KnownValue) and isinstance(member.val, str):
+                    output.append(member.val)
+                else:
+                    return None
+            return tuple(output)
+        return None
+
+    @staticmethod
+    def _normalize_slot_names(raw_names: Iterable[str]) -> tuple[tuple[str, ...], bool]:
+        names: list[str] = []
+        has_dict = False
+        for name in raw_names:
+            if name == "__dict__":
+                has_dict = True
+                continue
+            if name == "__weakref__":
+                continue
+            names.append(name)
+        return tuple(names), has_dict
+
+    def _apply_dataclass_slots_semantics(
+        self,
+        synthetic_class: SyntheticClassObjectValue,
+        semantics: _ClassDataclassSemantics,
+    ) -> None:
+        if not semantics.is_dataclass:
+            return
+        self._record_dataclass_slots_flag(synthetic_class, semantics)
+        if semantics.slots is not True:
+            return
+        if "__slots__" in synthetic_class.class_attributes:
+            return
+        slot_names = self._dataclass_slot_names_from_synthetic_class(synthetic_class)
+        if slot_names is None:
+            return
+        synthetic_class.class_attributes["__slots__"] = KnownValue(slot_names)
+
+    @staticmethod
+    def _record_dataclass_slots_flag(
+        synthetic_class: SyntheticClassObjectValue, semantics: _ClassDataclassSemantics
+    ) -> None:
+        if not semantics.is_dataclass:
+            synthetic_class.class_attributes.pop("%dataclass_slots", None)
+            return
+        if isinstance(semantics.slots, bool):
+            synthetic_class.class_attributes["%dataclass_slots"] = KnownValue(
+                semantics.slots
+            )
+        else:
+            synthetic_class.class_attributes.pop("%dataclass_slots", None)
+
+    def _dataclass_slot_names_from_synthetic_class(
+        self, synthetic_class: SyntheticClassObjectValue
+    ) -> tuple[str, ...] | None:
+        local_names = self._known_string_sequence_values(
+            synthetic_class.class_attributes.get("%dataclass_field_order")
+        )
+        if local_names is None or not local_names:
+            classvar_names = set(
+                self._known_string_sequence_values(
+                    synthetic_class.class_attributes.get("%classvars")
+                )
+                or ()
+            )
+            local_names = tuple(
+                name
+                for name in synthetic_class.class_attributes
+                if not name.startswith("%")
+                and not (name.startswith("__") and name.endswith("__"))
+                and name not in synthetic_class.method_attributes
+                and name not in classvar_names
+            )
+        initvar_names = set(
+            self._known_string_sequence_values(
+                synthetic_class.class_attributes.get("%dataclass_initvar_fields")
+            )
+            or ()
+        )
+        return tuple(name for name in local_names if name not in initvar_names)
 
     @staticmethod
     def _is_dataclass_kw_only_marker_value(value: Value) -> bool:
@@ -4916,6 +5118,155 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             ):
                 return True
         return False
+
+    @staticmethod
+    def _slot_names_from_runtime_slots(value: object) -> tuple[str, ...] | None:
+        if isinstance(value, str):
+            return (value,)
+        if isinstance(value, (tuple, list, set, frozenset)):
+            return tuple(item for item in value if isinstance(item, str))
+        return None
+
+    def _slot_state_for_synthetic_class(
+        self,
+        synthetic_class: SyntheticClassObjectValue,
+        *,
+        seen: set[int] | None = None,
+    ) -> tuple[frozenset[str], bool] | None:
+        if seen is None:
+            seen = set()
+        synthetic_id = id(synthetic_class)
+        if synthetic_id in seen:
+            return frozenset(), False
+        seen.add(synthetic_id)
+
+        slot_names: set[str] = set()
+        has_dict = False
+        if "__slots__" in synthetic_class.class_attributes:
+            names = self._known_string_sequence_values(
+                synthetic_class.class_attributes.get("__slots__")
+            )
+            if names is None:
+                return None
+            normalized_names, local_has_dict = self._normalize_slot_names(names)
+            slot_names.update(normalized_names)
+            has_dict = has_dict or local_has_dict
+        elif synthetic_class.class_attributes.get("%dataclass_slots") == KnownValue(
+            True
+        ):
+            dataclass_slot_names = self._dataclass_slot_names_from_synthetic_class(
+                synthetic_class
+            )
+            if dataclass_slot_names is None:
+                return None
+            slot_names.update(dataclass_slot_names)
+        else:
+            has_dict = True
+
+        for base in synthetic_class.base_classes:
+            base_state = self._slot_state_for_base_value(base, seen=seen)
+            if base_state is None:
+                return None
+            base_slots, base_has_dict = base_state
+            slot_names.update(base_slots)
+            has_dict = has_dict or base_has_dict
+        return frozenset(slot_names), has_dict
+
+    def _slot_state_for_runtime_type(
+        self, typ: type
+    ) -> tuple[frozenset[str], bool] | None:
+        if typ is object:
+            return frozenset(), False
+        slot_names: set[str] = set()
+        has_dict = False
+        saw_slots = False
+        for base in typ.__mro__:
+            if base is object:
+                continue
+            if "__slots__" not in base.__dict__:
+                has_dict = True
+                continue
+            names = self._slot_names_from_runtime_slots(base.__dict__["__slots__"])
+            if names is None:
+                return None
+            normalized_names, local_has_dict = self._normalize_slot_names(names)
+            slot_names.update(normalized_names)
+            has_dict = has_dict or local_has_dict
+            saw_slots = True
+        if not saw_slots:
+            has_dict = True
+        return frozenset(slot_names), has_dict
+
+    def _slot_state_for_base_value(
+        self, value: Value, *, seen: set[int] | None = None
+    ) -> tuple[frozenset[str], bool] | None:
+        value = replace_fallback(value)
+        if isinstance(value, AnnotatedValue):
+            return self._slot_state_for_base_value(value.value, seen=seen)
+        if isinstance(value, SyntheticClassObjectValue):
+            return self._slot_state_for_synthetic_class(value, seen=seen)
+        if isinstance(value, MultiValuedValue):
+            states = {
+                state
+                for subval in value.vals
+                if (state := self._slot_state_for_base_value(subval, seen=seen))
+                is not None
+            }
+            if len(states) == 1:
+                return next(iter(states))
+            return None
+        if isinstance(value, KnownValue) and isinstance(value.val, type):
+            return self._slot_state_for_runtime_type(value.val)
+        if isinstance(value, (TypedValue, GenericValue)) and isinstance(
+            value.typ, (type, str)
+        ):
+            return self._slot_state_for_type(value.typ, seen=seen)
+        return None
+
+    def _slot_state_for_type(
+        self, typ: type | str, *, seen: set[int] | None = None
+    ) -> tuple[frozenset[str], bool] | None:
+        if isinstance(typ, str):
+            synthetic_class = self.checker.get_synthetic_class(typ)
+            if synthetic_class is None:
+                return None
+            return self._slot_state_for_synthetic_class(synthetic_class, seen=seen)
+        return self._slot_state_for_runtime_type(typ)
+
+    def _slot_state_for_instance_value(
+        self, value: Value
+    ) -> tuple[frozenset[str], bool] | None:
+        value = replace_fallback(value)
+        if isinstance(value, AnnotatedValue):
+            return self._slot_state_for_instance_value(value.value)
+        if isinstance(value, MultiValuedValue):
+            states = {
+                state
+                for subval in value.vals
+                if (state := self._slot_state_for_instance_value(subval)) is not None
+            }
+            if len(states) == 1:
+                return next(iter(states))
+            return None
+        if isinstance(value, KnownValue):
+            if isinstance(value.val, type):
+                return None
+            return self._slot_state_for_runtime_type(type(value.val))
+        if isinstance(value, (TypedValue, GenericValue)):
+            if isinstance(value.typ, (type, str)):
+                return self._slot_state_for_type(value.typ)
+        return None
+
+    def _is_assignment_to_non_slot_attribute(
+        self, root_value: Value, attr_name: str
+    ) -> bool:
+        slot_state = self._slot_state_for_instance_value(root_value)
+        if slot_state is None:
+            return False
+        slot_names, has_dict = slot_state
+        if has_dict:
+            return False
+        return attr_name not in slot_names
 
     def _get_dataclass_status_for_type(
         self, typ: type | str
@@ -10977,11 +11328,27 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             )
             if is_namedtuple_field:
                 self._show_namedtuple_attribute_mutation_error(node)
+            is_slots_assignment = (
+                not is_final_assignment
+                and not is_classvar_instance_assignment
+                and not is_frozen_dataclass_assignment
+                and not is_namedtuple_field
+                and self._is_assignment_to_non_slot_attribute(
+                    root_composite.value, node.attr
+                )
+            )
+            if is_slots_assignment:
+                self._show_error_if_checking(
+                    node,
+                    f"Cannot assign to attribute {node.attr!r}; it is not in __slots__",
+                    error_code=ErrorCode.incompatible_assignment,
+                )
             if (
                 not is_final_assignment
                 and not is_classvar_instance_assignment
                 and not is_frozen_dataclass_assignment
                 and not is_namedtuple_field
+                and not is_slots_assignment
             ):
                 self._check_attribute_assignment_type(node, root_composite)
             if (
@@ -10995,21 +11362,27 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             if isinstance(root_composite.value, TypedValue):
                 typ = root_composite.value.typ
                 if isinstance(typ, type):
-                    self._record_type_attr_set(
-                        typ, node.attr, node, self.being_assigned
-                    )
+                    if not is_slots_assignment:
+                        self._record_type_attr_set(
+                            typ, node.attr, node, self.being_assigned
+                        )
             elif isinstance(root_composite.value, GenericValue):
                 typ = root_composite.value.typ
                 if isinstance(typ, type):
-                    self._record_type_attr_set(
-                        typ, node.attr, node, self.being_assigned
-                    )
+                    if not is_slots_assignment:
+                        self._record_type_attr_set(
+                            typ, node.attr, node, self.being_assigned
+                        )
             elif isinstance(root_composite.value, KnownValue) and not isinstance(
                 root_composite.value.val, type
             ):
-                self._record_type_attr_set(
-                    type(root_composite.value.val), node.attr, node, self.being_assigned
-                )
+                if not is_slots_assignment:
+                    self._record_type_attr_set(
+                        type(root_composite.value.val),
+                        node.attr,
+                        node,
+                        self.being_assigned,
+                    )
             return Composite(self.being_assigned, composite, node)
         elif self._is_read_ctx(node.ctx):
             if self._is_checking():
