@@ -753,9 +753,8 @@ class TestImportFailureHandlingCodeSamples(TestNameCheckVisitorBase):
         ok_no_eq: Hashable = NoEq(1)
         ok_unsafe_hash: Hashable = UnsafeHash(1)
         ok_explicit_hash: Hashable = ExplicitHash(1)
-        bad_explicit_none: Hashable = ExplicitlyUnhashable(
-            1
-        )  # E: incompatible_assignment
+        # E: incompatible_assignment
+        bad_explicit_none: Hashable = ExplicitlyUnhashable(1)
 
     @assert_passes()
     def test_hashability_respects_hash_none_for_typed_values(self):
