@@ -7898,8 +7898,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         values = []
         for i, elt in enumerate(elts):
             if (
-                not self.in_annotation
-                and isinstance(elt, PartialValue)
+                isinstance(elt, PartialValue)
                 and elt.operation is PartialValueOperation.UNPACK
             ):
                 vals = concrete_values_from_iterable(elt.root, self)
@@ -9932,18 +9931,8 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
 
     def visit_Starred(self, node: ast.Starred) -> Value:
         val = self.visit(node.value)
-        partial_node: ast.AST = node.value
-        runtime_value: Value = AnyValue(AnySource.inference)
-        if self.in_annotation:
-            partial_node = node
-            unpack = getattr(typing, "Unpack", None)
-            if unpack is not None:
-                try:
-                    runtime_value = TypedValue(type(unpack[int]))
-                except Exception:
-                    runtime_value = AnyValue(AnySource.inference)
         return PartialValue(
-            PartialValueOperation.UNPACK, val, partial_node, (), runtime_value
+            PartialValueOperation.UNPACK, val, node, (), AnyValue(AnySource.inference)
         )
 
     def visit_arg(self, node: ast.arg) -> None:
