@@ -1009,6 +1009,18 @@ class TestImportFailureHandlingCodeSamples(TestNameCheckVisitorBase):
         c = C()
         c.x = "x"  # E: incompatible_assignment
 
+    @assert_passes()
+    def test_assign_attribute_on_function_object(self):
+        def decorator(func):
+            func.__is_type_evaluation__ = True
+            return func
+
+        @decorator
+        def f() -> int:
+            return 1
+
+        assert f() == 1
+
 
 class TestNameCheckVisitor(TestNameCheckVisitorBase):
     @assert_passes(allow_import_failures=True)

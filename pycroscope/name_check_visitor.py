@@ -5177,6 +5177,8 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     ) -> tuple[frozenset[str], bool] | None:
         if typ is object:
             return frozenset(), False
+        if attributes.may_have_dynamic_attributes(typ):
+            return frozenset(), True
         slot_names: set[str] = set()
         has_dict = False
         saw_slots = False
@@ -5253,8 +5255,13 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 return None
             return self._slot_state_for_runtime_type(type(value.val))
         if isinstance(value, (TypedValue, GenericValue)):
-            if isinstance(value.typ, (type, str)):
+            if isinstance(value.typ, str):
                 return self._slot_state_for_type(value.typ)
+            if isinstance(value.typ, type):
+                synthetic_class = self.checker.get_synthetic_class(value.typ)
+                if synthetic_class is None:
+                    return None
+                return self._slot_state_for_synthetic_class(synthetic_class)
         return None
 
     def _is_assignment_to_non_slot_attribute(
