@@ -48,6 +48,7 @@ from .value import (
     MultiValuedValue,
     PredicateValue,
     Qualifier,
+    SelfTVV,
     SubclassValue,
     SyntheticClassObjectValue,
     SyntheticEnumMember,
@@ -509,7 +510,10 @@ def _get_direct_attribute_from_synthetic_class(
     if selected_name not in self_value.class_attributes:
         return UNINITIALIZED_VALUE
     result = _normalize_synthetic_class_attribute(
-        self_value.class_attributes[selected_name]
+        self_value.class_attributes[selected_name],
+        is_self_returning_classmethod=_is_synthetic_self_classmethod_attribute(
+            self_value, selected_name
+        ),
     )
     if _should_deliteralize_synthetic_enum_attr(self_value, selected_name):
         return _deliteralize_value(result)
@@ -538,7 +542,20 @@ def _is_synthetic_initvar_attribute(
     return attr_name in initvar_fields.val
 
 
-def _normalize_synthetic_class_attribute(value: Value) -> Value:
+def _is_synthetic_self_classmethod_attribute(
+    self_value: SyntheticClassObjectValue, attr_name: str
+) -> bool:
+    self_classmethods = self_value.class_attributes.get("%self_classmethods")
+    if not isinstance(self_classmethods, KnownValue) or not isinstance(
+        self_classmethods.val, (set, frozenset, tuple, list)
+    ):
+        return False
+    return attr_name in self_classmethods.val
+
+
+def _normalize_synthetic_class_attribute(
+    value: Value, *, is_self_returning_classmethod: bool = False
+) -> Value:
     # Decorated methods in synthetic classes are stored as the descriptor objects.
     # Mirror runtime attribute lookup for staticmethod by exposing the wrapped function.
     if isinstance(value, GenericValue) and value.typ is staticmethod and value.args:
@@ -557,7 +574,38 @@ def _normalize_synthetic_class_attribute(value: Value) -> Value:
                 )
             return AnyValue(AnySource.inference)
         return wrapped
+    if isinstance(value, GenericValue) and value.typ is classmethod and value.args:
+        if len(value.args) >= 2:
+            wrapped = value.args[1]
+        elif value.args:
+            wrapped = value.args[0]
+        else:
+            return AnyValue(AnySource.inference)
+        from .input_sig import FullSignature, InputSigValue
+
+        if isinstance(wrapped, InputSigValue):
+            if isinstance(wrapped.input_sig, FullSignature):
+                return_annotation = (
+                    value.args[2]
+                    if len(value.args) > 2
+                    else wrapped.input_sig.sig.return_value
+                )
+                # In import-failure fallback mode, explicit ``-> Self`` on
+                # classmethods can degrade to an unresolved generic argument.
+                if (
+                    is_self_returning_classmethod
+                    and isinstance(return_annotation, AnyValue)
+                    and (return_annotation.source is AnySource.generic_argument)
+                ):
+                    return_annotation = SelfTVV
+                return CallableValue(
+                    replace(wrapped.input_sig.sig, return_value=return_annotation)
+                )
+            return AnyValue(AnySource.inference)
+        return wrapped
     if isinstance(value, KnownValue) and isinstance(value.val, staticmethod):
+        return KnownValue(value.val.__func__)
+    if isinstance(value, KnownValue) and isinstance(value.val, classmethod):
         return KnownValue(value.val.__func__)
     return value
 
