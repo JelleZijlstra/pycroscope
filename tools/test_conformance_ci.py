@@ -21,15 +21,13 @@ if sys.version_info >= (3, 11):
 
 
 def test_get_expected_errors(tmp_path: Path) -> None:
-    source = textwrap.dedent(
-        """
+    source = textwrap.dedent("""
         x: int = "x"  # E
         y: int = "y"  # E? # E?
         @final  # E[tag]
         def f() -> None: ...  # E[tag]
         # x: int = "x"  # E
-        """
-    ).strip()
+        """).strip()
     path = tmp_path / "sample.py"
     path.write_text(source, encoding="utf-8")
     try:
@@ -54,14 +52,12 @@ def test_get_expected_errors_rejects_single_tagged_line(tmp_path: Path) -> None:
 def test_diff_expected_errors_and_parse_output(tmp_path: Path) -> None:
     test_case = tmp_path / "foo.py"
     test_case.write_text(
-        textwrap.dedent(
-            """
+        textwrap.dedent("""
             a: int = "a"  # E
             @final  # E[tag]
             def f() -> None: ...  # E[tag]
             b: int = "b"  # E?
-            """
-        ).strip(),
+            """).strip(),
         encoding="utf-8",
     )
     output_lines = [

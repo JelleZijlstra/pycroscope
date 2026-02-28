@@ -147,7 +147,10 @@ def _isinstance_or_issubclass_impl(
 ) -> Value:
     class_or_tuple = ctx.vars["class_or_tuple"]
     function_name = "issubclass" if is_subclass_check else "isinstance"
-    invalid_kind = _invalid_classinfo_kind(class_or_tuple)
+    first_arg_name = "cls" if is_subclass_check else "obj"
+    invalid_kind = _invalid_classinfo_kind(
+        class_or_tuple, ctx, is_subclass_check=is_subclass_check
+    )
     if invalid_kind is not None:
         ctx.show_error(
             f'Second argument to "{function_name}" cannot be {invalid_kind}',
@@ -155,7 +158,22 @@ def _isinstance_or_issubclass_impl(
             arg="class_or_tuple",
         )
         return TypedValue(bool)
-    varname = ctx.varname_for_arg("cls" if is_subclass_check else "obj")
+    unsafe_overlap = _find_unsafe_runtime_protocol_overlap(
+        ctx.vars[first_arg_name],
+        class_or_tuple,
+        ctx,
+        is_subclass_check=is_subclass_check,
+    )
+    if unsafe_overlap is not None:
+        candidate_type, protocol = unsafe_overlap
+        ctx.show_error(
+            f'First argument to "{function_name}" has unsafe overlap between'
+            f" {candidate_type.__name__!r} and protocol {protocol.__name__!r}",
+            ErrorCode.incompatible_argument,
+            arg=first_arg_name,
+        )
+        return TypedValue(bool)
+    varname = ctx.varname_for_arg(first_arg_name)
     if varname is None or not isinstance(class_or_tuple, KnownValue):
         return TypedValue(bool)
     try:
@@ -183,15 +201,21 @@ class _CannotResolve(Exception):
     pass
 
 
-def _invalid_classinfo_kind(value: Value) -> str | None:
+def _invalid_classinfo_kind(
+    value: Value, ctx: CallContext, *, is_subclass_check: bool
+) -> str | None:
     if isinstance(value, MultiValuedValue):
         for subval in value.vals:
-            invalid_kind = _invalid_classinfo_kind(subval)
+            invalid_kind = _invalid_classinfo_kind(
+                subval, ctx, is_subclass_check=is_subclass_check
+            )
             if invalid_kind is not None:
                 return invalid_kind
         return None
     if isinstance(value, AnnotatedValue):
-        return _invalid_classinfo_kind(value.value)
+        return _invalid_classinfo_kind(
+            value.value, ctx, is_subclass_check=is_subclass_check
+        )
     if isinstance(value, TypeAliasValue):
         return "a type alias"
     if isinstance(value, SyntheticClassObjectValue):
@@ -200,12 +224,28 @@ def _invalid_classinfo_kind(value: Value) -> str | None:
         return None
     if isinstance(value, TypedDictValue):
         return "a TypedDict"
+    if isinstance(value, TypedValue) and isinstance(value.typ, type):
+        if _is_non_runtime_checkable_protocol(value.typ, ctx):
+            return "a protocol that is not @runtime_checkable"
+        if is_subclass_check and _is_runtime_checkable_data_protocol(value.typ, ctx):
+            return "a runtime-checkable protocol with non-method members"
+        return None
+    if isinstance(value, GenericValue) and isinstance(value.typ, type):
+        if _is_non_runtime_checkable_protocol(value.typ, ctx):
+            return "a protocol that is not @runtime_checkable"
+        if is_subclass_check and _is_runtime_checkable_data_protocol(value.typ, ctx):
+            return "a runtime-checkable protocol with non-method members"
+        return "a parameterized generic"
     if not isinstance(value, KnownValue):
         return None
-    return _invalid_classinfo_kind_runtime(value.val)
+    return _invalid_classinfo_kind_runtime(
+        value.val, ctx, is_subclass_check=is_subclass_check
+    )
 
 
-def _invalid_classinfo_kind_runtime(val: object) -> str | None:
+def _invalid_classinfo_kind_runtime(
+    val: object, ctx: CallContext, *, is_subclass_check: bool
+) -> str | None:
     if is_instance_of_typing_name(val, "TypeAliasType"):
         return "a type alias"
     if is_typing_name(val, "TypedDict"):
@@ -214,32 +254,223 @@ def _invalid_classinfo_kind_runtime(val: object) -> str | None:
         return "a TypedDict"
     if safe_isinstance(val, tuple):
         for elt in val:
-            invalid_kind = _invalid_classinfo_kind_runtime(elt)
+            invalid_kind = _invalid_classinfo_kind_runtime(
+                elt, ctx, is_subclass_check=is_subclass_check
+            )
             if invalid_kind is not None:
                 return invalid_kind
         return None
     origin = typing_extensions.get_origin(val)
     if is_union(origin):
         for arg in typing_extensions.get_args(val):
-            invalid_kind = _invalid_classinfo_kind_runtime(arg)
+            invalid_kind = _invalid_classinfo_kind_runtime(
+                arg, ctx, is_subclass_check=is_subclass_check
+            )
             if invalid_kind is not None:
                 return invalid_kind
         return None
-    if safe_isinstance(val, type) and _is_non_runtime_checkable_protocol(val):
+    if safe_isinstance(val, type) and _is_non_runtime_checkable_protocol(val, ctx):
         return "a protocol that is not @runtime_checkable"
+    if (
+        is_subclass_check
+        and safe_isinstance(val, type)
+        and _is_runtime_checkable_data_protocol(val, ctx)
+    ):
+        return "a runtime-checkable protocol with non-method members"
     if origin is None:
         return None
-    if safe_isinstance(origin, type) and _is_non_runtime_checkable_protocol(origin):
+    if safe_isinstance(origin, type) and _is_non_runtime_checkable_protocol(
+        origin, ctx
+    ):
         return "a protocol that is not @runtime_checkable"
+    if (
+        is_subclass_check
+        and safe_isinstance(origin, type)
+        and _is_runtime_checkable_data_protocol(origin, ctx)
+    ):
+        return "a runtime-checkable protocol with non-method members"
     if typing_extensions.get_args(val):
         return "a parameterized generic"
     return None
 
 
-def _is_non_runtime_checkable_protocol(typ: type) -> bool:
+def _is_non_runtime_checkable_protocol(typ: type, ctx: CallContext) -> bool:
+    if not ctx.visitor.checker.make_type_object(typ).is_protocol:
+        return False
+    # Runtime classinfo semantics apply only to actual protocol runtime classes.
     if not safe_getattr(typ, "_is_protocol", False):
         return False
     return not safe_getattr(typ, "_is_runtime_protocol", False)
+
+
+def _is_runtime_checkable_protocol(typ: type, ctx: CallContext) -> bool:
+    if not ctx.visitor.checker.make_type_object(typ).is_protocol:
+        return False
+    if not safe_getattr(typ, "_is_protocol", False):
+        return False
+    return bool(safe_getattr(typ, "_is_runtime_protocol", False))
+
+
+def _runtime_protocol_member_names(protocol: type, ctx: CallContext) -> set[str]:
+    return set(ctx.visitor.checker.make_type_object(protocol).protocol_members)
+
+
+def _runtime_protocol_member_is_method(protocol: type, member: str) -> bool:
+    return callable(safe_getattr(protocol, member, None))
+
+
+def _is_runtime_checkable_data_protocol(protocol: type, ctx: CallContext) -> bool:
+    if not _is_runtime_checkable_protocol(protocol, ctx):
+        return False
+    for member in _runtime_protocol_member_names(protocol, ctx):
+        if not _runtime_protocol_member_is_method(protocol, member):
+            return True
+    return False
+
+
+def _iter_runtime_checkable_protocols(
+    class_info: object, ctx: CallContext
+) -> Iterable[type]:
+    if safe_isinstance(class_info, type):
+        if _is_runtime_checkable_protocol(class_info, ctx):
+            yield class_info
+        return
+    if safe_isinstance(class_info, tuple):
+        for elt in class_info:
+            yield from _iter_runtime_checkable_protocols(elt, ctx)
+        return
+    origin = typing_extensions.get_origin(class_info)
+    if is_union(origin):
+        for arg in typing_extensions.get_args(class_info):
+            yield from _iter_runtime_checkable_protocols(arg, ctx)
+    elif safe_isinstance(origin, type) and _is_runtime_checkable_protocol(origin, ctx):
+        yield origin
+
+
+def _iter_candidate_types_for_runtime_protocol_check(
+    value: Value, *, is_subclass_check: bool
+) -> Iterable[type]:
+    value = replace_fallback(value)
+    if isinstance(value, AnnotatedValue):
+        yield from _iter_candidate_types_for_runtime_protocol_check(
+            value.value, is_subclass_check=is_subclass_check
+        )
+        return
+    if isinstance(value, MultiValuedValue):
+        for subval in value.vals:
+            yield from _iter_candidate_types_for_runtime_protocol_check(
+                subval, is_subclass_check=is_subclass_check
+            )
+        return
+    if isinstance(value, KnownValue):
+        if is_subclass_check:
+            if safe_isinstance(value.val, type):
+                yield value.val
+        else:
+            yield type(value.val)
+        return
+    if (
+        is_subclass_check
+        and isinstance(value, SubclassValue)
+        and isinstance(value.typ, TypedValue)
+        and isinstance(value.typ.typ, type)
+    ):
+        yield value.typ.typ
+        return
+    if not is_subclass_check and isinstance(value, GenericValue):
+        if isinstance(value.typ, type):
+            yield value.typ
+        return
+    if not is_subclass_check and isinstance(value, SequenceValue):
+        if isinstance(value.typ, type):
+            yield value.typ
+        return
+    if not is_subclass_check and isinstance(value, TypedValue):
+        if isinstance(value.typ, type):
+            yield value.typ
+
+
+def _value_can_be_non_none(value: Value) -> bool:
+    value = replace_fallback(value)
+    if isinstance(value, AnnotatedValue):
+        return _value_can_be_non_none(value.value)
+    if isinstance(value, MultiValuedValue):
+        return any(_value_can_be_non_none(subval) for subval in value.vals)
+    if isinstance(value, KnownValue):
+        return value.val is not None
+    return True
+
+
+def _protocol_runtime_match_possible(
+    candidate_type: type, protocol: type, ctx: CallContext
+) -> bool:
+    candidate_value = TypedValue(candidate_type)
+    for member in _runtime_protocol_member_names(protocol, ctx):
+        actual = ctx.visitor.checker.get_attribute_from_value(candidate_value, member)
+        if actual is UNINITIALIZED_VALUE:
+            return False
+        if _runtime_protocol_member_is_method(protocol, member) and not (
+            _value_can_be_non_none(actual)
+        ):
+            return False
+    return True
+
+
+def _is_protocol_unsafe_overlap(
+    candidate_type: type, protocol: type, ctx: CallContext
+) -> bool:
+    if not _protocol_runtime_match_possible(candidate_type, protocol, ctx):
+        return False
+    protocol_type = TypedValue(protocol)
+    candidate_value = TypedValue(candidate_type)
+    compatibility = protocol_type.can_assign(candidate_value, ctx.visitor)
+    return isinstance(compatibility, CanAssignError)
+
+
+def _find_unsafe_runtime_protocol_overlap(
+    first_arg: Value,
+    class_or_tuple: Value,
+    ctx: CallContext,
+    *,
+    is_subclass_check: bool,
+) -> tuple[type, type] | None:
+    protocols = list(_iter_runtime_checkable_protocols_from_value(class_or_tuple, ctx))
+    if not protocols:
+        return None
+    seen_types: set[type] = set()
+    for candidate_type in _iter_candidate_types_for_runtime_protocol_check(
+        first_arg, is_subclass_check=is_subclass_check
+    ):
+        if candidate_type in seen_types:
+            continue
+        seen_types.add(candidate_type)
+        for protocol in protocols:
+            if _is_protocol_unsafe_overlap(candidate_type, protocol, ctx):
+                return candidate_type, protocol
+    return None
+
+
+def _iter_runtime_checkable_protocols_from_value(
+    value: Value, ctx: CallContext
+) -> Iterable[type]:
+    value = replace_fallback(value)
+    if isinstance(value, AnnotatedValue):
+        yield from _iter_runtime_checkable_protocols_from_value(value.value, ctx)
+        return
+    if isinstance(value, MultiValuedValue):
+        for subval in value.vals:
+            yield from _iter_runtime_checkable_protocols_from_value(subval, ctx)
+        return
+    if isinstance(value, KnownValue):
+        yield from _iter_runtime_checkable_protocols(value.val, ctx)
+        return
+    if isinstance(value, TypedValue) and isinstance(value.typ, type):
+        if _is_runtime_checkable_protocol(value.typ, ctx):
+            yield value.typ
+        return
+    if isinstance(value, GenericValue) and isinstance(value.typ, type):
+        if _is_runtime_checkable_protocol(value.typ, ctx):
+            yield value.typ
 
 
 def _resolve_isinstance_arg(val: object) -> Iterable[type]:

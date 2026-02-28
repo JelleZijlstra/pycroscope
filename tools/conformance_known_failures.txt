@@ -68,7 +68,6 @@ protocols_definition
 protocols_explicit
 protocols_generic
 protocols_recursive
-protocols_runtime_checkable
 protocols_subtyping
 qualifiers_annotated
 specialtypes_never

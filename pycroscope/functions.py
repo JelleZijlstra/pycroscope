@@ -319,7 +319,7 @@ def compute_parameters(
     value: Value | AnnotationExpr
     for idx, (param, default) in enumerate(zip_longest(args, defaults)):
         assert param is not None, "must have more args than defaults"
-        (kind, arg) = param
+        kind, arg = param
         is_self = (
             idx == 0
             and enclosing_class is not None
