@@ -17,7 +17,6 @@ dataclasses_descriptors
 dataclasses_inheritance
 dataclasses_match_args
 dataclasses_transform_converter
-dataclasses_transform_field
 dataclasses_usage
 directives_deprecated
 directives_type_checking

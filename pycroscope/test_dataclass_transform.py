@@ -344,6 +344,66 @@ class TestDataclassTransform(TestNameCheckVisitorBase):
                 c: int
 
     @assert_passes()
+    def test_dataclass_transform_field_specifier_implicit_defaults(self):
+        from typing import Any, Callable, Literal, TypeVar, overload
+
+        from typing_extensions import dataclass_transform
+
+        T = TypeVar("T")
+
+        @overload
+        def field1(
+            *,
+            default: str | None = None,
+            resolver: Callable[[], Any],
+            init: Literal[False] = False,
+        ) -> Any: ...
+
+        @overload
+        def field1(
+            *,
+            default: str | None = None,
+            resolver: None = None,
+            init: Literal[True] = True,
+        ) -> Any: ...
+
+        def field1(
+            *,
+            default: str | None = None,
+            resolver: Callable[[], Any] | None = None,
+            init: bool = True,
+        ) -> Any:
+            return object()
+
+        def field2(*, init: bool = False, kw_only: bool = True) -> Any:
+            return object()
+
+        @dataclass_transform(kw_only_default=True, field_specifiers=(field1, field2))
+        def create_model(*, init: bool = True) -> Callable[[type[T]], type[T]]:
+            def decorator(cls: type[T]) -> type[T]:
+                return cls
+
+            return decorator
+
+        @create_model()
+        class CustomerModel1:
+            id: int = field1(resolver=lambda: 0)
+            name: str = field1(default="Voldemort")
+
+        @create_model()
+        class CustomerModel2:
+            id: int = field2()
+            name: str = field2(init=True)
+
+        def check_calls() -> None:
+            CustomerModel1()
+            CustomerModel1(name="hi")
+            CustomerModel1(id=1, name="hi")  # E: incompatible_call
+            CustomerModel2(1)  # E: incompatible_call
+            CustomerModel2(name="Fred")
+            CustomerModel2(id=1, name="Fred")  # E: incompatible_call
+
+    @assert_passes()
     def test_dataclass_transform_base_field_specifier_options(self):
         from typing import Any
 
