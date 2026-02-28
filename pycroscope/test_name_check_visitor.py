@@ -869,6 +869,24 @@ class TestImportFailureHandlingCodeSamples(TestNameCheckVisitorBase):
         c.x = 2  # E: incompatible_assignment
 
     @assert_passes()
+    def test_classvar_attribute_assignment_on_instance(self):
+        from typing import ClassVar
+
+        class C:
+            x: ClassVar[int] = 1
+
+        class D(C):
+            pass
+
+        c = C()
+        c.x = 2  # E: incompatible_assignment
+        C.x = 3
+
+        d = D()
+        d.x = 4  # E: incompatible_assignment
+        D.x = 5
+
+    @assert_passes()
     def test_namedtuple_attribute_is_immutable(self):
         from typing import NamedTuple
 

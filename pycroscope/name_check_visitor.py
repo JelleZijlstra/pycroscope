@@ -229,6 +229,7 @@ from .value import (
     PartialValueOperation,
     PredicateValue,
     ReferencingValue,
+    SelfT,
     SequenceValue,
     SkipDeprecatedExtension,
     SubclassValue,
@@ -1904,6 +1905,95 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         synthetic_class.class_attributes["%classvars"] = KnownValue(
             frozenset(classvar_names)
         )
+
+    @staticmethod
+    def _classvar_names_from_mapping(attributes: Mapping[str, Value]) -> set[str]:
+        classvars = attributes.get("%classvars")
+        if isinstance(classvars, KnownValue) and isinstance(
+            classvars.val, (set, frozenset, tuple, list)
+        ):
+            return {item for item in classvars.val if isinstance(item, str)}
+        return set()
+
+    def _is_classvar_member(self, class_key: type | str, attr_name: str) -> bool:
+        return attr_name in self._classvar_names_for_class_key(class_key, set())
+
+    def _classvar_names_for_class_key(
+        self, class_key: type | str, seen: set[type | str]
+    ) -> set[str]:
+        if class_key in seen:
+            return set()
+        seen.add(class_key)
+        names: set[str] = set()
+        synthetic_class: SyntheticClassObjectValue | None = None
+        if isinstance(class_key, type):
+            synthetic_class = self.checker.get_synthetic_class(class_key)
+        elif isinstance(class_key, str):
+            synthetic_class = self._synthetic_classes_by_name.get(class_key)
+        if synthetic_class is not None:
+            names.update(
+                self._classvar_names_from_mapping(synthetic_class.class_attributes)
+            )
+            for base in synthetic_class.base_classes:
+                for base_value in flatten_values(base, unwrap_annotated=True):
+                    base_key: type | str | None = None
+                    if isinstance(base_value, SyntheticClassObjectValue):
+                        class_type = base_value.class_type
+                        if isinstance(class_type, TypedValue) and isinstance(
+                            class_type.typ, (type, str)
+                        ):
+                            base_key = class_type.typ
+                    elif isinstance(base_value, GenericValue) and isinstance(
+                        base_value.typ, (type, str)
+                    ):
+                        base_key = base_value.typ
+                    elif isinstance(base_value, TypedValue) and isinstance(
+                        base_value.typ, (type, str)
+                    ):
+                        base_key = base_value.typ
+                    elif isinstance(base_value, KnownValue) and isinstance(
+                        base_value.val, type
+                    ):
+                        base_key = base_value.val
+                    if base_key is not None:
+                        names.update(self._classvar_names_for_class_key(base_key, seen))
+        if isinstance(class_key, type):
+            names.update(self._runtime_classvar_names_for_class(class_key))
+            for base_class in self.checker.get_generic_bases(class_key):
+                if base_class != class_key:
+                    names.update(self._classvar_names_for_class_key(base_class, seen))
+        else:
+            for base_class in self.checker.get_generic_bases(class_key):
+                if base_class != class_key:
+                    names.update(self._classvar_names_for_class_key(base_class, seen))
+        return names
+
+    def _runtime_classvar_names_for_class(self, cls: type) -> set[str]:
+        annotations = safe_getattr(cls, "__annotations__", None)
+        if not isinstance(annotations, Mapping):
+            return set()
+        names: set[str] = set()
+        for name, annotation in annotations.items():
+            if not isinstance(name, str):
+                continue
+            origin = get_origin(annotation)
+            if is_typing_name(annotation, "ClassVar") or is_typing_name(
+                origin, "ClassVar"
+            ):
+                names.add(name)
+        return names
+
+    def _contains_classvar_type_parameter(self, value: Value) -> bool:
+        for subval in value.walk_values():
+            if isinstance(subval, TypeVarValue):
+                if subval.typevar is SelfT:
+                    continue
+                return True
+            if isinstance(subval, InputSigValue) and isinstance(
+                subval.input_sig, ParamSpecSig
+            ):
+                return True
+        return False
 
     def _record_synthetic_dataclass_field_metadata(
         self,
@@ -6542,6 +6632,57 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 return False
         return True
 
+    def _is_class_object_attribute_root(self, value: Value) -> bool | None:
+        value = replace_fallback(value)
+        if isinstance(value, AnnotatedValue):
+            return self._is_class_object_attribute_root(value.value)
+        if isinstance(value, MultiValuedValue):
+            kinds = {
+                result
+                for subval in value.vals
+                if (result := self._is_class_object_attribute_root(subval)) is not None
+            }
+            if len(kinds) == 1:
+                return next(iter(kinds))
+            return None
+        if isinstance(value, IntersectionValue):
+            kinds = {
+                result
+                for subval in value.vals
+                if (result := self._is_class_object_attribute_root(subval)) is not None
+            }
+            if len(kinds) == 1:
+                return next(iter(kinds))
+            return None
+        if isinstance(value, KnownValue):
+            return isinstance(value.val, type)
+        if isinstance(value, SyntheticClassObjectValue):
+            return True
+        if isinstance(value, SubclassValue):
+            return True
+        if isinstance(value, TypedValue):
+            if isinstance(value.typ, type):
+                return safe_issubclass(value.typ, type)
+            if isinstance(value.typ, str):
+                return value.typ in {"builtins.type", "type"}
+            return False
+        if isinstance(value, GenericValue):
+            if isinstance(value.typ, type):
+                return safe_issubclass(value.typ, type)
+            if isinstance(value.typ, str):
+                return value.typ in {"builtins.type", "type"}
+            return False
+        return False
+
+    def _is_assignment_to_classvar_through_instance(
+        self, node: ast.Attribute, root_value: Value
+    ) -> bool:
+        class_key = self._class_key_for_attribute_target(node, root_value)
+        if class_key is None or not self._is_classvar_member(class_key, node.attr):
+            return False
+        is_class_object = self._is_class_object_attribute_root(root_value)
+        return is_class_object is False
+
     def _namedtuple_fields_for_attribute_root(self, value: Value) -> set[str] | None:
         value = replace_fallback(value)
         if isinstance(value, AnnotatedValue):
@@ -9465,7 +9606,13 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             alias_expr = annotation_expr_from_ast(
                 node.value, self, suppress_errors=self._is_collecting()
             )
-            alias_type, _ = alias_expr.maybe_unqualify(set(Qualifier))
+            alias_type, alias_qualifiers = alias_expr.maybe_unqualify(set(Qualifier))
+            if Qualifier.ClassVar in alias_qualifiers:
+                self._show_error_if_checking(
+                    node.value,
+                    "ClassVar cannot be used in type aliases",
+                    error_code=ErrorCode.invalid_annotation,
+                )
             if isinstance(alias_type, InputSigValue):
                 if isinstance(alias_type.input_sig, ParamSpecSig):
                     message = "ParamSpec cannot be used in this annotation context"
@@ -9524,7 +9671,27 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         # TODO: handle TypeAlias and ClassVar
         is_final = Qualifier.Final in qualifiers
         has_classvar = Qualifier.ClassVar in qualifiers
-        if has_classvar and isinstance(node.target, ast.Name):
+        if has_classvar and self.scopes.scope_type() != ScopeType.class_scope:
+            self._show_error_if_checking(
+                node.annotation,
+                "ClassVar can only be used for assignments in class body",
+                error_code=ErrorCode.invalid_annotation,
+            )
+        if (
+            has_classvar
+            and expected_type is not None
+            and self._contains_classvar_type_parameter(expected_type)
+        ):
+            self._show_error_if_checking(
+                node.annotation,
+                "ClassVar type cannot include type parameters",
+                error_code=ErrorCode.classvar_type_parameters,
+            )
+        if (
+            has_classvar
+            and self.scopes.scope_type() == ScopeType.class_scope
+            and isinstance(node.target, ast.Name)
+        ):
             self._record_synthetic_classvar_name(node.target.id)
         is_current_class_dataclass = self._is_current_class_dataclass()
         if (
@@ -10524,8 +10691,21 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     f"Cannot assign to final name {node.attr}",
                     error_code=ErrorCode.incompatible_assignment,
                 )
+            is_classvar_instance_assignment = (
+                not is_final_assignment
+                and self._is_assignment_to_classvar_through_instance(
+                    node, root_composite.value
+                )
+            )
+            if is_classvar_instance_assignment:
+                self._show_error_if_checking(
+                    node,
+                    f"Cannot assign to class variable {node.attr!r} via instance",
+                    error_code=ErrorCode.incompatible_assignment,
+                )
             is_frozen_dataclass_assignment = (
                 not is_final_assignment
+                and not is_classvar_instance_assignment
                 and self._is_assignment_to_frozen_dataclass_attribute(
                     root_composite.value
                 )
@@ -10543,6 +10723,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 self._show_namedtuple_attribute_mutation_error(node)
             if (
                 not is_final_assignment
+                and not is_classvar_instance_assignment
                 and not is_frozen_dataclass_assignment
                 and not is_namedtuple_field
             ):
