@@ -16,7 +16,6 @@ classes_classvar
 constructors_call_init
 constructors_call_metaclass
 constructors_call_new
-constructors_callable
 dataclasses_descriptors
 dataclasses_hash
 dataclasses_inheritance

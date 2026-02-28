@@ -18,8 +18,10 @@ from .value import (
     CanAssignContext,
     CanAssignError,
     IsOneOf,
+    KnownValue,
     LowerBound,
     OrBound,
+    TypedValue,
     TypeVarLike,
     TypeVarMap,
     UpperBound,
@@ -81,7 +83,30 @@ def solve(bounds: Iterable[Bound], ctx: CanAssignContext) -> Value | CanAssignEr
             elif bound.value.is_assignable(top, ctx):
                 pass
             else:
-                top = unite_values(top, bound.value)
+
+                def _normalize_upper_bound(value: Value) -> Value | None:
+                    if isinstance(value, KnownValue):
+                        return TypedValue(type(value.val))
+                    return value.get_fallback_value()
+
+                top_fallback = (
+                    _normalize_upper_bound(top) if isinstance(top, Value) else None
+                )
+                bound_fallback = _normalize_upper_bound(bound.value)
+                if (
+                    top_fallback is not None
+                    and bound_fallback is not None
+                    and (
+                        top_fallback.is_assignable(bound_fallback, ctx)
+                        or bound_fallback.is_assignable(top_fallback, ctx)
+                    )
+                ):
+                    top = top_fallback
+                    continue
+                return CanAssignError(
+                    "Incompatible upper bounds on type variable",
+                    [CanAssignError(str(top)), CanAssignError(str(bound.value))],
+                )
         elif isinstance(bound, OrBound):
             # TODO figure out how to handle this
             continue

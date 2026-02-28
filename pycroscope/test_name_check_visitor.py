@@ -772,6 +772,30 @@ class TestImportFailureHandlingCodeSamples(TestNameCheckVisitorBase):
         DC4("", 0.2, b=3)
         DC4(a="", b=3, c=0.2)
 
+    @assert_passes(allow_import_failures=True)
+    def test_dataclass_constructor_field_metadata_after_import_failure(self):
+        boom = 1 / 0
+
+        from dataclasses import dataclass, field
+
+        @dataclass
+        class InventoryItem:
+            x = 0
+            name: str
+            unit_price: float
+            quantity_on_hand: int = 0
+
+        InventoryItem("soap", 2.3)
+        InventoryItem("name")  # E: incompatible_call
+
+        @dataclass
+        class WithInitFalse:
+            a: int = field(init=False)
+            b: int
+
+        WithInitFalse(1)
+        WithInitFalse(a=1, b=2)  # E: incompatible_call
+
     @assert_passes()
     def test_final_attribute_assignment_on_instance(self):
         from typing import Final
@@ -1536,6 +1560,18 @@ class TestSubclassValue(TestNameCheckVisitorBase):
             cls()  # E: incompatible_call
             cls(1)  # E: incompatible_call
             cls(1, 2)  # E: incompatible_argument
+
+    @assert_passes()
+    def test_incompatible_invariant_typevar_arguments(self):
+        from typing import TypeVar
+
+        T = TypeVar("T")
+
+        def f(x: list[T], y: list[T]) -> None:
+            pass
+
+        f([1], [2])
+        f([1], [""])  # E: incompatible_call
 
     @assert_passes()
     def test_type_union(self):
