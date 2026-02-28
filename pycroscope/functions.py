@@ -26,7 +26,12 @@ from .maybe_asynq import asynq
 from .node_visitor import ErrorContext
 from .options import Options, PyObjectSequenceOption
 from .relations import Relation, has_relation
-from .signature import ParameterKind, Signature, SigParameter
+from .signature import (
+    ParameterKind,
+    Signature,
+    SigParameter,
+    mark_ellipsis_style_any_tail_parameters,
+)
 from .stacked_scopes import Composite
 from .value import (
     AnnotationExpr,
@@ -441,6 +446,7 @@ def compute_parameters(
         param = SigParameter(arg.arg, kind, default, value)
         info = ParamInfo(param, arg, is_self)
         params.append(info)
+
     return params
 
 
@@ -555,7 +561,9 @@ def compute_value_of_function(
         if not visitor.is_generator:
             result = make_coro_type(result)
     sig = Signature.make(
-        [param_info.param for param_info in info.params],
+        mark_ellipsis_style_any_tail_parameters(
+            [param_info.param for param_info in info.params]
+        ),
         result,
         has_return_annotation=info.return_annotation is not None,
     )

@@ -247,6 +247,32 @@ class TestCanAssign:
             ),
         )
 
+    def test_unannotated_any_tail_accepts_anysig_paramspec(self) -> None:
+        left = Signature.make(
+            [
+                P("a", annotation=TypedValue(int), kind=K.POSITIONAL_ONLY),
+                P(
+                    "args",
+                    annotation=AnyValue(AnySource.unannotated),
+                    kind=K.VAR_POSITIONAL,
+                ),
+                P(
+                    "kwargs",
+                    annotation=AnyValue(AnySource.unannotated),
+                    kind=K.VAR_KEYWORD,
+                ),
+            ],
+            TypedValue(type(None)),
+        )
+        right = Signature.make(
+            [
+                P("a", annotation=TypedValue(int), kind=K.POSITIONAL_ONLY),
+                P("__P", annotation=AnyValue(AnySource.explicit), kind=K.PARAM_SPEC),
+            ],
+            TypedValue(type(None)),
+        )
+        self.can(left, right)
+
     def test_kw_only(self) -> None:
         kw_only_int = P("a", annotation=TypedValue(int), kind=K.KEYWORD_ONLY)
         kw_only_int_b = P("b", annotation=TypedValue(int), kind=K.KEYWORD_ONLY)

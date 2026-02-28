@@ -135,6 +135,51 @@ class TestSyntheticType(TestNameCheckVisitorBase):
             as_protocol: ProtocolWithP[P] = ta
             print(as_callable, as_protocol)
 
+    @assert_passes(allow_import_failures=True)
+    def test_callable_annotation_protocol_interop(self):
+        from typing import Any, Callable, Concatenate, ParamSpec, Protocol, TypeVar
+
+        T_contra = TypeVar("T_contra", contravariant=True)
+        P = ParamSpec("P")
+
+        class ProtoAnyTail(Protocol):
+            def __call__(self, *args: Any, **kwargs: Any) -> None: ...
+
+        class ProtoFixedTail(Protocol):
+            def __call__(self, a: int, *args: Any, **kwargs: Any) -> None: ...
+
+        class ProtoParamSpecAny(Protocol[P]):
+            def __call__(self, a: int, *args: P.args, **kwargs: P.kwargs) -> None: ...
+
+        class ProtoStrict(Protocol):
+            def __call__(self, a: float, b: int, *, k: str, m: str) -> None: ...
+
+        class ProtoZero(Protocol):
+            def __call__(self, *args: Any, **kwargs: Any) -> None: ...
+
+        class Proto5(Protocol[T_contra]):
+            def __call__(self, *args: T_contra, **kwargs: T_contra) -> None: ...
+
+        class Proto8(Protocol):
+            def __call__(self) -> None: ...
+
+        def capybara(
+            p_any: ProtoAnyTail,
+            p_ps: ProtoParamSpecAny[...],
+            p5: Proto5[Any],
+            p_strict: ProtoStrict,
+            p8: Proto8,
+            c1: Callable[..., None],
+            c2: Callable[Concatenate[int, ...], None],
+        ) -> None:
+            ok1: ProtoAnyTail = c2
+            ok2: ProtoFixedTail = p_ps
+            ok3: ProtoFixedTail = p_strict
+            ok4: ProtoParamSpecAny[...] = p_any  # keep reverse direction covered
+            ok5: Proto5[Any] = c1
+            err1: Proto5[Any] = p8  # E: incompatible_assignment
+            print(ok1, ok2, ok3, ok4, ok5, err1)
+
     @assert_passes()
     def test_functools(self):
         import functools

@@ -2975,6 +2975,132 @@ def _should_skip_typevartuple_substitution(annotation: Value) -> bool:
     return False
 
 
+def _is_ellipsis_style_any(value: Value) -> bool:
+    return isinstance(value, AnyValue) and value.source is AnySource.ellipsis_callable
+
+
+def mark_ellipsis_style_any_tail_parameters(
+    params: Sequence[SigParameter],
+) -> list[SigParameter]:
+    """Mark ``*args: Any, **kwargs: Any`` tails as gradual-call tails.
+
+    We encode this with ``AnySource.ellipsis_callable`` so it remains distinct
+    from tails that become ``Any`` only after TypeVar substitution.
+    """
+
+    marked = list(params)
+    var_pos_index: int | None = None
+    var_kw_index: int | None = None
+    for i, param in enumerate(marked):
+        if param.kind is ParameterKind.VAR_POSITIONAL:
+            var_pos_index = i
+        elif param.kind is ParameterKind.VAR_KEYWORD:
+            var_kw_index = i
+    if var_pos_index is None or var_kw_index is None:
+        return marked
+
+    var_pos = marked[var_pos_index]
+    var_kw = marked[var_kw_index]
+    if not (
+        _is_any_var_positional_annotation(var_pos.get_annotation())
+        and _is_any_var_keyword_annotation(var_kw.get_annotation())
+    ):
+        return marked
+
+    marker = AnyValue(AnySource.ellipsis_callable)
+    marked[var_pos_index] = replace(var_pos, annotation=GenericValue(tuple, [marker]))
+    marked[var_kw_index] = replace(
+        var_kw, annotation=GenericValue(dict, [TypedValue(str), marker])
+    )
+    return marked
+
+
+def _is_ellipsis_style_var_positional(param: SigParameter) -> bool:
+    annotation = param.get_annotation()
+    return (
+        param.kind is ParameterKind.VAR_POSITIONAL
+        and isinstance(annotation, GenericValue)
+        and annotation.typ is tuple
+        and len(annotation.args) == 1
+        and _is_ellipsis_style_any(annotation.args[0])
+    )
+
+
+def _is_ellipsis_style_var_keyword(param: SigParameter) -> bool:
+    annotation = param.get_annotation()
+    return (
+        param.kind is ParameterKind.VAR_KEYWORD
+        and isinstance(annotation, GenericValue)
+        and annotation.typ is dict
+        and len(annotation.args) == 2
+        and annotation.args[0] == TypedValue(str)
+        and _is_ellipsis_style_any(annotation.args[1])
+    )
+
+
+def _is_unannotated_any(value: Value) -> bool:
+    return isinstance(value, AnyValue) and value.source is AnySource.unannotated
+
+
+def _is_unannotated_any_var_positional(annotation: Value) -> bool:
+    return _is_unannotated_any(annotation) or (
+        isinstance(annotation, GenericValue)
+        and annotation.typ is tuple
+        and len(annotation.args) == 1
+        and _is_unannotated_any(annotation.args[0])
+    )
+
+
+def _is_unannotated_any_var_keyword(annotation: Value) -> bool:
+    return _is_unannotated_any(annotation) or (
+        isinstance(annotation, GenericValue)
+        and annotation.typ is dict
+        and len(annotation.args) == 2
+        and annotation.args[0] == TypedValue(str)
+        and _is_unannotated_any(annotation.args[1])
+    )
+
+
+def _is_any_var_positional_annotation(annotation: Value) -> bool:
+    return isinstance(annotation, AnyValue) or (
+        isinstance(annotation, GenericValue)
+        and annotation.typ is tuple
+        and len(annotation.args) == 1
+        and isinstance(annotation.args[0], AnyValue)
+    )
+
+
+def _is_any_var_keyword_annotation(annotation: Value) -> bool:
+    return isinstance(annotation, AnyValue) or (
+        isinstance(annotation, GenericValue)
+        and annotation.typ is dict
+        and len(annotation.args) == 2
+        and annotation.args[0] == TypedValue(str)
+        and isinstance(annotation.args[1], AnyValue)
+    )
+
+
+def _has_ellipsis_style_tail(signature: ConcreteSignature) -> bool:
+    if not isinstance(signature, Signature):
+        return False
+    args = signature.get_param_of_kind(ParameterKind.VAR_POSITIONAL)
+    kwargs = signature.get_param_of_kind(ParameterKind.VAR_KEYWORD)
+    return (
+        args is not None
+        and kwargs is not None
+        and (
+            (
+                _is_ellipsis_style_var_positional(args)
+                and _is_ellipsis_style_var_keyword(kwargs)
+            )
+            or (
+                _is_unannotated_any_var_positional(args.get_annotation())
+                and _is_unannotated_any_var_keyword(kwargs.get_annotation())
+            )
+        )
+    )
+
+
 def signatures_have_relation(
     left: ConcreteSignature,
     right: ConcreteSignature,
@@ -3051,6 +3177,8 @@ def signatures_have_relation(
             return unify_bounds_maps([return_tv_map, typevartuple_tv_map])
 
     tv_maps = [return_tv_map]
+    left_has_ellipsis_style_tail = _has_ellipsis_style_tail(left)
+    right_has_ellipsis_style_tail = _has_ellipsis_style_tail(right)
     their_params = list(right.parameters.values())
     their_args = right.get_param_of_kind(ParameterKind.VAR_POSITIONAL)
     if their_args is not None:
@@ -3065,7 +3193,17 @@ def signatures_have_relation(
     else:
         kwargs_annotation = None
     their_ellipsis = right.get_param_of_kind(ParameterKind.ELLIPSIS)
-    if their_ellipsis is not None:
+    their_paramspec = right.get_param_of_kind(ParameterKind.PARAM_SPEC)
+    right_has_anysig_paramspec = (
+        their_paramspec is not None
+        and isinstance(their_paramspec.get_annotation(), InputSigValue)
+        and isinstance(assert_input_sig(their_paramspec.get_annotation()), AnySig)
+    )
+    if (
+        their_ellipsis is not None
+        or right_has_anysig_paramspec
+        or right_has_ellipsis_style_tail
+    ):
         args_annotation = kwargs_annotation = AnyValue(AnySource.ellipsis_callable)
     consumed_positional = set()
     consumed_required_pos_only = set()
@@ -3176,6 +3314,11 @@ def signatures_have_relation(
             else:
                 return CanAssignError(f"parameter {my_param.name!r} is not accepted")
         elif my_param.kind is ParameterKind.VAR_POSITIONAL:
+            if left_has_ellipsis_style_tail and _is_any_var_positional_annotation(
+                my_annotation
+            ):
+                consumed_paramspec = True
+                continue
             if args_annotation is None:
                 return CanAssignError("*args are not accepted")
             tv_map = has_relation(args_annotation, my_annotation, relation, ctx)
@@ -3201,6 +3344,11 @@ def signatures_have_relation(
                     )
                 tv_maps.append(tv_map)
         elif my_param.kind is ParameterKind.VAR_KEYWORD:
+            if left_has_ellipsis_style_tail and _is_any_var_keyword_annotation(
+                my_annotation
+            ):
+                consumed_paramspec = True
+                continue
             if kwargs_annotation is None:
                 return CanAssignError("**kwargs are not accepted")
             my_kwargs_value = _get_var_keyword_value_type(my_annotation, relation, ctx)

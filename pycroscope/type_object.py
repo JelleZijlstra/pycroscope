@@ -7,7 +7,7 @@ An object that represents a type.
 import collections.abc
 import inspect
 from collections.abc import Callable, Container, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import cast
 from unittest import mock
 
@@ -16,6 +16,7 @@ from pycroscope.signature import (
     OverloadedSignature,
     ParameterKind,
     Signature,
+    mark_ellipsis_style_any_tail_parameters,
 )
 
 from .safe import safe_getattr, safe_in, safe_isinstance, safe_issubclass
@@ -29,6 +30,7 @@ from .value import (
     CanAssign,
     CanAssignContext,
     CanAssignError,
+    GenericValue,
     KnownValue,
     NotAGradualType,
     SelfT,
@@ -216,17 +218,42 @@ class TypeObject:
 
         bounds_maps = []
         for member in self.protocol_members:
-            expected = ctx.get_attribute_from_value(
-                self_val, member, prefer_typeshed=True
-            )
-            if expected is UNINITIALIZED_VALUE:
-                # In static fallback mode, synthetic protocol members may not have
-                # a retrievable attribute type. Keep enforcing member presence.
-                expected = AnyValue(AnySource.inference)
-            expected = expected.substitute_typevars({SelfT: other_val})
             # For __call__, we check compatibility with the other object itself.
             if member == "__call__":
-                actual = other_val
+                expected = UNINITIALIZED_VALUE
+                if isinstance(self.typ, str):
+                    checker_ctx = safe_getattr(ctx, "checker", ctx)
+                    get_synthetic_class = safe_getattr(
+                        checker_ctx, "get_synthetic_class", None
+                    )
+                    if callable(get_synthetic_class):
+                        synthetic_class = get_synthetic_class(self.typ)
+                        if synthetic_class is not None:
+                            expected = ctx.get_attribute_from_value(
+                                synthetic_class, member
+                            )
+                if expected is UNINITIALIZED_VALUE:
+                    expected_signature = self._as_concrete_signature(
+                        ctx.signature_from_value(self_val), ctx
+                    )
+                    if expected_signature is None:
+                        expected = AnyValue(AnySource.inference)
+                    else:
+                        if _should_mark_protocol_call_tail(self_val):
+                            expected_signature = _mark_protocol_call_signature_tail(
+                                expected_signature
+                            )
+                        expected = CallableValue(expected_signature)
+                expected = _bind_protocol_call_expected(expected, other_val, ctx)
+                expected = expected.substitute_typevars({SelfT: other_val})
+                if other_type_obj is not None and other_type_obj.is_protocol:
+                    actual = _get_protocol_call_member_value(
+                        other_type_obj.typ, other_val, ctx
+                    )
+                    if actual is UNINITIALIZED_VALUE:
+                        actual = other_val
+                else:
+                    actual = other_val
             # Hack to allow types to be hashable. This avoids a bug where type objects
             # don't match the Hashable protocol if they define a __hash__ method themselves:
             # we compare against the __hash__ instance method, but compared to the protocol
@@ -238,8 +265,24 @@ class TypeObject:
             # A better solution probably first requires a rewrite of the attribute fetching
             # system to make it more robust.
             elif member == "__hash__" and _should_use_permissive_dunder_hash(other_val):
+                expected = ctx.get_attribute_from_value(
+                    self_val, member, prefer_typeshed=True
+                )
+                if expected is UNINITIALIZED_VALUE:
+                    # In static fallback mode, synthetic protocol members may not have
+                    # a retrievable attribute type. Keep enforcing member presence.
+                    expected = AnyValue(AnySource.inference)
+                expected = expected.substitute_typevars({SelfT: other_val})
                 actual = AnyValue(AnySource.inference)
             else:
+                expected = ctx.get_attribute_from_value(
+                    self_val, member, prefer_typeshed=True
+                )
+                if expected is UNINITIALIZED_VALUE:
+                    # In static fallback mode, synthetic protocol members may not have
+                    # a retrievable attribute type. Keep enforcing member presence.
+                    expected = AnyValue(AnySource.inference)
+                expected = expected.substitute_typevars({SelfT: other_val})
                 actual = ctx.get_attribute_from_value(other_val, member)
                 actual = _maybe_bind_dunder_protocol_member(
                     actual, member, other_val, ctx
@@ -374,6 +417,84 @@ def _maybe_bind_dunder_protocol_member(
         if bound is not None:
             return CallableValue(bound, unwrapped.typ)
     return value
+
+
+def _bind_protocol_call_expected(
+    value: Value, self_value: Value, ctx: CanAssignContext
+) -> Value:
+    try:
+        unwrapped = replace_fallback(value)
+    except NotAGradualType:
+        return value
+    if not isinstance(unwrapped, CallableValue):
+        return value
+    signature = unwrapped.signature
+    if isinstance(signature, BoundMethodSignature):
+        return value
+    if isinstance(signature, (Signature, OverloadedSignature)):
+        if isinstance(signature, Signature):
+            first_params = [next(iter(signature.parameters.values()), None)]
+        else:
+            first_params = [
+                next(iter(sig.parameters.values()), None)
+                for sig in signature.signatures
+            ]
+        if not all(
+            param is not None and param.name in {"self", "cls", "__self"}
+            for param in first_params
+        ):
+            return value
+        bound = signature.bind_self(self_value=self_value, ctx=ctx)
+        if bound is not None:
+            return CallableValue(bound, unwrapped.typ)
+    return value
+
+
+def _get_protocol_call_member_value(
+    protocol_typ: type | super | str, self_value: Value, ctx: CanAssignContext
+) -> Value:
+    call_member = UNINITIALIZED_VALUE
+    if isinstance(protocol_typ, super):
+        return call_member
+    if isinstance(protocol_typ, str):
+        checker_ctx = safe_getattr(ctx, "checker", ctx)
+        get_synthetic_class = safe_getattr(checker_ctx, "get_synthetic_class", None)
+        if callable(get_synthetic_class):
+            synthetic_class = get_synthetic_class(protocol_typ)
+            if synthetic_class is not None:
+                call_member = ctx.get_attribute_from_value(synthetic_class, "__call__")
+    if call_member is UNINITIALIZED_VALUE:
+        call_member = ctx.get_attribute_from_value(
+            self_value, "__call__", prefer_typeshed=True
+        )
+    if call_member is UNINITIALIZED_VALUE:
+        return call_member
+    return _bind_protocol_call_expected(call_member, self_value, ctx)
+
+
+def _should_mark_protocol_call_tail(value: Value) -> bool:
+    return not isinstance(replace_fallback(value), GenericValue)
+
+
+def _mark_protocol_call_signature_tail(
+    signature: Signature | OverloadedSignature,
+) -> Signature | OverloadedSignature:
+    if isinstance(signature, Signature):
+        marked_params = mark_ellipsis_style_any_tail_parameters(
+            list(signature.parameters.values())
+        )
+        return replace(
+            signature, parameters={param.name: param for param in marked_params}
+        )
+    marked_signatures = []
+    for sig in signature.signatures:
+        marked_params = mark_ellipsis_style_any_tail_parameters(
+            list(sig.parameters.values())
+        )
+        marked_signatures.append(
+            replace(sig, parameters={param.name: param for param in marked_params})
+        )
+    return OverloadedSignature(marked_signatures)
 
 
 def _should_use_permissive_dunder_hash(val: Value) -> bool:
