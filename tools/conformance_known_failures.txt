@@ -24,7 +24,6 @@ dataclasses_postinit
 dataclasses_slots
 dataclasses_transform_converter
 dataclasses_transform_field
-dataclasses_transform_meta
 dataclasses_usage
 directives_deprecated
 directives_type_checking
@@ -46,7 +45,6 @@ generics_syntax_scoping
 generics_type_erasure
 generics_typevartuple_args
 generics_typevartuple_basic
-generics_typevartuple_callable
 generics_typevartuple_concat
 generics_typevartuple_specialization
 generics_typevartuple_unpack

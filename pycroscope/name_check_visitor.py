@@ -4389,6 +4389,13 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             merged_hierarchy_info = self._merge_dataclass_transform_infos(
                 hierarchy_transform_infos
             )
+            # Per the typing spec, a class that directly specifies a
+            # dataclass_transform-decorated metaclass is considered neither frozen
+            # nor non-frozen for inheritance checks.
+            if metaclass_transform_info is not None and not base_transform_infos:
+                merged_hierarchy_info = replace(
+                    merged_hierarchy_info, frozen_default=None
+                )
             frozen_override = next(
                 (
                     self._get_bool_literal(keyword.value)
