@@ -6,6 +6,7 @@ The checker maintains global state that is preserved across different modules.
 
 import ast
 import collections.abc
+import enum
 import itertools
 import sys
 import types
@@ -967,6 +968,20 @@ class Checker:
         get_return_override: Callable[[MaybeSignature], Value | None],
         get_call_attribute: Callable[[Value], Value] | None,
     ) -> ConcreteSignature:
+        if (
+            isinstance(value.class_type, TypedValue)
+            and isinstance(value.class_type.typ, type)
+            and safe_issubclass(value.class_type.typ, enum.Enum)
+            and isinstance(
+                enum_argspec := self._as_concrete_signature(
+                    self.arg_spec_cache.get_argspec(value.class_type.typ)
+                ),
+                (Signature, OverloadedSignature),
+            )
+            and not self._is_uninformative_constructor_signature(enum_argspec)
+        ):
+            return enum_argspec
+
         runtime_class = value.class_attributes.get("%runtime_class")
         if (
             isinstance(runtime_class, KnownValue)
