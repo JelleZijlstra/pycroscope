@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Improve dataclass `slots` checking (including `@dataclass_transform` classes): pycroscope now surfaces `__slots__` for slotted dataclasses, rejects `slots=True` classes that also define `__slots__`, and reports invalid assignments to attributes not declared in slots (including static fallback mode for unimportable modules).
 - Fix callable protocol compatibility for `__call__` signatures in import-failure fallback mode (including `*args: Any, **kwargs: Any` ellipsis-style tails and `Concatenate[..., ...]` interop), improving conformance for `callables_annotation.py`.
 - Improve static fallback analysis for unimportable modules by resolving synthetic class instance methods from synthetic bases in expression contexts, reducing false `undefined_attribute`/`inference_failure` cascades for cases like `Self`-typed methods.
 - Improve static fallback analysis for unimportable modules by making synthetic `@classmethod` attributes callable and preserving `Self` return specialization (for example inferring `Circle` from `Circle.from_config(...)`).
