@@ -1322,6 +1322,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     _synthetic_classes_by_name: dict[str, SyntheticClassObjectValue]
     _synthetic_abstract_methods: dict[str, set[str]]
     _synthetic_final_methods: dict[str, set[str]]
+    _dataclass_field_call_options_by_node: dict[int, _DataclassFieldCallOptions]
     _function_decorator_kinds_by_node: dict[
         ast.FunctionDef | ast.AsyncFunctionDef, frozenset[FunctionDecorator]
     ]
@@ -1497,6 +1498,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         self._synthetic_classes_by_name = {}
         self._synthetic_abstract_methods = {}
         self._synthetic_final_methods = {}
+        self._dataclass_field_call_options_by_node = {}
         self._function_decorator_kinds_by_node = {}
         self._function_returns_self_by_node = {}
         self._type_alias_first_definition_by_scope = {}
@@ -5164,12 +5166,15 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             return False
         with self.catch_errors():
             callee = self.visit(expr.func)
+        return self._is_dataclass_field_callee(callee)
+
+    def _is_dataclass_field_callee(self, callee: Value) -> bool:
         if isinstance(callee, KnownValue) and callee.val is dataclass_field:
             return True
-        for field_specifier in self.current_class_dataclass_field_specifiers:
-            if self._value_matches_dataclass_field_specifier(callee, field_specifier):
-                return True
-        return False
+        return any(
+            self._value_matches_dataclass_field_specifier(callee, field_specifier)
+            for field_specifier in self.current_class_dataclass_field_specifiers
+        )
 
     @staticmethod
     def _known_bool_literal_from_value(value: Value) -> bool | None:
@@ -5190,11 +5195,10 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             return value.val
         return None
 
-    def _arguments_for_call_node(self, node: ast.Call) -> list[Argument]:
-        args = [self.composite_from_node(arg) for arg in node.args]
-        keywords = [
-            (kw.arg, self.composite_from_node(kw.value)) for kw in node.keywords
-        ]
+    @staticmethod
+    def _arguments_from_call_composites(
+        args: Sequence[Composite], keywords: Sequence[tuple[str | None, Composite]]
+    ) -> list[Argument]:
         return [
             (
                 (Composite(arg.value.root, arg.varname, arg.node), ARGS)
@@ -5224,19 +5228,18 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             return None
         return bound_args
 
-    def _get_dataclass_field_call_bound_args(self, expr: ast.Call) -> BoundArgs | None:
-        with self.catch_errors() as caught_errors:
-            callee = self.visit(expr.func)
-        if caught_errors:
-            return None
-        signature = self.signature_from_value(callee, expr)
+    def _get_dataclass_field_call_bound_args_from_resolved_call(
+        self,
+        callee: Value,
+        args: Sequence[Composite],
+        keywords: Sequence[tuple[str | None, Composite]],
+        node: ast.Call,
+    ) -> BoundArgs | None:
+        signature = self.signature_from_value(callee, node)
         if not isinstance(signature, (Signature, OverloadedSignature)):
             return None
 
-        with self.catch_errors() as caught_errors:
-            arguments = self._arguments_for_call_node(expr)
-        if caught_errors:
-            return None
+        arguments = self._arguments_from_call_composites(args, keywords)
         preprocess_ctx = _DataclassFieldInferenceCallContext(self)
         actual_args = preprocess_args(arguments, preprocess_ctx)
         if actual_args is None:
@@ -5256,10 +5259,18 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 return bound_args
         return None
 
-    def _infer_dataclass_field_call_options(
-        self, expr: ast.Call
-    ) -> _DataclassFieldCallOptions:
-        bound_args = self._get_dataclass_field_call_bound_args(expr)
+    def _infer_dataclass_field_call_options_from_resolved_call(
+        self,
+        callee: Value,
+        args: Sequence[Composite],
+        keywords: Sequence[tuple[str | None, Composite]],
+        node: ast.Call,
+    ) -> _DataclassFieldCallOptions | None:
+        if not self._is_dataclass_field_callee(callee):
+            return None
+        bound_args = self._get_dataclass_field_call_bound_args_from_resolved_call(
+            callee, args, keywords, node
+        )
         if bound_args is None:
             return _DataclassFieldCallOptions()
         init = None
@@ -10488,58 +10499,18 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         ):
             self._record_synthetic_classvar_name(node.target.id)
         is_current_class_dataclass = self._is_current_class_dataclass()
+        has_default = node.value is not None
+        init = True
+        kw_only = self.current_class_dataclass_kw_only_default
+        alias: str | None = None
+        is_dataclass_field_call = False
+        dataclass_field_name: str | None = None
         if (
             is_current_class_dataclass
             and isinstance(node.target, ast.Name)
             and not has_classvar
         ):
-            has_default = node.value is not None
-            init = True
-            kw_only = self.current_class_dataclass_kw_only_default
-            alias: str | None = None
-            is_dataclass_field_call = isinstance(
-                node.value, ast.Call
-            ) and self._is_dataclass_field_call(node.value)
-            if is_dataclass_field_call:
-                has_default = any(
-                    kw.arg in {"default", "default_factory"}
-                    for kw in node.value.keywords
-                )
-                inferred_options = self._infer_dataclass_field_call_options(node.value)
-                if inferred_options.init is not None:
-                    init = inferred_options.init
-                init_keyword = next(
-                    (kw.value for kw in node.value.keywords if kw.arg == "init"), None
-                )
-                if isinstance(init_keyword, ast.Constant) and isinstance(
-                    init_keyword.value, bool
-                ):
-                    init = init_keyword.value
-                kw_only_keyword = next(
-                    (kw.value for kw in node.value.keywords if kw.arg == "kw_only"),
-                    None,
-                )
-                if isinstance(kw_only_keyword, ast.Constant) and isinstance(
-                    kw_only_keyword.value, bool
-                ):
-                    kw_only = kw_only_keyword.value
-                alias_keyword = next(
-                    (kw.value for kw in node.value.keywords if kw.arg == "alias"), None
-                )
-                if isinstance(alias_keyword, ast.Constant) and isinstance(
-                    alias_keyword.value, str
-                ):
-                    alias = alias_keyword.value
-            self._record_synthetic_dataclass_field_metadata(
-                node.target.id,
-                has_default=has_default,
-                init=init,
-                initvar=Qualifier.InitVar in qualifiers,
-                kw_only=kw_only,
-                alias=alias,
-            )
-        else:
-            is_dataclass_field_call = False
+            dataclass_field_name = node.target.id
         if (
             has_classvar
             and is_final
@@ -10592,6 +10563,45 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         if node.value is not None:
             is_yield = isinstance(node.value, ast.Yield)
             value = self.visit(node.value)
+            if (
+                dataclass_field_name is not None
+                and isinstance(node.value, ast.Call)
+                and (
+                    inferred_options := self._dataclass_field_call_options_by_node.pop(
+                        id(node.value), None
+                    )
+                )
+                is not None
+            ):
+                is_dataclass_field_call = True
+                has_default = any(
+                    kw.arg in {"default", "default_factory"}
+                    for kw in node.value.keywords
+                )
+                if inferred_options.init is not None:
+                    init = inferred_options.init
+                init_keyword = next(
+                    (kw.value for kw in node.value.keywords if kw.arg == "init"), None
+                )
+                if isinstance(init_keyword, ast.Constant) and isinstance(
+                    init_keyword.value, bool
+                ):
+                    init = init_keyword.value
+                kw_only_keyword = next(
+                    (kw.value for kw in node.value.keywords if kw.arg == "kw_only"),
+                    None,
+                )
+                if isinstance(kw_only_keyword, ast.Constant) and isinstance(
+                    kw_only_keyword.value, bool
+                ):
+                    kw_only = kw_only_keyword.value
+                alias_keyword = next(
+                    (kw.value for kw in node.value.keywords if kw.arg == "alias"), None
+                )
+                if isinstance(alias_keyword, ast.Constant) and isinstance(
+                    alias_keyword.value, str
+                ):
+                    alias = alias_keyword.value
 
             if expected_type is not None and not (
                 is_current_class_dataclass and is_dataclass_field_call
@@ -10614,6 +10624,16 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         else:
             is_yield = False
             value = None
+
+        if dataclass_field_name is not None:
+            self._record_synthetic_dataclass_field_metadata(
+                dataclass_field_name,
+                has_default=has_default,
+                init=init,
+                initvar=Qualifier.InitVar in qualifiers,
+                kw_only=kw_only,
+                alias=alias,
+            )
 
         with (
             override(self, "being_assigned", value),
@@ -11928,6 +11948,21 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             ]
         else:
             keywords = []
+
+        if (
+            self._is_current_class_dataclass()
+            and self.scopes.scope_type() == ScopeType.class_scope
+        ):
+            inferred_options = (
+                self._infer_dataclass_field_call_options_from_resolved_call(
+                    callee_wrapped, args, keywords, node
+                )
+            )
+            if inferred_options is not None:
+                self._dataclass_field_call_options_by_node[id(node)] = inferred_options
+            else:
+                self._dataclass_field_call_options_by_node.pop(id(node), None)
+
         if self._is_forbidden_annotated_call(callee_wrapped):
             self._show_error_if_checking(
                 node,
