@@ -510,11 +510,11 @@ class _AttrContext(CheckerAttrContext):
         return self.ignore_none
 
     def should_include_synthetic_methods(self) -> bool:
-        return True
+        return self.attr != "__call__"
 
     def bind_synthetic_instance_attribute(self, attr_name: str, value: Value) -> Value:
-        # Treat synthetic instance methods like bound methods so call and
-        # protocol checks use instance-call signatures even in fallback mode.
+        # Treat synthetic instance methods like bound methods in both expression
+        # and relation contexts, but leave dunder methods to specialized logic.
         if isinstance(value, CallableValue) and not (
             attr_name.startswith("__") and attr_name.endswith("__")
         ):
@@ -2975,9 +2975,19 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             if not effective_type_param_values and is_protocol_class:
                 # Runtime protocol classes often expose no generic parameters;
                 # recover class type parameters from protocol bases.
-                effective_type_param_values = (
-                    self._type_params_from_base_values_for_methods(base_values)
+                protocol_type_params = self._type_params_from_base_values_for_methods(
+                    base_values
                 )
+                if protocol_type_params and all(
+                    not (
+                        is_instance_of_typing_name(type_param.typevar, "ParamSpec")
+                        or is_instance_of_typing_name(
+                            type_param.typevar, "TypeVarTuple"
+                        )
+                    )
+                    for type_param in protocol_type_params
+                ):
+                    effective_type_param_values = protocol_type_params
             registered_type_param_values = self._align_type_params_with_runtime_class(
                 runtime_class_for_type_params, effective_type_param_values
             )
@@ -5898,14 +5908,22 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     def _type_params_from_base_values_for_methods(
         self, base_values: Sequence[Value]
     ) -> Sequence[TypeVarValue]:
-        type_params = list(self._type_params_from_base_values(base_values))
-        if type_params:
-            return type_params
+        type_params_from_bases = list(self._type_params_from_base_values(base_values))
+        if type_params_from_bases and all(
+            not (
+                is_instance_of_typing_name(type_param.typevar, "ParamSpec")
+                or is_instance_of_typing_name(type_param.typevar, "TypeVarTuple")
+            )
+            for type_param in type_params_from_bases
+        ):
+            return type_params_from_bases
         seen: set[object] = set()
-        for type_param in type_params:
+        type_params: list[TypeVarValue] = []
+        for type_param in type_params_from_bases:
             if type_param.typevar in seen:
                 continue
             seen.add(type_param.typevar)
+            type_params.append(type_param)
         for base in base_values:
             for subval in flatten_values(base):
                 runtime_annotation = self._runtime_annotation_from_value(subval)
