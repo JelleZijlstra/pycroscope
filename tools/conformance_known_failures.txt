@@ -45,6 +45,7 @@ generics_syntax_scoping
 generics_type_erasure
 generics_typevartuple_args
 generics_typevartuple_basic
+generics_typevartuple_callable
 generics_typevartuple_concat
 generics_typevartuple_specialization
 generics_typevartuple_unpack
