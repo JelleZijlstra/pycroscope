@@ -2935,6 +2935,21 @@ def _extract_var_positional_members(
             and len(inner.args) == 1
         ):
             return ((True, inner.args[0]),)
+    if (
+        isinstance(annotation, PartialValue)
+        and annotation.operation is PartialValueOperation.UNPACK
+    ):
+        inner = replace_known_sequence_value(annotation.root)
+        if isinstance(inner, SequenceValue) and inner.typ is tuple:
+            return inner.members
+        if isinstance(inner, TypeVarValue) and inner.is_typevartuple:
+            return ((True, inner),)
+        if (
+            isinstance(inner, GenericValue)
+            and inner.typ is tuple
+            and len(inner.args) == 1
+        ):
+            return ((True, inner.args[0]),)
     return None
 
 
