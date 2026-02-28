@@ -3,6 +3,8 @@
 ## Unreleased
 
 - Add initial PEP 681 `@dataclass_transform` support: classes transformed by marked decorators, base classes, or metaclasses now get dataclass-like constructor/frozen semantics in both normal analysis and static fallback mode when imports fail.
+- Honor standard `# type: ignore` comments (including top-of-file file-level ignores), so pycroscope now suppresses errors in the same places users expect from typing-spec directives.
+- Reduce false-positive `incompatible_override` errors for protocol-style method overrides by comparing callable signatures more consistently in override checks.
 - Improve `ParamSpec` handling by rejecting invalid annotation locations more consistently (including bare `ParamSpec` type aliases, `list[P]`, and `Callable[..., P]` return positions), and enforce assignment-target name matching for `TypeVar`, `TypeVarTuple`, `ParamSpec`, `NewType`, and functional `NamedTuple`/`TypedDict` declarations.
 - Improve protocol runtime-check checks: `issubclass()` now rejects `@runtime_checkable` data protocols, and `isinstance()`/`issubclass()` now report `incompatible_argument` for unsafe-overlap runtime-checkable protocol checks that could succeed at runtime despite incompatible member types.
 - Improve synthetic constructor-to-callable inference: pycroscope now synthesizes more accurate callable signatures for overloaded `__init__`/`__new__`, honors custom metaclass `__call__`, preserves local `namedtuple` constructor behavior, and handles dataclass constructor fallback (including class vars and import-failure subclasses) more accurately.

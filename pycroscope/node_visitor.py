@@ -57,6 +57,9 @@ FILE_ENVIRON_KEY = "ANS_STATIC_ANALYSIS_FILE"
 # If this comment occurs in a line with an error, or if the line before the error contains exactly
 # this comment, the error is ignored.
 IGNORE_COMMENT = "# static analysis: ignore"
+TYPE_IGNORE_COMMENT = "# type: ignore"
+_TYPE_IGNORE_INLINE_RE = re.compile(r"#\s*type:\s*ignore(?:\[[^\s\]]+\])?(?=\s|$)")
+_TYPE_IGNORE_FILE_LEVEL_RE = re.compile(r"#\s*type:\s*ignore(?:\[[^\s\]]+\])?")
 
 # Upper limit on the number of iterations when repeat_until_no_errors is enabled
 # to guard against infinite loop
@@ -280,6 +283,8 @@ class BaseNodeVisitor(ast.NodeVisitor):
     def _has_file_level_ignore(
         self, error_code: ErrorCodeInstance | None, ignore_comment: str
     ) -> bool:
+        if self._has_type_ignore_file_level():
+            return True
         # if the IGNORE_COMMENT occurs before any non-comment line, all errors in the file are
         # ignored
         for i, line in enumerate(self._lines()):
@@ -292,6 +297,20 @@ class BaseNodeVisitor(ast.NodeVisitor):
             ):
                 self.used_ignores.add(i)
                 return True
+        return False
+
+    def _has_type_ignore_file_level(self) -> bool:
+        """Whether there is a top-of-file '# type: ignore' comment."""
+        for i, line in enumerate(self._lines()):
+            stripped = line.strip()
+            if not stripped:
+                continue
+            if _TYPE_IGNORE_FILE_LEVEL_RE.fullmatch(stripped):
+                self.used_ignores.add(i)
+                return True
+            if stripped.startswith("#"):
+                continue
+            return False
         return False
 
     def get_unused_ignores(self) -> list[tuple[int, str]]:
@@ -714,6 +733,7 @@ class BaseNodeVisitor(ast.NodeVisitor):
                 re.search(f"{re.escape(ignore_comment)}(?!\\[)", this_line)
                 or error_code is not None
                 and f"{ignore_comment}[{error_code.name}]" in this_line
+                or _TYPE_IGNORE_INLINE_RE.search(this_line)
             ):
                 self.used_ignores.add(lineno - 1)
                 return

@@ -190,6 +190,8 @@ def run_pycroscope(tests_dir: Path) -> tuple[dict[str, dict[int, list[str]]], se
         "unused_assignment",
         "--enable",
         "invalid_literal",
+        "--enable",
+        "incompatible_override",
     ]
     proc = subprocess.run(
         command,
