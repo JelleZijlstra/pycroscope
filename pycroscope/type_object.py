@@ -65,7 +65,7 @@ class TypeObject:
     is_thrift_enum: bool = field(init=False)
     is_universally_assignable: bool = field(init=False)
     artificial_bases: set[type] = field(default_factory=set, init=False)
-    _protocol_positive_cache: dict[Value, BoundsMap] = field(
+    _protocol_positive_cache: dict[tuple[Value, Value], BoundsMap] = field(
         default_factory=dict, repr=False
     )
 
@@ -150,9 +150,14 @@ class TypeObject:
                 return CanAssignError(
                     f"Cannot assign super object {other_val} to protocol {self}"
                 )
-            use_cache = not isinstance(other_val, AnnotatedValue)
+            self_basic = replace_fallback(self_val)
+            use_cache = not isinstance(self_val, AnnotatedValue) and not isinstance(
+                other_val, AnnotatedValue
+            )
+            cache_key: tuple[Value, Value] | None = None
             if use_cache:
-                bounds_map = self._protocol_positive_cache.get(other_basic)
+                cache_key = (self_basic, other_basic)
+                bounds_map = self._protocol_positive_cache.get(cache_key)
                 if bounds_map is not None:
                     return bounds_map
             # This is a guard against infinite recursion if the Protocol is recursive
@@ -168,8 +173,12 @@ class TypeObject:
                         if not isinstance(subresult, CanAssignError):
                             result = subresult
                             break
-            if use_cache and not isinstance(result, CanAssignError):
-                self._protocol_positive_cache[other_basic] = result
+            if (
+                use_cache
+                and cache_key is not None
+                and not isinstance(result, CanAssignError)
+            ):
+                self._protocol_positive_cache[cache_key] = result
             return result
 
     def _is_callable_protocol_assignment_target(self, other: "TypeObject") -> bool:
@@ -268,6 +277,9 @@ class TypeObject:
                 expected = ctx.get_attribute_from_value(
                     self_val, member, prefer_typeshed=True
                 )
+                expected = _maybe_bind_dunder_protocol_member(
+                    expected, member, self_val, ctx
+                )
                 if expected is UNINITIALIZED_VALUE:
                     # In static fallback mode, synthetic protocol members may not have
                     # a retrievable attribute type. Keep enforcing member presence.
@@ -277,6 +289,9 @@ class TypeObject:
             else:
                 expected = ctx.get_attribute_from_value(
                     self_val, member, prefer_typeshed=True
+                )
+                expected = _maybe_bind_dunder_protocol_member(
+                    expected, member, self_val, ctx
                 )
                 if expected is UNINITIALIZED_VALUE:
                     # In static fallback mode, synthetic protocol members may not have
@@ -397,6 +412,21 @@ class TypeObject:
 def _maybe_bind_dunder_protocol_member(
     value: Value, member: str, self_value: Value, ctx: CanAssignContext
 ) -> Value:
+    def _has_self_parameter(sig: Signature | OverloadedSignature) -> bool:
+        def _first_parameter_name(signature: Signature) -> str | None:
+            return (
+                next(iter(signature.parameters.values())).name
+                if signature.parameters
+                else None
+            )
+
+        if isinstance(sig, Signature):
+            return _first_parameter_name(sig) in {"self", "cls"}
+        return all(
+            _first_parameter_name(subsig) in {"self", "cls"}
+            for subsig in sig.signatures
+        )
+
     if not (member.startswith("__") and member.endswith("__")):
         return value
     if value is UNINITIALIZED_VALUE:
@@ -410,9 +440,13 @@ def _maybe_bind_dunder_protocol_member(
     signature = unwrapped.signature
     if isinstance(signature, BoundMethodSignature):
         return value
+    if isinstance(
+        signature, (Signature, OverloadedSignature)
+    ) and not _has_self_parameter(signature):
+        return value
     if isinstance(signature, (Signature, OverloadedSignature)):
         bound = signature.bind_self(
-            self_value=self_value, self_annotation_value=self_value, ctx=ctx
+            self_value=self_value, self_annotation_value=None, ctx=ctx
         )
         if bound is not None:
             return CallableValue(bound, unwrapped.typ)

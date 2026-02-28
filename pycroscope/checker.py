@@ -1853,5 +1853,8 @@ class CheckerAttrContext(AttrContext):
     def get_synthetic_class(self, typ: type | str) -> SyntheticClassObjectValue | None:
         return self.checker.get_synthetic_class(typ)
 
+    def should_include_synthetic_methods(self) -> bool:
+        return True
+
     def bind_synthetic_instance_attribute(self, attr_name: str, value: Value) -> Value:
         return _normalize_synthetic_attribute(value)

@@ -247,7 +247,7 @@ class TestSyntheticType(TestNameCheckVisitorBase):
         class P0(Protocol):
             pass
 
-        P0()
+        P0()  # E: incompatible_call
 
         class HashableFloats(Iterable[float], Hashable, Protocol):
             pass
@@ -256,6 +256,69 @@ class TestSyntheticType(TestNameCheckVisitorBase):
             return 0.0
 
         cached_func((1, 2, 3))
+
+    @assert_passes(allow_import_failures=True)
+    def test_protocol_subtyping_after_import_failure(self):
+        from typing import Protocol, Sequence, TypeVar
+
+        class Proto1(Protocol):
+            pass
+
+        Proto1()  # E: incompatible_call
+
+        class Proto2(Protocol):
+            def method1(self) -> None: ...
+
+        class Concrete2:
+            def method1(self) -> None:
+                pass
+
+        def func1(p2: Proto2, c2: Concrete2) -> None:
+            v1: Proto2 = c2
+            v2: Concrete2 = p2  # E: incompatible_assignment
+            print(v1, v2)
+
+        class Proto3(Protocol):
+            def method1(self) -> None: ...
+
+            def method2(self) -> None: ...
+
+        def func2(p2: Proto2, p3: Proto3) -> None:
+            v1: Proto2 = p3
+            v2: Proto3 = p2  # E: incompatible_assignment
+            print(v1, v2)
+
+        S = TypeVar("S")
+        T = TypeVar("T")
+
+        class Proto4(Protocol[S, T]):
+            def method1(self, a: S, b: T) -> tuple[S, T]: ...
+
+        class Proto5(Protocol[T]):
+            def method1(self, a: T, b: T) -> tuple[T, T]: ...
+
+        def func3(p4_int: Proto4[int, int], p5_int: Proto5[int]) -> None:
+            v1: Proto4[int, int] = p5_int
+            v2: Proto5[int] = p4_int
+            v3: Proto4[int, float] = p5_int  # E: incompatible_assignment
+            v4: Proto5[float] = p4_int  # E: incompatible_assignment
+            print(v1, v2, v3, v4)
+
+        S_co = TypeVar("S_co", covariant=True)
+        T_contra = TypeVar("T_contra", contravariant=True)
+
+        class Proto6(Protocol[S_co, T_contra]):
+            def method1(self, a: T_contra) -> Sequence[S_co]: ...
+
+        class Proto7(Protocol[S_co, T_contra]):
+            def method1(self, a: T_contra) -> Sequence[S_co]: ...
+
+        def func4(p6: Proto6[float, float]) -> None:
+            v1: Proto7[object, int] = p6
+            v2: Proto7[float, float] = p6
+            v3: Proto7[int, float] = p6  # E: incompatible_assignment
+            v4: Proto7[float, object] = p6  # E: incompatible_assignment
+            print(v1, v2, v3, v4)
 
     @assert_passes()
     def test_custom_subclasscheck(self):
