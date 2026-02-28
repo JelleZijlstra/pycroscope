@@ -123,6 +123,7 @@ from .value import (
     Variance,
     annotate_value,
     get_typevar_variance,
+    replace_known_sequence_value,
     unite_values,
 )
 
@@ -916,7 +917,32 @@ def _callable_args_from_runtime(
                     "__P", kind=ParameterKind.PARAM_SPEC, annotation=param_spec
                 )
                 return [param]
-        types = [_type_from_runtime(arg, ctx) for arg in arg_types]
+        types: list[Value] = []
+        for arg in arg_types:
+            if _is_unpack_runtime_arg(arg):
+                expr = _annotation_expr_from_runtime(arg, ctx)
+                unpacked, qualifiers = expr.unqualify({Qualifier.Unpack})
+                if Qualifier.Unpack not in qualifiers:
+                    types.append(unpacked)
+                    continue
+                unpacked_members = _unpack_value(unpacked)
+                if unpacked_members is None:
+                    ctx.show_error(f"Invalid usage of Unpack with {unpacked}")
+                    types.append(AnyValue(AnySource.error))
+                    continue
+                for is_many, member in unpacked_members:
+                    if is_many:
+                        # Callable argument lists support unpacked TypeVarTuple
+                        # placeholders, but not generic unbounded tuples.
+                        if isinstance(member, TypeVarValue) and member.is_typevartuple:
+                            types.append(member)
+                        else:
+                            ctx.show_error(f"Invalid usage of Unpack with {unpacked}")
+                            types.append(AnyValue(AnySource.error))
+                    else:
+                        types.append(member)
+                continue
+            types.append(_type_from_runtime(arg, ctx))
         params = [
             SigParameter(
                 f"@{i}",
@@ -1830,6 +1856,8 @@ def _make_callable_from_value(
     args: Value, return_value: Value, ctx: Context, is_asynq: bool = False
 ) -> Value:
     return_annotation = _type_from_value(return_value, ctx)
+    if isinstance(args, KnownValue):
+        args = replace_known_sequence_value(args)
     if args == KnownValue(Ellipsis):
         return CallableValue(
             Signature.make(
@@ -1857,9 +1885,29 @@ def _make_callable_from_value(
                 "Ellipsis must be used directly in Callable[..., T], not in Callable[[...], T]"
             )
             return AnyValue(AnySource.error)
+        normalized_args: list[tuple[bool, Value]] = []
+        for is_many, arg in args.members:
+            if _is_unpack_annotation_member(arg):
+                expr = _annotation_expr_from_value(arg, ctx)
+                unpacked, qualifiers = expr.unqualify({Qualifier.Unpack})
+                if Qualifier.Unpack not in qualifiers:
+                    normalized_args.append((False, unpacked))
+                    continue
+                unpacked_members = _unpack_value(unpacked)
+                if unpacked_members is None:
+                    ctx.show_error(f"Invalid usage of Unpack with {unpacked}")
+                    normalized_args.append((False, AnyValue(AnySource.error)))
+                    continue
+                for unpacked_is_many, member in unpacked_members:
+                    if unpacked_is_many and isinstance(member, TypeVarValue):
+                        if member.is_typevartuple:
+                            normalized_args.append((False, member))
+                            continue
+                    normalized_args.append((unpacked_is_many, member))
+                continue
+            normalized_args.append((is_many, _type_from_value(arg, ctx)))
         params = []
-        for i, (is_many, arg) in enumerate(args.members):
-            annotation = _type_from_value(arg, ctx)
+        for i, (is_many, annotation) in enumerate(normalized_args):
             if is_many:
                 param = SigParameter(
                     f"@{i}",

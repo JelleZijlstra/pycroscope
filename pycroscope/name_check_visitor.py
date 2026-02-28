@@ -445,6 +445,29 @@ class _StarredValue(Value):
         self.node = node
 
 
+def _contains_unpack_annotation_value(value: Value) -> bool:
+    if isinstance(value, PartialValue):
+        return (
+            value.operation is PartialValueOperation.SUBSCRIPT
+            and isinstance(value.root, KnownValue)
+            and is_typing_name(value.root.val, "Unpack")
+        ) or any(_contains_unpack_annotation_value(member) for member in value.members)
+    if isinstance(value, SequenceValue):
+        return any(
+            _contains_unpack_annotation_value(member) for _, member in value.members
+        )
+    if isinstance(value, KnownValue):
+        origin = get_origin(value.val)
+        if is_typing_name(origin, "Unpack"):
+            return True
+        if isinstance(value.val, (tuple, list)):
+            return any(
+                _contains_unpack_annotation_value(KnownValue(member))
+                for member in value.val
+            )
+    return False
+
+
 @dataclass(init=False)
 class _AttrContext(CheckerAttrContext):
     visitor: "NameCheckVisitor"
@@ -9821,6 +9844,20 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
 
     def visit_Starred(self, node: ast.Starred) -> Value:
         val = self.visit(node.value)
+        if self.in_annotation:
+            unpack = getattr(typing, "Unpack", None)
+            if unpack is not None:
+                try:
+                    runtime_value: Value = TypedValue(type(unpack[int]))
+                except Exception:
+                    runtime_value = AnyValue(AnySource.inference)
+                return PartialValue(
+                    PartialValueOperation.SUBSCRIPT,
+                    KnownValue(unpack),
+                    node.value,
+                    (val,),
+                    runtime_value,
+                )
         return _StarredValue(val, node.value)
 
     def visit_arg(self, node: ast.arg) -> None:
