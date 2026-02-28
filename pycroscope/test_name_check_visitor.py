@@ -3212,6 +3212,32 @@ class TestAnnAssign(TestNameCheckVisitorBase):
             Box.identity(1).bit_length()
             Box.identity("x").upper()
 
+    @assert_passes(allow_import_failures=True)
+    def test_generic_alias_constructor_in_unimportable_module(self):
+        from typing import Generic, TypeVar, assert_type
+
+        import does_not_exist  # noqa: F401
+
+        T = TypeVar("T")
+
+        class Node(Generic[T]):
+            label: T
+
+            def __init__(self, label: T | None = None) -> None:
+                if label is not None:
+                    self.label = label
+
+        n1 = Node[int]()
+        n2 = Node[str]()
+        assert_type(n1, Node[int])
+        assert_type(n2, Node[str])
+        assert_type(Node[int]().label, int)
+
+        Node[int](0)
+        Node[int]("")  # E: incompatible_argument
+        Node[str]("")
+        Node[str](0)  # E: incompatible_argument
+
     @assert_passes()
     def test_protocol_override_keeps_compatible_self_type(self):
         from abc import abstractmethod
