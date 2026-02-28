@@ -290,11 +290,21 @@ def _has_relation(
             if isinstance(left, SubclassValue):
                 return CanAssignError(f"{right} is not {relation.description} {left}")
             return _has_relation(left, TypedValue(type), relation, ctx)
-        if isinstance(left, TypedValue) and left.get_type_object(
+        if isinstance(left, CallableValue):
+            signature = ctx.signature_from_value(right)
+            if signature is None:
+                return CanAssignError(f"{right} is not a callable type")
+            if isinstance(signature, pycroscope.signature.BoundMethodSignature):
+                signature = signature.get_signature(ctx=ctx)
+                if signature is None:
+                    return CanAssignError(f"{right} is not a callable type")
+            return _has_relation(left, CallableValue(signature), relation, ctx)
+        elif isinstance(left, TypedValue) and left.get_type_object(
             ctx
         ).is_assignable_to_type(type):
             return {}
-        return _has_relation(left, SubclassValue(right.class_type), relation, ctx)
+        else:
+            return _has_relation(left, SubclassValue(right.class_type), relation, ctx)
 
     # TypeVarValue
     if isinstance(left, TypeVarValue):

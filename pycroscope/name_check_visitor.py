@@ -1794,6 +1794,83 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                         synthetic_value = TypedValue(type(synthetic_value.val))
         synthetic_class.class_attributes[synthetic_name] = synthetic_value
 
+    def _record_synthetic_classvar_name(self, name: str) -> None:
+        if not isinstance(self.current_class, str):
+            return
+        synthetic_class = self._synthetic_classes_by_name.get(self.current_class)
+        if synthetic_class is None:
+            return
+        existing = synthetic_class.class_attributes.get("%classvars")
+        classvar_names: set[str] = set()
+        if isinstance(existing, KnownValue) and isinstance(
+            existing.val, (set, frozenset, tuple, list)
+        ):
+            classvar_names.update(
+                item for item in existing.val if isinstance(item, str)
+            )
+        classvar_names.add(name)
+        synthetic_class.class_attributes["%classvars"] = KnownValue(
+            frozenset(classvar_names)
+        )
+
+    def _record_synthetic_dataclass_field_metadata(
+        self, name: str, *, has_default: bool, init: bool
+    ) -> None:
+        if not isinstance(self.current_class, str):
+            return
+        synthetic_class = self._synthetic_classes_by_name.get(self.current_class)
+        if synthetic_class is None:
+            return
+
+        existing_order = synthetic_class.class_attributes.get("%dataclass_field_order")
+        field_order: list[str] = []
+        if isinstance(existing_order, KnownValue) and isinstance(
+            existing_order.val, (tuple, list)
+        ):
+            field_order = [item for item in existing_order.val if isinstance(item, str)]
+        if name not in field_order:
+            field_order.append(name)
+
+        existing_defaults = synthetic_class.class_attributes.get(
+            "%dataclass_default_fields"
+        )
+        default_fields: set[str] = set()
+        if isinstance(existing_defaults, KnownValue) and isinstance(
+            existing_defaults.val, (set, frozenset, tuple, list)
+        ):
+            default_fields.update(
+                item for item in existing_defaults.val if isinstance(item, str)
+            )
+        if has_default:
+            default_fields.add(name)
+        else:
+            default_fields.discard(name)
+
+        existing_init_false = synthetic_class.class_attributes.get(
+            "%dataclass_init_false_fields"
+        )
+        init_false_fields: set[str] = set()
+        if isinstance(existing_init_false, KnownValue) and isinstance(
+            existing_init_false.val, (set, frozenset, tuple, list)
+        ):
+            init_false_fields.update(
+                item for item in existing_init_false.val if isinstance(item, str)
+            )
+        if not init:
+            init_false_fields.add(name)
+        else:
+            init_false_fields.discard(name)
+
+        synthetic_class.class_attributes["%dataclass_field_order"] = KnownValue(
+            tuple(field_order)
+        )
+        synthetic_class.class_attributes["%dataclass_default_fields"] = KnownValue(
+            frozenset(default_fields)
+        )
+        synthetic_class.class_attributes["%dataclass_init_false_fields"] = KnownValue(
+            frozenset(init_false_fields)
+        )
+
     def _get_base_class_attributes(
         self, varname: str, node: ast.AST
     ) -> Iterable[tuple[type | str, Value]]:
@@ -2487,6 +2564,14 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     )
                     self.checker.register_synthetic_class(value)
             elif synthetic_class is not None:
+                metaclass_value = next(
+                    (
+                        value
+                        for keyword, value in keyword_values
+                        if keyword.arg == "metaclass"
+                    ),
+                    None,
+                )
                 if class_scope_values is None:
                     value = synthetic_class
                 else:
@@ -2500,6 +2585,8 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     # references captured during class analysis (including bases
                     # of later synthetic classes) see the enriched attributes.
                     synthetic_class.class_attributes.update(class_attributes)
+                    if isinstance(metaclass_value, Value):
+                        synthetic_class.class_attributes["%metaclass"] = metaclass_value
                     synthetic_class.method_attributes.clear()
                     synthetic_class.method_attributes.update(
                         self._get_synthetic_method_attributes(node)
@@ -2509,6 +2596,8 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     )
                     self.checker.register_synthetic_class(synthetic_class)
                     value = synthetic_class
+                if isinstance(metaclass_value, Value):
+                    synthetic_class.class_attributes["%metaclass"] = metaclass_value
                 if synthetic_fq_name is not None:
                     self._synthetic_classes_by_name[synthetic_fq_name] = synthetic_class
         value_to_store: Value | None = value
@@ -8269,7 +8358,33 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         # TODO: handle TypeAlias and ClassVar
         is_final = Qualifier.Final in qualifiers
         has_classvar = Qualifier.ClassVar in qualifiers
+        if has_classvar and isinstance(node.target, ast.Name):
+            self._record_synthetic_classvar_name(node.target.id)
         is_current_class_dataclass = self._is_current_class_dataclass()
+        if (
+            is_current_class_dataclass
+            and isinstance(node.target, ast.Name)
+            and not has_classvar
+        ):
+            has_default = node.value is not None
+            init = True
+            if isinstance(node.value, ast.Call) and self._is_dataclass_field_call(
+                node.value
+            ):
+                has_default = any(
+                    kw.arg in {"default", "default_factory"}
+                    for kw in node.value.keywords
+                )
+                init_keyword = next(
+                    (kw.value for kw in node.value.keywords if kw.arg == "init"), None
+                )
+                if isinstance(init_keyword, ast.Constant) and isinstance(
+                    init_keyword.value, bool
+                ):
+                    init = init_keyword.value
+            self._record_synthetic_dataclass_field_metadata(
+                node.target.id, has_default=has_default, init=init
+            )
         if (
             has_classvar
             and is_final
