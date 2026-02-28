@@ -1920,6 +1920,48 @@ class TestRequired(TestNameCheckVisitorBase):
                 x: ClassVar[Final[int]] = 1  # E: invalid_annotation
                 y: Final[ClassVar[int]] = 1  # E: invalid_annotation
 
+    @assert_passes()
+    def test_classvar_invalid_locations_and_type_params(self):
+        from typing import (
+            Any,
+            Callable,
+            ClassVar,
+            Generic,
+            ParamSpec,
+            TypeAlias,
+            TypeVar,
+            cast,
+        )
+
+        T = TypeVar("T")
+        P = ParamSpec("P")
+
+        class C(Generic[T, P]):
+            bad_t: ClassVar[T] = cast(Any, 0)
+            bad_nested: ClassVar[list[T]] = cast(Any, 0)
+            bad_paramspec: ClassVar[Callable[P, Any]] = cast(Any, 0)
+
+            def method(self) -> None:
+                local: ClassVar[int] = 0  # E: invalid_annotation
+                print(local)
+                self.attr: ClassVar[int] = 0  # E: invalid_annotation
+
+        outside: ClassVar[int] = 0  # E: invalid_annotation
+        Alias: TypeAlias = ClassVar[str]  # E: invalid_annotation
+
+    @assert_passes(settings={ErrorCode.classvar_type_parameters: True})
+    def test_classvar_type_parameters_check_enabled(self):
+        from typing import Any, Callable, ClassVar, Generic, ParamSpec, TypeVar, cast
+
+        T = TypeVar("T")
+        P = ParamSpec("P")
+
+        class C(Generic[T, P]):
+            bad_t: ClassVar[T] = cast(Any, 0)  # E: classvar_type_parameters
+            bad_nested: ClassVar[list[T]] = cast(Any, 0)  # E: classvar_type_parameters
+            # E: classvar_type_parameters
+            bad_paramspec: ClassVar[Callable[P, Any]] = cast(Any, 0)
+
 
 class TestParamSpec(TestNameCheckVisitorBase):
     @assert_passes()

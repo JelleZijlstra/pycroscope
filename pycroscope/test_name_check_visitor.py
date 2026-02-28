@@ -716,6 +716,57 @@ class TestImportFailureHandlingCodeSamples(TestNameCheckVisitorBase):
             pass
 
     @assert_passes()
+    def test_dataclass_hashability(self):
+        from dataclasses import dataclass
+        from typing import Hashable
+
+        @dataclass
+        class Unhashable:
+            value: int
+
+        @dataclass(frozen=True)
+        class Frozen:
+            value: int
+
+        @dataclass(eq=False)
+        class NoEq:
+            value: int
+
+        @dataclass(unsafe_hash=True)
+        class UnsafeHash:
+            value: int
+
+        @dataclass
+        class ExplicitHash:
+            value: int
+
+            def __hash__(self) -> int:
+                return 0
+
+        @dataclass(eq=False)
+        class ExplicitlyUnhashable:
+            value: int
+            __hash__ = None
+
+        bad_unhashable: Hashable = Unhashable(1)  # E: incompatible_assignment
+        ok_frozen: Hashable = Frozen(1)
+        ok_no_eq: Hashable = NoEq(1)
+        ok_unsafe_hash: Hashable = UnsafeHash(1)
+        ok_explicit_hash: Hashable = ExplicitHash(1)
+        # E: incompatible_assignment
+        bad_explicit_none: Hashable = ExplicitlyUnhashable(1)
+
+    @assert_passes()
+    def test_hashability_respects_hash_none_for_typed_values(self):
+        from typing import Hashable
+
+        class Unhashable:
+            __hash__ = None
+
+        obj: Unhashable = Unhashable()
+        bad: Hashable = obj  # E: incompatible_assignment
+
+    @assert_passes()
     def test_dataclass_kw_only_marker_is_allowed(self):
         from dataclasses import KW_ONLY, dataclass
 
@@ -867,6 +918,24 @@ class TestImportFailureHandlingCodeSamples(TestNameCheckVisitorBase):
 
         c = C()
         c.x = 2  # E: incompatible_assignment
+
+    @assert_passes()
+    def test_classvar_attribute_assignment_on_instance(self):
+        from typing import ClassVar
+
+        class C:
+            x: ClassVar[int] = 1
+
+        class D(C):
+            pass
+
+        c = C()
+        c.x = 2  # E: incompatible_assignment
+        C.x = 3
+
+        d = D()
+        d.x = 4  # E: incompatible_assignment
+        D.x = 5
 
     @assert_passes()
     def test_namedtuple_attribute_is_immutable(self):

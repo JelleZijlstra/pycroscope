@@ -600,3 +600,80 @@ class TestDataclassTransform(TestNameCheckVisitorBase):
             ordered1 = Ordered(id=1)
             ordered2 = Ordered(id=2)
             ordered1 < ordered2
+
+    @assert_passes()
+    def test_dataclass_transform_hash_semantics(self):
+        from dataclasses import dataclass
+        from typing import Hashable
+
+        from typing_extensions import dataclass_transform
+
+        @dataclass_transform(eq_default=True, frozen_default=False)
+        class Base:
+            def __init_subclass__(
+                cls, *, eq: bool = True, frozen: bool = False, unsafe_hash: bool = False
+            ) -> None:
+                dataclass(cls, eq=eq, frozen=frozen, unsafe_hash=unsafe_hash)
+
+        class Unhashable(Base):
+            value: int
+
+        class Frozen(Base, frozen=True):
+            value: int
+
+        class NoEq(Base, eq=False):
+            value: int
+
+        class UnsafeHash(Base, unsafe_hash=True):
+            value: int
+
+        class ExplicitHash(Base):
+            value: int
+
+            def __hash__(self) -> int:
+                return 0
+
+        bad_unhashable: Hashable = Unhashable(value=1)  # E: incompatible_assignment
+        ok_frozen: Hashable = Frozen(value=1)
+        ok_no_eq: Hashable = NoEq(value=1)
+        ok_unsafe_hash: Hashable = UnsafeHash(value=1)
+        ok_explicit_hash: Hashable = ExplicitHash(value=1)
+
+    @assert_passes(allow_import_failures=True)
+    def test_dataclass_transform_hash_semantics_after_import_failure(self):
+        boom = 1 / 0
+
+        from typing import Hashable
+
+        from typing_extensions import dataclass_transform
+
+        @dataclass_transform(eq_default=True, frozen_default=False)
+        class Base:
+            def __init_subclass__(
+                cls, *, eq: bool = True, frozen: bool = False, unsafe_hash: bool = False
+            ) -> None:
+                pass
+
+        class Unhashable(Base):
+            value: int
+
+        class Frozen(Base, frozen=True):
+            value: int
+
+        class NoEq(Base, eq=False):
+            value: int
+
+        class UnsafeHash(Base, unsafe_hash=True):
+            value: int
+
+        class ExplicitHash(Base):
+            value: int
+
+            def __hash__(self) -> int:
+                return 0
+
+        bad_unhashable: Hashable = Unhashable(value=1)  # E: incompatible_assignment
+        ok_frozen: Hashable = Frozen(value=1)
+        ok_no_eq: Hashable = NoEq(value=1)
+        ok_unsafe_hash: Hashable = UnsafeHash(value=1)
+        ok_explicit_hash: Hashable = ExplicitHash(value=1)

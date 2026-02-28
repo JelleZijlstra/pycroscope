@@ -192,6 +192,8 @@ def run_pycroscope(tests_dir: Path) -> tuple[dict[str, dict[int, list[str]]], se
         "invalid_literal",
         "--enable",
         "incompatible_override",
+        "--enable",
+        "classvar_type_parameters",
     ]
     proc = subprocess.run(
         command,

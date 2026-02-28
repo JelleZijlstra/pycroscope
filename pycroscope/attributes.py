@@ -707,6 +707,31 @@ def _get_attribute_from_typed(
         return KnownValue(typ)
     elif ctx.attr == "__dict__":
         return TypedValue(dict)
+    elif ctx.attr == "__hash__":
+        synthetic_class = ctx.get_synthetic_class(typ)
+        if synthetic_class is not None:
+            synthetic_hash = _get_direct_attribute_from_synthetic_class(
+                synthetic_class, "__hash__"
+            )
+            if synthetic_hash is not UNINITIALIZED_VALUE:
+                return set_self(synthetic_hash, ctx.root_value)
+        # Preserve explicit __hash__ = None from runtime classes. The generic
+        # class-attribute unwrapping path widens None to Any, which hides
+        # unhashable types in assignability checks.
+        try:
+            mro = list(type.mro(typ))
+        except Exception:
+            mro = []
+        for base_cls in mro:
+            try:
+                base_dict = base_cls.__dict__
+            except Exception:
+                continue
+            if "__hash__" not in base_dict:
+                continue
+            if base_dict["__hash__"] is None:
+                return set_self(KnownValue(None), ctx.root_value)
+            break
 
     result, provider, should_unwrap = _get_attribute_from_mro(typ, ctx, on_class=False)
     result = _substitute_typevars(typ, generic_args, result, provider, ctx)

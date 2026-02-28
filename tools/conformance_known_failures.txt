@@ -11,12 +11,10 @@ annotations_generators
 annotations_typeexpr
 callables_annotation
 callables_protocol
-classes_classvar
 constructors_call_init
 constructors_call_metaclass
 constructors_call_new
 dataclasses_descriptors
-dataclasses_hash
 dataclasses_inheritance
 dataclasses_match_args
 dataclasses_slots
