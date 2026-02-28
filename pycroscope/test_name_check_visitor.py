@@ -800,6 +800,65 @@ class TestImportFailureHandlingCodeSamples(TestNameCheckVisitorBase):
         WithInitFalse(a=1, b=2)  # E: incompatible_call
 
     @assert_passes()
+    def test_dataclass_post_init_initvar_semantics(self):
+        from dataclasses import InitVar, dataclass, field
+
+        @dataclass
+        class DC1:
+            a: int
+            b: int
+            x: InitVar[int]
+            c: int
+            y: InitVar[str]
+
+            def __post_init__(self, x: int, y: int) -> None:  # E: incompatible_override
+                pass
+
+        def f(dc1: DC1) -> None:
+            dc1.x  # E: undefined_attribute
+            dc1.y  # E: undefined_attribute
+
+        @dataclass
+        class DC2:
+            x: InitVar[int]
+            y: InitVar[str]
+
+            def __post_init__(self, x: int) -> None:  # E: incompatible_override
+                pass
+
+        @dataclass
+        class DC3:
+            _name: InitVar[str] = field()
+            name: str = field(init=False)
+
+            def __post_init__(self, _name: str): ...
+
+        @dataclass
+        class DC4(DC3):
+            _age: InitVar[int] = field()
+            age: int = field(init=False)
+
+            def __post_init__(self, _name: str, _age: int): ...
+
+    @assert_passes(allow_import_failures=True)
+    def test_dataclass_post_init_initvar_semantics_after_import_failure(self):
+        boom = 1 / 0
+
+        from dataclasses import InitVar, dataclass
+
+        @dataclass
+        class DC:
+            x: InitVar[int]
+            y: InitVar[str]
+
+            def __post_init__(self, x: int) -> None:  # E: incompatible_override
+                pass
+
+        def f(dc: DC) -> None:
+            dc.x  # E: undefined_attribute
+            dc.y  # E: undefined_attribute
+
+    @assert_passes()
     def test_final_attribute_assignment_on_instance(self):
         from typing import Final
 

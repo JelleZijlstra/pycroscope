@@ -149,6 +149,7 @@ from .signature import (
     KWARGS,
     BoundMethodSignature,
     ConcreteSignature,
+    InvalidSignature,
     MaybeSignature,
     OverloadedSignature,
     ParameterKind,
@@ -1887,6 +1888,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         *,
         has_default: bool,
         init: bool,
+        initvar: bool,
         kw_only: bool,
         alias: str | None,
     ) -> None:
@@ -1933,6 +1935,21 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         else:
             init_false_fields.discard(name)
 
+        existing_initvar = synthetic_class.class_attributes.get(
+            "%dataclass_initvar_fields"
+        )
+        initvar_fields: set[str] = set()
+        if isinstance(existing_initvar, KnownValue) and isinstance(
+            existing_initvar.val, (set, frozenset, tuple, list)
+        ):
+            initvar_fields.update(
+                item for item in existing_initvar.val if isinstance(item, str)
+            )
+        if initvar:
+            initvar_fields.add(name)
+        else:
+            initvar_fields.discard(name)
+
         existing_kw_only = synthetic_class.class_attributes.get(
             "%dataclass_kw_only_fields"
         )
@@ -1975,6 +1992,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         )
         synthetic_class.class_attributes["%dataclass_init_false_fields"] = KnownValue(
             frozenset(init_false_fields)
+        )
+        synthetic_class.class_attributes["%dataclass_initvar_fields"] = KnownValue(
+            frozenset(initvar_fields)
         )
         synthetic_class.class_attributes["%dataclass_kw_only_fields"] = KnownValue(
             frozenset(kw_only_fields)
@@ -2119,6 +2139,10 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         self, varname: str, node: ast.AST, value: Value
     ) -> None:
         if self.current_class is None:
+            return
+        if self._is_current_class_dataclass() and varname == "__post_init__":
+            # Dataclasses synthesize the expected __post_init__ contract from InitVar
+            # fields, so generic override rules are too strict here.
             return
         if varname in self.options.get_value_for(IgnoredForIncompatibleOverride):
             return
@@ -2580,6 +2604,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             synthetic_fq_name: str | None = None
             class_scope_object: type | str | None = class_obj
             dataclass_metadata_class: SyntheticClassObjectValue | None = None
+            dataclass_check_class: SyntheticClassObjectValue | None = None
             if synthetic_typeddict is not None:
                 self._validate_typeddict_class_syntax(node)
             elif class_obj is None:
@@ -2869,6 +2894,8 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     )
                     self.checker.register_synthetic_class(synthetic_class)
                     value = synthetic_class
+                if dataclass_semantics.is_dataclass:
+                    dataclass_check_class = synthetic_class
                 if isinstance(metaclass_value, Value):
                     synthetic_class.class_attributes["%metaclass"] = metaclass_value
                 if synthetic_fq_name is not None:
@@ -2893,6 +2920,14 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     self._get_synthetic_method_attributes(node)
                 )
                 self.checker.register_synthetic_class(dataclass_metadata_class)
+                if dataclass_semantics.is_dataclass:
+                    dataclass_check_class = dataclass_metadata_class
+            if (
+                self._is_checking()
+                and dataclass_semantics.is_dataclass
+                and dataclass_check_class is not None
+            ):
+                self._check_dataclass_post_init_signature(node, dataclass_check_class)
         value_to_store: Value | None = value
         if (
             class_obj is None
@@ -4737,6 +4772,52 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 node, message, error_code=ErrorCode.invalid_base
             )
             return
+
+    @staticmethod
+    def _get_dataclass_post_init_node(
+        node: ast.ClassDef,
+    ) -> ast.FunctionDef | ast.AsyncFunctionDef | None:
+        for stmt in node.body:
+            if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                if stmt.name == "__post_init__":
+                    return stmt
+        return None
+
+    def _check_dataclass_post_init_signature(
+        self, node: ast.ClassDef, dataclass_class: SyntheticClassObjectValue
+    ) -> None:
+        post_init_node = self._get_dataclass_post_init_node(node)
+        if post_init_node is None:
+            return
+        post_init_value = dataclass_class.class_attributes.get("__post_init__")
+        if post_init_value is None:
+            return
+        post_init_params = self.checker.get_synthetic_dataclass_post_init_parameters(
+            dataclass_class
+        )
+        expected_params = [
+            SigParameter(
+                "self",
+                ParameterKind.POSITIONAL_OR_KEYWORD,
+                annotation=AnyValue(AnySource.inference),
+            ),
+            *post_init_params,
+        ]
+        try:
+            expected_signature = Signature.make(
+                expected_params, AnyValue(AnySource.inference)
+            )
+        except InvalidSignature:
+            return
+        expected_value = CallableValue(expected_signature)
+        can_assign = self._can_assign_to_base_callable(expected_value, post_init_value)
+        if isinstance(can_assign, CanAssignError):
+            self._show_error_if_checking(
+                post_init_node,
+                "Dataclass __post_init__ is incompatible with InitVar fields",
+                error_code=ErrorCode.incompatible_override,
+                detail=can_assign.display(),
+            )
 
     @staticmethod
     def _compose_variance_polarity(polarity: int, variance: Variance) -> int:
@@ -9466,6 +9547,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 node.target.id,
                 has_default=has_default,
                 init=init,
+                initvar=Qualifier.InitVar in qualifiers,
                 kw_only=kw_only,
                 alias=alias,
             )
@@ -10730,14 +10812,16 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             if isinstance(root_type, type) and not _has_only_known_attributes(
                 self.checker.ts_finder, root_type
             ):
-                return self._maybe_get_attr_value(root_type, attr)
+                if not self._is_dataclass_initvar_attribute(root_type, attr):
+                    return self._maybe_get_attr_value(root_type, attr)
         elif isinstance(root_value, SubclassValue):
             if isinstance(root_value.typ, TypedValue):
                 root_type = root_value.typ.typ
                 if isinstance(root_type, type) and not _has_only_known_attributes(
                     self.checker.ts_finder, root_type
                 ):
-                    return self._maybe_get_attr_value(root_type, attr)
+                    if not self._is_dataclass_initvar_attribute(root_type, attr):
+                        return self._maybe_get_attr_value(root_type, attr)
             else:
                 return AnyValue(AnySource.inference)
         elif isinstance(root_value, MultiValuedValue):
@@ -11467,6 +11551,31 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             return self.attribute_checker.get_attribute_value(typ, attr_name)
         else:
             return AnyValue(AnySource.inference)
+
+    def _is_dataclass_initvar_attribute(self, typ: type, attr_name: str) -> bool:
+        synthetic = self.checker.get_synthetic_class(typ)
+        if synthetic is not None:
+            initvar_names = synthetic.class_attributes.get("%dataclass_initvar_fields")
+            if isinstance(initvar_names, KnownValue) and isinstance(
+                initvar_names.val, (set, frozenset, tuple, list)
+            ):
+                if attr_name in initvar_names.val:
+                    return True
+        try:
+            annotations = typ.__annotations__
+        except Exception:
+            return False
+        annotation = annotations.get(attr_name)
+        if annotation is None:
+            return False
+        if annotation is dataclasses.InitVar:
+            return True
+        origin = get_origin(annotation)
+        if origin is dataclasses.InitVar:
+            return True
+        if isinstance(annotation, str):
+            return "InitVar" in annotation
+        return False
 
     # Finding unused objects
 

@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Improve dataclass `InitVar` handling: `__post_init__` signatures are now validated against `InitVar` fields (including inherited fields), and `InitVar` members are now correctly rejected as instance attributes, fixing conformance for `dataclasses_postinit.py`.
 - Align `@dataclass_transform` metaclass inheritance with the typing spec: classes that directly specify a transform-decorated metaclass are now treated as neither frozen nor non-frozen, which fixes conformance behavior for `dataclasses_transform_meta.py`.
 - Replace internal starred-expression handling with `PartialValue` `UNPACK` operations, removing `_StarredValue` and making partial unpack evaluation consistent across annotations and runtime expression analysis.
 - Enforce type-variable variance compatibility in class inheritance through generic aliases, so invalid bases like `Base[T_co]` and aliased equivalents now report `invalid_annotation`.

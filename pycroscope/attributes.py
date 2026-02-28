@@ -491,6 +491,8 @@ def _get_direct_attribute_from_synthetic_class(
         mangled = _maybe_mangle_private_name(selected_name, self_value.name)
         if mangled is not None and mangled in self_value.class_attributes:
             selected_name = mangled
+    if _is_synthetic_initvar_attribute(self_value, selected_name):
+        return UNINITIALIZED_VALUE
     if selected_name not in self_value.class_attributes:
         return UNINITIALIZED_VALUE
     result = _normalize_synthetic_class_attribute(
@@ -510,6 +512,17 @@ def _is_synthetic_method_attribute(
         if mangled is not None:
             selected_name = mangled
     return selected_name in self_value.method_attributes
+
+
+def _is_synthetic_initvar_attribute(
+    self_value: SyntheticClassObjectValue, attr_name: str
+) -> bool:
+    initvar_fields = self_value.class_attributes.get("%dataclass_initvar_fields")
+    if not isinstance(initvar_fields, KnownValue) or not isinstance(
+        initvar_fields.val, (set, frozenset, tuple, list)
+    ):
+        return False
+    return attr_name in initvar_fields.val
 
 
 def _normalize_synthetic_class_attribute(value: Value) -> Value:
@@ -860,7 +873,11 @@ def _get_triple_from_annotations(
         annotations, ctx.attr, ctx=AnnotationsContext(ctx, typ)
     )
     if attr_expr is not None:
-        attr_type, _ = attr_expr.maybe_unqualify({Qualifier.ClassVar, Qualifier.Final})
+        attr_type, qualifiers = attr_expr.maybe_unqualify(
+            {Qualifier.ClassVar, Qualifier.Final, Qualifier.InitVar}
+        )
+        if Qualifier.InitVar in qualifiers:
+            return None
         if attr_type is not None:
             return (attr_type, typ, False)
     return None

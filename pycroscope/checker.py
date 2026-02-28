@@ -99,6 +99,13 @@ class AdditionalBaseProviders(PyObjectSequenceOption[_BaseProvider]):
     name = "additional_base_providers"
 
 
+@dataclass(frozen=True)
+class _DataclassFieldEntry:
+    field_name: str
+    parameter: SigParameter
+    is_initvar: bool
+
+
 @dataclass
 class Checker:
     raw_options: InitVar[Options | None] = None
@@ -1097,6 +1104,50 @@ class Checker:
         include_inherited: bool = True,
         seen: set[int] | None = None,
     ) -> list[SigParameter]:
+        entries = self._get_synthetic_dataclass_field_entries(
+            value, include_inherited=include_inherited, seen=seen
+        )
+        params: list[SigParameter] = []
+        by_name: dict[str, SigParameter] = {}
+        for entry in entries:
+            param = entry.parameter
+            if param.name in by_name:
+                params = [
+                    existing for existing in params if existing.name != param.name
+                ]
+            params.append(param)
+            by_name[param.name] = param
+        # Dataclass constructors place non-kw-only parameters before kw-only ones,
+        # regardless of field declaration order.
+        positional_params = [
+            param for param in params if param.kind is not ParameterKind.KEYWORD_ONLY
+        ]
+        kw_only_params = [
+            param for param in params if param.kind is ParameterKind.KEYWORD_ONLY
+        ]
+        return [*positional_params, *kw_only_params]
+
+    def get_synthetic_dataclass_post_init_parameters(
+        self, value: SyntheticClassObjectValue
+    ) -> list[SigParameter]:
+        entries = self._get_synthetic_dataclass_field_entries(
+            value, include_inherited=True, seen=None
+        )
+        return [
+            dataclass_replace(
+                entry.parameter, kind=ParameterKind.POSITIONAL_OR_KEYWORD, default=None
+            )
+            for entry in entries
+            if entry.is_initvar
+        ]
+
+    def _get_synthetic_dataclass_field_entries(
+        self,
+        value: SyntheticClassObjectValue,
+        *,
+        include_inherited: bool,
+        seen: set[int] | None,
+    ) -> list[_DataclassFieldEntry]:
         if seen is None:
             seen = set()
         value_id = id(value)
@@ -1104,18 +1155,16 @@ class Checker:
             return []
         seen.add(value_id)
 
-        params: list[SigParameter] = []
+        entries_by_field: dict[str, _DataclassFieldEntry] = {}
+        field_order: list[str] = []
         if include_inherited:
-            inherited_by_name: dict[str, SigParameter] = {}
-            inherited_order: list[str] = []
             for base in value.base_classes:
-                for inherited in self._iter_synthetic_dataclass_base_field_parameters(
+                for inherited in self._iter_synthetic_dataclass_base_field_entries(
                     base, seen=seen
                 ):
-                    if inherited.name not in inherited_by_name:
-                        inherited_order.append(inherited.name)
-                    inherited_by_name[inherited.name] = inherited
-            params.extend(inherited_by_name[name] for name in inherited_order)
+                    if inherited.field_name not in entries_by_field:
+                        field_order.append(inherited.field_name)
+                    entries_by_field[inherited.field_name] = inherited
 
         classvar_names: set[str] = set()
         classvars = value.class_attributes.get("%classvars")
@@ -1141,6 +1190,14 @@ class Checker:
             init_false_fields.update(
                 name for name in init_false_names.val if isinstance(name, str)
             )
+        initvar_fields: set[str] = set()
+        initvar_names = value.class_attributes.get("%dataclass_initvar_fields")
+        if isinstance(initvar_names, KnownValue) and isinstance(
+            initvar_names.val, (set, frozenset, tuple, list)
+        ):
+            initvar_fields.update(
+                name for name in initvar_names.val if isinstance(name, str)
+            )
         kw_only_fields: set[str] = set()
         kw_only_names = value.class_attributes.get("%dataclass_kw_only_fields")
         if isinstance(kw_only_names, KnownValue) and isinstance(
@@ -1161,27 +1218,26 @@ class Checker:
         order = value.class_attributes.get("%dataclass_field_order")
         if isinstance(order, KnownValue) and isinstance(order.val, (tuple, list)):
             ordered_fields = [name for name in order.val if isinstance(name, str)]
-
-        field_names: list[str]
-        if ordered_fields:
-            field_names = ordered_fields
-        else:
-            field_names = [
+        field_names = (
+            ordered_fields
+            if ordered_fields
+            else [
                 name
                 for name in value.class_attributes
                 if not name.startswith("%") and not _is_dunder(name)
             ]
+        )
 
-        by_name = {param.name: param for param in params}
         for name in field_names:
             attr = value.class_attributes.get(name, UNINITIALIZED_VALUE)
-            if attr is UNINITIALIZED_VALUE:
-                continue
-            if name in value.method_attributes:
-                continue
-            if name in classvar_names:
-                continue
-            if name in init_false_fields:
+            excluded = (
+                attr is UNINITIALIZED_VALUE
+                or name in value.method_attributes
+                or name in classvar_names
+                or name in init_false_fields
+            )
+            if excluded:
+                entries_by_field.pop(name, None)
                 continue
             param_name = aliases.get(name, name)
             if isinstance(attr, KnownValue):
@@ -1190,35 +1246,29 @@ class Checker:
             else:
                 annotation = attr
                 default = KnownValue(...) if name in default_fields else None
-            param = SigParameter(
-                param_name,
-                (
-                    ParameterKind.KEYWORD_ONLY
-                    if name in kw_only_fields
-                    else ParameterKind.POSITIONAL_OR_KEYWORD
+            if name not in field_order:
+                field_order.append(name)
+            entries_by_field[name] = _DataclassFieldEntry(
+                field_name=name,
+                parameter=SigParameter(
+                    param_name,
+                    (
+                        ParameterKind.KEYWORD_ONLY
+                        if name in kw_only_fields
+                        else ParameterKind.POSITIONAL_OR_KEYWORD
+                    ),
+                    default=default,
+                    annotation=annotation,
                 ),
-                default=default,
-                annotation=annotation,
+                is_initvar=name in initvar_fields,
             )
-            if param_name in by_name:
-                params = [
-                    existing for existing in params if existing.name != param_name
-                ]
-            params.append(param)
-            by_name[param_name] = param
-        # Dataclass constructors place non-kw-only parameters before kw-only ones,
-        # regardless of field declaration order.
-        positional_params = [
-            param for param in params if param.kind is not ParameterKind.KEYWORD_ONLY
+        return [
+            entries_by_field[name] for name in field_order if name in entries_by_field
         ]
-        kw_only_params = [
-            param for param in params if param.kind is ParameterKind.KEYWORD_ONLY
-        ]
-        return [*positional_params, *kw_only_params]
 
-    def _iter_synthetic_dataclass_base_field_parameters(
+    def _iter_synthetic_dataclass_base_field_entries(
         self, base: Value, *, seen: set[int]
-    ) -> list[SigParameter]:
+    ) -> list[_DataclassFieldEntry]:
         base = replace_fallback(base)
         synthetic_base: SyntheticClassObjectValue | None = None
         if isinstance(base, SyntheticClassObjectValue):
@@ -1233,9 +1283,19 @@ class Checker:
             synthetic_base = self.get_synthetic_class(base.val)
         if synthetic_base is None or not synthetic_base.is_dataclass:
             return []
-        return self._get_synthetic_dataclass_field_parameters(
+        return self._get_synthetic_dataclass_field_entries(
             synthetic_base, include_inherited=True, seen=seen
         )
+
+    def _iter_synthetic_dataclass_base_field_parameters(
+        self, base: Value, *, seen: set[int]
+    ) -> list[SigParameter]:
+        return [
+            entry.parameter
+            for entry in self._iter_synthetic_dataclass_base_field_entries(
+                base, seen=seen
+            )
+        ]
 
     def _augment_dataclass_constructor_signature_with_local_fields(
         self, init_sig: ConcreteSignature, value: SyntheticClassObjectValue
@@ -1538,12 +1598,20 @@ class Checker:
     def _make_synthetic_class_instance_value(
         self, value: SyntheticClassObjectValue
     ) -> Value:
+        initvar_fields: set[str] = set()
+        initvar_names = value.class_attributes.get("%dataclass_initvar_fields")
+        if isinstance(initvar_names, KnownValue) and isinstance(
+            initvar_names.val, (set, frozenset, tuple, list)
+        ):
+            initvar_fields.update(
+                name for name in initvar_names.val if isinstance(name, str)
+            )
         metadata = [
             HasAttrExtension(
                 KnownValue(name), self._make_any_base_attribute(name, attr)
             )
             for name, attr in value.class_attributes.items()
-            if not name.startswith("%")
+            if not name.startswith("%") and name not in initvar_fields
         ]
         if self._synthetic_class_has_any_base(value):
             instance: Value = AnyValue(AnySource.from_another)
