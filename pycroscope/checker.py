@@ -17,7 +17,7 @@ from dataclasses import replace as dataclass_replace
 from typing import TypeVar
 
 from .analysis_lib import override
-from .annotations import type_from_runtime
+from .annotations import type_from_runtime, type_from_value
 from .arg_spec import ArgSpecCache, GenericBases
 from .attributes import AttrContext, get_attribute
 from .extensions import get_overloads as get_runtime_overloads
@@ -58,6 +58,8 @@ from .value import (
     KnownValue,
     KnownValueWithTypeVars,
     MultiValuedValue,
+    PartialValue,
+    PartialValueOperation,
     SubclassValue,
     SyntheticClassObjectValue,
     TypeAlias,
@@ -1363,6 +1365,14 @@ class Checker:
     ) -> MaybeSignature:
         if value is UNINITIALIZED_VALUE:
             return None
+        if isinstance(value, PartialValue):
+            sig = self._signature_from_partial_subscript(
+                value,
+                get_return_override=get_return_override,
+                get_call_attribute=get_call_attribute,
+            )
+            if sig is not None:
+                return sig
         value = replace_fallback(value)
         if isinstance(value, KnownValue):
             origin = safe_getattr(value.val, "__origin__", None)
@@ -1591,6 +1601,71 @@ class Checker:
                 return None
         else:
             return None
+
+    def _signature_from_partial_subscript(
+        self,
+        value: PartialValue,
+        *,
+        get_return_override: Callable[[MaybeSignature], Value | None],
+        get_call_attribute: Callable[[Value], Value] | None,
+    ) -> MaybeSignature:
+        if value.operation is not PartialValueOperation.SUBSCRIPT:
+            return None
+        if not value.members:
+            return None
+        root = replace_fallback(value.root)
+        class_type: type | str | None = None
+        synthetic_root: SyntheticClassObjectValue | None = None
+        if isinstance(root, KnownValue) and isinstance(root.val, type):
+            class_type = root.val
+            origin_argspec = self.arg_spec_cache.get_argspec(root.val)
+        elif isinstance(root, SyntheticClassObjectValue):
+            synthetic_root = root
+            if isinstance(root.class_type, TypedValue) and isinstance(
+                root.class_type.typ, (type, str)
+            ):
+                class_type = root.class_type.typ
+            origin_argspec = self.signature_from_value(
+                root,
+                get_return_override=get_return_override,
+                get_call_attribute=get_call_attribute,
+            )
+        elif isinstance(root, TypedValue) and isinstance(root.typ, str):
+            class_type = root.typ
+            synthetic_class = self.get_synthetic_class(root.typ)
+            if synthetic_class is None:
+                return None
+            origin_argspec = self.signature_from_value(
+                synthetic_class,
+                get_return_override=get_return_override,
+                get_call_attribute=get_call_attribute,
+            )
+        elif isinstance(root, TypedValue) and isinstance(root.typ, type):
+            class_type = root.typ
+            origin_argspec = self.arg_spec_cache.get_argspec(root.typ)
+        else:
+            return None
+        if origin_argspec is None:
+            return None
+        if class_type is None:
+            return origin_argspec
+        type_params = self.arg_spec_cache.get_type_parameters(class_type)
+        if not type_params and synthetic_root is not None:
+            type_params = list(
+                self._infer_synthetic_type_params_from_methods(synthetic_root)
+            )
+        if not type_params:
+            return origin_argspec
+        typevar_map = {}
+        for param, member in zip(type_params, value.members):
+            if not isinstance(param, TypeVarValue):
+                continue
+            typevar_map[param.typevar] = type_from_value(
+                member, self, value.node, suppress_errors=True
+            )
+        if not typevar_map:
+            return origin_argspec
+        return origin_argspec.substitute_typevars(typevar_map)
 
     def _synthetic_class_has_any_base(self, value: SyntheticClassObjectValue) -> bool:
         return any(has_any_base_value(base) for base in value.base_classes)

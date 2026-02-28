@@ -620,6 +620,33 @@ class TestGenericClasses(TestNameCheckVisitorBase):
                 C(s)  # E: incompatible_argument
         """)
 
+    @assert_passes()
+    def test_legacy_generic_alias_constructor_call_preserves_type_args(self):
+        from typing import Generic, TypeVar
+
+        from typing_extensions import assert_type
+
+        T = TypeVar("T")
+
+        class Node(Generic[T]):
+            label: T
+
+            def __init__(self, label: T | None = None) -> None:
+                if label is not None:
+                    self.label = label
+
+        def capybara() -> None:
+            n1 = Node[int]()
+            n2 = Node[str]()
+            assert_type(n1, Node[int])
+            assert_type(n2, Node[str])
+            assert_type(Node[int]().label, int)
+
+            Node[int](0)
+            Node[int]("")  # E: incompatible_argument
+            Node[str]("")
+            Node[str](0)  # E: incompatible_argument
+
     @skip_before((3, 12))
     def test_infer_variance_from_member_annotations(self):
         self.assert_passes("""
