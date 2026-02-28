@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Fix callable protocol compatibility for `__call__` signatures in import-failure fallback mode (including `*args: Any, **kwargs: Any` ellipsis-style tails and `Concatenate[..., ...]` interop), improving conformance for `callables_annotation.py`.
 - Improve static fallback analysis for unimportable modules by resolving synthetic class instance methods from synthetic bases in expression contexts, reducing false `undefined_attribute`/`inference_failure` cascades for cases like `Self`-typed methods.
 - Improve static fallback analysis for unimportable modules by making synthetic `@classmethod` attributes callable and preserving `Self` return specialization (for example inferring `Circle` from `Circle.from_config(...)`).
 - Improve `ClassVar` conformance checks: pycroscope now rejects `ClassVar` outside class-body attribute declarations (including type aliases), reports errors for assignments to class variables through instances, and adds a new `classvar_type_parameters` error code (disabled by default) for rejecting `ClassVar` type parameters (`TypeVar`/`ParamSpec`); conformance CI now enables this stricter check.
