@@ -78,6 +78,7 @@ from .annotations import (
     annotation_expr_from_ast,
     annotation_expr_from_runtime,
     annotation_expr_from_value,
+    has_invalid_paramspec_usage,
     is_context_manager_type,
     is_instance_of_typing_name,
     is_typing_name,
@@ -291,6 +292,15 @@ AwaitableValue = GenericValue(collections.abc.Awaitable, [TypeVarValue(T)])
 KnownNone = KnownValue(None)
 ExceptionValue = TypedValue(BaseException) | SubclassValue(TypedValue(BaseException))
 ExceptionOrNone = ExceptionValue | KnownNone
+
+_TYPING_CONSTRUCTS_WITH_NAME_ARG: dict[str, str] = {
+    "TypeVar": "name",
+    "TypeVarTuple": "name",
+    "ParamSpec": "name",
+    "NewType": "name",
+    "NamedTuple": "typename",
+    "TypedDict": "typename",
+}
 
 
 def _is_known_none_annotation(value: Value) -> bool:
@@ -8236,6 +8246,27 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 Qualifier.InitVar,
             }
             expected_type, qualifiers = expr.maybe_unqualify(qualifiers)
+        if Qualifier.TypeAlias in qualifiers and node.value is not None:
+            alias_expr = annotation_expr_from_ast(
+                node.value, self, suppress_errors=self._is_collecting()
+            )
+            alias_type, _ = alias_expr.maybe_unqualify(set(Qualifier))
+            if isinstance(alias_type, InputSigValue):
+                if isinstance(alias_type.input_sig, ParamSpecSig):
+                    message = "ParamSpec cannot be used in this annotation context"
+                else:
+                    message = f"Unrecognized annotation {alias_type}"
+                self._show_error_if_checking(
+                    node.value, message, error_code=ErrorCode.invalid_annotation
+                )
+            elif alias_type is not None and has_invalid_paramspec_usage(
+                alias_type, self
+            ):
+                self._show_error_if_checking(
+                    node.value,
+                    "ParamSpec cannot be used in this annotation context",
+                    error_code=ErrorCode.invalid_annotation,
+                )
         if self.current_synthetic_typeddict is not None and isinstance(
             node.target, ast.Name
         ):
@@ -8264,6 +8295,15 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     f"Unrecognized annotation {expected_type}",
                     error_code=ErrorCode.invalid_annotation,
                 )
+            expected_type = AnyValue(AnySource.error)
+        elif expected_type is not None and has_invalid_paramspec_usage(
+            expected_type, self
+        ):
+            self._show_error_if_checking(
+                node.annotation,
+                "ParamSpec cannot be used in this annotation context",
+                error_code=ErrorCode.invalid_annotation,
+            )
             expected_type = AnyValue(AnySource.error)
 
         # TODO: handle TypeAlias and ClassVar
@@ -9783,6 +9823,82 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             variance=variance,
         )
 
+    def _call_assignment_target_name(self, node: ast.AST | None) -> str | None:
+        if not isinstance(node, ast.Call):
+            return None
+        parent = self.node_context.nth_parent(2)
+        if (
+            isinstance(parent, ast.Assign)
+            and parent.value is node
+            and len(parent.targets) == 1
+        ):
+            target = parent.targets[0]
+            if isinstance(target, ast.Name):
+                return target.id
+        if (
+            isinstance(parent, ast.AnnAssign)
+            and parent.value is node
+            and isinstance(parent.target, ast.Name)
+        ):
+            return parent.target.id
+        return None
+
+    def _maybe_get_name_arg_in_call(
+        self,
+        args: Sequence[Composite],
+        keywords: Sequence[tuple[str | None, Composite]],
+        keyword_name: str,
+    ) -> tuple[str, ast.AST | None] | None:
+        if args:
+            positional_name = replace_fallback(args[0].value)
+            if isinstance(positional_name, KnownValue) and isinstance(
+                positional_name.val, str
+            ):
+                return positional_name.val, args[0].node
+        for keyword, composite in keywords:
+            if keyword != keyword_name:
+                continue
+            keyword_value = replace_fallback(composite.value)
+            if isinstance(keyword_value, KnownValue) and isinstance(
+                keyword_value.val, str
+            ):
+                return keyword_value.val, composite.node
+            break
+        return None
+
+    def _check_assignment_target_name_match(
+        self,
+        node: ast.AST | None,
+        callee: Value,
+        args: Sequence[Composite],
+        keywords: Sequence[tuple[str | None, Composite]],
+    ) -> None:
+        if not isinstance(callee, KnownValue):
+            return
+        assigned_name = self._call_assignment_target_name(node)
+        if assigned_name is None:
+            return
+        for construct_name, name_keyword in _TYPING_CONSTRUCTS_WITH_NAME_ARG.items():
+            if not is_typing_name(callee.val, construct_name):
+                continue
+            maybe_name_arg = self._maybe_get_name_arg_in_call(
+                args, keywords, name_keyword
+            )
+            if maybe_name_arg is None:
+                return
+            name_arg_value, name_arg_node = maybe_name_arg
+            if name_arg_value != assigned_name:
+                error_node = name_arg_node if name_arg_node is not None else node
+                if error_node is None:
+                    return
+                self._show_error_if_checking(
+                    error_node,
+                    f"{construct_name} name argument must match the assignment target"
+                    " name",
+                    error_code=ErrorCode.incompatible_call,
+                )
+            return
+
     def check_call(
         self,
         node: ast.AST | None,
@@ -9829,6 +9945,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         *,
         allow_call: bool = False,
     ) -> Value:
+        args = tuple(args)
         keywords = tuple(keywords)
         if isinstance(callee_wrapped, KnownValue) and any(
             callee_wrapped.val is ignored
@@ -9838,6 +9955,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             return AnyValue(AnySource.error)
 
         self._check_invalid_typevar_bound(callee_wrapped, keywords, node=node)
+        self._check_assignment_target_name_match(node, callee_wrapped, args, keywords)
 
         if (
             isinstance(callee_wrapped, SyntheticClassObjectValue)

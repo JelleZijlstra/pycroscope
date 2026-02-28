@@ -768,6 +768,66 @@ def _is_paramspec_type_param(type_param: TypeVarLike | TypeVarValue) -> bool:
     return is_instance_of_typing_name(type_param, "ParamSpec")
 
 
+def _is_paramspec_annotation(value: Value) -> bool:
+    return isinstance(value, InputSigValue) and isinstance(
+        value.input_sig, ParamSpecSig
+    )
+
+
+def _type_param_value_allows_paramspec(type_param: Value) -> bool:
+    if isinstance(type_param, InputSigValue):
+        return isinstance(type_param.input_sig, ParamSpecSig)
+    if isinstance(type_param, TypeVarValue):
+        return is_instance_of_typing_name(type_param.typevar, "ParamSpec")
+    return False
+
+
+def has_invalid_paramspec_usage(
+    value: Value, can_assign_ctx: CanAssignContext | None
+) -> bool:
+    if _is_paramspec_annotation(value):
+        return True
+    if isinstance(value, AnnotatedValue):
+        return has_invalid_paramspec_usage(value.value, can_assign_ctx)
+    if isinstance(value, MultiValuedValue):
+        return any(
+            has_invalid_paramspec_usage(subval, can_assign_ctx) for subval in value.vals
+        )
+    if isinstance(value, TypeAliasValue):
+        return any(
+            has_invalid_paramspec_usage(type_arg, can_assign_ctx)
+            for type_arg in value.type_arguments
+        )
+    if isinstance(value, CallableValue):
+        signature = value.signature
+        if not isinstance(signature, Signature):
+            return False
+        if has_invalid_paramspec_usage(signature.return_value, can_assign_ctx):
+            return True
+        for param in signature.parameters.values():
+            annotation = param.annotation
+            if _is_paramspec_annotation(annotation):
+                if param.kind is not ParameterKind.PARAM_SPEC:
+                    return True
+            elif has_invalid_paramspec_usage(annotation, can_assign_ctx):
+                return True
+        return False
+    if isinstance(value, GenericValue):
+        type_params: Sequence[Value] = ()
+        if can_assign_ctx is not None:
+            type_params = can_assign_ctx.get_type_parameters(value.typ)
+        for i, arg in enumerate(value.args):
+            if _is_paramspec_annotation(arg):
+                if i >= len(type_params) or not _type_param_value_allows_paramspec(
+                    type_params[i]
+                ):
+                    return True
+            elif has_invalid_paramspec_usage(arg, can_assign_ctx):
+                return True
+        return False
+    return False
+
+
 def _type_from_runtime_type_alias_arg(
     arg: object, type_param: TypeVarLike | TypeVarValue, ctx: Context
 ) -> Value:

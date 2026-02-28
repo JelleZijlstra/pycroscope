@@ -1909,6 +1909,43 @@ class TestNewType(TestNameCheckVisitorBase):
         BadNewType7 = NewType("BadNewType7", Any)  # E: incompatible_call
 
 
+class TestTypingConstructNameMatching(TestNameCheckVisitorBase):
+    @assert_passes()
+    def test_assignment_target_name_mismatch(self):
+        from typing import NamedTuple, NewType, TypedDict, TypeVar
+
+        from typing_extensions import ParamSpec, TypeVarTuple
+
+        GoodTypeVar = TypeVar("GoodTypeVar")
+        BadTypeVar = TypeVar("WrongTypeVar")  # E: incompatible_call
+        GoodTypeVarTuple = TypeVarTuple("GoodTypeVarTuple")
+        BadTypeVarTuple = TypeVarTuple("WrongTypeVarTuple")  # E: incompatible_call
+        GoodParamSpec = ParamSpec("GoodParamSpec")
+        BadParamSpec = ParamSpec("WrongParamSpec")  # E: incompatible_call
+        GoodNewType = NewType("GoodNewType", int)
+        BadNewType = NewType("WrongNewType", int)  # E: incompatible_call
+        GoodNamedTuple = NamedTuple("GoodNamedTuple", [("x", int)])
+        BadNamedTuple = NamedTuple(
+            "WrongNamedTuple", [("x", int)]  # E: incompatible_call
+        )
+        GoodTypedDict = TypedDict("GoodTypedDict", {"x": int})
+        BadTypedDict = TypedDict("WrongTypedDict", {"x": int})  # E: incompatible_call
+        print(
+            GoodTypeVar,
+            BadTypeVar,
+            GoodTypeVarTuple,
+            BadTypeVarTuple,
+            GoodParamSpec,
+            BadParamSpec,
+            GoodNewType,
+            BadNewType,
+            GoodNamedTuple,
+            BadNamedTuple,
+            GoodTypedDict,
+            BadTypedDict,
+        )
+
+
 class TestImports(TestNameCheckVisitorBase):
     def test_star_import(self):
         self.assert_passes("""
