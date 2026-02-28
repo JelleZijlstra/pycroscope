@@ -155,7 +155,6 @@ from .signature import (
     ParameterKind,
     Signature,
     SigParameter,
-    make_bound_method,
 )
 from .stacked_scopes import (
     EMPTY_ORIGIN,
@@ -511,25 +510,40 @@ class _AttrContext(CheckerAttrContext):
         return self.ignore_none
 
     def should_include_synthetic_methods(self) -> bool:
-        return self.node is not None
+        return self.attr != "__call__"
 
     def bind_synthetic_instance_attribute(self, attr_name: str, value: Value) -> Value:
-        # In expression contexts (node is not None), treat synthetic instance
-        # methods like bound methods so calls on synthetic classes work even if
-        # module import failed. In relation-only contexts keep method signatures
-        # unbound to preserve protocol compatibility checks.
-        if (
-            self.node is not None
-            and isinstance(value, CallableValue)
-            and not (attr_name.startswith("__") and attr_name.endswith("__"))
+        # Treat synthetic instance methods like bound methods in both expression
+        # and relation contexts, but leave dunder methods to specialized logic.
+        if isinstance(value, CallableValue) and not (
+            attr_name.startswith("__") and attr_name.endswith("__")
         ):
-            maybe_bound = make_bound_method(
-                value.signature, self.root_composite, ctx=self.checker
+            bound_signature = value.signature.bind_self(
+                self_annotation_value=None,
+                self_value=self.root_composite.value,
+                ctx=self.checker,
             )
-            if maybe_bound is not None:
-                signature = maybe_bound.get_signature(ctx=self.checker)
-                if signature is not None:
-                    return CallableValue(signature)
+            if bound_signature is not None:
+                root_value = replace_fallback(self.root_composite.value)
+                synthetic_typ: str | None = None
+                generic_args: Sequence[Value] = ()
+                if isinstance(root_value, GenericValue) and isinstance(
+                    root_value.typ, str
+                ):
+                    synthetic_typ = root_value.typ
+                    generic_args = root_value.args
+                elif isinstance(root_value, TypedValue) and isinstance(
+                    root_value.typ, str
+                ):
+                    synthetic_typ = root_value.typ
+                if synthetic_typ is not None:
+                    generic_bases = self.checker.get_generic_bases(
+                        synthetic_typ, generic_args
+                    )
+                    declared = generic_bases.get(synthetic_typ, {})
+                    if declared:
+                        bound_signature = bound_signature.substitute_typevars(declared)
+                return CallableValue(bound_signature)
         return super().bind_synthetic_instance_attribute(attr_name, value)
 
 
@@ -2952,11 +2966,28 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             runtime_class_for_type_params = (
                 class_scope_object if isinstance(class_scope_object, type) else None
             )
+            is_protocol_class = self._is_protocol_class(base_values, class_scope_object)
             effective_type_param_values = (
                 type_param_values
                 if type_param_values
                 else self._type_params_from_base_values(base_values)
             )
+            if not effective_type_param_values and is_protocol_class:
+                # Runtime protocol classes often expose no generic parameters;
+                # recover class type parameters from protocol bases.
+                protocol_type_params = self._type_params_from_base_values_for_methods(
+                    base_values
+                )
+                if protocol_type_params and all(
+                    not (
+                        is_instance_of_typing_name(type_param.typevar, "ParamSpec")
+                        or is_instance_of_typing_name(
+                            type_param.typevar, "TypeVarTuple"
+                        )
+                    )
+                    for type_param in protocol_type_params
+                ):
+                    effective_type_param_values = protocol_type_params
             registered_type_param_values = self._align_type_params_with_runtime_class(
                 runtime_class_for_type_params, effective_type_param_values
             )
@@ -5877,9 +5908,18 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     def _type_params_from_base_values_for_methods(
         self, base_values: Sequence[Value]
     ) -> Sequence[TypeVarValue]:
+        type_params_from_bases = list(self._type_params_from_base_values(base_values))
+        if type_params_from_bases and all(
+            not (
+                is_instance_of_typing_name(type_param.typevar, "ParamSpec")
+                or is_instance_of_typing_name(type_param.typevar, "TypeVarTuple")
+            )
+            for type_param in type_params_from_bases
+        ):
+            return type_params_from_bases
         seen: set[object] = set()
         type_params: list[TypeVarValue] = []
-        for type_param in self._type_params_from_base_values(base_values):
+        for type_param in type_params_from_bases:
             if type_param.typevar in seen:
                 continue
             seen.add(type_param.typevar)
@@ -5897,7 +5937,11 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     if runtime_arg in seen:
                         continue
                     seen.add(runtime_arg)
-                    type_params.append(TypeVarValue(runtime_arg))
+                    type_params.append(
+                        TypeVarValue(
+                            runtime_arg, variance=get_typevar_variance(runtime_arg)
+                        )
+                    )
         return type_params
 
     def _check_protocol_base_validity(
@@ -12045,6 +12089,19 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         self.add_constraint(node, constraint)
         return val
 
+    def _get_instantiable_protocol_class_name(self, value: Value) -> str | None:
+        value = replace_fallback(value)
+        if isinstance(value, KnownValue) and isinstance(value.val, type):
+            if self.checker.make_type_object(value.val).is_protocol:
+                return value.val.__name__
+            return None
+        if isinstance(value, SyntheticClassObjectValue) and isinstance(
+            value.class_type, TypedValue
+        ):
+            if self.checker.make_type_object(value.class_type.typ).is_protocol:
+                return value.name
+        return None
+
     def _check_call_no_mvv(
         self,
         node: ast.AST | None,
@@ -12065,6 +12122,16 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
 
         self._check_invalid_typevar_bound(callee_wrapped, keywords, node=node)
         self._check_assignment_target_name_match(node, callee_wrapped, args, keywords)
+
+        protocol_class_name = self._get_instantiable_protocol_class_name(callee_wrapped)
+        if protocol_class_name is not None:
+            if node is not None:
+                self._show_error_if_checking(
+                    node,
+                    f"Cannot instantiate protocol class {protocol_class_name}",
+                    error_code=ErrorCode.incompatible_call,
+                )
+            return AnyValue(AnySource.error)
 
         if (
             isinstance(callee_wrapped, SyntheticClassObjectValue)

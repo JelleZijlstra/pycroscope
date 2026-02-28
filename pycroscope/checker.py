@@ -1853,5 +1853,10 @@ class CheckerAttrContext(AttrContext):
     def get_synthetic_class(self, typ: type | str) -> SyntheticClassObjectValue | None:
         return self.checker.get_synthetic_class(typ)
 
+    def should_include_synthetic_methods(self) -> bool:
+        # __call__ has dedicated protocol handling in type_object; exposing
+        # synthetic method values here can double-bind callable signatures.
+        return self.attr != "__call__"
+
     def bind_synthetic_instance_attribute(self, attr_name: str, value: Value) -> Value:
         return _normalize_synthetic_attribute(value)
