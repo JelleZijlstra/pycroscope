@@ -3130,6 +3130,41 @@ class TestAnnAssign(TestNameCheckVisitorBase):
             assert_type(child.f(), Child)
             assert_type(int_box.set_value(1), Box[int])
 
+    @assert_passes(allow_import_failures=True)
+    def test_self_classmethod_in_unimportable_module(self):
+        from typing import Self, assert_type
+
+        import does_not_exist  # noqa: F401
+
+        class Shape:
+            @classmethod
+            def from_config(cls, config: dict[str, float]) -> Self:
+                return cls()
+
+        class Circle(Shape):
+            pass
+
+        def capybara():
+            assert_type(Shape.from_config({}), Shape)
+            assert_type(Circle.from_config({}), Circle)
+
+    @assert_passes(allow_import_failures=True)
+    def test_typevar_classmethod_in_unimportable_module(self):
+        from typing import TypeVar
+
+        import does_not_exist  # noqa: F401
+
+        T = TypeVar("T")
+
+        class Box:
+            @classmethod
+            def identity(cls, value: T) -> T:
+                return value
+
+        def capybara():
+            Box.identity(1).bit_length()
+            Box.identity("x").upper()
+
     @assert_passes()
     def test_protocol_override_keeps_compatible_self_type(self):
         from abc import abstractmethod

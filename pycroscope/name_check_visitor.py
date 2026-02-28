@@ -1275,6 +1275,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     _function_decorator_kinds_by_node: dict[
         ast.FunctionDef | ast.AsyncFunctionDef, frozenset[FunctionDecorator]
     ]
+    _function_returns_self_by_node: dict[ast.FunctionDef | ast.AsyncFunctionDef, bool]
     _type_alias_first_definition_by_scope: dict[int, dict[str, ast.AST]]
     _type_alias_unguarded_refs_by_scope: dict[int, dict[str, set[str]]]
     _method_cache: dict[type[ast.AST], Callable[[Any], Value | None]]
@@ -1447,6 +1448,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         self._synthetic_abstract_methods = {}
         self._synthetic_final_methods = {}
         self._function_decorator_kinds_by_node = {}
+        self._function_returns_self_by_node = {}
         self._type_alias_first_definition_by_scope = {}
         self._type_alias_unguarded_refs_by_scope = {}
         self._method_cache = {}
@@ -3029,11 +3031,20 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                         for name, value in class_scope_values.items()
                         if not name.startswith("%")
                     }
+                    self_returning_classmethods = (
+                        self._get_synthetic_self_returning_classmethods(node)
+                    )
                     # Keep the prebound synthetic class object and fill in the
                     # discovered class attributes on that same object so
                     # references captured during class analysis (including bases
                     # of later synthetic classes) see the enriched attributes.
                     synthetic_class.class_attributes.update(class_attributes)
+                    if self_returning_classmethods:
+                        synthetic_class.class_attributes["%self_classmethods"] = (
+                            KnownValue(frozenset(self_returning_classmethods))
+                        )
+                    else:
+                        synthetic_class.class_attributes.pop("%self_classmethods", None)
                     if isinstance(metaclass_value, Value):
                         synthetic_class.class_attributes["%metaclass"] = metaclass_value
                     synthetic_class.method_attributes.clear()
@@ -3064,7 +3075,18 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     for name, value in class_scope_values.items()
                     if not name.startswith("%")
                 }
+                self_returning_classmethods = (
+                    self._get_synthetic_self_returning_classmethods(node)
+                )
                 dataclass_metadata_class.class_attributes.update(class_attributes)
+                if self_returning_classmethods:
+                    dataclass_metadata_class.class_attributes["%self_classmethods"] = (
+                        KnownValue(frozenset(self_returning_classmethods))
+                    )
+                else:
+                    dataclass_metadata_class.class_attributes.pop(
+                        "%self_classmethods", None
+                    )
                 if isinstance(metaclass_value, Value):
                     dataclass_metadata_class.class_attributes["%metaclass"] = (
                         metaclass_value
@@ -5649,6 +5671,52 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 )
         return method_attributes
 
+    @staticmethod
+    def _return_annotation_contains_self(return_annotation: Value | None) -> bool:
+        if return_annotation is None:
+            return False
+        for subvalue in return_annotation.walk_values():
+            if isinstance(subvalue, TypeVarValue) and subvalue.typevar is SelfT:
+                return True
+        return False
+
+    def _return_annotation_node_contains_self(self, annotation: ast.AST | None) -> bool:
+        if annotation is None:
+            return False
+        if isinstance(annotation, ast.Name):
+            return annotation.id == "Self"
+        if isinstance(annotation, ast.Attribute):
+            return annotation.attr == "Self"
+        if isinstance(annotation, ast.Constant) and isinstance(annotation.value, str):
+            try:
+                parsed = ast.parse(annotation.value, mode="eval")
+            except SyntaxError:
+                return False
+            return self._return_annotation_node_contains_self(parsed.body)
+        return any(
+            self._return_annotation_node_contains_self(child)
+            for child in ast.iter_child_nodes(annotation)
+        )
+
+    def _get_synthetic_self_returning_classmethods(
+        self, node: ast.ClassDef
+    ) -> set[str]:
+        self_returning_classmethods = set()
+        for stmt in node.body:
+            if not isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            decorator_kinds = self._function_decorator_kinds_by_node.get(
+                stmt, frozenset()
+            )
+            if FunctionDecorator.classmethod not in decorator_kinds:
+                continue
+            if not self._function_returns_self_by_node.get(stmt, False):
+                continue
+            self_returning_classmethods.add(
+                self._mangle_class_attribute_name(node.name, stmt.name)
+            )
+        return self_returning_classmethods
+
     def _current_class_name_from_context(self) -> str | None:
         for context in reversed(self.node_context.contexts):
             if isinstance(context, ast.ClassDef):
@@ -6038,6 +6106,15 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             potential_function=potential_function,
         ) as info:
             self._function_decorator_kinds_by_node[node] = info.decorator_kinds
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                contains_self_return = self._return_annotation_contains_self(
+                    info.return_annotation
+                )
+                if not contains_self_return:
+                    contains_self_return = self._return_annotation_node_contains_self(
+                        node.returns
+                    )
+                self._function_returns_self_by_node[node] = contains_self_return
             self.yield_checker.reset_yield_checks()
 
             if FunctionDecorator.final in info.decorator_kinds:

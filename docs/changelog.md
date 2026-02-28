@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Improve static fallback analysis for unimportable modules by resolving synthetic class instance methods from synthetic bases in expression contexts, reducing false `undefined_attribute`/`inference_failure` cascades for cases like `Self`-typed methods.
+- Improve static fallback analysis for unimportable modules by making synthetic `@classmethod` attributes callable and preserving `Self` return specialization (for example inferring `Circle` from `Circle.from_config(...)`).
 - Improve `ClassVar` conformance checks: pycroscope now rejects `ClassVar` outside class-body attribute declarations (including type aliases), reports errors for assignments to class variables through instances, and adds a new `classvar_type_parameters` error code (disabled by default) for rejecting `ClassVar` type parameters (`TypeVar`/`ParamSpec`); conformance CI now enables this stricter check.
 - Improve static fallback analysis for unimportable modules by resolving synthetic class instance methods from synthetic bases in expression contexts, reducing false `undefined_attribute`/`inference_failure` cascades for cases like `Self`-typed methods.
 - Fix dataclass hashability inference (including `@dataclass_transform` classes): mutable `eq=True` classes are now treated as unhashable unless `unsafe_hash=True` or an explicit `__hash__` is provided, in both normal analysis and import-failure fallback mode.
