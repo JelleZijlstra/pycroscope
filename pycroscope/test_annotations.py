@@ -1959,9 +1959,8 @@ class TestRequired(TestNameCheckVisitorBase):
         class C(Generic[T, P]):
             bad_t: ClassVar[T] = cast(Any, 0)  # E: classvar_type_parameters
             bad_nested: ClassVar[list[T]] = cast(Any, 0)  # E: classvar_type_parameters
-            bad_paramspec: ClassVar[Callable[P, Any]] = cast(
-                Any, 0
-            )  # E: classvar_type_parameters
+            # E: classvar_type_parameters
+            bad_paramspec: ClassVar[Callable[P, Any]] = cast(Any, 0)
 
 
 class TestParamSpec(TestNameCheckVisitorBase):
