@@ -517,6 +517,16 @@ class TestAnnotations(TestNameCheckVisitorBase):
             assert isinstance(val, AnyValue), annotation
 
     @assert_passes()
+    def test_runtime_initvar_requires_single_argument(self):
+        from dataclasses import InitVar, dataclass
+
+        BadInitVar = InitVar[int, str]
+
+        @dataclass
+        class C:
+            x: BadInitVar  # E: invalid_annotation
+
+    @assert_passes()
     def test_forward_ref_errors_keep_annotation_lineno(self):
         def invalid_annotations(
             p1: "[int, str]",  # E: invalid_annotation
@@ -886,6 +896,19 @@ class TestCallable(TestNameCheckVisitorBase):
             _v3: Callable[[], [int]]  # E: invalid_annotation
             _v4: Callable[int, int, int]  # E: invalid_annotation
             _v5: Callable[[...], int]  # E: invalid_annotation
+
+    @assert_passes()
+    def test_runtime_callable_requires_two_arguments(self):
+        from typing import Callable
+
+        class FakeMalformedCallable:
+            __origin__ = Callable
+            __args__ = (int,)
+
+        BadCallable = FakeMalformedCallable()
+
+        def f(x: BadCallable) -> None:  # E: invalid_annotation
+            pass
 
     @assert_passes()
     def test_abc_callable(self):
@@ -1881,6 +1904,25 @@ class TestRequired(TestNameCheckVisitorBase):
                 d: NotRequired[NotRequired[int]]  # E: invalid_annotation
                 e: ReadOnly[ReadOnly[int]]  # E: invalid_annotation
                 f: ClassVar[int]  # E: invalid_annotation
+
+    @assert_passes()
+    def test_invalid_qualifier_arity(self):
+        from dataclasses import InitVar
+        from typing import TYPE_CHECKING, ClassVar, TypedDict
+
+        from typing_extensions import Final, NotRequired, ReadOnly, Required
+
+        if TYPE_CHECKING:
+
+            class TD(TypedDict):
+                req: Required[int, str]  # E: invalid_annotation
+                notreq: NotRequired[int, str]  # E: invalid_annotation
+                readonly: ReadOnly[int, str]  # E: invalid_annotation
+
+            class C:
+                x: ClassVar[int, str] = 1  # E: invalid_annotation
+                y: Final[int, str] = 1  # E: invalid_annotation
+                z: InitVar[int, str]  # E: invalid_annotation
 
     @assert_passes()
     def test_duplicate_final_non_typeddict(self):

@@ -525,6 +525,9 @@ def _annotation_expr_from_runtime(val: object, ctx: Context) -> AnnotationExpr:
     elif is_typing_name(val, "TypeAlias"):
         return AnnotationExpr(ctx, None, [(Qualifier.TypeAlias, None)])
     elif isinstance(val, InitVar):
+        if isinstance(val.type, tuple):
+            ctx.show_error("InitVar[] requires a single argument")
+            return AnnotationExpr(ctx, AnyValue(AnySource.error))
         return AnnotationExpr(
             ctx, _type_from_runtime(val.type, ctx), [(Qualifier.InitVar, None)]
         )
@@ -1078,6 +1081,42 @@ def _type_from_value(value: Value, ctx: Context) -> Value:
         return AnyValue(AnySource.error)
 
 
+def _require_exact_argument_count(
+    args: Sequence[object], expected: int, construct: str, ctx: Context
+) -> bool:
+    if len(args) != expected:
+        target = f"{construct}[]"
+        if expected == 1:
+            message = f"{target} requires a single argument"
+        else:
+            message = (
+                f"{target} requires exactly {_argument_count_word(expected)} arguments"
+            )
+        ctx.show_error(message)
+        return False
+    return True
+
+
+def _argument_count_word(count: int) -> str:
+    if count == 1:
+        return "one"
+    if count == 2:
+        return "two"
+    return str(count)
+
+
+def _require_min_argument_count(
+    args: Sequence[object], minimum: int, construct: str, ctx: Context
+) -> bool:
+    if len(args) < minimum:
+        target = f"{construct}[]"
+        ctx.show_error(
+            f"{target} requires at least {_argument_count_word(minimum)} arguments"
+        )
+        return False
+    return True
+
+
 def _annotation_expr_from_subscripted_value(
     root: Value, node: ast.AST, members: Sequence[Value], ctx: Context
 ) -> AnnotationExpr:
@@ -1086,8 +1125,7 @@ def _annotation_expr_from_subscripted_value(
         return AnnotationExpr(ctx, val)
     root_val = root.val
     if is_typing_name(root_val, "Annotated"):
-        if len(members) < 2:
-            ctx.show_error("Annotated[] requires at least two arguments")
+        if not _require_min_argument_count(members, 2, "Annotated", ctx):
             return AnnotationExpr(ctx, AnyValue(AnySource.error))
         origin, *metadata = members
         origin_expr = _annotation_expr_from_value(origin, ctx)
@@ -1102,8 +1140,7 @@ def _annotation_expr_from_subscripted_value(
         Qualifier.Unpack,
     ):
         if is_typing_name(root_val, qualifier.name):
-            if len(members) != 1:
-                ctx.show_error(f"{qualifier.name}[] requires a single argument")
+            if not _require_exact_argument_count(members, 1, qualifier.name, ctx):
                 return AnnotationExpr(ctx, AnyValue(AnySource.error))
             inner = _annotation_expr_from_value(members[0], ctx)
             return inner.add_qualifier(qualifier, node)
@@ -1210,39 +1247,33 @@ def _type_from_subscripted_value(
             exprs = [_annotation_expr_from_value(arg, ctx) for arg in members]
             return _make_sequence_value(tuple, exprs, ctx)
     elif root is typing.Optional:
-        if len(members) != 1:
-            ctx.show_error("Optional[] takes only one argument")
+        if not _require_exact_argument_count(members, 1, "Optional", ctx):
             return AnyValue(AnySource.error)
         return unite_values(KnownValue(None), _type_from_value(members[0], ctx))
     elif root is typing.Type or root is type:
-        if len(members) != 1:
-            ctx.show_error("Type[] takes only one argument")
+        if not _require_exact_argument_count(members, 1, "Type", ctx):
             return AnyValue(AnySource.error)
         argument = _type_from_value(members[0], ctx)
         return SubclassValue.make(argument)
     elif is_typing_name(root, "Annotated"):
-        if len(members) < 2:
-            ctx.show_error("Annotated[] requires at least two arguments")
+        if not _require_min_argument_count(members, 2, "Annotated", ctx):
             return AnyValue(AnySource.error)
         origin, *metadata = members
         return _make_annotated(_type_from_value(origin, ctx), metadata, ctx)
     elif is_typing_name(root, "TypeGuard"):
-        if len(members) != 1:
-            ctx.show_error("TypeGuard requires a single argument")
+        if not _require_exact_argument_count(members, 1, "TypeGuard", ctx):
             return AnyValue(AnySource.error)
         return AnnotatedValue(
             TypedValue(bool), [TypeGuardExtension(_type_from_value(members[0], ctx))]
         )
     elif is_typing_name(root, "TypeIs"):
-        if len(members) != 1:
-            ctx.show_error("TypeIs requires a single argument")
+        if not _require_exact_argument_count(members, 1, "TypeIs", ctx):
             return AnyValue(AnySource.error)
         return AnnotatedValue(
             TypedValue(bool), [TypeIsExtension(_type_from_value(members[0], ctx))]
         )
     elif is_typing_name(root, "TypeForm"):
-        if len(members) != 1:
-            ctx.show_error("TypeForm requires a single argument")
+        if not _require_exact_argument_count(members, 1, "TypeForm", ctx):
             return AnyValue(AnySource.error)
         return TypeFormValue(_type_from_value(members[0], ctx))
     elif is_typing_name(root, "Required"):
@@ -1255,25 +1286,22 @@ def _type_from_subscripted_value(
         ctx.show_error("ReadOnly[] used in unsupported context")
         return AnyValue(AnySource.error)
     elif is_typing_name(root, "Final"):
-        if len(members) != 1:
-            ctx.show_error("Final[] requires a single argument")
+        if not _require_exact_argument_count(members, 1, "Final", ctx):
             return AnyValue(AnySource.error)
         return _type_from_value(members[0], ctx)
     elif is_typing_name(root, "Unpack"):
         ctx.show_error("Unpack[] used in unsupported context")
         return AnyValue(AnySource.error)
     elif root is Callable or root is typing.Callable:
-        if len(members) == 2:
-            args, return_value = members
-            return _make_callable_from_value(args, return_value, ctx)
-        ctx.show_error("Callable requires exactly two arguments")
-        return AnyValue(AnySource.error)
+        if not _require_exact_argument_count(members, 2, "Callable", ctx):
+            return AnyValue(AnySource.error)
+        args, return_value = members
+        return _make_callable_from_value(args, return_value, ctx)
     elif root is AsynqCallable:
-        if len(members) == 2:
-            args, return_value = members
-            return _make_callable_from_value(args, return_value, ctx, is_asynq=True)
-        ctx.show_error("AsynqCallable requires exactly two arguments")
-        return AnyValue(AnySource.error)
+        if not _require_exact_argument_count(members, 2, "AsynqCallable", ctx):
+            return AnyValue(AnySource.error)
+        args, return_value = members
+        return _make_callable_from_value(args, return_value, ctx, is_asynq=True)
     elif root is Intersection:
         if not members:
             ctx.show_error("Intersection[] is missing arguments")
@@ -1668,8 +1696,7 @@ def _annotation_expr_of_origin_args(
     origin: object, args: Sequence[object], val: object, ctx: Context
 ) -> AnnotationExpr:
     if is_typing_name(origin, "Annotated"):
-        if len(args) < 2:
-            ctx.show_error("Annotated[] requires at least two arguments")
+        if not _require_min_argument_count(args, 2, "Annotated", ctx):
             return AnnotationExpr(ctx, AnyValue(AnySource.error))
         origin, *metadata = args
         inner = _annotation_expr_from_runtime(origin, ctx)
@@ -1686,8 +1713,7 @@ def _annotation_expr_of_origin_args(
         Qualifier.Unpack,
     ):
         if is_typing_name(origin, qualifier.name):
-            if len(args) != 1:
-                ctx.show_error(f"{qualifier.name}[] requires a single argument")
+            if not _require_exact_argument_count(args, 1, qualifier.name, ctx):
                 return AnnotationExpr(ctx, AnyValue(AnySource.error))
             inner = _annotation_expr_from_runtime(args[0], ctx)
             return inner.add_qualifier(qualifier, None)
@@ -1701,8 +1727,7 @@ def _value_of_origin_args(
     if origin is type:
         if not args:
             return TypedValue(type)
-        if len(args) != 1:
-            ctx.show_error("Type[] takes only one argument")
+        if not _require_exact_argument_count(args, 1, "Type", ctx):
             return AnyValue(AnySource.error)
         return SubclassValue.make(_type_from_runtime(args[0], ctx))
     elif _is_tuple(origin):
@@ -1728,15 +1753,14 @@ def _value_of_origin_args(
     elif origin is Callable or is_typing_name(origin, "Callable"):
         if len(args) == 0:
             return CallableValue(ANY_SIGNATURE)
-        *arg_types, return_type = args
-        if len(arg_types) == 1 and isinstance(arg_types[0], list):
-            arg_types = arg_types[0]
+        if not _require_exact_argument_count(args, 2, "Callable", ctx):
+            return AnyValue(AnySource.error)
+        arg_types, return_type = args
         params = _callable_args_from_runtime(arg_types, "Callable", ctx)
         sig = Signature.make(params, _type_from_runtime(return_type, ctx))
         return CallableValue(sig)
     elif is_typing_name(origin, "Annotated"):
-        if len(args) < 2:
-            ctx.show_error("Annotated[] requires at least two arguments")
+        if not _require_min_argument_count(args, 2, "Annotated", ctx):
             return AnyValue(AnySource.error)
         origin, *metadata = args
         return _make_annotated(
@@ -1764,22 +1788,19 @@ def _value_of_origin_args(
             return KnownValue(args[0])
         return unite_values(*[KnownValue(arg) for arg in args])
     elif is_typing_name(origin, "TypeGuard"):
-        if len(args) != 1:
-            ctx.show_error("TypeGuard requires a single argument")
+        if not _require_exact_argument_count(args, 1, "TypeGuard", ctx):
             return AnyValue(AnySource.error)
         return AnnotatedValue(
             TypedValue(bool), [TypeGuardExtension(_type_from_runtime(args[0], ctx))]
         )
     elif is_typing_name(origin, "TypeIs"):
-        if len(args) != 1:
-            ctx.show_error("TypeIs requires a single argument")
+        if not _require_exact_argument_count(args, 1, "TypeIs", ctx):
             return AnyValue(AnySource.error)
         return AnnotatedValue(
             TypedValue(bool), [TypeIsExtension(_type_from_runtime(args[0], ctx))]
         )
     elif is_typing_name(origin, "TypeForm"):
-        if len(args) != 1:
-            ctx.show_error("TypeForm requires a single argument")
+        if not _require_exact_argument_count(args, 1, "TypeForm", ctx):
             return AnyValue(AnySource.error)
         return TypeFormValue(_type_from_runtime(args[0], ctx))
     elif is_instance_of_typing_name(origin, "TypeAliasType"):
