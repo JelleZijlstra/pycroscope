@@ -2810,6 +2810,12 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                         ] = KnownValue(
                             tuple(dataclass_semantics.transform_info.field_specifiers)
                         )
+                synthetic_methods = self._get_synthetic_method_attributes(node)
+                synthetic_class.method_attributes.update(synthetic_methods)
+                for method_name in synthetic_methods:
+                    synthetic_class.class_attributes.setdefault(
+                        method_name, AnyValue(AnySource.from_another)
+                    )
                 self._record_dataclass_slots_flag(synthetic_class, dataclass_semantics)
                 self._synthetic_classes_by_name[synthetic_fq_name] = synthetic_class
                 self.checker.register_synthetic_class(synthetic_class)
@@ -11358,6 +11364,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 and not is_slots_assignment
             ):
                 self._check_attribute_assignment_type(node, root_composite)
+                self._record_synthetic_attr_set(node, root_composite.value)
             if (
                 composite is not None
                 and self.scopes.scope_type() == ScopeType.function_scope
@@ -12381,6 +12388,21 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     ) -> None:
         if self.attribute_checker is not None:
             self.attribute_checker.record_attribute_set(typ, attr_name, node, value)
+
+    def _record_synthetic_attr_set(
+        self, node: ast.Attribute, root_value: Value
+    ) -> None:
+        if not self._is_checking() or self.being_assigned is None:
+            return
+        if not isinstance(node.value, ast.Name) or node.value.id not in {"self", "cls"}:
+            return
+        class_key = self._class_key_for_attribute_target(node, root_value)
+        if class_key is None:
+            return
+        synthetic_class = self.checker.get_synthetic_class(class_key)
+        if synthetic_class is None:
+            return
+        synthetic_class.class_attributes[node.attr] = self.being_assigned
 
     def _record_type_attr_read(self, typ: type, attr_name: str, node: ast.AST) -> None:
         if self.attribute_checker is not None:

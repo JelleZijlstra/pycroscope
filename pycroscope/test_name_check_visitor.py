@@ -531,6 +531,34 @@ class TestImportFailureHandlingCodeSamples(TestNameCheckVisitorBase):
                 pass
 
     @assert_passes(allow_import_failures=True)
+    def test_synthetic_instance_attrs_and_forward_methods_after_import_failure(self):
+        from typing import Generic, TypeVar
+
+        boom = 1 / 0
+
+        T = TypeVar("T")
+
+        class LoggedVar(Generic[T]):
+            def __init__(self, value: T, name: str) -> None:
+                self.name = name
+                self.value = value
+
+            def set(self, new: T) -> None:
+                self.log("Set " + repr(self.value))
+                self.value = new
+
+            def get(self) -> T:
+                self.log("Get " + repr(self.value))
+                return self.value
+
+            def log(self, message: str) -> None:
+                print(f"{self.name}: {message}")
+
+        def capybara(v: LoggedVar[int]) -> int:
+            v.set(1)
+            return v.get()
+
+    @assert_passes(allow_import_failures=True)
     def test_zero_arg_super_in_synthetic_class_after_import_failure(self):
         boom = 1 / 0
 
