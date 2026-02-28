@@ -1926,8 +1926,8 @@ class TestTypingConstructNameMatching(TestNameCheckVisitorBase):
         BadNewType = NewType("WrongNewType", int)  # E: incompatible_call
         GoodNamedTuple = NamedTuple("GoodNamedTuple", [("x", int)])
         BadNamedTuple = NamedTuple(
-            "WrongNamedTuple", [("x", int)]
-        )  # E: incompatible_call
+            "WrongNamedTuple", [("x", int)]  # E: incompatible_call
+        )
         GoodTypedDict = TypedDict("GoodTypedDict", {"x": int})
         BadTypedDict = TypedDict("WrongTypedDict", {"x": int})  # E: incompatible_call
         print(
