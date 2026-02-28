@@ -5,4 +5,5 @@ build/
 *.code-workspace
 .vscode/
 .venv
+node_modules/
 tmp/
