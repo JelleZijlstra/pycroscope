@@ -226,6 +226,60 @@ class TestTypeVar(TestNameCheckVisitorBase):
         class BadB(alias_b[T_contra, T_co]):  # E: invalid_annotation
             ...
 
+    @assert_passes(allow_import_failures=True)
+    def test_variance_in_class_bases_after_import_failure(self):
+        from typing import Generic, TypeVar
+
+        X1 = TypeVar("X1", covariant=True, contravariant=True)  # E: incompatible_call
+
+        T = TypeVar("T")
+        T_co = TypeVar("T_co", covariant=True)
+        T_contra = TypeVar("T_contra", contravariant=True)
+
+        class Co(Generic[T_co]): ...
+
+        class Contra(Generic[T_contra]): ...
+
+        class Inv(Generic[T]): ...
+
+        class GoodCo(Co[T_co]): ...
+
+        class GoodContra(Contra[T_contra]): ...
+
+        class BadCo(Co[T_contra]):  # E: invalid_annotation
+            ...
+
+        class BadContra(Contra[T_co]):  # E: invalid_annotation
+            ...
+
+        class BadInv(Inv[T_co]):  # E: invalid_annotation
+            ...
+
+    @assert_passes(allow_import_failures=True)
+    def test_nested_alias_variance_after_import_failure(self):
+        from typing import Generic, TypeVar
+
+        X1 = TypeVar("X1", covariant=True, contravariant=True)  # E: incompatible_call
+        T_co = TypeVar("T_co", covariant=True)
+        T_contra = TypeVar("T_contra", contravariant=True)
+
+        class Co(Generic[T_co]): ...
+
+        class Contra(Generic[T_contra]): ...
+
+        Co_TA = Co[T_co]
+        Contra_TA = Contra[T_contra]
+
+        class Good1(Contra_TA[Co_TA[T_contra]]): ...
+
+        class Good2(Contra_TA[Contra_TA[T_co]]): ...
+
+        class Bad1(Contra_TA[Co_TA[Contra_TA[T_contra]]]):  # E: invalid_annotation
+            ...
+
+        class Bad2(Contra_TA[Contra_TA[Contra_TA[T_co]]]):  # E: invalid_annotation
+            ...
+
     @assert_passes()
     def test_protocol_variance_mismatch(self):
         from typing import Protocol, TypeVar
