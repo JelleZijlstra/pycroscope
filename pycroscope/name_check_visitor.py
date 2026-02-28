@@ -249,6 +249,7 @@ from .value import (
     annotate_value,
     concrete_values_from_iterable,
     flatten_values,
+    get_typevar_variance,
     get_tv_map,
     has_any_base_value,
     is_async_iterable,
@@ -2803,6 +2804,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     if type_param_values
                     else effective_type_param_values
                 )
+                self._check_class_base_type_param_variances(
+                    node, declared_type_params, base_values, class_scope_object
+                )
                 self._check_protocol_type_param_variances(
                     node, declared_type_params, base_values, class_scope_object
                 )
@@ -4970,6 +4974,89 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 f"{inferred_type_param.variance.display_name()}",
                 error_code=ErrorCode.invalid_annotation,
             )
+
+    @staticmethod
+    def _variance_is_compatible_with_usage(
+        variance: Variance, used_polarities: set[int]
+    ) -> bool:
+        if not used_polarities or variance is Variance.INVARIANT:
+            return True
+        if variance is Variance.COVARIANT:
+            return -1 not in used_polarities
+        return 1 not in used_polarities
+
+    @staticmethod
+    def _is_variance_declaration_base(base_value: Value) -> bool:
+        subvals = list(flatten_values(replace_fallback(base_value)))
+        if not subvals:
+            return False
+        for subval in subvals:
+            if isinstance(subval, SyntheticClassObjectValue):
+                subval = subval.class_type
+            if isinstance(subval, GenericValue):
+                typ: object = subval.typ
+            elif isinstance(subval, TypedValue):
+                typ = subval.typ
+            elif isinstance(subval, KnownValue):
+                typ = subval.val
+            else:
+                return False
+            if not (is_typing_name(typ, "Generic") or is_typing_name(typ, "Protocol")):
+                return False
+        return True
+
+    def _check_class_base_type_param_variances(
+        self,
+        node: ast.ClassDef,
+        type_params: Sequence[TypeVarValue],
+        base_values: Sequence[Value],
+        class_scope_object: type | str | None,
+    ) -> None:
+        if self._is_protocol_class(base_values, class_scope_object):
+            return
+        analyzed_bases = [
+            replace_fallback(self._value_for_variance_annotation(base_node))
+            for base_node in node.bases
+        ]
+        typevars_to_check = {
+            type_param.typevar
+            for type_param in type_params
+            if is_instance_of_typing_name(type_param.typevar, "TypeVar")
+        }
+        for analyzed_base in analyzed_bases:
+            for subval in flatten_values(analyzed_base):
+                for walked in subval.walk_values():
+                    if not isinstance(walked, TypeVarValue):
+                        continue
+                    if not is_instance_of_typing_name(walked.typevar, "TypeVar"):
+                        continue
+                    typevars_to_check.add(walked.typevar)
+        if not typevars_to_check:
+            return
+
+        sorted_typevars = sorted(typevars_to_check, key=str)
+        for base_node, analyzed_base in zip(node.bases, analyzed_bases):
+            if self._is_variance_declaration_base(analyzed_base):
+                continue
+            type_param_polarities: dict[object, set[int]] = {
+                typevar: set() for typevar in sorted_typevars
+            }
+            for subval in flatten_values(analyzed_base):
+                self._collect_type_param_polarities_from_value(
+                    subval, type_param_polarities, polarity=1
+                )
+            for typevar in sorted_typevars:
+                used_polarities = type_param_polarities[typevar]
+                variance = get_typevar_variance(typevar)
+                if self._variance_is_compatible_with_usage(variance, used_polarities):
+                    continue
+                type_param_name = safe_getattr(typevar, "__name__", str(typevar))
+                self._show_error_if_checking(
+                    base_node,
+                    f"{type_param_name} has incompatible variance in base class",
+                    error_code=ErrorCode.invalid_annotation,
+                )
+                break
 
     def _is_protocol_class(
         self, base_values: Sequence[Value], class_scope_object: type | str | None

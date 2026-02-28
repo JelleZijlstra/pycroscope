@@ -194,6 +194,39 @@ class TestTypeVar(TestNameCheckVisitorBase):
             print(inv_assign_bad_1, inv_assign_bad_2)
 
     @assert_passes()
+    def test_variance_in_class_bases_and_aliases(self):
+        from typing import Generic, TypeAlias, TypeVar
+
+        T = TypeVar("T")
+        T_co = TypeVar("T_co", covariant=True)
+        T_contra = TypeVar("T_contra", contravariant=True)
+
+        class ClassA(Generic[T]):
+            pass
+
+        class ClassB(Generic[T, T_co]):
+            pass
+
+        class DeclaresCovariant(Generic[T_co]):
+            pass
+
+        alias_a_1: TypeAlias = ClassA[T_co]
+        alias_a_2: TypeAlias = alias_a_1[T_co]
+        alias_b = ClassB[T_co, T_contra]
+
+        class BadA1(ClassA[T_co]):  # E: invalid_annotation
+            ...
+
+        class BadA2(alias_a_1[T_co]):  # E: invalid_annotation
+            ...
+
+        class BadA3(alias_a_2[T_co]):  # E: invalid_annotation
+            ...
+
+        class BadB(alias_b[T_contra, T_co]):  # E: invalid_annotation
+            ...
+
+    @assert_passes()
     def test_protocol_variance_mismatch(self):
         from typing import Protocol, TypeVar
 
