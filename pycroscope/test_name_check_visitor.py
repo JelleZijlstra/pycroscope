@@ -848,8 +848,7 @@ class TestNameCheckVisitor(TestNameCheckVisitorBase):
     @assert_passes(allow_import_failures=True)
     def test_undefined_class_decorator_does_not_internal_error(self):
         @decorator1(0)  # E: undefined_name
-        class C:
-            pass
+        class C: ...
 
     @assert_passes()
     def test_synthetic_class_methods_from_stub_import(self):
