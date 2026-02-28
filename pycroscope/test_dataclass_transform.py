@@ -1,0 +1,517 @@
+# static analysis: ignore
+
+from .test_name_check_visitor import TestNameCheckVisitorBase
+from .test_node_visitor import assert_passes
+
+
+class TestDataclassTransform(TestNameCheckVisitorBase):
+    @assert_passes()
+    def test_dataclass_transform_decorator_base_and_metaclass(self):
+        from dataclasses import dataclass
+        from typing import Callable, TypeVar
+
+        from typing_extensions import dataclass_transform
+
+        T = TypeVar("T")
+
+        @dataclass_transform(kw_only_default=True, frozen_default=True)
+        def create_model(
+            *, frozen: bool = True, kw_only: bool = True
+        ) -> Callable[[type[T]], type[T]]:
+            def decorator(cls: type[T]) -> type[T]:
+                return dataclass(cls, frozen=frozen, kw_only=kw_only)
+
+            return decorator
+
+        @create_model()
+        class Decorated:
+            x: int
+
+        decorated = Decorated(x=1)
+
+        @dataclass_transform(kw_only_default=True, frozen_default=True)
+        class BaseModel:
+            def __init_subclass__(
+                cls, *, frozen: bool = True, kw_only: bool = True
+            ) -> None:
+                dataclass(cls, frozen=frozen, kw_only=kw_only)
+
+        class FromBase(BaseModel, frozen=True):
+            a: int
+
+        FromBase(a=1)
+
+        @dataclass_transform(kw_only_default=True, frozen_default=True)
+        class ModelMeta(type):
+            def __new__(
+                mcls,
+                name: str,
+                bases: tuple[type, ...],
+                namespace: dict[str, object],
+                *,
+                frozen: bool = True,
+                kw_only: bool = True,
+            ) -> type:
+                cls = super().__new__(mcls, name, bases, namespace)
+                return dataclass(cls, frozen=frozen, kw_only=kw_only)
+
+        class WithMeta(metaclass=ModelMeta, frozen=True): ...
+
+        class FromMeta(WithMeta, frozen=True):
+            b: int
+
+        FromMeta(b=1)
+
+        def check_errors() -> None:
+            Decorated(1)  # E: incompatible_call
+            decorated.x = 3  # E: incompatible_assignment
+            FromBase(1)  # E: incompatible_call
+            from_base = FromBase(a=1)
+            from_base.a = 2  # E: incompatible_assignment
+            FromMeta(1)  # E: incompatible_call
+            from_meta = FromMeta(b=1)
+            from_meta.b = 2  # E: incompatible_assignment
+
+    @assert_passes(allow_import_failures=True)
+    def test_dataclass_transform_synthetic_classes_after_import_failure(self):
+        boom = 1 / 0
+
+        from typing import Callable, TypeVar
+
+        from typing_extensions import dataclass_transform
+
+        T = TypeVar("T")
+
+        def model_field(*, init: bool = True, default: object = 0) -> object:
+            raise NotImplementedError
+
+        @dataclass_transform(
+            kw_only_default=True, frozen_default=True, field_specifiers=(model_field,)
+        )
+        def create_model(
+            *, frozen: bool = True, kw_only: bool = True
+        ) -> Callable[[type[T]], type[T]]:
+            def decorator(cls: type[T]) -> type[T]:
+                return cls
+
+            return decorator
+
+        @create_model()
+        class Decorated:
+            x: int = model_field(init=False)
+            y: int = model_field(default=3)
+
+        Decorated(y=1)
+        Decorated(x=1, y=1)  # E: incompatible_call
+        Decorated(1)  # E: incompatible_call
+        decorated = Decorated(y=1)
+        decorated.y = 2  # E: incompatible_assignment
+
+        @create_model(frozen=False)
+        class BadDecoratedChild(Decorated):  # E: invalid_base
+            z: int
+
+        @dataclass_transform(kw_only_default=True, frozen_default=True)
+        class BaseModel:
+            def __init_subclass__(
+                cls, *, frozen: bool = True, kw_only: bool = True
+            ) -> None:
+                pass
+
+        class BaseDerived(BaseModel, frozen=True):
+            a: int
+
+        BaseDerived(a=1)
+        BaseDerived(1)  # E: incompatible_call
+        base_derived = BaseDerived(a=1)
+        base_derived.a = 2  # E: incompatible_assignment
+
+        @dataclass_transform(kw_only_default=True, frozen_default=True)
+        class ModelMeta(type):
+            pass
+
+        class WithMeta(metaclass=ModelMeta):
+            def __init_subclass__(
+                cls, *, frozen: bool = True, kw_only: bool = True
+            ) -> None:
+                pass
+
+        class MetaDerived(WithMeta, frozen=True):
+            b: int
+
+        MetaDerived(b=1)
+        MetaDerived(1)  # E: incompatible_call
+        meta_derived = MetaDerived(b=1)
+        meta_derived.b = 2  # E: incompatible_assignment
+
+    @assert_passes()
+    def test_dataclass_transform_fully_imported_providers(self):
+        import sys
+        import types
+        from typing import Any, Callable, TypeVar
+
+        from typing_extensions import dataclass_transform
+
+        T = TypeVar("T")
+        helper = types.ModuleType("dt_transform_helpers")
+
+        def model_field(
+            *,
+            init: bool = True,
+            default: Any = 0,
+            alias: str | None = None,
+            kw_only: bool = False,
+        ) -> Any:
+            return object()
+
+        @dataclass_transform(
+            kw_only_default=True, frozen_default=True, field_specifiers=(model_field,)
+        )
+        def create_model(
+            *, frozen: bool = True, kw_only: bool = True
+        ) -> Callable[[type[T]], type[T]]:
+            def decorator(cls: type[T]) -> type[T]:
+                return cls
+
+            return decorator
+
+        @dataclass_transform(
+            kw_only_default=True, frozen_default=False, field_specifiers=(model_field,)
+        )
+        class BaseModel:
+            def __init_subclass__(
+                cls, *, frozen: bool = False, kw_only: bool = True
+            ) -> None:
+                pass
+
+        @dataclass_transform(
+            kw_only_default=True, frozen_default=False, field_specifiers=(model_field,)
+        )
+        class ModelMeta(type):
+            pass
+
+        helper.model_field = model_field
+        helper.create_model = create_model
+        helper.BaseModel = BaseModel
+        helper.ModelMeta = ModelMeta
+        sys.modules["dt_transform_helpers"] = helper
+
+        from dt_transform_helpers import BaseModel as ImportedBaseModel
+        from dt_transform_helpers import ModelMeta as ImportedModelMeta
+        from dt_transform_helpers import create_model as imported_create_model
+        from dt_transform_helpers import model_field as imported_model_field
+
+        @imported_create_model()
+        class Decorated:
+            x: int = imported_model_field(init=False)
+            y: int = imported_model_field(alias="why")
+            z: int = imported_model_field(default=3, kw_only=False)
+
+        class FromBase(ImportedBaseModel, frozen=True):
+            a: int = imported_model_field(init=False)
+            b: int = imported_model_field(alias="bee")
+            c: int = imported_model_field(default=3, kw_only=False)
+
+        class WithMeta(metaclass=ImportedModelMeta):
+            def __init_subclass__(
+                cls, *, frozen: bool = False, kw_only: bool = True
+            ) -> None:
+                pass
+
+        class FromMeta(WithMeta, frozen=True):  # E: invalid_base
+            m: int = imported_model_field(init=False)
+            n: int = imported_model_field(alias="enn")
+            o: int = imported_model_field(default=3, kw_only=False)
+
+        def check_calls() -> None:
+            Decorated(2, why=1)
+            Decorated(2, y=1)  # E: incompatible_call
+            Decorated(x=1, why=1)  # E: incompatible_call
+            decorated = Decorated(2, why=1)
+            decorated.y = 4  # E: incompatible_assignment
+
+            FromBase(2, bee=1)
+            FromBase(2, b=1)  # E: incompatible_call
+            from_base = FromBase(2, bee=1)
+            from_base.b = 4  # E: incompatible_assignment
+
+            FromMeta(2, enn=1)
+            FromMeta(2, n=1)  # E: incompatible_call
+            from_meta = FromMeta(2, enn=1)
+            from_meta.n = 4  # E: incompatible_assignment
+
+    @assert_passes()
+    def test_dataclass_transform_decorator_field_specifier_options(self):
+        from typing import Any, Callable, TypeVar
+
+        from typing_extensions import dataclass_transform
+
+        T = TypeVar("T")
+
+        def model_field(
+            *,
+            init: bool = True,
+            default: Any = 0,
+            alias: str | None = None,
+            kw_only: bool = False,
+        ) -> Any:
+            return object()
+
+        @dataclass_transform(
+            kw_only_default=True, frozen_default=True, field_specifiers=(model_field,)
+        )
+        def create_model(
+            *, frozen: bool = True, kw_only: bool = True
+        ) -> Callable[[type[T]], type[T]]:
+            def decorator(cls: type[T]) -> type[T]:
+                return cls
+
+            return decorator
+
+        @create_model()
+        class DecoratorModel:
+            x: int = model_field(init=False)
+            y: int = model_field(alias="why")
+            z: int = model_field(default=3, kw_only=False)
+
+        def check_calls() -> None:
+            DecoratorModel(2, why=1)
+            DecoratorModel(why=1)
+            DecoratorModel(2, y=1)  # E: incompatible_call
+            DecoratorModel(x=1, why=1)  # E: incompatible_call
+            DecoratorModel(1, 2)  # E: incompatible_call
+            model = DecoratorModel(2, why=1)
+            model.y = 3  # E: incompatible_assignment
+
+        def check_inheritance() -> None:
+            @create_model(frozen=True)
+            class Parent:
+                p: int
+
+            @create_model(frozen=False)
+            class Child(Parent):  # E: invalid_base
+                c: int
+
+    @assert_passes()
+    def test_dataclass_transform_base_field_specifier_options(self):
+        from typing import Any
+
+        from typing_extensions import dataclass_transform
+
+        def model_field(
+            *,
+            init: bool = True,
+            default: Any = 0,
+            alias: str | None = None,
+            kw_only: bool = False,
+        ) -> Any:
+            return object()
+
+        @dataclass_transform(
+            kw_only_default=True, frozen_default=False, field_specifiers=(model_field,)
+        )
+        class BaseModel:
+            def __init_subclass__(
+                cls, *, frozen: bool = False, kw_only: bool = True
+            ) -> None:
+                pass
+
+        class Concrete(BaseModel, frozen=True):
+            a: int = model_field(init=False)
+            b: int = model_field(alias="bee")
+            c: int = model_field(default=3, kw_only=False)
+
+        def check_calls() -> None:
+            Concrete(2, bee=1)
+            Concrete(bee=1)
+            Concrete(2, b=1)  # E: incompatible_call
+            Concrete(a=1, bee=1)  # E: incompatible_call
+            Concrete(1, 2)  # E: incompatible_call
+            model = Concrete(2, bee=1)
+            model.b = 3  # E: incompatible_assignment
+
+        def check_inheritance() -> None:
+            class FrozenParent(BaseModel, frozen=True):
+                x: int
+
+            class MutableChild(FrozenParent, frozen=False):  # E: invalid_base
+                y: int
+
+    @assert_passes()
+    def test_dataclass_transform_metaclass_field_specifier_options(self):
+        from typing import Any
+
+        from typing_extensions import dataclass_transform
+
+        def model_field(
+            *,
+            init: bool = True,
+            default: Any = 0,
+            alias: str | None = None,
+            kw_only: bool = False,
+        ) -> Any:
+            return object()
+
+        @dataclass_transform(
+            kw_only_default=True, frozen_default=False, field_specifiers=(model_field,)
+        )
+        class ModelMeta(type):
+            pass
+
+        class MetaBase(metaclass=ModelMeta):
+            def __init_subclass__(
+                cls, *, frozen: bool = False, kw_only: bool = True
+            ) -> None:
+                pass
+
+        class MetaConcrete(MetaBase, frozen=True):  # E: invalid_base
+            a: int = model_field(init=False)
+            b: int = model_field(alias="bee")
+            c: int = model_field(default=3, kw_only=False)
+
+        def check_calls() -> None:
+            MetaConcrete(2, bee=1)
+            MetaConcrete(bee=1)
+            MetaConcrete(2, b=1)  # E: incompatible_call
+            MetaConcrete(a=1, bee=1)  # E: incompatible_call
+            MetaConcrete(1, 2)  # E: incompatible_call
+            model = MetaConcrete(2, bee=1)
+            model.b = 3  # E: incompatible_assignment
+
+        def check_inheritance() -> None:
+            class FrozenParent(MetaBase, frozen=True):  # E: invalid_base
+                x: int
+
+            class MutableChild(FrozenParent, frozen=False):  # E: invalid_base
+                y: int
+
+    @assert_passes(allow_import_failures=True)
+    def test_dataclass_transform_decorator_field_specifier_options_after_import_failure(
+        self,
+    ):
+        boom = 1 / 0
+
+        from typing import Any, Callable, TypeVar
+
+        from typing_extensions import dataclass_transform
+
+        T = TypeVar("T")
+
+        def model_field(
+            *,
+            init: bool = True,
+            default: Any = 0,
+            alias: str | None = None,
+            kw_only: bool = False,
+        ) -> Any:
+            raise NotImplementedError
+
+        @dataclass_transform(
+            kw_only_default=True, frozen_default=True, field_specifiers=(model_field,)
+        )
+        def create_model(
+            *, frozen: bool = True, kw_only: bool = True
+        ) -> Callable[[type[T]], type[T]]:
+            def decorator(cls: type[T]) -> type[T]:
+                return cls
+
+            return decorator
+
+        @create_model()
+        class DecoratorModel:
+            x: int = model_field(init=False)
+            y: int = model_field(alias="why")
+            z: int = model_field(default=3, kw_only=False)
+
+        DecoratorModel(2, why=1)
+        DecoratorModel(why=1)
+        DecoratorModel(2, y=1)  # E: incompatible_call
+        DecoratorModel(x=1, why=1)  # E: incompatible_call
+        DecoratorModel(1, 2)  # E: incompatible_call
+        model = DecoratorModel(2, why=1)
+        model.y = 3  # E: incompatible_assignment
+
+    @assert_passes(allow_import_failures=True)
+    def test_dataclass_transform_base_field_specifier_options_after_import_failure(
+        self,
+    ):
+        boom = 1 / 0
+
+        from typing import Any
+
+        from typing_extensions import dataclass_transform
+
+        def model_field(
+            *,
+            init: bool = True,
+            default: Any = 0,
+            alias: str | None = None,
+            kw_only: bool = False,
+        ) -> Any:
+            raise NotImplementedError
+
+        @dataclass_transform(
+            kw_only_default=True, frozen_default=False, field_specifiers=(model_field,)
+        )
+        class BaseModel:
+            def __init_subclass__(
+                cls, *, frozen: bool = False, kw_only: bool = True
+            ) -> None:
+                pass
+
+        class Concrete(BaseModel, frozen=True):
+            a: int = model_field(init=False)
+            b: int = model_field(alias="bee")
+            c: int = model_field(default=3, kw_only=False)
+
+        Concrete(2, bee=1)
+        Concrete(bee=1)
+        Concrete(2, b=1)  # E: incompatible_call
+        Concrete(a=1, bee=1)  # E: incompatible_call
+        Concrete(1, 2)  # E: incompatible_call
+        model = Concrete(2, bee=1)
+        model.b = 3  # E: incompatible_assignment
+
+    @assert_passes(allow_import_failures=True)
+    def test_dataclass_transform_metaclass_field_specifier_options_after_import_failure(
+        self,
+    ):
+        boom = 1 / 0
+
+        from typing import Any
+
+        from typing_extensions import dataclass_transform
+
+        def model_field(
+            *,
+            init: bool = True,
+            default: Any = 0,
+            alias: str | None = None,
+            kw_only: bool = False,
+        ) -> Any:
+            raise NotImplementedError
+
+        @dataclass_transform(
+            kw_only_default=True, frozen_default=False, field_specifiers=(model_field,)
+        )
+        class ModelMeta(type):
+            pass
+
+        class MetaBase(metaclass=ModelMeta):
+            def __init_subclass__(
+                cls, *, frozen: bool = False, kw_only: bool = True
+            ) -> None:
+                pass
+
+        class MetaConcrete(MetaBase, frozen=True):  # E: invalid_base
+            a: int = model_field(init=False)
+            b: int = model_field(alias="bee")
+            c: int = model_field(default=3, kw_only=False)
+
+        MetaConcrete(2, bee=1)
+        MetaConcrete(bee=1)
+        MetaConcrete(2, b=1)  # E: incompatible_call
+        MetaConcrete(a=1, bee=1)  # E: incompatible_call
+        MetaConcrete(1, 2)  # E: incompatible_call
+        model = MetaConcrete(2, bee=1)
+        model.b = 3  # E: incompatible_assignment

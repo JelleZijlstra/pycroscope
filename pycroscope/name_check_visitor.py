@@ -506,6 +506,23 @@ class _SyntheticTypedDictContext:
     )
 
 
+@dataclass(frozen=True)
+class _DataclassTransformInfo:
+    frozen_default: bool | None = None
+    kw_only_default: bool | None = None
+    field_specifiers: tuple[Value, ...] = ()
+
+
+@dataclass(frozen=True)
+class _ClassDataclassSemantics:
+    is_dataclass: bool
+    frozen: bool | None
+    kw_only_default: bool
+    field_specifiers: tuple[Value, ...]
+    is_transform_provider: bool
+    transform_info: _DataclassTransformInfo | None = None
+
+
 class ComprehensionLengthInferenceLimit(IntegerOption):
     """If we iterate over something longer than this, we don't try to infer precise
     types for comprehensions. Increasing this can hurt performance."""
@@ -1229,6 +1246,8 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     collector: CallSiteCollector | None
     current_class: type | str | None
     current_class_is_dataclass: bool
+    current_class_dataclass_field_specifiers: tuple[Value, ...]
+    current_class_dataclass_kw_only_default: bool
     current_class_key: type | str | None
     current_class_type_params: Sequence[TypeVarValue] | None
     _active_pep695_type_params: list[set[object]]
@@ -1262,6 +1281,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     final_members_requiring_init: dict[type | str, dict[str, ast.AST]]
     enum_class_keys: set[type | str]
     enum_value_type_by_class: dict[type | str, Value]
+    _dataclass_transform_info_by_scope_name: dict[
+        int, dict[str, _DataclassTransformInfo]
+    ]
     yield_checker: YieldChecker
 
     def __init__(
@@ -1304,6 +1326,8 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         # current class (for inferring the type of cls and self arguments)
         self.current_class = None
         self.current_class_is_dataclass = False
+        self.current_class_dataclass_field_specifiers = ()
+        self.current_class_dataclass_kw_only_default = False
         self.current_class_key = None
         self.current_class_type_params = None
         self._active_pep695_type_params = []
@@ -1388,6 +1412,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         self.final_members_requiring_init = {}
         self.enum_class_keys = set()
         self.enum_value_type_by_class = {}
+        self._dataclass_transform_info_by_scope_name = {}
         self._fill_method_cache()
 
     def get_local_return_value(self, sig: MaybeSignature) -> Value | None:
@@ -1784,17 +1809,35 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         origin = current_scope.set(varname, value, lookup_node, self.state)
         if scope_type == ScopeType.class_scope:
             self._set_synthetic_class_attribute(varname, value)
+        if (
+            dataclass_transform_info := self._get_dataclass_transform_info_from_value(
+                value
+            )
+        ) is not None:
+            self._record_dataclass_transform_info_for_scope_name(
+                varname, dataclass_transform_info
+            )
         return value, origin
 
+    def _get_synthetic_class_for_current_scope(
+        self,
+    ) -> SyntheticClassObjectValue | None:
+        current_class = self.current_class
+        if isinstance(current_class, str):
+            return self._synthetic_classes_by_name.get(current_class)
+        if isinstance(current_class, type):
+            return self.checker.get_synthetic_class(current_class)
+        return None
+
     def _set_synthetic_class_attribute(self, name: str, value: Value) -> None:
-        if not isinstance(self.current_class, str):
-            return
-        synthetic_class = self._synthetic_classes_by_name.get(self.current_class)
+        synthetic_class = self._get_synthetic_class_for_current_scope()
         if synthetic_class is None:
             return
         synthetic_name = name
         synthetic_value = value
-        if self._is_enum_class_key(self.current_class):
+        if isinstance(self.current_class, (type, str)) and self._is_enum_class_key(
+            self.current_class
+        ):
             class_name = self._current_class_name_from_context()
             if class_name is not None:
                 mangled = self._mangle_private_enum_name(class_name, name)
@@ -1805,9 +1848,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         synthetic_class.class_attributes[synthetic_name] = synthetic_value
 
     def _record_synthetic_classvar_name(self, name: str) -> None:
-        if not isinstance(self.current_class, str):
-            return
-        synthetic_class = self._synthetic_classes_by_name.get(self.current_class)
+        synthetic_class = self._get_synthetic_class_for_current_scope()
         if synthetic_class is None:
             return
         existing = synthetic_class.class_attributes.get("%classvars")
@@ -1824,11 +1865,15 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         )
 
     def _record_synthetic_dataclass_field_metadata(
-        self, name: str, *, has_default: bool, init: bool
+        self,
+        name: str,
+        *,
+        has_default: bool,
+        init: bool,
+        kw_only: bool,
+        alias: str | None,
     ) -> None:
-        if not isinstance(self.current_class, str):
-            return
-        synthetic_class = self._synthetic_classes_by_name.get(self.current_class)
+        synthetic_class = self._get_synthetic_class_for_current_scope()
         if synthetic_class is None:
             return
 
@@ -1871,6 +1916,40 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         else:
             init_false_fields.discard(name)
 
+        existing_kw_only = synthetic_class.class_attributes.get(
+            "%dataclass_kw_only_fields"
+        )
+        kw_only_fields: set[str] = set()
+        if isinstance(existing_kw_only, KnownValue) and isinstance(
+            existing_kw_only.val, (set, frozenset, tuple, list)
+        ):
+            kw_only_fields.update(
+                item for item in existing_kw_only.val if isinstance(item, str)
+            )
+        if kw_only:
+            kw_only_fields.add(name)
+        else:
+            kw_only_fields.discard(name)
+
+        existing_aliases = synthetic_class.class_attributes.get(
+            "%dataclass_field_aliases"
+        )
+        aliases: dict[str, str] = {}
+        if isinstance(existing_aliases, KnownValue) and isinstance(
+            existing_aliases.val, Mapping
+        ):
+            aliases.update(
+                {
+                    str(field_name): alias_name
+                    for field_name, alias_name in existing_aliases.val.items()
+                    if isinstance(field_name, str) and isinstance(alias_name, str)
+                }
+            )
+        if alias is not None:
+            aliases[name] = alias
+        else:
+            aliases.pop(name, None)
+
         synthetic_class.class_attributes["%dataclass_field_order"] = KnownValue(
             tuple(field_order)
         )
@@ -1879,6 +1958,12 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         )
         synthetic_class.class_attributes["%dataclass_init_false_fields"] = KnownValue(
             frozenset(init_false_fields)
+        )
+        synthetic_class.class_attributes["%dataclass_kw_only_fields"] = KnownValue(
+            frozenset(kw_only_fields)
+        )
+        synthetic_class.class_attributes["%dataclass_field_aliases"] = KnownValue(
+            dict(aliases)
         )
 
     def _get_base_class_attributes(
@@ -2363,9 +2448,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
 
     def visit_ClassDef(self, node: ast.ClassDef) -> Value:
         decorator_values = self._generic_visit_list(node.decorator_list)
-        is_dataclass_class, frozen_dataclass = self._get_dataclass_decorator_status(
-            node
-        )
         class_obj = self._get_current_class_object(node)
         class_key: type | str = (
             class_obj
@@ -2408,8 +2490,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                         error_code=ErrorCode.invalid_annotation,
                     )
             base_values = self._generic_visit_list(node.bases)
-            if self._is_checking() and is_dataclass_class:
-                self._check_dataclass_inheritance(node, base_values, frozen_dataclass)
             if self._is_checking():
                 self._check_protocol_base_validity(node, base_values)
                 for base_node, base_value in zip(node.bases, base_values):
@@ -2429,6 +2509,16 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 self.enum_class_keys.add(class_key)
             self._check_for_final_base_classes(node, base_values)
             keyword_values = [(kw, self.visit(kw.value)) for kw in node.keywords]
+            dataclass_semantics = self._get_class_dataclass_semantics(
+                node,
+                class_obj=class_obj,
+                base_values=base_values,
+                keyword_values=keyword_values,
+            )
+            if self._is_checking() and dataclass_semantics.is_dataclass:
+                self._check_dataclass_inheritance(
+                    node, base_values, dataclass_semantics.frozen
+                )
             synthetic_typeddict = self._make_synthetic_typeddict_context(
                 node, base_values, keyword_values
             )
@@ -2459,6 +2549,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             synthetic_class = None
             synthetic_fq_name: str | None = None
             class_scope_object: type | str | None = class_obj
+            dataclass_metadata_class: SyntheticClassObjectValue | None = None
             if synthetic_typeddict is not None:
                 self._validate_typeddict_class_syntax(node)
             elif class_obj is None:
@@ -2475,17 +2566,120 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     node.name,
                     synthetic_class_type,
                     base_classes=tuple(base_values),
-                    is_dataclass=is_dataclass_class,
-                    dataclass_frozen=frozen_dataclass if is_dataclass_class else None,
+                    is_dataclass=dataclass_semantics.is_dataclass,
+                    dataclass_frozen=(
+                        dataclass_semantics.frozen
+                        if dataclass_semantics.is_dataclass
+                        else None
+                    ),
                 )
+                if dataclass_semantics.is_transform_provider:
+                    synthetic_class.class_attributes["%dataclass_transform"] = (
+                        KnownValue(True)
+                    )
+                    if dataclass_semantics.transform_info is not None and isinstance(
+                        dataclass_semantics.transform_info.frozen_default, bool
+                    ):
+                        synthetic_class.class_attributes[
+                            "%dataclass_transform_frozen_default"
+                        ] = KnownValue(
+                            dataclass_semantics.transform_info.frozen_default
+                        )
+                    if dataclass_semantics.transform_info is not None and isinstance(
+                        dataclass_semantics.transform_info.kw_only_default, bool
+                    ):
+                        synthetic_class.class_attributes[
+                            "%dataclass_transform_kw_only_default"
+                        ] = KnownValue(
+                            dataclass_semantics.transform_info.kw_only_default
+                        )
+                    if (
+                        dataclass_semantics.transform_info is not None
+                        and dataclass_semantics.transform_info.field_specifiers
+                    ):
+                        synthetic_class.class_attributes[
+                            "%dataclass_transform_field_specifiers"
+                        ] = KnownValue(
+                            tuple(dataclass_semantics.transform_info.field_specifiers)
+                        )
                 self._synthetic_classes_by_name[synthetic_fq_name] = synthetic_class
                 self.checker.register_synthetic_class(synthetic_class)
+                dataclass_metadata_class = synthetic_class
                 if self._is_checking():
                     self._synthetic_abstract_methods[synthetic_fq_name] = set()
                     # Bind the class name while checking its body so references
                     # like "return C.attr" or string annotations mentioning C
                     # resolve even when no runtime class object exists.
                     self.scopes.set(node.name, synthetic_class, node, self.state)
+            elif (
+                dataclass_semantics.is_dataclass
+                or dataclass_semantics.is_transform_provider
+            ):
+                existing = self.checker.get_synthetic_class(class_obj)
+                if existing is None:
+                    existing = SyntheticClassObjectValue(
+                        node.name,
+                        TypedValue(class_obj),
+                        base_classes=tuple(base_values),
+                        is_dataclass=dataclass_semantics.is_dataclass,
+                        dataclass_frozen=(
+                            dataclass_semantics.frozen
+                            if dataclass_semantics.is_dataclass
+                            else None
+                        ),
+                    )
+                    self.checker.register_synthetic_class(existing)
+                else:
+                    existing = replace(
+                        existing,
+                        base_classes=tuple(base_values),
+                        is_dataclass=dataclass_semantics.is_dataclass,
+                        dataclass_frozen=(
+                            dataclass_semantics.frozen
+                            if dataclass_semantics.is_dataclass
+                            else None
+                        ),
+                    )
+                    self.checker.register_synthetic_class(existing)
+                if dataclass_semantics.is_transform_provider:
+                    existing.class_attributes["%dataclass_transform"] = KnownValue(True)
+                    if dataclass_semantics.transform_info is not None and isinstance(
+                        dataclass_semantics.transform_info.frozen_default, bool
+                    ):
+                        existing.class_attributes[
+                            "%dataclass_transform_frozen_default"
+                        ] = KnownValue(
+                            dataclass_semantics.transform_info.frozen_default
+                        )
+                    if dataclass_semantics.transform_info is not None and isinstance(
+                        dataclass_semantics.transform_info.kw_only_default, bool
+                    ):
+                        existing.class_attributes[
+                            "%dataclass_transform_kw_only_default"
+                        ] = KnownValue(
+                            dataclass_semantics.transform_info.kw_only_default
+                        )
+                    if (
+                        dataclass_semantics.transform_info is not None
+                        and dataclass_semantics.transform_info.field_specifiers
+                    ):
+                        existing.class_attributes[
+                            "%dataclass_transform_field_specifiers"
+                        ] = KnownValue(
+                            tuple(dataclass_semantics.transform_info.field_specifiers)
+                        )
+                else:
+                    existing.class_attributes.pop("%dataclass_transform", None)
+                    existing.class_attributes.pop(
+                        "%dataclass_transform_frozen_default", None
+                    )
+                    existing.class_attributes.pop(
+                        "%dataclass_transform_kw_only_default", None
+                    )
+                    existing.class_attributes.pop(
+                        "%dataclass_transform_field_specifiers", None
+                    )
+                dataclass_metadata_class = existing
             generic_class_key = (
                 class_scope_object
                 if isinstance(class_scope_object, (type, str))
@@ -2519,17 +2713,23 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     base_values,
                     declared_type_params=registered_type_param_values,
                 )
-            class_is_dataclass = (
-                isinstance(class_obj, type) and is_dataclass_type(class_obj)
-            ) or any(
-                self._is_dataclass_decorator(decorator)
-                for decorator in node.decorator_list
-            )
             with (
                 self._active_pep695_type_param_scope(type_param_values),
                 override(self, "current_synthetic_typeddict", synthetic_typeddict),
                 override(self, "current_class_key", class_key),
-                override(self, "current_class_is_dataclass", class_is_dataclass),
+                override(
+                    self, "current_class_is_dataclass", dataclass_semantics.is_dataclass
+                ),
+                override(
+                    self,
+                    "current_class_dataclass_field_specifiers",
+                    dataclass_semantics.field_specifiers,
+                ),
+                override(
+                    self,
+                    "current_class_dataclass_kw_only_default",
+                    dataclass_semantics.kw_only_default,
+                ),
                 override(
                     self, "current_class_type_params", tuple(method_type_param_values)
                 ),
@@ -2564,6 +2764,14 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 self._populate_fallback_runtime_class(
                     fallback_runtime_class, class_scope_values
                 )
+            metaclass_value = next(
+                (
+                    value
+                    for keyword, value in keyword_values
+                    if keyword.arg == "metaclass"
+                ),
+                None,
+            )
             if synthetic_typeddict is not None:
                 typeddict_value = self._build_synthetic_typeddict_value(
                     synthetic_typeddict, node
@@ -2574,14 +2782,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     )
                     self.checker.register_synthetic_class(value)
             elif synthetic_class is not None:
-                metaclass_value = next(
-                    (
-                        value
-                        for keyword, value in keyword_values
-                        if keyword.arg == "metaclass"
-                    ),
-                    None,
-                )
                 if class_scope_values is None:
                     value = synthetic_class
                 else:
@@ -2610,6 +2810,26 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     synthetic_class.class_attributes["%metaclass"] = metaclass_value
                 if synthetic_fq_name is not None:
                     self._synthetic_classes_by_name[synthetic_fq_name] = synthetic_class
+            elif (
+                dataclass_metadata_class is not None
+                and class_scope_values is not None
+                and class_obj is not None
+            ):
+                class_attributes = {
+                    name: value
+                    for name, value in class_scope_values.items()
+                    if not name.startswith("%")
+                }
+                dataclass_metadata_class.class_attributes.update(class_attributes)
+                if isinstance(metaclass_value, Value):
+                    dataclass_metadata_class.class_attributes["%metaclass"] = (
+                        metaclass_value
+                    )
+                dataclass_metadata_class.method_attributes.clear()
+                dataclass_metadata_class.method_attributes.update(
+                    self._get_synthetic_method_attributes(node)
+                )
+                self.checker.register_synthetic_class(dataclass_metadata_class)
         value_to_store: Value | None = value
         if (
             class_obj is None
@@ -3666,6 +3886,444 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             return True, None
         return True, options.get("frozen", False)
 
+    def _record_dataclass_transform_info_for_scope_name(
+        self, name: str, info: _DataclassTransformInfo
+    ) -> None:
+        scope_id = id(self.scopes.current_scope())
+        mapping = self._dataclass_transform_info_by_scope_name.setdefault(scope_id, {})
+        existing = mapping.get(name)
+        if existing is None:
+            mapping[name] = info
+            return
+        mapping[name] = self._merge_dataclass_transform_infos((existing, info))
+
+    def _get_dataclass_transform_info_for_name(
+        self, name: str
+    ) -> _DataclassTransformInfo | None:
+        for scope in reversed(self.scopes.scopes):
+            info = self._dataclass_transform_info_by_scope_name.get(id(scope), {}).get(
+                name
+            )
+            if info is not None:
+                return info
+        return None
+
+    @staticmethod
+    def _merge_dataclass_transform_infos(
+        infos: Sequence[_DataclassTransformInfo],
+    ) -> _DataclassTransformInfo:
+        filtered = [info for info in infos]
+        if not filtered:
+            return _DataclassTransformInfo()
+
+        def _merge_bool(values: Sequence[bool | None]) -> bool | None:
+            bool_values = {value for value in values if isinstance(value, bool)}
+            if len(bool_values) == 1:
+                return next(iter(bool_values))
+            return None
+
+        field_specifiers: list[Value] = []
+        for info in filtered:
+            for field_specifier in info.field_specifiers:
+                if field_specifier not in field_specifiers:
+                    field_specifiers.append(field_specifier)
+        return _DataclassTransformInfo(
+            frozen_default=_merge_bool([info.frozen_default for info in filtered]),
+            kw_only_default=_merge_bool([info.kw_only_default for info in filtered]),
+            field_specifiers=tuple(field_specifiers),
+        )
+
+    def _extract_dataclass_transform_field_specifiers(
+        self, value: Value
+    ) -> tuple[Value, ...]:
+        value = replace_fallback(value)
+        if isinstance(value, AnnotatedValue):
+            return self._extract_dataclass_transform_field_specifiers(value.value)
+        if isinstance(value, MultiValuedValue):
+            field_specifiers: list[Value] = []
+            for subval in value.vals:
+                for (
+                    field_specifier
+                ) in self._extract_dataclass_transform_field_specifiers(subval):
+                    if field_specifier not in field_specifiers:
+                        field_specifiers.append(field_specifier)
+            return tuple(field_specifiers)
+        if isinstance(value, SequenceValue):
+            members = value.get_member_sequence()
+            if members is None:
+                return ()
+            return tuple(members)
+        if isinstance(value, KnownValue) and isinstance(
+            value.val, (tuple, list, set, frozenset)
+        ):
+            return tuple(KnownValue(item) for item in value.val)
+        return ()
+
+    def _is_dataclass_transform_marker_target(self, target: ast.expr) -> bool:
+        if isinstance(target, ast.Attribute):
+            return target.attr == "dataclass_transform"
+        if not isinstance(target, ast.Name):
+            return False
+        if target.id == "dataclass_transform":
+            return True
+        value = self.scopes.get(target.id, target, self.state, can_assign_ctx=self)
+        return self._is_dataclass_transform_marker_value(value)
+
+    @staticmethod
+    def _is_dataclass_transform_marker_value(value: Value) -> bool:
+        if value is UNINITIALIZED_VALUE:
+            return False
+        value = replace_fallback(value)
+        if isinstance(value, AnnotatedValue):
+            return NameCheckVisitor._is_dataclass_transform_marker_value(value.value)
+        if isinstance(value, MultiValuedValue):
+            return any(
+                NameCheckVisitor._is_dataclass_transform_marker_value(subval)
+                for subval in value.vals
+            )
+        return isinstance(value, KnownValue) and is_typing_name(
+            value.val, "dataclass_transform"
+        )
+
+    def _get_direct_dataclass_transform_info(
+        self, decorators: Sequence[ast.expr]
+    ) -> _DataclassTransformInfo | None:
+        infos: list[_DataclassTransformInfo] = []
+        for decorator in decorators:
+            if isinstance(decorator, ast.Call):
+                if not self._is_dataclass_transform_marker_target(decorator.func):
+                    continue
+                info = _DataclassTransformInfo(
+                    frozen_default=False, kw_only_default=False, field_specifiers=()
+                )
+                for kw in decorator.keywords:
+                    if kw.arg is None:
+                        continue
+                    if kw.arg == "frozen_default":
+                        bool_value = self._get_bool_literal(kw.value)
+                        if bool_value is not None:
+                            info = replace(info, frozen_default=bool_value)
+                    elif kw.arg == "kw_only_default":
+                        bool_value = self._get_bool_literal(kw.value)
+                        if bool_value is not None:
+                            info = replace(info, kw_only_default=bool_value)
+                    elif kw.arg == "field_specifiers":
+                        with self.catch_errors() as errors:
+                            field_specifier_value = self.visit(kw.value)
+                        if not errors:
+                            info = replace(
+                                info,
+                                field_specifiers=self._extract_dataclass_transform_field_specifiers(
+                                    field_specifier_value
+                                ),
+                            )
+                infos.append(info)
+            elif self._is_dataclass_transform_marker_target(decorator):
+                infos.append(
+                    _DataclassTransformInfo(
+                        frozen_default=False, kw_only_default=False, field_specifiers=()
+                    )
+                )
+        if not infos:
+            return None
+        return self._merge_dataclass_transform_infos(infos)
+
+    def _get_dataclass_transform_info_from_runtime_object(
+        self, obj: object
+    ) -> _DataclassTransformInfo | None:
+        raw = safe_getattr(obj, "__dataclass_transform__", None)
+        if not isinstance(raw, Mapping):
+            return None
+
+        frozen_default = raw.get("frozen_default", False)
+        if not isinstance(frozen_default, bool):
+            frozen_default = None
+        kw_only_default = raw.get("kw_only_default", False)
+        if not isinstance(kw_only_default, bool):
+            kw_only_default = None
+
+        field_specifier_values: list[Value] = []
+        raw_field_specifiers = raw.get("field_specifiers", ())
+        if isinstance(raw_field_specifiers, (tuple, list, set, frozenset)):
+            for field_specifier in raw_field_specifiers:
+                value = KnownValue(field_specifier)
+                if value not in field_specifier_values:
+                    field_specifier_values.append(value)
+
+        return _DataclassTransformInfo(
+            frozen_default=frozen_default,
+            kw_only_default=kw_only_default,
+            field_specifiers=tuple(field_specifier_values),
+        )
+
+    def _get_dataclass_transform_info_from_synthetic_class(
+        self, value: SyntheticClassObjectValue
+    ) -> _DataclassTransformInfo | None:
+        transform_marker = value.class_attributes.get("%dataclass_transform")
+        if not (
+            isinstance(transform_marker, KnownValue) and transform_marker.val is True
+        ):
+            return None
+
+        frozen_default: bool | None = None
+        raw_frozen_default = value.class_attributes.get(
+            "%dataclass_transform_frozen_default"
+        )
+        if isinstance(raw_frozen_default, KnownValue) and isinstance(
+            raw_frozen_default.val, bool
+        ):
+            frozen_default = raw_frozen_default.val
+
+        kw_only_default: bool | None = None
+        raw_kw_only_default = value.class_attributes.get(
+            "%dataclass_transform_kw_only_default"
+        )
+        if isinstance(raw_kw_only_default, KnownValue) and isinstance(
+            raw_kw_only_default.val, bool
+        ):
+            kw_only_default = raw_kw_only_default.val
+
+        field_specifiers: tuple[Value, ...] = ()
+        raw_field_specifiers = value.class_attributes.get(
+            "%dataclass_transform_field_specifiers"
+        )
+        if isinstance(raw_field_specifiers, KnownValue) and isinstance(
+            raw_field_specifiers.val, (tuple, list)
+        ):
+            values = [
+                item for item in raw_field_specifiers.val if isinstance(item, Value)
+            ]
+            field_specifiers = tuple(values)
+
+        return _DataclassTransformInfo(
+            frozen_default=frozen_default,
+            kw_only_default=kw_only_default,
+            field_specifiers=field_specifiers,
+        )
+
+    def _get_dataclass_transform_info_from_value(
+        self, value: Value
+    ) -> _DataclassTransformInfo | None:
+        if value is UNINITIALIZED_VALUE:
+            return None
+        try:
+            value = replace_fallback(value)
+        except NotAGradualType:
+            return None
+        if isinstance(value, AnnotatedValue):
+            return self._get_dataclass_transform_info_from_value(value.value)
+        if isinstance(value, MultiValuedValue):
+            infos = [
+                info
+                for subval in value.vals
+                if (info := self._get_dataclass_transform_info_from_value(subval))
+                is not None
+            ]
+            if not infos:
+                return None
+            return self._merge_dataclass_transform_infos(infos)
+        if isinstance(value, SyntheticClassObjectValue):
+            return self._get_dataclass_transform_info_from_synthetic_class(value)
+        if isinstance(value, KnownValue):
+            return self._get_dataclass_transform_info_from_runtime_object(value.val)
+        if isinstance(value, SubclassValue) and isinstance(value.typ, TypedValue):
+            return self._get_dataclass_transform_info_from_value(value.typ)
+        if isinstance(value, (TypedValue, GenericValue)):
+            if isinstance(value.typ, str):
+                synthetic_class = self.checker.get_synthetic_class(value.typ)
+                if synthetic_class is None:
+                    return None
+                return self._get_dataclass_transform_info_from_synthetic_class(
+                    synthetic_class
+                )
+            return self._get_dataclass_transform_info_from_runtime_object(value.typ)
+        return None
+
+    def _get_dataclass_transform_info_for_decorator_target(
+        self, target: ast.expr
+    ) -> _DataclassTransformInfo | None:
+        if isinstance(target, ast.Name):
+            if (
+                info := self._get_dataclass_transform_info_for_name(target.id)
+            ) is not None:
+                return info
+            value = self.scopes.get(target.id, target, self.state, can_assign_ctx=self)
+            return self._get_dataclass_transform_info_from_value(value)
+        with self.catch_errors() as errors:
+            value = self.visit(target)
+        if errors:
+            return None
+        return self._get_dataclass_transform_info_from_value(value)
+
+    def _get_class_dataclass_semantics(
+        self,
+        node: ast.ClassDef,
+        *,
+        class_obj: type | None,
+        base_values: Sequence[Value],
+        keyword_values: Sequence[tuple[ast.keyword, Value]],
+    ) -> _ClassDataclassSemantics:
+        direct_transform_info = self._get_direct_dataclass_transform_info(
+            node.decorator_list
+        )
+        base_transform_infos = [
+            info
+            for base_value in base_values
+            if (info := self._get_dataclass_transform_info_from_value(base_value))
+            is not None
+        ]
+        metaclass_transform_info = next(
+            (
+                info
+                for keyword, value in keyword_values
+                if keyword.arg == "metaclass"
+                and (info := self._get_dataclass_transform_info_from_value(value))
+                is not None
+            ),
+            None,
+        )
+
+        transform_provider_infos = list(base_transform_infos)
+        if metaclass_transform_info is not None:
+            transform_provider_infos.append(metaclass_transform_info)
+        if direct_transform_info is not None:
+            transform_provider_infos.append(direct_transform_info)
+        if (
+            class_obj is not None
+            and (
+                runtime_transform_info := self._get_dataclass_transform_info_from_runtime_object(
+                    class_obj
+                )
+            )
+            is not None
+        ):
+            transform_provider_infos.append(runtime_transform_info)
+        is_transform_provider = bool(transform_provider_infos)
+
+        is_dataclass_class, dataclass_options = self._get_dataclass_decorator_options(
+            node
+        )
+        if is_dataclass_class:
+            frozen = None
+            kw_only_default = False
+            if dataclass_options is not None:
+                frozen = dataclass_options.get("frozen", False)
+                kw_only_default = dataclass_options.get("kw_only", False)
+            return _ClassDataclassSemantics(
+                is_dataclass=True,
+                frozen=frozen,
+                kw_only_default=kw_only_default,
+                field_specifiers=(KnownValue(dataclass_field),),
+                is_transform_provider=is_transform_provider,
+                transform_info=None,
+            )
+
+        transform_infos: list[_DataclassTransformInfo] = []
+        for decorator in node.decorator_list:
+            target = decorator.func if isinstance(decorator, ast.Call) else decorator
+            info = self._get_dataclass_transform_info_for_decorator_target(target)
+            if info is None:
+                continue
+            if isinstance(decorator, ast.Call):
+                frozen_override = next(
+                    (
+                        self._get_bool_literal(kw.value)
+                        for kw in decorator.keywords
+                        if kw.arg == "frozen"
+                    ),
+                    None,
+                )
+                kw_only_override = next(
+                    (
+                        self._get_bool_literal(kw.value)
+                        for kw in decorator.keywords
+                        if kw.arg == "kw_only"
+                    ),
+                    None,
+                )
+                if frozen_override is not None:
+                    info = replace(info, frozen_default=frozen_override)
+                if kw_only_override is not None:
+                    info = replace(info, kw_only_default=kw_only_override)
+            transform_infos.append(info)
+
+        hierarchy_transform_infos = list(base_transform_infos)
+        if metaclass_transform_info is not None:
+            hierarchy_transform_infos.append(metaclass_transform_info)
+        if hierarchy_transform_infos:
+            merged_hierarchy_info = self._merge_dataclass_transform_infos(
+                hierarchy_transform_infos
+            )
+            frozen_override = next(
+                (
+                    self._get_bool_literal(keyword.value)
+                    for keyword in node.keywords
+                    if keyword.arg == "frozen"
+                ),
+                None,
+            )
+            kw_only_override = next(
+                (
+                    self._get_bool_literal(keyword.value)
+                    for keyword in node.keywords
+                    if keyword.arg == "kw_only"
+                ),
+                None,
+            )
+            if frozen_override is not None:
+                merged_hierarchy_info = replace(
+                    merged_hierarchy_info, frozen_default=frozen_override
+                )
+            if kw_only_override is not None:
+                merged_hierarchy_info = replace(
+                    merged_hierarchy_info, kw_only_default=kw_only_override
+                )
+            transform_infos.append(merged_hierarchy_info)
+
+        if transform_infos:
+            merged_transform_info = self._merge_dataclass_transform_infos(
+                transform_infos
+            )
+            return _ClassDataclassSemantics(
+                is_dataclass=True,
+                frozen=merged_transform_info.frozen_default,
+                kw_only_default=bool(merged_transform_info.kw_only_default),
+                field_specifiers=merged_transform_info.field_specifiers,
+                is_transform_provider=is_transform_provider,
+                transform_info=(
+                    self._merge_dataclass_transform_infos(transform_provider_infos)
+                    if transform_provider_infos
+                    else None
+                ),
+            )
+
+        if class_obj is not None and is_dataclass_type(class_obj):
+            dataclass_params = safe_getattr(class_obj, "__dataclass_params__", None)
+            frozen = safe_getattr(dataclass_params, "frozen", None)
+            if not isinstance(frozen, bool):
+                frozen = None
+            return _ClassDataclassSemantics(
+                is_dataclass=True,
+                frozen=frozen,
+                kw_only_default=False,
+                field_specifiers=(KnownValue(dataclass_field),),
+                is_transform_provider=is_transform_provider,
+                transform_info=None,
+            )
+
+        return _ClassDataclassSemantics(
+            is_dataclass=False,
+            frozen=None,
+            kw_only_default=False,
+            field_specifiers=(),
+            is_transform_provider=is_transform_provider,
+            transform_info=(
+                self._merge_dataclass_transform_infos(transform_provider_infos)
+                if transform_provider_infos
+                else None
+            ),
+        )
+
     @staticmethod
     def _is_dataclass_kw_only_marker_value(value: Value) -> bool:
         marker = getattr(dataclasses, "KW_ONLY", None)
@@ -3691,12 +4349,51 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             return self._is_dataclass_kw_only_marker_value(value)
         return False
 
+    @staticmethod
+    def _value_matches_dataclass_field_specifier(
+        value: Value, field_specifier: Value
+    ) -> bool:
+        value = replace_fallback(value)
+        field_specifier = replace_fallback(field_specifier)
+        if isinstance(value, AnnotatedValue):
+            return NameCheckVisitor._value_matches_dataclass_field_specifier(
+                value.value, field_specifier
+            )
+        if isinstance(field_specifier, AnnotatedValue):
+            return NameCheckVisitor._value_matches_dataclass_field_specifier(
+                value, field_specifier.value
+            )
+        if isinstance(value, MultiValuedValue):
+            return any(
+                NameCheckVisitor._value_matches_dataclass_field_specifier(
+                    subval, field_specifier
+                )
+                for subval in value.vals
+            )
+        if isinstance(field_specifier, MultiValuedValue):
+            return any(
+                NameCheckVisitor._value_matches_dataclass_field_specifier(value, subval)
+                for subval in field_specifier.vals
+            )
+        if isinstance(value, KnownValue) and isinstance(field_specifier, KnownValue):
+            return value.val is field_specifier.val
+        if isinstance(value, SyntheticClassObjectValue) and isinstance(
+            field_specifier, SyntheticClassObjectValue
+        ):
+            return value.class_type == field_specifier.class_type
+        return value == field_specifier
+
     def _is_dataclass_field_call(self, expr: ast.expr) -> bool:
         if not isinstance(expr, ast.Call):
             return False
         with self.catch_errors():
             callee = self.visit(expr.func)
-        return isinstance(callee, KnownValue) and callee.val is dataclass_field
+        if isinstance(callee, KnownValue) and callee.val is dataclass_field:
+            return True
+        for field_specifier in self.current_class_dataclass_field_specifiers:
+            if self._value_matches_dataclass_field_specifier(callee, field_specifier):
+                return True
+        return False
 
     def _should_build_dataclass_kw_only_fallback(
         self, node: ast.ClassDef, options: Mapping[str, bool]
@@ -3720,12 +4417,10 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     def _get_dataclass_status_for_type(
         self, typ: type | str
     ) -> tuple[bool, bool | None]:
-        if isinstance(typ, str):
-            synthetic_class = self.checker.get_synthetic_class(typ)
-            if synthetic_class is None or not synthetic_class.is_dataclass:
-                return False, None
+        synthetic_class = self.checker.get_synthetic_class(typ)
+        if synthetic_class is not None and synthetic_class.is_dataclass:
             return True, synthetic_class.dataclass_frozen
-        if not is_dataclass_type(typ):
+        if not isinstance(typ, type) or not is_dataclass_type(typ):
             return False, None
         dataclass_params = safe_getattr(typ, "__dataclass_params__", None)
         frozen = safe_getattr(dataclass_params, "frozen", None)
@@ -4640,6 +5335,15 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             )
 
     def visit_FunctionDef(self, node: FunctionDefNode) -> Value:
+        direct_dataclass_transform_info: _DataclassTransformInfo | None = None
+        if not isinstance(node, ast.Lambda):
+            direct_dataclass_transform_info = self._get_direct_dataclass_transform_info(
+                node.decorator_list
+            )
+            if direct_dataclass_transform_info is not None:
+                self._record_dataclass_transform_info_for_scope_name(
+                    node.name, direct_dataclass_transform_info
+                )
         potential_function = self._get_potential_function(node)
         with self.compute_function_info(
             node,
@@ -4712,6 +5416,10 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 FunctionDecorator.overload not in info.decorator_kinds
                 and FunctionDecorator.evaluated not in info.decorator_kinds
             ):
+                if direct_dataclass_transform_info is not None:
+                    self._record_dataclass_transform_info_for_scope_name(
+                        node.name, direct_dataclass_transform_info
+                    )
                 self._set_name_in_scope(node.name, node, val)
 
             if (
@@ -8408,9 +9116,12 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         ):
             has_default = node.value is not None
             init = True
-            if isinstance(node.value, ast.Call) and self._is_dataclass_field_call(
-                node.value
-            ):
+            kw_only = self.current_class_dataclass_kw_only_default
+            alias: str | None = None
+            is_dataclass_field_call = isinstance(
+                node.value, ast.Call
+            ) and self._is_dataclass_field_call(node.value)
+            if is_dataclass_field_call:
                 has_default = any(
                     kw.arg in {"default", "default_factory"}
                     for kw in node.value.keywords
@@ -8422,9 +9133,30 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     init_keyword.value, bool
                 ):
                     init = init_keyword.value
+                kw_only_keyword = next(
+                    (kw.value for kw in node.value.keywords if kw.arg == "kw_only"),
+                    None,
+                )
+                if isinstance(kw_only_keyword, ast.Constant) and isinstance(
+                    kw_only_keyword.value, bool
+                ):
+                    kw_only = kw_only_keyword.value
+                alias_keyword = next(
+                    (kw.value for kw in node.value.keywords if kw.arg == "alias"), None
+                )
+                if isinstance(alias_keyword, ast.Constant) and isinstance(
+                    alias_keyword.value, str
+                ):
+                    alias = alias_keyword.value
             self._record_synthetic_dataclass_field_metadata(
-                node.target.id, has_default=has_default, init=init
+                node.target.id,
+                has_default=has_default,
+                init=init,
+                kw_only=kw_only,
+                alias=alias,
             )
+        else:
+            is_dataclass_field_call = False
         if (
             has_classvar
             and is_final
@@ -8478,7 +9210,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             is_yield = isinstance(node.value, ast.Yield)
             value = self.visit(node.value)
 
-            if expected_type is not None:
+            if expected_type is not None and not (
+                is_current_class_dataclass and is_dataclass_field_call
+            ):
                 can_assign = has_relation(
                     expected_type, value, Relation.ASSIGNABLE, self
                 )

@@ -983,6 +983,12 @@ class Checker:
             return enum_argspec
 
         runtime_class = value.class_attributes.get("%runtime_class")
+        runtime_uses_default_object_constructor = (
+            isinstance(runtime_class, KnownValue)
+            and isinstance(runtime_class.val, type)
+            and safe_getattr(runtime_class.val, "__init__", None) is object.__init__
+            and safe_getattr(runtime_class.val, "__new__", None) is object.__new__
+        )
         if (
             isinstance(runtime_class, KnownValue)
             and (
@@ -996,6 +1002,7 @@ class Checker:
                 (Signature, OverloadedSignature),
             )
             and not self._is_uninformative_constructor_signature(runtime_argspec)
+            and not (value.is_dataclass and runtime_uses_default_object_constructor)
         ):
             return runtime_argspec
 
@@ -1081,8 +1088,32 @@ class Checker:
             return Signature.make([ELLIPSIS_PARAM], instance_type)
 
     def _get_synthetic_dataclass_field_parameters(
-        self, value: SyntheticClassObjectValue
+        self,
+        value: SyntheticClassObjectValue,
+        *,
+        include_inherited: bool = True,
+        seen: set[int] | None = None,
     ) -> list[SigParameter]:
+        if seen is None:
+            seen = set()
+        value_id = id(value)
+        if value_id in seen:
+            return []
+        seen.add(value_id)
+
+        params: list[SigParameter] = []
+        if include_inherited:
+            inherited_by_name: dict[str, SigParameter] = {}
+            inherited_order: list[str] = []
+            for base in value.base_classes:
+                for inherited in self._iter_synthetic_dataclass_base_field_parameters(
+                    base, seen=seen
+                ):
+                    if inherited.name not in inherited_by_name:
+                        inherited_order.append(inherited.name)
+                    inherited_by_name[inherited.name] = inherited
+            params.extend(inherited_by_name[name] for name in inherited_order)
+
         classvar_names: set[str] = set()
         classvars = value.class_attributes.get("%classvars")
         if isinstance(classvars, KnownValue) and isinstance(
@@ -1107,6 +1138,22 @@ class Checker:
             init_false_fields.update(
                 name for name in init_false_names.val if isinstance(name, str)
             )
+        kw_only_fields: set[str] = set()
+        kw_only_names = value.class_attributes.get("%dataclass_kw_only_fields")
+        if isinstance(kw_only_names, KnownValue) and isinstance(
+            kw_only_names.val, (set, frozenset, tuple, list)
+        ):
+            kw_only_fields.update(
+                name for name in kw_only_names.val if isinstance(name, str)
+            )
+        aliases: dict[str, str] = {}
+        alias_names = value.class_attributes.get("%dataclass_field_aliases")
+        if isinstance(alias_names, KnownValue) and isinstance(alias_names.val, dict):
+            aliases = {
+                field_name: alias
+                for field_name, alias in alias_names.val.items()
+                if isinstance(field_name, str) and isinstance(alias, str)
+            }
         ordered_fields: list[str] = []
         order = value.class_attributes.get("%dataclass_field_order")
         if isinstance(order, KnownValue) and isinstance(order.val, (tuple, list)):
@@ -1122,7 +1169,7 @@ class Checker:
                 if not name.startswith("%") and not _is_dunder(name)
             ]
 
-        params: list[SigParameter] = []
+        by_name = {param.name: param for param in params}
         for name in field_names:
             attr = value.class_attributes.get(name, UNINITIALIZED_VALUE)
             if attr is UNINITIALIZED_VALUE:
@@ -1133,26 +1180,66 @@ class Checker:
                 continue
             if name in init_false_fields:
                 continue
+            param_name = aliases.get(name, name)
             if isinstance(attr, KnownValue):
                 annotation: Value = TypedValue(type(attr.val))
                 default: Value | None = attr if name in default_fields else None
             else:
                 annotation = attr
                 default = KnownValue(...) if name in default_fields else None
-            params.append(
-                SigParameter(
-                    name,
-                    ParameterKind.POSITIONAL_OR_KEYWORD,
-                    default=default,
-                    annotation=annotation,
-                )
+            param = SigParameter(
+                param_name,
+                (
+                    ParameterKind.KEYWORD_ONLY
+                    if name in kw_only_fields
+                    else ParameterKind.POSITIONAL_OR_KEYWORD
+                ),
+                default=default,
+                annotation=annotation,
             )
-        return params
+            if param_name in by_name:
+                params = [
+                    existing for existing in params if existing.name != param_name
+                ]
+            params.append(param)
+            by_name[param_name] = param
+        # Dataclass constructors place non-kw-only parameters before kw-only ones,
+        # regardless of field declaration order.
+        positional_params = [
+            param for param in params if param.kind is not ParameterKind.KEYWORD_ONLY
+        ]
+        kw_only_params = [
+            param for param in params if param.kind is ParameterKind.KEYWORD_ONLY
+        ]
+        return [*positional_params, *kw_only_params]
+
+    def _iter_synthetic_dataclass_base_field_parameters(
+        self, base: Value, *, seen: set[int]
+    ) -> list[SigParameter]:
+        base = replace_fallback(base)
+        synthetic_base: SyntheticClassObjectValue | None = None
+        if isinstance(base, SyntheticClassObjectValue):
+            synthetic_base = base
+        elif isinstance(base, GenericValue):
+            if isinstance(base.typ, (type, str)):
+                synthetic_base = self.get_synthetic_class(base.typ)
+        elif isinstance(base, TypedValue):
+            if isinstance(base.typ, (type, str)):
+                synthetic_base = self.get_synthetic_class(base.typ)
+        elif isinstance(base, KnownValue) and isinstance(base.val, type):
+            synthetic_base = self.get_synthetic_class(base.val)
+        if synthetic_base is None or not synthetic_base.is_dataclass:
+            return []
+        return self._get_synthetic_dataclass_field_parameters(
+            synthetic_base, include_inherited=True, seen=seen
+        )
 
     def _augment_dataclass_constructor_signature_with_local_fields(
         self, init_sig: ConcreteSignature, value: SyntheticClassObjectValue
     ) -> ConcreteSignature:
-        extra_params = self._get_synthetic_dataclass_field_parameters(value)
+        extra_params = self._get_synthetic_dataclass_field_parameters(
+            value, include_inherited=False
+        )
         if not extra_params:
             return init_sig
 
@@ -1234,6 +1321,36 @@ class Checker:
                         return origin_argspec.substitute_typevars(typevar_map)
                     return origin_argspec
             argspec = self.arg_spec_cache.get_argspec(value.val)
+            if isinstance(value.val, type):
+                synthetic_class = self.get_synthetic_class(value.val)
+                if synthetic_class is not None and synthetic_class.is_dataclass:
+                    synthetic_constructor_sig = (
+                        self._get_synthetic_constructor_signature(
+                            synthetic_class,
+                            get_return_override=get_return_override,
+                            get_call_attribute=get_call_attribute,
+                        )
+                    )
+                    concrete_argspec = (
+                        self._as_concrete_signature(argspec)
+                        if argspec is not None
+                        else None
+                    )
+                    uses_default_object_constructor = (
+                        safe_getattr(value.val, "__init__", None) is object.__init__
+                        and safe_getattr(value.val, "__new__", None) is object.__new__
+                    )
+                    if synthetic_constructor_sig is not None and (
+                        argspec is None
+                        or uses_default_object_constructor
+                        or (
+                            concrete_argspec is not None
+                            and self._is_uninformative_constructor_signature(
+                                concrete_argspec
+                            )
+                        )
+                    ):
+                        argspec = synthetic_constructor_sig
             if argspec is None:
                 if get_call_attribute is not None:
                     method_object = get_call_attribute(value)
