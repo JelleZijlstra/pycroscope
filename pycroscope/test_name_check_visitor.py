@@ -3150,7 +3150,7 @@ class TestAnnAssign(TestNameCheckVisitorBase):
 
     @assert_passes(allow_import_failures=True)
     def test_typevar_classmethod_in_unimportable_module(self):
-        from typing import TypeVar, assert_type
+        from typing import TypeVar
 
         import does_not_exist  # noqa: F401
 
@@ -3162,8 +3162,8 @@ class TestAnnAssign(TestNameCheckVisitorBase):
                 return value
 
         def capybara():
-            assert_type(Box.identity(1), Box)  # E: inference_failure
-            assert_type(Box.identity("x"), Box)  # E: inference_failure
+            Box.identity(1).bit_length()
+            Box.identity("x").upper()
 
     @assert_passes()
     def test_protocol_override_keeps_compatible_self_type(self):
