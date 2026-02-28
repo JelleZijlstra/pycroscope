@@ -218,10 +218,13 @@ class TestDataclassTransform(TestNameCheckVisitorBase):
             ) -> None:
                 pass
 
-        class FromMeta(WithMeta, frozen=True):  # E: invalid_base
+        class FromMeta(WithMeta, frozen=True):
             m: int = imported_model_field(init=False)
             n: int = imported_model_field(alias="enn")
             o: int = imported_model_field(default=3, kw_only=False)
+
+        class MutableFromMeta(FromMeta, frozen=False):  # E: invalid_base
+            p: int = imported_model_field(alias="pee")
 
         def check_calls() -> None:
             Decorated(2, why=1)
@@ -364,7 +367,7 @@ class TestDataclassTransform(TestNameCheckVisitorBase):
             ) -> None:
                 pass
 
-        class MetaConcrete(MetaBase, frozen=True):  # E: invalid_base
+        class MetaConcrete(MetaBase, frozen=True):
             a: int = model_field(init=False)
             b: int = model_field(alias="bee")
             c: int = model_field(default=3, kw_only=False)
@@ -379,7 +382,7 @@ class TestDataclassTransform(TestNameCheckVisitorBase):
             model.b = 3  # E: incompatible_assignment
 
         def check_inheritance() -> None:
-            class FrozenParent(MetaBase, frozen=True):  # E: invalid_base
+            class FrozenParent(MetaBase, frozen=True):
                 x: int
 
             class MutableChild(FrozenParent, frozen=False):  # E: invalid_base
@@ -503,7 +506,7 @@ class TestDataclassTransform(TestNameCheckVisitorBase):
             ) -> None:
                 pass
 
-        class MetaConcrete(MetaBase, frozen=True):  # E: invalid_base
+        class MetaConcrete(MetaBase, frozen=True):
             a: int = model_field(init=False)
             b: int = model_field(alias="bee")
             c: int = model_field(default=3, kw_only=False)
