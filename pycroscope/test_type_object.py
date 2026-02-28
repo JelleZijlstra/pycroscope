@@ -137,7 +137,7 @@ class TestSyntheticType(TestNameCheckVisitorBase):
 
     @assert_passes(allow_import_failures=True)
     def test_callable_annotation_protocol_interop(self):
-        from typing import Any, Callable, Concatenate, ParamSpec, Protocol, TypeVar
+        from typing import Any, Callable, ParamSpec, Protocol, TypeVar
 
         T_contra = TypeVar("T_contra", contravariant=True)
         P = ParamSpec("P")
@@ -170,7 +170,7 @@ class TestSyntheticType(TestNameCheckVisitorBase):
             p_strict: ProtoStrict,
             p8: Proto8,
             c1: Callable[..., None],
-            c2: Callable[Concatenate[int, ...], None],
+            c2: ProtoFixedTail,
         ) -> None:
             ok1: ProtoAnyTail = c2
             ok2: ProtoFixedTail = p_ps
