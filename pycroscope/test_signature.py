@@ -1641,6 +1641,23 @@ class TestUnpack(TestNameCheckVisitorBase):
                 assert_type(func3(1, "", 3j, 3.4), tuple[float, str, complex])
             """)
 
+    @skip_before((3, 11))
+    def test_var_positional_typevartuple_import_failure(self):
+        self.assert_passes(
+            """
+            from typing import TypeVar, TypeVarTuple, assert_type
+
+            Ts = TypeVarTuple("Ts")
+            T = TypeVar("T")
+
+            def func3(*args: * tuple[int, *Ts, T]) -> tuple[T, *Ts]:
+                raise NotImplementedError
+
+            assert_type(func3(1, "", 3j, 3.4), tuple[float | int, str, complex | float | int])
+            """,
+            allow_import_failures=True,
+        )
+
 
 class TestTooManyPosArgs(TestNameCheckVisitorBase):
     def test_basic(self):

@@ -84,6 +84,8 @@ from .value import (
     ParameterTypeGuardExtension,
     ParamSpecArgsValue,
     ParamSpecKwargsValue,
+    PartialValue,
+    PartialValueOperation,
     SelfT,
     SequenceValue,
     TypedDictValue,
@@ -2841,12 +2843,12 @@ def _try_match_typevartuple_var_positional(
 ) -> CanAssign | None:
     if param.kind is not ParameterKind.VAR_POSITIONAL:
         return None
-    if not isinstance(annotation, SequenceValue) or annotation.typ is not tuple:
+    expected_members = _extract_var_positional_members(annotation)
+    if expected_members is None:
         return None
     value_to_check = replace_known_sequence_value(value_to_check)
     if not isinstance(value_to_check, SequenceValue) or value_to_check.typ is not tuple:
         return None
-    expected_members = annotation.members
     actual_members = value_to_check.get_member_sequence()
     if actual_members is None:
         return None
@@ -2905,6 +2907,35 @@ def _try_match_typevartuple_var_positional(
         {marker_member.typevar: [LowerBound(marker_member.typevar, captured)]}
     )
     return unify_bounds_maps(bounds_maps)
+
+
+def _extract_var_positional_members(
+    annotation: Value,
+) -> tuple[tuple[bool, Value], ...] | None:
+    annotation = replace_known_sequence_value(annotation)
+    if isinstance(annotation, AnnotatedValue):
+        annotation = annotation.value
+    if isinstance(annotation, SequenceValue) and annotation.typ is tuple:
+        return annotation.members
+    if (
+        isinstance(annotation, PartialValue)
+        and annotation.operation is PartialValueOperation.SUBSCRIPT
+        and isinstance(annotation.root, KnownValue)
+        and is_instance_of_typing_name(annotation.root.val, "Unpack")
+        and len(annotation.members) == 1
+    ):
+        inner = replace_known_sequence_value(annotation.members[0])
+        if isinstance(inner, SequenceValue) and inner.typ is tuple:
+            return inner.members
+        if isinstance(inner, TypeVarValue) and inner.is_typevartuple:
+            return ((True, inner),)
+        if (
+            isinstance(inner, GenericValue)
+            and inner.typ is tuple
+            and len(inner.args) == 1
+        ):
+            return ((True, inner.args[0]),)
+    return None
 
 
 def _signature_has_standalone_typevartuple_param(sig: ConcreteSignature) -> bool:
