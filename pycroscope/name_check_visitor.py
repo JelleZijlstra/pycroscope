@@ -157,7 +157,6 @@ from .signature import (
     ParameterKind,
     Signature,
     SigParameter,
-    make_bound_method,
     preprocess_args,
 )
 from .stacked_scopes import (
@@ -5177,25 +5176,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         )
 
     @staticmethod
-    def _known_bool_literal_from_value(value: Value) -> bool | None:
-        value = replace_fallback(value)
-        if isinstance(value, AnnotatedValue):
-            return NameCheckVisitor._known_bool_literal_from_value(value.value)
-        if isinstance(value, MultiValuedValue):
-            known_values: set[bool] = set()
-            for subval in value.vals:
-                known = NameCheckVisitor._known_bool_literal_from_value(subval)
-                if known is None:
-                    return None
-                known_values.add(known)
-            if len(known_values) == 1:
-                return next(iter(known_values))
-            return None
-        if isinstance(value, KnownValue) and isinstance(value.val, bool):
-            return value.val
-        return None
-
-    @staticmethod
     def _arguments_from_call_composites(
         args: Sequence[Composite], keywords: Sequence[tuple[str | None, Composite]]
     ) -> list[Argument]:
@@ -5275,7 +5255,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             return _DataclassFieldCallOptions()
         init = None
         if "init" in bound_args:
-            init = self._known_bool_literal_from_value(bound_args["init"][1].value)
+            init_value = bound_args["init"][1].value
+            if isinstance(init_value, KnownValue) and isinstance(init_value.val, bool):
+                init = init_value.val
         return _DataclassFieldCallOptions(init=init)
 
     def _should_build_dataclass_kw_only_fallback(
