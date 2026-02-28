@@ -59,7 +59,7 @@ from unittest.mock import ANY
 import typeshed_client
 from typing_extensions import Protocol, is_typeddict
 
-from pycroscope.input_sig import InputSigValue, ParamSpecSig
+from pycroscope.input_sig import ActualArguments, InputSigValue, ParamSpecSig
 
 from . import attributes, format_strings, importer, node_visitor, type_evaluation
 from .analysis_lib import (
@@ -147,6 +147,8 @@ from .signature import (
     ANY_SIGNATURE,
     ARGS,
     KWARGS,
+    Argument,
+    BoundArgs,
     BoundMethodSignature,
     ConcreteSignature,
     InvalidSignature,
@@ -155,6 +157,8 @@ from .signature import (
     ParameterKind,
     Signature,
     SigParameter,
+    make_bound_method,
+    preprocess_args,
 )
 from .stacked_scopes import (
     EMPTY_ORIGIN,
@@ -1258,6 +1262,36 @@ class _PendingOverloadBlock:
 class _EnumMemberTracker:
     by_value: dict[object, str] = dataclass_field(default_factory=dict)
     by_name: dict[str, object] = dataclass_field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class _DataclassFieldCallOptions:
+    init: bool | None = None
+
+
+@dataclass
+class _DataclassFieldInferenceCallContext:
+    checker: "NameCheckVisitor"
+    errors: list[str] = dataclass_field(default_factory=list)
+
+    @property
+    def visitor(self) -> "NameCheckVisitor":
+        return self.checker
+
+    @property
+    def can_assign_ctx(self) -> "NameCheckVisitor":
+        return self.checker
+
+    def on_error(
+        self,
+        message: str,
+        *,
+        code: Error = ErrorCode.incompatible_call,
+        node: ast.AST | None = None,
+        detail: str | None = None,
+        replacement: node_visitor.Replacement | None = None,
+    ) -> None:
+        self.errors.append(message)
 
 
 @used  # exposed as an API
@@ -5136,6 +5170,102 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             if self._value_matches_dataclass_field_specifier(callee, field_specifier):
                 return True
         return False
+
+    @staticmethod
+    def _known_bool_literal_from_value(value: Value) -> bool | None:
+        value = replace_fallback(value)
+        if isinstance(value, AnnotatedValue):
+            return NameCheckVisitor._known_bool_literal_from_value(value.value)
+        if isinstance(value, MultiValuedValue):
+            known_values: set[bool] = set()
+            for subval in value.vals:
+                known = NameCheckVisitor._known_bool_literal_from_value(subval)
+                if known is None:
+                    return None
+                known_values.add(known)
+            if len(known_values) == 1:
+                return next(iter(known_values))
+            return None
+        if isinstance(value, KnownValue) and isinstance(value.val, bool):
+            return value.val
+        return None
+
+    def _arguments_for_call_node(self, node: ast.Call) -> list[Argument]:
+        args = [self.composite_from_node(arg) for arg in node.args]
+        keywords = [
+            (kw.arg, self.composite_from_node(kw.value)) for kw in node.keywords
+        ]
+        return [
+            (
+                (Composite(arg.value.root, arg.varname, arg.node), ARGS)
+                if (
+                    isinstance(arg.value, PartialValue)
+                    and arg.value.operation is PartialValueOperation.UNPACK
+                )
+                else (arg, None)
+            )
+            for arg in args
+        ] + [
+            (value, KWARGS) if keyword is None else (value, keyword)
+            for keyword, value in keywords
+        ]
+
+    def _get_bound_args_for_dataclass_field_signature(
+        self, signature: Signature, actual_args: ActualArguments, *, is_overload: bool
+    ) -> BoundArgs | None:
+        ctx = _DataclassFieldInferenceCallContext(self)
+        bound_args = signature.bind_arguments(actual_args, ctx)
+        if bound_args is None:
+            return None
+        ret = signature.check_call_preprocessed(
+            actual_args, ctx, is_overload=is_overload
+        )
+        if ret.is_error or ret.remaining_arguments is not None:
+            return None
+        return bound_args
+
+    def _get_dataclass_field_call_bound_args(self, expr: ast.Call) -> BoundArgs | None:
+        with self.catch_errors() as caught_errors:
+            callee = self.visit(expr.func)
+        if caught_errors:
+            return None
+        signature = self.signature_from_value(callee, expr)
+        if not isinstance(signature, (Signature, OverloadedSignature)):
+            return None
+
+        with self.catch_errors() as caught_errors:
+            arguments = self._arguments_for_call_node(expr)
+        if caught_errors:
+            return None
+        preprocess_ctx = _DataclassFieldInferenceCallContext(self)
+        actual_args = preprocess_args(arguments, preprocess_ctx)
+        if actual_args is None:
+            return None
+
+        if isinstance(signature, Signature):
+            return self._get_bound_args_for_dataclass_field_signature(
+                signature, actual_args, is_overload=False
+            )
+
+        last = len(signature.signatures) - 1
+        for i, overload_sig in enumerate(signature.signatures):
+            bound_args = self._get_bound_args_for_dataclass_field_signature(
+                overload_sig, actual_args, is_overload=i != last
+            )
+            if bound_args is not None:
+                return bound_args
+        return None
+
+    def _infer_dataclass_field_call_options(
+        self, expr: ast.Call
+    ) -> _DataclassFieldCallOptions:
+        bound_args = self._get_dataclass_field_call_bound_args(expr)
+        if bound_args is None:
+            return _DataclassFieldCallOptions()
+        init = None
+        if "init" in bound_args:
+            init = self._known_bool_literal_from_value(bound_args["init"][1].value)
+        return _DataclassFieldCallOptions(init=init)
 
     def _should_build_dataclass_kw_only_fallback(
         self, node: ast.ClassDef, options: Mapping[str, bool]
@@ -10375,6 +10505,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     kw.arg in {"default", "default_factory"}
                     for kw in node.value.keywords
                 )
+                inferred_options = self._infer_dataclass_field_call_options(node.value)
+                if inferred_options.init is not None:
+                    init = inferred_options.init
                 init_keyword = next(
                     (kw.value for kw in node.value.keywords if kw.arg == "init"), None
                 )
