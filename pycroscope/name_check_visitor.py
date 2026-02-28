@@ -155,6 +155,7 @@ from .signature import (
     ParameterKind,
     Signature,
     SigParameter,
+    make_bound_method,
 )
 from .stacked_scopes import (
     EMPTY_ORIGIN,
@@ -507,6 +508,28 @@ class _AttrContext(CheckerAttrContext):
 
     def should_ignore_none_attributes(self) -> bool:
         return self.ignore_none
+
+    def should_include_synthetic_methods(self) -> bool:
+        return self.node is not None
+
+    def bind_synthetic_instance_attribute(self, attr_name: str, value: Value) -> Value:
+        # In expression contexts (node is not None), treat synthetic instance
+        # methods like bound methods so calls on synthetic classes work even if
+        # module import failed. In relation-only contexts keep method signatures
+        # unbound to preserve protocol compatibility checks.
+        if (
+            self.node is not None
+            and isinstance(value, CallableValue)
+            and not (attr_name.startswith("__") and attr_name.endswith("__"))
+        ):
+            maybe_bound = make_bound_method(
+                value.signature, self.root_composite, ctx=self.checker
+            )
+            if maybe_bound is not None:
+                signature = maybe_bound.get_signature(ctx=self.checker)
+                if signature is not None:
+                    return CallableValue(signature)
+        return super().bind_synthetic_instance_attribute(attr_name, value)
 
 
 @dataclass
