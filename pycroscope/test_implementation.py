@@ -1662,6 +1662,56 @@ class TestIssubclass(TestNameCheckVisitorBase):
             isinstance(obj, Mapping)
             issubclass(cls, Mapping)
 
+    @assert_passes()
+    def test_rejects_data_protocol_for_issubclass(self) -> None:
+        from typing import Protocol, runtime_checkable
+
+        @runtime_checkable
+        class DataProtocol(Protocol):
+            name: str
+
+            def method1(self) -> int: ...
+
+        @runtime_checkable
+        class NonDataProtocol(Protocol):
+            def method1(self) -> int: ...
+
+        def capybara(cls: type[object]) -> None:
+            issubclass(cls, DataProtocol)  # E: incompatible_argument
+            issubclass(cls, (NonDataProtocol, DataProtocol))  # E: incompatible_argument
+            issubclass(cls, NonDataProtocol)
+
+    @assert_passes()
+    def test_runtime_checkable_protocol_unsafe_overlap(self) -> None:
+        from typing import Protocol, runtime_checkable
+
+        @runtime_checkable
+        class Proto(Protocol):
+            def method1(self, arg: int) -> int: ...
+
+        @runtime_checkable
+        class NonDataProtocol(Protocol):
+            def method1(self) -> int: ...
+
+        class ConcreteA:
+            def method1(self, arg: str) -> None:
+                pass
+
+        class ConcreteB:
+            method1: int = 1
+
+        class Good:
+            def method1(self, arg: int) -> int:
+                return arg
+
+        def capybara() -> None:
+            both = (Proto, NonDataProtocol)
+            isinstance(ConcreteA(), Proto)  # E: incompatible_argument
+            isinstance(ConcreteB(), both)  # E: incompatible_argument
+            issubclass(ConcreteA, both)  # E: incompatible_argument
+            isinstance(Good(), Proto)
+            issubclass(Good, Proto)
+
 
 class TestCallableGuards(TestNameCheckVisitorBase):
     @assert_passes()
