@@ -510,6 +510,7 @@ class _SyntheticTypedDictContext:
 class _DataclassTransformInfo:
     frozen_default: bool | None = None
     kw_only_default: bool | None = None
+    order_default: bool | None = None
     field_specifiers: tuple[Value, ...] = ()
 
 
@@ -517,6 +518,7 @@ class _DataclassTransformInfo:
 class _ClassDataclassSemantics:
     is_dataclass: bool
     frozen: bool | None
+    order: bool | None
     kw_only_default: bool
     field_specifiers: tuple[Value, ...]
     is_transform_provider: bool
@@ -2572,6 +2574,11 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                         if dataclass_semantics.is_dataclass
                         else None
                     ),
+                    dataclass_order=(
+                        dataclass_semantics.order
+                        if dataclass_semantics.is_dataclass
+                        else None
+                    ),
                 )
                 if dataclass_semantics.is_transform_provider:
                     synthetic_class.class_attributes["%dataclass_transform"] = (
@@ -2593,6 +2600,12 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                         ] = KnownValue(
                             dataclass_semantics.transform_info.kw_only_default
                         )
+                    if dataclass_semantics.transform_info is not None and isinstance(
+                        dataclass_semantics.transform_info.order_default, bool
+                    ):
+                        synthetic_class.class_attributes[
+                            "%dataclass_transform_order_default"
+                        ] = KnownValue(dataclass_semantics.transform_info.order_default)
                     if (
                         dataclass_semantics.transform_info is not None
                         and dataclass_semantics.transform_info.field_specifiers
@@ -2627,6 +2640,11 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                             if dataclass_semantics.is_dataclass
                             else None
                         ),
+                        dataclass_order=(
+                            dataclass_semantics.order
+                            if dataclass_semantics.is_dataclass
+                            else None
+                        ),
                     )
                     self.checker.register_synthetic_class(existing)
                 else:
@@ -2636,6 +2654,11 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                         is_dataclass=dataclass_semantics.is_dataclass,
                         dataclass_frozen=(
                             dataclass_semantics.frozen
+                            if dataclass_semantics.is_dataclass
+                            else None
+                        ),
+                        dataclass_order=(
+                            dataclass_semantics.order
                             if dataclass_semantics.is_dataclass
                             else None
                         ),
@@ -2659,6 +2682,12 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                         ] = KnownValue(
                             dataclass_semantics.transform_info.kw_only_default
                         )
+                    if dataclass_semantics.transform_info is not None and isinstance(
+                        dataclass_semantics.transform_info.order_default, bool
+                    ):
+                        existing.class_attributes[
+                            "%dataclass_transform_order_default"
+                        ] = KnownValue(dataclass_semantics.transform_info.order_default)
                     if (
                         dataclass_semantics.transform_info is not None
                         and dataclass_semantics.transform_info.field_specifiers
@@ -2675,6 +2704,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     )
                     existing.class_attributes.pop(
                         "%dataclass_transform_kw_only_default", None
+                    )
+                    existing.class_attributes.pop(
+                        "%dataclass_transform_order_default", None
                     )
                     existing.class_attributes.pop(
                         "%dataclass_transform_field_specifiers", None
@@ -3930,6 +3962,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         return _DataclassTransformInfo(
             frozen_default=_merge_bool([info.frozen_default for info in filtered]),
             kw_only_default=_merge_bool([info.kw_only_default for info in filtered]),
+            order_default=_merge_bool([info.order_default for info in filtered]),
             field_specifiers=tuple(field_specifiers),
         )
 
@@ -3994,7 +4027,10 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 if not self._is_dataclass_transform_marker_target(decorator.func):
                     continue
                 info = _DataclassTransformInfo(
-                    frozen_default=False, kw_only_default=False, field_specifiers=()
+                    frozen_default=False,
+                    kw_only_default=False,
+                    order_default=False,
+                    field_specifiers=(),
                 )
                 for kw in decorator.keywords:
                     if kw.arg is None:
@@ -4007,6 +4043,10 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                         bool_value = self._get_bool_literal(kw.value)
                         if bool_value is not None:
                             info = replace(info, kw_only_default=bool_value)
+                    elif kw.arg == "order_default":
+                        bool_value = self._get_bool_literal(kw.value)
+                        if bool_value is not None:
+                            info = replace(info, order_default=bool_value)
                     elif kw.arg == "field_specifiers":
                         with self.catch_errors() as errors:
                             field_specifier_value = self.visit(kw.value)
@@ -4021,7 +4061,10 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             elif self._is_dataclass_transform_marker_target(decorator):
                 infos.append(
                     _DataclassTransformInfo(
-                        frozen_default=False, kw_only_default=False, field_specifiers=()
+                        frozen_default=False,
+                        kw_only_default=False,
+                        order_default=False,
+                        field_specifiers=(),
                     )
                 )
         if not infos:
@@ -4041,6 +4084,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         kw_only_default = raw.get("kw_only_default", False)
         if not isinstance(kw_only_default, bool):
             kw_only_default = None
+        order_default = raw.get("order_default", False)
+        if not isinstance(order_default, bool):
+            order_default = None
 
         field_specifier_values: list[Value] = []
         raw_field_specifiers = raw.get("field_specifiers", ())
@@ -4053,6 +4099,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         return _DataclassTransformInfo(
             frozen_default=frozen_default,
             kw_only_default=kw_only_default,
+            order_default=order_default,
             field_specifiers=tuple(field_specifier_values),
         )
 
@@ -4083,6 +4130,15 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         ):
             kw_only_default = raw_kw_only_default.val
 
+        order_default: bool | None = None
+        raw_order_default = value.class_attributes.get(
+            "%dataclass_transform_order_default"
+        )
+        if isinstance(raw_order_default, KnownValue) and isinstance(
+            raw_order_default.val, bool
+        ):
+            order_default = raw_order_default.val
+
         field_specifiers: tuple[Value, ...] = ()
         raw_field_specifiers = value.class_attributes.get(
             "%dataclass_transform_field_specifiers"
@@ -4098,6 +4154,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         return _DataclassTransformInfo(
             frozen_default=frozen_default,
             kw_only_default=kw_only_default,
+            order_default=order_default,
             field_specifiers=field_specifiers,
         )
 
@@ -4106,6 +4163,14 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     ) -> _DataclassTransformInfo | None:
         if value is UNINITIALIZED_VALUE:
             return None
+        if isinstance(value, PartialValue):
+            if (
+                info := self._get_dataclass_transform_info_from_value(
+                    value.runtime_value
+                )
+            ) is not None:
+                return info
+            return self._get_dataclass_transform_info_from_value(value.root)
         try:
             value = replace_fallback(value)
         except NotAGradualType:
@@ -4125,7 +4190,27 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         if isinstance(value, SyntheticClassObjectValue):
             return self._get_dataclass_transform_info_from_synthetic_class(value)
         if isinstance(value, KnownValue):
-            return self._get_dataclass_transform_info_from_runtime_object(value.val)
+            if (
+                info := self._get_dataclass_transform_info_from_runtime_object(
+                    value.val
+                )
+            ) is not None:
+                return info
+            origin = safe_getattr(value.val, "__origin__", None)
+            if isinstance(origin, type):
+                synthetic_class = self.checker.get_synthetic_class(origin)
+                if (
+                    synthetic_class is not None
+                    and (
+                        synthetic_info := self._get_dataclass_transform_info_from_synthetic_class(
+                            synthetic_class
+                        )
+                    )
+                    is not None
+                ):
+                    return synthetic_info
+                return self._get_dataclass_transform_info_from_runtime_object(origin)
+            return None
         if isinstance(value, SubclassValue) and isinstance(value.typ, TypedValue):
             return self._get_dataclass_transform_info_from_value(value.typ)
         if isinstance(value, (TypedValue, GenericValue)):
@@ -4205,13 +4290,16 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         )
         if is_dataclass_class:
             frozen = None
+            order = None
             kw_only_default = False
             if dataclass_options is not None:
                 frozen = dataclass_options.get("frozen", False)
+                order = dataclass_options.get("order", False)
                 kw_only_default = dataclass_options.get("kw_only", False)
             return _ClassDataclassSemantics(
                 is_dataclass=True,
                 frozen=frozen,
+                order=order,
                 kw_only_default=kw_only_default,
                 field_specifiers=(KnownValue(dataclass_field),),
                 is_transform_provider=is_transform_provider,
@@ -4241,10 +4329,20 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     ),
                     None,
                 )
+                order_override = next(
+                    (
+                        self._get_bool_literal(kw.value)
+                        for kw in decorator.keywords
+                        if kw.arg == "order"
+                    ),
+                    None,
+                )
                 if frozen_override is not None:
                     info = replace(info, frozen_default=frozen_override)
                 if kw_only_override is not None:
                     info = replace(info, kw_only_default=kw_only_override)
+                if order_override is not None:
+                    info = replace(info, order_default=order_override)
             transform_infos.append(info)
 
         hierarchy_transform_infos = list(base_transform_infos)
@@ -4270,6 +4368,14 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 ),
                 None,
             )
+            order_override = next(
+                (
+                    self._get_bool_literal(keyword.value)
+                    for keyword in node.keywords
+                    if keyword.arg == "order"
+                ),
+                None,
+            )
             if frozen_override is not None:
                 merged_hierarchy_info = replace(
                     merged_hierarchy_info, frozen_default=frozen_override
@@ -4277,6 +4383,10 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             if kw_only_override is not None:
                 merged_hierarchy_info = replace(
                     merged_hierarchy_info, kw_only_default=kw_only_override
+                )
+            if order_override is not None:
+                merged_hierarchy_info = replace(
+                    merged_hierarchy_info, order_default=order_override
                 )
             transform_infos.append(merged_hierarchy_info)
 
@@ -4287,6 +4397,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             return _ClassDataclassSemantics(
                 is_dataclass=True,
                 frozen=merged_transform_info.frozen_default,
+                order=merged_transform_info.order_default,
                 kw_only_default=bool(merged_transform_info.kw_only_default),
                 field_specifiers=merged_transform_info.field_specifiers,
                 is_transform_provider=is_transform_provider,
@@ -4302,9 +4413,13 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             frozen = safe_getattr(dataclass_params, "frozen", None)
             if not isinstance(frozen, bool):
                 frozen = None
+            order = safe_getattr(dataclass_params, "order", None)
+            if not isinstance(order, bool):
+                order = None
             return _ClassDataclassSemantics(
                 is_dataclass=True,
                 frozen=frozen,
+                order=order,
                 kw_only_default=False,
                 field_specifiers=(KnownValue(dataclass_field),),
                 is_transform_provider=is_transform_provider,
@@ -4314,6 +4429,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         return _ClassDataclassSemantics(
             is_dataclass=False,
             frozen=None,
+            order=None,
             kw_only_default=False,
             field_specifiers=(),
             is_transform_provider=is_transform_provider,
@@ -4428,6 +4544,20 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             frozen = None
         return True, frozen
 
+    def _get_dataclass_order_status_for_type(
+        self, typ: type | str
+    ) -> tuple[bool, bool | None]:
+        synthetic_class = self.checker.get_synthetic_class(typ)
+        if synthetic_class is not None and synthetic_class.is_dataclass:
+            return True, synthetic_class.dataclass_order
+        if not isinstance(typ, type) or not is_dataclass_type(typ):
+            return False, None
+        dataclass_params = safe_getattr(typ, "__dataclass_params__", None)
+        order = safe_getattr(dataclass_params, "order", None)
+        if not isinstance(order, bool):
+            order = None
+        return True, order
+
     def _get_dataclass_status_for_class_value(
         self, value: Value
     ) -> tuple[bool, bool | None]:
@@ -4485,6 +4615,65 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             if isinstance(value.typ, (type, str)):
                 return self._get_dataclass_status_for_type(value.typ)
         return False, None
+
+    def _get_dataclass_order_info_for_instance_value(
+        self, value: Value
+    ) -> tuple[type | str, bool | None] | None:
+        value = replace_fallback(value)
+        if isinstance(value, AnnotatedValue):
+            return self._get_dataclass_order_info_for_instance_value(value.value)
+        if isinstance(value, MultiValuedValue):
+            infos = {
+                info
+                for subval in value.vals
+                if (info := self._get_dataclass_order_info_for_instance_value(subval))
+                is not None
+            }
+            if len(infos) == 1:
+                return next(iter(infos))
+            return None
+        if isinstance(value, KnownValue):
+            if isinstance(value.val, type):
+                return None
+            typ: type | str = type(value.val)
+            is_dataclass, order = self._get_dataclass_order_status_for_type(typ)
+            if not is_dataclass:
+                return None
+            return typ, order
+        if isinstance(value, (TypedValue, GenericValue)):
+            if not isinstance(value.typ, (type, str)):
+                return None
+            typ = value.typ
+            is_dataclass, order = self._get_dataclass_order_status_for_type(typ)
+            if not is_dataclass:
+                return None
+            return typ, order
+        return None
+
+    def _check_dataclass_order_comparison(
+        self, op: ast.cmpop, lhs: Value, rhs: Value, parent_node: ast.AST
+    ) -> None:
+        if not isinstance(op, (ast.Lt, ast.LtE, ast.Gt, ast.GtE)):
+            return
+        lhs_info = self._get_dataclass_order_info_for_instance_value(lhs)
+        rhs_info = self._get_dataclass_order_info_for_instance_value(rhs)
+        if lhs_info is None or rhs_info is None:
+            return
+        lhs_type, lhs_order = lhs_info
+        rhs_type, rhs_order = rhs_info
+        if lhs_order is not True or rhs_order is not True or lhs_type != rhs_type:
+            description, _, _, _ = BINARY_OPERATION_TO_DESCRIPTION_AND_METHOD[type(op)]
+            lhs_shown = (
+                lhs_type if isinstance(lhs_type, str) else stringify_object(lhs_type)
+            )
+            rhs_shown = (
+                rhs_type if isinstance(rhs_type, str) else stringify_object(rhs_type)
+            )
+            self._show_error_if_checking(
+                parent_node,
+                f"Unsupported operands for {description}: {lhs_shown} and {rhs_shown}",
+                error_code=ErrorCode.unsupported_operation,
+            )
 
     def _check_dataclass_inheritance(
         self,
@@ -7790,6 +7979,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         parent_node: ast.AST,
     ) -> Value:
         self.check_for_unsafe_comparison(op, lhs, rhs, parent_node)
+        self._check_dataclass_order_comparison(op, lhs, rhs, parent_node)
 
         lhs_constraint = extract_constraints(lhs)
         rhs_constraint = extract_constraints(rhs)

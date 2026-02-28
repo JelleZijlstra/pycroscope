@@ -674,6 +674,9 @@ class TestImportFailureHandlingCodeSamples(TestNameCheckVisitorBase):
         dc1_1 = DC1("", 0)
         dc2_1 = DC2("hi", 2)
 
+        if dc1_1 < dc2_1:  # E: unsupported_operation
+            pass
+
         if dc1_1 != dc2_1:
             pass
 

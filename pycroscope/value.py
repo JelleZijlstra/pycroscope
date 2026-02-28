@@ -1562,6 +1562,9 @@ class SyntheticClassObjectValue(Value):
     dataclass_frozen: bool | None = field(
         default=None, compare=False, hash=False, repr=False
     )
+    dataclass_order: bool | None = field(
+        default=None, compare=False, hash=False, repr=False
+    )
 
     def substitute_typevars(self, typevars: TypeVarMap) -> Value:
         substituted = self.class_type.substitute_typevars(typevars)
@@ -1584,6 +1587,7 @@ class SyntheticClassObjectValue(Value):
             },
             self.is_dataclass,
             self.dataclass_frozen,
+            self.dataclass_order,
         )
 
     def walk_values(self) -> Iterable[Value]:
