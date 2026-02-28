@@ -14,7 +14,7 @@ from .signature import (
 from .signature import ParameterKind as K
 from .signature import SigParameter as P
 from .test_name_check_visitor import TestNameCheckVisitorBase
-from .test_node_visitor import assert_passes
+from .test_node_visitor import assert_passes, skip_before
 from .test_value import CTX
 from .tests import make_simple_sequence
 from .value import (
@@ -1599,6 +1599,47 @@ class TestUnpack(TestNameCheckVisitorBase):
             ...
 
         print(ok, bad)
+
+    @skip_before((3, 11))
+    def test_callable_typevartuple(self):
+        self.assert_passes("""
+            from typing import Callable, TypeVar, TypeVarTuple
+
+            from typing_extensions import assert_type
+
+            Ts = TypeVarTuple("Ts")
+            T = TypeVar("T")
+
+            def func2(f: Callable[[int, *Ts, T], tuple[T, *Ts]]) -> tuple[*Ts, T]:
+                raise NotImplementedError
+
+            def callback1(a: int, b: str, c: int, d: complex) -> tuple[complex, str, int]:
+                raise NotImplementedError
+
+            def callback2(a: int, d: str) -> tuple[str]:
+                raise NotImplementedError
+
+            def caller() -> None:
+                assert_type(func2(callback1), tuple[str, int, complex])
+                assert_type(func2(callback2), tuple[str])
+            """)
+
+    @skip_before((3, 11))
+    def test_var_positional_typevartuple(self):
+        self.assert_passes("""
+            from typing import TypeVar, TypeVarTuple
+
+            from typing_extensions import assert_type
+
+            Ts = TypeVarTuple("Ts")
+            T = TypeVar("T")
+
+            def func3(*args: *tuple[int, *Ts, T]) -> tuple[T, *Ts]:
+                raise NotImplementedError
+
+            def caller() -> None:
+                assert_type(func3(1, "", 3j, 3.4), tuple[float, str, complex])
+            """)
 
 
 class TestTooManyPosArgs(TestNameCheckVisitorBase):

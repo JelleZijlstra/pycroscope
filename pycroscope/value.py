@@ -1228,13 +1228,26 @@ class SequenceValue(GenericValue):
             return SequenceValue(typ, members)
 
     def substitute_typevars(self, typevars: TypeVarMap) -> Value:
-        return SequenceValue(
-            self.typ,
-            [
-                (is_many, member.substitute_typevars(typevars))
-                for is_many, member in self.members
-            ],
-        )
+        new_members: list[tuple[bool, Value]] = []
+        for is_many, member in self.members:
+            substituted = member.substitute_typevars(typevars)
+            if (
+                is_many
+                and isinstance(member, TypeVarValue)
+                and member.is_typevartuple
+                and self.typ is tuple
+                and substituted is not member
+            ):
+                substituted = replace_known_sequence_value(substituted)
+                if (
+                    isinstance(substituted, SequenceValue)
+                    and substituted.typ is tuple
+                    and all(not inner_many for inner_many, _ in substituted.members)
+                ):
+                    new_members.extend(substituted.members)
+                    continue
+            new_members.append((is_many, substituted))
+        return SequenceValue(self.typ, new_members)
 
     def __str__(self) -> str:
         members = ", ".join(
