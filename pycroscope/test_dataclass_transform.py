@@ -8,7 +8,9 @@ class TestDataclassTransform(TestNameCheckVisitorBase):
     @assert_passes()
     def test_dataclass_transform_decorator_base_and_metaclass(self):
         from dataclasses import dataclass
-        from typing import Callable, TypeVar, dataclass_transform
+        from typing import Callable, TypeVar
+
+        from typing_extensions import dataclass_transform
 
         T = TypeVar("T")
 
@@ -53,7 +55,7 @@ class TestDataclassTransform(TestNameCheckVisitorBase):
                 cls = super().__new__(mcls, name, bases, namespace)
                 return dataclass(cls, frozen=frozen, kw_only=kw_only)
 
-        class WithMeta(metaclass=ModelMeta): ...
+        class WithMeta(metaclass=ModelMeta, frozen=True): ...
 
         class FromMeta(WithMeta, frozen=True):
             b: int
@@ -74,7 +76,9 @@ class TestDataclassTransform(TestNameCheckVisitorBase):
     def test_dataclass_transform_synthetic_classes_after_import_failure(self):
         boom = 1 / 0
 
-        from typing import Callable, TypeVar, dataclass_transform
+        from typing import Callable, TypeVar
+
+        from typing_extensions import dataclass_transform
 
         T = TypeVar("T")
 
@@ -144,7 +148,9 @@ class TestDataclassTransform(TestNameCheckVisitorBase):
     def test_dataclass_transform_fully_imported_providers(self):
         import sys
         import types
-        from typing import Any, Callable, TypeVar, dataclass_transform
+        from typing import Any, Callable, TypeVar
+
+        from typing_extensions import dataclass_transform
 
         T = TypeVar("T")
         helper = types.ModuleType("dt_transform_helpers")
@@ -236,7 +242,9 @@ class TestDataclassTransform(TestNameCheckVisitorBase):
 
     @assert_passes()
     def test_dataclass_transform_decorator_field_specifier_options(self):
-        from typing import Any, Callable, TypeVar, dataclass_transform
+        from typing import Any, Callable, TypeVar
+
+        from typing_extensions import dataclass_transform
 
         T = TypeVar("T")
 
@@ -286,7 +294,9 @@ class TestDataclassTransform(TestNameCheckVisitorBase):
 
     @assert_passes()
     def test_dataclass_transform_base_field_specifier_options(self):
-        from typing import Any, dataclass_transform
+        from typing import Any
+
+        from typing_extensions import dataclass_transform
 
         def model_field(
             *,
@@ -329,7 +339,9 @@ class TestDataclassTransform(TestNameCheckVisitorBase):
 
     @assert_passes()
     def test_dataclass_transform_metaclass_field_specifier_options(self):
-        from typing import Any, dataclass_transform
+        from typing import Any
+
+        from typing_extensions import dataclass_transform
 
         def model_field(
             *,
@@ -379,7 +391,9 @@ class TestDataclassTransform(TestNameCheckVisitorBase):
     ):
         boom = 1 / 0
 
-        from typing import Any, Callable, TypeVar, dataclass_transform
+        from typing import Any, Callable, TypeVar
+
+        from typing_extensions import dataclass_transform
 
         T = TypeVar("T")
 
@@ -423,7 +437,9 @@ class TestDataclassTransform(TestNameCheckVisitorBase):
     ):
         boom = 1 / 0
 
-        from typing import Any, dataclass_transform
+        from typing import Any
+
+        from typing_extensions import dataclass_transform
 
         def model_field(
             *,
@@ -462,7 +478,9 @@ class TestDataclassTransform(TestNameCheckVisitorBase):
     ):
         boom = 1 / 0
 
-        from typing import Any, dataclass_transform
+        from typing import Any
+
+        from typing_extensions import dataclass_transform
 
         def model_field(
             *,
