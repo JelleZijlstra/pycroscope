@@ -131,6 +131,10 @@ ErrorCode = ErrorRegistry(
         Error("incompatible_assignment", "Incompatible variable assignment"),
         Error("invalid_typeddict_key", "Invalid key in TypedDict"),
         Error("invalid_annotation", "Invalid type annotation"),
+        Error(
+            "classvar_type_parameters",
+            "ClassVar cannot include TypeVar/ParamSpec type parameters",
+        ),
         Error("invalid_literal", "Invalid argument to Literal[]"),
         Error("invalid_base", "Invalid base class"),
         Error(
@@ -191,6 +195,7 @@ DISABLED_IN_TESTS = {
     ErrorCode.suggested_return_type,
     ErrorCode.suggested_parameter_type,
     ErrorCode.implicit_any,
+    ErrorCode.classvar_type_parameters,
     ErrorCode.invalid_literal,
 }
 
