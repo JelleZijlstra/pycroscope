@@ -1039,10 +1039,13 @@ class Checker:
 
         if has_direct_new and not has_direct_init:
             init_sig = None
-        if value.is_dataclass and not has_direct_init and init_sig is not None:
-            init_sig = self._augment_dataclass_constructor_signature_with_local_fields(
-                init_sig, value
+        if value.is_dataclass and not has_direct_init:
+            dataclass_sig = self._get_synthetic_dataclass_constructor_signature(
+                value, instance_type
             )
+            if dataclass_sig is None:
+                dataclass_sig = Signature.make([], instance_type)
+            init_sig = dataclass_sig
 
         if new_sig is not None and init_sig is not None:
             if self._signature_allows_init_after_new(new_sig, instance_type):

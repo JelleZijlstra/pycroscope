@@ -515,3 +515,85 @@ class TestDataclassTransform(TestNameCheckVisitorBase):
         MetaConcrete(1, 2)  # E: incompatible_call
         model = MetaConcrete(2, bee=1)
         model.b = 3  # E: incompatible_assignment
+
+    @assert_passes(allow_import_failures=True)
+    def test_dataclass_transform_ignores_inherited_init_after_import_failure(self):
+        boom = 1 / 0
+
+        from typing import Any
+
+        from typing_extensions import dataclass_transform
+
+        def model_field(*, init: bool = True, default: Any = 0) -> Any:
+            raise NotImplementedError
+
+        @dataclass_transform(kw_only_default=True, field_specifiers=(model_field,))
+        class Base:
+            not_a_field: str
+
+            def __init_subclass__(cls, *, kw_only: bool = True) -> None:
+                pass
+
+            def __init__(self, not_a_field: str) -> None:
+                self.not_a_field = not_a_field
+
+        class Child(Base):
+            id: int = model_field()
+
+        Child(id=1)
+        Child(not_a_field="x", id=1)  # E: incompatible_call
+
+    @assert_passes()
+    def test_dataclass_transform_generic_base(self):
+        from typing import Any, Generic, TypeVar
+
+        from typing_extensions import dataclass_transform
+
+        T = TypeVar("T")
+
+        def model_field(*, init: bool = True, default: Any = 0) -> Any:
+            return object()
+
+        @dataclass_transform(kw_only_default=True, field_specifiers=(model_field,))
+        class GenericBase(Generic[T]):
+            data: T
+
+            def __init_subclass__(cls, *, kw_only: bool = True) -> None:
+                pass
+
+        class GenericChild(GenericBase[int]):
+            id: int = model_field()
+
+        def check_calls() -> None:
+            GenericChild(id=1)
+
+    @assert_passes()
+    def test_dataclass_transform_order_keyword_controls_comparison(self):
+        from typing import Any
+
+        from typing_extensions import dataclass_transform
+
+        def model_field(*, init: bool = True, default: Any = 0) -> Any:
+            return object()
+
+        @dataclass_transform(kw_only_default=True, field_specifiers=(model_field,))
+        class Base:
+            def __init_subclass__(
+                cls, *, order: bool = True, kw_only: bool = True
+            ) -> None:
+                pass
+
+        class Unordered(Base):
+            id: int = model_field()
+
+        class Ordered(Base, order=True):
+            id: int = model_field()
+
+        def check_calls() -> None:
+            unordered1 = Unordered(id=1)
+            unordered2 = Unordered(id=2)
+            unordered1 < unordered2  # E: unsupported_operation
+
+            ordered1 = Ordered(id=1)
+            ordered2 = Ordered(id=2)
+            ordered1 < ordered2

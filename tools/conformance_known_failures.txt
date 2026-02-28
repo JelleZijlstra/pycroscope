@@ -20,13 +20,10 @@ dataclasses_descriptors
 dataclasses_hash
 dataclasses_inheritance
 dataclasses_match_args
-dataclasses_order
 dataclasses_postinit
 dataclasses_slots
-dataclasses_transform_class
 dataclasses_transform_converter
 dataclasses_transform_field
-dataclasses_transform_func
 dataclasses_transform_meta
 dataclasses_usage
 directives_deprecated
