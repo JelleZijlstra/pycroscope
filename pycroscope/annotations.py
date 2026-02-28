@@ -1042,6 +1042,9 @@ def _annotation_expr_from_value(value: Value, ctx: Context) -> AnnotationExpr:
             return _annotation_expr_from_subscripted_value(
                 value.root, value.node, value.members, ctx
             )
+        if value.operation is PartialValueOperation.UNPACK:
+            inner = _annotation_expr_from_value(value.root, ctx)
+            return inner.add_qualifier(Qualifier.Unpack, value.node)
         return AnnotationExpr(ctx, _type_from_value(value, ctx))
     else:
         return AnnotationExpr(ctx, _type_from_value(value, ctx))
@@ -1483,11 +1486,7 @@ class _Visitor(ast.NodeVisitor):
     def visit_Starred(self, node: ast.Starred) -> Value:
         value = self.visit(node.value)
         return PartialValue(
-            PartialValueOperation.SUBSCRIPT,
-            KnownValue(typing_extensions.Unpack),
-            node,
-            (value,),
-            _UNPACK_RUNTIME_TYPE,
+            PartialValueOperation.UNPACK, value, node, (), _UNPACK_RUNTIME_TYPE
         )
 
     def visit_UnaryOp(self, node: ast.UnaryOp) -> Value | None:
@@ -1648,6 +1647,8 @@ def _is_unpack_annotation_member(member: Value) -> bool:
         origin = get_origin(member.val)
         return is_typing_name(origin, "Unpack")
     if isinstance(member, PartialValue):
+        if member.operation is PartialValueOperation.UNPACK:
+            return True
         return (
             member.operation is PartialValueOperation.SUBSCRIPT
             and isinstance(member.root, KnownValue)

@@ -250,6 +250,7 @@ from .value import (
     concrete_values_from_iterable,
     flatten_values,
     get_tv_map,
+    get_typevar_variance,
     has_any_base_value,
     is_async_iterable,
     is_iterable,
@@ -429,29 +430,19 @@ class AsyncCustomContextManager(Protocol[T_co, U_co]):
         raise NotImplementedError
 
 
-@dataclass
-class _StarredValue(Value):
-    """Helper Value to represent the result of "*x".
-
-    Should not escape this file.
-
-    """
-
-    value: Value
-    node: ast.AST
-
-    def __init__(self, value: Value, node: ast.AST) -> None:
-        self.value = value
-        self.node = node
-
-
 def _contains_unpack_annotation_value(value: Value) -> bool:
     if isinstance(value, PartialValue):
-        return (
+        if value.operation is PartialValueOperation.UNPACK:
+            return True
+        if (
             value.operation is PartialValueOperation.SUBSCRIPT
             and isinstance(value.root, KnownValue)
             and is_typing_name(value.root.val, "Unpack")
-        ) or any(_contains_unpack_annotation_value(member) for member in value.members)
+        ):
+            return True
+        return _contains_unpack_annotation_value(value.root) or any(
+            _contains_unpack_annotation_value(member) for member in value.members
+        )
     if isinstance(value, SequenceValue):
         return any(
             _contains_unpack_annotation_value(member) for _, member in value.members
@@ -2826,6 +2817,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     if type_param_values
                     else effective_type_param_values
                 )
+                self._check_class_base_type_param_variances(
+                    node, declared_type_params, base_values, class_scope_object
+                )
                 self._check_protocol_type_param_variances(
                     node, declared_type_params, base_values, class_scope_object
                 )
@@ -5000,6 +4994,89 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 f"{inferred_type_param.variance.display_name()}",
                 error_code=ErrorCode.invalid_annotation,
             )
+
+    @staticmethod
+    def _variance_is_compatible_with_usage(
+        variance: Variance, used_polarities: set[int]
+    ) -> bool:
+        if not used_polarities or variance is Variance.INVARIANT:
+            return True
+        if variance is Variance.COVARIANT:
+            return -1 not in used_polarities
+        return 1 not in used_polarities
+
+    @staticmethod
+    def _is_variance_declaration_base(base_value: Value) -> bool:
+        subvals = list(flatten_values(replace_fallback(base_value)))
+        if not subvals:
+            return False
+        for subval in subvals:
+            if isinstance(subval, SyntheticClassObjectValue):
+                subval = subval.class_type
+            if isinstance(subval, GenericValue):
+                typ: object = subval.typ
+            elif isinstance(subval, TypedValue):
+                typ = subval.typ
+            elif isinstance(subval, KnownValue):
+                typ = subval.val
+            else:
+                return False
+            if not (is_typing_name(typ, "Generic") or is_typing_name(typ, "Protocol")):
+                return False
+        return True
+
+    def _check_class_base_type_param_variances(
+        self,
+        node: ast.ClassDef,
+        type_params: Sequence[TypeVarValue],
+        base_values: Sequence[Value],
+        class_scope_object: type | str | None,
+    ) -> None:
+        if self._is_protocol_class(base_values, class_scope_object):
+            return
+        analyzed_bases = [
+            replace_fallback(self._value_for_variance_annotation(base_node))
+            for base_node in node.bases
+        ]
+        typevars_to_check = {
+            type_param.typevar
+            for type_param in type_params
+            if is_instance_of_typing_name(type_param.typevar, "TypeVar")
+        }
+        for analyzed_base in analyzed_bases:
+            for subval in flatten_values(analyzed_base):
+                for walked in subval.walk_values():
+                    if not isinstance(walked, TypeVarValue):
+                        continue
+                    if not is_instance_of_typing_name(walked.typevar, "TypeVar"):
+                        continue
+                    typevars_to_check.add(walked.typevar)
+        if not typevars_to_check:
+            return
+
+        sorted_typevars = sorted(typevars_to_check, key=str)
+        for base_node, analyzed_base in zip(node.bases, analyzed_bases):
+            if self._is_variance_declaration_base(analyzed_base):
+                continue
+            type_param_polarities: dict[object, set[int]] = {
+                typevar: set() for typevar in sorted_typevars
+            }
+            for subval in flatten_values(analyzed_base):
+                self._collect_type_param_polarities_from_value(
+                    subval, type_param_polarities, polarity=1
+                )
+            for typevar in sorted_typevars:
+                used_polarities = type_param_polarities[typevar]
+                variance = get_typevar_variance(typevar)
+                if self._variance_is_compatible_with_usage(variance, used_polarities):
+                    continue
+                type_param_name = safe_getattr(typevar, "__name__", str(typevar))
+                self._show_error_if_checking(
+                    base_node,
+                    f"{type_param_name} has incompatible variance in base class",
+                    error_code=ErrorCode.invalid_annotation,
+                )
+                break
 
     def _is_protocol_class(
         self, base_values: Sequence[Value], class_scope_object: type | str | None
@@ -7820,12 +7897,16 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     ) -> Value:
         values = []
         for i, elt in enumerate(elts):
-            if isinstance(elt, _StarredValue):
-                vals = concrete_values_from_iterable(elt.value, self)
+            if (
+                not self.in_annotation
+                and isinstance(elt, PartialValue)
+                and elt.operation is PartialValueOperation.UNPACK
+            ):
+                vals = concrete_values_from_iterable(elt.root, self)
                 if isinstance(vals, CanAssignError):
                     self.show_error(
                         elt.node,
-                        f"{elt.value} is not iterable",
+                        f"{elt.root} is not iterable",
                         ErrorCode.unsupported_operation,
                         detail=str(vals),
                     )
@@ -9851,21 +9932,19 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
 
     def visit_Starred(self, node: ast.Starred) -> Value:
         val = self.visit(node.value)
+        partial_node: ast.AST = node.value
+        runtime_value: Value = AnyValue(AnySource.inference)
         if self.in_annotation:
+            partial_node = node
             unpack = getattr(typing, "Unpack", None)
             if unpack is not None:
                 try:
-                    runtime_value: Value = TypedValue(type(unpack[int]))
+                    runtime_value = TypedValue(type(unpack[int]))
                 except Exception:
                     runtime_value = AnyValue(AnySource.inference)
-                return PartialValue(
-                    PartialValueOperation.SUBSCRIPT,
-                    KnownValue(unpack),
-                    node.value,
-                    (val,),
-                    runtime_value,
-                )
-        return _StarredValue(val, node.value)
+        return PartialValue(
+            PartialValueOperation.UNPACK, val, partial_node, (), runtime_value
+        )
 
     def visit_arg(self, node: ast.arg) -> None:
         self.yield_checker.record_assignment(node.arg)
@@ -11099,8 +11178,11 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         else:
             arguments = [
                 (
-                    (Composite(arg.value.value, arg.varname, arg.node), ARGS)
-                    if isinstance(arg.value, _StarredValue)
+                    (Composite(arg.value.root, arg.varname, arg.node), ARGS)
+                    if (
+                        isinstance(arg.value, PartialValue)
+                        and arg.value.operation is PartialValueOperation.UNPACK
+                    )
                     else (arg, None)
                 )
                 for arg in args
