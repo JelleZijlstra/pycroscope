@@ -6,7 +6,6 @@ aliases_implicit
 aliases_recursive
 aliases_type_statement
 aliases_typealiastype
-aliases_variance
 annotations_forward_refs
 annotations_generators
 annotations_typeexpr
