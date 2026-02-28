@@ -3,6 +3,7 @@
 ## Unreleased
 
 - Improve static fallback analysis for unimportable modules by resolving synthetic class instance methods from synthetic bases in expression contexts, reducing false `undefined_attribute`/`inference_failure` cascades for cases like `Self`-typed methods.
+- Fix dataclass hashability inference (including `@dataclass_transform` classes): mutable `eq=True` classes are now treated as unhashable unless `unsafe_hash=True` or an explicit `__hash__` is provided, in both normal analysis and import-failure fallback mode.
 - Improve dataclass `InitVar` handling: `__post_init__` signatures are now validated against `InitVar` fields (including inherited fields), and `InitVar` members are now correctly rejected as instance attributes, fixing conformance for `dataclasses_postinit.py`.
 - Align `@dataclass_transform` metaclass inheritance with the typing spec: classes that directly specify a transform-decorated metaclass are now treated as neither frozen nor non-frozen, which fixes conformance behavior for `dataclasses_transform_meta.py`.
 - Replace internal starred-expression handling with `PartialValue` `UNPACK` operations, removing `_StarredValue` and making partial unpack evaluation consistent across annotations and runtime expression analysis.
