@@ -82,6 +82,23 @@ def test_partial_value_fallback() -> None:
     assert_cannot_assign(TypedValue(int), partial)
 
 
+def test_partial_unpack_value() -> None:
+    node = ast.parse("(*xs,)", mode="eval").body
+    assert isinstance(node, ast.Tuple)
+    starred = node.elts[0]
+    assert isinstance(starred, ast.Starred)
+    partial = value.PartialValue(
+        operation=value.PartialValueOperation.UNPACK,
+        root=TypedValue(tuple),
+        node=starred,
+        members=(),
+        runtime_value=AnyValue(AnySource.inference),
+    )
+
+    assert partial.get_fallback_value() == AnyValue(AnySource.inference)
+    assert str(partial) == "Any[inference] (partial from *tuple)"
+
+
 def test_extract_type_form_from_partial_value() -> None:
     from typing_extensions import TypeForm
 

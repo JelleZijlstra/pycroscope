@@ -429,29 +429,19 @@ class AsyncCustomContextManager(Protocol[T_co, U_co]):
         raise NotImplementedError
 
 
-@dataclass
-class _StarredValue(Value):
-    """Helper Value to represent the result of "*x".
-
-    Should not escape this file.
-
-    """
-
-    value: Value
-    node: ast.AST
-
-    def __init__(self, value: Value, node: ast.AST) -> None:
-        self.value = value
-        self.node = node
-
-
 def _contains_unpack_annotation_value(value: Value) -> bool:
     if isinstance(value, PartialValue):
-        return (
+        if value.operation is PartialValueOperation.UNPACK:
+            return True
+        if (
             value.operation is PartialValueOperation.SUBSCRIPT
             and isinstance(value.root, KnownValue)
             and is_typing_name(value.root.val, "Unpack")
-        ) or any(_contains_unpack_annotation_value(member) for member in value.members)
+        ):
+            return True
+        return _contains_unpack_annotation_value(value.root) or any(
+            _contains_unpack_annotation_value(member) for member in value.members
+        )
     if isinstance(value, SequenceValue):
         return any(
             _contains_unpack_annotation_value(member) for _, member in value.members
@@ -7813,12 +7803,16 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     ) -> Value:
         values = []
         for i, elt in enumerate(elts):
-            if isinstance(elt, _StarredValue):
-                vals = concrete_values_from_iterable(elt.value, self)
+            if (
+                not self.in_annotation
+                and isinstance(elt, PartialValue)
+                and elt.operation is PartialValueOperation.UNPACK
+            ):
+                vals = concrete_values_from_iterable(elt.root, self)
                 if isinstance(vals, CanAssignError):
                     self.show_error(
                         elt.node,
-                        f"{elt.value} is not iterable",
+                        f"{elt.root} is not iterable",
                         ErrorCode.unsupported_operation,
                         detail=str(vals),
                     )
@@ -9844,21 +9838,19 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
 
     def visit_Starred(self, node: ast.Starred) -> Value:
         val = self.visit(node.value)
+        partial_node: ast.AST = node.value
+        runtime_value: Value = AnyValue(AnySource.inference)
         if self.in_annotation:
+            partial_node = node
             unpack = getattr(typing, "Unpack", None)
             if unpack is not None:
                 try:
-                    runtime_value: Value = TypedValue(type(unpack[int]))
+                    runtime_value = TypedValue(type(unpack[int]))
                 except Exception:
                     runtime_value = AnyValue(AnySource.inference)
-                return PartialValue(
-                    PartialValueOperation.SUBSCRIPT,
-                    KnownValue(unpack),
-                    node.value,
-                    (val,),
-                    runtime_value,
-                )
-        return _StarredValue(val, node.value)
+        return PartialValue(
+            PartialValueOperation.UNPACK, val, partial_node, (), runtime_value
+        )
 
     def visit_arg(self, node: ast.arg) -> None:
         self.yield_checker.record_assignment(node.arg)
@@ -11092,8 +11084,11 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         else:
             arguments = [
                 (
-                    (Composite(arg.value.value, arg.varname, arg.node), ARGS)
-                    if isinstance(arg.value, _StarredValue)
+                    (Composite(arg.value.root, arg.varname, arg.node), ARGS)
+                    if (
+                        isinstance(arg.value, PartialValue)
+                        and arg.value.operation is PartialValueOperation.UNPACK
+                    )
                     else (arg, None)
                 )
                 for arg in args

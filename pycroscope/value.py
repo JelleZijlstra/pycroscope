@@ -492,6 +492,7 @@ class PartialValueOperation(enum.Enum):
     """Kinds of partially evaluated operations represented by :class:`PartialValue`."""
 
     SUBSCRIPT = 1
+    UNPACK = 2
 
 
 @dataclass(frozen=True)
@@ -505,8 +506,12 @@ class PartialValue(Value):
     runtime_value: Value
 
     def __str__(self) -> str:
-        members = ", ".join(str(member) for member in self.members)
-        return f"{self.runtime_value} (partial from {self.root}[{members}])"
+        if self.operation is PartialValueOperation.SUBSCRIPT:
+            members = ", ".join(str(member) for member in self.members)
+            return f"{self.runtime_value} (partial from {self.root}[{members}])"
+        if self.operation is PartialValueOperation.UNPACK:
+            return f"{self.runtime_value} (partial from *{self.root})"
+        return f"{self.runtime_value} (partial from {self.root})"
 
     def get_fallback_value(self) -> Value:
         return self.runtime_value
