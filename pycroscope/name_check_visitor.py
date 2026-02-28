@@ -2191,7 +2191,16 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     base_value.val, child_value, base_class, node
                 )
             if callable(base_value.val):
-                return self._can_assign_to_base_callable(base_value, child_value)
+                callable_result = self._can_assign_to_base_callable(
+                    base_value, child_value
+                )
+                if callable_result is None:
+                    return {}
+                return callable_result
+        if isinstance(base_value, CallableValue):
+            callable_result = self._can_assign_to_base_callable(base_value, child_value)
+            if callable_result is not None:
+                return callable_result
         return has_relation(base_value, child_value, Relation.ASSIGNABLE, self)
 
     def _can_assign_to_base_property(
@@ -2229,17 +2238,21 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             return get_direction
 
     def _can_assign_to_base_callable(
-        self, base_value: KnownValue, child_value: Value
-    ) -> CanAssign:
+        self, base_value: Value, child_value: Value
+    ) -> CanAssign | None:
         base_sig = self.signature_from_value(base_value)
+        if base_sig is ANY_SIGNATURE:
+            return None
         if not isinstance(base_sig, (Signature, OverloadedSignature)):
-            return {}
+            return None
         child_sig = self.signature_from_value(child_value)
+        if child_sig is ANY_SIGNATURE:
+            return None
         if not isinstance(child_sig, (Signature, OverloadedSignature)):
             return CanAssignError(f"{child_value} is not callable")
         base_bound = base_sig.bind_self(ctx=self)
         if base_bound is None:
-            return {}
+            return None
         child_bound = child_sig.bind_self(ctx=self)
         if child_bound is None:
             return CanAssignError(f"{child_value} is missing a 'self' argument")

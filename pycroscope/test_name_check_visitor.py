@@ -2721,6 +2721,33 @@ class TestUnusedIgnore(TestNameCheckVisitorBase):
             print(x)  # static analysis: ignore[undefined_name]
 
 
+class TestTypeIgnore(TestNameCheckVisitorBase):
+    @assert_passes()
+    def test_inline_type_ignore(self):
+        x: int = ""  # type: ignore
+        y: int = ""  # type: ignore - additional text
+        z: int = ""  # type: ignore[attr-defined]
+        a: int = ""  # type: ignore # comment
+
+    def test_top_of_file_type_ignore(self):
+        self.assert_passes("""
+            #!/usr/bin/env python
+
+            # type: ignore
+
+            x: int = ""
+            """)
+
+    def test_type_ignore_not_file_level_after_docstring(self):
+        self.assert_passes('''
+            """module doc"""
+
+            # type: ignore
+
+            x: int = ""  # E: incompatible_assignment
+            ''')
+
+
 class TestNestedLoop(TestNameCheckVisitorBase):
     @assert_passes()
     def test(self):
@@ -2945,12 +2972,26 @@ class TestAnnAssign(TestNameCheckVisitorBase):
 
         class AbstractSized(SizedAndClosable1):
             @abstractmethod
-            def close(self) -> None:  # E: incompatible_override
+            def close(self) -> None:
                 raise NotImplementedError
 
         x = AbstractSized()  # E: incompatible_call
         f1: SizedClosableFlush = WithFlush()
         f2: SizedClosableFlush = FlushOnly()  # E: incompatible_assignment
+
+    @assert_passes()
+    def test_protocol_override_keeps_compatible_self_type(self):
+        from abc import abstractmethod
+        from collections.abc import Sized
+        from typing import Protocol
+
+        class SizedAndClosable(Sized, Protocol):
+            def close(self) -> None: ...
+
+        class AbstractSized(SizedAndClosable):
+            @abstractmethod
+            def close(self) -> None:
+                raise NotImplementedError
 
     @assert_passes()
     def test_inconsistent_type(self):

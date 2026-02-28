@@ -28,8 +28,6 @@ dataclasses_transform_meta
 dataclasses_usage
 directives_deprecated
 directives_type_checking
-directives_type_ignore
-directives_type_ignore_file1
 generics_base_class
 generics_basic
 generics_defaults
@@ -56,7 +54,6 @@ generics_variance
 literals_literalstring
 literals_parameterizations
 literals_semantics
-namedtuples_define_class
 overloads_definitions_stub
 overloads_basic
 protocols_class_objects
