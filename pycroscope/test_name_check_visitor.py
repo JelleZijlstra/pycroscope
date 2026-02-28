@@ -3056,6 +3056,29 @@ class TestAnnAssign(TestNameCheckVisitorBase):
         f1: SizedClosableFlush = WithFlush()
         f2: SizedClosableFlush = FlushOnly()  # E: incompatible_assignment
 
+    @assert_passes(allow_import_failures=True)
+    def test_self_methods_in_unimportable_generic_module(self):
+        from typing import Generic, Self, TypeVar, assert_type
+
+        import does_not_exist  # noqa: F401
+
+        T = TypeVar("T")
+
+        class Base:
+            def f(self) -> Self:
+                return self
+
+        class Child(Base):
+            pass
+
+        class Box(Generic[T]):
+            def set_value(self, value: T) -> Self:
+                return self
+
+        def capybara(child: Child, int_box: Box[int]):
+            assert_type(child.f(), Child)
+            assert_type(int_box.set_value(1), Box[int])
+
     @assert_passes()
     def test_protocol_override_keeps_compatible_self_type(self):
         from abc import abstractmethod

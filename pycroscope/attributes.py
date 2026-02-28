@@ -120,6 +120,12 @@ class AttrContext:
     def get_synthetic_class(self, typ: type | str) -> SyntheticClassObjectValue | None:
         return None
 
+    def bind_synthetic_instance_attribute(self, attr_name: str, value: Value) -> Value:
+        return value
+
+    def should_include_synthetic_methods(self) -> bool:
+        return False
+
 
 def get_attribute(ctx: AttrContext) -> Value:
     if isinstance(ctx.root_value, TypeAliasValue) and _is_type_alias_symbol(ctx):
@@ -383,9 +389,13 @@ def _get_attribute_from_synthetic_type(
     synthetic_class = ctx.get_synthetic_class(fq_name)
     if synthetic_class is not None:
         result = _get_direct_attribute_from_synthetic_class(synthetic_class, ctx.attr)
-        if result is not UNINITIALIZED_VALUE and not _is_synthetic_method_attribute(
-            synthetic_class, ctx.attr
-        ):
+        if result is not UNINITIALIZED_VALUE:
+            if _is_synthetic_method_attribute(synthetic_class, ctx.attr) and (
+                not ctx.should_include_synthetic_methods()
+            ):
+                result = UNINITIALIZED_VALUE
+        if result is not UNINITIALIZED_VALUE:
+            result = ctx.bind_synthetic_instance_attribute(ctx.attr, result)
             result = _substitute_typevars(fq_name, generic_args, result, fq_name, ctx)
             return set_self(result, ctx.root_value)
     result, provider = ctx.get_attribute_from_typeshed_recursively(
@@ -413,10 +423,13 @@ def _get_attribute_from_synthetic_type_bases(
                 result = _get_direct_attribute_from_synthetic_class(
                     synthetic_class, ctx.attr
                 )
-                if (
-                    result is not UNINITIALIZED_VALUE
-                    and not _is_synthetic_method_attribute(synthetic_class, ctx.attr)
-                ):
+                if result is not UNINITIALIZED_VALUE:
+                    if _is_synthetic_method_attribute(synthetic_class, ctx.attr) and (
+                        not ctx.should_include_synthetic_methods()
+                    ):
+                        result = UNINITIALIZED_VALUE
+                if result is not UNINITIALIZED_VALUE:
+                    result = ctx.bind_synthetic_instance_attribute(ctx.attr, result)
                     return result, base_typ
             result, provider = ctx.get_attribute_from_typeshed_recursively(
                 base_typ, on_class=False
