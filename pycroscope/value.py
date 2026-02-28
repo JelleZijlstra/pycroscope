@@ -506,12 +506,14 @@ class PartialValue(Value):
     runtime_value: Value
 
     def __str__(self) -> str:
-        if self.operation is PartialValueOperation.SUBSCRIPT:
-            members = ", ".join(str(member) for member in self.members)
-            return f"{self.runtime_value} (partial from {self.root}[{members}])"
-        if self.operation is PartialValueOperation.UNPACK:
-            return f"{self.runtime_value} (partial from *{self.root})"
-        return f"{self.runtime_value} (partial from {self.root})"
+        match self.operation:
+            case PartialValueOperation.SUBSCRIPT:
+                members = ", ".join(str(member) for member in self.members)
+                return f"{self.runtime_value} (partial from {self.root}[{members}])"
+            case PartialValueOperation.UNPACK:
+                return f"{self.runtime_value} (partial from *{self.root})"
+            case _:
+                assert_never(self.operation)
 
     def get_fallback_value(self) -> Value:
         return self.runtime_value
