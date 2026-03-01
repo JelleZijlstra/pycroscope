@@ -73,6 +73,7 @@ from .value import (
     AnySource,
     AnyValue,
     CanAssignContext,
+    CanAssignError,
     Extension,
     GenericBases,
     GenericValue,
@@ -88,6 +89,8 @@ from .value import (
     TypedValue,
     TypeVarValue,
     Value,
+    is_async_iterable,
+    is_iterable,
     make_coro_type,
     replace_fallback,
     unite_values,
@@ -431,7 +434,16 @@ class ArgSpecCache:
         if returns is not None:
             has_return_annotation = True
         else:
-            if is_wrapped or sig.return_annotation is inspect.Signature.empty:
+            if is_wrapped:
+                inferred = self._infer_contextmanager_wrapper_return(
+                    function_object, sig, func_globals
+                )
+                if inferred is not None:
+                    returns, has_return_annotation = inferred
+                else:
+                    returns = AnyValue(AnySource.unannotated)
+                    has_return_annotation = False
+            elif sig.return_annotation is inspect.Signature.empty:
                 returns = AnyValue(AnySource.unannotated)
                 has_return_annotation = False
             else:
@@ -478,6 +490,47 @@ class ArgSpecCache:
             is_asynq=is_asynq,
             allow_call=allow_call
             or FunctionsSafeToCall.contains(callable_object, self.options),
+        )
+
+    def _infer_contextmanager_wrapper_return(
+        self,
+        function_object: object,
+        sig: inspect.Signature,
+        func_globals: Mapping[str, object] | None,
+    ) -> tuple[Value, bool] | None:
+        wrapped = safe_getattr(function_object, "__wrapped__", None)
+        if wrapped is None:
+            return None
+        wrapper_globals = safe_getattr(function_object, "__globals__", None)
+        if (
+            not isinstance(wrapper_globals, Mapping)
+            or wrapper_globals.get("__name__") != "contextlib"
+        ):
+            return None
+        code = safe_getattr(function_object, "__code__", None)
+        if safe_getattr(code, "co_name", None) != "helper":
+            return None
+        if sig.return_annotation is inspect.Signature.empty:
+            return None
+        wrapped_return = type_from_runtime(
+            sig.return_annotation, ctx=AnnotationsContext(self, func_globals)
+        )
+        if inspect.isasyncgenfunction(wrapped):
+            maybe_iterable = is_async_iterable(wrapped_return, self.ctx)
+            if isinstance(maybe_iterable, CanAssignError):
+                return None
+            return (
+                GenericValue(
+                    "contextlib._AsyncGeneratorContextManager", [maybe_iterable]
+                ),
+                True,
+            )
+        maybe_iterable = is_iterable(wrapped_return, self.ctx)
+        if isinstance(maybe_iterable, CanAssignError):
+            return None
+        return (
+            GenericValue("contextlib._GeneratorContextManager", [maybe_iterable]),
+            True,
         )
 
     def _make_sig_parameter(
