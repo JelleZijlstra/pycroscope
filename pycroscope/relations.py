@@ -816,6 +816,10 @@ def _has_relation_for_generic_arg_pair(
         return pycroscope.input_sig.input_sigs_have_relation(
             left.input_sig, right.input_sig, relation, ctx
         )
+    if isinstance(left, pycroscope.input_sig.InputSigValue) or isinstance(
+        right, pycroscope.input_sig.InputSigValue
+    ):
+        return CanAssignError(f"{left} is not {relation.description} {right}")
     return has_relation(left, right, relation, ctx)
 
 

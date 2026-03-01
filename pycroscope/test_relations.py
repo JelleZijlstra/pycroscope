@@ -1,7 +1,24 @@
 # static analysis: ignore
 
+from pycroscope.checker import Checker
+from pycroscope.input_sig import FullSignature, InputSigValue
+from pycroscope.relations import Relation, _has_relation_for_generic_arg_pair
+from pycroscope.signature import ParameterKind, Signature, SigParameter
 from pycroscope.test_name_check_visitor import TestNameCheckVisitorBase
 from pycroscope.test_node_visitor import assert_passes, skip_before
+from pycroscope.value import CanAssignError, TypedValue
+
+
+def test_mixed_input_sig_generic_relation_does_not_crash():
+    sig = Signature.make(
+        [SigParameter("x", ParameterKind.POSITIONAL_ONLY, annotation=TypedValue(int))],
+        return_annotation=TypedValue(str),
+    )
+    input_sig = InputSigValue(FullSignature(sig))
+    result = _has_relation_for_generic_arg_pair(
+        input_sig, TypedValue(int), Relation.ASSIGNABLE, Checker()
+    )
+    assert isinstance(result, CanAssignError)
 
 
 class TestRelations(TestNameCheckVisitorBase):
