@@ -2486,15 +2486,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         base_value = replace_fallback(base_value)
         if isinstance(base_value, AnnotatedValue):
             return self._base_class_key_from_value(base_value.value)
-        if isinstance(base_value, (MultiValuedValue, IntersectionValue)):
-            class_keys = {
-                class_key
-                for subval in base_value.vals
-                if (class_key := self._base_class_key_from_value(subval)) is not None
-            }
-            if len(class_keys) == 1:
-                return next(iter(class_keys))
-            return None
         if isinstance(base_value, SubclassValue) and isinstance(
             base_value.typ, TypedValue
         ):
@@ -7462,16 +7453,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 return root_value.typ
             return None
         if isinstance(root_value, MultiValuedValue):
-            class_keys = {
-                class_key
-                for subval in root_value.vals
-                if (class_key := self._class_key_from_attribute_root_value(subval))
-                is not None
-            }
-            if len(class_keys) == 1:
-                return next(iter(class_keys))
-            return None
-        if isinstance(root_value, IntersectionValue):
             class_keys = {
                 class_key
                 for subval in root_value.vals
