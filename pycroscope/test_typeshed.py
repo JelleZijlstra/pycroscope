@@ -895,7 +895,7 @@ class TestParamSpec(TestNameCheckVisitorBase):
         import contextlib
         from typing import Generator
 
-        def cm(a: int) -> Generator[str]:
+        def cm(a: int) -> Generator[str, None, None]:
             yield "hello"
 
         def capybara():

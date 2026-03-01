@@ -3865,8 +3865,9 @@ class TestContextManagerWithSuppression(TestNameCheckVisitorBase):
     @assert_passes()
     def test_sync(self):
         import contextlib
+        from collections.abc import Generator
         from types import TracebackType
-        from typing import ContextManager, Generator, Optional, Type
+        from typing import ContextManager, Optional, Type
 
         class SuppressException:
             def __enter__(self) -> None:

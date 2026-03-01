@@ -180,8 +180,8 @@ class TestAnnotations(TestNameCheckVisitorBase):
 
     @assert_passes()
     def test_contextmanager(self):
+        from collections.abc import Generator
         from contextlib import contextmanager
-        from typing import Generator
 
         @contextmanager
         def capybara() -> Generator[int]:
