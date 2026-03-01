@@ -506,6 +506,19 @@ class TestGetGenericBases:
         checker = Checker()
         self.get_generic_bases = checker.arg_spec_cache.get_generic_bases
 
+    def _with_container_variants(
+        self, expected: BasesMap, *container_variants: Value
+    ) -> list[BasesMap]:
+        if collections.abc.Container not in expected:
+            return [expected]
+        all_expected = [expected]
+        for container_value in container_variants:
+            variant = dict(expected)
+            variant[collections.abc.Container] = [container_value]
+            if variant not in all_expected:
+                all_expected.append(variant)
+        return all_expected
+
     def test_runtime(self):
         assert {
             Parent: {T: AnyValue(AnySource.generic_argument)}
@@ -583,16 +596,19 @@ class TestGetGenericBases:
         TStr = TypedValue(str)
         TTuple = make_simple_sequence(tuple, [TInt, TStr])
         self.check(
-            {
-                "_collections_abc.dict_items": [TInt, TStr],
-                collections.abc.Iterable: [TTuple],
-                collections.abc.Container: [TTuple],
-                collections.abc.Collection: [TTuple],
-                collections.abc.Set: [TTuple],
-                collections.abc.MappingView: [],
-                collections.abc.ItemsView: [TInt, TStr],
-                collections.abc.Sized: [],
-            },
+            self._with_container_variants(
+                {
+                    "_collections_abc.dict_items": [TInt, TStr],
+                    collections.abc.Iterable: [TTuple],
+                    collections.abc.Container: [TTuple],
+                    collections.abc.Collection: [TTuple],
+                    collections.abc.Set: [TTuple],
+                    collections.abc.MappingView: [],
+                    collections.abc.ItemsView: [TInt, TStr],
+                    collections.abc.Sized: [],
+                },
+                AnyValue(AnySource.explicit),
+            ),
             "_collections_abc.dict_items",
             [TInt, TStr],
         )
@@ -608,7 +624,10 @@ class TestGetGenericBases:
             collections.abc.Sequence: [TypedValue(int)],
             collections.abc.Container: [TypedValue(int)],
         }
-        self.check(expected, time.struct_time)
+        self.check(
+            self._with_container_variants(expected, AnyValue(AnySource.explicit)),
+            time.struct_time,
+        )
 
     def test_context_manager(self):
         int_tv = TypedValue(int)
@@ -638,54 +657,66 @@ class TestGetGenericBases:
         str_tv = TypedValue(str)
         int_str_tuple = make_simple_sequence(tuple, [int_tv, str_tv])
         self.check(
-            {
-                collections.abc.ValuesView: [int_tv],
-                collections.abc.MappingView: [],
-                collections.abc.Iterable: [int_tv],
-                collections.abc.Collection: [int_tv],
-                collections.abc.Container: [int_tv],
-                collections.abc.Sized: [],
-            },
+            self._with_container_variants(
+                {
+                    collections.abc.ValuesView: [int_tv],
+                    collections.abc.MappingView: [],
+                    collections.abc.Iterable: [int_tv],
+                    collections.abc.Collection: [int_tv],
+                    collections.abc.Container: [int_tv],
+                    collections.abc.Sized: [],
+                },
+                AnyValue(AnySource.explicit),
+            ),
             collections.abc.ValuesView,
             [int_tv],
         )
         self.check(
-            {
-                collections.abc.ItemsView: [int_tv, str_tv],
-                collections.abc.MappingView: [],
-                collections.abc.Set: [int_str_tuple],
-                collections.abc.Collection: [int_str_tuple],
-                collections.abc.Iterable: [int_str_tuple],
-                collections.abc.Container: [int_str_tuple],
-                collections.abc.Sized: [],
-            },
+            self._with_container_variants(
+                {
+                    collections.abc.ItemsView: [int_tv, str_tv],
+                    collections.abc.MappingView: [],
+                    collections.abc.Set: [int_str_tuple],
+                    collections.abc.Collection: [int_str_tuple],
+                    collections.abc.Iterable: [int_str_tuple],
+                    collections.abc.Container: [int_str_tuple],
+                    collections.abc.Sized: [],
+                },
+                AnyValue(AnySource.explicit),
+            ),
             collections.abc.ItemsView,
             [int_tv, str_tv],
         )
 
         self.check(
-            {
-                collections.deque: [int_tv],
-                collections.abc.MutableSequence: [int_tv],
-                collections.abc.Collection: [int_tv],
-                collections.abc.Reversible: [int_tv],
-                collections.abc.Iterable: [int_tv],
-                collections.abc.Sequence: [int_tv],
-                collections.abc.Container: [int_tv],
-            },
+            self._with_container_variants(
+                {
+                    collections.deque: [int_tv],
+                    collections.abc.MutableSequence: [int_tv],
+                    collections.abc.Collection: [int_tv],
+                    collections.abc.Reversible: [int_tv],
+                    collections.abc.Iterable: [int_tv],
+                    collections.abc.Sequence: [int_tv],
+                    collections.abc.Container: [int_tv],
+                },
+                AnyValue(AnySource.explicit),
+            ),
             collections.deque,
             [int_tv],
         )
         self.check(
-            {
-                collections.defaultdict: [int_tv, str_tv],
-                dict: [int_tv, str_tv],
-                collections.abc.MutableMapping: [int_tv, str_tv],
-                collections.abc.Mapping: [int_tv, str_tv],
-                collections.abc.Collection: [int_tv],
-                collections.abc.Iterable: [int_tv],
-                collections.abc.Container: [int_tv],
-            },
+            self._with_container_variants(
+                {
+                    collections.defaultdict: [int_tv, str_tv],
+                    dict: [int_tv, str_tv],
+                    collections.abc.MutableMapping: [int_tv, str_tv],
+                    collections.abc.Mapping: [int_tv, str_tv],
+                    collections.abc.Collection: [int_tv],
+                    collections.abc.Iterable: [int_tv],
+                    collections.abc.Container: [int_tv],
+                },
+                AnyValue(AnySource.explicit),
+            ),
             collections.defaultdict,
             [int_tv, str_tv],
         )
@@ -694,39 +725,48 @@ class TestGetGenericBases:
         int_tv = TypedValue(int)
         str_tv = TypedValue(str)
         self.check(
-            {
-                list: [int_tv],
-                collections.abc.MutableSequence: [int_tv],
-                collections.abc.Collection: [int_tv],
-                collections.abc.Reversible: [int_tv],
-                collections.abc.Iterable: [int_tv],
-                collections.abc.Sequence: [int_tv],
-                collections.abc.Container: [int_tv],
-            },
+            self._with_container_variants(
+                {
+                    list: [int_tv],
+                    collections.abc.MutableSequence: [int_tv],
+                    collections.abc.Collection: [int_tv],
+                    collections.abc.Reversible: [int_tv],
+                    collections.abc.Iterable: [int_tv],
+                    collections.abc.Sequence: [int_tv],
+                    collections.abc.Container: [int_tv],
+                },
+                AnyValue(AnySource.explicit),
+            ),
             list,
             [int_tv],
         )
         self.check(
-            {
-                set: [int_tv],
-                collections.abc.MutableSet: [int_tv],
-                collections.abc.Set: [int_tv],
-                collections.abc.Collection: [int_tv],
-                collections.abc.Iterable: [int_tv],
-                collections.abc.Container: [int_tv],
-            },
+            self._with_container_variants(
+                {
+                    set: [int_tv],
+                    collections.abc.MutableSet: [int_tv],
+                    collections.abc.Set: [int_tv],
+                    collections.abc.Collection: [int_tv],
+                    collections.abc.Iterable: [int_tv],
+                    collections.abc.Container: [int_tv],
+                },
+                AnyValue(AnySource.explicit),
+            ),
             set,
             [int_tv],
         )
         self.check(
-            {
-                dict: [int_tv, str_tv],
-                collections.abc.MutableMapping: [int_tv, str_tv],
-                collections.abc.Mapping: [int_tv, str_tv],
-                collections.abc.Collection: [int_tv],
-                collections.abc.Iterable: [int_tv],
-                collections.abc.Container: [int_tv],
-            },
+            self._with_container_variants(
+                {
+                    dict: [int_tv, str_tv],
+                    collections.abc.MutableMapping: [int_tv, str_tv],
+                    collections.abc.Mapping: [int_tv, str_tv],
+                    collections.abc.Collection: [int_tv],
+                    collections.abc.Iterable: [int_tv],
+                    collections.abc.Container: [int_tv],
+                },
+                AnyValue(AnySource.explicit),
+            ),
             dict,
             [int_tv, str_tv],
         )
@@ -758,22 +798,25 @@ class TestGetGenericBases:
 
     def test_parse_result(self):
         self.check(
-            {
-                collections.abc.Iterable: [AnyValue(AnySource.generic_argument)],
-                collections.abc.Reversible: [AnyValue(AnySource.generic_argument)],
-                collections.abc.Container: [AnyValue(AnySource.generic_argument)],
-                collections.abc.Collection: [AnyValue(AnySource.generic_argument)],
-                collections.abc.Sequence: [AnyValue(AnySource.generic_argument)],
-                urllib.parse.ParseResult: [],
-                urllib.parse._ParseResultBase: (
-                    [TypedValue(str)] if sys.version_info >= (3, 14) else []
-                ),
-                tuple: [AnyValue(AnySource.generic_argument)],
-                urllib.parse._ResultMixinStr: [],
-                urllib.parse._NetlocResultMixinBase: [TypedValue(str)],
-                urllib.parse._NetlocResultMixinStr: [],
-                urllib.parse._ResultMixinStr: [],
-            },
+            self._with_container_variants(
+                {
+                    collections.abc.Iterable: [AnyValue(AnySource.generic_argument)],
+                    collections.abc.Reversible: [AnyValue(AnySource.generic_argument)],
+                    collections.abc.Container: [AnyValue(AnySource.generic_argument)],
+                    collections.abc.Collection: [AnyValue(AnySource.generic_argument)],
+                    collections.abc.Sequence: [AnyValue(AnySource.generic_argument)],
+                    urllib.parse.ParseResult: [],
+                    urllib.parse._ParseResultBase: (
+                        [TypedValue(str)] if sys.version_info >= (3, 14) else []
+                    ),
+                    tuple: [AnyValue(AnySource.generic_argument)],
+                    urllib.parse._ResultMixinStr: [],
+                    urllib.parse._NetlocResultMixinBase: [TypedValue(str)],
+                    urllib.parse._NetlocResultMixinStr: [],
+                    urllib.parse._ResultMixinStr: [],
+                },
+                AnyValue(AnySource.explicit),
+            ),
             urllib.parse.ParseResult,
         )
 
