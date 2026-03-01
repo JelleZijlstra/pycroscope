@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Improve constructor checking when modules fail at import time: pycroscope now enforces explicit `__init__` self-annotation compatibility for specialized generic class calls (for example rejecting `Class4[str]()` when `__init__` requires `Class4[int]`), and avoids false positives from synthetic class-subscripting fallback on generic instances.
 - Improve static fallback analysis for unimportable modules by pre-registering synthetic methods and persisting `self`/`cls` attribute assignments, reducing false `undefined_attribute` errors in class methods.
 - Tighten typing-construct arity validation in annotations (including `ClassVar`/`Final`/`Required` qualifiers and runtime `Callable[...]` parsing), so malformed argument lists are reported more consistently.
 - Improve `@dataclass_transform` field specifier default handling: pycroscope now infers implicit `init` values from field-specifier signatures (including overload defaults like `Literal[False]`), fixing constructor checks for cases like `dataclasses_transform_field.py`.

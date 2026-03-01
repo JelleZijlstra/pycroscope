@@ -11255,7 +11255,23 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     def _maybe_subscript_synthetic_class(
         self, value: Value, index: Value, node: ast.Subscript
     ) -> Value | None:
-        synthetic_typ: str | None
+        if isinstance(value, GenericValue) and value.typ is not type:
+            # Generic instances should use __getitem__; this path is for class
+            # specialization (C[T]).
+            return None
+
+        def _normalize_member(member: Value) -> Value:
+            normalized = type_from_value(member, self, node, suppress_errors=True)
+            if (
+                isinstance(normalized, AnyValue)
+                and normalized.source is AnySource.error
+                and isinstance(member, (TypedValue, GenericValue))
+                and isinstance(member.typ, (type, str))
+            ):
+                return member
+            return normalized
+
+        synthetic_typ: str
         if isinstance(value, SyntheticClassObjectValue):
             class_type = value.class_type
             if not isinstance(class_type, TypedValue) or not isinstance(
@@ -11267,18 +11283,19 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             synthetic_typ = value.typ
         else:
             return None
+        members = self._maybe_unpack_tuple(index)
+        normalized_members = tuple(_normalize_member(member) for member in members)
         if self.checker.get_synthetic_class(synthetic_typ) is None:
             return None
         generic_bases = self.checker.get_generic_bases(synthetic_typ, ())
         if not generic_bases.get(synthetic_typ):
             return None
-        members = self._maybe_unpack_tuple(index)
         return PartialValue(
             PartialValueOperation.SUBSCRIPT,
             value,
             node,
             members,
-            GenericValue(synthetic_typ, list(members)),
+            GenericValue(synthetic_typ, list(normalized_members)),
         )
 
     def _get_dunder(self, node: ast.AST, callee_val: Value, method_name: str) -> Value:

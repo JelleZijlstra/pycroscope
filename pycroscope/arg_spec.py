@@ -945,18 +945,20 @@ class ArgSpecCache:
                     returns=return_type,
                     allow_call=allow_call,
                 )
-            bound_sig = make_bound_method(
-                signature, Composite(TypedValue(obj)), ctx=self.ctx
-            )
-            if bound_sig is None:
-                return None
             if is_dunder_new:
                 self_annotation_value = KnownValue(obj)
+                bound_self_value: Value = TypedValue(obj)
             else:
                 if type_params:
                     self_annotation_value = GenericValue(obj, type_params)
                 else:
                     self_annotation_value = TypedValue(obj)
+                bound_self_value = self_annotation_value
+            bound_sig = make_bound_method(
+                signature, Composite(bound_self_value), ctx=self.ctx
+            )
+            if bound_sig is None:
+                return None
             sig = bound_sig.get_signature(
                 preserve_impl=True,
                 ctx=self.ctx,

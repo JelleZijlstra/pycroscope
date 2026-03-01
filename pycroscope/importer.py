@@ -116,5 +116,11 @@ def import_module(module_path: str, filename: Path) -> ModuleType:
         raise ImportError(f"Cannot import {module_path} from {filename}: no spec found")
     module = importlib.util.module_from_spec(spec)
     sys.modules[module_path] = module
-    spec.loader.exec_module(module)
+    try:
+        spec.loader.exec_module(module)
+    except BaseException:
+        # Avoid leaking a partially initialized module when execution fails.
+        if sys.modules.get(module_path) is module:
+            del sys.modules[module_path]
+        raise
     return module

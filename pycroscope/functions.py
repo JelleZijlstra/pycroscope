@@ -74,6 +74,16 @@ AsyncGeneratorValue = GenericValue(
 )
 
 
+def _type_param_identities_for_class(enclosing_class: TypedValue | None) -> set[object]:
+    if not isinstance(enclosing_class, GenericValue):
+        return set()
+    identities: set[object] = set()
+    for arg in enclosing_class.args:
+        if isinstance(arg, TypeVarValue):
+            identities.add(arg.typevar)
+    return identities
+
+
 class AsyncFunctionKind(enum.Enum):
     non_async = 0
     normal = 1
@@ -369,6 +379,25 @@ def compute_parameters(
                             f" with declared type {inner_value}",
                             error_code=ErrorCode.incompatible_default,
                             detail=tv_map.display(),
+                        )
+                if (
+                    is_self
+                    and getattr(node, "name", None) == "__init__"
+                    and inner_value is not None
+                ):
+                    class_type_param_ids = _type_param_identities_for_class(
+                        enclosing_class
+                    )
+                    if class_type_param_ids and any(
+                        isinstance(subval, TypeVarValue)
+                        and subval.typevar in class_type_param_ids
+                        for subval in inner_value.walk_values()
+                    ):
+                        ctx.show_error(
+                            arg,
+                            "Class-scoped type variables are not allowed in __init__"
+                            " self annotation",
+                            error_code=ErrorCode.invalid_annotation,
                         )
         elif is_self:
             assert enclosing_class is not None

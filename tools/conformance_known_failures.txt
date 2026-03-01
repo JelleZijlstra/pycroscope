@@ -10,7 +10,6 @@ annotations_forward_refs
 annotations_generators
 annotations_typeexpr
 callables_protocol
-constructors_call_init
 constructors_call_metaclass
 constructors_call_new
 dataclasses_descriptors

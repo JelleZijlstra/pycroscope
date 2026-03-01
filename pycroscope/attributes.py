@@ -46,6 +46,8 @@ from .value import (
     KnownValue,
     KnownValueWithTypeVars,
     MultiValuedValue,
+    PartialValue,
+    PartialValueOperation,
     PredicateValue,
     Qualifier,
     SelfTVV,
@@ -646,7 +648,50 @@ def _get_attribute_from_synthetic_base(
     *,
     seen: set[int],
 ) -> Value:
+    if (
+        isinstance(base, PartialValue)
+        and base.operation is PartialValueOperation.SUBSCRIPT
+    ):
+        root = replace_fallback(base.root)
+        members = tuple(base.members)
+        if isinstance(root, SyntheticClassObjectValue):
+            class_type = root.class_type
+            if isinstance(class_type, TypedValue) and isinstance(
+                class_type.typ, (type, str)
+            ):
+                base = GenericValue(class_type.typ, members)
+        elif isinstance(root, KnownValue) and isinstance(root.val, type):
+            base = GenericValue(root.val, members)
+        elif isinstance(root, TypedValue) and isinstance(root.typ, (type, str)):
+            base = GenericValue(root.typ, members)
+
     base = replace_fallback(base)
+
+    if isinstance(base, GenericValue):
+        if isinstance(base.typ, str):
+            synthetic_base = ctx.get_synthetic_class(base.typ)
+            if synthetic_base is not None:
+                base_id = id(synthetic_base)
+                if base_id not in seen:
+                    seen_with_base = {*seen, base_id}
+                    result = _get_attribute_from_synthetic_class_inner(
+                        base.typ, synthetic_base, ctx, seen=seen_with_base
+                    )
+                    if result is not UNINITIALIZED_VALUE:
+                        return _substitute_typevars(
+                            base.typ, base.args, result, base.typ, ctx
+                        )
+            result, provider = ctx.get_attribute_from_typeshed_recursively(
+                base.typ, on_class=True
+            )
+            if result is not UNINITIALIZED_VALUE:
+                return _substitute_typevars(base.typ, base.args, result, provider, ctx)
+            return UNINITIALIZED_VALUE
+        if isinstance(base.typ, type):
+            result = _get_attribute_from_subclass(base.typ, self_value.class_type, ctx)
+            if result is not UNINITIALIZED_VALUE:
+                return _substitute_typevars(base.typ, base.args, result, base.typ, ctx)
+            return result
 
     if isinstance(base, SyntheticClassObjectValue):
         base_id = id(base)
