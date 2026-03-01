@@ -49,7 +49,7 @@ import typing_extensions
 from typing_extensions import NoDefault, ParamSpec, TypedDict
 
 from pycroscope.annotated_types import get_annotated_types_extension
-from pycroscope.input_sig import InputSigValue, ParamSpecSig
+from pycroscope.input_sig import FullSignature, InputSigValue, ParamSpecSig
 from pycroscope.relations import HashableProtoValue, Relation, has_relation
 
 from . import type_evaluation
@@ -765,7 +765,21 @@ def _is_assignable_for_alias_arg(expected: Value, actual: Value, ctx: Context) -
     return not isinstance(result, CanAssignError)
 
 
-def _is_paramspec_type_param(type_param: TypeVarLike | TypeVarValue) -> bool:
+def _get_generic_type_parameters_for_annotation(
+    typ: type, ctx: Context
+) -> Sequence[object]:
+    runtime_type_params = getattr(typ, "__parameters__", ())
+    if isinstance(runtime_type_params, tuple) and runtime_type_params:
+        return runtime_type_params
+    can_assign_ctx = _get_can_assign_context(ctx)
+    if can_assign_ctx is None:
+        return ()
+    return can_assign_ctx.get_type_parameters(typ)
+
+
+def _is_paramspec_type_param(type_param: object) -> bool:
+    if isinstance(type_param, InputSigValue):
+        return isinstance(type_param.input_sig, ParamSpecSig)
     if isinstance(type_param, TypeVarValue):
         return is_instance_of_typing_name(type_param.typevar, "ParamSpec")
     return is_instance_of_typing_name(type_param, "ParamSpec")
@@ -874,9 +888,14 @@ def has_invalid_paramspec_usage(
 
 
 def _type_from_runtime_type_alias_arg(
-    arg: object, type_param: TypeVarLike | TypeVarValue, ctx: Context
+    arg: object, type_param: object, ctx: Context
 ) -> Value:
     if _is_paramspec_type_param(type_param):
+        if is_typing_name(get_origin(arg), "Concatenate"):
+            concatenate_members = [
+                _type_from_runtime(member, ctx) for member in get_args(arg)
+            ]
+            return _paramspec_value_from_concatenate_members(concatenate_members, ctx)
         if isinstance(arg, tuple):
             return SequenceValue(
                 tuple, [(False, _type_from_runtime(member, ctx)) for member in arg]
@@ -889,9 +908,19 @@ def _type_from_runtime_type_alias_arg(
 
 
 def _type_from_value_type_alias_arg(
-    arg: Value, type_param: TypeVarLike | TypeVarValue, ctx: Context
+    arg: Value, type_param: object, ctx: Context
 ) -> Value:
     if _is_paramspec_type_param(type_param):
+        if (
+            isinstance(arg, PartialValue)
+            and arg.operation is PartialValueOperation.SUBSCRIPT
+            and isinstance(arg.root, KnownValue)
+            and is_typing_name(arg.root.val, "Concatenate")
+        ):
+            concatenate_members = [
+                _type_from_value(member, ctx) for member in arg.members
+            ]
+            return _paramspec_value_from_concatenate_members(concatenate_members, ctx)
         if isinstance(arg, SequenceValue) and arg.typ in (list, tuple):
             members = arg.get_member_sequence()
             if members is not None:
@@ -934,6 +963,44 @@ def _validate_type_alias_arg_values(
             ctx.show_error(
                 f"Type argument {arg} is not compatible with constraints ({constraint_list})"
             )
+
+
+def _paramspec_value_from_concatenate_members(
+    concatenate_members: Sequence[Value], ctx: Context
+) -> Value:
+    if not concatenate_members:
+        ctx.show_error("Concatenate[] must have at least one type argument")
+        return AnyValue(AnySource.error)
+    tail = concatenate_members[-1]
+    if isinstance(tail, InputSigValue):
+        tail_annotation = tail
+    elif isinstance(tail, TypeVarValue) and is_instance_of_typing_name(
+        tail.typevar, "ParamSpec"
+    ):
+        tail_annotation = InputSigValue(
+            ParamSpecSig(
+                cast(typing_extensions.ParamSpec | typing.ParamSpec, tail.typevar)
+            )
+        )
+    else:
+        ctx.show_error(f"Last argument to Concatenate must be a ParamSpec, got {tail}")
+        return AnyValue(AnySource.error)
+    annotations = [*concatenate_members[:-1], tail_annotation]
+    params = [
+        SigParameter(
+            f"@{i}",
+            kind=(
+                ParameterKind.PARAM_SPEC
+                if i == len(annotations) - 1
+                else ParameterKind.POSITIONAL_ONLY
+            ),
+            annotation=annotation,
+        )
+        for i, annotation in enumerate(annotations)
+    ]
+    return InputSigValue(
+        FullSignature(Signature.make(params, AnyValue(AnySource.generic_argument)))
+    )
 
 
 def _validate_type_alias_args(
@@ -1378,7 +1445,32 @@ def _type_from_subscripted_value(
             tuple(_type_from_value(subval, ctx) for subval in members)
         )
     elif isinstance(root, type):
-        return GenericValue(root, [_type_from_value(elt, ctx) for elt in members])
+        type_params = _get_generic_type_parameters_for_annotation(root, ctx)
+        if len(type_params) == len(members):
+            typed_members = [
+                _type_from_value_type_alias_arg(elt, type_param, ctx)
+                for elt, type_param in zip(members, type_params)
+            ]
+        else:
+            typed_members = [_type_from_value(elt, ctx) for elt in members]
+        if len(type_params) == 1 and _is_paramspec_type_param(type_params[0]):
+            if len(members) == 1:
+                typed_member = typed_members[0]
+                if isinstance(typed_member, InputSigValue):
+                    paramspec_arg = typed_member
+                elif isinstance(typed_member, SequenceValue) and typed_member.typ in (
+                    list,
+                    tuple,
+                ):
+                    paramspec_arg = typed_member
+                else:
+                    paramspec_arg = SequenceValue(tuple, [(False, typed_member)])
+            else:
+                paramspec_arg = SequenceValue(
+                    tuple, [(False, typed_member) for typed_member in typed_members]
+                )
+            return GenericValue(root, [paramspec_arg])
+        return GenericValue(root, typed_members)
     elif is_typing_name(root, "ClassVar"):
         ctx.show_error("ClassVar[] used in unsupported context")
         return AnyValue(AnySource.error)
@@ -1885,9 +1977,19 @@ def _value_of_origin_args(
             ctx,
         )
     elif isinstance(origin, type):
+        runtime_origin = origin
         origin = _maybe_get_extra(origin)
         if args:
-            args_vals = [_type_from_runtime(val, ctx) for val in args]
+            type_params = _get_generic_type_parameters_for_annotation(
+                runtime_origin, ctx
+            )
+            if len(type_params) == len(args):
+                args_vals = [
+                    _type_from_runtime_type_alias_arg(arg, type_param, ctx)
+                    for arg, type_param in zip(args, type_params)
+                ]
+            else:
+                args_vals = [_type_from_runtime(val, ctx) for val in args]
             return GenericValue(origin, args_vals)
         else:
             return _maybe_typed_value(origin)
