@@ -3,6 +3,7 @@
 ## Unreleased
 
 - Improve `@contextmanager`/`@asynccontextmanager` inference: decorated callables now keep context-manager return types, and `with ... as x` now infers the yielded value type more precisely.
+- Improve constraint narrowing consistency by routing `isinstance(...)` and `is ...` checks through relation-based subtype logic, reducing edge-case mismatches across complex value kinds.
 - Update internal `@contextmanager` return annotations to use `Generator[...]`, improving compatibility with newer typing/typeshed behavior.
 - Improve protocol compatibility in static fallback mode for unimportable modules: pycroscope now enforces ClassVar-vs-instance member distinctions, writable data-member/property rules (including setter requirements), and supports plain writable attributes for read-only protocol properties.
 - Fix tuple-literal equivalence checks so `Literal[("x",)]` is treated as equivalent to `tuple[Literal["x"]]` in subtype/equivalence relations.

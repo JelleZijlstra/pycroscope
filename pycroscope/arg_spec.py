@@ -44,12 +44,14 @@ from .safe import (
     hasattr_static,
     is_async_fn,
     is_bound_classmethod,
+    is_namedtuple_class,
     is_newtype,
     is_typing_name,
     safe_getattr,
     safe_hasattr,
     safe_isinstance,
     safe_issubclass,
+    should_disable_runtime_call_for_namedtuple_class,
 )
 from .signature import (
     ANY_SIGNATURE,
@@ -111,6 +113,13 @@ if sys.version_info >= (3, 11):
 MethodWrapperType = type(object().__str__)
 
 _SELF_PARAM = inspect.Parameter("__self", inspect.Parameter.POSITIONAL_ONLY)
+
+
+def _is_plain_object_constructor(obj: type) -> bool:
+    return (
+        safe_getattr(obj, "__init__", None) is object.__init__
+        and safe_getattr(obj, "__new__", None) is object.__new__
+    )
 
 
 @used  # exposed as an API
@@ -836,11 +845,11 @@ class ArgSpecCache:
                 return sig
             return bound_sig
 
-        is_namedtuple_class = self._is_namedtuple_class(obj)
+        is_namedtuple = is_namedtuple_class(obj)
         disable_namedtuple_runtime_call = False
-        if is_namedtuple_class and safe_isinstance(obj, type):
+        if is_namedtuple and safe_isinstance(obj, type):
             disable_namedtuple_runtime_call = (
-                self._should_disable_runtime_call_for_namedtuple_class(obj)
+                should_disable_runtime_call_for_namedtuple_class(obj)
             )
         allow_call = not disable_namedtuple_runtime_call and (
             FunctionsSafeToCall.contains(obj, self.options)
@@ -933,7 +942,7 @@ class ArgSpecCache:
 
         if inspect.isclass(obj):
             obj = UnwrapClass.unwrap(obj, self.options)
-            if self._is_namedtuple_class(obj):
+            if is_namedtuple_class(obj):
                 return self._namedtuple_constructor_signature(obj, type_params)
             override = ConstructorHooks.get_constructor(obj, self.options)
             is_dunder_new = False
@@ -976,7 +985,7 @@ class ArgSpecCache:
                         is_dunder_new = True
                         constructor = obj.__new__
                         inspect_sig = self._safe_get_signature(constructor)
-                    elif self._is_plain_object_constructor(obj):
+                    elif _is_plain_object_constructor(obj):
                         constructor = obj.__init__
                         inspect_sig = inspect.Signature(parameters=[_SELF_PARAM])
                     else:
@@ -1051,32 +1060,6 @@ class ArgSpecCache:
             return self._make_any_sig(obj)
         return None
 
-    @staticmethod
-    def _is_namedtuple_class(obj: object) -> bool:
-        return (
-            safe_isinstance(obj, type)
-            and safe_issubclass(obj, tuple)
-            and isinstance(safe_getattr(obj, "_fields", None), tuple)
-        )
-
-    @staticmethod
-    def _should_disable_runtime_call_for_namedtuple_class(obj: type) -> bool:
-        module_name = safe_getattr(obj, "__module__", None)
-        if isinstance(module_name, str) and module_name.startswith("pycroscope"):
-            return False
-        annotations = safe_getattr(obj, "__annotations__", None)
-        if isinstance(annotations, dict) and annotations:
-            return True
-        type_params = safe_getattr(obj, "__parameters__", ())
-        return bool(type_params)
-
-    @staticmethod
-    def _is_plain_object_constructor(obj: type) -> bool:
-        return (
-            safe_getattr(obj, "__init__", None) is object.__init__
-            and safe_getattr(obj, "__new__", None) is object.__new__
-        )
-
     def _namedtuple_constructor_signature(
         self, obj: type, type_params: Sequence[Value]
     ) -> Signature:
@@ -1148,7 +1131,7 @@ class ArgSpecCache:
 
             impl = infer_return_type
 
-        allow_call = not self._should_disable_runtime_call_for_namedtuple_class(obj)
+        allow_call = not should_disable_runtime_call_for_namedtuple_class(obj)
         return Signature.make(
             params, return_type, callable=obj, allow_call=allow_call, impl=impl
         )
