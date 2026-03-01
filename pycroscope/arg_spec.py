@@ -237,6 +237,7 @@ class ClassesSafeToInstantiate(PyObjectSequenceOption[type]):
         CustomCheck,
         Value,
         Extension,
+        Composite,
         KVPair,
         TypedDictEntry,
         range,
@@ -531,6 +532,11 @@ class ArgSpecCache:
         return (
             GenericValue("contextlib._GeneratorContextManager", [maybe_iterable]),
             True,
+        )
+
+    def _should_disable_namedtuple_runtime_call(self, obj: type) -> bool:
+        return should_disable_runtime_call_for_namedtuple_class(obj) and not (
+            ClassesSafeToInstantiate.contains(obj, self.options)
         )
 
     def _make_sig_parameter(
@@ -849,7 +855,7 @@ class ArgSpecCache:
         disable_namedtuple_runtime_call = False
         if is_namedtuple and safe_isinstance(obj, type):
             disable_namedtuple_runtime_call = (
-                should_disable_runtime_call_for_namedtuple_class(obj)
+                self._should_disable_namedtuple_runtime_call(obj)
             )
         allow_call = not disable_namedtuple_runtime_call and (
             FunctionsSafeToCall.contains(obj, self.options)
@@ -1131,7 +1137,7 @@ class ArgSpecCache:
 
             impl = infer_return_type
 
-        allow_call = not should_disable_runtime_call_for_namedtuple_class(obj)
+        allow_call = not self._should_disable_namedtuple_runtime_call(obj)
         return Signature.make(
             params, return_type, callable=obj, allow_call=allow_call, impl=impl
         )
