@@ -81,6 +81,60 @@ class TestTypeAliasType(TestNameCheckVisitorBase):
             pass
 
     @skip_before((3, 12))
+    def test_312_runtime_typealiastype_variadic_specialization(self):
+        self.assert_passes("""
+            from typing import Callable, ParamSpec, TypeAliasType, TypeVar, TypeVarTuple
+
+            TStr = TypeVar("TStr", bound=str)
+            P = ParamSpec("P")
+            Ts = TypeVarTuple("Ts")
+
+            Alias = TypeAliasType(
+                "Alias", Callable[P, TStr] | tuple[*Ts], type_params=(TStr, P, Ts)
+            )
+
+            ok1: Alias[str, ..., int, str]
+            ok2: Alias[str, [int, str], int]
+            bad: Alias[int, ...]  # E: invalid_annotation
+        """)
+
+    @skip_before((3, 12))
+    def test_312_runtime_typealiastype_scope_checks(self):
+        self.assert_passes("""
+            from typing import Generic, TypeAliasType, TypeVar
+
+            S = TypeVar("S")
+            T = TypeVar("T")
+            my_tuple = (S, T)
+
+            Bad1 = TypeAliasType("Bad1", list[S], type_params=(T,))  # E: invalid_annotation
+            Bad2 = TypeAliasType("Bad2", list[S])  # E: invalid_annotation
+            Bad3 = TypeAliasType("Bad3", int, type_params=my_tuple)  # E: invalid_annotation
+
+            class C(Generic[T]):
+                Good = TypeAliasType("Good", list[T])
+        """)
+
+    @skip_before((3, 12))
+    def test_312_runtime_typealiastype_cycles(self):
+        self.assert_passes(
+            """
+            from typing import TypeAliasType, TypeVar
+
+            T = TypeVar("T")
+
+            Bad1 = TypeAliasType("Bad1", "Bad1")  # E: invalid_annotation
+            Bad2 = TypeAliasType("Bad2", T | "Bad2[str]", type_params=(T,))  # E: invalid_annotation
+            Bad3 = TypeAliasType("Bad3", "Bad4")  # E: invalid_annotation
+            Bad4 = TypeAliasType("Bad4", Bad3)  # E: invalid_annotation
+            Bad5 = TypeAliasType("Bad5", list[Bad5])  # E: invalid_annotation
+
+            Good = TypeAliasType("Good", T | "list[Good[T]]", type_params=(T,))
+        """,
+            allow_import_failures=True,
+        )
+
+    @skip_before((3, 12))
     def test_312(self):
         self.assert_passes("""
             from typing_extensions import assert_type

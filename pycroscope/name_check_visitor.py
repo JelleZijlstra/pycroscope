@@ -246,6 +246,7 @@ from .value import (
     TypeFormValue,
     TypeGuardExtension,
     TypeIsExtension,
+    TypeVarLike,
     TypeVarMap,
     TypeVarValue,
     UnboundMethodValue,
@@ -2646,8 +2647,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         for subval in flatten_values(base_value, unwrap_annotated=True):
             if isinstance(subval, TypeAliasValue):
                 return True
-            if isinstance(subval, KnownValue) and is_instance_of_typing_name(
-                subval.val, "TypeAliasType"
+            if isinstance(subval, KnownValue) and (
+                is_typing_name(subval.val, "TypeAliasType")
+                or is_instance_of_typing_name(subval.val, "TypeAliasType")
             ):
                 return True
         return False
@@ -10275,7 +10277,13 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
 
     def visit_Assign(self, node: ast.Assign) -> None:
         is_yield = isinstance(node.value, ast.Yield)
-        if (
+        runtime_type_alias_value = self._make_runtime_type_alias_assignment_value(node)
+        if runtime_type_alias_value is not None:
+            if self.annotate:
+                with self.catch_errors():
+                    self.visit(node.value)
+            value = runtime_type_alias_value
+        elif (
             self.current_enum_members is not None
             and self.current_function_name is None
             and isinstance(node.value, ast.Name)
@@ -10660,8 +10668,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         for subval in flatten_values(resolved, unwrap_annotated=True):
             if isinstance(subval, TypeAliasValue):
                 return True
-            if isinstance(subval, KnownValue) and is_instance_of_typing_name(
-                subval.val, "TypeAliasType"
+            if isinstance(subval, KnownValue) and (
+                is_typing_name(subval.val, "TypeAliasType")
+                or is_instance_of_typing_name(subval.val, "TypeAliasType")
             ):
                 return True
         return False
@@ -10739,17 +10748,31 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     def _collect_unguarded_type_alias_refs(value_node: ast.AST) -> set[str]:
         refs: set[str] = set()
 
-        def walk(node: ast.AST, guarded: bool) -> None:
+        def walk(node: ast.AST, guarded: bool, allow_string_parse: bool = True) -> None:
             if isinstance(node, ast.Subscript):
-                walk(node.value, guarded)
-                walk(node.slice, True)
+                walk(node.value, guarded, allow_string_parse)
+                walk(node.slice, True, allow_string_parse)
                 return
             if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load):
                 if not guarded:
                     refs.add(node.id)
                 return
+            if (
+                allow_string_parse
+                and isinstance(node, ast.Constant)
+                and isinstance(node.value, str)
+            ):
+                parse_source = node.value
+                if "\n" in parse_source or "\r" in parse_source:
+                    parse_source = f"({parse_source})"
+                try:
+                    parsed = ast.parse(parse_source, mode="eval")
+                except SyntaxError:
+                    return
+                walk(parsed.body, guarded, False)
+                return
             for child in ast.iter_child_nodes(node):
-                walk(child, guarded)
+                walk(child, guarded, allow_string_parse)
 
         walk(value_node, False)
         return refs
@@ -10828,6 +10851,174 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     ) -> set[str]:
         return self._legacy_typevars_in_nodes(
             [value_node], declared_type_params, include_active_type_params=False
+        )
+
+    @staticmethod
+    def _is_typealiastype_value(value: Value) -> bool:
+        for subval in flatten_values(value, unwrap_annotated=True):
+            if isinstance(subval, KnownValue) and (
+                is_typing_name(subval.val, "TypeAliasType")
+                or is_instance_of_typing_name(subval.val, "TypeAliasType")
+            ):
+                return True
+        return False
+
+    def _resolve_call_target_value(self, node: ast.expr) -> Value:
+        if isinstance(node, ast.Name):
+            resolved, _ = self.resolve_name(node, error_node=node, suppress_errors=True)
+            return resolved
+        if isinstance(node, ast.Attribute):
+            root_value = self._resolve_call_target_value(node.value)
+            if root_value is UNINITIALIZED_VALUE or any(
+                subval is UNINITIALIZED_VALUE
+                for subval in flatten_values(root_value, unwrap_annotated=True)
+            ):
+                return AnyValue(AnySource.inference)
+            if isinstance(root_value, AnyValue) and root_value == AnyValue(
+                AnySource.error
+            ):
+                return root_value
+            resolved = self.get_attribute(Composite(root_value), node.attr, None)
+            if resolved is UNINITIALIZED_VALUE:
+                return AnyValue(AnySource.inference)
+            return resolved
+        return AnyValue(AnySource.inference)
+
+    def _is_typealiastype_call(self, node: ast.Call) -> bool:
+        return self._is_typealiastype_value(self._resolve_call_target_value(node.func))
+
+    @staticmethod
+    def _get_runtime_type_alias_value_node(node: ast.Call) -> ast.AST | None:
+        if len(node.args) >= 2:
+            return node.args[1]
+        for keyword in node.keywords:
+            if keyword.arg == "value":
+                return keyword.value
+        return None
+
+    @staticmethod
+    def _runtime_type_alias_self_reference(value_node: ast.AST, name: str) -> bool:
+        return any(
+            isinstance(subnode, ast.Name)
+            and isinstance(subnode.ctx, ast.Load)
+            and subnode.id == name
+            for subnode in ast.walk(value_node)
+        )
+
+    @staticmethod
+    def _runtime_type_alias_declared_type_params(
+        params: Sequence[TypeVarLike | TypeVarValue],
+    ) -> Sequence[TypeVarValue]:
+        declared: list[TypeVarValue] = []
+        for param in params:
+            if isinstance(param, TypeVarValue):
+                declared.append(param)
+            elif is_instance_of_typing_name(param, "TypeVarTuple") or is_typing_name(
+                type(param), "TypeVarTuple"
+            ):
+                declared.append(TypeVarValue(param, is_typevartuple=True))
+            else:
+                declared.append(TypeVarValue(param))
+        return declared
+
+    def _extract_runtime_type_alias_type_params(
+        self, node: ast.Call
+    ) -> Sequence[TypeVarLike | TypeVarValue]:
+        type_params_keyword = next(
+            (keyword for keyword in node.keywords if keyword.arg == "type_params"), None
+        )
+        if type_params_keyword is None:
+            return []
+        if not isinstance(type_params_keyword.value, ast.Tuple):
+            self._show_error_if_checking(
+                type_params_keyword.value,
+                "type_params argument to TypeAliasType must be a literal tuple",
+                error_code=ErrorCode.invalid_annotation,
+            )
+            return []
+        params: list[TypeVarLike | TypeVarValue] = []
+        for elt in type_params_keyword.value.elts:
+            value = self.visit(elt)
+            if isinstance(value, TypeVarValue):
+                params.append(value)
+                continue
+            if isinstance(value, InputSigValue) and isinstance(
+                value.input_sig, ParamSpecSig
+            ):
+                params.append(value.input_sig.param_spec)
+                continue
+            identity = self._type_param_identity(value)
+            if identity is not None:
+                params.append(cast(TypeVarLike, identity))
+                continue
+            self._show_error_if_checking(
+                elt,
+                "TypeAliasType type_params must contain only type parameters",
+                error_code=ErrorCode.invalid_annotation,
+            )
+        return params
+
+    def _make_runtime_type_alias_assignment_value(
+        self, node: ast.Assign
+    ) -> Value | None:
+        if len(node.targets) != 1 or not isinstance(node.targets[0], ast.Name):
+            return None
+        if not isinstance(node.value, ast.Call) or not self._is_typealiastype_call(
+            node.value
+        ):
+            return None
+        value_node = self._get_runtime_type_alias_value_node(node.value)
+        if value_node is None:
+            return None
+        name = node.targets[0].id
+        if self._is_collecting():
+            self._record_type_alias_structure(name, node, value_node)
+        type_params = self._extract_runtime_type_alias_type_params(node.value)
+        declared_type_params = list(
+            self._runtime_type_alias_declared_type_params(type_params)
+        )
+        if self.current_class_type_params is not None:
+            declared_type_params.extend(self.current_class_type_params)
+        declared_type_params = list(dict.fromkeys(declared_type_params))
+        has_circular_definition = False
+        if self._runtime_type_alias_self_reference(value_node, name):
+            has_circular_definition = True
+        if self._type_alias_has_unguarded_cycle(name):
+            has_circular_definition = True
+        if self._is_checking():
+            if has_circular_definition:
+                self._show_error_if_checking(
+                    node,
+                    f"Type alias {name} has a circular definition",
+                    error_code=ErrorCode.invalid_annotation,
+                )
+            legacy_typevars = self._legacy_typevars_in_nodes(
+                [value_node], declared_type_params
+            )
+            if legacy_typevars:
+                if type_params:
+                    message = (
+                        "Type alias cannot combine old-style TypeVar declarations"
+                        " with type statement parameters"
+                    )
+                else:
+                    message = (
+                        "Type alias must declare type parameters in the"
+                        " type statement"
+                    )
+                self._show_error_if_checking(
+                    node, message, error_code=ErrorCode.invalid_annotation
+                )
+        if has_circular_definition:
+            evaluator = lambda: AnyValue(AnySource.error)
+        else:
+            evaluator = lambda: annotation_expr_from_ast(
+                value_node, visitor=self, suppress_errors=True
+            ).to_value(allow_qualifiers=True, allow_empty=True)
+        return TypeAliasValue(
+            name,
+            self.module.__name__ if self.module is not None else "",
+            TypeAlias(evaluator, lambda: tuple(type_params)),
         )
 
     if sys.version_info >= (3, 12):
@@ -11028,6 +11219,8 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         return self.composite_from_subscript(node).value
 
     def composite_from_subscript(self, node: ast.Subscript) -> Composite:
+        if self.annotate and not hasattr(node, "inferred_value"):
+            node.inferred_value = AnyValue(AnySource.inference)
         root_composite = self.composite_from_node(node.value)
         index_composite = self.composite_from_node(node.slice)
         index = index_composite.value
@@ -11055,7 +11248,10 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             return_value = self._composite_from_subscript_no_mvv(
                 node, root_composite, index_composite, varname
             )
-        return Composite(return_value, varname, node)
+        composite = Composite(return_value, varname, node)
+        if self.annotate:
+            node.inferred_value = composite.value
+        return composite
 
     def _composite_from_subscript_no_mvv(
         self,
@@ -11119,8 +11315,11 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     isinstance(stripped_root.value, TypeAliasValue)
                     or (
                         isinstance(stripped_root.value, KnownValue)
-                        and is_instance_of_typing_name(
-                            stripped_root.value.val, "TypeAliasType"
+                        and (
+                            is_typing_name(stripped_root.value.val, "TypeAliasType")
+                            or is_instance_of_typing_name(
+                                stripped_root.value.val, "TypeAliasType"
+                            )
                         )
                     )
                     or (
