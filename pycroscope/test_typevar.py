@@ -425,8 +425,8 @@ class TestTypeVar(TestNameCheckVisitorBase):
 
         class BadOrder(Generic[DefaultT, T]): ...  # E: invalid_annotation
 
-        class BadAfterVariadic(
-            Generic[Unpack[Ts], DefaultAfterVariadic]  # E: invalid_annotation
+        class BadAfterVariadic(  # E: invalid_annotation
+            Generic[Unpack[Ts], DefaultAfterVariadic]
         ): ...
 
         class GoodAfterVariadic(Generic[Unpack[Ts], P]): ...
