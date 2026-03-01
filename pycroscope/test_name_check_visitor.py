@@ -259,6 +259,21 @@ class TestImportFailureHandling(TestNameCheckVisitorBase):
         unpack_extra(name="No Country for Old Men", year=2007)
 
     @assert_passes(allow_import_failures=True)
+    def test_constructor_explicit_self_annotation_after_import_failure(self):
+        from typing import Generic, TypeVar
+
+        T = TypeVar("T")
+
+        class C(Generic[T]):
+            def __init__(self: "C[int]") -> None:
+                pass
+
+        boom = 1 / 0
+
+        C[int]()
+        C[str]()  # E: incompatible_call
+
+    @assert_passes(allow_import_failures=True)
     def test_nominal_class_fallback_after_import_failure(self):
         from typing import Any, overload
 
@@ -1767,6 +1782,56 @@ class TestSubclassValue(TestNameCheckVisitorBase):
             cls(1, 2)  # E: incompatible_argument
 
     @assert_passes()
+    def test_constructor_inherited_generic_init_with_self_annotation(self):
+        from typing import Generic, TypeVar
+
+        from typing_extensions import Self
+
+        T = TypeVar("T")
+
+        class Base(Generic[T]):
+            def __init__(self, x: Self | None) -> None:
+                pass
+
+        class Child(Base[int]):
+            pass
+
+        Child(Child(None))
+        Child(Base(None))  # E: incompatible_argument
+
+    @assert_passes()
+    def test_constructor_respects_explicit_init_self_annotation(self):
+        from typing import Generic, TypeVar
+
+        T = TypeVar("T")
+
+        class C(Generic[T]):
+            def __init__(self: "C[int]") -> None:
+                pass
+
+        C()
+        C[int]()
+        C[str]()  # E: incompatible_call
+
+    @assert_passes()
+    def test_init_self_annotation_disallows_class_scoped_typevars(self):
+        from typing import Generic, TypeVar
+
+        T1 = TypeVar("T1")
+        T2 = TypeVar("T2")
+        V = TypeVar("V")
+
+        class Bad(Generic[T1, T2]):
+            def __init__(self: "Bad[T2, T1]") -> None:  # E: invalid_annotation
+                pass
+
+        class Good(Generic[T1]):
+            def __init__(self: "Good[V]", value: V) -> None:
+                pass
+
+        Good(1)
+
+    @assert_passes()
     def test_incompatible_invariant_typevar_arguments(self):
         from typing import TypeVar
 
@@ -3184,9 +3249,10 @@ class TestAnnAssign(TestNameCheckVisitorBase):
 
     @assert_passes(allow_import_failures=True)
     def test_self_methods_in_unimportable_generic_module(self):
-        from typing import Generic, Self, TypeVar, assert_type
+        from typing import Generic, TypeVar
 
         import does_not_exist  # noqa: F401
+        from typing_extensions import Self, assert_type
 
         T = TypeVar("T")
 
@@ -3207,9 +3273,8 @@ class TestAnnAssign(TestNameCheckVisitorBase):
 
     @assert_passes(allow_import_failures=True)
     def test_self_classmethod_in_unimportable_module(self):
-        from typing import Self, assert_type
-
         import does_not_exist  # noqa: F401
+        from typing_extensions import Self, assert_type
 
         class Shape:
             @classmethod

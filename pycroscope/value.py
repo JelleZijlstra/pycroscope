@@ -2725,6 +2725,15 @@ def replace_fallback(val: Value) -> BasicType:
 
 def has_any_base_value(val: Value, *, _seen: set[int] | None = None) -> bool:
     """Whether a base-class value implies dynamic ``Any``-base behavior."""
+    if (
+        isinstance(val, PartialValue)
+        and val.operation is PartialValueOperation.SUBSCRIPT
+    ):
+        root = replace_fallback(val.root)
+        if isinstance(
+            root, (KnownValue, TypedValue, GenericValue, SyntheticClassObjectValue)
+        ):
+            return has_any_base_value(root, _seen=_seen)
     val = replace_fallback(val)
     if isinstance(val, MultiValuedValue):
         return any(has_any_base_value(subval, _seen=_seen) for subval in val.vals)

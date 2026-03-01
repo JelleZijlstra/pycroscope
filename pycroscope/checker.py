@@ -49,10 +49,12 @@ from .suggested_type import CallableTracker
 from .type_object import TypeObject, get_mro
 from .typeshed import TypeshedFinder
 from .value import (
+    NO_RETURN_VALUE,
     UNINITIALIZED_VALUE,
     AnySource,
     AnyValue,
     CallableValue,
+    CanAssignError,
     GenericValue,
     HasAttrExtension,
     KnownValue,
@@ -753,6 +755,125 @@ class Checker:
         return True
 
     @staticmethod
+    def _signature_has_no_parameters(signature: ConcreteSignature) -> bool:
+        signatures = (
+            signature.signatures
+            if isinstance(signature, OverloadedSignature)
+            else [signature]
+        )
+        return all(not sig.parameters for sig in signatures)
+
+    @staticmethod
+    def _make_incompatible_constructor_signature(instance_type: Value) -> Signature:
+        return Signature.make(
+            [
+                SigParameter(
+                    "%self",
+                    kind=ParameterKind.POSITIONAL_ONLY,
+                    annotation=NO_RETURN_VALUE,
+                )
+            ],
+            instance_type,
+        )
+
+    @staticmethod
+    def _is_incompatible_constructor_signature(signature: ConcreteSignature) -> bool:
+        signatures = (
+            signature.signatures
+            if isinstance(signature, OverloadedSignature)
+            else [signature]
+        )
+        for sig in signatures:
+            params = list(sig.parameters.values())
+            if len(params) != 1:
+                return False
+            param = params[0]
+            if (
+                param.name != "%self"
+                or param.kind is not ParameterKind.POSITIONAL_ONLY
+                or param.annotation is not NO_RETURN_VALUE
+            ):
+                return False
+        return True
+
+    def _runtime_init_self_annotation_matches(
+        self,
+        origin: type,
+        *,
+        instance_type: Value,
+        typevar_map: dict[TypeVarLike, Value],
+    ) -> bool:
+        init_method = safe_getattr(origin, "__init__", None)
+        if init_method is None:
+            return True
+        init_sig = self._as_concrete_signature(
+            self.arg_spec_cache.get_argspec(init_method)
+        )
+        if init_sig is None:
+            return True
+        signatures = (
+            init_sig.signatures
+            if isinstance(init_sig, OverloadedSignature)
+            else [init_sig]
+        )
+        checked = False
+        for signature in signatures:
+            params = list(signature.parameters.values())
+            if not params:
+                continue
+            checked = True
+            self_annotation = params[0].annotation.substitute_typevars(typevar_map)
+            if self_annotation.is_assignable(instance_type, self):
+                return True
+        return not checked
+
+    def _synthetic_init_self_annotation_matches(
+        self,
+        synthetic_class: SyntheticClassObjectValue,
+        *,
+        instance_type: Value,
+        get_return_override: Callable[[MaybeSignature], Value | None],
+        get_call_attribute: Callable[[Value], Value] | None,
+    ) -> bool:
+        has_direct_init = "__init__" in synthetic_class.class_attributes
+        init_sig = self._get_synthetic_constructor_method_signature(
+            synthetic_class,
+            "__init__",
+            use_direct_method=has_direct_init,
+            bound_self_value=instance_type,
+            self_annotation_value=instance_type,
+            get_return_override=get_return_override,
+            get_call_attribute=get_call_attribute,
+        )
+        if init_sig is None:
+            return True
+        return not self._is_incompatible_constructor_signature(init_sig)
+
+    def _synthetic_explicit_self_annotation_matches_instance(
+        self, annotation: Value, *, instance_type: Value, class_type: type | str
+    ) -> bool:
+        expected_args = self._extract_generic_args_from_self_annotation(
+            annotation, class_type
+        )
+        if expected_args is None:
+            return True
+        instance_root = replace_fallback(instance_type)
+        if (
+            not isinstance(instance_root, GenericValue)
+            or instance_root.typ != class_type
+        ):
+            return True
+        if len(expected_args) != len(instance_root.args):
+            return False
+        for expected_arg, actual_arg in zip(expected_args, instance_root.args):
+            expected_root = replace_fallback(expected_arg)
+            if isinstance(expected_root, TypeVarValue):
+                continue
+            if isinstance(expected_root.can_assign(actual_arg, self), CanAssignError):
+                return False
+        return True
+
+    @staticmethod
     def _extract_generic_args_from_self_annotation(
         annotation: Value, class_type: type | str
     ) -> tuple[Value, ...] | None:
@@ -794,9 +915,11 @@ class Checker:
     def _make_synthetic_constructor_instance_value(
         self, value: SyntheticClassObjectValue
     ) -> Value:
-        if isinstance(
-            value.class_type, TypedValue
-        ) and not self._synthetic_class_has_any_base(value):
+        if self._synthetic_class_has_any_base(value):
+            return self._make_synthetic_class_instance_value(value)
+        if isinstance(value.class_type, GenericValue):
+            return value.class_type
+        if isinstance(value.class_type, TypedValue):
             type_params = self.arg_spec_cache.get_type_parameters(value.class_type.typ)
             if not type_params:
                 type_params = list(
@@ -867,16 +990,35 @@ class Checker:
                 else [method_sig]
             )
             bound_sigs: list[Signature] = []
+            had_incompatible_self_annotation = False
+            enforce_self_compatibility = use_direct_method and not any(
+                isinstance(subval, TypeVarValue)
+                for subval in bound_self_value.walk_values()
+            )
             for source_sig in source_sigs:
                 params = list(source_sig.parameters.values())
                 source_self_annotation = (
                     params[0].annotation if params else self_annotation_value
                 )
+                if (
+                    params
+                    and enforce_self_compatibility
+                    and not self._synthetic_explicit_self_annotation_matches_instance(
+                        source_self_annotation,
+                        instance_type=bound_self_value,
+                        class_type=value.class_type.typ,
+                    )
+                ):
+                    had_incompatible_self_annotation = True
+                    continue
                 bound = self._bind_constructor_like_signature(
                     source_sig,
                     self_value=bound_self_value,
                     self_annotation_value=source_self_annotation,
                 )
+                if bound is None and params and enforce_self_compatibility:
+                    had_incompatible_self_annotation = True
+                    continue
                 if not isinstance(bound, Signature):
                     continue
                 if self._is_uninformative_constructor_signature(bound):
@@ -899,6 +1041,18 @@ class Checker:
             combined = self._combine_signatures(bound_sigs)
             if combined is not None:
                 return combined
+            if had_incompatible_self_annotation:
+                # Preserve constructor-call failure when explicit self binding fails.
+                return Signature.make(
+                    [
+                        SigParameter(
+                            "%self",
+                            kind=ParameterKind.POSITIONAL_ONLY,
+                            annotation=NO_RETURN_VALUE,
+                        )
+                    ],
+                    bound_self_value,
+                )
         bound = self._bind_constructor_like_signature(
             method_sig,
             self_value=bound_self_value,
@@ -1056,6 +1210,12 @@ class Checker:
                 dataclass_sig = Signature.make([], instance_type)
             init_sig = dataclass_sig
 
+        if (
+            new_sig is not None
+            and init_sig is not None
+            and self._signature_has_no_parameters(new_sig)
+        ):
+            return init_sig
         if new_sig is not None and init_sig is not None:
             if self._signature_allows_init_after_new(new_sig, instance_type):
                 return init_sig
@@ -1378,18 +1538,46 @@ class Checker:
             origin = safe_getattr(value.val, "__origin__", None)
             args = safe_getattr(value.val, "__args__", None)
             if isinstance(origin, type) and isinstance(args, tuple):
-                origin_argspec = self.arg_spec_cache.get_argspec(origin)
+                origin_argspec = self.signature_from_value(
+                    KnownValue(origin),
+                    get_return_override=get_return_override,
+                    get_call_attribute=get_call_attribute,
+                )
+                if origin_argspec is None:
+                    origin_argspec = self.arg_spec_cache.get_argspec(origin)
                 if origin_argspec is not None:
                     type_params = self.arg_spec_cache.get_type_parameters(origin)
+                    if not type_params:
+                        generic_bases = self.arg_spec_cache.get_generic_bases(
+                            origin, substitute_typevars=False
+                        )
+                        type_params = [
+                            val
+                            for val in generic_bases.get(origin, {}).values()
+                            if isinstance(val, TypeVarValue)
+                        ]
                     arg_values = [
                         type_from_runtime(arg, visitor=self, suppress_errors=True)
                         for arg in args
                     ]
+                    specialized_instance_type: Value
+                    if arg_values:
+                        specialized_instance_type = GenericValue(origin, arg_values)
+                    else:
+                        specialized_instance_type = TypedValue(origin)
                     typevar_map = {
                         param.typevar: arg
                         for param, arg in zip(type_params, arg_values)
                         if isinstance(param, TypeVarValue)
                     }
+                    if not self._runtime_init_self_annotation_matches(
+                        origin,
+                        instance_type=specialized_instance_type,
+                        typevar_map=typevar_map,
+                    ):
+                        return self._make_incompatible_constructor_signature(
+                            specialized_instance_type
+                        )
                     if typevar_map:
                         return origin_argspec.substitute_typevars(typevar_map)
                     return origin_argspec
@@ -1618,7 +1806,14 @@ class Checker:
         synthetic_root: SyntheticClassObjectValue | None = None
         if isinstance(root, KnownValue) and isinstance(root.val, type):
             class_type = root.val
-            origin_argspec = self.arg_spec_cache.get_argspec(root.val)
+            synthetic_root = self.get_synthetic_class(root.val)
+            origin_argspec = self.signature_from_value(
+                KnownValue(root.val),
+                get_return_override=get_return_override,
+                get_call_attribute=get_call_attribute,
+            )
+            if origin_argspec is None:
+                origin_argspec = self.arg_spec_cache.get_argspec(root.val)
         elif isinstance(root, SyntheticClassObjectValue):
             synthetic_root = root
             if isinstance(root.class_type, TypedValue) and isinstance(
@@ -1642,6 +1837,7 @@ class Checker:
             )
         elif isinstance(root, TypedValue) and isinstance(root.typ, type):
             class_type = root.typ
+            synthetic_root = self.get_synthetic_class(root.typ)
             origin_argspec = self.arg_spec_cache.get_argspec(root.typ)
         else:
             return None
@@ -1650,19 +1846,71 @@ class Checker:
         if class_type is None:
             return origin_argspec
         type_params = self.arg_spec_cache.get_type_parameters(class_type)
+        if not type_params and isinstance(class_type, type):
+            generic_bases = self.arg_spec_cache.get_generic_bases(
+                class_type, substitute_typevars=False
+            )
+            type_params = [
+                val
+                for val in generic_bases.get(class_type, {}).values()
+                if isinstance(val, TypeVarValue)
+            ]
         if not type_params and synthetic_root is not None:
             type_params = list(
                 self._infer_synthetic_type_params_from_methods(synthetic_root)
             )
-        if not type_params:
-            return origin_argspec
+        member_values = [
+            type_from_value(member, self, value.node, suppress_errors=True)
+            for member in value.members
+        ]
+        compatibility_member_values = [
+            (
+                member
+                if (
+                    isinstance(converted_member, AnyValue)
+                    and converted_member.source is AnySource.error
+                    and isinstance(member, (TypedValue, GenericValue))
+                    and isinstance(member.typ, (type, str))
+                )
+                else converted_member
+            )
+            for member, converted_member in zip(value.members, member_values)
+        ]
         typevar_map = {}
-        for param, member in zip(type_params, value.members):
+        for param, member in zip(type_params, member_values):
             if not isinstance(param, TypeVarValue):
                 continue
-            typevar_map[param.typevar] = type_from_value(
-                member, self, value.node, suppress_errors=True
+            typevar_map[param.typevar] = member
+        specialized_instance_type: Value
+        if compatibility_member_values:
+            specialized_instance_type = GenericValue(
+                class_type, compatibility_member_values
             )
+        else:
+            specialized_instance_type = TypedValue(class_type)
+        if (
+            synthetic_root is not None
+            and not self._synthetic_init_self_annotation_matches(
+                synthetic_root,
+                instance_type=specialized_instance_type,
+                get_return_override=get_return_override,
+                get_call_attribute=get_call_attribute,
+            )
+        ):
+            return self._make_incompatible_constructor_signature(
+                specialized_instance_type
+            )
+        if isinstance(class_type, type):
+            if not self._runtime_init_self_annotation_matches(
+                class_type,
+                instance_type=specialized_instance_type,
+                typevar_map=typevar_map,
+            ):
+                return self._make_incompatible_constructor_signature(
+                    specialized_instance_type
+                )
+        if not type_params:
+            return origin_argspec
         if not typevar_map:
             return origin_argspec
         return origin_argspec.substitute_typevars(typevar_map)
