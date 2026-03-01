@@ -129,11 +129,13 @@ from .safe import (
     all_of_type,
     is_dataclass_type,
     is_hashable,
+    is_namedtuple_class,
     is_typing_name,
     safe_getattr,
     safe_hasattr,
     safe_isinstance,
     safe_issubclass,
+    should_disable_runtime_call_for_namedtuple_class,
 )
 from .shared_options import EnforceNoUnused, ImportPaths, Paths
 from .signature import (
@@ -3650,9 +3652,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 runtime_base = self._runtime_annotation_from_value(base_value)
                 if runtime_base is typing.Any:
                     return None
-            if isinstance(runtime_base, type) and self._is_namedtuple_class(
-                runtime_base
-            ):
+            if isinstance(runtime_base, type) and is_namedtuple_class(runtime_base):
                 namedtuple_base_fields.update(runtime_base._fields)
             if has_namedtuple_marker_base and not self._is_namedtuple_generic_base(
                 base_value
@@ -8236,7 +8236,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             typ = value.typ
         elif isinstance(value, TypedValue) and isinstance(value.typ, type):
             typ = value.typ
-        if typ is None or not self._is_namedtuple_class(typ):
+        if typ is None or not is_namedtuple_class(typ):
             return None
         fields = safe_getattr(typ, "_fields", None)
         if not isinstance(fields, tuple):
@@ -13468,31 +13468,12 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     return TypedValue(task_cls)
             return return_value
 
-    @staticmethod
-    def _is_namedtuple_class(value: object) -> bool:
-        return (
-            isinstance(value, type)
-            and safe_issubclass(value, tuple)
-            and isinstance(safe_getattr(value, "_fields", None), tuple)
-        )
-
-    @staticmethod
-    def _should_disable_runtime_call_for_namedtuple_class(value: type) -> bool:
-        module_name = safe_getattr(value, "__module__", None)
-        if isinstance(module_name, str) and module_name.startswith("pycroscope"):
-            return False
-        annotations = safe_getattr(value, "__annotations__", None)
-        if isinstance(annotations, dict) and annotations:
-            return True
-        type_params = safe_getattr(value, "__parameters__", ())
-        return bool(type_params)
-
     def _should_perform_runtime_call(self, callee: KnownValue) -> bool:
         callee_obj = callee.val
         return not (
             isinstance(callee_obj, type)
-            and self._is_namedtuple_class(callee_obj)
-            and self._should_disable_runtime_call_for_namedtuple_class(callee_obj)
+            and is_namedtuple_class(callee_obj)
+            and should_disable_runtime_call_for_namedtuple_class(callee_obj)
         )
 
     def _specialize_generic_alias_call_return(
@@ -13550,7 +13531,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         if not isinstance(return_value, KnownValue):
             return return_value
         runtime_class = return_value.val
-        if not self._is_namedtuple_class(runtime_class):
+        if not is_namedtuple_class(runtime_class):
             return return_value
         synthetic = SyntheticClassObjectValue(
             runtime_class.__name__,
