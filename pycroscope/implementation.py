@@ -60,7 +60,6 @@ from .stacked_scopes import (
     annotate_with_constraint,
 )
 from .value import (
-    KNOWN_MUTABLE_TYPES,
     NO_RETURN_VALUE,
     UNINITIALIZED_VALUE,
     AnnotatedValue,
@@ -97,6 +96,7 @@ from .value import (
     dump_value,
     flatten_values,
     kv_pairs_from_mapping,
+    len_of_value,
     namedtuple_members_from_value,
     replace_fallback,
     replace_known_sequence_value,
@@ -2056,26 +2056,6 @@ def _qcore_assert_impl(ctx: CallContext, positive: bool) -> ImplReturn:
         varname, ConstraintType.intersect_with, positive, constrained_to
     )
     return ImplReturn(KnownValue(None), no_return_unless=no_return_unless)
-
-
-def len_of_value(val: Value) -> Value:
-    if isinstance(val, AnnotatedValue):
-        return len_of_value(val.value)
-    if (
-        isinstance(val, SequenceValue)
-        and isinstance(val.typ, type)
-        and not issubclass(val.typ, KNOWN_MUTABLE_TYPES)
-    ):
-        members = val.get_member_sequence()
-        if members is not None:
-            return KnownValue(len(members))
-    if isinstance(val, KnownValue):
-        try:
-            if not isinstance(val.val, KNOWN_MUTABLE_TYPES):
-                return KnownValue(len(val.val))
-        except Exception:
-            return TypedValue(int)
-    return TypedValue(int)
 
 
 def len_transformer(

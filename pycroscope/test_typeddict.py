@@ -1,8 +1,14 @@
 # static analysis: ignore
-from .implementation import assert_is_value
 from .test_name_check_visitor import TestNameCheckVisitorBase
 from .test_node_visitor import assert_passes, skip_if_not_installed
-from .value import AnySource, AnyValue, TypedDictEntry, TypedDictValue, TypedValue
+from .value import (
+    AnySource,
+    AnyValue,
+    TypedDictEntry,
+    TypedDictValue,
+    TypedValue,
+    assert_is_value,
+)
 
 
 class TestExtraKeys(TestNameCheckVisitorBase):

@@ -2971,6 +2971,26 @@ GetItemProtoValue = GenericValue(GetItemProto, [TypeVarValue(T_co)])
 TypingGenericAlias = type(list[int])
 
 
+def len_of_value(val: Value) -> Value:
+    if isinstance(val, AnnotatedValue):
+        return len_of_value(val.value)
+    if (
+        isinstance(val, SequenceValue)
+        and isinstance(val.typ, type)
+        and not issubclass(val.typ, KNOWN_MUTABLE_TYPES)
+    ):
+        members = val.get_member_sequence()
+        if members is not None:
+            return KnownValue(len(members))
+    if isinstance(val, KnownValue):
+        try:
+            if not isinstance(val.val, KNOWN_MUTABLE_TYPES):
+                return KnownValue(len(val.val))
+        except Exception:
+            return TypedValue(int)
+    return TypedValue(int)
+
+
 def concrete_values_from_iterable(
     value: Value, ctx: CanAssignContext
 ) -> CanAssignError | Value | Sequence[Value]:

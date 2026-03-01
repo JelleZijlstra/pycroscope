@@ -8,7 +8,6 @@ from . import test_node_visitor
 from .analysis_lib import make_module
 from .checker import Checker
 from .error_code import DISABLED_IN_TESTS, ErrorCode
-from .implementation import assert_is_value, dump_value
 from .name_check_visitor import ClassAttributeChecker, NameCheckVisitor, _static_hasattr
 from .test_config import CONFIG_PATH
 from .test_node_visitor import (
@@ -42,6 +41,8 @@ from .value import (
     TypeVarValue,
     UnboundMethodValue,
     VariableNameValue,
+    assert_is_value,
+    dump_value,
 )
 
 # ===================================================

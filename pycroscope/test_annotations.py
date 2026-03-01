@@ -1,7 +1,6 @@
 # static analysis: ignore
 from .annotations import has_invalid_paramspec_usage
 from .error_code import ErrorCode
-from .implementation import assert_is_value
 from .signature import OverloadedSignature, Signature, SigParameter
 from .test_name_check_visitor import TestNameCheckVisitorBase
 from .test_node_visitor import assert_passes, skip_before, skip_if_not_installed
@@ -21,6 +20,7 @@ from .value import (
     TypedDictValue,
     TypedValue,
     TypeVarValue,
+    assert_is_value,
 )
 
 

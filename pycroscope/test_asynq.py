@@ -16,7 +16,6 @@ from .asynq_tests import (
     proxied_fn,
 )
 from .find_unused import used
-from .implementation import assert_is_value
 from .name_check_visitor import _get_task_cls
 from .test_name_check_visitor import TestNameCheckVisitorBase
 from .test_node_visitor import assert_passes
@@ -29,6 +28,7 @@ from .value import (
     KnownValue,
     KVPair,
     TypedValue,
+    assert_is_value,
 )
 
 used(maybe_asynq)
