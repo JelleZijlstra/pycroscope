@@ -393,15 +393,15 @@ class TestSyntheticType(TestNameCheckVisitorBase):
 
         ok_settable1: WantsSettableProperty = SettablePropertyImpl()
         ok_settable2: WantsSettableProperty = PlainAttrImpl()
-        bad_settable1: WantsSettableProperty = (
+        bad_settable1: WantsSettableProperty = (  # E: incompatible_assignment
             ReadOnlyPropertyImpl()
-        )  # E: incompatible_assignment
-        bad_settable2: WantsSettableProperty = (
+        )
+        bad_settable2: WantsSettableProperty = (  # E: incompatible_assignment
             NamedTupleImpl()
-        )  # E: incompatible_assignment
-        bad_settable3: WantsSettableProperty = (
+        )
+        bad_settable3: WantsSettableProperty = (  # E: incompatible_assignment
             FrozenDataclassImpl()
-        )  # E: incompatible_assignment
+        )
         print(
             bad_classvar,
             bad_data1,
