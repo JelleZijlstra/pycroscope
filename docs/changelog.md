@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Improve dataclass constructor/pattern semantics in static fallback mode: pycroscope now honors class-level `init`/`match_args` settings for `@dataclass` and `@dataclass_transform`, and recognizes `factory=` field specifier defaults when checking generated constructors and `default_factory` return types.
 - Improve dataclass conformance in static fallback mode for unimportable modules: pycroscope now validates default-before-non-default field ordering, checks `default_factory` return types against field annotations, preserves callable dataclass fields as values (not bound methods), exposes dataclass metadata (`__dataclass_fields__`), and resolves inherited dataclass constructors more accurately.
 - Improve constructor checking when modules fail at import time: pycroscope now enforces explicit `__init__` self-annotation compatibility for specialized generic class calls (for example rejecting `Class4[str]()` when `__init__` requires `Class4[int]`), and avoids false positives from synthetic class-subscripting fallback on generic instances.
 - Improve `TypeAliasType(...)` handling: variadic alias specialization now supports `TypeVarTuple`, runtime `type_params` scope/literal-tuple and circular-definition checks are enforced, and recursive alias evaluation no longer triggers internal recursion errors.

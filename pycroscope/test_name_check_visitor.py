@@ -858,6 +858,34 @@ class TestImportFailureHandlingCodeSamples(TestNameCheckVisitorBase):
                 __slots__ = ()
 
     @assert_passes(allow_import_failures=True)
+    def test_dataclass_init_and_match_args_after_import_failure(self):
+        boom = 1 / 0
+
+        from dataclasses import dataclass
+
+        @dataclass(init=False)
+        class InitDisabled:
+            x: int
+            y: int
+
+        InitDisabled()
+        InitDisabled(1, 2)  # E: incompatible_call
+
+        def match_init_disabled(value: InitDisabled) -> None:
+            match value:
+                case InitDisabled(1, 2):
+                    pass
+
+        @dataclass(match_args=False)
+        class NoMatchArgs:
+            x: int
+
+        def reject_positional_patterns(value: NoMatchArgs) -> None:
+            match value:
+                case NoMatchArgs(1):  # E: bad_match
+                    pass
+
+    @assert_passes(allow_import_failures=True)
     def test_dataclass_kw_only_checks_after_import_failure(self):
         boom = 1 / 0
 
@@ -1012,6 +1040,22 @@ class TestImportFailureHandlingCodeSamples(TestNameCheckVisitorBase):
         class DC3:
             a: InitVar[int] = 0
             b: int
+
+        @dataclass
+        class DC4:
+            a: int = field(repr=False)
+            b: int
+
+        @dataclass
+        class DC5:
+            a: int = 0
+            b: int = field(init=False)
+
+            def method(self) -> None:
+                local: int = 0
+                _ = local
+
+        DC4(1, 2)
 
     @assert_passes()
     def test_dataclass_post_init_initvar_semantics(self):

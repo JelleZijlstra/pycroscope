@@ -605,9 +605,11 @@ class _SyntheticTypedDictContext:
 
 @dataclass(frozen=True)
 class _DataclassTransformInfo:
+    init_default: bool | None = None
     eq_default: bool | None = None
     frozen_default: bool | None = None
     unsafe_hash_default: bool | None = None
+    match_args_default: bool | None = None
     kw_only_default: bool | None = None
     order_default: bool | None = None
     slots_default: bool | None = None
@@ -617,9 +619,11 @@ class _DataclassTransformInfo:
 @dataclass(frozen=True)
 class _ClassDataclassSemantics:
     is_dataclass: bool
+    init: bool | None
     eq: bool | None
     frozen: bool | None
     unsafe_hash: bool | None
+    match_args: bool | None
     order: bool | None
     slots: bool | None
     kw_only_default: bool
@@ -1306,6 +1310,9 @@ class _EnumMemberTracker:
 @dataclass(frozen=True)
 class _DataclassFieldCallOptions:
     init: bool | None = None
+    kw_only: bool | None = None
+    alias: str | None = None
+    has_default: bool = False
     default_factory: Value | None = None
 
 
@@ -2852,6 +2859,12 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                         KnownValue(True)
                     )
                     if dataclass_semantics.transform_info is not None and isinstance(
+                        dataclass_semantics.transform_info.init_default, bool
+                    ):
+                        synthetic_class.class_attributes[
+                            "%dataclass_transform_init_default"
+                        ] = KnownValue(dataclass_semantics.transform_info.init_default)
+                    if dataclass_semantics.transform_info is not None and isinstance(
                         dataclass_semantics.transform_info.eq_default, bool
                     ):
                         synthetic_class.class_attributes[
@@ -2872,6 +2885,14 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                             "%dataclass_transform_unsafe_hash_default"
                         ] = KnownValue(
                             dataclass_semantics.transform_info.unsafe_hash_default
+                        )
+                    if dataclass_semantics.transform_info is not None and isinstance(
+                        dataclass_semantics.transform_info.match_args_default, bool
+                    ):
+                        synthetic_class.class_attributes[
+                            "%dataclass_transform_match_args_default"
+                        ] = KnownValue(
+                            dataclass_semantics.transform_info.match_args_default
                         )
                     if dataclass_semantics.transform_info is not None and isinstance(
                         dataclass_semantics.transform_info.kw_only_default, bool
@@ -2961,6 +2982,12 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 if dataclass_semantics.is_transform_provider:
                     existing.class_attributes["%dataclass_transform"] = KnownValue(True)
                     if dataclass_semantics.transform_info is not None and isinstance(
+                        dataclass_semantics.transform_info.init_default, bool
+                    ):
+                        existing.class_attributes[
+                            "%dataclass_transform_init_default"
+                        ] = KnownValue(dataclass_semantics.transform_info.init_default)
+                    if dataclass_semantics.transform_info is not None and isinstance(
                         dataclass_semantics.transform_info.eq_default, bool
                     ):
                         existing.class_attributes["%dataclass_transform_eq_default"] = (
@@ -2981,6 +3008,14 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                             "%dataclass_transform_unsafe_hash_default"
                         ] = KnownValue(
                             dataclass_semantics.transform_info.unsafe_hash_default
+                        )
+                    if dataclass_semantics.transform_info is not None and isinstance(
+                        dataclass_semantics.transform_info.match_args_default, bool
+                    ):
+                        existing.class_attributes[
+                            "%dataclass_transform_match_args_default"
+                        ] = KnownValue(
+                            dataclass_semantics.transform_info.match_args_default
                         )
                     if dataclass_semantics.transform_info is not None and isinstance(
                         dataclass_semantics.transform_info.kw_only_default, bool
@@ -3014,6 +3049,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 else:
                     existing.class_attributes.pop("%dataclass_transform", None)
                     existing.class_attributes.pop(
+                        "%dataclass_transform_init_default", None
+                    )
+                    existing.class_attributes.pop(
                         "%dataclass_transform_eq_default", None
                     )
                     existing.class_attributes.pop(
@@ -3021,6 +3059,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     )
                     existing.class_attributes.pop(
                         "%dataclass_transform_unsafe_hash_default", None
+                    )
+                    existing.class_attributes.pop(
+                        "%dataclass_transform_match_args_default", None
                     )
                     existing.class_attributes.pop(
                         "%dataclass_transform_kw_only_default", None
@@ -4352,10 +4393,14 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 if field_specifier not in field_specifiers:
                     field_specifiers.append(field_specifier)
         return _DataclassTransformInfo(
+            init_default=_merge_bool([info.init_default for info in filtered]),
             eq_default=_merge_bool([info.eq_default for info in filtered]),
             frozen_default=_merge_bool([info.frozen_default for info in filtered]),
             unsafe_hash_default=_merge_bool(
                 [info.unsafe_hash_default for info in filtered]
+            ),
+            match_args_default=_merge_bool(
+                [info.match_args_default for info in filtered]
             ),
             kw_only_default=_merge_bool([info.kw_only_default for info in filtered]),
             order_default=_merge_bool([info.order_default for info in filtered]),
@@ -4424,9 +4469,11 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 if not self._is_dataclass_transform_marker_target(decorator.func):
                     continue
                 info = _DataclassTransformInfo(
+                    init_default=True,
                     eq_default=True,
                     frozen_default=False,
                     unsafe_hash_default=False,
+                    match_args_default=True,
                     kw_only_default=False,
                     order_default=False,
                     slots_default=None,
@@ -4435,7 +4482,11 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 for kw in decorator.keywords:
                     if kw.arg is None:
                         continue
-                    if kw.arg == "eq_default":
+                    if kw.arg == "init_default":
+                        bool_value = self._get_bool_literal(kw.value)
+                        if bool_value is not None:
+                            info = replace(info, init_default=bool_value)
+                    elif kw.arg == "eq_default":
                         bool_value = self._get_bool_literal(kw.value)
                         if bool_value is not None:
                             info = replace(info, eq_default=bool_value)
@@ -4447,6 +4498,10 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                         bool_value = self._get_bool_literal(kw.value)
                         if bool_value is not None:
                             info = replace(info, unsafe_hash_default=bool_value)
+                    elif kw.arg == "match_args_default":
+                        bool_value = self._get_bool_literal(kw.value)
+                        if bool_value is not None:
+                            info = replace(info, match_args_default=bool_value)
                     elif kw.arg == "kw_only_default":
                         bool_value = self._get_bool_literal(kw.value)
                         if bool_value is not None:
@@ -4473,9 +4528,11 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             elif self._is_dataclass_transform_marker_target(decorator):
                 infos.append(
                     _DataclassTransformInfo(
+                        init_default=True,
                         eq_default=True,
                         frozen_default=False,
                         unsafe_hash_default=False,
+                        match_args_default=True,
                         kw_only_default=False,
                         order_default=False,
                         slots_default=None,
@@ -4493,6 +4550,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         if not isinstance(raw, Mapping):
             return None
 
+        init_default = raw.get("init_default", True)
+        if not isinstance(init_default, bool):
+            init_default = None
         eq_default = raw.get("eq_default", True)
         if not isinstance(eq_default, bool):
             eq_default = None
@@ -4502,6 +4562,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         unsafe_hash_default = raw.get("unsafe_hash_default", False)
         if not isinstance(unsafe_hash_default, bool):
             unsafe_hash_default = None
+        match_args_default = raw.get("match_args_default", True)
+        if not isinstance(match_args_default, bool):
+            match_args_default = None
         kw_only_default = raw.get("kw_only_default", False)
         if not isinstance(kw_only_default, bool):
             kw_only_default = None
@@ -4521,9 +4584,11 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     field_specifier_values.append(value)
 
         return _DataclassTransformInfo(
+            init_default=init_default,
             eq_default=eq_default,
             frozen_default=frozen_default,
             unsafe_hash_default=unsafe_hash_default,
+            match_args_default=match_args_default,
             kw_only_default=kw_only_default,
             order_default=order_default,
             slots_default=slots_default,
@@ -4538,6 +4603,15 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             isinstance(transform_marker, KnownValue) and transform_marker.val is True
         ):
             return None
+
+        init_default: bool | None = None
+        raw_init_default = value.class_attributes.get(
+            "%dataclass_transform_init_default"
+        )
+        if isinstance(raw_init_default, KnownValue) and isinstance(
+            raw_init_default.val, bool
+        ):
+            init_default = raw_init_default.val
 
         eq_default: bool | None = None
         raw_eq_default = value.class_attributes.get("%dataclass_transform_eq_default")
@@ -4563,6 +4637,15 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             raw_unsafe_hash_default.val, bool
         ):
             unsafe_hash_default = raw_unsafe_hash_default.val
+
+        match_args_default: bool | None = None
+        raw_match_args_default = value.class_attributes.get(
+            "%dataclass_transform_match_args_default"
+        )
+        if isinstance(raw_match_args_default, KnownValue) and isinstance(
+            raw_match_args_default.val, bool
+        ):
+            match_args_default = raw_match_args_default.val
 
         kw_only_default: bool | None = None
         raw_kw_only_default = value.class_attributes.get(
@@ -4604,9 +4687,11 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             field_specifiers = tuple(values)
 
         return _DataclassTransformInfo(
+            init_default=init_default,
             eq_default=eq_default,
             frozen_default=frozen_default,
             unsafe_hash_default=unsafe_hash_default,
+            match_args_default=match_args_default,
             kw_only_default=kw_only_default,
             order_default=order_default,
             slots_default=slots_default,
@@ -4744,24 +4829,30 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             node
         )
         if is_dataclass_class:
+            init = None
             eq = None
             frozen = None
             unsafe_hash = None
+            match_args = None
             order = None
             slots = None
             kw_only_default = False
             if dataclass_options is not None:
+                init = dataclass_options.get("init", True)
                 eq = dataclass_options.get("eq", True)
                 frozen = dataclass_options.get("frozen", False)
                 unsafe_hash = dataclass_options.get("unsafe_hash", False)
+                match_args = dataclass_options.get("match_args", True)
                 order = dataclass_options.get("order", False)
                 slots = dataclass_options.get("slots", False)
                 kw_only_default = dataclass_options.get("kw_only", False)
             return _ClassDataclassSemantics(
                 is_dataclass=True,
+                init=init,
                 eq=eq,
                 frozen=frozen,
                 unsafe_hash=unsafe_hash,
+                match_args=match_args,
                 order=order,
                 slots=slots,
                 kw_only_default=kw_only_default,
@@ -4777,6 +4868,14 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             if info is None:
                 continue
             if isinstance(decorator, ast.Call):
+                init_override = next(
+                    (
+                        self._get_bool_literal(kw.value)
+                        for kw in decorator.keywords
+                        if kw.arg == "init"
+                    ),
+                    None,
+                )
                 eq_override = next(
                     (
                         self._get_bool_literal(kw.value)
@@ -4798,6 +4897,14 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                         self._get_bool_literal(kw.value)
                         for kw in decorator.keywords
                         if kw.arg == "unsafe_hash"
+                    ),
+                    None,
+                )
+                match_args_override = next(
+                    (
+                        self._get_bool_literal(kw.value)
+                        for kw in decorator.keywords
+                        if kw.arg == "match_args"
                     ),
                     None,
                 )
@@ -4825,12 +4932,16 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     ),
                     None,
                 )
+                if init_override is not None:
+                    info = replace(info, init_default=init_override)
                 if eq_override is not None:
                     info = replace(info, eq_default=eq_override)
                 if frozen_override is not None:
                     info = replace(info, frozen_default=frozen_override)
                 if unsafe_hash_override is not None:
                     info = replace(info, unsafe_hash_default=unsafe_hash_override)
+                if match_args_override is not None:
+                    info = replace(info, match_args_default=match_args_override)
                 if kw_only_override is not None:
                     info = replace(info, kw_only_default=kw_only_override)
                 if order_override is not None:
@@ -4853,6 +4964,14 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 merged_hierarchy_info = replace(
                     merged_hierarchy_info, frozen_default=None
                 )
+            init_override = next(
+                (
+                    self._get_bool_literal(keyword.value)
+                    for keyword in node.keywords
+                    if keyword.arg == "init"
+                ),
+                None,
+            )
             eq_override = next(
                 (
                     self._get_bool_literal(keyword.value)
@@ -4874,6 +4993,14 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     self._get_bool_literal(keyword.value)
                     for keyword in node.keywords
                     if keyword.arg == "unsafe_hash"
+                ),
+                None,
+            )
+            match_args_override = next(
+                (
+                    self._get_bool_literal(keyword.value)
+                    for keyword in node.keywords
+                    if keyword.arg == "match_args"
                 ),
                 None,
             )
@@ -4901,6 +5028,10 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 ),
                 None,
             )
+            if init_override is not None:
+                merged_hierarchy_info = replace(
+                    merged_hierarchy_info, init_default=init_override
+                )
             if eq_override is not None:
                 merged_hierarchy_info = replace(
                     merged_hierarchy_info, eq_default=eq_override
@@ -4912,6 +5043,10 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             if unsafe_hash_override is not None:
                 merged_hierarchy_info = replace(
                     merged_hierarchy_info, unsafe_hash_default=unsafe_hash_override
+                )
+            if match_args_override is not None:
+                merged_hierarchy_info = replace(
+                    merged_hierarchy_info, match_args_default=match_args_override
                 )
             if kw_only_override is not None:
                 merged_hierarchy_info = replace(
@@ -4933,9 +5068,11 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             )
             return _ClassDataclassSemantics(
                 is_dataclass=True,
+                init=merged_transform_info.init_default,
                 eq=merged_transform_info.eq_default,
                 frozen=merged_transform_info.frozen_default,
                 unsafe_hash=merged_transform_info.unsafe_hash_default,
+                match_args=merged_transform_info.match_args_default,
                 order=merged_transform_info.order_default,
                 slots=merged_transform_info.slots_default,
                 kw_only_default=bool(merged_transform_info.kw_only_default),
@@ -4950,6 +5087,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
 
         if class_obj is not None and is_dataclass_type(class_obj):
             dataclass_params = safe_getattr(class_obj, "__dataclass_params__", None)
+            init = safe_getattr(dataclass_params, "init", None)
+            if not isinstance(init, bool):
+                init = None
             eq = safe_getattr(dataclass_params, "eq", None)
             if not isinstance(eq, bool):
                 eq = None
@@ -4959,15 +5099,18 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             unsafe_hash = safe_getattr(dataclass_params, "unsafe_hash", None)
             if not isinstance(unsafe_hash, bool):
                 unsafe_hash = None
+            match_args = "__match_args__" in class_obj.__dict__
             order = safe_getattr(dataclass_params, "order", None)
             if not isinstance(order, bool):
                 order = None
             slots = "__slots__" in class_obj.__dict__
             return _ClassDataclassSemantics(
                 is_dataclass=True,
+                init=init,
                 eq=eq,
                 frozen=frozen,
                 unsafe_hash=unsafe_hash,
+                match_args=match_args,
                 order=order,
                 slots=slots,
                 kw_only_default=False,
@@ -4978,9 +5121,11 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
 
         return _ClassDataclassSemantics(
             is_dataclass=False,
+            init=None,
             eq=None,
             frozen=None,
             unsafe_hash=None,
+            match_args=None,
             order=None,
             slots=None,
             kw_only_default=False,
@@ -5113,6 +5258,8 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     ) -> None:
         if not semantics.is_dataclass:
             synthetic_class.class_attributes.pop("%dataclass_slots", None)
+            synthetic_class.class_attributes.pop("%dataclass_init", None)
+            synthetic_class.class_attributes.pop("%dataclass_match_args", None)
             return
         if isinstance(semantics.slots, bool):
             synthetic_class.class_attributes["%dataclass_slots"] = KnownValue(
@@ -5120,6 +5267,18 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             )
         else:
             synthetic_class.class_attributes.pop("%dataclass_slots", None)
+        if isinstance(semantics.init, bool):
+            synthetic_class.class_attributes["%dataclass_init"] = KnownValue(
+                semantics.init
+            )
+        else:
+            synthetic_class.class_attributes.pop("%dataclass_init", None)
+        if isinstance(semantics.match_args, bool):
+            synthetic_class.class_attributes["%dataclass_match_args"] = KnownValue(
+                semantics.match_args
+            )
+        else:
+            synthetic_class.class_attributes.pop("%dataclass_match_args", None)
 
     def _dataclass_slot_names_from_synthetic_class(
         self, synthetic_class: SyntheticClassObjectValue
@@ -5302,15 +5461,79 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         )
         if bound_args is None:
             return _DataclassFieldCallOptions()
-        init = None
-        if "init" in bound_args:
-            init_value = bound_args["init"][1].value
-            if isinstance(init_value, KnownValue) and isinstance(init_value.val, bool):
-                init = init_value.val
+        init = self._dataclass_field_bound_bool_arg(bound_args, "init")
+        kw_only = self._dataclass_field_bound_bool_arg(
+            bound_args, "kw_only", include_default=False
+        )
+        alias = self._dataclass_field_bound_str_arg(
+            bound_args, "alias", include_default=False
+        )
+        has_default = False
+        default_value = self._dataclass_field_bound_arg(
+            bound_args, "default", include_default=False
+        )
+        if default_value is not None and not self._is_absent_dataclass_default_value(
+            default_value
+        ):
+            has_default = True
         default_factory = None
-        if "default_factory" in bound_args:
-            default_factory = bound_args["default_factory"][1].value
-        return _DataclassFieldCallOptions(init=init, default_factory=default_factory)
+        for key in ("default_factory", "factory"):
+            factory_value = self._dataclass_field_bound_arg(
+                bound_args, key, include_default=False
+            )
+            if factory_value is None:
+                continue
+            if self._is_absent_dataclass_default_value(factory_value):
+                continue
+            has_default = True
+            default_factory = factory_value
+            break
+        return _DataclassFieldCallOptions(
+            init=init,
+            kw_only=kw_only,
+            alias=alias,
+            has_default=has_default,
+            default_factory=default_factory,
+        )
+
+    @staticmethod
+    def _dataclass_field_bound_arg(
+        bound_args: BoundArgs, name: str, *, include_default: bool = True
+    ) -> Value | None:
+        if name not in bound_args:
+            return None
+        if not include_default and bound_args[name][0] is type_evaluation.DEFAULT:
+            return None
+        return bound_args[name][1].value
+
+    @staticmethod
+    def _dataclass_field_bound_bool_arg(
+        bound_args: BoundArgs, name: str, *, include_default: bool = True
+    ) -> bool | None:
+        value = NameCheckVisitor._dataclass_field_bound_arg(
+            bound_args, name, include_default=include_default
+        )
+        if isinstance(value, KnownValue) and isinstance(value.val, bool):
+            return value.val
+        return None
+
+    @staticmethod
+    def _dataclass_field_bound_str_arg(
+        bound_args: BoundArgs, name: str, *, include_default: bool = True
+    ) -> str | None:
+        value = NameCheckVisitor._dataclass_field_bound_arg(
+            bound_args, name, include_default=include_default
+        )
+        if isinstance(value, KnownValue) and isinstance(value.val, str):
+            return value.val
+        return None
+
+    @staticmethod
+    def _is_absent_dataclass_default_value(value: Value) -> bool:
+        value = replace_fallback(value)
+        if isinstance(value, KnownValue):
+            return value.val is Ellipsis or value.val is dataclasses.MISSING
+        return False
 
     @staticmethod
     def _callable_return_type_from_signature(
@@ -5720,21 +5943,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     def _check_dataclass_field_default_order(
         self, node: ast.ClassDef, dataclass_class: SyntheticClassObjectValue
     ) -> None:
-        _ = dataclass_class
-        is_dataclass_class, dataclass_options = self._get_dataclass_decorator_options(
-            node
-        )
-        if (
-            is_dataclass_class
-            and dataclass_options is not None
-            and dataclass_options.get("init", True) is False
-        ):
+        raw_init = dataclass_class.class_attributes.get("%dataclass_init")
+        if isinstance(raw_init, KnownValue) and raw_init.val is False:
             return
-        kw_only_default = bool(
-            dataclass_options.get("kw_only", False)
-            if dataclass_options is not None
-            else False
-        )
         error_node = next(
             (
                 decorator
@@ -5743,66 +5954,36 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             ),
             node,
         )
+
+        field_order = self._known_string_sequence_values(
+            dataclass_class.class_attributes.get("%dataclass_field_order")
+        )
+        if not field_order:
+            return
+        default_fields = set(
+            self._known_string_sequence_values(
+                dataclass_class.class_attributes.get("%dataclass_default_fields")
+            )
+            or ()
+        )
+        init_false_fields = set(
+            self._known_string_sequence_values(
+                dataclass_class.class_attributes.get("%dataclass_init_false_fields")
+            )
+            or ()
+        )
+        kw_only_fields = set(
+            self._known_string_sequence_values(
+                dataclass_class.class_attributes.get("%dataclass_kw_only_fields")
+            )
+            or ()
+        )
+
         saw_default = False
-        for statement in node.body:
-            if not (
-                isinstance(statement, ast.AnnAssign)
-                and isinstance(statement.target, ast.Name)
-                and statement.simple
-            ):
+        for field_name in field_order:
+            if field_name in init_false_fields or field_name in kw_only_fields:
                 continue
-
-            if self._is_dataclass_kw_only_marker_annotation(statement.annotation):
-                kw_only_default = True
-                continue
-
-            annotation_expr = annotation_expr_from_ast(
-                statement.annotation, visitor=self, suppress_errors=True
-            )
-            _, qualifiers = annotation_expr.maybe_unqualify(
-                {
-                    Qualifier.ClassVar,
-                    Qualifier.Final,
-                    Qualifier.InitVar,
-                    Qualifier.ReadOnly,
-                    Qualifier.Required,
-                    Qualifier.NotRequired,
-                },
-                mutually_exclusive_qualifiers=(
-                    (Qualifier.Required, Qualifier.NotRequired),
-                ),
-            )
-            if Qualifier.ClassVar in qualifiers:
-                continue
-
-            init = True
-            kw_only = kw_only_default
-            has_default = statement.value is not None
-            if isinstance(statement.value, ast.Call) and self._is_dataclass_field_call(
-                statement.value
-            ):
-                has_default = any(
-                    keyword.arg in {"default", "default_factory"}
-                    for keyword in statement.value.keywords
-                )
-                for keyword in statement.value.keywords:
-                    if (
-                        keyword.arg == "init"
-                        and isinstance(keyword.value, ast.Constant)
-                        and isinstance(keyword.value.value, bool)
-                    ):
-                        init = keyword.value.value
-                    elif (
-                        keyword.arg == "kw_only"
-                        and isinstance(keyword.value, ast.Constant)
-                        and isinstance(keyword.value.value, bool)
-                    ):
-                        kw_only = keyword.value.value
-
-            if not init or kw_only:
-                continue
-
-            if has_default:
+            if field_name in default_fields:
                 saw_default = True
                 continue
             if saw_default:
@@ -10754,6 +10935,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         dataclass_field_name: str | None = None
         if (
             is_current_class_dataclass
+            and self.scopes.scope_type() == ScopeType.class_scope
             and isinstance(node.target, ast.Name)
             and not has_classvar
         ):
@@ -10822,12 +11004,16 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             ):
                 is_dataclass_field_call = True
                 dataclass_default_factory = inferred_options.default_factory
-                has_default = any(
-                    kw.arg in {"default", "default_factory"}
+                has_default = inferred_options.has_default or any(
+                    kw.arg in {"default", "default_factory", "factory"}
                     for kw in node.value.keywords
                 )
                 if inferred_options.init is not None:
                     init = inferred_options.init
+                if inferred_options.kw_only is not None:
+                    kw_only = inferred_options.kw_only
+                if inferred_options.alias is not None:
+                    alias = inferred_options.alias
                 init_keyword = next(
                     (kw.value for kw in node.value.keywords if kw.arg == "init"), None
                 )

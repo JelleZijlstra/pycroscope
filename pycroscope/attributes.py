@@ -545,7 +545,30 @@ def _is_synthetic_method_attribute(
             selected_name = mangled
     if selected_name in self_value.method_attributes:
         return True
-    return self_value.is_dataclass and selected_name == "__init__"
+    return (
+        self_value.is_dataclass
+        and selected_name == "__init__"
+        and _synthetic_dataclass_init_enabled(self_value)
+    )
+
+
+def _synthetic_dataclass_flag(
+    self_value: SyntheticClassObjectValue, flag_name: str, *, default: bool
+) -> bool:
+    raw_value = self_value.class_attributes.get(flag_name)
+    if isinstance(raw_value, KnownValue) and isinstance(raw_value.val, bool):
+        return raw_value.val
+    return default
+
+
+def _synthetic_dataclass_init_enabled(self_value: SyntheticClassObjectValue) -> bool:
+    return _synthetic_dataclass_flag(self_value, "%dataclass_init", default=True)
+
+
+def _synthetic_dataclass_match_args_enabled(
+    self_value: SyntheticClassObjectValue,
+) -> bool:
+    return _synthetic_dataclass_flag(self_value, "%dataclass_match_args", default=True)
 
 
 def _iter_synthetic_dataclass_base_init_parameters(
@@ -730,8 +753,23 @@ def _get_synthetic_dataclass_attribute(
     if not synthetic_class.is_dataclass:
         return UNINITIALIZED_VALUE
     if ctx.attr == "__init__":
+        if not _synthetic_dataclass_init_enabled(synthetic_class):
+            return UNINITIALIZED_VALUE
         return _synthetic_dataclass_init_callable_value(
             synthetic_class, ctx, on_class=on_class
+        )
+    if ctx.attr == "__match_args__":
+        if not _synthetic_dataclass_match_args_enabled(synthetic_class):
+            return UNINITIALIZED_VALUE
+        init_parameters = _get_synthetic_dataclass_init_parameters(
+            synthetic_class, ctx, include_inherited=True, seen=None
+        )
+        return KnownValue(
+            tuple(
+                param.name
+                for param in init_parameters
+                if param.kind is not ParameterKind.KEYWORD_ONLY
+            )
         )
     if ctx.attr == "__dataclass_fields__":
         return GenericValue(dict, [TypedValue(str), AnyValue(AnySource.explicit)])

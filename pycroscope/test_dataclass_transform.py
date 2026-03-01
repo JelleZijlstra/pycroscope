@@ -785,3 +785,110 @@ class TestDataclassTransform(TestNameCheckVisitorBase):
         ok_no_eq: Hashable = NoEq(value=1)
         ok_unsafe_hash: Hashable = UnsafeHash(value=1)
         ok_explicit_hash: Hashable = ExplicitHash(value=1)
+
+    @assert_passes(allow_import_failures=True)
+    def test_dataclass_transform_init_and_match_args_keywords_after_import_failure(
+        self,
+    ):
+        boom = 1 / 0
+
+        from typing_extensions import dataclass_transform
+
+        @dataclass_transform()
+        class Base:
+            def __init_subclass__(
+                cls, *, init: bool = True, match_args: bool = True
+            ) -> None:
+                pass
+
+        class InitDisabled(Base, init=False):
+            x: int
+
+        InitDisabled()
+        InitDisabled(1)  # E: incompatible_call
+
+        class Matchable(Base, init=False, match_args=True):
+            x: int
+            y: int
+
+        def allow_positional_patterns(value: Matchable) -> None:
+            match value:
+                case Matchable(1, 2):
+                    pass
+
+        class NoMatchArgs(Base, match_args=False):
+            x: int
+
+        def reject_positional_patterns(value: NoMatchArgs) -> None:
+            match value:
+                case NoMatchArgs(1):  # E: bad_match
+                    pass
+
+    @assert_passes(allow_import_failures=True)
+    def test_dataclass_transform_factory_field_specifier_after_import_failure(self):
+        boom = 1 / 0
+
+        from typing import Any, Callable, TypeVar
+
+        from typing_extensions import dataclass_transform
+
+        T = TypeVar("T")
+
+        def model_field(
+            *,
+            init: bool = True,
+            default: Any = ...,
+            factory: Callable[[], Any] | None = None,
+        ) -> Any:
+            return object()
+
+        @dataclass_transform(field_specifiers=(model_field,))
+        def create_model() -> Callable[[type[T]], type[T]]:
+            def decorator(cls: type[T]) -> type[T]:
+                return cls
+
+            return decorator
+
+        @create_model()
+        class WithFactory:
+            x: int = model_field(factory=lambda: 1)
+
+        WithFactory()
+        WithFactory(1)
+
+        @create_model()
+        class BadFactory:
+            x: int = model_field(factory=lambda: "x")  # E: incompatible_assignment
+
+        @create_model()
+        class BadOrder:  # E: invalid_annotation
+            x: int = model_field(factory=lambda: 1)
+            y: int
+
+    @assert_passes(allow_import_failures=True)
+    def test_dataclass_transform_non_default_kwargs_do_not_set_default(self):
+        boom = 1 / 0
+
+        from typing import Any, Callable, TypeVar
+
+        from typing_extensions import dataclass_transform
+
+        T = TypeVar("T")
+
+        def model_field(*, default: Any = ..., repr: bool = True) -> Any:
+            return object()
+
+        @dataclass_transform(field_specifiers=(model_field,))
+        def create_model() -> Callable[[type[T]], type[T]]:
+            def decorator(cls: type[T]) -> type[T]:
+                return cls
+
+            return decorator
+
+        @create_model()
+        class Model:
+            x: int = model_field(repr=False)
+            y: int
+
+        Model(1, 2)
+        Model(1)  # E: incompatible_call
