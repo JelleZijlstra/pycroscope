@@ -3,6 +3,7 @@
 ## Unreleased
 
 - Improve `Value` dispatch consistency in suggested-type and class-key inference helpers by normalizing through fallback values and handling unions/intersections more consistently.
+- Improve `Value` dispatch robustness in name checking so enum assignment analysis, protocol-base detection, and type-parameter extraction handle unions/intersections consistently and avoid internal errors on non-gradual values.
 - Improve intersection-type attribute checks so pycroscope now enforces slot restrictions, frozen-dataclass immutability, and NamedTuple field immutability for `Intersection[...]` instance values.
 - Improve class-object resolution for annotated and generic values in core name checking, reducing false negatives in protocol-instantiation, enum-base, and attribute-target checks.
 - Improve protocol/class-object compatibility checks by handling more class-value forms consistently (including `SubclassValue` generic wrappers and `type`-typed values).

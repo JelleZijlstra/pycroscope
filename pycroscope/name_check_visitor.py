@@ -49,7 +49,7 @@ from typing import (
 from unittest.mock import ANY
 
 import typeshed_client
-from typing_extensions import NoDefault, Protocol, is_typeddict
+from typing_extensions import NoDefault, Protocol, assert_never, is_typeddict
 
 from pycroscope.input_sig import ActualArguments, InputSigValue, ParamSpecSig
 
@@ -135,6 +135,7 @@ from .relations import (
     check_hashability,
     has_relation,
     intersect_multi,
+    is_assignable,
     is_subtype,
 )
 from .safe import (
@@ -243,6 +244,7 @@ from .value import (
     SkipDeprecatedExtension,
     SubclassValue,
     SyntheticClassObjectValue,
+    SyntheticModuleValue,
     SysPlatformExtension,
     SysVersionInfoExtension,
     TypeAlias,
@@ -307,6 +309,13 @@ AwaitableValue = GenericValue(collections.abc.Awaitable, [TypeVarValue(T)])
 KnownNone = KnownValue(None)
 ExceptionValue = TypedValue(BaseException) | SubclassValue(TypedValue(BaseException))
 ExceptionOrNone = ExceptionValue | KnownNone
+
+
+class _SupportsDescriptorGet(Protocol):
+    def __get__(
+        self, instance: object, owner: type[object] | None = None, /
+    ) -> object: ...
+
 
 _TYPING_CONSTRUCTS_WITH_NAME_ARG: dict[str, str] = {
     "TypeVar": "name",
@@ -4062,7 +4071,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 continue
             if forced_nonmember:
                 continue
-            if not forced_member and _is_nonmember_enum_assignment_value(unwrapped):
+            if not forced_member and _is_nonmember_enum_assignment_value(
+                unwrapped, self
+            ):
                 continue
             if isinstance(statement, ast.AnnAssign):
                 self._show_error_if_checking(
@@ -13298,30 +13309,62 @@ def _unwrap_enum_member_wrapper(value: Value) -> tuple[Value, bool, bool]:
     return value, False, False
 
 
-def _is_nonmember_enum_assignment_value(value: Value) -> bool:
+def _is_nonmember_enum_assignment_value(
+    value: Value, checker: "NameCheckVisitor"
+) -> bool:
+    """Whether an Enum class-body assignment should stay a non-member.
+
+    Enum ignores callables and descriptor-like objects (e.g. ``property``),
+    so we check assignability to both callable and descriptor protocols.
+    """
+    if value in (VOID, UNINITIALIZED_VALUE) or isinstance(value, ReferencingValue):
+        return False
     value = replace_fallback(value)
-    if isinstance(value, (CallableValue, InputSigValue, SyntheticClassObjectValue)):
-        return True
-    if isinstance(value, UnboundMethodValue):
-        return True
-    if isinstance(value, GenericValue):
-        if value.typ in {staticmethod, classmethod, property}:
-            return True
-        if isinstance(value.typ, type) and safe_issubclass(value.typ, type):
-            return True
-    if isinstance(value, KnownValue):
-        if isinstance(value.val, type):
-            return True
-        return _static_hasattr(value.val, "__get__")
-    if isinstance(value, TypedValue):
-        return isinstance(value.typ, type) and safe_issubclass(value.typ, type)
-    return False
+    callable_or_descriptor = TypedValue(collections.abc.Callable) | TypedValue(
+        _SupportsDescriptorGet
+    )
+    return is_assignable(callable_or_descriptor, value, checker)
 
 
 def _runtime_object_for_enum_member(value: Value) -> object:
+    if isinstance(value, InputSigValue):
+        return object()
+    if value in (VOID, UNINITIALIZED_VALUE) or isinstance(value, ReferencingValue):
+        return object()
     value = replace_fallback(value)
+    if isinstance(value, MultiValuedValue):
+        member_values = [
+            _runtime_object_for_enum_member(subval) for subval in value.vals
+        ]
+        first_value = member_values[0]
+        if all(member_value is first_value for member_value in member_values):
+            return first_value
+        return object()
+    if isinstance(value, IntersectionValue):
+        member_values = [
+            _runtime_object_for_enum_member(subval) for subval in value.vals
+        ]
+        first_value = member_values[0]
+        if all(member_value is first_value for member_value in member_values):
+            return first_value
+        return object()
     if isinstance(value, KnownValue):
         return value.val
+    if isinstance(
+        value,
+        (
+            AnyValue,
+            SyntheticClassObjectValue,
+            SyntheticModuleValue,
+            UnboundMethodValue,
+            TypedValue,
+            SubclassValue,
+            TypeFormValue,
+            PredicateValue,
+        ),
+    ):
+        return object()
+    assert_never(value)
     return object()
 
 
@@ -13645,8 +13688,15 @@ def _variance_is_compatible_with_usage(
 def _is_variance_declaration_arg(arg: Value) -> bool:
     if isinstance(arg, TypeVarValue):
         return True
-    if isinstance(arg, AnnotatedValue):
-        return _is_variance_declaration_arg(arg.value)
+    if isinstance(arg, InputSigValue):
+        return False
+    if arg in (VOID, UNINITIALIZED_VALUE) or isinstance(arg, ReferencingValue):
+        return False
+    arg = replace_fallback(arg)
+    if isinstance(arg, MultiValuedValue):
+        return all(_is_variance_declaration_arg(subval) for subval in arg.vals)
+    if isinstance(arg, IntersectionValue):
+        return any(_is_variance_declaration_arg(subval) for subval in arg.vals)
     if isinstance(arg, KnownValue):
         type_param = arg.val
         return (
@@ -13654,6 +13704,21 @@ def _is_variance_declaration_arg(arg: Value) -> bool:
             or is_instance_of_typing_name(type_param, "TypeVarTuple")
             or is_instance_of_typing_name(type_param, "ParamSpec")
         )
+    if isinstance(
+        arg,
+        (
+            AnyValue,
+            SyntheticClassObjectValue,
+            SyntheticModuleValue,
+            UnboundMethodValue,
+            TypedValue,
+            SubclassValue,
+            TypeFormValue,
+            PredicateValue,
+        ),
+    ):
+        return False
+    assert_never(arg)
     return False
 
 
@@ -13687,18 +13752,59 @@ def _is_variance_declaration_base(base_value: Value) -> bool:
 def _type_param_value_from_value(value: Value) -> TypeVarValue | None:
     if isinstance(value, InputSigValue) and isinstance(value.input_sig, ParamSpecSig):
         return TypeVarValue(value.input_sig.param_spec)
-    try:
-        value = replace_fallback(value)
-    except NotAGradualType:
+    if isinstance(value, InputSigValue):
+        return None
+    if value in (VOID, UNINITIALIZED_VALUE) or isinstance(value, ReferencingValue):
         return None
     if isinstance(value, TypeVarValue):
         return value
-    if isinstance(value, KnownValue) and (
-        is_instance_of_typing_name(value.val, "TypeVar")
-        or is_instance_of_typing_name(value.val, "TypeVarTuple")
-        or is_instance_of_typing_name(value.val, "ParamSpec")
+    value = replace_fallback(value)
+    if isinstance(value, MultiValuedValue):
+        type_params = [
+            type_param
+            for subval in value.vals
+            if (type_param := _type_param_value_from_value(subval)) is not None
+        ]
+        if not type_params:
+            return None
+        first = type_params[0]
+        if all(type_param.typevar is first.typevar for type_param in type_params):
+            return first
+        return None
+    if isinstance(value, IntersectionValue):
+        result: TypeVarValue | None = None
+        for subval in value.vals:
+            type_param = _type_param_value_from_value(subval)
+            if type_param is None:
+                continue
+            if result is None:
+                result = type_param
+            elif result.typevar is not type_param.typevar:
+                return None
+        return result
+    if isinstance(value, KnownValue):
+        if (
+            is_instance_of_typing_name(value.val, "TypeVar")
+            or is_instance_of_typing_name(value.val, "TypeVarTuple")
+            or is_instance_of_typing_name(value.val, "ParamSpec")
+        ):
+            return TypeVarValue(value.val, variance=get_typevar_variance(value.val))
+        return None
+    if isinstance(
+        value,
+        (
+            AnyValue,
+            SyntheticClassObjectValue,
+            SyntheticModuleValue,
+            UnboundMethodValue,
+            TypedValue,
+            SubclassValue,
+            TypeFormValue,
+            PredicateValue,
+        ),
     ):
-        return TypeVarValue(value.val, variance=get_typevar_variance(value.val))
+        return None
+    assert_never(value)
     return None
 
 
@@ -13709,17 +13815,36 @@ def _count_starred_type_param_args(slice_node: ast.AST) -> int:
 
 
 def _is_protocol_base(base_value: Value) -> bool:
-    for subval in flatten_values(replace_fallback(base_value)):
-        if isinstance(subval, SyntheticClassObjectValue):
-            subval = subval.class_type
-        if isinstance(subval, KnownValue):
-            typ: object = subval.val
-        elif isinstance(subval, TypedValue):
-            typ = subval.typ
-        else:
-            continue
-        if is_typing_name(typ, "Protocol"):
-            return True
+    if isinstance(base_value, InputSigValue):
+        return False
+    if base_value in (VOID, UNINITIALIZED_VALUE) or isinstance(
+        base_value, ReferencingValue
+    ):
+        return False
+    base_value = replace_fallback(base_value)
+    if isinstance(base_value, MultiValuedValue):
+        return any(_is_protocol_base(subval) for subval in base_value.vals)
+    if isinstance(base_value, IntersectionValue):
+        return any(_is_protocol_base(subval) for subval in base_value.vals)
+    if isinstance(base_value, SyntheticClassObjectValue):
+        return _is_protocol_base(base_value.class_type)
+    if isinstance(base_value, KnownValue):
+        return is_typing_name(base_value.val, "Protocol")
+    if isinstance(base_value, TypedValue):
+        return is_typing_name(base_value.typ, "Protocol")
+    if isinstance(
+        base_value,
+        (
+            AnyValue,
+            SyntheticModuleValue,
+            UnboundMethodValue,
+            SubclassValue,
+            TypeFormValue,
+            PredicateValue,
+        ),
+    ):
+        return False
+    assert_never(base_value)
     return False
 
 
