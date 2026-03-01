@@ -3865,8 +3865,9 @@ class TestContextManagerWithSuppression(TestNameCheckVisitorBase):
     @assert_passes()
     def test_sync(self):
         import contextlib
+        from collections.abc import Generator
         from types import TracebackType
-        from typing import ContextManager, Iterator, Optional, Type
+        from typing import ContextManager, Optional, Type
 
         class SuppressException:
             def __enter__(self) -> None:
@@ -3908,7 +3909,7 @@ class TestContextManagerWithSuppression(TestNameCheckVisitorBase):
             return EmptyContext()
 
         @contextlib.contextmanager
-        def empty_contextlib_manager() -> Iterator[None]:
+        def empty_contextlib_manager() -> Generator[None]:
             yield
 
         def use_suppress_exception():

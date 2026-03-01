@@ -28,15 +28,7 @@ import types
 import typing
 from abc import abstractmethod
 from argparse import SUPPRESS, ArgumentParser
-from collections.abc import (
-    Callable,
-    Container,
-    Generator,
-    Iterable,
-    Iterator,
-    Mapping,
-    Sequence,
-)
+from collections.abc import Callable, Container, Generator, Iterable, Mapping, Sequence
 from contextlib import AbstractContextManager
 from dataclasses import dataclass, replace
 from dataclasses import field as dataclass_field
@@ -1329,7 +1321,7 @@ class StackedContexts:
         return None
 
     @contextlib.contextmanager
-    def add(self, value: ast.AST) -> Iterator[None]:
+    def add(self, value: ast.AST) -> Generator[None]:
         """Context manager to add a context to the stack."""
         self.contexts.append(value)
         try:
@@ -2811,7 +2803,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         return False
 
     @contextlib.contextmanager
-    def _set_current_class(self, current_class: type | str | None) -> Iterator[None]:
+    def _set_current_class(self, current_class: type | str | None) -> Generator[None]:
         should_track_members = should_check_for_duplicate_values(
             current_class, self.options
         )
@@ -10930,7 +10922,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         return unite_values(then_val, else_val)
 
     @contextlib.contextmanager
-    def _subscope_and_maybe_supress(self, should_suppress: bool) -> Iterator[SubScope]:
+    def _subscope_and_maybe_supress(self, should_suppress: bool) -> Generator[SubScope]:
         with self.scopes.subscope() as scope:
             if should_suppress:
                 with self.catch_errors():
@@ -11501,7 +11493,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     @contextlib.contextmanager
     def _active_pep695_type_param_scope(
         self, type_params: Sequence[TypeVarValue]
-    ) -> Iterator[None]:
+    ) -> Generator[None]:
         if not type_params:
             yield
             return

@@ -180,11 +180,11 @@ class TestAnnotations(TestNameCheckVisitorBase):
 
     @assert_passes()
     def test_contextmanager(self):
+        from collections.abc import Generator
         from contextlib import contextmanager
-        from typing import Iterator
 
         @contextmanager
-        def capybara() -> Iterator[int]:
+        def capybara() -> Generator[int]:
             yield 3
 
         def kerodon():
@@ -202,7 +202,7 @@ class TestAnnotations(TestNameCheckVisitorBase):
                 assert_is_value(e, AnyValue(AnySource.generic_argument))
 
         @contextmanager
-        def post_capybara() -> Iterator[int]:
+        def post_capybara() -> Generator[int]:
             yield 3
 
     @assert_passes()

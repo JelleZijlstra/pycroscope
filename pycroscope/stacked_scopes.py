@@ -25,7 +25,7 @@ import contextlib
 import enum
 from ast import AST
 from collections import OrderedDict, defaultdict
-from collections.abc import Callable, Iterable, Iterator, Sequence
+from collections.abc import Callable, Generator, Iterable, Sequence
 from contextlib import AbstractContextManager
 from dataclasses import dataclass, field, replace
 from itertools import chain
@@ -855,16 +855,16 @@ class Scope:
         return varname in self.variables or varname in self.declared_types
 
     @contextlib.contextmanager
-    def suppressing_subscope(self) -> Iterator[SubScope]:
+    def suppressing_subscope(self) -> Generator[SubScope]:
         yield {}
 
     # no real subscopes in non-function scopes, just dummy implementations
     @contextlib.contextmanager
-    def subscope(self) -> Iterator[None]:
+    def subscope(self) -> Generator[None]:
         yield
 
     @contextlib.contextmanager
-    def loop_scope(self) -> Iterator[None]:
+    def loop_scope(self) -> Generator[None]:
         # Context manager for the subscope associated with a loop.
         yield
 
@@ -1232,7 +1232,7 @@ class FunctionScope(Scope):
         }
 
     @contextlib.contextmanager
-    def suppressing_subscope(self) -> Iterator[SubScope]:
+    def suppressing_subscope(self) -> Generator[SubScope]:
         """A suppressing subscope is a subscope that may suppress exceptions
         inside of it.
 
@@ -1273,7 +1273,7 @@ class FunctionScope(Scope):
         self.combine_subscopes([dummy_subscope, new_scope])
 
     @contextlib.contextmanager
-    def subscope(self) -> Iterator[SubScope]:
+    def subscope(self) -> Generator[SubScope]:
         """Create a new subscope, to be used for conditional branches."""
         # Ignore LEAVES_SCOPE if it's already there, so that we type check code after the
         # assert False correctly. Without this, test_after_assert_false fails.
@@ -1289,7 +1289,7 @@ class FunctionScope(Scope):
             yield new_name_to_nodes
 
     @contextlib.contextmanager
-    def loop_scope(self) -> Iterator[list[SubScope]]:
+    def loop_scope(self) -> Generator[list[SubScope]]:
         loop_scopes = []
         with self.subscope() as main_scope:
             loop_scopes.append(main_scope)
@@ -1453,7 +1453,7 @@ class StackedScopes:
         scope_type: ScopeType,
         scope_node: Node,
         scope_object: object | None = None,
-    ) -> Iterator[None]:
+    ) -> Generator[None]:
         """Context manager that adds a scope of this type to the top of the stack."""
         if scope_type is ScopeType.function_scope:
             scope = FunctionScope(
@@ -1475,7 +1475,7 @@ class StackedScopes:
             self.scopes.pop()
 
     @contextlib.contextmanager
-    def ignore_topmost_scope(self) -> Iterator[None]:
+    def ignore_topmost_scope(self) -> Generator[None]:
         """Context manager that temporarily ignores the topmost scope."""
         scope = self.scopes.pop()
         try:
@@ -1484,7 +1484,7 @@ class StackedScopes:
             self.scopes.append(scope)
 
     @contextlib.contextmanager
-    def allow_only_module_scope(self) -> Iterator[None]:
+    def allow_only_module_scope(self) -> Generator[None]:
         """Context manager that allows only lookups in the module and builtin scopes."""
         rest = self.scopes[2:]
         del self.scopes[2:]
