@@ -280,7 +280,7 @@ class TestSyntheticType(TestNameCheckVisitorBase):
                 ),
             )
             assert_is_value(c._clear_cache(), KnownValue(None))
-            assert_is_value(c(), TypedValue(int))
+            assert_type(c(), int)
             c.doesnt_exist  # E: undefined_attribute
 
     @assert_passes()
@@ -744,8 +744,6 @@ class TestIO(TestNameCheckVisitorBase):
         import io
         from typing import TextIO
 
-        from typing_extensions import assert_type
-
         def want_io(x: TextIO):
             x.write("hello")
 
@@ -758,8 +756,6 @@ class TestIO(TestNameCheckVisitorBase):
     def test_binary(self):
         import io
         from typing import BinaryIO
-
-        from typing_extensions import assert_type
 
         def want_io(x: BinaryIO):
             x.write(b"hello")

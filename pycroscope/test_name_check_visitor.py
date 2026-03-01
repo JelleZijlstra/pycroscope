@@ -4,6 +4,8 @@ import collections
 import os
 import types
 
+from typing_extensions import assert_type
+
 from . import test_node_visitor
 from .analysis_lib import make_module
 from .checker import Checker
@@ -130,6 +132,7 @@ def _make_module(code_str: str) -> types.ModuleType:
     # make helpers for value inference checking available to all tests
     extra_scope = dict(
         assert_is_value=assert_is_value,
+        assert_type=assert_type,
         AsyncTaskIncompleteValue=AsyncTaskIncompleteValue,
         CallableValue=CallableValue,
         DictIncompleteValue=DictIncompleteValue,

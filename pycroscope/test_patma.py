@@ -31,7 +31,7 @@ class TestPatma(TestNameCheckVisitorBase):
                 case _ if x == 4:
                     assert_is_value(x, KnownValue(4))
                 case _:
-                    assert_is_value(x, TypedValue(int))
+                    assert_type(x, int)
 
     @assert_passes()
     def test_sequence(self):
@@ -59,7 +59,7 @@ class TestPatma(TestNameCheckVisitorBase):
                         x, GenericValue(list, [AnyValue(AnySource.generic_argument)])
                     )
 
-            assert_is_value(seq[0], TypedValue(int))
+            assert_type(seq[0], int)
             match seq[0]:
                 case [1, 2, 3]:  # E: impossible_pattern
                     pass
@@ -68,7 +68,7 @@ class TestPatma(TestNameCheckVisitorBase):
     def test_sequence_length_narrowing(self):
         from typing import TypeAlias
 
-        from typing_extensions import Unpack, assert_type
+        from typing_extensions import Unpack
 
         Input: TypeAlias = (
             tuple[int] | tuple[str, str] | tuple[int, Unpack[tuple[str, ...]], int]
@@ -129,7 +129,7 @@ class TestPatma(TestNameCheckVisitorBase):
                 case int("x"):  # E: impossible_pattern
                     pass
                 case int():
-                    assert_is_value(obj, TypedValue(int))
+                    assert_type(obj, int)
                 case NotMatchable(x="x"):
                     pass
                 case NotMatchable("x"):  # E: bad_match
@@ -141,7 +141,7 @@ class TestPatma(TestNameCheckVisitorBase):
                 case MatchArgs(x) if x == "x":
                     assert_is_value(x, KnownValue("x"))
                 case MatchArgs(x):
-                    assert_is_value(x, TypedValue(str))
+                    assert_type(x, str)
                 case MatchArgs("x", x="x"):  # E: bad_match
                     pass
                 case MatchArgs(1, 2, 3):  # E: bad_match
@@ -219,8 +219,6 @@ class TestPatma(TestNameCheckVisitorBase):
 
     @assert_passes()
     def test_reassign_in_tuple(self):
-        from typing_extensions import assert_type
-
         def f(x: int | str) -> None:
             match (x,):
                 case (int() as x,):

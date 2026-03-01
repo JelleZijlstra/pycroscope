@@ -32,10 +32,10 @@ class TestEnum(TestNameCheckVisitorBase):
             b = 2
 
         def capybara():
-            assert_is_value(X(1), TypedValue(X))
+            assert_type(X(1), X)
             # This should be an error, but the typeshed
             # stubs are too lenient.
-            assert_is_value(X(None), TypedValue(X))
+            assert_type(X(None), X)
 
     @assert_passes()
     def test_iteration(self):
@@ -53,16 +53,16 @@ class TestEnum(TestNameCheckVisitorBase):
             enum_t: Type[Enum], int_enum_t: Type[IntEnum], subclass_t: Type[MySubclass]
         ):
             for x in X:
-                assert_is_value(x, TypedValue(X))
+                assert_type(x, X)
 
             for et in enum_t:
-                assert_is_value(et, TypedValue(Enum))
+                assert_type(et, Enum)
 
             for iet in int_enum_t:
-                assert_is_value(iet, TypedValue(IntEnum))
+                assert_type(iet, IntEnum)
 
             for st in subclass_t:
-                assert_is_value(st, TypedValue(MySubclass))
+                assert_type(st, MySubclass)
 
     @assert_passes()
     def test_duplicate_enum_member(self):

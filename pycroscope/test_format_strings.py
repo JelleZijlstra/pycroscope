@@ -13,15 +13,7 @@ from .test_name_check_visitor import TestNameCheckVisitorBase
 from .test_node_visitor import assert_passes
 from .test_value import CTX
 from .tests import make_simple_sequence
-from .value import (
-    AnySource,
-    AnyValue,
-    DictIncompleteValue,
-    KnownValue,
-    KVPair,
-    TypedValue,
-    assert_is_value,
-)
+from .value import AnySource, AnyValue, DictIncompleteValue, KnownValue, KVPair
 
 PERCENT_TESTCASES = [
     ("%(a)s", (ConversionSpecifier("s", mapping_key="a"),), ("", "")),
@@ -409,8 +401,8 @@ class TestPercentFormatString(TestNameCheckVisitorBase):
     @assert_passes()
     def test_inference(self):
         def capybara(a):
-            assert_is_value("%s %s" % (3, 0), TypedValue(str))
-            assert_is_value("%s %s" % (a, 0), TypedValue(str))
+            assert_type("%s %s" % (3, 0), str)
+            assert_type("%s %s" % (a, 0), str)
 
 
 class TestUseFStrings(TestNameCheckVisitorBase):
@@ -482,7 +474,7 @@ def capybara(x):
 class TestFStringLiteral(TestNameCheckVisitorBase):
     @assert_passes()
     def test_basic(self):
-        from typing_extensions import Literal, assert_type
+        from typing_extensions import Literal
 
         def capybara(a: Literal["a"], ab: Literal["a", "b"]):
             assert_type(f"a{a}", Literal["aa"])
@@ -495,7 +487,7 @@ class TestFStringLiteral(TestNameCheckVisitorBase):
 
     @assert_passes()
     def test_conversions(self):
-        from typing_extensions import Literal, assert_type
+        from typing_extensions import Literal
 
         def capybara(a: Literal["á"], ab: Literal["á", "ê"]):
             assert_type(f"a{a!r}", Literal["a'á'"])

@@ -55,7 +55,7 @@ class TestAsyncAwait(TestNameCheckVisitorBase):
             pass
 
         async def capybara(aw: Aww[int, str]) -> None:
-            assert_is_value(await aw, TypedValue(str))
+            assert_type(await aw, str)
 
     @assert_passes()
     def test_async_comprehension(self):
@@ -290,7 +290,7 @@ class TestAsyncGenerator(TestNameCheckVisitorBase):
                 gen(), GenericValue(collections.abc.AsyncIterator, [TypedValue(int)])
             )
             async for i in gen():
-                assert_is_value(i, TypedValue(int))
+                assert_type(i, int)
 
     @assert_passes()
     def test_async_generator(self):
@@ -309,7 +309,7 @@ class TestAsyncGenerator(TestNameCheckVisitorBase):
                 ),
             )
             async for i in gen():
-                assert_is_value(i, TypedValue(int))
+                assert_type(i, int)
 
     @assert_passes()
     def test_async_comprehension_over_generator(self):
@@ -334,5 +334,5 @@ class TestAsyncGenerator(TestNameCheckVisitorBase):
 
         async def capybara() -> AsyncGenerator[int, str]:
             x = yield 1
-            assert_is_value(x, TypedValue(str))
+            assert_type(x, str)
             yield x  # E: incompatible_yield

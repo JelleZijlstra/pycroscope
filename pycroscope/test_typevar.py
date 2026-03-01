@@ -38,15 +38,15 @@ class TestTypeVar(TestNameCheckVisitorBase):
 
         def capybara(x: str, xs: List[int], gen: GenCls[int]) -> None:
             assert_is_value(id(3), KnownValue(3))
-            assert_is_value(id(x), TypedValue(str))
-            assert_is_value(get_one(xs), TypedValue(int))
-            assert_is_value(get_one([int(3)]), TypedValue(int))
+            assert_type(id(x), str)
+            assert_type(get_one(xs), int)
+            assert_type(get_one([int(3)]), int)
             # This one doesn't work yet because we don't know how to go from
             # KnownValue([3]) to a GenericValue of some sort.
             # assert_is_value(get_one([3]), KnownValue(3))
 
-            assert_is_value(gen.get_one(), TypedValue(int))
-            assert_is_value(gen.get_another(), TypedValue(int))
+            assert_type(gen.get_one(), int)
+            assert_type(gen.get_another(), int)
 
     @assert_passes()
     def test_identity(self):
