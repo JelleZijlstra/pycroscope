@@ -1196,9 +1196,34 @@ def _type_from_subscripted_value(
 ) -> Value:
     if isinstance(root, GenericValue):
         if len(root.args) == len(members):
-            return GenericValue(
-                root.typ, [_type_from_value(member, ctx) for member in members]
-            )
+            typed_members = [_type_from_value(member, ctx) for member in members]
+            if is_typing_name(root.typ, "Generic") or is_typing_name(
+                root.typ, "Protocol"
+            ):
+                generic_type_params: list[TypeVarLike | TypeVarValue] = []
+                for root_arg in root.args:
+                    if isinstance(root_arg, TypeVarValue):
+                        generic_type_params.append(root_arg)
+                        continue
+                    if isinstance(root_arg, KnownValue) and (
+                        is_instance_of_typing_name(root_arg.val, "TypeVar")
+                        or is_instance_of_typing_name(root_arg.val, "TypeVarTuple")
+                        or is_instance_of_typing_name(root_arg.val, "ParamSpec")
+                    ):
+                        generic_type_params.append(cast(TypeVarLike, root_arg.val))
+                        continue
+                    break
+                else:
+                    alias = TypeAlias(
+                        evaluator=lambda root=root: root,
+                        evaluate_type_params=lambda generic_type_params=tuple(
+                            generic_type_params
+                        ): generic_type_params,
+                    )
+                    return TypeAliasValue(
+                        "<generic_alias>", "typing", alias, tuple(typed_members)
+                    )
+            return GenericValue(root.typ, typed_members)
     if isinstance(root, PartialValue):
         root_type = _type_from_value(root, ctx)
         return _type_from_subscripted_value(root_type, members, ctx)
@@ -1264,8 +1289,9 @@ def _type_from_subscripted_value(
                 error_code=ErrorCode.invalid_literal,
             )
             return AnyValue(AnySource.error)
+        known_members = cast(Sequence[KnownValue], members)
         invalid_members = [
-            elt for elt in members if not _is_valid_pep586_literal_value(elt.val)
+            elt for elt in known_members if not _is_valid_pep586_literal_value(elt.val)
         ]
         if invalid_members:
             invalid_values = ", ".join(repr(elt.val) for elt in invalid_members)
@@ -1360,7 +1386,51 @@ def _type_from_subscripted_value(
     else:
         origin = get_origin(root)
         if isinstance(origin, type):
-            return GenericValue(origin, [_type_from_value(elt, ctx) for elt in members])
+            typed_members = [_type_from_value(elt, ctx) for elt in members]
+            if is_typing_name(origin, "Generic") or is_typing_name(origin, "Protocol"):
+                runtime_type_params = tuple(get_args(root))
+                if len(runtime_type_params) == len(members) and all(
+                    is_instance_of_typing_name(type_param, "TypeVar")
+                    or is_instance_of_typing_name(type_param, "TypeVarTuple")
+                    or is_instance_of_typing_name(type_param, "ParamSpec")
+                    for type_param in runtime_type_params
+                ):
+                    typed_runtime_type_params = cast(
+                        tuple[TypeVarLike, ...], runtime_type_params
+                    )
+
+                    def _evaluate_runtime_generic_alias(
+                        origin: type = origin,
+                        runtime_type_params: tuple[
+                            TypeVarLike, ...
+                        ] = typed_runtime_type_params,
+                    ) -> Value:
+                        return GenericValue(
+                            origin,
+                            [
+                                TypeVarValue(
+                                    type_param,
+                                    variance=get_typevar_variance(type_param),
+                                )
+                                for type_param in runtime_type_params
+                            ],
+                        )
+
+                    def _evaluate_runtime_generic_alias_type_params(
+                        runtime_type_params: tuple[
+                            TypeVarLike, ...
+                        ] = typed_runtime_type_params,
+                    ) -> tuple[TypeVarLike, ...]:
+                        return runtime_type_params
+
+                    alias = TypeAlias(
+                        evaluator=_evaluate_runtime_generic_alias,
+                        evaluate_type_params=_evaluate_runtime_generic_alias_type_params,
+                    )
+                    return TypeAliasValue(
+                        "<runtime_generic_alias>", "typing", alias, tuple(typed_members)
+                    )
+            return GenericValue(origin, typed_members)
         ctx.show_error(f"Unrecognized subscripted annotation: {root}")
         return AnyValue(AnySource.error)
 

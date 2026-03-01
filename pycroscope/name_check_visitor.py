@@ -5668,6 +5668,31 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         else:
             used_polarities.add(polarity)
 
+    def _synthetic_type_params_for_variance(
+        self, typ: type | str, arity: int
+    ) -> Sequence[TypeVarLike] | None:
+        if not isinstance(typ, str):
+            return None
+        synthetic_class = self.checker.get_synthetic_class(typ)
+        if synthetic_class is None:
+            return None
+        for base in synthetic_class.base_classes:
+            runtime_annotation = self._runtime_annotation_from_value(base)
+            origin = typing.get_origin(runtime_annotation)
+            if origin is None or not (
+                is_typing_name(origin, "Generic") or is_typing_name(origin, "Protocol")
+            ):
+                continue
+            type_params = typing.get_args(runtime_annotation)
+            if len(type_params) != arity:
+                continue
+            if all(
+                is_instance_of_typing_name(type_param, "TypeVar")
+                for type_param in type_params
+            ):
+                return cast(tuple[TypeVarLike, ...], type_params)
+        return None
+
     def _value_for_variance_annotation(self, annotation: ast.expr) -> Value:
         annotation_expr = annotation_expr_from_ast(
             annotation, self, suppress_errors=True
@@ -5716,10 +5741,23 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                         ),
                     )
             else:
-                for arg in value.args:
-                    self._collect_type_param_polarities_from_value(
-                        arg, type_param_polarities, polarity=0
-                    )
+                synthetic_type_params = self._synthetic_type_params_for_variance(
+                    value.typ, len(value.args)
+                )
+                if synthetic_type_params is None:
+                    for arg in value.args:
+                        self._collect_type_param_polarities_from_value(
+                            arg, type_param_polarities, polarity=0
+                        )
+                else:
+                    for arg, type_param in zip(value.args, synthetic_type_params):
+                        self._collect_type_param_polarities_from_value(
+                            arg,
+                            type_param_polarities,
+                            polarity=self._compose_variance_polarity(
+                                polarity, get_typevar_variance(type_param)
+                            ),
+                        )
             return
         if isinstance(value, AnnotatedValue):
             self._collect_type_param_polarities_from_value(
@@ -5733,10 +5771,29 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 )
             return
         if isinstance(value, TypeAliasValue):
-            for type_argument in value.type_arguments:
-                self._collect_type_param_polarities_from_value(
-                    type_argument, type_param_polarities, polarity=polarity
-                )
+            alias_type_params = value.alias.get_type_params()
+            if value.type_arguments and len(alias_type_params) == len(
+                value.type_arguments
+            ):
+                for alias_type_param, type_argument in zip(
+                    alias_type_params, value.type_arguments
+                ):
+                    type_param = (
+                        alias_type_param.typevar
+                        if isinstance(alias_type_param, TypeVarValue)
+                        else alias_type_param
+                    )
+                    self._collect_type_param_polarities_from_value(
+                        type_argument,
+                        type_param_polarities,
+                        polarity=self._compose_variance_polarity(
+                            polarity, get_typevar_variance(type_param)
+                        ),
+                    )
+                return
+            self._collect_type_param_polarities_from_value(
+                value.get_value(), type_param_polarities, polarity=polarity
+            )
             return
         if isinstance(value, SubclassValue):
             self._collect_type_param_polarities_from_value(
@@ -5921,6 +5978,21 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         return 1 not in used_polarities
 
     @staticmethod
+    def _is_variance_declaration_arg(arg: Value) -> bool:
+        if isinstance(arg, TypeVarValue):
+            return True
+        if isinstance(arg, AnnotatedValue):
+            return NameCheckVisitor._is_variance_declaration_arg(arg.value)
+        if isinstance(arg, KnownValue):
+            type_param = arg.val
+            return (
+                is_instance_of_typing_name(type_param, "TypeVar")
+                or is_instance_of_typing_name(type_param, "TypeVarTuple")
+                or is_instance_of_typing_name(type_param, "ParamSpec")
+            )
+        return False
+
+    @staticmethod
     def _is_variance_declaration_base(base_value: Value) -> bool:
         subvals = list(flatten_values(replace_fallback(base_value)))
         if not subvals:
@@ -5930,13 +6002,20 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 subval = subval.class_type
             if isinstance(subval, GenericValue):
                 typ: object = subval.typ
+                type_args: Sequence[Value] = subval.args
             elif isinstance(subval, TypedValue):
                 typ = subval.typ
+                type_args = ()
             elif isinstance(subval, KnownValue):
                 typ = subval.val
+                type_args = ()
             else:
                 return False
             if not (is_typing_name(typ, "Generic") or is_typing_name(typ, "Protocol")):
+                return False
+            if type_args and not all(
+                NameCheckVisitor._is_variance_declaration_arg(arg) for arg in type_args
+            ):
                 return False
         return True
 
@@ -5950,8 +6029,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         if self._is_protocol_class(base_values, class_scope_object):
             return
         analyzed_bases = [
-            replace_fallback(self._value_for_variance_annotation(base_node))
-            for base_node in node.bases
+            self._value_for_variance_annotation(base_node) for base_node in node.bases
         ]
         typevars_to_check = {
             type_param.typevar
@@ -5960,7 +6038,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         }
         for analyzed_base in analyzed_bases:
             for subval in flatten_values(analyzed_base):
-                for walked in subval.walk_values():
+                for walked in self._walk_values_for_variance_typevar_collection(subval):
                     if not isinstance(walked, TypeVarValue):
                         continue
                     if not is_instance_of_typing_name(walked.typevar, "TypeVar"):
@@ -5992,6 +6070,24 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     error_code=ErrorCode.invalid_annotation,
                 )
                 break
+
+    def _walk_values_for_variance_typevar_collection(
+        self, value: Value
+    ) -> Iterable[Value]:
+        if isinstance(value, TypeAliasValue):
+            yield value
+            for type_argument in value.type_arguments:
+                yield from self._walk_values_for_variance_typevar_collection(
+                    type_argument
+                )
+            return
+        for walked in value.walk_values():
+            if walked is value:
+                yield walked
+            elif isinstance(walked, TypeAliasValue):
+                yield from self._walk_values_for_variance_typevar_collection(walked)
+            else:
+                yield walked
 
     def _is_protocol_class(
         self, base_values: Sequence[Value], class_scope_object: type | str | None

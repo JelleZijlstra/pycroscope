@@ -1210,12 +1210,6 @@ class Checker:
                 dataclass_sig = Signature.make([], instance_type)
             init_sig = dataclass_sig
 
-        if (
-            new_sig is not None
-            and init_sig is not None
-            and self._signature_has_no_parameters(new_sig)
-        ):
-            return init_sig
         if new_sig is not None and init_sig is not None:
             if self._signature_allows_init_after_new(new_sig, instance_type):
                 return init_sig

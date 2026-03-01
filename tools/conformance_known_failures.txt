@@ -12,7 +12,6 @@ annotations_typeexpr
 callables_protocol
 constructors_call_metaclass
 constructors_call_new
-constructors_callable
 dataclasses_descriptors
 dataclasses_inheritance
 dataclasses_match_args
@@ -41,7 +40,6 @@ generics_typevartuple_basic
 generics_typevartuple_concat
 generics_typevartuple_specialization
 generics_typevartuple_unpack
-generics_variance
 literals_literalstring
 literals_parameterizations
 literals_semantics
