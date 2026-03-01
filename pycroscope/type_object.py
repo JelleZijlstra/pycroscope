@@ -37,7 +37,9 @@ from .value import (
     CanAssignContext,
     CanAssignError,
     GenericValue,
+    IntersectionValue,
     KnownValue,
+    MultiValuedValue,
     NotAGradualType,
     SelfT,
     SubclassValue,
@@ -531,27 +533,29 @@ def _describe_member_for_type(
 
 
 def _class_key_from_value(value: Value) -> type | str | None:
-    value = replace_fallback(value)
-    while isinstance(value, AnnotatedValue):
-        value = replace_fallback(value.value)
-    if isinstance(value, SyntheticClassObjectValue):
-        class_type = value.class_type
-        if isinstance(class_type, TypedValue) and isinstance(
-            class_type.typ, (type, str)
-        ):
-            return class_type.typ
-        return None
-    if isinstance(value, GenericValue) and isinstance(value.typ, (type, str)):
-        return value.typ
-    if isinstance(value, TypedValue) and isinstance(value.typ, (type, str)):
-        return value.typ
-    if isinstance(value, KnownValue) and isinstance(value.val, type):
-        return value.val
-    if isinstance(value, SubclassValue):
-        typ = value.typ
-        if isinstance(typ, TypedValue) and isinstance(typ.typ, (type, str)):
-            return typ.typ
+    keys = list(dict.fromkeys(_iter_class_keys_from_value(value)))
+    if len(keys) == 1:
+        return keys[0]
     return None
+
+
+def _iter_class_keys_from_value(value: Value) -> list[type | str]:
+    value = replace_fallback(value)
+    if isinstance(value, SyntheticClassObjectValue):
+        return _typed_class_key(value.class_type)
+    if isinstance(value, SubclassValue):
+        return _iter_class_keys_from_value(value.typ)
+    if isinstance(value, TypedValue):
+        return _typed_class_key(value)
+    if isinstance(value, KnownValue) and isinstance(value.val, type):
+        return [value.val]
+    return []
+
+
+def _typed_class_key(value: Value) -> list[type | str]:
+    if isinstance(value, TypedValue) and isinstance(value.typ, (type, str)):
+        return [value.typ]
+    return []
 
 
 def _checker_ctx(ctx: CanAssignContext) -> object:
@@ -576,24 +580,9 @@ def _iter_base_keys(class_key: type | str, ctx: CanAssignContext) -> list[type |
             for flattened in flatten_values(
                 replace_fallback(base), unwrap_annotated=True
             ):
-                if isinstance(flattened, SyntheticClassObjectValue):
-                    class_type = flattened.class_type
-                    if isinstance(class_type, TypedValue) and isinstance(
-                        class_type.typ, (type, str)
-                    ):
-                        bases.append(class_type.typ)
-                elif isinstance(flattened, GenericValue) and isinstance(
-                    flattened.typ, (type, str)
-                ):
-                    bases.append(flattened.typ)
-                elif isinstance(flattened, TypedValue) and isinstance(
-                    flattened.typ, (type, str)
-                ):
-                    bases.append(flattened.typ)
-                elif isinstance(flattened, KnownValue) and isinstance(
-                    flattened.val, type
-                ):
-                    bases.append(flattened.val)
+                flattened_key = _class_key_from_value(flattened)
+                if flattened_key is not None:
+                    bases.append(flattened_key)
     if isinstance(class_key, type):
         bases.extend(
             base
@@ -924,9 +913,33 @@ def _mark_protocol_call_signature_tail(
 
 
 def _should_use_permissive_dunder_hash(val: Value) -> bool:
-    val = replace_fallback(val)
-    if isinstance(val, SubclassValue):
+    return _is_definitely_class_object_value(val)
+
+
+def _is_definitely_class_object_value(value: Value) -> bool:
+    """Return whether the value definitely represents a class object.
+
+    For unions, all members must be class objects.
+    For intersections, any class-object member is enough because the intersection
+    value must satisfy all member constraints at once.
+    """
+    value = replace_fallback(value)
+    if isinstance(value, MultiValuedValue):
+        return bool(value.vals) and all(
+            _is_definitely_class_object_value(subval) for subval in value.vals
+        )
+    if isinstance(value, IntersectionValue):
+        return bool(value.vals) and any(
+            _is_definitely_class_object_value(subval) for subval in value.vals
+        )
+    if isinstance(value, KnownValue):
+        return safe_isinstance(value.val, type)
+    if isinstance(value, (SubclassValue, SyntheticClassObjectValue)):
         return True
-    elif isinstance(val, KnownValue) and safe_isinstance(val.val, type):
-        return True
+    if isinstance(value, TypedValue):
+        if isinstance(value.typ, type):
+            return safe_issubclass(value.typ, type)
+        if isinstance(value.typ, str):
+            return value.typ in {"type", "builtins.type"}
+        return False
     return False
