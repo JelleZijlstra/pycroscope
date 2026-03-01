@@ -3,7 +3,6 @@ from collections.abc import Sequence
 
 from pycroscope.relations import Relation
 
-from .implementation import assert_is_value
 from .signature import (
     ELLIPSIS_PARAM,
     ConcreteSignature,
@@ -28,6 +27,7 @@ from .value import (
     TypedDictEntry,
     TypedDictValue,
     TypedValue,
+    assert_is_value,
 )
 
 TupleInt = GenericValue(tuple, [TypedValue(int)])

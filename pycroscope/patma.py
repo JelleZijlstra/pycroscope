@@ -19,7 +19,6 @@ from .annotated_types import MaxLen, MinLen
 from .annotations import type_from_value
 from .error_code import ErrorCode
 from .extensions import CustomCheck
-from .implementation import len_of_value
 from .predicates import EqualsPredicate, IsAssignablePredicate
 from .relations import Relation, has_relation, intersect_values
 from .signature import MappingValue
@@ -55,6 +54,7 @@ from .value import (
     Value,
     flatten_values,
     kv_pairs_from_mapping,
+    len_of_value,
     replace_known_sequence_value,
     unite_values,
     unpack_values,

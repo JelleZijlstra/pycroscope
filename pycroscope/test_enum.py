@@ -1,8 +1,14 @@
 # static analysis: ignore
-from .implementation import assert_is_value
 from .test_name_check_visitor import TestNameCheckVisitorBase
 from .test_node_visitor import assert_passes
-from .value import AnySource, AnyValue, KnownValue, SubclassValue, TypedValue
+from .value import (
+    AnySource,
+    AnyValue,
+    KnownValue,
+    SubclassValue,
+    TypedValue,
+    assert_is_value,
+)
 
 
 class TestEnum(TestNameCheckVisitorBase):

@@ -1,5 +1,4 @@
 # static analysis: ignore
-from .implementation import assert_is_value
 from .test_name_check_visitor import TestNameCheckVisitorBase
 from .test_node_visitor import assert_passes, skip_before
 from .tests import make_simple_sequence
@@ -11,6 +10,7 @@ from .value import (
     KnownValue,
     MultiValuedValue,
     TypedValue,
+    assert_is_value,
 )
 
 

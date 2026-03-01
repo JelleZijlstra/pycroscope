@@ -1,8 +1,7 @@
 # static analysis: ignore
-from .implementation import assert_is_value
 from .test_name_check_visitor import TestNameCheckVisitorBase
 from .test_node_visitor import assert_passes
-from .value import KnownValue
+from .value import KnownValue, assert_is_value
 
 
 class TestImport(TestNameCheckVisitorBase):

@@ -1,8 +1,7 @@
 # static analysis: ignore
-from .implementation import assert_is_value
 from .test_name_check_visitor import TestNameCheckVisitorBase
 from .test_node_visitor import assert_passes
-from .value import GenericValue, KnownValue, TypedValue
+from .value import GenericValue, KnownValue, TypedValue, assert_is_value
 
 
 class TestPEP673(TestNameCheckVisitorBase):
