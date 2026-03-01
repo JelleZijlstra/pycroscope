@@ -1813,6 +1813,51 @@ class TestSubclassValue(TestNameCheckVisitorBase):
         C[int]()
         C[str]()  # E: incompatible_call
 
+    @assert_passes(allow_import_failures=True)
+    def test_constructor_callable_ignores_init_when_new_returns_proxy(self):
+        from typing import Callable, ParamSpec, TypeVar, assert_type
+
+        P = ParamSpec("P")
+        R = TypeVar("R")
+
+        def accepts_callable(cb: Callable[P, R]) -> Callable[P, R]:
+            return cb
+
+        class Proxy:
+            pass
+
+        class C:
+            def __new__(cls) -> Proxy:
+                return Proxy()
+
+            def __init__(self, x: int) -> None:
+                pass
+
+        r = accepts_callable(C)
+        assert_type(r(), Proxy)
+        r(1)  # E: incompatible_call
+
+    @assert_passes(allow_import_failures=True)
+    def test_constructor_callable_ignores_init_when_new_returns_any(self):
+        from typing import Any, Callable, ParamSpec, TypeVar, assert_type
+
+        P = ParamSpec("P")
+        R = TypeVar("R")
+
+        def accepts_callable(cb: Callable[P, R]) -> Callable[P, R]:
+            return cb
+
+        class C:
+            def __new__(cls) -> Any:
+                return super().__new__(cls)
+
+            def __init__(self, x: int) -> None:
+                pass
+
+        r = accepts_callable(C)
+        assert_type(r(), Any)
+        r(1)  # E: incompatible_call
+
     @assert_passes()
     def test_init_self_annotation_disallows_class_scoped_typevars(self):
         from typing import Generic, TypeVar
