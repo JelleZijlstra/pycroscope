@@ -42,6 +42,16 @@ class TestRelations(TestNameCheckVisitorBase):
                 assert_type(ge0, Eq0 | Ge1)
             """)
 
+    @assert_passes()
+    def test_literal_tuple_equivalent_to_tuple_of_literals(self):
+        from typing_extensions import Literal, assert_type
+
+        def capybara(
+            literal_tuple: Literal[(("x",),)], tuple_of_literals: tuple[Literal["x"]]
+        ) -> None:
+            assert_type(literal_tuple, tuple[Literal["x"]])
+            assert_type(tuple_of_literals, Literal[(("x",),)])
+
 
 class TestIntersections(TestNameCheckVisitorBase):
     @assert_passes()

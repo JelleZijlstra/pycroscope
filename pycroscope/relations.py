@@ -81,6 +81,7 @@ from pycroscope.value import (
     gradualize,
     intersect_bounds_maps,
     namedtuple_members_from_value,
+    replace_known_sequence_value,
     stringify_object,
     typify_literal,
     unify_bounds_maps,
@@ -280,6 +281,10 @@ def _has_relation(
         original_right = right
     if original_left is None:
         original_left = left
+    if isinstance(left, KnownValue):
+        left = replace_known_sequence_value(left)
+    if isinstance(right, KnownValue):
+        right = replace_known_sequence_value(right)
 
     if isinstance(left, SyntheticClassObjectValue):
         if isinstance(right, SyntheticClassObjectValue) and left == right:
