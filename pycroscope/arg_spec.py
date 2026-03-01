@@ -1246,15 +1246,30 @@ class ArgSpecCache:
         tv_map = {}
         if substitute_typevars:
             for i, tv_value in enumerate(my_typevars.values()):
-                if not isinstance(tv_value, TypeVarValue):
-                    continue
                 try:
                     value = generic_args[i]
                 except IndexError:
                     value = AnyValue(AnySource.generic_argument)
-                tv_map[tv_value.typevar] = value
+                if isinstance(tv_value, TypeVarValue):
+                    tv_map[tv_value.typevar] = value
+                elif isinstance(tv_value, InputSigValue) and isinstance(
+                    tv_value.input_sig, ParamSpecSig
+                ):
+                    tv_map[tv_value.input_sig.param_spec] = value
+
+        def _substitute_base_arg(value: Value) -> Value:
+            if (
+                isinstance(value, InputSigValue)
+                and isinstance(value.input_sig, ParamSpecSig)
+                and value.input_sig.param_spec in tv_map
+            ):
+                # For class generic arguments, ParamSpec specializations are stored as
+                # regular Value payloads (e.g. tuple/list SequenceValue), not InputSigValue.
+                return tv_map[value.input_sig.param_spec]
+            return value.substitute_typevars(tv_map)
+
         return {
-            base: {tv: value.substitute_typevars(tv_map) for tv, value in args.items()}
+            base: {tv: _substitute_base_arg(value) for tv, value in args.items()}
             for base, args in generic_bases.items()
         }
 

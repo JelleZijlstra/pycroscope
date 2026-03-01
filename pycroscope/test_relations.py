@@ -1,27 +1,82 @@
 # static analysis: ignore
 
-from pycroscope.checker import Checker
-from pycroscope.input_sig import FullSignature, InputSigValue
-from pycroscope.relations import Relation, _has_relation_for_generic_arg_pair
-from pycroscope.signature import ParameterKind, Signature, SigParameter
 from pycroscope.test_name_check_visitor import TestNameCheckVisitorBase
 from pycroscope.test_node_visitor import assert_passes, skip_before
-from pycroscope.value import CanAssignError, TypedValue
-
-
-def test_mixed_input_sig_generic_relation_does_not_crash():
-    sig = Signature.make(
-        [SigParameter("x", ParameterKind.POSITIONAL_ONLY, annotation=TypedValue(int))],
-        return_annotation=TypedValue(str),
-    )
-    input_sig = InputSigValue(FullSignature(sig))
-    result = _has_relation_for_generic_arg_pair(
-        input_sig, TypedValue(int), Relation.ASSIGNABLE, Checker()
-    )
-    assert isinstance(result, CanAssignError)
 
 
 class TestRelations(TestNameCheckVisitorBase):
+    @assert_passes()
+    def test_mixed_input_sig_generic_relation_does_not_crash(self):
+        from typing import Generic
+
+        from typing_extensions import ParamSpec
+
+        P = ParamSpec("P")
+
+        class C(Generic[P]):
+            pass
+
+        def takes_int(x: C[[int]]) -> None:
+            pass
+
+        def g(x: C[P]) -> None:
+            takes_int(x)  # E: incompatible_argument
+
+    @assert_passes()
+    def test_single_paramspec_list_and_flat_forms_are_equivalent(self):
+        from typing import Generic
+
+        from typing_extensions import ParamSpec, assert_type
+
+        P = ParamSpec("P")
+
+        class Z(Generic[P]):
+            pass
+
+        def takes_one_list(x: Z[[int]]) -> None:
+            assert_type(x, Z[int])
+
+        def takes_one_flat(x: Z[int]) -> None:
+            assert_type(x, Z[[int]])
+
+        def takes_two_list(x: Z[[int, str]]) -> None:
+            assert_type(x, Z[int, str])
+
+        def takes_two_flat(x: Z[int, str]) -> None:
+            assert_type(x, Z[[int, str]])
+
+        def capybara(
+            one_list: Z[[int]],
+            one_flat: Z[int],
+            two_list: Z[[int, str]],
+            two_flat: Z[int, str],
+            paramspec: Z[P],
+        ) -> None:
+            takes_one_list(one_flat)
+            takes_one_flat(one_list)
+            takes_two_list(two_flat)
+            takes_two_flat(two_list)
+            takes_one_list(paramspec)  # E: incompatible_argument
+
+    @assert_passes()
+    def test_paramspec_after_typevar_uses_list_form(self):
+        from typing import Generic, TypeVar
+
+        from typing_extensions import ParamSpec
+
+        T = TypeVar("T")
+        P = ParamSpec("P")
+
+        class X(Generic[T, P]):
+            pass
+
+        def takes_params(x: X[int, [int]]) -> None:
+            pass
+
+        def capybara(good: X[int, [int]], paramspec: X[int, P]) -> None:
+            takes_params(good)
+            takes_params(paramspec)  # E: incompatible_argument
+
     @skip_before((3, 12))
     def test_unbounded_tuple_unions(self):
         self.assert_passes("""

@@ -765,7 +765,21 @@ def _is_assignable_for_alias_arg(expected: Value, actual: Value, ctx: Context) -
     return not isinstance(result, CanAssignError)
 
 
-def _is_paramspec_type_param(type_param: TypeVarLike | TypeVarValue) -> bool:
+def _get_generic_type_parameters_for_annotation(
+    typ: type, ctx: Context
+) -> Sequence[object]:
+    runtime_type_params = getattr(typ, "__parameters__", ())
+    if isinstance(runtime_type_params, tuple) and runtime_type_params:
+        return runtime_type_params
+    can_assign_ctx = _get_can_assign_context(ctx)
+    if can_assign_ctx is None:
+        return ()
+    return can_assign_ctx.get_type_parameters(typ)
+
+
+def _is_paramspec_type_param(type_param: object) -> bool:
+    if isinstance(type_param, InputSigValue):
+        return isinstance(type_param.input_sig, ParamSpecSig)
     if isinstance(type_param, TypeVarValue):
         return is_instance_of_typing_name(type_param.typevar, "ParamSpec")
     return is_instance_of_typing_name(type_param, "ParamSpec")
@@ -874,7 +888,7 @@ def has_invalid_paramspec_usage(
 
 
 def _type_from_runtime_type_alias_arg(
-    arg: object, type_param: TypeVarLike | TypeVarValue, ctx: Context
+    arg: object, type_param: object, ctx: Context
 ) -> Value:
     if _is_paramspec_type_param(type_param):
         if isinstance(arg, tuple):
@@ -889,7 +903,7 @@ def _type_from_runtime_type_alias_arg(
 
 
 def _type_from_value_type_alias_arg(
-    arg: Value, type_param: TypeVarLike | TypeVarValue, ctx: Context
+    arg: Value, type_param: object, ctx: Context
 ) -> Value:
     if _is_paramspec_type_param(type_param):
         if isinstance(arg, SequenceValue) and arg.typ in (list, tuple):
@@ -1378,7 +1392,26 @@ def _type_from_subscripted_value(
             tuple(_type_from_value(subval, ctx) for subval in members)
         )
     elif isinstance(root, type):
-        return GenericValue(root, [_type_from_value(elt, ctx) for elt in members])
+        typed_members = [_type_from_value(elt, ctx) for elt in members]
+        type_params = _get_generic_type_parameters_for_annotation(root, ctx)
+        if len(type_params) == 1 and _is_paramspec_type_param(type_params[0]):
+            if len(members) == 1:
+                member = members[0]
+                typed_member = typed_members[0]
+                if isinstance(typed_member, InputSigValue):
+                    paramspec_arg = typed_member
+                elif isinstance(member, SequenceValue) and member.typ in (list, tuple):
+                    paramspec_arg = _type_from_value_type_alias_arg(
+                        member, type_params[0], ctx
+                    )
+                else:
+                    paramspec_arg = SequenceValue(tuple, [(False, typed_member)])
+            else:
+                paramspec_arg = SequenceValue(
+                    tuple, [(False, typed_member) for typed_member in typed_members]
+                )
+            return GenericValue(root, [paramspec_arg])
+        return GenericValue(root, typed_members)
     elif is_typing_name(root, "ClassVar"):
         ctx.show_error("ClassVar[] used in unsupported context")
         return AnyValue(AnySource.error)
@@ -1887,7 +1920,14 @@ def _value_of_origin_args(
     elif isinstance(origin, type):
         origin = _maybe_get_extra(origin)
         if args:
-            args_vals = [_type_from_runtime(val, ctx) for val in args]
+            type_params = _get_generic_type_parameters_for_annotation(origin, ctx)
+            if len(type_params) == len(args):
+                args_vals = [
+                    _type_from_runtime_type_alias_arg(arg, type_param, ctx)
+                    for arg, type_param in zip(args, type_params)
+                ]
+            else:
+                args_vals = [_type_from_runtime(val, ctx) for val in args]
             return GenericValue(origin, args_vals)
         else:
             return _maybe_typed_value(origin)
