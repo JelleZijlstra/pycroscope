@@ -1783,7 +1783,9 @@ class TestSubclassValue(TestNameCheckVisitorBase):
 
     @assert_passes()
     def test_constructor_inherited_generic_init_with_self_annotation(self):
-        from typing import Generic, Self, TypeVar
+        from typing import Generic, TypeVar
+
+        from typing_extensions import Self
 
         T = TypeVar("T")
 
@@ -3247,9 +3249,10 @@ class TestAnnAssign(TestNameCheckVisitorBase):
 
     @assert_passes(allow_import_failures=True)
     def test_self_methods_in_unimportable_generic_module(self):
-        from typing import Generic, Self, TypeVar, assert_type
+        from typing import Generic, TypeVar
 
         import does_not_exist  # noqa: F401
+        from typing_extensions import Self, assert_type
 
         T = TypeVar("T")
 
@@ -3270,9 +3273,8 @@ class TestAnnAssign(TestNameCheckVisitorBase):
 
     @assert_passes(allow_import_failures=True)
     def test_self_classmethod_in_unimportable_module(self):
-        from typing import Self, assert_type
-
         import does_not_exist  # noqa: F401
+        from typing_extensions import Self, assert_type
 
         class Shape:
             @classmethod
