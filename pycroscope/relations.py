@@ -939,7 +939,9 @@ def _extract_type_form(value: Value, ctx: CanAssignContext) -> Value | CanAssign
             extracted = gradualize(type_form)
         except NotAGradualType:
             return CanAssignError(f"{value} is not a TypeForm")
-        if isinstance(extracted, TypeVarValue) and extracted.typevar is SelfT:
+        if isinstance(extracted, TypeVarValue) and (
+            extracted.typevar is SelfT or extracted.is_typevartuple
+        ):
             return CanAssignError(f"{value} is not a TypeForm")
         if isinstance(extracted, (ParamSpecArgsValue, ParamSpecKwargsValue)):
             return CanAssignError(f"{value} is not a TypeForm")

@@ -11,7 +11,12 @@ from .error_code import DISABLED_IN_TESTS, ErrorCode
 from .implementation import assert_is_value, dump_value
 from .name_check_visitor import ClassAttributeChecker, NameCheckVisitor, _static_hasattr
 from .test_config import CONFIG_PATH
-from .test_node_visitor import assert_fails, assert_passes, skip_if_not_installed
+from .test_node_visitor import (
+    assert_fails,
+    assert_passes,
+    skip_before,
+    skip_if_not_installed,
+)
 from .tests import make_simple_sequence
 from .value import (
     NO_RETURN_VALUE,
@@ -2379,6 +2384,28 @@ class TestTypingConstructNameMatching(TestNameCheckVisitorBase):
             BadNamedTuple,
             GoodTypedDict,
             BadTypedDict,
+        )
+
+    @skip_before((3, 11))
+    def test_generic_typevartuple_base_validation(self):
+        self.assert_passes(
+            """
+            from typing import Generic, TypeVarTuple
+
+            Shape = TypeVarTuple("Shape")
+            Ts1 = TypeVarTuple("Ts1")
+            Ts2 = TypeVarTuple("Ts2")
+
+            class Good(Generic[*Shape]):
+                ...
+
+            class Bad(Generic[Shape]):  # E: invalid_annotation
+                ...
+
+            class Bad2(Generic[*Ts1, *Ts2]):  # E: invalid_annotation
+                ...
+            """,
+            allow_import_failures=True,
         )
 
 

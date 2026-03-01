@@ -83,6 +83,7 @@ from .annotations import (
     is_instance_of_typing_name,
     is_typing_name,
     type_from_value,
+    value_from_ast,
 )
 from .arg_spec import ArgSpecCache, IgnoredCallees, UnwrapClass, is_dot_asynq_function
 from .asynq_checker import AsynqChecker
@@ -463,6 +464,36 @@ def _contains_unpack_annotation_value(value: Value) -> bool:
                 for member in value.val
             )
     return False
+
+
+def _is_typevartuple_annotation_value(value: Value) -> bool:
+    if isinstance(value, TypeVarValue):
+        return value.is_typevartuple
+    if not isinstance(value, KnownValue):
+        return False
+    return is_instance_of_typing_name(value.val, "TypeVarTuple") or is_typing_name(
+        type(value.val), "TypeVarTuple"
+    )
+
+
+def _count_typevartuple_type_param_arg(value: Value) -> tuple[int, int]:
+    if isinstance(value, PartialValue):
+        if (
+            value.operation is PartialValueOperation.UNPACK
+            and _is_typevartuple_annotation_value(value.root)
+        ):
+            return (0, 1)
+        if (
+            value.operation is PartialValueOperation.SUBSCRIPT
+            and isinstance(value.root, KnownValue)
+            and is_typing_name(value.root.val, "Unpack")
+            and len(value.members) == 1
+            and _is_typevartuple_annotation_value(value.members[0])
+        ):
+            return (0, 1)
+    if _is_typevartuple_annotation_value(value):
+        return (1, 0)
+    return (0, 0)
 
 
 @dataclass(init=False)
@@ -2757,6 +2788,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     )
             base_values = self._generic_visit_list(node.bases)
             if self._is_checking():
+                self._check_typevartuple_usage_in_type_parameter_bases(
+                    node, base_values
+                )
                 self._check_protocol_base_validity(node, base_values)
                 for base_node, base_value in zip(node.bases, base_values):
                     if self._is_type_alias_base_value(base_value):
@@ -6324,6 +6358,98 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                         )
                     )
         return type_params
+
+    def _check_typevartuple_usage_in_type_parameter_bases(
+        self, node: ast.ClassDef, base_values: Sequence[Value]
+    ) -> None:
+        for base, base_value in zip(node.bases, base_values):
+            if not isinstance(base, ast.Subscript):
+                continue
+            if self._is_type_parameter_base(base_value):
+                is_type_param_base = True
+            else:
+                root_value = safe_getattr(base.value, "inferred_value", None)
+                if root_value is None:
+                    root_value = value_from_ast(
+                        base.value, visitor=self, error_on_unrecognized=False
+                    )
+                is_type_param_base = self._is_type_parameter_base(root_value)
+            if not is_type_param_base:
+                continue
+            arg_values = self._type_param_base_arg_values(base.slice)
+            bare_count = 0
+            unpacked_count = 0
+            for arg_value in arg_values:
+                bare, unpacked = _count_typevartuple_type_param_arg(arg_value)
+                bare_count += bare
+                unpacked_count += unpacked
+            bare_count = max(bare_count, self._count_typevartuple_name_args(base.slice))
+            starred_count = self._count_starred_type_param_args(base.slice)
+            if bare_count:
+                self._show_error_if_checking(
+                    base.slice,
+                    "TypeVarTuple must be unpacked",
+                    error_code=ErrorCode.invalid_annotation,
+                )
+            if unpacked_count > 1 or starred_count > 1:
+                self._show_error_if_checking(
+                    base.slice,
+                    "Only one TypeVarTuple can be used in a type parameter list",
+                    error_code=ErrorCode.invalid_annotation,
+                )
+
+    def _type_param_base_arg_values(self, slice_node: ast.AST) -> Sequence[Value]:
+        args = safe_getattr(slice_node, "inferred_value", None)
+        if args is None:
+            args = value_from_ast(slice_node, visitor=self, error_on_unrecognized=False)
+        if isinstance(args, SequenceValue) and args.typ is tuple:
+            members = args.get_member_sequence()
+            if members is not None:
+                return members
+            return [member for _, member in args.members]
+        return [args]
+
+    @staticmethod
+    def _count_starred_type_param_args(slice_node: ast.AST) -> int:
+        if isinstance(slice_node, ast.Tuple):
+            return sum(isinstance(elt, ast.Starred) for elt in slice_node.elts)
+        return int(isinstance(slice_node, ast.Starred))
+
+    def _count_typevartuple_name_args(self, slice_node: ast.AST) -> int:
+        if isinstance(slice_node, ast.Tuple):
+            arg_nodes: Sequence[ast.AST] = slice_node.elts
+        else:
+            arg_nodes = [slice_node]
+        count = 0
+        for arg_node in arg_nodes:
+            if not isinstance(arg_node, ast.Name):
+                continue
+            resolved, _ = self.resolve_name(arg_node, suppress_errors=True)
+            if _is_typevartuple_annotation_value(resolved):
+                count += 1
+        return count
+
+    def _is_type_parameter_base(self, value: Value) -> bool:
+        for subval in flatten_values(replace_fallback(value)):
+            candidate: object
+            if isinstance(subval, SyntheticClassObjectValue):
+                subval = subval.class_type
+            if isinstance(subval, GenericValue):
+                candidate = subval.typ
+            elif isinstance(subval, TypedValue):
+                candidate = subval.typ
+            elif isinstance(subval, KnownValue):
+                candidate = subval.val
+            else:
+                continue
+            origin = get_origin(candidate)
+            if origin is not None:
+                candidate = origin
+            if is_typing_name(candidate, "Generic") or is_typing_name(
+                candidate, "Protocol"
+            ):
+                return True
+        return False
 
     def _check_protocol_base_validity(
         self, node: ast.ClassDef, base_values: Sequence[Value]

@@ -506,6 +506,14 @@ def translate_vararg_type(
             return inner_typ
         elif isinstance(inner_typ, ParamSpecArgsValue):
             return inner_typ
+        elif isinstance(inner_typ, TypeVarValue) and inner_typ.is_typevartuple:
+            if error_ctx is not None and node is not None:
+                error_ctx.show_error(
+                    node,
+                    "TypeVarTuple must be unpacked",
+                    error_code=ErrorCode.invalid_annotation,
+                )
+            return AnyValue(AnySource.error)
         else:
             return GenericValue(tuple, [inner_typ])
     elif kind is ParameterKind.VAR_KEYWORD:

@@ -1837,6 +1837,10 @@ def _annotation_expr_of_origin_args(
 def _value_of_origin_args(
     origin: object, args: Sequence[object], val: object, ctx: Context
 ) -> Value:
+    if is_typing_name(origin, "Unpack"):
+        if not _require_exact_argument_count(args, 1, "Unpack", ctx):
+            return AnyValue(AnySource.error)
+        return _type_from_runtime(args[0], ctx)
     if origin is type:
         if not args:
             return TypedValue(type)
@@ -1969,6 +1973,9 @@ def _make_sequence_value(
                 elements = [(True, AnyValue(AnySource.error))]
             pairs += elements
         else:
+            if isinstance(val, TypeVarValue) and val.is_typevartuple:
+                ctx.show_error("TypeVarTuple must be unpacked")
+                val = AnyValue(AnySource.error)
             pairs.append((False, val))
     if typ is tuple and sum(is_many for is_many, _ in pairs) > 1:
         ctx.show_error("Only one unbounded tuple can be used inside a tuple type")

@@ -2434,6 +2434,33 @@ class TestUnpack(TestNameCheckVisitorBase):
                 t5: tuple[*tuple[str, ...], *Ts]  # E: invalid_annotation
             """)
 
+    @skip_before((3, 11))
+    def test_typevartuple_must_be_unpacked(self):
+        self.assert_passes("""
+            from typing import TypeVarTuple
+
+            Ts = TypeVarTuple("Ts")
+
+            bad_tuple: tuple[Ts]  # E: invalid_annotation
+
+            def bad(*args: Ts) -> None:  # E: invalid_annotation
+                ...
+            """)
+
+    @skip_before((3, 11))
+    def test_typevartuple_unpack_in_generic_argument(self):
+        self.assert_passes("""
+            from typing import Generic, TypeVarTuple
+
+            Shape = TypeVarTuple("Shape")
+
+            class Array(Generic[*Shape]):
+                ...
+
+            def multiply(x: Array[*Shape], y: Array[*Shape]) -> Array[*Shape]:
+                raise NotImplementedError
+            """)
+
     @assert_passes(allow_import_failures=True)
     def test_unresolved_tuple_member_preserves_ellipsis(self):
         from typing import Any
