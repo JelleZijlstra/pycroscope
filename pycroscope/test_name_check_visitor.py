@@ -3502,6 +3502,82 @@ class TestAnnAssign(TestNameCheckVisitorBase):
         f2: SizedClosableFlush = FlushOnly()  # E: incompatible_assignment
 
     @assert_passes(allow_import_failures=True)
+    def test_protocol_class_object_method_and_property_shapes(self):
+        from typing import Any, Protocol
+
+        import does_not_exist  # noqa: F401
+
+        class ProtoA1(Protocol):
+            def method1(self, x: int) -> int: ...
+
+        class ProtoA2(Protocol):
+            def method1(_self, self: Any, x: int) -> int: ...
+
+        class ConcreteA:
+            def method1(self, x: int) -> int:
+                return 0
+
+        pa1: ProtoA1 = ConcreteA  # E: incompatible_assignment
+        pa2: ProtoA2 = ConcreteA
+
+        class ProtoB1(Protocol):
+            @property
+            def prop1(self) -> int: ...
+
+        class ConcreteB:
+            @property
+            def prop1(self) -> int:
+                return 0
+
+        pb1: ProtoB1 = ConcreteB  # E: incompatible_assignment
+
+    @assert_passes(allow_import_failures=True)
+    def test_protocol_class_object_classvar_members(self):
+        from typing import ClassVar, Protocol
+
+        class ProtoC1(Protocol):
+            attr1: ClassVar[int]
+
+        class ProtoC2(Protocol):
+            attr1: int
+
+        class ConcreteC1:
+            attr1: ClassVar[int] = 1
+
+        class ConcreteC2:
+            attr1: int = 1
+
+        class CMeta(type):
+            attr1: int
+
+            def __init__(self, attr1: int) -> None:
+                self.attr1 = attr1
+
+        class ConcreteC3(metaclass=CMeta):
+            pass
+
+        pc1: ProtoC1 = ConcreteC1  # E: incompatible_assignment
+        pc2: ProtoC2 = ConcreteC1
+        pc3: ProtoC1 = ConcreteC2  # E: incompatible_assignment
+        pc4: ProtoC2 = ConcreteC2  # E: incompatible_assignment
+        pc5: ProtoC1 = ConcreteC3  # E: incompatible_assignment
+        pc6: ProtoC2 = ConcreteC3
+
+    @assert_passes()
+    def test_protocol_class_object_call_member(self):
+        from typing import Protocol
+
+        class Concrete:
+            def __init__(self, x: int) -> None:
+                self.x = x
+
+        class Factory(Protocol):
+            def __call__(self, x: int) -> Concrete: ...
+
+        factory: Factory = Concrete
+        created: Concrete = factory(1)
+
+    @assert_passes(allow_import_failures=True)
     def test_self_methods_in_unimportable_generic_module(self):
         from typing import Generic, TypeVar
 

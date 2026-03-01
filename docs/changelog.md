@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Improve protocol/class-object conformance for class-object assignments: pycroscope now enforces method/property/class-variable compatibility more accurately (including static-fallback analysis for unimportable modules).
 - Improve `Value` dispatch consistency in suggested-type and class-key inference helpers by normalizing through fallback values and handling unions/intersections more consistently.
 - Improve `Value` dispatch robustness in name checking so enum assignment analysis, protocol-base detection, and type-parameter extraction handle unions/intersections consistently and avoid internal errors on non-gradual values.
 - Improve intersection-type attribute checks so pycroscope now enforces slot restrictions, frozen-dataclass immutability, and NamedTuple field immutability for `Intersection[...]` instance values.
