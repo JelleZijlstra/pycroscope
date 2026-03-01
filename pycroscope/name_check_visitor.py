@@ -5255,7 +5255,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             return self._slot_state_for_base_value(value.value, seen=seen)
         if isinstance(value, SyntheticClassObjectValue):
             return self._slot_state_for_synthetic_class(value, seen=seen)
-        if isinstance(value, MultiValuedValue):
+        if isinstance(value, (MultiValuedValue, IntersectionValue)):
             states = {
                 state
                 for subval in value.vals
@@ -5289,7 +5289,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         value = replace_fallback(value)
         if isinstance(value, AnnotatedValue):
             return self._slot_state_for_instance_value(value.value)
-        if isinstance(value, MultiValuedValue):
+        if isinstance(value, (MultiValuedValue, IntersectionValue)):
             states = {
                 state
                 for subval in value.vals
@@ -5303,13 +5303,8 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 return None
             return self._slot_state_for_runtime_type(type(value.val))
         if isinstance(value, (TypedValue, GenericValue)):
-            if isinstance(value.typ, str):
+            if isinstance(value.typ, (type, str)):
                 return self._slot_state_for_type(value.typ)
-            if isinstance(value.typ, type):
-                synthetic_class = self.checker.get_synthetic_class(value.typ)
-                if synthetic_class is None:
-                    return None
-                return self._slot_state_for_synthetic_class(synthetic_class)
         return None
 
     def _is_assignment_to_non_slot_attribute(
@@ -5357,7 +5352,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         value = replace_fallback(value)
         if isinstance(value, AnnotatedValue):
             return self._get_dataclass_status_for_class_value(value.value)
-        if isinstance(value, MultiValuedValue):
+        if isinstance(value, (MultiValuedValue, IntersectionValue)):
             statuses = {
                 self._get_dataclass_status_for_class_value(subval)
                 for subval in value.vals
@@ -5392,7 +5387,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         value = replace_fallback(value)
         if isinstance(value, AnnotatedValue):
             return self._get_dataclass_status_for_instance_value(value.value)
-        if isinstance(value, MultiValuedValue):
+        if isinstance(value, (MultiValuedValue, IntersectionValue)):
             statuses = {
                 self._get_dataclass_status_for_instance_value(subval)
                 for subval in value.vals
@@ -5415,7 +5410,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         value = replace_fallback(value)
         if isinstance(value, AnnotatedValue):
             return self._get_dataclass_order_info_for_instance_value(value.value)
-        if isinstance(value, MultiValuedValue):
+        if isinstance(value, (MultiValuedValue, IntersectionValue)):
             infos = {
                 info
                 for subval in value.vals
@@ -7554,21 +7549,14 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         is_class_object = self._is_class_object_attribute_root(root_value)
         return is_class_object is False
 
-    def _namedtuple_fields_for_attribute_root(self, value: Value) -> set[str] | None:
+    def _namedtuple_fields_for_simple_attribute_root(
+        self, value: Value
+    ) -> set[str] | None:
         value = replace_fallback(value)
         if isinstance(value, AnnotatedValue):
-            return self._namedtuple_fields_for_attribute_root(value.value)
-        if isinstance(value, MultiValuedValue):
-            shared_fields: set[str] | None = None
-            for subval in value.vals:
-                subval_fields = self._namedtuple_fields_for_attribute_root(subval)
-                if subval_fields is None:
-                    return None
-                if shared_fields is None:
-                    shared_fields = set(subval_fields)
-                else:
-                    shared_fields &= subval_fields
-            return shared_fields
+            return self._namedtuple_fields_for_simple_attribute_root(value.value)
+        if isinstance(value, (MultiValuedValue, IntersectionValue)):
+            return None
         typ: type | None = None
         if isinstance(value, KnownValue) and not isinstance(value.val, type):
             typ = type(value.val)
@@ -7586,7 +7574,17 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         return set(fields)
 
     def _is_namedtuple_field_attribute(self, root_value: Value, attr_name: str) -> bool:
-        fields = self._namedtuple_fields_for_attribute_root(root_value)
+        value = replace_fallback(root_value)
+        if isinstance(value, AnnotatedValue):
+            return self._is_namedtuple_field_attribute(value.value, attr_name)
+        if isinstance(value, (MultiValuedValue, IntersectionValue)):
+            if not value.vals:
+                return False
+            return all(
+                self._is_namedtuple_field_attribute(subval, attr_name)
+                for subval in value.vals
+            )
+        fields = self._namedtuple_fields_for_simple_attribute_root(value)
         return fields is not None and attr_name in fields
 
     def _show_namedtuple_attribute_mutation_error(self, node: ast.Attribute) -> None:

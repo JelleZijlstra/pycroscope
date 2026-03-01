@@ -741,6 +741,23 @@ class TestImportFailureHandlingCodeSamples(TestNameCheckVisitorBase):
             frozen = Frozen(1)
             frozen.value = 2  # E: incompatible_assignment
 
+    @assert_passes()
+    def test_frozen_dataclass_disallows_intersection_attribute_assignment(self):
+        from dataclasses import dataclass
+
+        from pycroscope.extensions import Intersection
+
+        @dataclass(frozen=True)
+        class FrozenA:
+            value: int
+
+        @dataclass(frozen=True)
+        class FrozenB:
+            value: int
+
+        def mutate(value: Intersection[FrozenA, FrozenB]) -> None:
+            value.value = 2  # E: incompatible_assignment
+
     @assert_passes(allow_import_failures=True)
     def test_frozen_dataclass_checks_after_import_failure(self):
         from dataclasses import dataclass
@@ -862,6 +879,19 @@ class TestImportFailureHandlingCodeSamples(TestNameCheckVisitorBase):
             class DataclassWithSlotsAttribute:  # E: invalid_annotation
                 x: int
                 __slots__ = ()
+
+    @assert_passes()
+    def test_dataclass_slots_semantics_for_intersection_instances(self):
+        from pycroscope.extensions import Intersection
+
+        class SlottedA:
+            __slots__ = ("x",)
+
+        class SlottedB:
+            __slots__ = ("x",)
+
+        def mutate(value: Intersection[SlottedA, SlottedB]) -> None:
+            value.y = 3  # E: incompatible_assignment
 
     @assert_passes(allow_import_failures=True)
     def test_dataclass_init_and_match_args_after_import_failure(self):
@@ -1160,6 +1190,22 @@ class TestImportFailureHandlingCodeSamples(TestNameCheckVisitorBase):
         p = Point(1)
 
         def mutate() -> None:
+            p.x = 2  # E: incompatible_assignment
+            del p.x  # E: incompatible_assignment
+
+    @assert_passes()
+    def test_namedtuple_attribute_is_immutable_for_intersections(self):
+        from typing import NamedTuple
+
+        from pycroscope.extensions import Intersection
+
+        class PointA(NamedTuple):
+            x: int
+
+        class PointB(NamedTuple):
+            x: int
+
+        def mutate(p: Intersection[PointA, PointB]) -> None:
             p.x = 2  # E: incompatible_assignment
             del p.x  # E: incompatible_assignment
 

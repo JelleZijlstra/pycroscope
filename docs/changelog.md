@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Improve intersection-type attribute checks so pycroscope now enforces slot restrictions, frozen-dataclass immutability, and NamedTuple field immutability for `Intersection[...]` instance values.
 - Improve class-object resolution for annotated and generic values in core name checking, reducing false negatives in protocol-instantiation, enum-base, and attribute-target checks.
 - Improve `@contextmanager`/`@asynccontextmanager` inference: decorated callables now keep context-manager return types, and `with ... as x` now infers the yielded value type more precisely.
 - Improve constraint narrowing consistency by routing `isinstance(...)` and `is ...` checks through relation-based subtype logic, reducing edge-case mismatches across complex value kinds.
