@@ -64,14 +64,9 @@ def get_line_range_for_node(node: ast.stmt | ast.expr, lines: list[str]) -> list
 
     """
     first_lineno = node.lineno
-    # iterate through all childnodes and find the max lineno
-    last_lineno = first_lineno + 1
-    for childnode in ast.walk(node):
-        end_lineno = getattr(childnode, "end_lineno", None)
-        if end_lineno is not None:
-            last_lineno = max(last_lineno, end_lineno)
-        elif hasattr(childnode, "lineno"):
-            last_lineno = max(last_lineno, childnode.lineno)
+    # `end_lineno` is available on AST nodes in supported Python versions.
+    node_end_lineno = node.end_lineno
+    last_lineno = max(first_lineno + 1, node_end_lineno or first_lineno)
 
     def is_part_of_same_node(first_line: str, line: str) -> bool:
         current_indent = get_indentation(line)
