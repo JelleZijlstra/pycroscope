@@ -130,7 +130,13 @@ from .options import (
 from .patma import PatmaVisitor
 from .predicates import EqualsPredicate, InPredicate
 from .reexport import ImplicitReexportTracker
-from .relations import Relation, check_hashability, has_relation, intersect_multi
+from .relations import (
+    Relation,
+    check_hashability,
+    has_relation,
+    intersect_multi,
+    is_subtype,
+)
 from .safe import (
     all_of_type,
     is_dataclass_type,
@@ -2497,6 +2503,10 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             if isinstance(class_type, TypedValue):
                 return class_type.typ
             return None
+        if isinstance(base_value, GenericValue):
+            if isinstance(base_value.typ, (type, str)):
+                return base_value.typ
+            return None
         if isinstance(base_value, TypedValue):
             if isinstance(base_value.typ, (type, str)):
                 return base_value.typ
@@ -2816,7 +2826,10 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                             "NewType types cannot be used as base classes",
                             error_code=ErrorCode.invalid_base,
                         )
-            if any(_is_enum_base_value(base) for base in base_values):
+            if any(
+                is_subtype(SubclassValue(TypedValue(enum.Enum)), base, self)
+                for base in base_values
+            ):
                 self.enum_class_keys.add(class_key)
             self._check_for_final_base_classes(node, base_values)
             keyword_values = [(kw, self.visit(kw.value)) for kw in node.keywords]
@@ -12486,16 +12499,17 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         return val
 
     def _get_instantiable_protocol_class_name(self, value: Value) -> str | None:
-        value = replace_fallback(value)
-        if isinstance(value, KnownValue) and isinstance(value.val, type):
-            if self.checker.make_type_object(value.val).is_protocol:
-                return value.val.__name__
+        if self._is_class_object_attribute_root(value) is not True:
             return None
-        if isinstance(value, SyntheticClassObjectValue) and isinstance(
-            value.class_type, TypedValue
-        ):
-            if self.checker.make_type_object(value.class_type.typ).is_protocol:
+        class_key = self._base_class_key_from_value(value)
+        if class_key is None:
+            return None
+        if self.checker.make_type_object(class_key).is_protocol:
+            if isinstance(value, SyntheticClassObjectValue):
                 return value.name
+            if isinstance(class_key, type):
+                return class_key.__name__
+            return class_key.rsplit(".", 1)[-1]
         return None
 
     def _check_call_no_mvv(
@@ -13132,30 +13146,6 @@ def _classvar_names_from_mapping(attributes: Mapping[str, Value]) -> set[str]:
     ):
         return {item for item in classvars.val if isinstance(item, str)}
     return set()
-
-
-def _is_enum_base_value(base_value: Value) -> bool:
-    base_value = replace_fallback(base_value)
-    if isinstance(base_value, SyntheticClassObjectValue):
-        class_type = base_value.class_type
-        if isinstance(class_type, TypedValue):
-            return _is_enum_base_value(class_type)
-        return False
-    if isinstance(base_value, KnownValue):
-        return isinstance(base_value.val, type) and safe_issubclass(
-            base_value.val, enum.Enum
-        )
-    if isinstance(base_value, TypedValue):
-        return isinstance(base_value.typ, type) and safe_issubclass(
-            base_value.typ, enum.Enum
-        )
-    if isinstance(base_value, SubclassValue) and isinstance(base_value.typ, TypedValue):
-        return isinstance(base_value.typ.typ, type) and safe_issubclass(
-            base_value.typ.typ, enum.Enum
-        )
-    if isinstance(base_value, MultiValuedValue):
-        return any(_is_enum_base_value(subval) for subval in base_value.vals)
-    return False
 
 
 def _is_newtype_base_value(base_value: Value) -> bool:

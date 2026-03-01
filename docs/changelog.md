@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Improve class-object resolution for annotated and generic values in core name checking, reducing false negatives in protocol-instantiation, enum-base, and attribute-target checks.
 - Improve `@contextmanager`/`@asynccontextmanager` inference: decorated callables now keep context-manager return types, and `with ... as x` now infers the yielded value type more precisely.
 - Improve constraint narrowing consistency by routing `isinstance(...)` and `is ...` checks through relation-based subtype logic, reducing edge-case mismatches across complex value kinds.
 - Apply NamedTuple runtime-call suppression consistently by removing the special-case exemption for classes in `pycroscope.*` modules.
