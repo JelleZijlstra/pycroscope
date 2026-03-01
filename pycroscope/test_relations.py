@@ -122,6 +122,23 @@ class TestRelations(TestNameCheckVisitorBase):
             x.g("x")
             x.g(0)  # E: incompatible_argument
 
+    @assert_passes()
+    def test_paramspec_concatenate_specialization_in_generic_class(self):
+        from typing import Any, Callable, Concatenate, Generic, TypeVar, cast
+
+        from typing_extensions import ParamSpec
+
+        T = TypeVar("T")
+        P1 = ParamSpec("P1")
+        P2 = ParamSpec("P2")
+
+        class A(Generic[T, P1]):
+            f: Callable[P1, int] = cast(Any, "")
+            x: T = cast(Any, "")
+
+        def takes(x: A[int, Concatenate[int, P2]]) -> None:
+            x.f(0, "x")
+
     @skip_before((3, 12))
     def test_unbounded_tuple_unions(self):
         self.assert_passes("""

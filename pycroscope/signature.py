@@ -1713,28 +1713,13 @@ class Signature:
                     tv = input_sig.param_spec
                     if tv in typevars:
                         replacement_value = typevars[tv]
-                        if isinstance(
-                            replacement_value, SequenceValue
-                        ) and replacement_value.typ in (list, tuple):
-                            members = replacement_value.get_member_sequence()
-                            if members is None:
-                                replacement = AnySig()
-                            else:
-                                replacement = FullSignature(
-                                    Signature.make(
-                                        [
-                                            SigParameter(
-                                                f"@{i}",
-                                                ParameterKind.POSITIONAL_ONLY,
-                                                annotation=member,
-                                            )
-                                            for i, member in enumerate(members)
-                                        ],
-                                        AnyValue(AnySource.generic_argument),
-                                    )
-                                )
-                        else:
-                            replacement = assert_input_sig(replacement_value)
+                        if isinstance(replacement_value, AnyValue) or (
+                            isinstance(replacement_value, SequenceValue)
+                            and replacement_value.typ in (list, tuple)
+                        ):
+                            params.append((name, param))
+                            continue
+                        replacement = assert_input_sig(replacement_value)
                         new_val = replacement.substitute_typevars(typevars)
                         if isinstance(new_val, ParamSpecSig):
                             new_param = SigParameter(
@@ -1744,7 +1729,11 @@ class Signature:
                             )
                             params.append((name, new_param))
                         elif isinstance(new_val, AnySig):
-                            new_param = SigParameter(param.name, ParameterKind.ELLIPSIS)
+                            new_param = SigParameter(
+                                param.name,
+                                ParameterKind.PARAM_SPEC,
+                                annotation=InputSigValue(new_val),
+                            )
                             params.append((param.name, new_param))
                         elif isinstance(new_val, ActualArguments):
                             new_param = SigParameter(
