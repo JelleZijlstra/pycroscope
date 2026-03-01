@@ -1689,6 +1689,16 @@ class SyntheticClassObjectValue(Value):
             return KnownValue(type(self.class_type.typ))
         return TypedValue(type)
 
+    def can_assign(self, other: Value, ctx: CanAssignContext) -> CanAssign:
+        if isinstance(self.class_type, TypedValue):
+            class_typ = self.class_type.typ
+            if isinstance(other, SubclassValue):
+                other = other.typ
+            other = replace_fallback(other)
+            if isinstance(other, GenericValue) and other.typ == class_typ:
+                return {}
+        return super().can_assign(other, ctx)
+
     def __str__(self) -> str:
         return f"<class {self.name!r}>"
 

@@ -681,6 +681,15 @@ def test_synthetic_class_object_value_nominal_class() -> None:
     assert_cannot_assign(SubclassValue(TypedValue(str)), int_cls)
 
 
+def test_synthetic_class_object_value_matches_specialized_type() -> None:
+    synthetic_cls = value.SyntheticClassObjectValue("C", TypedValue("mod.C"))
+    specialized = SubclassValue(GenericValue("mod.C", [TypedValue(int)]))
+
+    # Unspecialized class objects should still match specialized type[...] forms.
+    assert_can_assign(specialized, synthetic_cls)
+    assert_can_assign(synthetic_cls, specialized)
+
+
 def test_synthetic_class_object_value_unresolved_nominal_class() -> None:
     unresolved_cls = value.SyntheticClassObjectValue("X", TypedValue("mod.X"))
     other_cls = value.SyntheticClassObjectValue("Y", TypedValue("mod.Y"))

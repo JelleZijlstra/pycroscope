@@ -57,7 +57,7 @@ from typing import (
 from unittest.mock import ANY
 
 import typeshed_client
-from typing_extensions import Protocol, is_typeddict
+from typing_extensions import NoDefault, Protocol, is_typeddict
 
 from pycroscope.input_sig import ActualArguments, InputSigValue, ParamSpecSig
 
@@ -3210,6 +3210,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     if type_param_values
                     else effective_type_param_values
                 )
+                self._check_class_type_param_default_rules(node, declared_type_params)
                 self._check_class_base_type_param_variances(
                     node, declared_type_params, base_values, class_scope_object
                 )
@@ -6484,6 +6485,40 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         for type_param, runtime_type_param in zip(type_params, runtime_type_params):
             aligned.append(replace(type_param, typevar=runtime_type_param))
         return aligned
+
+    def _type_param_has_default(self, type_param: TypeVarValue) -> bool:
+        if type_param.default is not None:
+            return True
+        runtime_default = safe_getattr(type_param.typevar, "__default__", NoDefault)
+        return runtime_default is not NoDefault
+
+    def _check_class_type_param_default_rules(
+        self, node: ast.ClassDef, type_params: Sequence[TypeVarValue]
+    ) -> None:
+        seen_default = False
+        previous_was_typevartuple = False
+        for type_param in type_params:
+            has_default = self._type_param_has_default(type_param)
+            is_typevartuple = type_param.is_typevartuple or is_instance_of_typing_name(
+                type_param.typevar, "TypeVarTuple"
+            )
+            is_typevar = is_instance_of_typing_name(type_param.typevar, "TypeVar")
+            if seen_default and not has_default:
+                self._show_error_if_checking(
+                    node,
+                    "non-default TypeVars cannot follow ones with defaults",
+                    error_code=ErrorCode.invalid_annotation,
+                )
+                return
+            if previous_was_typevartuple and has_default and is_typevar:
+                self._show_error_if_checking(
+                    node,
+                    "TypeVars with defaults cannot follow TypeVarTuples",
+                    error_code=ErrorCode.invalid_annotation,
+                )
+                return
+            seen_default = seen_default or has_default
+            previous_was_typevartuple = is_typevartuple
 
     def _type_params_from_base_values(
         self, base_values: Sequence[Value]
@@ -12854,6 +12889,46 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 error_node, message, error_code=ErrorCode.invalid_annotation
             )
 
+    def _check_typevar_default_constraints(
+        self, typevar: TypeVarValue, node: ast.AST | None
+    ) -> None:
+        if node is None or typevar.default is None:
+            return
+        if typevar.bound is not None:
+            can_assign = has_relation(
+                typevar.bound, typevar.default, Relation.ASSIGNABLE, self
+            )
+            if isinstance(can_assign, CanAssignError):
+                self._show_error_if_checking(
+                    node,
+                    "the bound and default are incompatible",
+                    error_code=ErrorCode.invalid_annotation,
+                )
+                return
+        if typevar.constraints:
+
+            def _default_matches_constraint(constraint: Value, default: Value) -> bool:
+                if constraint == default:
+                    return True
+                if isinstance(constraint, TypedValue) and isinstance(
+                    default, TypedValue
+                ):
+                    return constraint.typ == default.typ
+                if isinstance(constraint, KnownValue) and isinstance(
+                    default, KnownValue
+                ):
+                    return constraint.val == default.val
+                return False
+
+            for constraint in typevar.constraints:
+                if _default_matches_constraint(constraint, typevar.default):
+                    return
+            self._show_error_if_checking(
+                node,
+                "TypeVar default must be one of its constraints",
+                error_code=ErrorCode.invalid_annotation,
+            )
+
     def _maybe_build_typevar_call_value(
         self,
         callee: Value,
@@ -12936,6 +13011,95 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             constraints=tuple(constraints),
             default=default,
             variance=variance,
+        )
+
+    @staticmethod
+    def _is_runtime_type_param_with_default(param: object) -> bool:
+        return safe_getattr(param, "__default__", NoDefault) is not NoDefault
+
+    @staticmethod
+    def _is_runtime_typevartuple_param(param: object) -> bool:
+        if is_instance_of_typing_name(param, "TypeVarTuple"):
+            return True
+        origin = get_origin(param)
+        if not is_typing_name(origin, "Unpack"):
+            return False
+        unpacked_args = get_args(param)
+        return bool(unpacked_args) and is_instance_of_typing_name(
+            unpacked_args[0], "TypeVarTuple"
+        )
+
+    @classmethod
+    def _flatten_runtime_type_params(cls, obj: object) -> list[object]:
+        if isinstance(obj, tuple):
+            params: list[object] = []
+            for member in obj:
+                params.extend(cls._flatten_runtime_type_params(member))
+            return params
+        return [obj]
+
+    def _runtime_default_ordering_violation(
+        self, params: Sequence[object], message: str
+    ) -> bool:
+        if "without a default follows type parameter with a default" in message:
+            seen_default = False
+            for param in params:
+                if not safe_hasattr(param, "__typing_subst__"):
+                    continue
+                has_default = self._is_runtime_type_param_with_default(param)
+                if seen_default and not has_default:
+                    return True
+                seen_default = seen_default or has_default
+            return False
+        if "with a default follows TypeVarTuple" in message:
+            seen_typevartuple = False
+            for param in params:
+                if self._is_runtime_typevartuple_param(param):
+                    seen_typevartuple = True
+                    continue
+                if not safe_hasattr(param, "__typing_subst__"):
+                    continue
+                if (
+                    seen_typevartuple
+                    and self._is_runtime_type_param_with_default(param)
+                    and is_instance_of_typing_name(param, "TypeVar")
+                ):
+                    return True
+            return False
+        return False
+
+    def _maybe_report_default_ordering_type_error(
+        self,
+        callee: Value,
+        node: ast.AST | None,
+        error: Exception,
+        arg_values: Iterable[Value],
+    ) -> None:
+        if node is None or not isinstance(error, TypeError):
+            return
+        message = str(error)
+        if not (
+            "without a default follows type parameter with a default" in message
+            or "with a default follows TypeVarTuple" in message
+        ):
+            return
+        if not isinstance(callee, KnownValue):
+            return
+        if safe_getattr(callee.val, "__name__", None) != "__class_getitem__":
+            return
+        owner = safe_getattr(callee.val, "__self__", None)
+        if not (is_typing_name(owner, "Generic") or is_typing_name(owner, "Protocol")):
+            return
+        runtime_params: list[object] = []
+        for arg_value in arg_values:
+            arg_value = replace_fallback(arg_value)
+            if not isinstance(arg_value, KnownValue):
+                return
+            runtime_params.extend(self._flatten_runtime_type_params(arg_value.val))
+        if not self._runtime_default_ordering_violation(runtime_params, message):
+            return
+        self._show_error_if_checking(
+            node, message, error_code=ErrorCode.invalid_annotation
         )
 
     def _call_assignment_target_name(self, node: ast.AST | None) -> str | None:
@@ -13153,6 +13317,8 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         synthesized_typevar = self._maybe_build_typevar_call_value(
             callee_wrapped, args, keywords
         )
+        if synthesized_typevar is not None:
+            self._check_typevar_default_constraints(synthesized_typevar, node)
         if synthesized_typevar is not None and (
             isinstance(return_value, AnyValue)
             or (
@@ -13180,6 +13346,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                         **{key: value.val for key, value in kw_values},
                     )
                 except Exception as e:
+                    self._maybe_report_default_ordering_type_error(
+                        callee_wrapped, node, e, arg_values
+                    )
                     self.log(logging.INFO, "exception calling", (callee_wrapped, e))
                 else:
                     if result is NotImplemented:

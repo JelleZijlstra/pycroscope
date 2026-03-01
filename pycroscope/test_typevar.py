@@ -404,6 +404,33 @@ class TestTypeVar(TestNameCheckVisitorBase):
             assert_is_value(dictget(d, key), TypedValue(str) | KnownValue(None))
             assert_is_value(dictget(d, key, 1), TypedValue(str) | KnownValue(1))
 
+    @assert_passes()
+    def test_typevar_default_must_match_bound_and_constraints(self):
+        from typing_extensions import TypeVar
+
+        TypeVar("BadBound", bound=str, default=int)  # E: invalid_annotation
+        TypeVar("BadConstraint", float, str, default=int)  # E: invalid_annotation
+
+    @assert_passes(allow_import_failures=True)
+    def test_class_type_param_default_ordering_rules(self):
+        from typing import Generic
+
+        from typing_extensions import ParamSpec, TypeVar, TypeVarTuple, Unpack
+
+        DefaultT = TypeVar("DefaultT", default=int)
+        T = TypeVar("T")
+        Ts = TypeVarTuple("Ts")
+        DefaultAfterVariadic = TypeVar("DefaultAfterVariadic", default=bool)
+        P = ParamSpec("P", default=[str])
+
+        class BadOrder(Generic[DefaultT, T]): ...  # E: invalid_annotation
+
+        class BadAfterVariadic(
+            Generic[Unpack[Ts], DefaultAfterVariadic]  # E: invalid_annotation
+        ): ...
+
+        class GoodAfterVariadic(Generic[Unpack[Ts], P]): ...
+
 
 class TestSolve(TestNameCheckVisitorBase):
     @assert_passes()
