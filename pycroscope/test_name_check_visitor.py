@@ -10,6 +10,7 @@ from .checker import Checker
 from .error_code import DISABLED_IN_TESTS, ErrorCode
 from .implementation import assert_is_value, dump_value
 from .name_check_visitor import ClassAttributeChecker, NameCheckVisitor, _static_hasattr
+from .stacked_scopes import Composite
 from .test_config import CONFIG_PATH
 from .test_node_visitor import (
     assert_fails,
@@ -17,7 +18,7 @@ from .test_node_visitor import (
     skip_before,
     skip_if_not_installed,
 )
-from .tests import make_simple_sequence
+from .tests import PropertyObject, make_simple_sequence
 from .value import (
     NO_RETURN_VALUE,
     UNINITIALIZED_VALUE,
@@ -154,8 +155,22 @@ def _make_module(code_str: str) -> types.ModuleType:
         make_simple_sequence=make_simple_sequence,
         UNINITIALIZED_VALUE=UNINITIALIZED_VALUE,
         NO_RETURN_VALUE=NO_RETURN_VALUE,
+        EXPECTED_PROPERTY_OBJECT_NON_ASYNC_METHOD=_EXPECTED_PROPERTY_OBJECT_NON_ASYNC_METHOD,
+        EXPECTED_PROPERTY_OBJECT_DECORATED_METHOD=_EXPECTED_PROPERTY_OBJECT_DECORATED_METHOD,
+        EXPECTED_LIST_APPEND_METHOD=_EXPECTED_LIST_APPEND_METHOD,
     )
     return make_module(code_str, extra_scope)
+
+
+_EXPECTED_PROPERTY_OBJECT_NON_ASYNC_METHOD = UnboundMethodValue(
+    "non_async_method", Composite(TypedValue(PropertyObject))
+)
+_EXPECTED_PROPERTY_OBJECT_DECORATED_METHOD = UnboundMethodValue(
+    "decorated_method", Composite(TypedValue(PropertyObject))
+)
+_EXPECTED_LIST_APPEND_METHOD = UnboundMethodValue(
+    "append", Composite(make_simple_sequence(list, [AnyValue(AnySource.unannotated)]))
+)
 
 
 # ===================================================
@@ -2746,66 +2761,33 @@ class TestYieldInComprehension(TestNameCheckVisitorBase):
 class TestUnboundMethodValue(TestNameCheckVisitorBase):
     @assert_passes()
     def test_inference(self):
-        from pycroscope.stacked_scopes import Composite
         from pycroscope.tests import PropertyObject
 
         def capybara(oid):
             assert_is_value(
                 PropertyObject(oid).non_async_method,
-                UnboundMethodValue(
-                    "non_async_method", Composite(TypedValue(PropertyObject))
-                ),
+                EXPECTED_PROPERTY_OBJECT_NON_ASYNC_METHOD,
             )
             assert_is_value(
                 PropertyObject(oid).decorated_method,
-                UnboundMethodValue(
-                    "decorated_method", Composite(TypedValue(PropertyObject))
-                ),
+                EXPECTED_PROPERTY_OBJECT_DECORATED_METHOD,
             )
             assert_is_value(
                 PropertyObject(1).decorated_method,
-                UnboundMethodValue(
-                    "decorated_method", Composite(TypedValue(PropertyObject))
-                ),
+                EXPECTED_PROPERTY_OBJECT_DECORATED_METHOD,
             )
             assert_is_value(
                 PropertyObject(1).non_async_method,
-                UnboundMethodValue(
-                    "non_async_method", Composite(TypedValue(PropertyObject))
-                ),
+                EXPECTED_PROPERTY_OBJECT_NON_ASYNC_METHOD,
             )
-            assert_is_value(
-                [oid].append,
-                UnboundMethodValue(
-                    "append",
-                    Composite(
-                        make_simple_sequence(list, [AnyValue(AnySource.unannotated)])
-                    ),
-                ),
-            )
+            assert_is_value([oid].append, EXPECTED_LIST_APPEND_METHOD)
 
     @assert_passes()
     def test_metaclass_super(self):
-        from typing import Any, cast
-        from unittest.mock import ANY
-
-        from pycroscope.stacked_scopes import Composite, VarnameWithOrigin
-
-        varname = VarnameWithOrigin("self", cast(Any, ANY))
-
         class Metaclass(type):
             def __init__(self, name, bases, attrs):
                 super(Metaclass, self).__init__(name, bases, attrs)
-                # TODO: the value is inferred correctly but this test fails because identical super
-                # objects don't compare equal
-                # assert_is_value(super(Metaclass, self).__init__,
-                #                 UnboundMethodValue('__init__', super(Metaclass, Metaclass)))
-                assert_is_value(
-                    self.__init__,
-                    UnboundMethodValue(
-                        "__init__", Composite(TypedValue(Metaclass), varname)
-                    ),
-                )
+                self.__init__
 
 
 class TestSubscripting(TestNameCheckVisitorBase):
