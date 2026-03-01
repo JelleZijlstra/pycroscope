@@ -57,7 +57,7 @@ from typing import (
 from unittest.mock import ANY
 
 import typeshed_client
-from typing_extensions import Protocol, is_typeddict
+from typing_extensions import NoDefault, Protocol, is_typeddict
 
 from pycroscope.input_sig import ActualArguments, InputSigValue, ParamSpecSig
 
@@ -3210,6 +3210,13 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     if type_param_values
                     else effective_type_param_values
                 )
+                if not declared_type_params:
+                    declared_type_params = (
+                        self._type_params_from_base_annotations_for_default_rules(
+                            node.bases
+                        )
+                    )
+                self._check_class_type_param_default_rules(node, declared_type_params)
                 self._check_class_base_type_param_variances(
                     node, declared_type_params, base_values, class_scope_object
                 )
@@ -6484,6 +6491,107 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         for type_param, runtime_type_param in zip(type_params, runtime_type_params):
             aligned.append(replace(type_param, typevar=runtime_type_param))
         return aligned
+
+    def _type_param_has_default(self, type_param: TypeVarValue) -> bool:
+        if type_param.default is not None:
+            return True
+        runtime_default = safe_getattr(type_param.typevar, "__default__", NoDefault)
+        return runtime_default is not NoDefault
+
+    def _check_class_type_param_default_rules(
+        self, node: ast.ClassDef, type_params: Sequence[TypeVarValue]
+    ) -> None:
+        seen_default = False
+        previous_was_typevartuple = False
+        for type_param in type_params:
+            has_default = self._type_param_has_default(type_param)
+            is_typevartuple = type_param.is_typevartuple or is_instance_of_typing_name(
+                type_param.typevar, "TypeVarTuple"
+            )
+            is_typevar = is_instance_of_typing_name(type_param.typevar, "TypeVar")
+            if seen_default and not has_default:
+                self._show_error_if_checking(
+                    node,
+                    "non-default TypeVars cannot follow ones with defaults",
+                    error_code=ErrorCode.invalid_annotation,
+                )
+                return
+            if previous_was_typevartuple and has_default and is_typevar:
+                self._show_error_if_checking(
+                    node,
+                    "TypeVars with defaults cannot follow TypeVarTuples",
+                    error_code=ErrorCode.invalid_annotation,
+                )
+                return
+            seen_default = seen_default or has_default
+            previous_was_typevartuple = is_typevartuple
+
+    @staticmethod
+    def _type_param_value_from_value(value: Value) -> TypeVarValue | None:
+        if isinstance(value, InputSigValue) and isinstance(
+            value.input_sig, ParamSpecSig
+        ):
+            return TypeVarValue(value.input_sig.param_spec)
+        try:
+            value = replace_fallback(value)
+        except NotAGradualType:
+            return None
+        if isinstance(value, TypeVarValue):
+            return value
+        if isinstance(value, KnownValue) and (
+            is_instance_of_typing_name(value.val, "TypeVar")
+            or is_instance_of_typing_name(value.val, "TypeVarTuple")
+            or is_instance_of_typing_name(value.val, "ParamSpec")
+        ):
+            return TypeVarValue(value.val, variance=get_typevar_variance(value.val))
+        return None
+
+    def _type_param_from_expr_for_default_rules(
+        self, node: ast.expr
+    ) -> TypeVarValue | None:
+        if isinstance(node, ast.Starred):
+            return self._type_param_from_expr_for_default_rules(node.value)
+        if isinstance(node, ast.Subscript):
+            if (
+                isinstance(node.value, ast.Name)
+                and node.value.id == "Unpack"
+                or isinstance(node.value, ast.Attribute)
+                and node.value.attr == "Unpack"
+            ):
+                unpacked = node.slice
+                if isinstance(unpacked, ast.Tuple) and len(unpacked.elts) == 1:
+                    unpacked = unpacked.elts[0]
+                return self._type_param_from_expr_for_default_rules(unpacked)
+            return None
+        if not isinstance(node, ast.Name):
+            return None
+        with contextlib.suppress(NotAGradualType):
+            value = self.scopes.get(node.id, node, self.state, can_assign_ctx=self)
+            return self._type_param_value_from_value(value)
+        return None
+
+    def _type_params_from_base_annotations_for_default_rules(
+        self, base_nodes: Sequence[ast.expr]
+    ) -> Sequence[TypeVarValue]:
+        seen: set[object] = set()
+        type_params: list[TypeVarValue] = []
+        for base_node in base_nodes:
+            if not isinstance(base_node, ast.Subscript):
+                continue
+            maybe_members = (
+                base_node.slice.elts
+                if isinstance(base_node.slice, ast.Tuple)
+                else [base_node.slice]
+            )
+            for member in maybe_members:
+                maybe_type_param = self._type_param_from_expr_for_default_rules(member)
+                if maybe_type_param is None:
+                    continue
+                if maybe_type_param.typevar in seen:
+                    continue
+                seen.add(maybe_type_param.typevar)
+                type_params.append(maybe_type_param)
+        return type_params
 
     def _type_params_from_base_values(
         self, base_values: Sequence[Value]
@@ -12854,6 +12962,46 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 error_node, message, error_code=ErrorCode.invalid_annotation
             )
 
+    def _check_typevar_default_constraints(
+        self, typevar: TypeVarValue, node: ast.AST | None
+    ) -> None:
+        if node is None or typevar.default is None:
+            return
+        if typevar.bound is not None:
+            can_assign = has_relation(
+                typevar.bound, typevar.default, Relation.ASSIGNABLE, self
+            )
+            if isinstance(can_assign, CanAssignError):
+                self._show_error_if_checking(
+                    node,
+                    "the bound and default are incompatible",
+                    error_code=ErrorCode.invalid_annotation,
+                )
+                return
+        if typevar.constraints:
+
+            def _default_matches_constraint(constraint: Value, default: Value) -> bool:
+                if constraint == default:
+                    return True
+                if isinstance(constraint, TypedValue) and isinstance(
+                    default, TypedValue
+                ):
+                    return constraint.typ == default.typ
+                if isinstance(constraint, KnownValue) and isinstance(
+                    default, KnownValue
+                ):
+                    return constraint.val == default.val
+                return False
+
+            for constraint in typevar.constraints:
+                if _default_matches_constraint(constraint, typevar.default):
+                    return
+            self._show_error_if_checking(
+                node,
+                "TypeVar default must be one of its constraints",
+                error_code=ErrorCode.invalid_annotation,
+            )
+
     def _maybe_build_typevar_call_value(
         self,
         callee: Value,
@@ -13153,6 +13301,8 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         synthesized_typevar = self._maybe_build_typevar_call_value(
             callee_wrapped, args, keywords
         )
+        if synthesized_typevar is not None:
+            self._check_typevar_default_constraints(synthesized_typevar, node)
         if synthesized_typevar is not None and (
             isinstance(return_value, AnyValue)
             or (
