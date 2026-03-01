@@ -77,7 +77,13 @@ from .annotations import (
     type_from_value,
     value_from_ast,
 )
-from .arg_spec import ArgSpecCache, IgnoredCallees, UnwrapClass, is_dot_asynq_function
+from .arg_spec import (
+    ArgSpecCache,
+    ClassesSafeToInstantiate,
+    IgnoredCallees,
+    UnwrapClass,
+    is_dot_asynq_function,
+)
 from .asynq_checker import AsynqChecker
 from .boolability import Boolability, get_boolability
 from .checker import Checker, CheckerAttrContext
@@ -13474,6 +13480,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             isinstance(callee_obj, type)
             and is_namedtuple_class(callee_obj)
             and should_disable_runtime_call_for_namedtuple_class(callee_obj)
+            and not ClassesSafeToInstantiate.contains(callee_obj, self.options)
         )
 
     def _specialize_generic_alias_call_return(
