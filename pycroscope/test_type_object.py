@@ -47,6 +47,23 @@ def test_class_key_from_subclass_generic_value() -> None:
     assert _class_key_from_value(value) == "mod.Base"
 
 
+def test_class_key_from_union_with_consistent_key() -> None:
+    value = MultiValuedValue(
+        [
+            SubclassValue(TypedValue("mod.Base")),
+            GenericValue("mod.Base", [TypedValue(int)]),
+        ]
+    )
+    assert _class_key_from_value(value) == "mod.Base"
+
+
+def test_class_key_from_intersection_with_consistent_key() -> None:
+    value = IntersectionValue(
+        (TypedValue("mod.Base"), SubclassValue(TypedValue("mod.Base")))
+    )
+    assert _class_key_from_value(value) == "mod.Base"
+
+
 def test_iter_base_keys_handles_subclass_synthetic_base() -> None:
     synthetic = SyntheticClassObjectValue(
         "Child",

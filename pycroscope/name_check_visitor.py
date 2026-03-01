@@ -6925,7 +6925,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 and FunctionDecorator.overload not in info.decorator_kinds
                 and FunctionDecorator.abstractmethod not in info.decorator_kinds
             ):
-                prepared = prepare_type(result.return_value)
+                prepared = prepare_type(result.return_value, self)
                 if should_suggest_type(prepared):
                     detail, metadata = display_suggested_type(
                         prepared, self.scopes, self

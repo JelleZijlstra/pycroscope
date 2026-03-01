@@ -1,9 +1,25 @@
 # static analysis: ignore
+from unittest import mock
+
+from .annotated_types import MinLen
 from .error_code import ErrorCode
-from .suggested_type import prepare_type
+from .stacked_scopes import Composite
+from .suggested_type import prepare_type, should_suggest_type
 from .test_name_check_visitor import TestNameCheckVisitorBase
 from .test_node_visitor import assert_passes
-from .value import KnownValue, SubclassValue, TypedValue
+from .value import (
+    NO_RETURN_VALUE,
+    AnySource,
+    AnyValue,
+    IntersectionValue,
+    KnownValue,
+    PredicateValue,
+    SubclassValue,
+    SyntheticClassObjectValue,
+    SyntheticModuleValue,
+    TypedValue,
+    UnboundMethodValue,
+)
 
 
 class TestSuggestedType(TestNameCheckVisitorBase):
@@ -67,3 +83,42 @@ def test_prepare_type() -> None:
         None
     ) | TypedValue(str)
     assert prepare_type(KnownValue(True) | KnownValue(False)) == TypedValue(bool)
+
+
+def test_prepare_type_intersection() -> None:
+    assert prepare_type(IntersectionValue((KnownValue(True), TypedValue(bool)))) == (
+        IntersectionValue((TypedValue(bool), TypedValue(bool)))
+    )
+
+
+def test_prepare_type_intersection_uses_intersect_multi() -> None:
+    with mock.patch(
+        "pycroscope.relations.intersect_multi", return_value=TypedValue(bool)
+    ) as mock_intersect:
+        ctx = object()
+        result = prepare_type(
+            IntersectionValue((KnownValue(True), TypedValue(bool))), ctx=ctx
+        )
+    assert result == TypedValue(bool)
+    mock_intersect.assert_called_once_with([TypedValue(bool), TypedValue(bool)], ctx)
+
+
+def test_should_suggest_type_intersection() -> None:
+    assert not should_suggest_type(
+        IntersectionValue((AnyValue(AnySource.inference), TypedValue(int)))
+    )
+
+
+def test_should_suggest_type_union() -> None:
+    assert not should_suggest_type(NO_RETURN_VALUE)
+    assert not should_suggest_type(TypedValue(int) | AnyValue(AnySource.inference))
+    assert should_suggest_type(TypedValue(int) | KnownValue(1))
+
+
+def test_should_not_suggest_non_annotation_values() -> None:
+    assert not should_suggest_type(
+        SyntheticClassObjectValue("Cls", TypedValue("mod.Cls"))
+    )
+    assert not should_suggest_type(SyntheticModuleValue(("mod",)))
+    assert not should_suggest_type(UnboundMethodValue("f", Composite(TypedValue(int))))
+    assert not should_suggest_type(PredicateValue(MinLen(1)))
