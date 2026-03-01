@@ -11,6 +11,8 @@ from dataclasses import dataclass, field, replace
 from typing import cast, get_origin
 from unittest import mock
 
+from typing_extensions import assert_never
+
 from pycroscope.signature import (
     BoundMethodSignature,
     OverloadedSignature,
@@ -41,10 +43,15 @@ from .value import (
     KnownValue,
     MultiValuedValue,
     NotAGradualType,
+    PredicateValue,
     SelfT,
+    SimpleType,
     SubclassValue,
     SyntheticClassObjectValue,
+    SyntheticModuleValue,
     TypedValue,
+    TypeFormValue,
+    UnboundMethodValue,
     Value,
     flatten_values,
     replace_fallback,
@@ -541,6 +548,20 @@ def _class_key_from_value(value: Value) -> type | str | None:
 
 def _iter_class_keys_from_value(value: Value) -> list[type | str]:
     value = replace_fallback(value)
+    if isinstance(value, MultiValuedValue):
+        keys: list[type | str] = []
+        for subval in value.vals:
+            keys.extend(_iter_class_keys_from_value(subval))
+        return keys
+    if isinstance(value, IntersectionValue):
+        keys = []
+        for member in value.vals:
+            keys.extend(_iter_class_keys_from_value(member))
+        return keys
+    return _iter_class_keys_from_simple_value(value)
+
+
+def _iter_class_keys_from_simple_value(value: SimpleType) -> list[type | str]:
     if isinstance(value, SyntheticClassObjectValue):
         return _typed_class_key(value.class_type)
     if isinstance(value, SubclassValue):
@@ -549,7 +570,19 @@ def _iter_class_keys_from_value(value: Value) -> list[type | str]:
         return _typed_class_key(value)
     if isinstance(value, KnownValue) and isinstance(value.val, type):
         return [value.val]
-    return []
+    if isinstance(
+        value,
+        (
+            AnyValue,
+            SyntheticModuleValue,
+            UnboundMethodValue,
+            TypeFormValue,
+            PredicateValue,
+            KnownValue,
+        ),
+    ):
+        return []
+    assert_never(value)
 
 
 def _typed_class_key(value: Value) -> list[type | str]:

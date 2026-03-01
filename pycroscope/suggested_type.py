@@ -11,28 +11,36 @@ from dataclasses import dataclass, field
 from types import FunctionType
 from typing import Any
 
+from typing_extensions import assert_never
+
 from .error_code import ErrorCode
 from .node_visitor import ErrorContext, Failure
 from .safe import safe_getattr, safe_isinstance
 from .signature import Signature
 from .stacked_scopes import StackedScopes, VisitorState
 from .value import (
-    NO_RETURN_VALUE,
-    AnnotatedValue,
     AnySource,
     AnyValue,
     CallableValue,
     CanAssignContext,
     CanAssignError,
     GenericValue,
+    IntersectionValue,
     KnownValue,
     MultiValuedValue,
+    PredicateValue,
     SequenceValue,
+    SimpleType,
     SubclassValue,
+    SyntheticClassObjectValue,
+    SyntheticModuleValue,
     TypedDictValue,
     TypedValue,
+    TypeFormValue,
+    UnboundMethodValue,
     Value,
     VariableNameValue,
+    replace_fallback,
     replace_known_sequence_value,
     stringify_object,
     unite_values,
@@ -62,7 +70,7 @@ class CallableData:
             all_values = [call[param.arg] for call in self.calls]
             if sig_param.default is not None:
                 all_values.append(sig_param.default)
-            all_values = [prepare_type(v) for v in all_values]
+            all_values = [prepare_type(v, ctx) for v in all_values]
             all_values = [v for v in all_values if not isinstance(v, AnyValue)]
             if not all_values:
                 continue
@@ -120,7 +128,7 @@ class CallableTracker:
 def display_suggested_type(
     value: Value, scopes: StackedScopes, ctx: CanAssignContext
 ) -> tuple[str, dict[str, Any] | None]:
-    value = prepare_type(value)
+    value = prepare_type(value, ctx)
     if isinstance(value, MultiValuedValue) and value.vals:
         cae = CanAssignError("Union", [CanAssignError(str(val)) for val in value.vals])
     else:
@@ -154,6 +162,20 @@ def display_suggested_type(
 
 
 def should_suggest_type(value: Value) -> bool:
+    value = replace_fallback(value)
+    if isinstance(value, MultiValuedValue):
+        if not value.vals:
+            return False
+        if len(value.vals) > 5:
+            # Big unions probably aren't useful
+            return False
+        return all(should_suggest_type(member) for member in value.vals)
+    if isinstance(value, IntersectionValue):
+        return all(should_suggest_type(member) for member in value.vals)
+    return _should_suggest_simple_type(value)
+
+
+def _should_suggest_simple_type(value: SimpleType) -> bool:
     # Literal[<some function>] isn't useful. In the future we should suggest a
     # Callable type.
     if isinstance(value, KnownValue) and isinstance(value.val, FunctionType):
@@ -163,48 +185,27 @@ def should_suggest_type(value: Value) -> bool:
         return False
     if isinstance(value, AnyValue):
         return False
-    if isinstance(value, MultiValuedValue) and len(value.vals) > 5:
-        # Big unions probably aren't useful
+    if isinstance(
+        value,
+        (
+            SyntheticClassObjectValue,
+            SyntheticModuleValue,
+            UnboundMethodValue,
+            PredicateValue,
+        ),
+    ):
         return False
-    # We emptied out a Union
-    if value is NO_RETURN_VALUE:
-        return False
-    return True
+    if isinstance(value, (TypedValue, SubclassValue, TypeFormValue, KnownValue)):
+        return True
+    assert_never(value)
 
 
-def prepare_type(value: Value) -> Value:
+def prepare_type(value: Value, ctx: CanAssignContext | None = None) -> Value:
     """Simplify a type to turn it into a suggestion."""
-    if isinstance(value, AnnotatedValue):
-        return prepare_type(value.value)
-    elif isinstance(value, SequenceValue):
-        if value.typ is tuple:
-            members = value.get_member_sequence()
-            if members is not None:
-                return SequenceValue(
-                    tuple, [(False, prepare_type(elt)) for elt in members]
-                )
-        return GenericValue(value.typ, [prepare_type(arg) for arg in value.args])
-    elif isinstance(value, (TypedDictValue, CallableValue)):
-        return value
-    elif isinstance(value, GenericValue):
-        # TODO maybe turn DictIncompleteValue into TypedDictValue?
-        return GenericValue(value.typ, [prepare_type(arg) for arg in value.args])
-    elif isinstance(value, VariableNameValue):
-        return AnyValue(AnySource.unannotated)
-    elif isinstance(value, KnownValue):
-        if value.val is None:
-            return value
-        elif safe_isinstance(value.val, type):
-            return SubclassValue(TypedValue(value.val))
-        elif callable(value.val):
-            return value  # TODO get the signature instead and return a CallableValue?
-        value = replace_known_sequence_value(value)
-        if isinstance(value, KnownValue):
-            return TypedValue(type(value.val))
-        else:
-            return prepare_type(value)
-    elif isinstance(value, MultiValuedValue):
-        vals = [prepare_type(subval) for subval in value.vals]
+    value = replace_known_sequence_value(value)
+    value = replace_fallback(value)
+    if isinstance(value, MultiValuedValue):
+        vals = [prepare_type(subval, ctx) for subval in value.vals]
         # Throw out Anys
         vals = [val for val in vals if not isinstance(val, AnyValue)]
         type_literals: list[tuple[Value, type]] = []
@@ -226,8 +227,56 @@ def prepare_type(value: Value) -> Value:
                 type_val = SubclassValue(TypedValue(shared_type))
             return unite_values(type_val, *rest)
         return unite_values(*[v for v, _ in type_literals], *rest)
-    else:
+    if isinstance(value, IntersectionValue):
+        prepared_members = [prepare_type(member, ctx) for member in value.vals]
+        if ctx is None:
+            return IntersectionValue(tuple(prepared_members))
+        # Avoid module import cycles at import time.
+        from .relations import intersect_multi
+
+        return intersect_multi(prepared_members, ctx)
+    return _prepare_simple_type(value, ctx)
+
+
+def _prepare_simple_type(value: SimpleType, ctx: CanAssignContext | None) -> Value:
+    if isinstance(value, SequenceValue):
+        if value.typ is tuple:
+            members = value.get_member_sequence()
+            if members is not None:
+                return SequenceValue(
+                    tuple, [(False, prepare_type(elt, ctx)) for elt in members]
+                )
+        return GenericValue(value.typ, [prepare_type(arg, ctx) for arg in value.args])
+    if isinstance(value, (TypedDictValue, CallableValue)):
         return value
+    if isinstance(value, GenericValue):
+        # TODO maybe turn DictIncompleteValue into TypedDictValue?
+        return GenericValue(value.typ, [prepare_type(arg, ctx) for arg in value.args])
+    if isinstance(value, VariableNameValue):
+        return AnyValue(AnySource.unannotated)
+    if isinstance(value, KnownValue):
+        if value.val is None:
+            return value
+        if safe_isinstance(value.val, type):
+            return SubclassValue(TypedValue(value.val))
+        if callable(value.val):
+            return value  # TODO get the signature instead and return a CallableValue?
+        return TypedValue(type(value.val))
+    if isinstance(
+        value,
+        (
+            AnyValue,
+            TypedValue,
+            SubclassValue,
+            SyntheticClassObjectValue,
+            SyntheticModuleValue,
+            UnboundMethodValue,
+            TypeFormValue,
+            PredicateValue,
+        ),
+    ):
+        return value
+    assert_never(value)
 
 
 def get_shared_type(types: Sequence[type]) -> type:
