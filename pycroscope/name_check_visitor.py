@@ -5670,7 +5670,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
 
     def _synthetic_type_params_for_variance(
         self, typ: type | str, arity: int
-    ) -> Sequence[object] | None:
+    ) -> Sequence[TypeVarLike] | None:
         if not isinstance(typ, str):
             return None
         synthetic_class = self.checker.get_synthetic_class(typ)
@@ -5690,7 +5690,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 is_instance_of_typing_name(type_param, "TypeVar")
                 for type_param in type_params
             ):
-                return type_params
+                return cast(tuple[TypeVarLike, ...], type_params)
         return None
 
     def _value_for_variance_annotation(self, annotation: ast.expr) -> Value:
