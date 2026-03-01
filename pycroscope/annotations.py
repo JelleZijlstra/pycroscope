@@ -932,6 +932,51 @@ def _type_from_value_type_alias_arg(
     return _type_from_value(arg, ctx)
 
 
+def _normalize_paramspec_generic_arg(
+    arg: Value, *, allow_flat_form: bool, ctx: Context
+) -> Value:
+    if isinstance(arg, KnownValue):
+        arg = replace_known_sequence_value(arg)
+    if isinstance(arg, InputSigValue):
+        return arg
+    if isinstance(arg, SequenceValue) and arg.typ in (list, tuple):
+        return arg
+    if arg == KnownValue(Ellipsis):
+        return AnyValue(AnySource.ellipsis_callable)
+    if isinstance(arg, AnyValue):
+        return arg
+    if isinstance(arg, KnownValue) and is_instance_of_typing_name(arg.val, "ParamSpec"):
+        return InputSigValue(ParamSpecSig(arg.val))
+    if allow_flat_form:
+        return SequenceValue(tuple, [(False, arg)])
+    ctx.show_error(
+        "ParamSpec specialization must use list form, Concatenate[..., P], P, or ...",
+        error_code=ErrorCode.invalid_annotation,
+    )
+    return AnyValue(AnySource.error)
+
+
+def _normalize_paramspec_generic_args(
+    type_params: Sequence[object], args: Sequence[Value], ctx: Context
+) -> list[Value]:
+    if len(type_params) == 1 and _is_paramspec_type_param(type_params[0]):
+        if len(args) == 1:
+            return [
+                _normalize_paramspec_generic_arg(args[0], allow_flat_form=True, ctx=ctx)
+            ]
+        return [SequenceValue(tuple, [(False, arg) for arg in args])]
+    if len(type_params) == len(args):
+        return [
+            (
+                _normalize_paramspec_generic_arg(arg, allow_flat_form=False, ctx=ctx)
+                if _is_paramspec_type_param(type_param)
+                else arg
+            )
+            for type_param, arg in zip(type_params, args)
+        ]
+    return list(args)
+
+
 def _validate_type_alias_arg_values(
     type_params: Sequence[TypeVarLike | TypeVarValue],
     args_vals: Sequence[Value],
@@ -1262,7 +1307,13 @@ def _type_from_subscripted_value(
 ) -> Value:
     if isinstance(root, GenericValue):
         if len(root.args) == len(members):
-            typed_members = [_type_from_value(member, ctx) for member in members]
+            typed_members = [
+                _type_from_value_type_alias_arg(member, root_arg, ctx)
+                for member, root_arg in zip(members, root.args)
+            ]
+            typed_members = _normalize_paramspec_generic_args(
+                root.args, typed_members, ctx
+            )
             if is_typing_name(root.typ, "Generic") or is_typing_name(
                 root.typ, "Protocol"
             ):
@@ -1289,6 +1340,12 @@ def _type_from_subscripted_value(
                     return TypeAliasValue(
                         "<generic_alias>", "typing", alias, tuple(typed_members)
                     )
+            return GenericValue(root.typ, typed_members)
+        if len(root.args) == 1 and _is_paramspec_type_param(root.args[0]):
+            typed_members = [_type_from_value(member, ctx) for member in members]
+            typed_members = _normalize_paramspec_generic_args(
+                root.args, typed_members, ctx
+            )
             return GenericValue(root.typ, typed_members)
     if isinstance(root, PartialValue):
         root_type = _type_from_value(root, ctx)
@@ -1453,23 +1510,9 @@ def _type_from_subscripted_value(
             ]
         else:
             typed_members = [_type_from_value(elt, ctx) for elt in members]
-        if len(type_params) == 1 and _is_paramspec_type_param(type_params[0]):
-            if len(members) == 1:
-                typed_member = typed_members[0]
-                if isinstance(typed_member, InputSigValue):
-                    paramspec_arg = typed_member
-                elif isinstance(typed_member, SequenceValue) and typed_member.typ in (
-                    list,
-                    tuple,
-                ):
-                    paramspec_arg = typed_member
-                else:
-                    paramspec_arg = SequenceValue(tuple, [(False, typed_member)])
-            else:
-                paramspec_arg = SequenceValue(
-                    tuple, [(False, typed_member) for typed_member in typed_members]
-                )
-            return GenericValue(root, [paramspec_arg])
+        typed_members = _normalize_paramspec_generic_args(
+            type_params, typed_members, ctx
+        )
         return GenericValue(root, typed_members)
     elif is_typing_name(root, "ClassVar"):
         ctx.show_error("ClassVar[] used in unsupported context")
@@ -1990,6 +2033,7 @@ def _value_of_origin_args(
                 ]
             else:
                 args_vals = [_type_from_runtime(val, ctx) for val in args]
+            args_vals = _normalize_paramspec_generic_args(type_params, args_vals, ctx)
             return GenericValue(origin, args_vals)
         else:
             return _maybe_typed_value(origin)

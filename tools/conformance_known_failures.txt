@@ -24,7 +24,6 @@ generics_defaults_referential
 generics_defaults_specialization
 generics_paramspec_components
 generics_paramspec_semantics
-generics_paramspec_specialization
 generics_scoping
 generics_self_advanced
 generics_self_basic
