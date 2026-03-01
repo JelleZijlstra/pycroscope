@@ -2,6 +2,8 @@
 
 - If behavior, CLI output/options, or configuration changes, update the relevant docs in `docs/` in the same change.
   Do not update `docs/` for minor changes.
+- When asked to make a PR, first rebase your changes on latest `main`, then open a PR. Verify that the PR
+  body is formatted correctly, then monitor CI and push fixes for any CI failures or merge conflicts.
 
 ## Changelog
 
@@ -30,3 +32,5 @@
 - Code that branches on different subclasses of `Value` should take care to cover all cases. Where possible, replace
   code that dispatches on different kinds of values with a call to a general helper function that already knows how
   to deal with all Values, such as `has_relation`.
+- Avoid using `@staticmethod` for local helper functions. Use private module-level functions instead.
+- Avoid using function-local imports, except where necessary to avoid an import cycle.
