@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Fix tuple-literal equivalence checks so `Literal[("x",)]` is treated as equivalent to `tuple[Literal["x"]]` in subtype/equivalence relations.
 - Improve dataclass constructor/pattern semantics in static fallback mode: pycroscope now honors class-level `init`/`match_args` settings for `@dataclass` and `@dataclass_transform`, and recognizes `factory=` field specifier defaults when checking generated constructors and `default_factory` return types.
 - Improve dataclass conformance in static fallback mode for unimportable modules: pycroscope now validates default-before-non-default field ordering, checks `default_factory` return types against field annotations, preserves callable dataclass fields as values (not bound methods), exposes dataclass metadata (`__dataclass_fields__`), and resolves inherited dataclass constructors more accurately.
 - Tighten `TypeVarTuple` validation: pycroscope now reports `invalid_annotation` for unpacking mistakes like `tuple[Ts]`, `*args: Ts`, `Generic[Ts]`, and `Generic[*Ts1, *Ts2]`, and no longer emits spurious `Unrecognized annotation typing.Unpack[...]` errors for annotations like `Array[*Shape]`.
