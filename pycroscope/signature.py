@@ -119,6 +119,27 @@ ELLIPSIS = Sentinel("ellipsis")
 ELLIPSIS_COMPOSITE = Composite(AnyValue(AnySource.ellipsis_callable))
 
 
+def _is_staticmethod_callable(func: FunctionType) -> bool:
+    module = inspect.getmodule(func)
+    if module is None:
+        return False
+    qualname_parts = func.__qualname__.split(".")
+    if len(qualname_parts) < 2:
+        return False
+    owner: object = module
+    for part in qualname_parts[:-1]:
+        try:
+            owner = getattr(owner, part)
+        except AttributeError:
+            return False
+    attr_name = qualname_parts[-1]
+    try:
+        member = inspect.getattr_static(owner, attr_name)
+    except AttributeError:
+        return False
+    return isinstance(member, staticmethod)
+
+
 class MaximumPositionalArgs(IntegerOption):
     """If calls have more than this many positional arguments, attempt to
     turn them into keyword arguments."""
@@ -923,28 +944,7 @@ class Signature:
             return False
         if "<locals>" in self.callable.__qualname__:
             return False
-        return not self._is_staticmethod_callable(self.callable)
-
-    @staticmethod
-    def _is_staticmethod_callable(func: FunctionType) -> bool:
-        module = inspect.getmodule(func)
-        if module is None:
-            return False
-        qualname_parts = func.__qualname__.split(".")
-        if len(qualname_parts) < 2:
-            return False
-        owner: object = module
-        for part in qualname_parts[:-1]:
-            try:
-                owner = getattr(owner, part)
-            except AttributeError:
-                return False
-        attr_name = qualname_parts[-1]
-        try:
-            member = inspect.getattr_static(owner, attr_name)
-        except AttributeError:
-            return False
-        return isinstance(member, staticmethod)
+        return not _is_staticmethod_callable(self.callable)
 
     def bind_arguments(
         self, actual_args: ActualArguments, ctx: CheckCallContext
