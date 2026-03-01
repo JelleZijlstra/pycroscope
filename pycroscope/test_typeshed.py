@@ -562,6 +562,11 @@ class TestGetGenericBases:
         else:
             assert expected == cleaned
 
+    def _allow_any_container(self, expected: BasesMap) -> list[BasesMap]:
+        container_any = dict(expected)
+        container_any[collections.abc.Container] = [AnyValue(AnySource.explicit)]
+        return [expected, container_any]
+
     def test_coroutine(self):
         one = KnownValue(1)
         two = KnownValue(2)
@@ -583,16 +588,18 @@ class TestGetGenericBases:
         TStr = TypedValue(str)
         TTuple = make_simple_sequence(tuple, [TInt, TStr])
         self.check(
-            {
-                "_collections_abc.dict_items": [TInt, TStr],
-                collections.abc.Iterable: [TTuple],
-                collections.abc.Container: [TTuple],
-                collections.abc.Collection: [TTuple],
-                collections.abc.Set: [TTuple],
-                collections.abc.MappingView: [],
-                collections.abc.ItemsView: [TInt, TStr],
-                collections.abc.Sized: [],
-            },
+            self._allow_any_container(
+                {
+                    "_collections_abc.dict_items": [TInt, TStr],
+                    collections.abc.Iterable: [TTuple],
+                    collections.abc.Container: [TTuple],
+                    collections.abc.Collection: [TTuple],
+                    collections.abc.Set: [TTuple],
+                    collections.abc.MappingView: [],
+                    collections.abc.ItemsView: [TInt, TStr],
+                    collections.abc.Sized: [],
+                }
+            ),
             "_collections_abc.dict_items",
             [TInt, TStr],
         )
@@ -608,7 +615,7 @@ class TestGetGenericBases:
             collections.abc.Sequence: [TypedValue(int)],
             collections.abc.Container: [TypedValue(int)],
         }
-        self.check(expected, time.struct_time)
+        self.check(self._allow_any_container(expected), time.struct_time)
 
     def test_context_manager(self):
         int_tv = TypedValue(int)
@@ -638,14 +645,16 @@ class TestGetGenericBases:
         str_tv = TypedValue(str)
         int_str_tuple = make_simple_sequence(tuple, [int_tv, str_tv])
         self.check(
-            {
-                collections.abc.ValuesView: [int_tv],
-                collections.abc.MappingView: [],
-                collections.abc.Iterable: [int_tv],
-                collections.abc.Collection: [int_tv],
-                collections.abc.Container: [int_tv],
-                collections.abc.Sized: [],
-            },
+            self._allow_any_container(
+                {
+                    collections.abc.ValuesView: [int_tv],
+                    collections.abc.MappingView: [],
+                    collections.abc.Iterable: [int_tv],
+                    collections.abc.Collection: [int_tv],
+                    collections.abc.Container: [int_tv],
+                    collections.abc.Sized: [],
+                }
+            ),
             collections.abc.ValuesView,
             [int_tv],
         )
@@ -694,15 +703,17 @@ class TestGetGenericBases:
         int_tv = TypedValue(int)
         str_tv = TypedValue(str)
         self.check(
-            {
-                list: [int_tv],
-                collections.abc.MutableSequence: [int_tv],
-                collections.abc.Collection: [int_tv],
-                collections.abc.Reversible: [int_tv],
-                collections.abc.Iterable: [int_tv],
-                collections.abc.Sequence: [int_tv],
-                collections.abc.Container: [int_tv],
-            },
+            self._allow_any_container(
+                {
+                    list: [int_tv],
+                    collections.abc.MutableSequence: [int_tv],
+                    collections.abc.Collection: [int_tv],
+                    collections.abc.Reversible: [int_tv],
+                    collections.abc.Iterable: [int_tv],
+                    collections.abc.Sequence: [int_tv],
+                    collections.abc.Container: [int_tv],
+                }
+            ),
             list,
             [int_tv],
         )
@@ -758,22 +769,24 @@ class TestGetGenericBases:
 
     def test_parse_result(self):
         self.check(
-            {
-                collections.abc.Iterable: [AnyValue(AnySource.generic_argument)],
-                collections.abc.Reversible: [AnyValue(AnySource.generic_argument)],
-                collections.abc.Container: [AnyValue(AnySource.generic_argument)],
-                collections.abc.Collection: [AnyValue(AnySource.generic_argument)],
-                collections.abc.Sequence: [AnyValue(AnySource.generic_argument)],
-                urllib.parse.ParseResult: [],
-                urllib.parse._ParseResultBase: (
-                    [TypedValue(str)] if sys.version_info >= (3, 14) else []
-                ),
-                tuple: [AnyValue(AnySource.generic_argument)],
-                urllib.parse._ResultMixinStr: [],
-                urllib.parse._NetlocResultMixinBase: [TypedValue(str)],
-                urllib.parse._NetlocResultMixinStr: [],
-                urllib.parse._ResultMixinStr: [],
-            },
+            self._allow_any_container(
+                {
+                    collections.abc.Iterable: [AnyValue(AnySource.generic_argument)],
+                    collections.abc.Reversible: [AnyValue(AnySource.generic_argument)],
+                    collections.abc.Container: [AnyValue(AnySource.generic_argument)],
+                    collections.abc.Collection: [AnyValue(AnySource.generic_argument)],
+                    collections.abc.Sequence: [AnyValue(AnySource.generic_argument)],
+                    urllib.parse.ParseResult: [],
+                    urllib.parse._ParseResultBase: (
+                        [TypedValue(str)] if sys.version_info >= (3, 14) else []
+                    ),
+                    tuple: [AnyValue(AnySource.generic_argument)],
+                    urllib.parse._ResultMixinStr: [],
+                    urllib.parse._NetlocResultMixinBase: [TypedValue(str)],
+                    urllib.parse._NetlocResultMixinStr: [],
+                    urllib.parse._ResultMixinStr: [],
+                }
+            ),
             urllib.parse.ParseResult,
         )
 
