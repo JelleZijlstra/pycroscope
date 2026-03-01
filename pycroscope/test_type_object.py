@@ -320,6 +320,101 @@ class TestSyntheticType(TestNameCheckVisitorBase):
             v4: Proto7[float, object] = p6  # E: incompatible_assignment
             print(v1, v2, v3, v4)
 
+    @assert_passes(allow_import_failures=True)
+    def test_protocol_member_semantics_after_import_failure(self):
+        from dataclasses import dataclass
+        from typing import ClassVar, NamedTuple, Protocol, Sequence
+
+        class WantsClassVar(Protocol):
+            val: ClassVar[Sequence[int]]
+
+        class HasInstanceVal:
+            val: Sequence[int] = [0]
+
+        bad_classvar: WantsClassVar = HasInstanceVal()  # E: incompatible_assignment
+
+        class WantsDataMember(Protocol):
+            val: Sequence[int]
+
+        class HasClassVar:
+            val: ClassVar[Sequence[int]] = [0]
+
+        class HasReadOnlyProperty:
+            @property
+            def val(self) -> Sequence[int]:
+                return [0]
+
+        class HasMutableList:
+            val: list[int] = [0]
+
+        bad_data1: WantsDataMember = HasClassVar()  # E: incompatible_assignment
+        bad_data2: WantsDataMember = HasReadOnlyProperty()  # E: incompatible_assignment
+        bad_data3: WantsDataMember = HasMutableList()  # E: incompatible_assignment
+
+        class WantsReadOnlyProperty(Protocol):
+            @property
+            def val(self) -> Sequence[float]: ...
+
+        class PlainAttrForReadOnly:
+            val: Sequence[float] = [0]
+
+        ok_read_only: WantsReadOnlyProperty = PlainAttrForReadOnly()
+
+        class WantsSettableProperty(Protocol):
+            @property
+            def val(self) -> Sequence[float]: ...
+
+            @val.setter
+            def val(self, value: Sequence[float]) -> None: ...
+
+        class SettablePropertyImpl:
+            @property
+            def val(self) -> Sequence[float]:
+                return [0]
+
+            @val.setter
+            def val(self, value: Sequence[float]) -> None:
+                pass
+
+        class PlainAttrImpl:
+            val: Sequence[float] = [0]
+
+        class ReadOnlyPropertyImpl:
+            @property
+            def val(self) -> Sequence[float]:
+                return [0]
+
+        class NamedTupleImpl(NamedTuple):
+            val: Sequence[float] = [0]
+
+        @dataclass(frozen=True)
+        class FrozenDataclassImpl:
+            val: Sequence[float] = [0]
+
+        ok_settable1: WantsSettableProperty = SettablePropertyImpl()
+        ok_settable2: WantsSettableProperty = PlainAttrImpl()
+        bad_settable1: WantsSettableProperty = (  # E: incompatible_assignment
+            ReadOnlyPropertyImpl()
+        )
+        bad_settable2: WantsSettableProperty = (  # E: incompatible_assignment
+            NamedTupleImpl()
+        )
+        bad_settable3: WantsSettableProperty = (  # E: incompatible_assignment
+            FrozenDataclassImpl()
+        )
+        print(
+            bad_classvar,
+            bad_data1,
+            bad_data2,
+            bad_data3,
+            ok_read_only,
+            ok_settable1,
+            ok_settable2,
+            bad_settable1,
+            bad_settable2,
+            bad_settable3,
+        )
+
     @assert_passes()
     def test_custom_subclasscheck(self):
         class _ThriftEnumMeta(type):

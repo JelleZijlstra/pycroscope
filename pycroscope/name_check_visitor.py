@@ -410,6 +410,9 @@ if sys.version_info < (3, 11):
 if asynq is not None:
     SAFE_DECORATORS_FOR_ARGSPEC_TO_RETVAL.append(KnownValue(asynq.asynq))
 
+SYNTHETIC_PROPERTY_GETTER_PREFIX = "%property_getter:"
+SYNTHETIC_PROPERTY_SETTER_PREFIX = "%property_setter:"
+
 
 class CustomContextManager(Protocol[T_co, U_co]):
     def __enter__(self) -> T_co:
@@ -605,6 +608,23 @@ class _AttrContext(CheckerAttrContext):
             )
             if not should_bind:
                 return super().bind_synthetic_instance_attribute(attr_name, value)
+            if synthetic_class is not None:
+                raw_attr = synthetic_class.class_attributes.get(attr_name)
+                if raw_attr is not None:
+                    raw_attr = replace_fallback(raw_attr)
+                    if (
+                        isinstance(raw_attr, GenericValue)
+                        and raw_attr.typ in {classmethod, staticmethod}
+                    ) or (
+                        isinstance(raw_attr, KnownValue)
+                        and isinstance(raw_attr.val, (classmethod, staticmethod))
+                    ):
+                        # classmethod/staticmethod are already descriptor-adjusted by
+                        # synthetic attribute normalization; binding again drops one
+                        # real parameter.
+                        return super().bind_synthetic_instance_attribute(
+                            attr_name, value
+                        )
             bound_signature = value.signature.bind_self(
                 self_annotation_value=None,
                 self_value=self.root_composite.value,
@@ -2041,6 +2061,64 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         synthetic_class.class_attributes["%classvars"] = KnownValue(
             frozenset(classvar_names)
         )
+
+    def _record_synthetic_property_metadata(
+        self, node: FunctionDefNode, info: FunctionInfo
+    ) -> None:
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            return
+        if self.scopes.scope_type() is not ScopeType.class_scope:
+            return
+        class_name = self._current_class_name_from_context()
+        if class_name is None:
+            return
+        synthetic_class = self._get_synthetic_class_for_current_scope()
+        if synthetic_class is None:
+            return
+
+        mangled_name = self._mangle_class_attribute_name(class_name, node.name)
+        getter_key = f"{SYNTHETIC_PROPERTY_GETTER_PREFIX}{mangled_name}"
+        if any(
+            isinstance(unapplied, KnownValue) and unapplied.val is property
+            for unapplied, _, _ in info.decorators
+        ):
+            getter_value = (
+                info.return_annotation
+                if info.return_annotation is not None
+                else AnyValue(AnySource.unannotated)
+            )
+            synthetic_class.class_attributes[getter_key] = getter_value
+
+        setter_target_name: str | None = None
+        for decorator in node.decorator_list:
+            if (
+                isinstance(decorator, ast.Attribute)
+                and decorator.attr == "setter"
+                and isinstance(decorator.value, ast.Name)
+            ):
+                setter_target_name = decorator.value.id
+                break
+        if setter_target_name is None:
+            return
+
+        mangled_target = self._mangle_class_attribute_name(
+            class_name, setter_target_name
+        )
+        if FunctionDecorator.staticmethod in info.decorator_kinds:
+            value_index = 0
+        else:
+            value_index = 1
+        if value_index >= len(info.params):
+            setter_value: Value = AnyValue(AnySource.unannotated)
+        else:
+            setter_annotation = info.params[value_index].param.annotation
+            if setter_annotation is None:
+                setter_value = AnyValue(AnySource.unannotated)
+            else:
+                setter_value = setter_annotation
+        synthetic_class.class_attributes[
+            f"{SYNTHETIC_PROPERTY_SETTER_PREFIX}{mangled_target}"
+        ] = setter_value
 
     @staticmethod
     def _classvar_names_from_mapping(attributes: Mapping[str, Value]) -> set[str]:
@@ -7385,6 +7463,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                         node.name, direct_dataclass_transform_info
                     )
                 self._set_name_in_scope(node.name, node, val)
+                self._record_synthetic_property_metadata(node, info)
 
             if (
                 node.name in METHODS_ALLOWING_NOTIMPLEMENTED
@@ -12018,6 +12097,12 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 if self.in_annotation and (
                     isinstance(stripped_root.value, TypeAliasValue)
                     or (
+                        self.module is None
+                        and self._should_use_static_annotation_subscript_on_import_failure(
+                            stripped_root.value
+                        )
+                    )
+                    or (
                         isinstance(stripped_root.value, KnownValue)
                         and (
                             is_typing_name(stripped_root.value.val, "TypeAliasType")
@@ -12153,6 +12238,17 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             or root is collections.abc.Callable
             or is_typing_name(root, "Callable")
             or root is AsynqCallable
+        )
+
+    @staticmethod
+    def _should_use_static_annotation_subscript_on_import_failure(value: Value) -> bool:
+        if not isinstance(value, KnownValue):
+            return False
+        root = value.val
+        return (
+            root is typing.Iterable
+            or root is collections.abc.Iterable
+            or is_typing_name(root, "Iterable")
         )
 
     def _maybe_subscript_synthetic_class(
@@ -13578,6 +13674,18 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         class_key = self._class_key_for_attribute_target(node, root_value)
         if class_key is None:
             return
+        if node.value.id == "self":
+            class_type = self.checker.make_type_object(class_key)
+            if class_type.is_protocol:
+                if node.attr not in class_type.protocol_members:
+                    self._show_error_if_checking(
+                        node,
+                        "Protocol members cannot be defined via assignment to self",
+                        error_code=ErrorCode.invalid_annotation,
+                    )
+                # Protocol members must come from the class body (PEP 544), so don't
+                # synthesize new members from method-body self assignments.
+                return
         synthetic_class = self.checker.get_synthetic_class(class_key)
         if synthetic_class is None:
             return

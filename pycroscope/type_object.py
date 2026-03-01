@@ -8,7 +8,7 @@ import collections.abc
 import inspect
 from collections.abc import Callable, Container, Sequence
 from dataclasses import dataclass, field, replace
-from typing import cast
+from typing import cast, get_origin
 from unittest import mock
 
 from pycroscope.signature import (
@@ -35,12 +35,27 @@ from .value import (
     NotAGradualType,
     SelfT,
     SubclassValue,
+    SyntheticClassObjectValue,
     TypedValue,
     Value,
+    flatten_values,
     replace_fallback,
     stringify_object,
     unify_bounds_maps,
 )
+
+SYNTHETIC_PROPERTY_GETTER_PREFIX = "%property_getter:"
+SYNTHETIC_PROPERTY_SETTER_PREFIX = "%property_setter:"
+
+
+@dataclass(frozen=True)
+class _MemberDescriptor:
+    value: Value
+    is_classvar: bool
+    is_method: bool
+    is_property: bool
+    property_has_setter: bool
+    is_writable: bool
 
 
 def get_mro(typ: type | super) -> Sequence[type]:
@@ -224,8 +239,18 @@ class TypeObject:
             other_type_obj = other_basic.get_type_object(ctx)
         else:
             other_type_obj = None
+        other_type_key = _class_key_from_value(other_val)
 
         bounds_maps = []
+        protocol_type_key: type | str | None
+        if isinstance(self.typ, (type, str)):
+            protocol_type_key = self.typ
+        else:
+            protocol_type_key = None
+        apply_synthetic_member_rules = (
+            isinstance(protocol_type_key, str)
+            and _get_synthetic_class_for_key(protocol_type_key, ctx) is not None
+        )
         for member in self.protocol_members:
             # For __call__, we check compatibility with the other object itself.
             if member == "__call__":
@@ -312,7 +337,63 @@ class TypeObject:
             if actual is UNINITIALIZED_VALUE:
                 can_assign = CanAssignError(f"{other_val} has no attribute {member!r}")
             else:
-                can_assign = has_relation(expected, actual, Relation.ASSIGNABLE, ctx)
+                if not apply_synthetic_member_rules:
+                    can_assign = has_relation(
+                        expected, actual, Relation.ASSIGNABLE, ctx
+                    )
+                else:
+                    expected_desc = _describe_member_for_type(
+                        protocol_type_key, self_val, member, expected, ctx
+                    )
+                    actual_desc = _describe_member_for_type(
+                        other_type_key, other_val, member, actual, ctx
+                    )
+                    skip_classvar_check = member.startswith("__") and member.endswith(
+                        "__"
+                    )
+                    if (
+                        not skip_classvar_check
+                        and expected_desc.is_classvar != actual_desc.is_classvar
+                    ):
+                        can_assign = CanAssignError(
+                            f"ClassVar status of protocol member {member!r} conflicts"
+                        )
+                    else:
+                        expected_for_relation = expected_desc.value
+                        actual_for_relation = actual_desc.value
+                        expected_is_writable_data_member = (
+                            not expected_desc.is_method
+                            and not expected_desc.is_property
+                            and not expected_desc.is_classvar
+                            and not _is_callable_member_value(expected_desc.value, ctx)
+                        )
+                        expected_requires_writable = (
+                            expected_desc.is_property
+                            and expected_desc.property_has_setter
+                        ) or expected_is_writable_data_member
+                        if expected_requires_writable and not actual_desc.is_writable:
+                            can_assign = CanAssignError(
+                                f"Protocol member {member!r} is not writable"
+                            )
+                        else:
+                            can_assign = has_relation(
+                                expected_for_relation,
+                                actual_for_relation,
+                                Relation.ASSIGNABLE,
+                                ctx,
+                            )
+                            if (
+                                not isinstance(can_assign, CanAssignError)
+                                and expected_requires_writable
+                            ):
+                                reverse = has_relation(
+                                    actual_for_relation,
+                                    expected_for_relation,
+                                    Relation.ASSIGNABLE,
+                                    ctx,
+                                )
+                                if isinstance(reverse, CanAssignError):
+                                    can_assign = reverse
                 if isinstance(can_assign, CanAssignError):
                     can_assign = CanAssignError(
                         f"Value of protocol member {member!r} conflicts", [can_assign]
@@ -407,6 +488,315 @@ class TypeObject:
         if len(seen) == len(self.protocol_members):
             return members
         return [*members, *sorted(self.protocol_members - seen)]
+
+
+def _describe_member_for_type(
+    class_key: type | str | None,
+    owner_value: Value,
+    member: str,
+    resolved_value: Value,
+    ctx: CanAssignContext,
+) -> _MemberDescriptor:
+    is_classvar = class_key is not None and _is_member_classvar(
+        class_key, member, ctx, seen=set()
+    )
+    property_getter, property_has_setter = _get_property_member_value(
+        class_key, owner_value, member, resolved_value, ctx
+    )
+    is_property = property_getter is not None
+    is_method = (
+        not is_property
+        and class_key is not None
+        and _is_member_method(class_key, member, ctx, seen=set())
+    )
+    value = property_getter if property_getter is not None else resolved_value
+    if is_classvar or is_method:
+        is_writable = False
+    elif is_property:
+        is_writable = property_has_setter
+    else:
+        is_writable = class_key is None or not _is_readonly_instance_member(
+            class_key, member, ctx
+        )
+    return _MemberDescriptor(
+        value=value,
+        is_classvar=is_classvar,
+        is_method=is_method,
+        is_property=is_property,
+        property_has_setter=property_has_setter,
+        is_writable=is_writable,
+    )
+
+
+def _class_key_from_value(value: Value) -> type | str | None:
+    value = replace_fallback(value)
+    while isinstance(value, AnnotatedValue):
+        value = replace_fallback(value.value)
+    if isinstance(value, SyntheticClassObjectValue):
+        class_type = value.class_type
+        if isinstance(class_type, TypedValue) and isinstance(
+            class_type.typ, (type, str)
+        ):
+            return class_type.typ
+        return None
+    if isinstance(value, GenericValue) and isinstance(value.typ, (type, str)):
+        return value.typ
+    if isinstance(value, TypedValue) and isinstance(value.typ, (type, str)):
+        return value.typ
+    if isinstance(value, KnownValue) and isinstance(value.val, type):
+        return value.val
+    if isinstance(value, SubclassValue):
+        typ = value.typ
+        if isinstance(typ, TypedValue) and isinstance(typ.typ, (type, str)):
+            return typ.typ
+    return None
+
+
+def _checker_ctx(ctx: CanAssignContext) -> object:
+    return safe_getattr(ctx, "checker", ctx)
+
+
+def _get_synthetic_class_for_key(
+    class_key: type | str, ctx: CanAssignContext
+) -> SyntheticClassObjectValue | None:
+    checker = _checker_ctx(ctx)
+    get_synthetic_class = safe_getattr(checker, "get_synthetic_class", None)
+    if callable(get_synthetic_class):
+        return get_synthetic_class(class_key)
+    return None
+
+
+def _iter_base_keys(class_key: type | str, ctx: CanAssignContext) -> list[type | str]:
+    bases: list[type | str] = []
+    synthetic = _get_synthetic_class_for_key(class_key, ctx)
+    if synthetic is not None:
+        for base in synthetic.base_classes:
+            for flattened in flatten_values(
+                replace_fallback(base), unwrap_annotated=True
+            ):
+                if isinstance(flattened, SyntheticClassObjectValue):
+                    class_type = flattened.class_type
+                    if isinstance(class_type, TypedValue) and isinstance(
+                        class_type.typ, (type, str)
+                    ):
+                        bases.append(class_type.typ)
+                elif isinstance(flattened, GenericValue) and isinstance(
+                    flattened.typ, (type, str)
+                ):
+                    bases.append(flattened.typ)
+                elif isinstance(flattened, TypedValue) and isinstance(
+                    flattened.typ, (type, str)
+                ):
+                    bases.append(flattened.typ)
+                elif isinstance(flattened, KnownValue) and isinstance(
+                    flattened.val, type
+                ):
+                    bases.append(flattened.val)
+    if isinstance(class_key, type):
+        bases.extend(
+            base
+            for base in safe_getattr(class_key, "__bases__", ())
+            if isinstance(base, type)
+        )
+    else:
+        checker = _checker_ctx(ctx)
+        get_generic_bases = safe_getattr(checker, "get_generic_bases", None)
+        if callable(get_generic_bases):
+            try:
+                generic_bases = get_generic_bases(class_key)
+            except Exception:
+                generic_bases = {}
+            for base in generic_bases:
+                if isinstance(base, (type, str)) and base != class_key:
+                    bases.append(base)
+    return bases
+
+
+def _is_member_classvar(
+    class_key: type | str, member: str, ctx: CanAssignContext, *, seen: set[type | str]
+) -> bool:
+    if class_key in seen:
+        return False
+    seen.add(class_key)
+
+    synthetic = _get_synthetic_class_for_key(class_key, ctx)
+    if synthetic is not None:
+        classvars = synthetic.class_attributes.get("%classvars")
+        if isinstance(classvars, KnownValue) and isinstance(
+            classvars.val, (set, frozenset, tuple, list)
+        ):
+            if member in {name for name in classvars.val if isinstance(name, str)}:
+                return True
+
+    if isinstance(class_key, type):
+        annotations = safe_getattr(class_key, "__annotations__", None)
+        if isinstance(annotations, dict):
+            annotation = annotations.get(member)
+            if annotation is not None:
+                origin = get_origin(annotation)
+                if safe_getattr(origin, "__name__", None) == "ClassVar":
+                    return True
+                if safe_getattr(annotation, "__name__", None) == "ClassVar":
+                    return True
+                if isinstance(annotation, str) and "ClassVar" in annotation:
+                    return True
+
+    return any(
+        _is_member_classvar(base, member, ctx, seen=seen)
+        for base in _iter_base_keys(class_key, ctx)
+    )
+
+
+def _is_member_method(
+    class_key: type | str, member: str, ctx: CanAssignContext, *, seen: set[type | str]
+) -> bool:
+    if class_key in seen:
+        return False
+    seen.add(class_key)
+
+    synthetic = _get_synthetic_class_for_key(class_key, ctx)
+    if synthetic is not None and member in synthetic.method_attributes:
+        return True
+
+    if isinstance(class_key, type):
+        descriptor = inspect.getattr_static(class_key, member, UNINITIALIZED_VALUE)
+        if descriptor is not UNINITIALIZED_VALUE:
+            if isinstance(descriptor, property):
+                return False
+            if isinstance(descriptor, (staticmethod, classmethod)):
+                return True
+            if inspect.isfunction(descriptor) or inspect.ismethoddescriptor(descriptor):
+                return True
+            return False
+
+    return any(
+        _is_member_method(base, member, ctx, seen=seen)
+        for base in _iter_base_keys(class_key, ctx)
+    )
+
+
+def _is_property_marker_value(value: Value) -> bool:
+    value = replace_fallback(value)
+    return (
+        isinstance(value, KnownValue)
+        and isinstance(value.val, property)
+        or isinstance(value, (TypedValue, GenericValue))
+        and value.typ is property
+    )
+
+
+def _get_property_member_value(
+    class_key: type | str | None,
+    owner_value: Value,
+    member: str,
+    resolved_value: Value,
+    ctx: CanAssignContext,
+) -> tuple[Value | None, bool]:
+    if class_key is None:
+        return None, False
+
+    property_getter = _get_synthetic_property_metadata(
+        class_key, member, SYNTHETIC_PROPERTY_GETTER_PREFIX, ctx, seen=set()
+    )
+    if property_getter is not None:
+        property_setter = _get_synthetic_property_metadata(
+            class_key, member, SYNTHETIC_PROPERTY_SETTER_PREFIX, ctx, seen=set()
+        )
+        return property_getter, property_setter is not None
+
+    synthetic_member_value = _get_synthetic_member_value(
+        class_key, member, ctx, seen=set()
+    )
+    if synthetic_member_value is not None and _is_property_marker_value(
+        synthetic_member_value
+    ):
+        if resolved_value is not UNINITIALIZED_VALUE and not _is_property_marker_value(
+            resolved_value
+        ):
+            return resolved_value, False
+        return AnyValue(AnySource.inference), False
+
+    if isinstance(class_key, type):
+        descriptor = inspect.getattr_static(class_key, member, UNINITIALIZED_VALUE)
+        if isinstance(descriptor, property):
+            getter = resolved_value
+            if getter is UNINITIALIZED_VALUE or _is_property_marker_value(getter):
+                getter = ctx.get_attribute_from_value(owner_value, member)
+            if getter is UNINITIALIZED_VALUE or _is_property_marker_value(getter):
+                getter = AnyValue(AnySource.inference)
+            return getter, descriptor.fset is not None
+
+    return None, False
+
+
+def _get_synthetic_property_metadata(
+    class_key: type | str,
+    member: str,
+    prefix: str,
+    ctx: CanAssignContext,
+    *,
+    seen: set[type | str],
+) -> Value | None:
+    if class_key in seen:
+        return None
+    seen.add(class_key)
+    synthetic = _get_synthetic_class_for_key(class_key, ctx)
+    if synthetic is None:
+        return None
+    key = f"{prefix}{member}"
+    if key in synthetic.class_attributes:
+        return synthetic.class_attributes[key]
+    for base in _iter_base_keys(class_key, ctx):
+        found = _get_synthetic_property_metadata(base, member, prefix, ctx, seen=seen)
+        if found is not None:
+            return found
+    return None
+
+
+def _get_synthetic_member_value(
+    class_key: type | str, member: str, ctx: CanAssignContext, *, seen: set[type | str]
+) -> Value | None:
+    if class_key in seen:
+        return None
+    seen.add(class_key)
+    synthetic = _get_synthetic_class_for_key(class_key, ctx)
+    if synthetic is None:
+        return None
+    if member in synthetic.class_attributes:
+        return synthetic.class_attributes[member]
+    for base in _iter_base_keys(class_key, ctx):
+        found = _get_synthetic_member_value(base, member, ctx, seen=seen)
+        if found is not None:
+            return found
+    return None
+
+
+def _is_readonly_instance_member(
+    class_key: type | str, member: str, ctx: CanAssignContext
+) -> bool:
+    if isinstance(class_key, type):
+        if safe_issubclass(class_key, tuple):
+            fields = safe_getattr(class_key, "_fields", None)
+            if isinstance(fields, tuple) and member in fields:
+                return True
+        dataclass_params = safe_getattr(class_key, "__dataclass_params__", None)
+        if safe_getattr(dataclass_params, "frozen", None) is True:
+            return True
+
+    synthetic = _get_synthetic_class_for_key(class_key, ctx)
+    if synthetic is not None and synthetic.dataclass_frozen is True:
+        return True
+    return False
+
+
+def _is_callable_member_value(value: Value, ctx: CanAssignContext) -> bool:
+    value = replace_fallback(value)
+    if isinstance(value, CallableValue):
+        return True
+    if isinstance(value, KnownValue) and callable(value.val):
+        return True
+    signature = ctx.signature_from_value(value)
+    return isinstance(signature, (Signature, OverloadedSignature, BoundMethodSignature))
 
 
 def _maybe_bind_dunder_protocol_member(

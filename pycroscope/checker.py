@@ -1947,6 +1947,7 @@ class Checker:
         return instance
 
     def _make_any_base_attribute(self, name: str, attr: Value) -> Value:
+        attr = self._normalize_synthetic_descriptor_attribute(attr)
         if isinstance(attr, CallableValue):
             if _is_dunder(name):
                 return attr
@@ -1955,6 +1956,61 @@ class Checker:
                 return CallableValue(maybe_bound)
             return attr
         return _normalize_synthetic_attribute(attr)
+
+    @staticmethod
+    def _normalize_synthetic_descriptor_attribute(attr: Value) -> Value:
+        if isinstance(attr, GenericValue) and attr.typ is staticmethod:
+            wrapped = next(iter(attr.args), AnyValue(AnySource.inference))
+            if isinstance(wrapped, AnyValue) and wrapped.source is AnySource.inference:
+                return wrapped
+            from .input_sig import FullSignature, InputSigValue
+
+            if isinstance(wrapped, InputSigValue):
+                if isinstance(wrapped.input_sig, FullSignature):
+                    return_annotation = (
+                        attr.args[1]
+                        if len(attr.args) > 1
+                        else wrapped.input_sig.sig.return_value
+                    )
+                    return CallableValue(
+                        dataclass_replace(
+                            wrapped.input_sig.sig, return_value=return_annotation
+                        )
+                    )
+                return AnyValue(AnySource.inference)
+            return wrapped
+        if isinstance(attr, GenericValue) and attr.typ is classmethod:
+            wrapped: Value
+            if len(attr.args) >= 2:
+                wrapped = attr.args[1]
+            else:
+                wrapped = next(iter(attr.args), AnyValue(AnySource.inference))
+                if (
+                    isinstance(wrapped, AnyValue)
+                    and wrapped.source is AnySource.inference
+                ):
+                    return wrapped
+            from .input_sig import FullSignature, InputSigValue
+
+            if isinstance(wrapped, InputSigValue):
+                if isinstance(wrapped.input_sig, FullSignature):
+                    return_annotation = (
+                        attr.args[2]
+                        if len(attr.args) > 2
+                        else wrapped.input_sig.sig.return_value
+                    )
+                    return CallableValue(
+                        dataclass_replace(
+                            wrapped.input_sig.sig, return_value=return_annotation
+                        )
+                    )
+                return AnyValue(AnySource.inference)
+            return wrapped
+        if isinstance(attr, KnownValue) and isinstance(attr.val, staticmethod):
+            return KnownValue(attr.val.__func__)
+        if isinstance(attr, KnownValue) and isinstance(attr.val, classmethod):
+            return KnownValue(attr.val.__func__)
+        return attr
 
     def _bind_synthetic_method(
         self, signature: ConcreteSignature
