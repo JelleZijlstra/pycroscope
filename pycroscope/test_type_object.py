@@ -120,6 +120,16 @@ class TestSyntheticType(TestNameCheckVisitorBase):
             print(bad, ok, bad2)
 
     @assert_passes()
+    def test_callable_protocol_instance_call_not_treated_as_instantiation(self):
+        from typing import Protocol
+
+        class IdentityFunction(Protocol):
+            def __call__(self, x: int) -> int: ...
+
+        def apply_identity(identity: IdentityFunction) -> int:
+            return identity(1)
+
+    @assert_passes()
     def test_paramspec_callable_protocol_equivalence(self):
         from typing import Callable, ParamSpec, Protocol, TypeAlias
 

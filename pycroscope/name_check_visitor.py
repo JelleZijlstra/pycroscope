@@ -12509,6 +12509,8 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         return val
 
     def _get_instantiable_protocol_class_name(self, value: Value) -> str | None:
+        if self._is_class_object_attribute_root(value) is not True:
+            return None
         class_key = self._base_class_key_from_value(value)
         if class_key is None:
             return None
