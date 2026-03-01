@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Improve `TypeAliasType(...)` handling: variadic alias specialization now supports `TypeVarTuple`, runtime `type_params` scope/literal-tuple and circular-definition checks are enforced, and recursive alias evaluation no longer triggers internal recursion errors.
 - Improve static fallback analysis for unimportable modules by pre-registering synthetic methods and persisting `self`/`cls` attribute assignments, reducing false `undefined_attribute` errors in class methods.
 - Tighten typing-construct arity validation in annotations (including `ClassVar`/`Final`/`Required` qualifiers and runtime `Callable[...]` parsing), so malformed argument lists are reported more consistently.
 - Improve `@dataclass_transform` field specifier default handling: pycroscope now infers implicit `init` values from field-specifier signatures (including overload defaults like `Literal[False]`), fixing constructor checks for cases like `dataclasses_transform_field.py`.

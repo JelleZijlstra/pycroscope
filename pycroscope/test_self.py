@@ -6,6 +6,7 @@ Runs pycroscope on itself.
 
 import ast
 import sys
+import textwrap
 from pathlib import Path
 
 import pycroscope
@@ -57,6 +58,44 @@ def _check_all_files_with_annotations() -> None:
         for filename, node in missing_annotations:
             print(f"{filename}:{node.lineno}:{node.col_offset}: {ast.dump(node)}")
         assert False, f"found no annotations on {len(missing_annotations)} expressions"
+
+
+def _missing_annotations_for_tree(tree: ast.AST) -> list[ast.AST]:
+    return [
+        node
+        for node in ast.walk(tree)
+        if (
+            hasattr(node, "lineno")
+            and hasattr(node, "col_offset")
+            and not hasattr(node, "inferred_value")
+            and not isinstance(node, (ast.keyword, ast.arg))
+        )
+    ]
+
+
+def test_typealiastype_subscript_annotation(tmp_path: Path) -> None:
+    code = textwrap.dedent("""
+        from typing import List, TypeVar
+        from typing_extensions import TypeAliasType, assert_type
+
+        T = TypeVar("T")
+        MyType = TypeAliasType("MyType", List[T], type_params=(T,))
+
+        def f(x: MyType[int]) -> None:
+            assert_type(x, MyType[int])
+    """)
+    filename = tmp_path / "type_alias_annotation.py"
+    filename.write_text(code, encoding="utf-8")
+    tree = ast.parse(code.encode("utf-8"), str(filename))
+    settings = PycroscopeVisitor._get_default_settings()
+    if settings is not None:
+        settings[ErrorCode.implicit_any] = False
+    kwargs: dict[str, object] = {"settings": settings, "files": [str(filename)]}
+    kwargs = dict(PycroscopeVisitor.prepare_constructor_kwargs(kwargs))
+    visitor = PycroscopeVisitor(str(filename), code, tree, annotate=True, **kwargs)
+    failures = visitor.check()
+    assert not any(failure["code"].name == "internal_error" for failure in failures)
+    assert not _missing_annotations_for_tree(tree)
 
 
 @skip_if_not_installed("asynq")

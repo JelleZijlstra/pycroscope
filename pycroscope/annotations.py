@@ -772,6 +772,48 @@ def _is_paramspec_type_param(type_param: TypeVarLike | TypeVarValue) -> bool:
     return is_instance_of_typing_name(type_param, "ParamSpec")
 
 
+def _is_typevartuple_type_param(type_param: TypeVarLike | TypeVarValue) -> bool:
+    if isinstance(type_param, TypeVarValue):
+        return type_param.is_typevartuple
+    return is_instance_of_typing_name(type_param, "TypeVarTuple") or is_typing_name(
+        type(type_param), "TypeVarTuple"
+    )
+
+
+def _match_type_alias_arg_values(
+    type_params: Sequence[TypeVarValue], args_vals: Sequence[Value]
+) -> Sequence[tuple[TypeVarValue, Value]] | None:
+    variadic_indexes = [
+        i
+        for i, type_param in enumerate(type_params)
+        if _is_typevartuple_type_param(type_param)
+    ]
+    if len(variadic_indexes) > 1:
+        return None
+    if not variadic_indexes:
+        if len(type_params) != len(args_vals):
+            return None
+        return list(zip(type_params, args_vals))
+    variadic_index = variadic_indexes[0]
+    minimum_args = len(type_params) - 1
+    if len(args_vals) < minimum_args:
+        return None
+    suffix_count = len(type_params) - variadic_index - 1
+    variadic_end = len(args_vals) - suffix_count
+    variadic_members = [(False, arg) for arg in args_vals[variadic_index:variadic_end]]
+    matched: list[tuple[TypeVarValue, Value]] = []
+    for i, type_param in enumerate(type_params):
+        if i < variadic_index:
+            argument = args_vals[i]
+        elif i == variadic_index:
+            argument = SequenceValue(tuple, variadic_members)
+        else:
+            suffix_index = i - variadic_index - 1
+            argument = args_vals[variadic_end + suffix_index]
+        matched.append((type_param, argument))
+    return matched
+
+
 def _is_paramspec_annotation(value: Value) -> bool:
     return isinstance(value, InputSigValue) and isinstance(
         value.input_sig, ParamSpecSig
@@ -871,13 +913,14 @@ def _validate_type_alias_arg_values(
         tv if isinstance(tv, TypeVarValue) else make_type_var_value(tv, ctx)
         for tv in type_params
     )
-    if len(type_params) != len(args_vals):
+    matched_args = _match_type_alias_arg_values(validated_type_params, args_vals)
+    if matched_args is None:
         ctx.show_error(
             f"Expected {len(type_params)} type arguments for type alias,"
             f" got {len(args_vals)}"
         )
         return
-    for arg, type_param in zip(args_vals, validated_type_params):
+    for type_param, arg in matched_args:
         if type_param.bound is not None and not _is_assignable_for_alias_arg(
             type_param.bound, arg, ctx
         ):
