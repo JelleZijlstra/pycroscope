@@ -87,6 +87,7 @@ from .value import (
     TypedDictEntry,
     TypedDictValue,
     TypedValue,
+    TypeVarMap,
     TypeVarValue,
     Value,
     is_async_iterable,
@@ -1243,7 +1244,10 @@ class ArgSpecCache:
         my_typevars = generic_bases[typ]
         if not my_typevars:
             return generic_bases
-        tv_map = {}
+        tv_map: TypeVarMap = {}
+        paramspec_generic_arg_map: dict[
+            typing_extensions.ParamSpec | typing.ParamSpec, Value
+        ] = {}
         if substitute_typevars:
             for i, tv_value in enumerate(my_typevars.values()):
                 try:
@@ -1255,17 +1259,17 @@ class ArgSpecCache:
                 elif isinstance(tv_value, InputSigValue) and isinstance(
                     tv_value.input_sig, ParamSpecSig
                 ):
-                    tv_map[tv_value.input_sig.param_spec] = value
+                    paramspec_generic_arg_map[tv_value.input_sig.param_spec] = value
 
         def _substitute_base_arg(value: Value) -> Value:
             if (
                 isinstance(value, InputSigValue)
                 and isinstance(value.input_sig, ParamSpecSig)
-                and value.input_sig.param_spec in tv_map
+                and value.input_sig.param_spec in paramspec_generic_arg_map
             ):
                 # For class generic arguments, ParamSpec specializations are stored as
                 # regular Value payloads (e.g. tuple/list SequenceValue), not InputSigValue.
-                return tv_map[value.input_sig.param_spec]
+                return paramspec_generic_arg_map[value.input_sig.param_spec]
             return value.substitute_typevars(tv_map)
 
         return {

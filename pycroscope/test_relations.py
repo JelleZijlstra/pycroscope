@@ -77,6 +77,51 @@ class TestRelations(TestNameCheckVisitorBase):
             takes_params(good)
             takes_params(paramspec)  # E: incompatible_argument
 
+    @assert_passes()
+    def test_paramspec_specialization_applies_to_callable_attribute(self):
+        from typing import Any, Callable, Generic, cast
+
+        from typing_extensions import ParamSpec
+
+        P = ParamSpec("P")
+
+        class C(Generic[P]):
+            f: Callable[P, int] = cast(Any, "")
+
+        def takes_list_form(x: C[[int, str, bool]]) -> None:
+            x.f(0, "", True)
+            x.f("", "", True)  # E: incompatible_argument
+            x.f(0, "", "")  # E: incompatible_argument
+
+        def takes_flat_form(x: C[int, str, bool]) -> None:
+            x.f(0, "", True)
+            x.f("", "", True)  # E: incompatible_argument
+            x.f(0, "", "")  # E: incompatible_argument
+
+    @assert_passes()
+    def test_paramspec_specialization_through_inherited_generic_bases(self):
+        from typing import Any, Callable, Generic, TypeVar, cast
+
+        from typing_extensions import ParamSpec
+
+        T = TypeVar("T")
+        P1 = ParamSpec("P1")
+        P2 = ParamSpec("P2")
+
+        class A(Generic[T, P1]):
+            f: Callable[P1, int] = cast(Any, "")
+            x: T = cast(Any, "")
+
+        class B(A[T, P1], Generic[T, P1, P2]):
+            g: Callable[P2, int] = cast(Any, "")
+            x: T = cast(Any, "")
+
+        def capybara(x: B[int, [int, bool], [str]]) -> None:
+            x.f(0, True)
+            x.f("", True)  # E: incompatible_argument
+            x.g("x")
+            x.g(0)  # E: incompatible_argument
+
     @skip_before((3, 12))
     def test_unbounded_tuple_unions(self):
         self.assert_passes("""

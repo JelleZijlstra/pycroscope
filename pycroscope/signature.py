@@ -1712,7 +1712,29 @@ class Signature:
                 if isinstance(input_sig, ParamSpecSig):
                     tv = input_sig.param_spec
                     if tv in typevars:
-                        replacement = assert_input_sig(typevars[tv])
+                        replacement_value = typevars[tv]
+                        if isinstance(
+                            replacement_value, SequenceValue
+                        ) and replacement_value.typ in (list, tuple):
+                            members = replacement_value.get_member_sequence()
+                            if members is None:
+                                replacement = AnySig()
+                            else:
+                                replacement = FullSignature(
+                                    Signature.make(
+                                        [
+                                            SigParameter(
+                                                f"@{i}",
+                                                ParameterKind.POSITIONAL_ONLY,
+                                                annotation=member,
+                                            )
+                                            for i, member in enumerate(members)
+                                        ],
+                                        AnyValue(AnySource.generic_argument),
+                                    )
+                                )
+                        else:
+                            replacement = assert_input_sig(replacement_value)
                         new_val = replacement.substitute_typevars(typevars)
                         if isinstance(new_val, ParamSpecSig):
                             new_param = SigParameter(
