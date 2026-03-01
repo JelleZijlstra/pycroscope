@@ -8,7 +8,7 @@ class TestExoticTry(TestNameCheckVisitorBase):
     def test_except_everything(self):
         from typing import Tuple, Type, Union
 
-        from typing_extensions import Literal, assert_type
+        from typing_extensions import Literal
 
         def capybara(
             typ: Literal[TypeError, ValueError],
@@ -39,8 +39,6 @@ class TestTryStar(TestNameCheckVisitorBase):
     @skip_before((3, 11))
     def test_eg_types(self):
         self.assert_passes("""
-            from typing import assert_type
-
             def capybara():
                 try:
                     pass
@@ -59,7 +57,7 @@ class TestTryStar(TestNameCheckVisitorBase):
     @skip_before((3, 11))
     def test_variable_scope(self):
         self.assert_passes("""
-            from typing import assert_type, Literal
+            from typing import Literal
 
             def capybara():
                 x = 0
@@ -78,7 +76,7 @@ class TestTryStar(TestNameCheckVisitorBase):
     @skip_before((3, 11))
     def test_try_else(self):
         self.assert_passes("""
-            from typing import assert_type, Literal
+            from typing import Literal
 
             def capybara():
                 x = 0
@@ -100,7 +98,7 @@ class TestTryStar(TestNameCheckVisitorBase):
     @skip_before((3, 11))
     def test_try_finally(self):
         self.assert_passes("""
-            from typing import assert_type, Literal
+            from typing import Literal
 
             def capybara():
                 x = 0

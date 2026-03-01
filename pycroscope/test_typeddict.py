@@ -37,7 +37,7 @@ class TestExtraKeys(TestNameCheckVisitorBase):
     def test_methods(self):
         from typing import Union
 
-        from typing_extensions import Literal, TypedDict, assert_type
+        from typing_extensions import Literal, TypedDict
 
         from pycroscope.extensions import has_extra_keys
 
@@ -66,7 +66,7 @@ class TestExtraKeys(TestNameCheckVisitorBase):
 
     @assert_passes()
     def test_kwargs_annotation(self):
-        from typing_extensions import TypedDict, Unpack, assert_type
+        from typing_extensions import TypedDict, Unpack
 
         from pycroscope.extensions import has_extra_keys
 
@@ -126,7 +126,7 @@ class TestExtraKeys(TestNameCheckVisitorBase):
     def test_iteration(self):
         from typing import Union
 
-        from typing_extensions import Literal, TypedDict, assert_type
+        from typing_extensions import Literal, TypedDict
 
         from pycroscope.extensions import has_extra_keys
 
@@ -266,7 +266,7 @@ class TestTypedDict(TestNameCheckVisitorBase):
                 name: str
 
             cls: type = Movie
-            assert_is_value(cls, TypedValue(type))
+            assert_type(cls, type)
 
     @assert_passes()
     def test_typevar_bound_disallows_typeddict(self):
@@ -295,7 +295,7 @@ class TestTypedDict(TestNameCheckVisitorBase):
 
     @assert_passes()
     def test_unknown_key(self):
-        from typing_extensions import TypedDict, assert_type
+        from typing_extensions import TypedDict
 
         class Capybara(TypedDict):
             x: int
@@ -320,7 +320,7 @@ class TestTypedDict(TestNameCheckVisitorBase):
                     }
                 ),
             )
-            assert_is_value(y["a"], TypedValue(int))
+            assert_type(y["a"], int)
 
     @assert_passes()
     def test_functional_syntax_validation(self):
@@ -333,7 +333,7 @@ class TestTypedDict(TestNameCheckVisitorBase):
         Bad3 = TypedDict("WrongName", {"a": int})  # E: incompatible_call
 
         def capybara(x: T) -> None:
-            assert_is_value(x["a"], TypedValue(int))
+            assert_type(x["a"], int)
             print(Bad1, Bad2, Bad3)
 
     @assert_passes(allow_import_failures=True)
@@ -407,7 +407,7 @@ class TestTypedDict(TestNameCheckVisitorBase):
                     }
                 ),
             )
-            assert_is_value(x["a"], TypedValue(int))
+            assert_type(x["a"], int)
 
     @assert_passes()
     def test_unknown_key_unresolved(self):
@@ -703,7 +703,7 @@ class TestReadOnly(TestNameCheckVisitorBase):
 
     @assert_passes()
     def test_annotated_plus_qualifier(self):
-        from typing_extensions import Annotated, ReadOnly, TypedDict, assert_type
+        from typing_extensions import Annotated, ReadOnly, TypedDict
 
         class TD(TypedDict):
             a: Annotated[ReadOnly[int], ""]

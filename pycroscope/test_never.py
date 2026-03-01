@@ -1,7 +1,7 @@
 # static analysis: ignore
 from .test_name_check_visitor import TestNameCheckVisitorBase
 from .test_node_visitor import assert_passes, skip_before
-from .value import NO_RETURN_VALUE, TypedValue, assert_is_value
+from .value import NO_RETURN_VALUE, assert_is_value
 
 
 class TestAnnotations(TestNameCheckVisitorBase):
@@ -44,7 +44,7 @@ class TestNoReturn(TestNameCheckVisitorBase):
         def capybara(x: Optional[int]) -> None:
             if x is None:
                 f()
-            assert_is_value(x, TypedValue(int))
+            assert_type(x, int)
 
     @assert_passes()
     def test_no_return_parameter(self):
@@ -99,7 +99,7 @@ class TestAssertNever(TestNameCheckVisitorBase):
     def test_enum_is_or(self):
         import enum
 
-        from typing_extensions import Literal, assert_never, assert_type
+        from typing_extensions import Literal, assert_never
 
         class Capybara(enum.Enum):
             hydrochaeris = 1
@@ -122,7 +122,7 @@ class TestAssertNever(TestNameCheckVisitorBase):
 
     @assert_passes()
     def test_literal(self):
-        from typing_extensions import Literal, assert_never, assert_type
+        from typing_extensions import Literal, assert_never
 
         def capybara(x: Literal["a", "b", "c"]) -> None:
             if x in ("a", "b"):

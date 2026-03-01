@@ -1,7 +1,7 @@
 # static analysis: ignore
 from .test_name_check_visitor import TestNameCheckVisitorBase
 from .test_node_visitor import assert_passes, skip_if_not_installed
-from .value import AnySource, AnyValue, KnownValue, TypedValue, assert_is_value
+from .value import AnySource, AnyValue, KnownValue, assert_is_value
 
 
 class TestGenerator(TestNameCheckVisitorBase):
@@ -11,7 +11,7 @@ class TestGenerator(TestNameCheckVisitorBase):
 
         def gen(cond) -> Generator[int, str, bytes]:
             x = yield 1
-            assert_is_value(x, TypedValue(str))
+            assert_type(x, str)
             yield "x"  # E: incompatible_yield
             if cond:
                 return b"hello"
@@ -20,7 +20,7 @@ class TestGenerator(TestNameCheckVisitorBase):
 
         def capybara() -> Generator[int, int, int]:
             x = yield from gen(True)  # E: incompatible_yield
-            assert_is_value(x, TypedValue(bytes))
+            assert_type(x, bytes)
 
             return 3
 

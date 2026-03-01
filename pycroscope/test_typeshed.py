@@ -59,10 +59,10 @@ class TestTypeshedClient(TestNameCheckVisitorBase):
         from typing import Container
 
         assert_is_value(math.exp(1.0), TypedValue(float) | TypedValue(int))
-        assert_is_value("".isspace(), TypedValue(bool))
+        assert_type("".isspace(), bool)
 
         def capybara(x: Container[int]) -> None:
-            assert_is_value(x.__contains__(1), TypedValue(bool))
+            assert_type(x.__contains__(1), bool)
 
     @assert_passes()
     def test_dict_update(self):
@@ -150,12 +150,12 @@ class TestTypeshedClient(TestNameCheckVisitorBase):
     @assert_passes()
     def test_str_find(self):
         def capybara(s: str) -> None:
-            assert_is_value(s.find("x"), TypedValue(int))
+            assert_type(s.find("x"), int)
 
     @assert_passes()
     def test_str_count(self):
         def capybara(s: str) -> None:
-            assert_is_value(s.count("x"), TypedValue(int))
+            assert_type(s.count("x"), int)
 
     @assert_passes()
     def test_dict_fromkeys(self):
@@ -171,8 +171,6 @@ class TestTypeshedClient(TestNameCheckVisitorBase):
     @assert_passes()
     def test_datetime(self):
         from datetime import datetime
-
-        from typing_extensions import assert_type
 
         def capybara(i: int):
             dt = datetime.fromtimestamp(i)
@@ -229,9 +227,9 @@ class TestBundledStubs(TestNameCheckVisitorBase):
             )
 
             assert_is_value(ExplicitAlias, KnownValue(int))
-            assert_is_value(constant, TypedValue(int))
-            assert_is_value(aliased_constant, TypedValue(int))
-            assert_is_value(explicitly_aliased_constant, TypedValue(int))
+            assert_type(constant, int)
+            assert_type(aliased_constant, int)
+            assert_type(explicitly_aliased_constant, int)
 
     def test_aliases(self):
         tsf = TypeshedFinder.make(Checker(), TEST_OPTIONS, verbose=True)
@@ -279,7 +277,6 @@ class TestBundledStubs(TestNameCheckVisitorBase):
     def test_typevar_with_default(self):
         def capybara(x: int):
             from _pycroscope_tests.typevar import f
-            from typing_extensions import assert_type
 
             assert_type(f(x), int)
 
@@ -290,7 +287,6 @@ class TestBundledStubs(TestNameCheckVisitorBase):
 
         def capybara(x: int):
             from _pycroscope_tests.paramspec import f, g
-            from typing_extensions import assert_type
 
             assert_type(f(x), int)
             assert_type(g(some_func, x), str)
@@ -319,7 +315,7 @@ class TestBundledStubs(TestNameCheckVisitorBase):
         import ast
 
         def capybara(x: ast.Yield):
-            assert_is_value(x, TypedValue(ast.Yield))
+            assert_type(x, ast.Yield)
             assert_is_value(x.value, TypedValue(ast.expr) | KnownValue(None))
 
     @assert_passes()
@@ -347,8 +343,8 @@ class TestBundledStubs(TestNameCheckVisitorBase):
 
             from _pycroscope_tests.evaluated import open, open2
 
-            assert_is_value(open("r"), TypedValue(TextIO))
-            assert_is_value(open("rb"), TypedValue(BinaryIO))
+            assert_type(open("r"), TextIO)
+            assert_type(open("rb"), BinaryIO)
             assert_is_value(
                 open(unannotated), GenericValue(IO, [AnyValue(AnySource.explicit)])
             )
@@ -356,8 +352,8 @@ class TestBundledStubs(TestNameCheckVisitorBase):
                 open("r" if unannotated else "rb"),
                 TypedValue(TextIO) | TypedValue(BinaryIO),
             )
-            assert_is_value(open2("r"), TypedValue(TextIO))
-            assert_is_value(open2("rb"), TypedValue(BinaryIO))
+            assert_type(open2("r"), TextIO)
+            assert_type(open2("rb"), BinaryIO)
             assert_is_value(
                 open2(unannotated), GenericValue(IO, [AnyValue(AnySource.explicit)])
             )
@@ -398,7 +394,7 @@ class TestBundledStubs(TestNameCheckVisitorBase):
 
     @assert_passes()
     def test_stub_context_manager(self):
-        from typing_extensions import Literal, assert_type
+        from typing_extensions import Literal
 
         def capybara():
             from _pycroscope_tests.contextmanager import cm
@@ -476,14 +472,14 @@ class TestConstructors(TestNameCheckVisitorBase):
     @assert_passes()
     def test_typeshed_constructors(self):
         def capybara(x):
-            assert_is_value(int(x), TypedValue(int))
+            assert_type(int(x), int)
             assert_is_value(
                 frozenset(),
                 GenericValue(frozenset, [AnyValue(AnySource.generic_argument)]),
             )
 
-            assert_is_value(type("x"), TypedValue(type))
-            assert_is_value(type("x", (), {}), TypedValue(type))
+            assert_type(type("x"), type)
+            assert_type(type("x", (), {}), type)
 
 
 class Parent(Generic[T]):
@@ -883,10 +879,10 @@ class TestRange(TestNameCheckVisitorBase):
     def test_iteration(self):
         def capybara(r: range):
             for j in r:
-                assert_is_value(j, TypedValue(int))
+                assert_type(j, int)
 
             for i in range(10000000):
-                assert_is_value(i, TypedValue(int))
+                assert_type(i, int)
 
 
 class TestParamSpec(TestNameCheckVisitorBase):
@@ -912,8 +908,6 @@ class TestIntegration(TestNameCheckVisitorBase):
     def test_open(self):
         import io
         from typing import IO, Any, BinaryIO
-
-        from pycroscope.extensions import assert_type
 
         def capybara(buffering: int, mode: str):
             assert_type(open("x"), io.TextIOWrapper)
@@ -1002,4 +996,4 @@ class TestDeprecated(TestNameCheckVisitorBase):
         import datetime
 
         def capybara() -> None:
-            assert_is_value(datetime.datetime.utcnow(), TypedValue(datetime.datetime))
+            assert_type(datetime.datetime.utcnow(), datetime.datetime)

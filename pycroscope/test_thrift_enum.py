@@ -2,7 +2,7 @@
 
 from .test_name_check_visitor import TestNameCheckVisitorBase
 from .test_node_visitor import assert_passes
-from .value import KnownValue, TypedValue, assert_is_value
+from .value import KnownValue, assert_is_value
 
 
 class TestThriftEnum(TestNameCheckVisitorBase):
@@ -59,10 +59,10 @@ class TestThriftEnum(TestNameCheckVisitorBase):
             return te
 
         def capybara(e: ThriftEnum):
-            assert_is_value(get_it(e), TypedValue(ThriftEnum))
+            assert_type(get_it(e), ThriftEnum)
             assert_is_value(get_it(ThriftEnum.X), KnownValue(ThriftEnum.X))
 
-            assert_is_value(get_it_annotated(e), TypedValue(ThriftEnum))
+            assert_type(get_it_annotated(e), ThriftEnum)
             assert_is_value(get_it_annotated(ThriftEnum.X), KnownValue(ThriftEnum.X))
 
     @assert_passes()

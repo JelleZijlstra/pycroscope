@@ -34,9 +34,9 @@ class TestBinOps(TestNameCheckVisitorBase):
 
         def tucotuco():
             x = Capybara()
-            assert_is_value(x + 1, TypedValue(str))
+            assert_type(x + 1, str)
             x += "a"
-            assert_is_value(x, TypedValue(int))
+            assert_type(x, int)
 
     @assert_passes()
     def test_binop_notimplemented(self):
@@ -143,9 +143,9 @@ class TestOperators(TestNameCheckVisitorBase):
     @assert_passes()
     def test_binop_type_inference(self):
         def capybara(x):
-            assert_is_value(1 + int(x), TypedValue(int))
-            assert_is_value(3 * int(x), TypedValue(int))
-            assert_is_value("foo" + str(x), TypedValue(str))
+            assert_type(1 + int(x), int)
+            assert_type(3 * int(x), int)
+            assert_type("foo" + str(x), str)
             assert_is_value(1 + float(x), TypedValue(float) | TypedValue(int))
             assert_is_value(1.0 + int(x), TypedValue(float) | TypedValue(int))
             assert_is_value(3 * 3.0 + 1, KnownValue(10.0))

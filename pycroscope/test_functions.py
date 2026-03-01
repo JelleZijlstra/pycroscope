@@ -104,7 +104,7 @@ class TestNestedFunction(TestNameCheckVisitorBase):
                     print(arg.numerator)
                     return 1
 
-                assert_is_value(nested(1), TypedValue(int))
+                assert_type(nested(1), int)
 
 
 class TestFunctionDefinitions(TestNameCheckVisitorBase):
@@ -127,15 +127,15 @@ class TestFunctionDefinitions(TestNameCheckVisitorBase):
         from typing import Optional
 
         def f(a: int, /) -> None:
-            assert_is_value(a, TypedValue(int))
+            assert_type(a, int)
 
         def g(a: Optional[str] = None, /, b: int = 1) -> None:
             assert_is_value(a, TypedValue(str) | KnownValue(None))
-            assert_is_value(b, TypedValue(int))
+            assert_type(b, int)
 
         def h(a, b: int = 1, /, c: int = 2) -> None:  # E: missing_parameter_annotation
             assert_is_value(a, AnyValue(AnySource.unannotated))
-            assert_is_value(b, TypedValue(int))
+            assert_type(b, int)
 
         def capybara() -> None:
             f(1)
@@ -249,11 +249,11 @@ class TestDecorators(TestNameCheckVisitorBase):
 
         def capybara():
             with typing_generator() as a:
-                assert_is_value(a, TypedValue(int))
+                assert_type(a, int)
             with collections_generator_one() as b:
-                assert_is_value(b, TypedValue(int))
+                assert_type(b, int)
             with collections_generator_three() as c:
-                assert_is_value(c, TypedValue(int))
+                assert_type(c, int)
 
 
 class TestAsyncGenerator(TestNameCheckVisitorBase):
@@ -293,8 +293,6 @@ class TestGenericFunctions(TestNameCheckVisitorBase):
     @skip_before((3, 12))
     def test_generic(self):
         self.assert_passes("""
-            from typing_extensions import assert_type
-
             def func[T](x: T) -> T:
                 return x
 
@@ -305,8 +303,6 @@ class TestGenericFunctions(TestNameCheckVisitorBase):
     @skip_before((3, 12))
     def test_generic_with_bound(self):
         self.assert_passes("""
-            from typing_extensions import assert_type
-
             def func[T: int](x: T) -> T:
                 return x
 

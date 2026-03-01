@@ -20,11 +20,11 @@ class TestPEP673(TestNameCheckVisitorBase):
             pass
 
         def capybara(x: X, y: Y):
-            assert_is_value(x.parent, TypedValue(X))
-            assert_is_value(y.parent, TypedValue(Y))
+            assert_type(x.parent, X)
+            assert_type(y.parent, Y)
 
-            assert_is_value(x.prop, TypedValue(X))
-            assert_is_value(y.prop, TypedValue(Y))
+            assert_type(x.prop, X)
+            assert_type(y.prop, Y)
 
     @assert_passes()
     def test_method(self):
@@ -42,11 +42,11 @@ class TestPEP673(TestNameCheckVisitorBase):
             pass
 
         def capybara(x: X, y: Y):
-            assert_is_value(x.ret(), TypedValue(X))
-            assert_is_value(y.ret(), TypedValue(Y))
+            assert_type(x.ret(), X)
+            assert_type(y.ret(), Y)
 
-            assert_is_value(X.from_config(), TypedValue(X))
-            assert_is_value(Y.from_config(), TypedValue(Y))
+            assert_type(X.from_config(), X)
+            assert_type(Y.from_config(), Y)
 
     @assert_passes()
     def test_parameter_type(self):
@@ -131,8 +131,8 @@ class TestPEP673(TestNameCheckVisitorBase):
                 return self
 
         def capybara(c: Container[int]):
-            assert_is_value(c.value, TypedValue(int))
-            assert_is_value(c.set_value(3), GenericValue(Container, [TypedValue(int)]))
+            assert_type(c.value, int)
+            assert_type(c.set_value(3), Container[int])
 
     @assert_passes()
     def test_classvar(self):
@@ -152,7 +152,6 @@ class TestPEP673(TestNameCheckVisitorBase):
     def test_stub(self):
         def capybara():
             from _pycroscope_tests.self import X, Y
-            from typing_extensions import assert_type
 
             x = X()
             y = Y()
@@ -175,7 +174,6 @@ class TestPEP673(TestNameCheckVisitorBase):
     def test_typeshed_self(self):
         def capybara():
             from _pycroscope_tests.tsself import X
-            from typing_extensions import assert_type
 
             x = X()
             assert_type(x, X)

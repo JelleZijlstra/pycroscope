@@ -26,12 +26,12 @@ class TestTypeEvaluation(TestNameCheckVisitorBase):
                 return "x"
 
         def capybara(args, kwargs):
-            assert_is_value(simple_evaluated(1), TypedValue(str))
-            assert_is_value(simple_evaluated(1, "1"), TypedValue(int))
-            assert_is_value(simple_evaluated(*args), TypedValue(str))
-            assert_is_value(simple_evaluated(**kwargs), TypedValue(str))
-            assert_is_value(simple_evaluated(1, y="1"), TypedValue(int))
-            assert_is_value(simple_evaluated(1, **{"y": "1"}), TypedValue(int))
+            assert_type(simple_evaluated(1), str)
+            assert_type(simple_evaluated(1, "1"), int)
+            assert_type(simple_evaluated(*args), str)
+            assert_type(simple_evaluated(**kwargs), str)
+            assert_type(simple_evaluated(1, y="1"), int)
+            assert_type(simple_evaluated(1, **{"y": "1"}), int)
 
     @assert_passes()
     def test_is_of_type(self):
@@ -55,9 +55,9 @@ class TestTypeEvaluation(TestNameCheckVisitorBase):
                 return 0
 
         def capybara(unannotated):
-            assert_is_value(is_of_type_evaluated(1), TypedValue(str))
-            assert_is_value(is_of_type_evaluated(2), TypedValue(int))
-            assert_is_value(is_of_type_evaluated(unannotated), TypedValue(int))
+            assert_type(is_of_type_evaluated(1), str)
+            assert_type(is_of_type_evaluated(2), int)
+            assert_type(is_of_type_evaluated(unannotated), int)
             assert_is_value(
                 is_of_type_evaluated(2 if unannotated else 1),
                 TypedValue(int) | TypedValue(str),
@@ -85,9 +85,9 @@ class TestTypeEvaluation(TestNameCheckVisitorBase):
                 return 0
 
         def capybara(unannotated):
-            assert_is_value(not_evaluated(1), TypedValue(int))
-            assert_is_value(not_evaluated(2), TypedValue(str))
-            assert_is_value(not_evaluated(unannotated), TypedValue(str))
+            assert_type(not_evaluated(1), int)
+            assert_type(not_evaluated(2), str)
+            assert_type(not_evaluated(unannotated), str)
             assert_is_value(
                 not_evaluated(2 if unannotated else 1),
                 TypedValue(int) | TypedValue(str),
@@ -112,9 +112,9 @@ class TestTypeEvaluation(TestNameCheckVisitorBase):
             raise NotImplementedError
 
         def capybara(unannotated):
-            assert_is_value(compare_evaluated(None), TypedValue(str))
+            assert_type(compare_evaluated(None), str)
             assert_is_value(compare_evaluated(1), TypedValue(float) | TypedValue(int))
-            assert_is_value(compare_evaluated("x"), TypedValue(int))
+            assert_type(compare_evaluated("x"), int)
             assert_is_value(
                 compare_evaluated(None if unannotated else 1),
                 TypedValue(str) | TypedValue(float) | TypedValue(int),
@@ -140,7 +140,7 @@ class TestTypeEvaluation(TestNameCheckVisitorBase):
 
         def capybara():
             nonempty_please("")  # E: incompatible_call
-            assert_is_value(nonempty_please("x"), TypedValue(int))
+            assert_type(nonempty_please("x"), int)
 
     @assert_passes()
     def test_restrict_kind(self):
@@ -181,8 +181,8 @@ class TestTypeEvaluation(TestNameCheckVisitorBase):
             raise NotImplementedError
 
         def capybara():
-            assert_is_value(only_one(1), TypedValue(str))
-            assert_is_value(only_one(2), TypedValue(str))  # E: incompatible_call
+            assert_type(only_one(1), str)
+            assert_type(only_one(2), str)  # E: incompatible_call
 
     @assert_passes()
     def test_enum(self):
@@ -207,9 +207,9 @@ class TestTypeEvaluation(TestNameCheckVisitorBase):
             raise NotImplementedError
 
         def capybara(c: Color):
-            assert_is_value(want_enum(Color.magenta), TypedValue(str))
-            assert_is_value(want_enum(Color.cyan), TypedValue(int))
-            assert_is_value(want_enum(c), TypedValue(bool))
+            assert_type(want_enum(Color.magenta), str)
+            assert_type(want_enum(Color.cyan), int)
+            assert_type(want_enum(c), bool)
 
     @assert_passes()
     def test_platform(self):
@@ -319,8 +319,8 @@ class TestTypeEvaluation(TestNameCheckVisitorBase):
                 return str
 
         def capybara(x: bool):
-            assert_is_value(maybe_use_header(True), TypedValue(str))
-            assert_is_value(maybe_use_header(x), TypedValue(int))
+            assert_type(maybe_use_header(True), str)
+            assert_type(maybe_use_header(x), int)
 
     @assert_passes()
     def test_generic(self):
@@ -369,8 +369,8 @@ class TestBoolOp(TestNameCheckVisitorBase):
         def capybara(
             a: int, b: str, maybe_a: Literal[1, 2], maybe_b: Literal["x", "y"]
         ) -> None:
-            assert_is_value(use_and(1, "x"), TypedValue(str))
-            assert_is_value(use_and(a, b), TypedValue(int))
+            assert_type(use_and(1, "x"), str)
+            assert_type(use_and(a, b), int)
             assert_is_value(
                 use_and(maybe_a, maybe_b), TypedValue(str) | TypedValue(int)
             )
@@ -393,10 +393,10 @@ class TestBoolOp(TestNameCheckVisitorBase):
         def capybara(
             b: str, x_or_y: Literal["x", "y"], x_or_z: Literal["x", "z"]
         ) -> None:
-            assert_is_value(use_or("x"), TypedValue(str))
-            assert_is_value(use_or("y"), TypedValue(str))
-            assert_is_value(use_or(b), TypedValue(int))
-            assert_is_value(use_or(x_or_y), TypedValue(str))
+            assert_type(use_or("x"), str)
+            assert_type(use_or("y"), str)
+            assert_type(use_or(b), int)
+            assert_type(use_or(x_or_y), str)
             assert_is_value(use_or(x_or_z), TypedValue(str) | TypedValue(int))
 
     @assert_passes()
@@ -417,8 +417,8 @@ class TestBoolOp(TestNameCheckVisitorBase):
 
         def capybara():
             val = is_one(-1)  # E: incompatible_call
-            assert_is_value(val, TypedValue(int))
-            assert_is_value(is_one(2), TypedValue(str))
+            assert_type(val, int)
+            assert_type(is_one(2), str)
 
 
 class TestValidation(TestNameCheckVisitorBase):
@@ -547,12 +547,12 @@ class TestExamples(TestNameCheckVisitorBase):
             return IO[Any]
 
         def capybara():
-            assert_is_value(open2("x", "r"), TypedValue(TextIOWrapper))
+            assert_type(open2("x", "r"), TextIOWrapper)
             open2("x", "rb", encoding="utf-8")  # E: incompatible_call
-            assert_is_value(open2("x", "rb", buffering=0), TypedValue(FileIO))
-            assert_is_value(open2("x", "rb+"), TypedValue(BufferedRandom))
-            assert_is_value(open2("x", "rb"), TypedValue(BufferedReader))
-            assert_is_value(open2("x", "rb", buffering=1), TypedValue(BufferedReader))
+            assert_type(open2("x", "rb", buffering=0), FileIO)
+            assert_type(open2("x", "rb+"), BufferedRandom)
+            assert_type(open2("x", "rb"), BufferedReader)
+            assert_type(open2("x", "rb", buffering=1), BufferedReader)
 
     @assert_passes()
     def test_safe_upcast(self):
@@ -570,8 +570,8 @@ class TestExamples(TestNameCheckVisitorBase):
             return Any
 
         def capybara():
-            assert_is_value(safe_upcast(object, 1), TypedValue(object))
-            assert_is_value(safe_upcast(int, 1), TypedValue(int))
+            assert_type(safe_upcast(object, 1), object)
+            assert_type(safe_upcast(int, 1), int)
             safe_upcast(str, 1)  # E: incompatible_call
 
     @assert_passes()

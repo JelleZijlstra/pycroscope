@@ -82,7 +82,7 @@ class TestUnwrapYield(TestNameCheckVisitorBase):
             val1 = yield async_fn.asynq(1)
             assert_is_value(val1, KnownValue("async_fn"))
             val2 = yield square.asynq(3)
-            assert_is_value(val2, TypedValue(int))
+            assert_type(val2, int)
 
             val3, val4 = yield async_fn.asynq(1), async_fn.asynq(2)
             assert_is_value(val3, KnownValue("async_fn"))
@@ -101,7 +101,7 @@ class TestUnwrapYield(TestNameCheckVisitorBase):
 
             vals2 = yield [square.asynq(i) for i in ints]
             for val in vals2:
-                assert_is_value(val, TypedValue(int))
+                assert_type(val, int)
 
             vals3 = yield {1: square.asynq(1)}
             assert_is_value(
@@ -215,7 +215,7 @@ class TestReturn(TestNameCheckVisitorBase):
             assert_is_value(
                 async_fn.asynq(), AsyncTaskIncompleteValue(AsyncTask, KnownValue(3))
             )
-            assert_is_value(WithAProperty().this_is_one, TypedValue(str))
+            assert_type(WithAProperty().this_is_one, str)
             assert_is_value(pure_async_proxy(oid), AnyValue(AnySource.unannotated))
             assert_is_value(impure_async_proxy(), AnyValue(AnySource.unannotated))
             assert_is_value(
