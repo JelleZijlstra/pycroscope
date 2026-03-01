@@ -2486,6 +2486,15 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         base_value = replace_fallback(base_value)
         if isinstance(base_value, AnnotatedValue):
             return self._base_class_key_from_value(base_value.value)
+        if isinstance(base_value, (MultiValuedValue, IntersectionValue)):
+            class_keys = {
+                class_key
+                for subval in base_value.vals
+                if (class_key := self._base_class_key_from_value(subval)) is not None
+            }
+            if len(class_keys) == 1:
+                return next(iter(class_keys))
+            return None
         if isinstance(base_value, SubclassValue) and isinstance(
             base_value.typ, TypedValue
         ):
@@ -2496,6 +2505,10 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             class_type = base_value.class_type
             if isinstance(class_type, TypedValue):
                 return class_type.typ
+            return None
+        if isinstance(base_value, GenericValue):
+            if isinstance(base_value.typ, (type, str)):
+                return base_value.typ
             return None
         if isinstance(base_value, TypedValue):
             if isinstance(base_value.typ, (type, str)):
@@ -2816,7 +2829,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                             "NewType types cannot be used as base classes",
                             error_code=ErrorCode.invalid_base,
                         )
-            if any(_is_enum_base_value(base) for base in base_values):
+            if any(_is_enum_base_value(base, self) for base in base_values):
                 self.enum_class_keys.add(class_key)
             self._check_for_final_base_classes(node, base_values)
             keyword_values = [(kw, self.visit(kw.value)) for kw in node.keywords]
@@ -7449,6 +7462,16 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 return root_value.typ
             return None
         if isinstance(root_value, MultiValuedValue):
+            class_keys = {
+                class_key
+                for subval in root_value.vals
+                if (class_key := self._class_key_from_attribute_root_value(subval))
+                is not None
+            }
+            if len(class_keys) == 1:
+                return next(iter(class_keys))
+            return None
+        if isinstance(root_value, IntersectionValue):
             class_keys = {
                 class_key
                 for subval in root_value.vals
@@ -12486,16 +12509,15 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         return val
 
     def _get_instantiable_protocol_class_name(self, value: Value) -> str | None:
-        value = replace_fallback(value)
-        if isinstance(value, KnownValue) and isinstance(value.val, type):
-            if self.checker.make_type_object(value.val).is_protocol:
-                return value.val.__name__
+        class_key = self._base_class_key_from_value(value)
+        if class_key is None:
             return None
-        if isinstance(value, SyntheticClassObjectValue) and isinstance(
-            value.class_type, TypedValue
-        ):
-            if self.checker.make_type_object(value.class_type.typ).is_protocol:
+        if self.checker.make_type_object(class_key).is_protocol:
+            if isinstance(value, SyntheticClassObjectValue):
                 return value.name
+            if isinstance(class_key, type):
+                return class_key.__name__
+            return class_key.rsplit(".", 1)[-1]
         return None
 
     def _check_call_no_mvv(
@@ -13134,28 +13156,13 @@ def _classvar_names_from_mapping(attributes: Mapping[str, Value]) -> set[str]:
     return set()
 
 
-def _is_enum_base_value(base_value: Value) -> bool:
-    base_value = replace_fallback(base_value)
-    if isinstance(base_value, SyntheticClassObjectValue):
-        class_type = base_value.class_type
-        if isinstance(class_type, TypedValue):
-            return _is_enum_base_value(class_type)
-        return False
-    if isinstance(base_value, KnownValue):
-        return isinstance(base_value.val, type) and safe_issubclass(
-            base_value.val, enum.Enum
-        )
-    if isinstance(base_value, TypedValue):
-        return isinstance(base_value.typ, type) and safe_issubclass(
-            base_value.typ, enum.Enum
-        )
-    if isinstance(base_value, SubclassValue) and isinstance(base_value.typ, TypedValue):
-        return isinstance(base_value.typ.typ, type) and safe_issubclass(
-            base_value.typ.typ, enum.Enum
-        )
-    if isinstance(base_value, MultiValuedValue):
-        return any(_is_enum_base_value(subval) for subval in base_value.vals)
-    return False
+def _is_enum_base_value(base_value: Value, ctx: NameCheckVisitor) -> bool:
+    return not isinstance(
+        has_relation(
+            SubclassValue(TypedValue(enum.Enum)), base_value, Relation.SUBTYPE, ctx
+        ),
+        CanAssignError,
+    )
 
 
 def _is_newtype_base_value(base_value: Value) -> bool:
