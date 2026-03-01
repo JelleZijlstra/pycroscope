@@ -1172,6 +1172,7 @@ class Checker:
         instance_type = self._make_synthetic_constructor_instance_value(value)
         has_direct_new = "__new__" in value.class_attributes
         has_direct_init = "__init__" in value.class_attributes
+        dataclass_init_enabled = self._synthetic_dataclass_init_enabled(value)
 
         metaclass_call = self._get_synthetic_metaclass_call_signature(
             value,
@@ -1202,7 +1203,7 @@ class Checker:
 
         if has_direct_new and not has_direct_init:
             init_sig = None
-        if value.is_dataclass and not has_direct_init:
+        if value.is_dataclass and dataclass_init_enabled and not has_direct_init:
             dataclass_sig = self._get_synthetic_dataclass_constructor_signature(
                 value, instance_type
             )
@@ -1218,7 +1219,7 @@ class Checker:
             return new_sig
         if init_sig is not None:
             return init_sig
-        if value.is_dataclass:
+        if value.is_dataclass and dataclass_init_enabled:
             dataclass_sig = self._get_synthetic_dataclass_constructor_signature(
                 value, instance_type
             )
@@ -1241,6 +1242,13 @@ class Checker:
             ):
                 return concrete
         return Signature.make([], instance_type)
+
+    @staticmethod
+    def _synthetic_dataclass_init_enabled(value: SyntheticClassObjectValue) -> bool:
+        raw_flag = value.class_attributes.get("%dataclass_init")
+        if isinstance(raw_flag, KnownValue) and isinstance(raw_flag.val, bool):
+            return raw_flag.val
+        return True
 
     def _get_synthetic_dataclass_constructor_signature(
         self, value: SyntheticClassObjectValue, instance_type: Value
