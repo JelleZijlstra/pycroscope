@@ -34,7 +34,8 @@
   live in the owning module even when they support special-casing logic.
 - Code that branches on different subclasses of `Value` should take care to cover all cases. Where possible, replace
   code that dispatches on different kinds of values with a call to a general helper function that already knows how
-  to deal with all Values, such as `has_relation`. If dispatching on `Value` is necessary, use the following procedure:
+  to deal with all Values, such as `has_relation`, `is_assignable`, or `is_subtype`. If dispatching on `Value` is
+  necessary, use the following procedure:
   - Call `pycroscope.value.gradualize` or `pycroscope.value.replace_fallback` to narrow the Value to a
     fixed set of classes. This will raise `NotAGradualType`
     when it encounters unexpected Value subclasses. Do not catch this exception; instead add specific handling for those
@@ -46,3 +47,7 @@
     all types are covered.
 - Avoid using `@staticmethod` for local helper functions. Use private module-level functions instead.
 - Avoid using function-local imports, except where necessary to avoid an import cycle.
+- Never catch `NotAGradualType`. Instead refactor the code so that non-gradual types do not escape narrow parts of the
+  checker, or add specific handling for individual types.
+- Do not use the names of symbols or parameters (such as `self`) for logic. Instead use type inference or figure out
+  whether a parameter (for example) logically represents `self` without relying on the name.
