@@ -3007,9 +3007,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             effective_type_param_values = (
                 type_param_values
                 if type_param_values
-                else self._type_params_from_base_values(
-                    base_values, include_runtime_fallback=class_obj is None
-                )
+                else self._type_params_from_base_values(base_values)
             )
             if not effective_type_param_values and is_protocol_class:
                 # Runtime protocol classes often expose no generic parameters;
@@ -5670,6 +5668,31 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         else:
             used_polarities.add(polarity)
 
+    def _synthetic_type_params_for_variance(
+        self, typ: type | str, arity: int
+    ) -> Sequence[object] | None:
+        if not isinstance(typ, str):
+            return None
+        synthetic_class = self.checker.get_synthetic_class(typ)
+        if synthetic_class is None:
+            return None
+        for base in synthetic_class.base_classes:
+            runtime_annotation = self._runtime_annotation_from_value(base)
+            origin = typing.get_origin(runtime_annotation)
+            if origin is None or not (
+                is_typing_name(origin, "Generic") or is_typing_name(origin, "Protocol")
+            ):
+                continue
+            type_params = typing.get_args(runtime_annotation)
+            if len(type_params) != arity:
+                continue
+            if all(
+                is_instance_of_typing_name(type_param, "TypeVar")
+                for type_param in type_params
+            ):
+                return type_params
+        return None
+
     def _value_for_variance_annotation(self, annotation: ast.expr) -> Value:
         annotation_expr = annotation_expr_from_ast(
             annotation, self, suppress_errors=True
@@ -5718,10 +5741,23 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                         ),
                     )
             else:
-                for arg in value.args:
-                    self._collect_type_param_polarities_from_value(
-                        arg, type_param_polarities, polarity=0
-                    )
+                synthetic_type_params = self._synthetic_type_params_for_variance(
+                    value.typ, len(value.args)
+                )
+                if synthetic_type_params is None:
+                    for arg in value.args:
+                        self._collect_type_param_polarities_from_value(
+                            arg, type_param_polarities, polarity=0
+                        )
+                else:
+                    for arg, type_param in zip(value.args, synthetic_type_params):
+                        self._collect_type_param_polarities_from_value(
+                            arg,
+                            type_param_polarities,
+                            polarity=self._compose_variance_polarity(
+                                polarity, get_typevar_variance(type_param)
+                            ),
+                        )
             return
         if isinstance(value, AnnotatedValue):
             self._collect_type_param_polarities_from_value(
@@ -5735,10 +5771,29 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 )
             return
         if isinstance(value, TypeAliasValue):
-            for type_argument in value.type_arguments:
-                self._collect_type_param_polarities_from_value(
-                    type_argument, type_param_polarities, polarity=polarity
-                )
+            alias_type_params = value.alias.get_type_params()
+            if value.type_arguments and len(alias_type_params) == len(
+                value.type_arguments
+            ):
+                for alias_type_param, type_argument in zip(
+                    alias_type_params, value.type_arguments
+                ):
+                    type_param = (
+                        alias_type_param.typevar
+                        if isinstance(alias_type_param, TypeVarValue)
+                        else alias_type_param
+                    )
+                    self._collect_type_param_polarities_from_value(
+                        type_argument,
+                        type_param_polarities,
+                        polarity=self._compose_variance_polarity(
+                            polarity, get_typevar_variance(type_param)
+                        ),
+                    )
+                return
+            self._collect_type_param_polarities_from_value(
+                value.get_value(), type_param_polarities, polarity=polarity
+            )
             return
         if isinstance(value, SubclassValue):
             self._collect_type_param_polarities_from_value(
@@ -5923,6 +5978,21 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         return 1 not in used_polarities
 
     @staticmethod
+    def _is_variance_declaration_arg(arg: Value) -> bool:
+        if isinstance(arg, TypeVarValue):
+            return True
+        if isinstance(arg, AnnotatedValue):
+            return NameCheckVisitor._is_variance_declaration_arg(arg.value)
+        if isinstance(arg, KnownValue):
+            type_param = arg.val
+            return (
+                is_instance_of_typing_name(type_param, "TypeVar")
+                or is_instance_of_typing_name(type_param, "TypeVarTuple")
+                or is_instance_of_typing_name(type_param, "ParamSpec")
+            )
+        return False
+
+    @staticmethod
     def _is_variance_declaration_base(base_value: Value) -> bool:
         subvals = list(flatten_values(replace_fallback(base_value)))
         if not subvals:
@@ -5932,13 +6002,20 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 subval = subval.class_type
             if isinstance(subval, GenericValue):
                 typ: object = subval.typ
+                type_args: Sequence[Value] = subval.args
             elif isinstance(subval, TypedValue):
                 typ = subval.typ
+                type_args = ()
             elif isinstance(subval, KnownValue):
                 typ = subval.val
+                type_args = ()
             else:
                 return False
             if not (is_typing_name(typ, "Generic") or is_typing_name(typ, "Protocol")):
+                return False
+            if type_args and not all(
+                NameCheckVisitor._is_variance_declaration_arg(arg) for arg in type_args
+            ):
                 return False
         return True
 
@@ -5952,8 +6029,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         if self._is_protocol_class(base_values, class_scope_object):
             return
         analyzed_bases = [
-            replace_fallback(self._value_for_variance_annotation(base_node))
-            for base_node in node.bases
+            self._value_for_variance_annotation(base_node) for base_node in node.bases
         ]
         typevars_to_check = {
             type_param.typevar
@@ -5962,7 +6038,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         }
         for analyzed_base in analyzed_bases:
             for subval in flatten_values(analyzed_base):
-                for walked in subval.walk_values():
+                for walked in self._walk_values_for_variance_typevar_collection(subval):
                     if not isinstance(walked, TypeVarValue):
                         continue
                     if not is_instance_of_typing_name(walked.typevar, "TypeVar"):
@@ -5995,6 +6071,24 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 )
                 break
 
+    def _walk_values_for_variance_typevar_collection(
+        self, value: Value
+    ) -> Iterable[Value]:
+        if isinstance(value, TypeAliasValue):
+            yield value
+            for type_argument in value.type_arguments:
+                yield from self._walk_values_for_variance_typevar_collection(
+                    type_argument
+                )
+            return
+        for walked in value.walk_values():
+            if walked is value:
+                yield walked
+            elif isinstance(walked, TypeAliasValue):
+                yield from self._walk_values_for_variance_typevar_collection(walked)
+            else:
+                yield walked
+
     def _is_protocol_class(
         self, base_values: Sequence[Value], class_scope_object: type | str | None
     ) -> bool:
@@ -6017,7 +6111,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         return aligned
 
     def _type_params_from_base_values(
-        self, base_values: Sequence[Value], *, include_runtime_fallback: bool = False
+        self, base_values: Sequence[Value]
     ) -> Sequence[TypeVarValue]:
         seen: set[object] = set()
         type_params: list[TypeVarValue] = []
@@ -6030,36 +6124,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                         continue
                     seen.add(walked.typevar)
                     type_params.append(walked)
-        if include_runtime_fallback and not type_params:
-            self._append_runtime_type_params_from_base_values(
-                base_values, seen, type_params
-            )
         return type_params
-
-    def _append_runtime_type_params_from_base_values(
-        self,
-        base_values: Sequence[Value],
-        seen: set[object],
-        type_params: list[TypeVarValue],
-    ) -> None:
-        for base in base_values:
-            for subval in flatten_values(base):
-                runtime_annotation = self._runtime_annotation_from_value(subval)
-                for runtime_arg in typing.get_args(runtime_annotation):
-                    if not (
-                        is_instance_of_typing_name(runtime_arg, "TypeVar")
-                        or is_instance_of_typing_name(runtime_arg, "TypeVarTuple")
-                        or is_instance_of_typing_name(runtime_arg, "ParamSpec")
-                    ):
-                        continue
-                    if runtime_arg in seen:
-                        continue
-                    seen.add(runtime_arg)
-                    type_params.append(
-                        TypeVarValue(
-                            runtime_arg, variance=get_typevar_variance(runtime_arg)
-                        )
-                    )
 
     def _type_params_from_base_values_for_methods(
         self, base_values: Sequence[Value]
@@ -6080,9 +6145,24 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 continue
             seen.add(type_param.typevar)
             type_params.append(type_param)
-        self._append_runtime_type_params_from_base_values(
-            base_values, seen, type_params
-        )
+        for base in base_values:
+            for subval in flatten_values(base):
+                runtime_annotation = self._runtime_annotation_from_value(subval)
+                for runtime_arg in typing.get_args(runtime_annotation):
+                    if not (
+                        is_instance_of_typing_name(runtime_arg, "TypeVar")
+                        or is_instance_of_typing_name(runtime_arg, "TypeVarTuple")
+                        or is_instance_of_typing_name(runtime_arg, "ParamSpec")
+                    ):
+                        continue
+                    if runtime_arg in seen:
+                        continue
+                    seen.add(runtime_arg)
+                    type_params.append(
+                        TypeVarValue(
+                            runtime_arg, variance=get_typevar_variance(runtime_arg)
+                        )
+                    )
         return type_params
 
     def _check_protocol_base_validity(
