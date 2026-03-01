@@ -25,7 +25,7 @@ import contextlib
 import enum
 from ast import AST
 from collections import OrderedDict, defaultdict
-from collections.abc import Callable, Iterable, Iterator, Sequence
+from collections.abc import Callable, Generator, Iterable, Sequence
 from contextlib import AbstractContextManager
 from dataclasses import dataclass, field, replace
 from itertools import chain
@@ -34,12 +34,17 @@ from typing import Any, NamedTuple, Optional, TypeVar
 
 from typing_extensions import assert_never
 
-from pycroscope.relations import intersect_values, subtract_values
+from pycroscope.relations import (
+    Relation,
+    has_relation,
+    intersect_values,
+    subtract_values,
+)
 
 from .analysis_lib import Sentinel, override
 from .boolability import get_boolability
 from .extensions import reveal_type
-from .safe import safe_equals, safe_issubclass
+from .safe import safe_equals
 from .value import (
     NO_RETURN_VALUE,
     UNINITIALIZED_VALUE,
@@ -47,6 +52,7 @@ from .value import (
     AnySource,
     AnyValue,
     CanAssignContext,
+    CanAssignError,
     ConstraintExtension,
     KnownValue,
     MultiValuedValue,
@@ -68,6 +74,12 @@ T = TypeVar("T")
 LEAVES_SCOPE = "%LEAVES_SCOPE"
 LEAVES_LOOP = "%LEAVES_LOOP"
 _UNINITIALIZED = Sentinel("uninitialized")
+
+
+def _is_subtype(supertype: Value, subtype: Value, ctx: CanAssignContext) -> bool:
+    return not isinstance(
+        has_relation(supertype, subtype, Relation.SUBTYPE, ctx), CanAssignError
+    )
 
 
 class VisitorState(enum.Enum):
@@ -345,64 +357,43 @@ class Constraint(AbstractConstraint):
 
         inner_value = replace_fallback(value)
         if self.constraint_type == ConstraintType.is_instance:
+            target_type = TypedValue(self.value)
             if isinstance(inner_value, AnyValue):
                 if self.positive:
-                    yield TypedValue(self.value)
+                    yield target_type
                 else:
                     yield inner_value
-            elif isinstance(inner_value, KnownValue):
-                if self.positive:
-                    if isinstance(inner_value.val, self.value):
-                        yield value
-                else:
-                    if not isinstance(inner_value.val, self.value):
-                        yield value
-            elif isinstance(inner_value, TypedValue):
-                if isinstance(inner_value.typ, str):
-                    # TODO handle synthetic types correctly here (which would require
-                    # a CanAssignContext).
+            elif isinstance(inner_value, TypedValue) and isinstance(
+                inner_value.typ, str
+            ):
+                # TODO handle synthetic types correctly here.
+                yield value
+            elif isinstance(inner_value, SubclassValue) and not isinstance(
+                inner_value.typ, TypedValue
+            ):
+                yield value
+            elif self.positive:
+                if _is_subtype(target_type, inner_value, ctx):
                     yield value
-                elif self.positive:
-                    if safe_issubclass(inner_value.typ, self.value):
-                        yield value
-                    elif safe_issubclass(self.value, inner_value.typ):
-                        yield TypedValue(self.value)
-                    # TODO: Technically here we should infer an intersection type:
-                    # a type that is a subclass of both types. In practice currently
-                    # _constrain_value() will eventually return NoReturn.
-                else:
-                    if not safe_issubclass(inner_value.typ, self.value):
-                        yield value
-            elif isinstance(inner_value, SubclassValue):
-                if not isinstance(inner_value.typ, TypedValue):
+                elif _is_subtype(inner_value, target_type, ctx):
+                    yield target_type
+                # TODO: Technically here we should infer an intersection type:
+                # a type that is a subclass of both types. In practice currently
+                # _constrain_value() will eventually return NoReturn.
+            else:
+                if not _is_subtype(target_type, inner_value, ctx):
                     yield value
-                elif self.positive:
-                    if isinstance(inner_value.typ.typ, self.value):
-                        yield value
-                else:
-                    if not isinstance(inner_value.typ.typ, self.value):
-                        yield value
 
         elif self.constraint_type == ConstraintType.is_value:
             if self.positive:
                 known_val = KnownValue(self.value)
-                if isinstance(inner_value, AnyValue):
+                if (
+                    isinstance(inner_value, KnownValue)
+                    and inner_value.val is self.value
+                ):
+                    yield value
+                elif _is_subtype(inner_value, known_val, ctx):
                     yield known_val
-                elif isinstance(inner_value, KnownValue):
-                    if inner_value.val is self.value:
-                        yield value
-                elif isinstance(inner_value, TypedValue):
-                    if isinstance(self.value, inner_value.typ):
-                        yield known_val
-                elif isinstance(inner_value, SubclassValue):
-                    if (
-                        isinstance(inner_value.typ, TypedValue)
-                        and isinstance(self.value, type)
-                        # TODO consider synthetic types
-                        and isinstance(inner_value.typ.typ, type)
-                        and safe_issubclass(self.value, inner_value.typ.typ)
-                    ):
-                        yield known_val
             else:
                 if not (
                     isinstance(inner_value, KnownValue)
@@ -855,16 +846,16 @@ class Scope:
         return varname in self.variables or varname in self.declared_types
 
     @contextlib.contextmanager
-    def suppressing_subscope(self) -> Iterator[SubScope]:
+    def suppressing_subscope(self) -> Generator[SubScope]:
         yield {}
 
     # no real subscopes in non-function scopes, just dummy implementations
     @contextlib.contextmanager
-    def subscope(self) -> Iterator[None]:
+    def subscope(self) -> Generator[None]:
         yield
 
     @contextlib.contextmanager
-    def loop_scope(self) -> Iterator[None]:
+    def loop_scope(self) -> Generator[None]:
         # Context manager for the subscope associated with a loop.
         yield
 
@@ -1232,7 +1223,7 @@ class FunctionScope(Scope):
         }
 
     @contextlib.contextmanager
-    def suppressing_subscope(self) -> Iterator[SubScope]:
+    def suppressing_subscope(self) -> Generator[SubScope]:
         """A suppressing subscope is a subscope that may suppress exceptions
         inside of it.
 
@@ -1273,7 +1264,7 @@ class FunctionScope(Scope):
         self.combine_subscopes([dummy_subscope, new_scope])
 
     @contextlib.contextmanager
-    def subscope(self) -> Iterator[SubScope]:
+    def subscope(self) -> Generator[SubScope]:
         """Create a new subscope, to be used for conditional branches."""
         # Ignore LEAVES_SCOPE if it's already there, so that we type check code after the
         # assert False correctly. Without this, test_after_assert_false fails.
@@ -1289,7 +1280,7 @@ class FunctionScope(Scope):
             yield new_name_to_nodes
 
     @contextlib.contextmanager
-    def loop_scope(self) -> Iterator[list[SubScope]]:
+    def loop_scope(self) -> Generator[list[SubScope]]:
         loop_scopes = []
         with self.subscope() as main_scope:
             loop_scopes.append(main_scope)
@@ -1453,7 +1444,7 @@ class StackedScopes:
         scope_type: ScopeType,
         scope_node: Node,
         scope_object: object | None = None,
-    ) -> Iterator[None]:
+    ) -> Generator[None]:
         """Context manager that adds a scope of this type to the top of the stack."""
         if scope_type is ScopeType.function_scope:
             scope = FunctionScope(
@@ -1475,7 +1466,7 @@ class StackedScopes:
             self.scopes.pop()
 
     @contextlib.contextmanager
-    def ignore_topmost_scope(self) -> Iterator[None]:
+    def ignore_topmost_scope(self) -> Generator[None]:
         """Context manager that temporarily ignores the topmost scope."""
         scope = self.scopes.pop()
         try:
@@ -1484,7 +1475,7 @@ class StackedScopes:
             self.scopes.append(scope)
 
     @contextlib.contextmanager
-    def allow_only_module_scope(self) -> Iterator[None]:
+    def allow_only_module_scope(self) -> Generator[None]:
         """Context manager that allows only lookups in the module and builtin scopes."""
         rest = self.scopes[2:]
         del self.scopes[2:]

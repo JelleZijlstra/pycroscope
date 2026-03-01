@@ -893,9 +893,9 @@ class TestParamSpec(TestNameCheckVisitorBase):
     @assert_passes()
     def test_contextmanager(self):
         import contextlib
-        from typing import Iterator
+        from typing import Generator
 
-        def cm(a: int) -> Iterator[str]:
+        def cm(a: int) -> Generator[str, None, None]:
             yield "hello"
 
         def capybara():

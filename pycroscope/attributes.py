@@ -22,6 +22,7 @@ else:
 
 from .annotated_types import EnumName
 from .annotations import Context, annotation_expr_from_annotations, type_from_runtime
+from .input_sig import FullSignature, InputSigValue
 from .options import Options, PyObjectSequenceOption
 from .safe import (
     is_async_fn,
@@ -798,14 +799,18 @@ def _is_synthetic_self_classmethod_attribute(
     return attr_name in self_classmethods.val
 
 
-def _normalize_synthetic_class_attribute(
-    value: Value, *, is_self_returning_classmethod: bool = False
+def normalize_synthetic_descriptor_attribute(
+    value: Value,
+    *,
+    is_self_returning_classmethod: bool = False,
+    unknown_descriptor_means_any: bool = True,
 ) -> Value:
-    # Decorated methods in synthetic classes are stored as the descriptor objects.
-    # Mirror runtime attribute lookup for staticmethod by exposing the wrapped function.
-    if isinstance(value, GenericValue) and value.typ is staticmethod and value.args:
-        wrapped = value.args[0]
-        from .input_sig import FullSignature, InputSigValue
+    if isinstance(value, GenericValue) and value.typ is staticmethod:
+        if not value.args:
+            if unknown_descriptor_means_any:
+                return AnyValue(AnySource.inference)
+            return value
+        wrapped = next(iter(value.args))
 
         if isinstance(wrapped, InputSigValue):
             if isinstance(wrapped.input_sig, FullSignature):
@@ -819,14 +824,12 @@ def _normalize_synthetic_class_attribute(
                 )
             return AnyValue(AnySource.inference)
         return wrapped
-    if isinstance(value, GenericValue) and value.typ is classmethod and value.args:
-        if len(value.args) >= 2:
-            wrapped = value.args[1]
-        elif value.args:
-            wrapped = value.args[0]
-        else:
-            return AnyValue(AnySource.inference)
-        from .input_sig import FullSignature, InputSigValue
+    if isinstance(value, GenericValue) and value.typ is classmethod:
+        if not value.args:
+            if unknown_descriptor_means_any:
+                return AnyValue(AnySource.inference)
+            return value
+        wrapped = value.args[1] if len(value.args) >= 2 else next(iter(value.args))
 
         if isinstance(wrapped, InputSigValue):
             if isinstance(wrapped.input_sig, FullSignature):
@@ -835,12 +838,10 @@ def _normalize_synthetic_class_attribute(
                     if len(value.args) > 2
                     else wrapped.input_sig.sig.return_value
                 )
-                # In import-failure fallback mode, explicit ``-> Self`` on
-                # classmethods can degrade to an unresolved generic argument.
                 if (
                     is_self_returning_classmethod
                     and isinstance(return_annotation, AnyValue)
-                    and (return_annotation.source is AnySource.generic_argument)
+                    and return_annotation.source is AnySource.generic_argument
                 ):
                     return_annotation = SelfTVV
                 return CallableValue(
@@ -853,6 +854,16 @@ def _normalize_synthetic_class_attribute(
     if isinstance(value, KnownValue) and isinstance(value.val, classmethod):
         return KnownValue(value.val.__func__)
     return value
+
+
+def _normalize_synthetic_class_attribute(
+    value: Value, *, is_self_returning_classmethod: bool = False
+) -> Value:
+    return normalize_synthetic_descriptor_attribute(
+        value,
+        is_self_returning_classmethod=is_self_returning_classmethod,
+        unknown_descriptor_means_any=False,
+    )
 
 
 def _maybe_mangle_private_name(attr_name: str, class_name: str) -> str | None:

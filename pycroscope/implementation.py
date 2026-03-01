@@ -21,6 +21,7 @@ from .extensions import assert_type, reveal_locals, reveal_type
 from .format_strings import parse_format_string
 from .maybe_asynq import qcore
 from .predicates import IsAssignablePredicate
+from .regex_check import check_regex_in_value
 from .relations import (
     Relation,
     check_hashability,
@@ -3180,35 +3181,6 @@ def get_default_argspecs() -> dict[object, Signature]:
             )
             signatures.append(sig)
     return {sig.callable: sig for sig in signatures}
-
-
-def check_regex(pattern: str | bytes) -> CanAssignError | None:
-    try:
-        re.compile(pattern)
-    except re.error as e:
-        return CanAssignError(
-            f"Invalid regex pattern: {e}", error_code=ErrorCode.invalid_regex
-        )
-    return None
-
-
-def check_regex_in_value(value: Value) -> CanAssignError | None:
-    errors = []
-    for subval in flatten_values(value):
-        if not isinstance(subval, KnownValue):
-            continue
-        if not isinstance(subval.val, (str, bytes)):
-            continue
-        maybe_error = check_regex(subval.val)
-        if maybe_error is not None:
-            errors.append(maybe_error)
-    if errors:
-        if len(errors) == 1:
-            return errors[0]
-        return pycroscope.value.CanAssignError(
-            "Invalid regex", errors, pycroscope.error_code.ErrorCode.invalid_regex
-        )
-    return None
 
 
 def _re_impl_with_pattern(ctx: CallContext) -> Value:

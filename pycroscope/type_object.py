@@ -19,7 +19,13 @@ from pycroscope.signature import (
     mark_ellipsis_style_any_tail_parameters,
 )
 
-from .safe import safe_getattr, safe_in, safe_isinstance, safe_issubclass
+from .safe import (
+    is_namedtuple_class,
+    safe_getattr,
+    safe_in,
+    safe_isinstance,
+    safe_issubclass,
+)
 from .value import (
     UNINITIALIZED_VALUE,
     AnnotatedValue,
@@ -46,6 +52,15 @@ from .value import (
 
 SYNTHETIC_PROPERTY_GETTER_PREFIX = "%property_getter:"
 SYNTHETIC_PROPERTY_SETTER_PREFIX = "%property_setter:"
+
+
+def _as_concrete_signature(
+    sig: Signature | BoundMethodSignature | OverloadedSignature | None,
+    ctx: CanAssignContext,
+) -> Signature | OverloadedSignature | None:
+    if isinstance(sig, BoundMethodSignature):
+        return sig.get_signature(ctx=ctx)
+    return sig
 
 
 @dataclass(frozen=True)
@@ -208,26 +223,13 @@ class TypeObject:
         other_val: KnownValue | TypedValue | SubclassValue | AnnotatedValue,
         ctx: CanAssignContext,
     ) -> CanAssign:
-        expected_sig = self._as_concrete_signature(
-            ctx.signature_from_value(self_val), ctx
-        )
-        actual_sig = self._as_concrete_signature(
-            ctx.signature_from_value(other_val), ctx
-        )
+        expected_sig = _as_concrete_signature(ctx.signature_from_value(self_val), ctx)
+        actual_sig = _as_concrete_signature(ctx.signature_from_value(other_val), ctx)
         if expected_sig is None or actual_sig is None:
             return CanAssignError(
                 f"Cannot assign protocol {other_val} to non-protocol {self}"
             )
         return expected_sig.can_assign(actual_sig, ctx)
-
-    @staticmethod
-    def _as_concrete_signature(
-        sig: Signature | BoundMethodSignature | OverloadedSignature | None,
-        ctx: CanAssignContext,
-    ) -> Signature | OverloadedSignature | None:
-        if isinstance(sig, BoundMethodSignature):
-            return sig.get_signature(ctx=ctx)
-        return sig
 
     def _is_compatible_with_protocol(
         self, self_val: Value, other_val: Value, ctx: CanAssignContext
@@ -267,7 +269,7 @@ class TypeObject:
                                 synthetic_class, member
                             )
                 if expected is UNINITIALIZED_VALUE:
-                    expected_signature = self._as_concrete_signature(
+                    expected_signature = _as_concrete_signature(
                         ctx.signature_from_value(self_val), ctx
                     )
                     if expected_signature is None:
@@ -775,7 +777,7 @@ def _is_readonly_instance_member(
     class_key: type | str, member: str, ctx: CanAssignContext
 ) -> bool:
     if isinstance(class_key, type):
-        if safe_issubclass(class_key, tuple):
+        if is_namedtuple_class(class_key):
             fields = safe_getattr(class_key, "_fields", None)
             if isinstance(fields, tuple) and member in fields:
                 return True

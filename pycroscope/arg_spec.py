@@ -11,7 +11,7 @@ import inspect
 import sys
 import textwrap
 import typing
-from collections.abc import Callable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Generator, Mapping, Sequence
 from dataclasses import dataclass, replace
 from re import Pattern
 from types import FunctionType, MethodType, ModuleType
@@ -44,12 +44,14 @@ from .safe import (
     hasattr_static,
     is_async_fn,
     is_bound_classmethod,
+    is_namedtuple_class,
     is_newtype,
     is_typing_name,
     safe_getattr,
     safe_hasattr,
     safe_isinstance,
     safe_issubclass,
+    should_disable_runtime_call_for_namedtuple_class,
 )
 from .signature import (
     ANY_SIGNATURE,
@@ -71,6 +73,7 @@ from .value import (
     AnySource,
     AnyValue,
     CanAssignContext,
+    CanAssignError,
     Extension,
     GenericBases,
     GenericValue,
@@ -86,6 +89,8 @@ from .value import (
     TypedValue,
     TypeVarValue,
     Value,
+    is_async_iterable,
+    is_iterable,
     make_coro_type,
     replace_fallback,
     unite_values,
@@ -110,9 +115,16 @@ MethodWrapperType = type(object().__str__)
 _SELF_PARAM = inspect.Parameter("__self", inspect.Parameter.POSITIONAL_ONLY)
 
 
+def _is_plain_object_constructor(obj: type) -> bool:
+    return (
+        safe_getattr(obj, "__init__", None) is object.__init__
+        and safe_getattr(obj, "__new__", None) is object.__new__
+    )
+
+
 @used  # exposed as an API
 @contextlib.contextmanager
-def with_implementation(fn: object, implementation_fn: Impl) -> Iterator[None]:
+def with_implementation(fn: object, implementation_fn: Impl) -> Generator[None]:
     """Temporarily sets the implementation of fn to be implementation_fn.
 
     This is useful for invoking test_scope to aggregate all calls to a particular function. For
@@ -225,6 +237,7 @@ class ClassesSafeToInstantiate(PyObjectSequenceOption[type]):
         CustomCheck,
         Value,
         Extension,
+        Composite,
         KVPair,
         TypedDictEntry,
         range,
@@ -422,7 +435,16 @@ class ArgSpecCache:
         if returns is not None:
             has_return_annotation = True
         else:
-            if is_wrapped or sig.return_annotation is inspect.Signature.empty:
+            if is_wrapped:
+                inferred = self._infer_contextmanager_wrapper_return(
+                    function_object, sig, func_globals
+                )
+                if inferred is not None:
+                    returns, has_return_annotation = inferred
+                else:
+                    returns = AnyValue(AnySource.unannotated)
+                    has_return_annotation = False
+            elif sig.return_annotation is inspect.Signature.empty:
                 returns = AnyValue(AnySource.unannotated)
                 has_return_annotation = False
             else:
@@ -469,6 +491,52 @@ class ArgSpecCache:
             is_asynq=is_asynq,
             allow_call=allow_call
             or FunctionsSafeToCall.contains(callable_object, self.options),
+        )
+
+    def _infer_contextmanager_wrapper_return(
+        self,
+        function_object: object,
+        sig: inspect.Signature,
+        func_globals: Mapping[str, object] | None,
+    ) -> tuple[Value, bool] | None:
+        wrapped = safe_getattr(function_object, "__wrapped__", None)
+        if wrapped is None:
+            return None
+        wrapper_globals = safe_getattr(function_object, "__globals__", None)
+        if (
+            not isinstance(wrapper_globals, Mapping)
+            or wrapper_globals.get("__name__") != "contextlib"
+        ):
+            return None
+        code = safe_getattr(function_object, "__code__", None)
+        if safe_getattr(code, "co_name", None) != "helper":
+            return None
+        if sig.return_annotation is inspect.Signature.empty:
+            return None
+        wrapped_return = type_from_runtime(
+            sig.return_annotation, ctx=AnnotationsContext(self, func_globals)
+        )
+        if inspect.isasyncgenfunction(wrapped):
+            maybe_iterable = is_async_iterable(wrapped_return, self.ctx)
+            if isinstance(maybe_iterable, CanAssignError):
+                return None
+            return (
+                GenericValue(
+                    "contextlib._AsyncGeneratorContextManager", [maybe_iterable]
+                ),
+                True,
+            )
+        maybe_iterable = is_iterable(wrapped_return, self.ctx)
+        if isinstance(maybe_iterable, CanAssignError):
+            return None
+        return (
+            GenericValue("contextlib._GeneratorContextManager", [maybe_iterable]),
+            True,
+        )
+
+    def _should_disable_namedtuple_runtime_call(self, obj: type) -> bool:
+        return should_disable_runtime_call_for_namedtuple_class(obj) and not (
+            ClassesSafeToInstantiate.contains(obj, self.options)
         )
 
     def _make_sig_parameter(
@@ -783,11 +851,11 @@ class ArgSpecCache:
                 return sig
             return bound_sig
 
-        is_namedtuple_class = self._is_namedtuple_class(obj)
+        is_namedtuple = is_namedtuple_class(obj)
         disable_namedtuple_runtime_call = False
-        if is_namedtuple_class and safe_isinstance(obj, type):
+        if is_namedtuple and safe_isinstance(obj, type):
             disable_namedtuple_runtime_call = (
-                self._should_disable_runtime_call_for_namedtuple_class(obj)
+                self._should_disable_namedtuple_runtime_call(obj)
             )
         allow_call = not disable_namedtuple_runtime_call and (
             FunctionsSafeToCall.contains(obj, self.options)
@@ -880,7 +948,7 @@ class ArgSpecCache:
 
         if inspect.isclass(obj):
             obj = UnwrapClass.unwrap(obj, self.options)
-            if self._is_namedtuple_class(obj):
+            if is_namedtuple_class(obj):
                 return self._namedtuple_constructor_signature(obj, type_params)
             override = ConstructorHooks.get_constructor(obj, self.options)
             is_dunder_new = False
@@ -923,7 +991,7 @@ class ArgSpecCache:
                         is_dunder_new = True
                         constructor = obj.__new__
                         inspect_sig = self._safe_get_signature(constructor)
-                    elif self._is_plain_object_constructor(obj):
+                    elif _is_plain_object_constructor(obj):
                         constructor = obj.__init__
                         inspect_sig = inspect.Signature(parameters=[_SELF_PARAM])
                     else:
@@ -998,32 +1066,6 @@ class ArgSpecCache:
             return self._make_any_sig(obj)
         return None
 
-    @staticmethod
-    def _is_namedtuple_class(obj: object) -> bool:
-        return (
-            safe_isinstance(obj, type)
-            and safe_issubclass(obj, tuple)
-            and isinstance(safe_getattr(obj, "_fields", None), tuple)
-        )
-
-    @staticmethod
-    def _should_disable_runtime_call_for_namedtuple_class(obj: type) -> bool:
-        module_name = safe_getattr(obj, "__module__", None)
-        if isinstance(module_name, str) and module_name.startswith("pycroscope"):
-            return False
-        annotations = safe_getattr(obj, "__annotations__", None)
-        if isinstance(annotations, dict) and annotations:
-            return True
-        type_params = safe_getattr(obj, "__parameters__", ())
-        return bool(type_params)
-
-    @staticmethod
-    def _is_plain_object_constructor(obj: type) -> bool:
-        return (
-            safe_getattr(obj, "__init__", None) is object.__init__
-            and safe_getattr(obj, "__new__", None) is object.__new__
-        )
-
     def _namedtuple_constructor_signature(
         self, obj: type, type_params: Sequence[Value]
     ) -> Signature:
@@ -1095,7 +1137,7 @@ class ArgSpecCache:
 
             impl = infer_return_type
 
-        allow_call = not self._should_disable_runtime_call_for_namedtuple_class(obj)
+        allow_call = not self._should_disable_namedtuple_runtime_call(obj)
         return Signature.make(
             params, return_type, callable=obj, allow_call=allow_call, impl=impl
         )

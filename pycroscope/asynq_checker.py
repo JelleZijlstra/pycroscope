@@ -8,7 +8,7 @@ import ast
 import contextlib
 import inspect
 import types
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Generator
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -65,7 +65,7 @@ class AsynqChecker:
         name: str,
         async_kind: AsyncFunctionKind = AsyncFunctionKind.non_async,
         is_classmethod: bool = False,
-    ) -> Iterator[None]:
+    ) -> Generator[None]:
         """Sets the current function name for async data collection."""
         # Override current_func_name only if this is the outermost function, so that data access
         # within nested functions is attributed to the outer function. However, for async inner

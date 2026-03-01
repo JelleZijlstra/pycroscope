@@ -1,6 +1,7 @@
 # static analysis: ignore
 from typing import Dict, Union
 
+from .attributes import normalize_synthetic_descriptor_attribute
 from .test_name_check_visitor import TestNameCheckVisitorBase
 from .test_node_visitor import (
     assert_passes,
@@ -20,6 +21,15 @@ from .value import (
 )
 
 _global_dict: Dict[Union[int, str], bytes] = {}
+
+
+def test_normalize_synthetic_descriptor_attribute_empty_args() -> None:
+    assert normalize_synthetic_descriptor_attribute(
+        GenericValue(staticmethod, [])
+    ) == AnyValue(AnySource.inference)
+    assert normalize_synthetic_descriptor_attribute(
+        GenericValue(classmethod, [])
+    ) == AnyValue(AnySource.inference)
 
 
 class TestAttributes(TestNameCheckVisitorBase):

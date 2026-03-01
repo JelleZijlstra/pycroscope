@@ -53,6 +53,7 @@ from pycroscope.extensions import CustomCheck, ExternalType, PredicateCheck
 from pycroscope.safe import (
     all_of_type,
     is_instance_of_typing_name,
+    is_namedtuple_class,
     is_typing_name,
     safe_equals,
     safe_getattr,
@@ -3243,10 +3244,7 @@ def namedtuple_members_from_value(
     else:
         return None
 
-    if not (
-        safe_issubclass(namedtuple_type, tuple)
-        and isinstance(getattr(namedtuple_type, "_fields", None), tuple)
-    ):
+    if not is_namedtuple_class(namedtuple_type):
         return None
 
     fields_obj = safe_getattr(namedtuple_type, "_fields", None)

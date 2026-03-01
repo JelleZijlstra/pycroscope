@@ -13,7 +13,7 @@ import enum
 import types
 import typing
 from collections import defaultdict
-from collections.abc import Callable, Container, Iterable, Iterator, Sequence
+from collections.abc import Callable, Container, Generator, Iterable, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Annotated, Any, Literal, NoReturn, TypeVar
@@ -161,7 +161,7 @@ class ValidRegex(CustomCheck):
     """
 
     def can_assign(self, value: "Value", ctx: "CanAssignContext") -> "CanAssign":
-        error = pycroscope.implementation.check_regex_in_value(value)
+        error = pycroscope.regex_check.check_regex_in_value(value)
         if error is not None:
             return error
         return {}
@@ -495,7 +495,7 @@ def assert_type(val: _T, typ: Any) -> _T:
 
 
 @contextmanager
-def assert_error() -> Iterator[None]:
+def assert_error() -> Generator[None]:
     """Context manager that asserts that code produces a type checker error.
 
     Example::
