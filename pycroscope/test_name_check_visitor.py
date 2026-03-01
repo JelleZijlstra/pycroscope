@@ -928,6 +928,91 @@ class TestImportFailureHandlingCodeSamples(TestNameCheckVisitorBase):
         WithInitFalse(1)
         WithInitFalse(a=1, b=2)  # E: incompatible_call
 
+    @assert_passes(allow_import_failures=True)
+    def test_dataclass_usage_features_after_import_failure(self):
+        boom = 1 / 0
+
+        from dataclasses import dataclass, field
+        from typing import (
+            Any,
+            Callable,
+            ClassVar,
+            Generic,
+            Protocol,
+            TypeVar,
+            assert_type,
+        )
+
+        T = TypeVar("T")
+
+        @dataclass(order=True)
+        class InventoryItem:
+            name: str
+            unit_price: float
+            quantity_on_hand: int = 0
+
+        class InventoryItemInitProto(Protocol):
+            def __call__(
+                self, name: str, unit_price: float, quantity_on_hand: int = ...
+            ) -> None: ...
+
+        item = InventoryItem("soap", 2.3)
+        init_proto: InventoryItemInitProto = item.__init__
+        item.__repr__
+        item.__eq__
+        item.__ne__
+        item.__lt__
+        item.__le__
+        item.__gt__
+        item.__ge__
+
+        def parser(s: str) -> int:
+            return int(s)
+
+        @dataclass
+        class WithCallableDefault:
+            c: Callable[[str], int] = parser
+
+        with_callable_default = WithCallableDefault()
+        assert_type(with_callable_default.c, Callable[[str], int])
+
+        @dataclass
+        class WithBadFactory:
+            a: int = field(default_factory=str)  # E: incompatible_assignment
+
+        class DataclassProto(Protocol):
+            __dataclass_fields__: ClassVar[dict[str, Any]]
+
+        proto: DataclassProto = item
+
+        @dataclass
+        class Box(Generic[T]):
+            value: T
+
+        class StrBox(Box[str]):
+            pass
+
+        StrBox("")
+
+    @assert_passes(allow_import_failures=True)
+    def test_dataclass_default_order_validation(self):
+        from dataclasses import InitVar, dataclass, field
+
+        @dataclass  # E: invalid_annotation
+        class DC1:
+            a: int = 0
+            b: int
+
+        @dataclass  # E: invalid_annotation
+        class DC2:
+            a: int = field(default=1)
+            b: int
+
+        @dataclass  # E: invalid_annotation
+        class DC3:
+            a: InitVar[int] = 0
+            b: int
+
     @assert_passes()
     def test_dataclass_post_init_initvar_semantics(self):
         from dataclasses import InitVar, dataclass, field

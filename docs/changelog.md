@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Improve dataclass conformance in static fallback mode for unimportable modules: pycroscope now validates default-before-non-default field ordering, checks `default_factory` return types against field annotations, preserves callable dataclass fields as values (not bound methods), exposes dataclass metadata (`__dataclass_fields__`), and resolves inherited dataclass constructors more accurately.
 - Improve constructor checking when modules fail at import time: pycroscope now enforces explicit `__init__` self-annotation compatibility for specialized generic class calls (for example rejecting `Class4[str]()` when `__init__` requires `Class4[int]`), and avoids false positives from synthetic class-subscripting fallback on generic instances.
 - Improve `TypeAliasType(...)` handling: variadic alias specialization now supports `TypeVarTuple`, runtime `type_params` scope/literal-tuple and circular-definition checks are enforced, and recursive alias evaluation no longer triggers internal recursion errors.
 - Fix variance checks in static fallback mode for unimportable modules by recovering generic type parameters from base annotations, which removes false `invalid_annotation` errors and restores expected nested-alias variance errors (for example `generics_variance.py`).

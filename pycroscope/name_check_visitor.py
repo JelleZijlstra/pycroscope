@@ -516,37 +516,76 @@ class _AttrContext(CheckerAttrContext):
     def should_include_synthetic_methods(self) -> bool:
         return self.attr != "__call__"
 
+    def _synthetic_instance_attr_is_method(
+        self,
+        synthetic_class: SyntheticClassObjectValue,
+        attr_name: str,
+        *,
+        seen: set[int],
+    ) -> bool:
+        synthetic_id = id(synthetic_class)
+        if synthetic_id in seen:
+            return False
+        seen.add(synthetic_id)
+        if attr_name in synthetic_class.method_attributes:
+            return True
+        for base in synthetic_class.base_classes:
+            base = replace_fallback(base)
+            synthetic_base: SyntheticClassObjectValue | None = None
+            if isinstance(base, SyntheticClassObjectValue):
+                synthetic_base = base
+            elif isinstance(base, GenericValue) and isinstance(base.typ, (type, str)):
+                synthetic_base = self.checker.get_synthetic_class(base.typ)
+            elif isinstance(base, TypedValue) and isinstance(base.typ, (type, str)):
+                synthetic_base = self.checker.get_synthetic_class(base.typ)
+            elif isinstance(base, KnownValue) and isinstance(base.val, type):
+                synthetic_base = self.checker.get_synthetic_class(base.val)
+            if synthetic_base is not None and self._synthetic_instance_attr_is_method(
+                synthetic_base, attr_name, seen=seen
+            ):
+                return True
+        return False
+
     def bind_synthetic_instance_attribute(self, attr_name: str, value: Value) -> Value:
         # Treat synthetic instance methods like bound methods in both expression
-        # and relation contexts, but leave dunder methods to specialized logic.
-        if isinstance(value, CallableValue) and not (
-            attr_name.startswith("__") and attr_name.endswith("__")
-        ):
+        # and relation contexts. Callable fields that aren't methods should
+        # remain regular callables when accessed on an instance.
+        if isinstance(value, CallableValue):
+            root_value = replace_fallback(self.root_composite.value)
+            if isinstance(root_value, AnnotatedValue):
+                root_value = replace_fallback(root_value.value)
+            synthetic_typ: str | None = None
+            generic_args: Sequence[Value] = ()
+            if isinstance(root_value, GenericValue) and isinstance(root_value.typ, str):
+                synthetic_typ = root_value.typ
+                generic_args = root_value.args
+            elif isinstance(root_value, TypedValue) and isinstance(root_value.typ, str):
+                synthetic_typ = root_value.typ
+            if synthetic_typ is None:
+                return super().bind_synthetic_instance_attribute(attr_name, value)
+            synthetic_class = self.checker.get_synthetic_class(synthetic_typ)
+            is_dunder = attr_name.startswith("__") and attr_name.endswith("__")
+            if is_dunder and attr_name != "__init__":
+                return super().bind_synthetic_instance_attribute(attr_name, value)
+            should_bind = synthetic_class is not None and (
+                self._synthetic_instance_attr_is_method(
+                    synthetic_class, attr_name, seen=set()
+                )
+            )
+            if not should_bind:
+                return super().bind_synthetic_instance_attribute(attr_name, value)
             bound_signature = value.signature.bind_self(
                 self_annotation_value=None,
                 self_value=self.root_composite.value,
                 ctx=self.checker,
             )
             if bound_signature is not None:
-                root_value = replace_fallback(self.root_composite.value)
-                synthetic_typ: str | None = None
-                generic_args: Sequence[Value] = ()
-                if isinstance(root_value, GenericValue) and isinstance(
-                    root_value.typ, str
-                ):
-                    synthetic_typ = root_value.typ
-                    generic_args = root_value.args
-                elif isinstance(root_value, TypedValue) and isinstance(
-                    root_value.typ, str
-                ):
-                    synthetic_typ = root_value.typ
-                if synthetic_typ is not None:
-                    generic_bases = self.checker.get_generic_bases(
-                        synthetic_typ, generic_args
-                    )
-                    declared = generic_bases.get(synthetic_typ, {})
-                    if declared:
-                        bound_signature = bound_signature.substitute_typevars(declared)
+                generic_bases = self.checker.get_generic_bases(
+                    synthetic_typ, generic_args
+                )
+                declared = generic_bases.get(synthetic_typ, {})
+                if declared:
+                    bound_signature = bound_signature.substitute_typevars(declared)
                 return CallableValue(bound_signature)
         return super().bind_synthetic_instance_attribute(attr_name, value)
 
@@ -1267,6 +1306,7 @@ class _EnumMemberTracker:
 @dataclass(frozen=True)
 class _DataclassFieldCallOptions:
     init: bool | None = None
+    default_factory: Value | None = None
 
 
 @dataclass
@@ -2778,6 +2818,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             class_scope_object: type | str | None = class_obj
             dataclass_metadata_class: SyntheticClassObjectValue | None = None
             dataclass_check_class: SyntheticClassObjectValue | None = None
+            synthetic_base_values = tuple(base_values) or (KnownValue(object),)
             if synthetic_typeddict is not None:
                 self._validate_typeddict_class_syntax(node)
             elif class_obj is None:
@@ -2793,7 +2834,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 synthetic_class = SyntheticClassObjectValue(
                     node.name,
                     synthetic_class_type,
-                    base_classes=tuple(base_values),
+                    base_classes=synthetic_base_values,
                     is_dataclass=dataclass_semantics.is_dataclass,
                     dataclass_frozen=(
                         dataclass_semantics.frozen
@@ -2886,7 +2927,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     existing = SyntheticClassObjectValue(
                         node.name,
                         TypedValue(class_obj),
-                        base_classes=tuple(base_values),
+                        base_classes=synthetic_base_values,
                         is_dataclass=dataclass_semantics.is_dataclass,
                         dataclass_frozen=(
                             dataclass_semantics.frozen
@@ -2903,7 +2944,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 else:
                     existing = replace(
                         existing,
-                        base_classes=tuple(base_values),
+                        base_classes=synthetic_base_values,
                         is_dataclass=dataclass_semantics.is_dataclass,
                         dataclass_frozen=(
                             dataclass_semantics.frozen
@@ -3039,10 +3080,15 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             should_register_generic_bases = synthetic_typeddict is None and (
                 isinstance(generic_class_key, str) or bool(registered_type_param_values)
             )
+            base_values_for_registration = (
+                base_values
+                if (base_values or class_obj is not None)
+                else [KnownValue(object)]
+            )
             if should_register_generic_bases:
                 self.checker.register_synthetic_type_bases(
                     generic_class_key,
-                    base_values,
+                    base_values_for_registration,
                     declared_type_params=registered_type_param_values,
                 )
             with (
@@ -3080,7 +3126,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 )
                 self.checker.register_synthetic_type_bases(
                     generic_class_key,
-                    base_values,
+                    base_values_for_registration,
                     declared_type_params=registered_inferred_type_params,
                 )
             if self._is_checking() and synthetic_typeddict is None:
@@ -3206,6 +3252,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 and dataclass_semantics.is_dataclass
                 and dataclass_check_class is not None
             ):
+                self._check_dataclass_field_default_order(node, dataclass_check_class)
                 self._check_dataclass_post_init_signature(node, dataclass_check_class)
         value_to_store: Value | None = value
         if (
@@ -5260,7 +5307,24 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             init_value = bound_args["init"][1].value
             if isinstance(init_value, KnownValue) and isinstance(init_value.val, bool):
                 init = init_value.val
-        return _DataclassFieldCallOptions(init=init)
+        default_factory = None
+        if "default_factory" in bound_args:
+            default_factory = bound_args["default_factory"][1].value
+        return _DataclassFieldCallOptions(init=init, default_factory=default_factory)
+
+    @staticmethod
+    def _callable_return_type_from_signature(
+        signature: MaybeSignature, *, checker: "NameCheckVisitor"
+    ) -> Value | None:
+        if isinstance(signature, BoundMethodSignature):
+            signature = signature.get_signature(ctx=checker)
+        if isinstance(signature, Signature):
+            return signature.return_value
+        if isinstance(signature, OverloadedSignature):
+            if not signature.signatures:
+                return None
+            return unite_values(*(sig.return_value for sig in signature.signatures))
+        return None
 
     def _should_build_dataclass_kw_only_fallback(
         self, node: ast.ClassDef, options: Mapping[str, bool]
@@ -5652,6 +5716,102 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 error_code=ErrorCode.incompatible_override,
                 detail=can_assign.display(),
             )
+
+    def _check_dataclass_field_default_order(
+        self, node: ast.ClassDef, dataclass_class: SyntheticClassObjectValue
+    ) -> None:
+        _ = dataclass_class
+        is_dataclass_class, dataclass_options = self._get_dataclass_decorator_options(
+            node
+        )
+        if (
+            is_dataclass_class
+            and dataclass_options is not None
+            and dataclass_options.get("init", True) is False
+        ):
+            return
+        kw_only_default = bool(
+            dataclass_options.get("kw_only", False)
+            if dataclass_options is not None
+            else False
+        )
+        error_node = next(
+            (
+                decorator
+                for decorator in node.decorator_list
+                if self._is_dataclass_decorator(decorator)
+            ),
+            node,
+        )
+        saw_default = False
+        for statement in node.body:
+            if not (
+                isinstance(statement, ast.AnnAssign)
+                and isinstance(statement.target, ast.Name)
+                and statement.simple
+            ):
+                continue
+
+            if self._is_dataclass_kw_only_marker_annotation(statement.annotation):
+                kw_only_default = True
+                continue
+
+            annotation_expr = annotation_expr_from_ast(
+                statement.annotation, visitor=self, suppress_errors=True
+            )
+            _, qualifiers = annotation_expr.maybe_unqualify(
+                {
+                    Qualifier.ClassVar,
+                    Qualifier.Final,
+                    Qualifier.InitVar,
+                    Qualifier.ReadOnly,
+                    Qualifier.Required,
+                    Qualifier.NotRequired,
+                },
+                mutually_exclusive_qualifiers=(
+                    (Qualifier.Required, Qualifier.NotRequired),
+                ),
+            )
+            if Qualifier.ClassVar in qualifiers:
+                continue
+
+            init = True
+            kw_only = kw_only_default
+            has_default = statement.value is not None
+            if isinstance(statement.value, ast.Call) and self._is_dataclass_field_call(
+                statement.value
+            ):
+                has_default = any(
+                    keyword.arg in {"default", "default_factory"}
+                    for keyword in statement.value.keywords
+                )
+                for keyword in statement.value.keywords:
+                    if (
+                        keyword.arg == "init"
+                        and isinstance(keyword.value, ast.Constant)
+                        and isinstance(keyword.value.value, bool)
+                    ):
+                        init = keyword.value.value
+                    elif (
+                        keyword.arg == "kw_only"
+                        and isinstance(keyword.value, ast.Constant)
+                        and isinstance(keyword.value.value, bool)
+                    ):
+                        kw_only = keyword.value.value
+
+            if not init or kw_only:
+                continue
+
+            if has_default:
+                saw_default = True
+                continue
+            if saw_default:
+                self._show_error_if_checking(
+                    error_node,
+                    "Dataclass fields without defaults cannot follow fields with defaults",
+                    error_code=ErrorCode.invalid_annotation,
+                )
+                return
 
     @staticmethod
     def _compose_variance_polarity(polarity: int, variance: Variance) -> int:
@@ -10590,6 +10750,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         kw_only = self.current_class_dataclass_kw_only_default
         alias: str | None = None
         is_dataclass_field_call = False
+        dataclass_default_factory: Value | None = None
         dataclass_field_name: str | None = None
         if (
             is_current_class_dataclass
@@ -10660,6 +10821,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 is not None
             ):
                 is_dataclass_field_call = True
+                dataclass_default_factory = inferred_options.default_factory
                 has_default = any(
                     kw.arg in {"default", "default_factory"}
                     for kw in node.value.keywords
@@ -10689,23 +10851,49 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 ):
                     alias = alias_keyword.value
 
-            if expected_type is not None and not (
-                is_current_class_dataclass and is_dataclass_field_call
-            ):
-                can_assign = has_relation(
-                    expected_type, value, Relation.ASSIGNABLE, self
-                )
-                if isinstance(can_assign, CanAssignError):
-                    self._show_error_if_checking(
-                        node,
-                        f"Incompatible assignment: expected {expected_type}, got"
-                        f" {value}",
-                        error_code=ErrorCode.incompatible_assignment,
-                        detail=can_assign.display(),
+            if expected_type is not None:
+                if not (is_current_class_dataclass and is_dataclass_field_call):
+                    can_assign = has_relation(
+                        expected_type, value, Relation.ASSIGNABLE, self
                     )
+                    if isinstance(can_assign, CanAssignError):
+                        self._show_error_if_checking(
+                            node,
+                            f"Incompatible assignment: expected {expected_type}, got"
+                            f" {value}",
+                            error_code=ErrorCode.incompatible_assignment,
+                            detail=can_assign.display(),
+                        )
                 # We set the declared type on initial assignment, so that the
                 # annotation can be used to adjust pycroscope's type inference.
                 value = expected_type
+
+                if (
+                    is_current_class_dataclass
+                    and is_dataclass_field_call
+                    and dataclass_default_factory is not None
+                ):
+                    default_factory_sig = self.signature_from_value(
+                        dataclass_default_factory
+                    )
+                    default_factory_return = self._callable_return_type_from_signature(
+                        default_factory_sig, checker=self
+                    )
+                    if default_factory_return is not None:
+                        can_assign_return = has_relation(
+                            expected_type,
+                            default_factory_return,
+                            Relation.ASSIGNABLE,
+                            self,
+                        )
+                        if isinstance(can_assign_return, CanAssignError):
+                            self._show_error_if_checking(
+                                node,
+                                "Dataclass default_factory return type is incompatible"
+                                f" with field type {expected_type}",
+                                error_code=ErrorCode.incompatible_assignment,
+                                detail=can_assign_return.display(),
+                            )
 
         else:
             is_yield = False

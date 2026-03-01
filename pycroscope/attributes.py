@@ -30,7 +30,13 @@ from .safe import (
     safe_isinstance,
     safe_issubclass,
 )
-from .signature import MaybeSignature
+from .signature import (
+    InvalidSignature,
+    MaybeSignature,
+    ParameterKind,
+    Signature,
+    SigParameter,
+)
 from .stacked_scopes import Composite
 from .value import (
     UNINITIALIZED_VALUE,
@@ -392,6 +398,10 @@ def _get_attribute_from_synthetic_type(
     synthetic_class = ctx.get_synthetic_class(fq_name)
     if synthetic_class is not None:
         result = _get_direct_attribute_from_synthetic_class(synthetic_class, ctx.attr)
+        if result is UNINITIALIZED_VALUE:
+            result = _get_synthetic_dataclass_attribute(
+                synthetic_class, ctx, on_class=False
+            )
         if result is not UNINITIALIZED_VALUE:
             if _is_synthetic_method_attribute(synthetic_class, ctx.attr) and (
                 not ctx.should_include_synthetic_methods()
@@ -485,6 +495,9 @@ def _get_attribute_from_synthetic_class_inner(
     direct = _get_direct_attribute_from_synthetic_class(self_value, ctx.attr)
     if direct is not UNINITIALIZED_VALUE:
         return direct
+    dataclass_attr = _get_synthetic_dataclass_attribute(self_value, ctx, on_class=True)
+    if dataclass_attr is not UNINITIALIZED_VALUE:
+        return dataclass_attr
 
     for base in self_value.base_classes:
         result = _get_attribute_from_synthetic_base(base, self_value, ctx, seen=seen)
@@ -530,7 +543,199 @@ def _is_synthetic_method_attribute(
         mangled = _maybe_mangle_private_name(selected_name, self_value.name)
         if mangled is not None:
             selected_name = mangled
-    return selected_name in self_value.method_attributes
+    if selected_name in self_value.method_attributes:
+        return True
+    return self_value.is_dataclass and selected_name == "__init__"
+
+
+def _iter_synthetic_dataclass_base_init_parameters(
+    base: Value, ctx: AttrContext, *, seen: set[int]
+) -> list[SigParameter]:
+    base = replace_fallback(base)
+    synthetic_base: SyntheticClassObjectValue | None = None
+    if isinstance(base, SyntheticClassObjectValue):
+        synthetic_base = base
+    elif isinstance(base, GenericValue):
+        if isinstance(base.typ, (type, str)):
+            synthetic_base = ctx.get_synthetic_class(base.typ)
+    elif isinstance(base, TypedValue):
+        if isinstance(base.typ, (type, str)):
+            synthetic_base = ctx.get_synthetic_class(base.typ)
+    elif isinstance(base, KnownValue) and isinstance(base.val, type):
+        synthetic_base = ctx.get_synthetic_class(base.val)
+    if synthetic_base is None or not synthetic_base.is_dataclass:
+        return []
+    return _get_synthetic_dataclass_init_parameters(
+        synthetic_base, ctx, include_inherited=True, seen=seen
+    )
+
+
+def _get_synthetic_dataclass_init_parameters(
+    synthetic_class: SyntheticClassObjectValue,
+    ctx: AttrContext,
+    *,
+    include_inherited: bool,
+    seen: set[int] | None,
+) -> list[SigParameter]:
+    if seen is None:
+        seen = set()
+    synthetic_id = id(synthetic_class)
+    if synthetic_id in seen:
+        return []
+    seen.add(synthetic_id)
+
+    params_by_field: dict[str, SigParameter] = {}
+    field_order: list[str] = []
+    if include_inherited:
+        for base in synthetic_class.base_classes:
+            for inherited in _iter_synthetic_dataclass_base_init_parameters(
+                base, ctx, seen=seen
+            ):
+                if inherited.name not in params_by_field:
+                    field_order.append(inherited.name)
+                params_by_field[inherited.name] = inherited
+
+    classvar_names: set[str] = set()
+    classvars = synthetic_class.class_attributes.get("%classvars")
+    if isinstance(classvars, KnownValue) and isinstance(
+        classvars.val, (set, frozenset, tuple, list)
+    ):
+        classvar_names.update(name for name in classvars.val if isinstance(name, str))
+
+    default_fields: set[str] = set()
+    default_names = synthetic_class.class_attributes.get("%dataclass_default_fields")
+    if isinstance(default_names, KnownValue) and isinstance(
+        default_names.val, (set, frozenset, tuple, list)
+    ):
+        default_fields.update(
+            name for name in default_names.val if isinstance(name, str)
+        )
+
+    init_false_fields: set[str] = set()
+    init_false_names = synthetic_class.class_attributes.get(
+        "%dataclass_init_false_fields"
+    )
+    if isinstance(init_false_names, KnownValue) and isinstance(
+        init_false_names.val, (set, frozenset, tuple, list)
+    ):
+        init_false_fields.update(
+            name for name in init_false_names.val if isinstance(name, str)
+        )
+
+    kw_only_fields: set[str] = set()
+    kw_only_names = synthetic_class.class_attributes.get("%dataclass_kw_only_fields")
+    if isinstance(kw_only_names, KnownValue) and isinstance(
+        kw_only_names.val, (set, frozenset, tuple, list)
+    ):
+        kw_only_fields.update(
+            name for name in kw_only_names.val if isinstance(name, str)
+        )
+
+    aliases: dict[str, str] = {}
+    alias_names = synthetic_class.class_attributes.get("%dataclass_field_aliases")
+    if isinstance(alias_names, KnownValue) and isinstance(alias_names.val, dict):
+        aliases = {
+            field_name: alias
+            for field_name, alias in alias_names.val.items()
+            if isinstance(field_name, str) and isinstance(alias, str)
+        }
+
+    ordered_fields: list[str] = []
+    order = synthetic_class.class_attributes.get("%dataclass_field_order")
+    if isinstance(order, KnownValue) and isinstance(order.val, (tuple, list)):
+        ordered_fields = [name for name in order.val if isinstance(name, str)]
+    field_names = (
+        ordered_fields
+        if ordered_fields
+        else [
+            name
+            for name in synthetic_class.class_attributes
+            if not name.startswith("%")
+            and not (name.startswith("__") and name.endswith("__"))
+        ]
+    )
+
+    for field_name in field_names:
+        attr = synthetic_class.class_attributes.get(field_name, UNINITIALIZED_VALUE)
+        excluded = (
+            attr is UNINITIALIZED_VALUE
+            or field_name in synthetic_class.method_attributes
+            or field_name in classvar_names
+            or field_name in init_false_fields
+        )
+        if excluded:
+            params_by_field.pop(field_name, None)
+            continue
+
+        parameter_name = aliases.get(field_name, field_name)
+        annotation: Value
+        if isinstance(attr, KnownValue):
+            annotation = TypedValue(type(attr.val))
+        else:
+            annotation = attr
+
+        parameter = SigParameter(
+            parameter_name,
+            (
+                ParameterKind.KEYWORD_ONLY
+                if field_name in kw_only_fields
+                else ParameterKind.POSITIONAL_OR_KEYWORD
+            ),
+            default=KnownValue(...) if field_name in default_fields else None,
+            annotation=annotation,
+        )
+        if field_name not in field_order:
+            field_order.append(field_name)
+        params_by_field[field_name] = parameter
+
+    params = [params_by_field[name] for name in field_order if name in params_by_field]
+    positional_params = [
+        parameter
+        for parameter in params
+        if parameter.kind is not ParameterKind.KEYWORD_ONLY
+    ]
+    kw_only_params = [
+        parameter
+        for parameter in params
+        if parameter.kind is ParameterKind.KEYWORD_ONLY
+    ]
+    return [*positional_params, *kw_only_params]
+
+
+def _synthetic_dataclass_init_callable_value(
+    synthetic_class: SyntheticClassObjectValue, ctx: AttrContext, *, on_class: bool
+) -> Value:
+    parameters = _get_synthetic_dataclass_init_parameters(
+        synthetic_class, ctx, include_inherited=True, seen=None
+    )
+    if on_class:
+        parameters = [
+            SigParameter(
+                "self",
+                ParameterKind.POSITIONAL_OR_KEYWORD,
+                annotation=AnyValue(AnySource.inference),
+            ),
+            *parameters,
+        ]
+    try:
+        signature = Signature.make(parameters, KnownValue(None))
+    except InvalidSignature:
+        return AnyValue(AnySource.inference)
+    return CallableValue(signature)
+
+
+def _get_synthetic_dataclass_attribute(
+    synthetic_class: SyntheticClassObjectValue, ctx: AttrContext, *, on_class: bool
+) -> Value:
+    if not synthetic_class.is_dataclass:
+        return UNINITIALIZED_VALUE
+    if ctx.attr == "__init__":
+        return _synthetic_dataclass_init_callable_value(
+            synthetic_class, ctx, on_class=on_class
+        )
+    if ctx.attr == "__dataclass_fields__":
+        return GenericValue(dict, [TypedValue(str), AnyValue(AnySource.explicit)])
+    return UNINITIALIZED_VALUE
 
 
 def _is_synthetic_initvar_attribute(
