@@ -108,6 +108,27 @@ def safe_in(item: T, collection: Container[T]) -> bool:
         return False
 
 
+def is_namedtuple_class(value: object) -> typing_extensions.TypeIs[type]:
+    """Return whether value is a namedtuple-like runtime class."""
+    return (
+        safe_isinstance(value, type)
+        and safe_issubclass(value, tuple)
+        and isinstance(safe_getattr(value, "_fields", None), tuple)
+    )
+
+
+def should_disable_runtime_call_for_namedtuple_class(value: type) -> bool:
+    """Return whether runtime calls to this namedtuple class should be skipped."""
+    module_name = safe_getattr(value, "__module__", None)
+    if isinstance(module_name, str) and module_name.startswith("pycroscope"):
+        return False
+    annotations = safe_getattr(value, "__annotations__", None)
+    if isinstance(annotations, dict) and annotations:
+        return True
+    type_params = safe_getattr(value, "__parameters__", ())
+    return bool(type_params)
+
+
 def is_hashable(obj: object) -> bool:
     """Return whether an object is hashable."""
     try:

@@ -30,6 +30,7 @@ from .options import Options, PyObjectSequenceOption
 from .reexport import ImplicitReexportTracker
 from .safe import (
     is_instance_of_typing_name,
+    is_namedtuple_class,
     is_typing_name,
     safe_getattr,
     safe_issubclass,
@@ -112,6 +113,90 @@ class _DataclassFieldEntry:
     field_name: str
     parameter: SigParameter
     is_initvar: bool
+
+
+def _runtime_type_generic_alias(typ: type) -> str:
+    return f"{typ.__module__}.{typ.__qualname__}"
+
+
+def _replace_signature_return(
+    signature: MaybeSignature, return_value: Value
+) -> MaybeSignature:
+    if isinstance(signature, (Signature, OverloadedSignature)):
+        return signature.replace_return_value(return_value)
+    if isinstance(signature, BoundMethodSignature):
+        return BoundMethodSignature(
+            signature.signature.replace_return_value(return_value),
+            signature.self_composite,
+            return_override=signature.return_override,
+        )
+    return signature
+
+
+def _combine_signatures(signatures: Sequence[Signature]) -> ConcreteSignature | None:
+    if not signatures:
+        return None
+    if len(signatures) == 1:
+        return signatures[0]
+    return OverloadedSignature(list(signatures))
+
+
+def _signature_has_no_parameters(signature: ConcreteSignature) -> bool:
+    signatures = (
+        signature.signatures
+        if isinstance(signature, OverloadedSignature)
+        else [signature]
+    )
+    return all(not sig.parameters for sig in signatures)
+
+
+def _make_incompatible_constructor_signature(instance_type: Value) -> Signature:
+    return Signature.make(
+        [
+            SigParameter(
+                "%self", kind=ParameterKind.POSITIONAL_ONLY, annotation=NO_RETURN_VALUE
+            )
+        ],
+        instance_type,
+    )
+
+
+def _is_incompatible_constructor_signature(signature: ConcreteSignature) -> bool:
+    signatures = (
+        signature.signatures
+        if isinstance(signature, OverloadedSignature)
+        else [signature]
+    )
+    for sig in signatures:
+        params = list(sig.parameters.values())
+        if len(params) != 1:
+            return False
+        param = params[0]
+        if (
+            param.name != "%self"
+            or param.kind is not ParameterKind.POSITIONAL_ONLY
+            or param.annotation is not NO_RETURN_VALUE
+        ):
+            return False
+    return True
+
+
+def _extract_generic_args_from_self_annotation(
+    annotation: Value, class_type: type | str
+) -> tuple[Value, ...] | None:
+    root = replace_fallback(annotation)
+    if isinstance(root, SubclassValue):
+        root = replace_fallback(root.typ)
+    if isinstance(root, GenericValue) and root.typ == class_type:
+        return tuple(root.args)
+    return None
+
+
+def _synthetic_dataclass_init_enabled(value: SyntheticClassObjectValue) -> bool:
+    raw_flag = value.class_attributes.get("%dataclass_init")
+    if isinstance(raw_flag, KnownValue) and isinstance(raw_flag.val, bool):
+        return raw_flag.val
+    return True
 
 
 @dataclass
@@ -434,14 +519,10 @@ class Checker:
         for key in self._iter_generic_override_keys(typ):
             self.type_object_cache.pop(key, None)
 
-    @staticmethod
-    def _runtime_type_generic_alias(typ: type) -> str:
-        return f"{typ.__module__}.{typ.__qualname__}"
-
     def _iter_generic_override_keys(self, typ: type | str) -> Iterator[type | str]:
         yield typ
         if isinstance(typ, type):
-            yield self._runtime_type_generic_alias(typ)
+            yield _runtime_type_generic_alias(typ)
 
     def _get_synthetic_generic_bases(
         self, typ: type | str
@@ -568,28 +649,6 @@ class Checker:
             return root.val
         return None
 
-    @staticmethod
-    def _is_namedtuple_runtime_class(value: object) -> bool:
-        return (
-            isinstance(value, type)
-            and safe_issubclass(value, tuple)
-            and isinstance(safe_getattr(value, "_fields", None), tuple)
-        )
-
-    @staticmethod
-    def _replace_signature_return(
-        signature: MaybeSignature, return_value: Value
-    ) -> MaybeSignature:
-        if isinstance(signature, (Signature, OverloadedSignature)):
-            return signature.replace_return_value(return_value)
-        if isinstance(signature, BoundMethodSignature):
-            return BoundMethodSignature(
-                signature.signature.replace_return_value(return_value),
-                signature.self_composite,
-                return_override=signature.return_override,
-            )
-        return signature
-
     def _as_concrete_signature(
         self, signature: MaybeSignature
     ) -> ConcreteSignature | None:
@@ -672,20 +731,10 @@ class Checker:
             preserve_impl=True, ctx=self, self_annotation_value=self_annotation_value
         )
 
-    @staticmethod
-    def _combine_signatures(
-        signatures: Sequence[Signature],
-    ) -> ConcreteSignature | None:
-        if not signatures:
-            return None
-        if len(signatures) == 1:
-            return signatures[0]
-        return OverloadedSignature(list(signatures))
-
     def _synthetic_constructor_return_from_self_annotation(
         self, annotation: Value, *, default: Value, class_type: type | str
     ) -> Value:
-        args = self._extract_generic_args_from_self_annotation(annotation, class_type)
+        args = _extract_generic_args_from_self_annotation(annotation, class_type)
         if args is not None:
             return GenericValue(class_type, args)
         root = replace_fallback(annotation)
@@ -758,48 +807,6 @@ class Checker:
                 return False
         return True
 
-    @staticmethod
-    def _signature_has_no_parameters(signature: ConcreteSignature) -> bool:
-        signatures = (
-            signature.signatures
-            if isinstance(signature, OverloadedSignature)
-            else [signature]
-        )
-        return all(not sig.parameters for sig in signatures)
-
-    @staticmethod
-    def _make_incompatible_constructor_signature(instance_type: Value) -> Signature:
-        return Signature.make(
-            [
-                SigParameter(
-                    "%self",
-                    kind=ParameterKind.POSITIONAL_ONLY,
-                    annotation=NO_RETURN_VALUE,
-                )
-            ],
-            instance_type,
-        )
-
-    @staticmethod
-    def _is_incompatible_constructor_signature(signature: ConcreteSignature) -> bool:
-        signatures = (
-            signature.signatures
-            if isinstance(signature, OverloadedSignature)
-            else [signature]
-        )
-        for sig in signatures:
-            params = list(sig.parameters.values())
-            if len(params) != 1:
-                return False
-            param = params[0]
-            if (
-                param.name != "%self"
-                or param.kind is not ParameterKind.POSITIONAL_ONLY
-                or param.annotation is not NO_RETURN_VALUE
-            ):
-                return False
-        return True
-
     def _runtime_init_self_annotation_matches(
         self,
         origin: type,
@@ -851,12 +858,12 @@ class Checker:
         )
         if init_sig is None:
             return True
-        return not self._is_incompatible_constructor_signature(init_sig)
+        return not _is_incompatible_constructor_signature(init_sig)
 
     def _synthetic_explicit_self_annotation_matches_instance(
         self, annotation: Value, *, instance_type: Value, class_type: type | str
     ) -> bool:
-        expected_args = self._extract_generic_args_from_self_annotation(
+        expected_args = _extract_generic_args_from_self_annotation(
             annotation, class_type
         )
         if expected_args is None:
@@ -877,17 +884,6 @@ class Checker:
                 return False
         return True
 
-    @staticmethod
-    def _extract_generic_args_from_self_annotation(
-        annotation: Value, class_type: type | str
-    ) -> tuple[Value, ...] | None:
-        root = replace_fallback(annotation)
-        if isinstance(root, SubclassValue):
-            root = replace_fallback(root.typ)
-        if isinstance(root, GenericValue) and root.typ == class_type:
-            return tuple(root.args)
-        return None
-
     def _infer_synthetic_type_params_from_methods(
         self, value: SyntheticClassObjectValue
     ) -> tuple[Value, ...]:
@@ -907,7 +903,7 @@ class Checker:
                 params = list(signature.parameters.values())
                 if not params:
                     continue
-                args = self._extract_generic_args_from_self_annotation(
+                args = _extract_generic_args_from_self_annotation(
                     params[0].annotation, class_type
                 )
                 if args is not None and all(
@@ -1042,7 +1038,7 @@ class Checker:
             )
             if collapsed is not None:
                 return collapsed
-            combined = self._combine_signatures(bound_sigs)
+            combined = _combine_signatures(bound_sigs)
             if combined is not None:
                 return combined
             if had_incompatible_self_annotation:
@@ -1158,10 +1154,7 @@ class Checker:
         )
         if (
             isinstance(runtime_class, KnownValue)
-            and (
-                value.is_dataclass
-                or self._is_namedtuple_runtime_class(runtime_class.val)
-            )
+            and (value.is_dataclass or is_namedtuple_class(runtime_class.val))
             and isinstance(
                 runtime_argspec := self._as_concrete_signature(
                     self.arg_spec_cache.get_argspec(runtime_class.val)
@@ -1176,7 +1169,7 @@ class Checker:
         instance_type = self._make_synthetic_constructor_instance_value(value)
         has_direct_new = "__new__" in value.class_attributes
         has_direct_init = "__init__" in value.class_attributes
-        dataclass_init_enabled = self._synthetic_dataclass_init_enabled(value)
+        dataclass_init_enabled = _synthetic_dataclass_init_enabled(value)
 
         metaclass_call = self._get_synthetic_metaclass_call_signature(
             value,
@@ -1246,13 +1239,6 @@ class Checker:
             ):
                 return concrete
         return Signature.make([], instance_type)
-
-    @staticmethod
-    def _synthetic_dataclass_init_enabled(value: SyntheticClassObjectValue) -> bool:
-        raw_flag = value.class_attributes.get("%dataclass_init")
-        if isinstance(raw_flag, KnownValue) and isinstance(raw_flag.val, bool):
-            return raw_flag.val
-        return True
 
     def _get_synthetic_dataclass_constructor_signature(
         self, value: SyntheticClassObjectValue, instance_type: Value
@@ -1581,7 +1567,7 @@ class Checker:
                         instance_type=specialized_instance_type,
                         typevar_map=typevar_map,
                     ):
-                        return self._make_incompatible_constructor_signature(
+                        return _make_incompatible_constructor_signature(
                             specialized_instance_type
                         )
                     if typevar_map:
@@ -1709,7 +1695,7 @@ class Checker:
                             self_annotation_value=value.class_type, ctx=self
                         )
                         if bound_init is not None:
-                            return self._replace_signature_return(
+                            return _replace_signature_return(
                                 bound_init,
                                 self._make_synthetic_class_instance_value(value),
                             )
@@ -1776,7 +1762,7 @@ class Checker:
                 )
                 if argspec is None:
                     return ANY_SIGNATURE
-                return self._replace_signature_return(argspec, value.typ)
+                return _replace_signature_return(argspec, value.typ)
         elif isinstance(value, AnyValue):
             return ANY_SIGNATURE
         elif isinstance(value, MultiValuedValue):
@@ -1903,16 +1889,14 @@ class Checker:
                 get_call_attribute=get_call_attribute,
             )
         ):
-            return self._make_incompatible_constructor_signature(
-                specialized_instance_type
-            )
+            return _make_incompatible_constructor_signature(specialized_instance_type)
         if isinstance(class_type, type):
             if not self._runtime_init_self_annotation_matches(
                 class_type,
                 instance_type=specialized_instance_type,
                 typevar_map=typevar_map,
             ):
-                return self._make_incompatible_constructor_signature(
+                return _make_incompatible_constructor_signature(
                     specialized_instance_type
                 )
         if not type_params:
