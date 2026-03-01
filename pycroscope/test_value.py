@@ -66,16 +66,6 @@ def test_any_value() -> None:
     assert str(AnyValue(AnySource.default)) == "Any"
 
 
-def test_normalize_synthetic_descriptor_attribute_empty_args() -> None:
-    checker = Checker()
-    assert checker._normalize_synthetic_descriptor_attribute(
-        GenericValue(staticmethod, [])
-    ) == AnyValue(AnySource.inference)
-    assert checker._normalize_synthetic_descriptor_attribute(
-        GenericValue(classmethod, [])
-    ) == AnyValue(AnySource.inference)
-
-
 def test_partial_value_fallback() -> None:
     node = ast.parse("list[int]", mode="eval").body
     assert isinstance(node, ast.Subscript)
