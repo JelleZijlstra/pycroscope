@@ -2,13 +2,22 @@
 
 from .test_name_check_visitor import TestNameCheckVisitorBase
 from .test_node_visitor import assert_passes
-from .type_object import TypeObject
+from .type_object import (
+    TypeObject,
+    _class_key_from_value,
+    _iter_base_keys,
+    _should_use_permissive_dunder_hash,
+)
 from .value import (
     AnySource,
     AnyValue,
     CallableValue,
     GenericValue,
+    IntersectionValue,
     KnownValue,
+    MultiValuedValue,
+    SubclassValue,
+    SyntheticClassObjectValue,
     TypedValue,
     assert_is_value,
 )
@@ -30,6 +39,45 @@ def test_protocol_member_str_order_is_deterministic() -> None:
     )
     assert (
         str(synthetic_protocol) == "synthetic.Protocol (Protocol with members 'f', 'm')"
+    )
+
+
+def test_class_key_from_subclass_generic_value() -> None:
+    value = SubclassValue(GenericValue("mod.Base", [TypedValue(int)]))
+    assert _class_key_from_value(value) == "mod.Base"
+
+
+def test_iter_base_keys_handles_subclass_synthetic_base() -> None:
+    synthetic = SyntheticClassObjectValue(
+        "Child",
+        TypedValue("mod.Child"),
+        base_classes=(SubclassValue(TypedValue("mod.Base")),),
+    )
+
+    class _Checker:
+        def get_synthetic_class(self, typ):
+            if typ == "mod.Child":
+                return synthetic
+            return None
+
+        def get_generic_bases(self, typ):
+            return {}
+
+    class _Ctx:
+        checker = _Checker()
+
+    assert _iter_base_keys("mod.Child", _Ctx()) == ["mod.Base"]
+
+
+def test_permissive_dunder_hash_class_object_detection() -> None:
+    assert _should_use_permissive_dunder_hash(TypedValue(type))
+    assert _should_use_permissive_dunder_hash(GenericValue(type, [TypedValue(int)]))
+    assert not _should_use_permissive_dunder_hash(TypedValue(list))
+    assert not _should_use_permissive_dunder_hash(
+        MultiValuedValue([TypedValue(type), TypedValue(list)])
+    )
+    assert _should_use_permissive_dunder_hash(
+        IntersectionValue((TypedValue(type), TypedValue(list)))
     )
 
 
