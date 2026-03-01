@@ -5304,6 +5304,10 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             return self._slot_state_for_runtime_type(type(value.val))
         if isinstance(value, (TypedValue, GenericValue)):
             if isinstance(value.typ, (type, str)):
+                if isinstance(value.typ, type) and safe_getattr(
+                    value.typ, "__abstractmethods__", None
+                ):
+                    return None
                 return self._slot_state_for_type(value.typ)
         return None
 

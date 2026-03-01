@@ -1235,7 +1235,10 @@ class TestImportFailureHandlingCodeSamples(TestNameCheckVisitorBase):
 
     @assert_passes()
     def test_assign_attribute_on_function_object(self):
-        def decorator(func):
+        from collections.abc import Callable
+        from typing import Any
+
+        def decorator(func: Callable[..., Any]) -> Callable[..., Any]:
             func.__is_type_evaluation__ = True
             return func
 
