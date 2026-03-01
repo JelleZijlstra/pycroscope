@@ -77,7 +77,13 @@ from .annotations import (
     type_from_value,
     value_from_ast,
 )
-from .arg_spec import ArgSpecCache, IgnoredCallees, UnwrapClass, is_dot_asynq_function
+from .arg_spec import (
+    ArgSpecCache,
+    ClassesSafeToInstantiate,
+    IgnoredCallees,
+    UnwrapClass,
+    is_dot_asynq_function,
+)
 from .asynq_checker import AsynqChecker
 from .boolability import Boolability, get_boolability
 from .checker import Checker, CheckerAttrContext
@@ -1672,22 +1678,13 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         # Only pickle the attributes needed to get error reporting working
         return self.__class__, (self.filename, self.contents, self.tree, self.settings)
 
-    @staticmethod
-    def _maybe_normalize_filename(filename: str) -> str:
-        try:
-            return str(Path(filename).resolve())
-        except OSError:
-            return os.path.abspath(filename)
-
     def _get_import_failure_lineno(self, error: BaseException) -> int | None:
-        target_filename = self._maybe_normalize_filename(self.filename)
+        target_filename = _maybe_normalize_filename(self.filename)
 
         tb = error.__traceback__
         lineno = None
         while tb is not None:
-            frame_filename = self._maybe_normalize_filename(
-                tb.tb_frame.f_code.co_filename
-            )
+            frame_filename = _maybe_normalize_filename(tb.tb_frame.f_code.co_filename)
             if frame_filename == target_filename:
                 lineno = tb.tb_lineno
             tb = tb.tb_next
@@ -1701,7 +1698,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         error_filename = getattr(error, "filename", None)
         if error_filename is None:
             return lineno
-        if self._maybe_normalize_filename(error_filename) == target_filename:
+        if _maybe_normalize_filename(error_filename) == target_filename:
             return lineno
         return None
 
@@ -2032,7 +2029,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         ):
             class_name = self._current_class_name_from_context()
             if class_name is not None:
-                mangled = self._mangle_private_enum_name(class_name, name)
+                mangled = _mangle_private_enum_name(class_name, name)
                 if mangled is not None:
                     synthetic_name = mangled
                     if isinstance(synthetic_value, KnownValue):
@@ -2070,7 +2067,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         if synthetic_class is None:
             return
 
-        mangled_name = self._mangle_class_attribute_name(class_name, node.name)
+        mangled_name = _mangle_class_attribute_name(class_name, node.name)
         getter_key = f"{SYNTHETIC_PROPERTY_GETTER_PREFIX}{mangled_name}"
         if any(
             isinstance(unapplied, KnownValue) and unapplied.val is property
@@ -2095,9 +2092,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         if setter_target_name is None:
             return
 
-        mangled_target = self._mangle_class_attribute_name(
-            class_name, setter_target_name
-        )
+        mangled_target = _mangle_class_attribute_name(class_name, setter_target_name)
         if FunctionDecorator.staticmethod in info.decorator_kinds:
             value_index = 0
         else:
@@ -2113,15 +2108,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         synthetic_class.class_attributes[
             f"{SYNTHETIC_PROPERTY_SETTER_PREFIX}{mangled_target}"
         ] = setter_value
-
-    @staticmethod
-    def _classvar_names_from_mapping(attributes: Mapping[str, Value]) -> set[str]:
-        classvars = attributes.get("%classvars")
-        if isinstance(classvars, KnownValue) and isinstance(
-            classvars.val, (set, frozenset, tuple, list)
-        ):
-            return {item for item in classvars.val if isinstance(item, str)}
-        return set()
 
     def _is_classvar_member(self, class_key: type | str, attr_name: str) -> bool:
         return attr_name in self._classvar_names_for_class_key(class_key, set())
@@ -2139,9 +2125,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         elif isinstance(class_key, str):
             synthetic_class = self._synthetic_classes_by_name.get(class_key)
         if synthetic_class is not None:
-            names.update(
-                self._classvar_names_from_mapping(synthetic_class.class_attributes)
-            )
+            names.update(_classvar_names_from_mapping(synthetic_class.class_attributes))
             for base in synthetic_class.base_classes:
                 for base_value in flatten_values(base, unwrap_annotated=True):
                     base_key: type | str | None = None
@@ -2752,58 +2736,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             return safe_issubclass(class_key, enum.Enum)
         return False
 
-    @staticmethod
-    def _is_enum_base_value(base_value: Value) -> bool:
-        base_value = replace_fallback(base_value)
-        if isinstance(base_value, SyntheticClassObjectValue):
-            class_type = base_value.class_type
-            if isinstance(class_type, TypedValue):
-                return NameCheckVisitor._is_enum_base_value(class_type)
-            return False
-        if isinstance(base_value, KnownValue):
-            return isinstance(base_value.val, type) and safe_issubclass(
-                base_value.val, enum.Enum
-            )
-        if isinstance(base_value, TypedValue):
-            return isinstance(base_value.typ, type) and safe_issubclass(
-                base_value.typ, enum.Enum
-            )
-        if isinstance(base_value, SubclassValue) and isinstance(
-            base_value.typ, TypedValue
-        ):
-            return isinstance(base_value.typ.typ, type) and safe_issubclass(
-                base_value.typ.typ, enum.Enum
-            )
-        if isinstance(base_value, MultiValuedValue):
-            return any(
-                NameCheckVisitor._is_enum_base_value(subval)
-                for subval in base_value.vals
-            )
-        return False
-
-    @staticmethod
-    def _is_newtype_base_value(base_value: Value) -> bool:
-        for subval in flatten_values(replace_fallback(base_value)):
-            if not isinstance(subval, KnownValue):
-                continue
-            if isinstance(subval.val, type):
-                continue
-            if safe_hasattr(subval.val, "__supertype__"):
-                return True
-        return False
-
-    @staticmethod
-    def _is_type_alias_base_value(base_value: Value) -> bool:
-        for subval in flatten_values(base_value, unwrap_annotated=True):
-            if isinstance(subval, TypeAliasValue):
-                return True
-            if isinstance(subval, KnownValue) and (
-                is_typing_name(subval.val, "TypeAliasType")
-                or is_instance_of_typing_name(subval.val, "TypeAliasType")
-            ):
-                return True
-        return False
-
     @contextlib.contextmanager
     def _set_current_class(self, current_class: type | str | None) -> Generator[None]:
         should_track_members = should_check_for_duplicate_values(
@@ -2872,19 +2804,19 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 )
                 self._check_protocol_base_validity(node, base_values)
                 for base_node, base_value in zip(node.bases, base_values):
-                    if self._is_type_alias_base_value(base_value):
+                    if _is_type_alias_base_value(base_value):
                         self._show_error_if_checking(
                             base_node,
                             "Type aliases cannot be used as base classes",
                             error_code=ErrorCode.invalid_base,
                         )
-                    if self._is_newtype_base_value(base_value):
+                    if _is_newtype_base_value(base_value):
                         self._show_error_if_checking(
                             base_node,
                             "NewType types cannot be used as base classes",
                             error_code=ErrorCode.invalid_base,
                         )
-            if any(self._is_enum_base_value(base) for base in base_values):
+            if any(_is_enum_base_value(base) for base in base_values):
                 self.enum_class_keys.add(class_key)
             self._check_for_final_base_classes(node, base_values)
             keyword_values = [(kw, self.visit(kw.value)) for kw in node.keywords]
@@ -3035,7 +2967,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     synthetic_class.class_attributes.setdefault(
                         method_name, AnyValue(AnySource.from_another)
                     )
-                self._record_dataclass_slots_flag(synthetic_class, dataclass_semantics)
+                _record_dataclass_slots_flag(synthetic_class, dataclass_semantics)
                 self._synthetic_classes_by_name[synthetic_fq_name] = synthetic_class
                 self.checker.register_synthetic_class(synthetic_class)
                 dataclass_metadata_class = synthetic_class
@@ -3181,7 +3113,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     existing.class_attributes.pop(
                         "%dataclass_transform_field_specifiers", None
                     )
-                self._record_dataclass_slots_flag(existing, dataclass_semantics)
+                _record_dataclass_slots_flag(existing, dataclass_semantics)
                 dataclass_metadata_class = existing
             generic_class_key = (
                 class_scope_object
@@ -3296,7 +3228,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     node, declared_type_params, base_values, class_scope_object
                 )
             if fallback_runtime_class is not None and class_scope_values is not None:
-                self._populate_fallback_runtime_class(
+                _populate_fallback_runtime_class(
                     fallback_runtime_class, class_scope_values
                 )
             metaclass_value = next(
@@ -3433,7 +3365,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         bases = []
         invalid_non_typeddict_bases = []
         for base_node, base_value in zip(node.bases, base_values):
-            if self._is_typeddict_marker_base(base_value):
+            if _is_typeddict_marker_base(base_value):
                 has_typeddict_base = True
                 continue
             base_typed_dict = self._typed_dict_base_value(base_value, base_node)
@@ -3466,7 +3398,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         explicit_extra_keys_readonly = False
         for keyword, _ in keyword_values:
             if keyword.arg == "total":
-                bool_value = self._get_bool_literal(keyword.value)
+                bool_value = _get_bool_literal(keyword.value)
                 if bool_value is None:
                     self._show_error_if_checking(
                         keyword.value,
@@ -3477,7 +3409,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     total = bool_value
                 continue
             if keyword.arg == "closed":
-                bool_value = self._get_bool_literal(keyword.value)
+                bool_value = _get_bool_literal(keyword.value)
                 if bool_value is None:
                     self._show_error_if_checking(
                         keyword.value,
@@ -3600,18 +3532,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     error_code=ErrorCode.invalid_annotation,
                 )
 
-    @staticmethod
-    def _is_typeddict_marker_base(base_value: Value) -> bool:
-        return isinstance(base_value, KnownValue) and is_typing_name(
-            base_value.val, "TypedDict"
-        )
-
-    @staticmethod
-    def _is_namedtuple_marker_base(base_value: Value) -> bool:
-        return isinstance(base_value, KnownValue) and is_typing_name(
-            base_value.val, "NamedTuple"
-        )
-
     def _is_typeddict_generic_base(self, base_value: Value) -> bool:
         if isinstance(base_value, MultiValuedValue):
             return all(
@@ -3642,7 +3562,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         namedtuple_base_fields: set[str] = set()
         invalid_non_generic_bases: list[ast.expr] = []
         for base_node, base_value in zip(node.bases, base_values):
-            if self._is_namedtuple_marker_base(base_value):
+            if _is_namedtuple_marker_base(base_value):
                 has_namedtuple_marker_base = True
                 continue
             base = replace_fallback(base_value)
@@ -4069,20 +3989,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             return field_default
         return self._runtime_default_from_expr(expr)
 
-    @staticmethod
-    def _populate_fallback_runtime_class(
-        runtime_class: type, class_scope_values: Mapping[str, Value]
-    ) -> None:
-        for name, value in class_scope_values.items():
-            if name.startswith("%") or name in runtime_class.__dict__:
-                continue
-            if not isinstance(value, KnownValue):
-                continue
-            try:
-                setattr(runtime_class, name, value.val)
-            except Exception:
-                continue
-
     def _apply_synthetic_enum_semantics(
         self,
         node: ast.ClassDef,
@@ -4094,14 +4000,14 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
 
         class_attributes = synthetic_class.class_attributes
         enum_value_type = self.enum_value_type_by_class.get(class_key)
-        ignore_names = self._enum_ignore_names(class_attributes.get("_ignore_"))
+        ignore_names = _enum_ignore_names(class_attributes.get("_ignore_"))
         member_literal_values: dict[str, object] = {}
         member_order: list[str] = []
         missing: Value | None = None
 
-        for member_name, statement in self._iter_enum_assignment_candidates(node):
+        for member_name, statement in _iter_enum_assignment_candidates(node):
             stmt_forced_member, stmt_forced_nonmember = (
-                self._enum_statement_member_decorators(statement)
+                _enum_statement_member_decorators(statement)
             )
             value = class_attributes.get(member_name, missing)
             if value is missing:
@@ -4121,7 +4027,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             else:
                 assert value is not None
                 unwrapped, forced_member, forced_nonmember = (
-                    self._unwrap_enum_member_wrapper(value)
+                    _unwrap_enum_member_wrapper(value)
                 )
 
             if member_name in ignore_names:
@@ -4143,9 +4049,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 continue
             if forced_nonmember:
                 continue
-            if not forced_member and self._is_nonmember_enum_assignment_value(
-                unwrapped
-            ):
+            if not forced_member and _is_nonmember_enum_assignment_value(unwrapped):
                 continue
             if isinstance(statement, ast.AnnAssign):
                 self._show_error_if_checking(
@@ -4161,7 +4065,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             ):
                 literal_value = member_literal_values[statement.value.id]
             else:
-                literal_value = self._runtime_object_for_enum_member(unwrapped)
+                literal_value = _runtime_object_for_enum_member(unwrapped)
             if literal_value is Ellipsis:
                 literal_value = object()
             member_literal_values[member_name] = literal_value
@@ -4177,7 +4081,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 )
 
         for attr_name in list(class_attributes):
-            mangled = self._mangle_private_enum_name(node.name, attr_name)
+            mangled = _mangle_private_enum_name(node.name, attr_name)
             if mangled is None:
                 continue
             class_attributes.setdefault(mangled, class_attributes[attr_name])
@@ -4211,134 +4115,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 error_code=ErrorCode.invalid_annotation,
                 detail=can_assign.display(),
             )
-
-    @staticmethod
-    def _mangle_private_enum_name(class_name: str, attr_name: str) -> str | None:
-        if not attr_name.startswith("__") or attr_name.endswith("__"):
-            return None
-        return f"_{class_name}{attr_name}"
-
-    @staticmethod
-    def _enum_ignore_names(value: Value | None) -> set[str]:
-        if value is None:
-            return set()
-        value = replace_fallback(value)
-        if isinstance(value, KnownValue):
-            if isinstance(value.val, str):
-                return set(value.val.split())
-            if isinstance(value.val, (list, tuple, set)):
-                return {elt for elt in value.val if isinstance(elt, str)}
-        return set()
-
-    @staticmethod
-    def _iter_enum_assignment_candidates(
-        node: ast.ClassDef,
-    ) -> Iterable[tuple[str, ast.AST]]:
-        for statement in node.body:
-            if isinstance(statement, ast.Assign):
-                for target in statement.targets:
-                    if isinstance(target, ast.Name):
-                        yield target.id, statement
-            elif isinstance(statement, ast.AnnAssign):
-                if isinstance(statement.target, ast.Name):
-                    yield statement.target.id, statement
-            elif isinstance(
-                statement, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
-            ):
-                yield statement.name, statement
-
-    @staticmethod
-    def _enum_statement_member_decorators(statement: ast.AST) -> tuple[bool, bool]:
-        if not isinstance(
-            statement, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
-        ):
-            return False, False
-
-        forced_member = False
-        forced_nonmember = False
-        for decorator in statement.decorator_list:
-            target = decorator
-            if isinstance(target, ast.Call):
-                target = target.func
-            if isinstance(target, ast.Name):
-                if target.id == "member":
-                    forced_member = True
-                elif target.id == "nonmember":
-                    forced_nonmember = True
-            elif (
-                isinstance(target, ast.Attribute)
-                and isinstance(target.value, ast.Name)
-                and target.value.id == "enum"
-            ):
-                if target.attr == "member":
-                    forced_member = True
-                elif target.attr == "nonmember":
-                    forced_nonmember = True
-        return forced_member, forced_nonmember
-
-    @staticmethod
-    def _unwrap_enum_member_wrapper(value: Value) -> tuple[Value, bool, bool]:
-        value = replace_fallback(value)
-        member_cls = getattr(enum, "member", None)
-        nonmember_cls = getattr(enum, "nonmember", None)
-
-        if (
-            member_cls is not None
-            and isinstance(value, GenericValue)
-            and value.typ is member_cls
-        ):
-            if value.args:
-                return value.args[0], True, False
-            return AnyValue(AnySource.inference), True, False
-        if (
-            nonmember_cls is not None
-            and isinstance(value, GenericValue)
-            and value.typ is nonmember_cls
-        ):
-            if value.args:
-                return value.args[0], False, True
-            return AnyValue(AnySource.inference), False, True
-
-        if (
-            member_cls is not None
-            and isinstance(value, KnownValue)
-            and isinstance(value.val, member_cls)
-        ):
-            return KnownValue(value.val.value), True, False
-        if (
-            nonmember_cls is not None
-            and isinstance(value, KnownValue)
-            and isinstance(value.val, nonmember_cls)
-        ):
-            return KnownValue(value.val.value), False, True
-        return value, False, False
-
-    @staticmethod
-    def _is_nonmember_enum_assignment_value(value: Value) -> bool:
-        value = replace_fallback(value)
-        if isinstance(value, (CallableValue, InputSigValue, SyntheticClassObjectValue)):
-            return True
-        if isinstance(value, UnboundMethodValue):
-            return True
-        if isinstance(value, GenericValue):
-            if value.typ in {staticmethod, classmethod, property}:
-                return True
-            if isinstance(value.typ, type) and safe_issubclass(value.typ, type):
-                return True
-        if isinstance(value, KnownValue):
-            if isinstance(value.val, type):
-                return True
-            return _static_hasattr(value.val, "__get__")
-        if isinstance(value, TypedValue):
-            return isinstance(value.typ, type) and safe_issubclass(value.typ, type)
-        return False
-
-    @staticmethod
-    def _runtime_object_for_enum_member(value: Value) -> object:
-        value = replace_fallback(value)
-        if isinstance(value, KnownValue):
-            return value.val
-        return object()
 
     def _make_synthetic_enum_runtime_class(
         self,
@@ -4402,12 +4178,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     return typed_dict_type
         return None
 
-    @staticmethod
-    def _get_bool_literal(node: ast.AST) -> bool | None:
-        if isinstance(node, ast.Constant) and isinstance(node.value, bool):
-            return node.value
-        return None
-
     def _is_dataclass_decorator_target(self, target: ast.expr) -> bool:
         if isinstance(target, ast.Attribute):
             return target.attr == "dataclass"
@@ -4416,21 +4186,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         if target.id == "dataclass":
             return True
         value = self.scopes.get(target.id, target, self.state, can_assign_ctx=self)
-        return self._is_dataclass_decorator_value(value)
-
-    @staticmethod
-    def _is_dataclass_decorator_value(value: Value) -> bool:
-        if value is UNINITIALIZED_VALUE:
-            return False
-        value = replace_fallback(value)
-        if isinstance(value, AnnotatedValue):
-            return NameCheckVisitor._is_dataclass_decorator_value(value.value)
-        if isinstance(value, MultiValuedValue):
-            return any(
-                NameCheckVisitor._is_dataclass_decorator_value(subval)
-                for subval in value.vals
-            )
-        return isinstance(value, KnownValue) and value.val is dataclass
+        return _is_dataclass_decorator_value(value)
 
     def _get_dataclass_decorator_options(
         self, node: ast.ClassDef
@@ -4443,7 +4199,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 for kw in decorator.keywords:
                     if kw.arg is None:
                         return True, None
-                    value = self._get_bool_literal(kw.value)
+                    value = _get_bool_literal(kw.value)
                     if value is None:
                         return True, None
                     options[kw.arg] = value
@@ -4471,7 +4227,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         if existing is None:
             mapping[name] = info
             return
-        mapping[name] = self._merge_dataclass_transform_infos((existing, info))
+        mapping[name] = _merge_dataclass_transform_infos((existing, info))
 
     def _get_dataclass_transform_info_for_name(
         self, name: str
@@ -4483,41 +4239,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             if info is not None:
                 return info
         return None
-
-    @staticmethod
-    def _merge_dataclass_transform_infos(
-        infos: Sequence[_DataclassTransformInfo],
-    ) -> _DataclassTransformInfo:
-        filtered = [info for info in infos]
-        if not filtered:
-            return _DataclassTransformInfo()
-
-        def _merge_bool(values: Sequence[bool | None]) -> bool | None:
-            bool_values = {value for value in values if isinstance(value, bool)}
-            if len(bool_values) == 1:
-                return next(iter(bool_values))
-            return None
-
-        field_specifiers: list[Value] = []
-        for info in filtered:
-            for field_specifier in info.field_specifiers:
-                if field_specifier not in field_specifiers:
-                    field_specifiers.append(field_specifier)
-        return _DataclassTransformInfo(
-            init_default=_merge_bool([info.init_default for info in filtered]),
-            eq_default=_merge_bool([info.eq_default for info in filtered]),
-            frozen_default=_merge_bool([info.frozen_default for info in filtered]),
-            unsafe_hash_default=_merge_bool(
-                [info.unsafe_hash_default for info in filtered]
-            ),
-            match_args_default=_merge_bool(
-                [info.match_args_default for info in filtered]
-            ),
-            kw_only_default=_merge_bool([info.kw_only_default for info in filtered]),
-            order_default=_merge_bool([info.order_default for info in filtered]),
-            slots_default=_merge_bool([info.slots_default for info in filtered]),
-            field_specifiers=tuple(field_specifiers),
-        )
 
     def _extract_dataclass_transform_field_specifiers(
         self, value: Value
@@ -4553,23 +4274,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         if target.id == "dataclass_transform":
             return True
         value = self.scopes.get(target.id, target, self.state, can_assign_ctx=self)
-        return self._is_dataclass_transform_marker_value(value)
-
-    @staticmethod
-    def _is_dataclass_transform_marker_value(value: Value) -> bool:
-        if value is UNINITIALIZED_VALUE:
-            return False
-        value = replace_fallback(value)
-        if isinstance(value, AnnotatedValue):
-            return NameCheckVisitor._is_dataclass_transform_marker_value(value.value)
-        if isinstance(value, MultiValuedValue):
-            return any(
-                NameCheckVisitor._is_dataclass_transform_marker_value(subval)
-                for subval in value.vals
-            )
-        return isinstance(value, KnownValue) and is_typing_name(
-            value.val, "dataclass_transform"
-        )
+        return _is_dataclass_transform_marker_value(value)
 
     def _get_direct_dataclass_transform_info(
         self, decorators: Sequence[ast.expr]
@@ -4594,35 +4299,35 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     if kw.arg is None:
                         continue
                     if kw.arg == "init_default":
-                        bool_value = self._get_bool_literal(kw.value)
+                        bool_value = _get_bool_literal(kw.value)
                         if bool_value is not None:
                             info = replace(info, init_default=bool_value)
                     elif kw.arg == "eq_default":
-                        bool_value = self._get_bool_literal(kw.value)
+                        bool_value = _get_bool_literal(kw.value)
                         if bool_value is not None:
                             info = replace(info, eq_default=bool_value)
                     elif kw.arg == "frozen_default":
-                        bool_value = self._get_bool_literal(kw.value)
+                        bool_value = _get_bool_literal(kw.value)
                         if bool_value is not None:
                             info = replace(info, frozen_default=bool_value)
                     elif kw.arg == "unsafe_hash_default":
-                        bool_value = self._get_bool_literal(kw.value)
+                        bool_value = _get_bool_literal(kw.value)
                         if bool_value is not None:
                             info = replace(info, unsafe_hash_default=bool_value)
                     elif kw.arg == "match_args_default":
-                        bool_value = self._get_bool_literal(kw.value)
+                        bool_value = _get_bool_literal(kw.value)
                         if bool_value is not None:
                             info = replace(info, match_args_default=bool_value)
                     elif kw.arg == "kw_only_default":
-                        bool_value = self._get_bool_literal(kw.value)
+                        bool_value = _get_bool_literal(kw.value)
                         if bool_value is not None:
                             info = replace(info, kw_only_default=bool_value)
                     elif kw.arg == "order_default":
-                        bool_value = self._get_bool_literal(kw.value)
+                        bool_value = _get_bool_literal(kw.value)
                         if bool_value is not None:
                             info = replace(info, order_default=bool_value)
                     elif kw.arg == "slots_default":
-                        bool_value = self._get_bool_literal(kw.value)
+                        bool_value = _get_bool_literal(kw.value)
                         if bool_value is not None:
                             info = replace(info, slots_default=bool_value)
                     elif kw.arg == "field_specifiers":
@@ -4652,7 +4357,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 )
         if not infos:
             return None
-        return self._merge_dataclass_transform_infos(infos)
+        return _merge_dataclass_transform_infos(infos)
 
     def _get_dataclass_transform_info_from_runtime_object(
         self, obj: object
@@ -4837,7 +4542,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             ]
             if not infos:
                 return None
-            return self._merge_dataclass_transform_infos(infos)
+            return _merge_dataclass_transform_infos(infos)
         if isinstance(value, SyntheticClassObjectValue):
             return self._get_dataclass_transform_info_from_synthetic_class(value)
         if isinstance(value, KnownValue):
@@ -4981,7 +4686,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             if isinstance(decorator, ast.Call):
                 init_override = next(
                     (
-                        self._get_bool_literal(kw.value)
+                        _get_bool_literal(kw.value)
                         for kw in decorator.keywords
                         if kw.arg == "init"
                     ),
@@ -4989,7 +4694,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 )
                 eq_override = next(
                     (
-                        self._get_bool_literal(kw.value)
+                        _get_bool_literal(kw.value)
                         for kw in decorator.keywords
                         if kw.arg == "eq"
                     ),
@@ -4997,7 +4702,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 )
                 frozen_override = next(
                     (
-                        self._get_bool_literal(kw.value)
+                        _get_bool_literal(kw.value)
                         for kw in decorator.keywords
                         if kw.arg == "frozen"
                     ),
@@ -5005,7 +4710,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 )
                 unsafe_hash_override = next(
                     (
-                        self._get_bool_literal(kw.value)
+                        _get_bool_literal(kw.value)
                         for kw in decorator.keywords
                         if kw.arg == "unsafe_hash"
                     ),
@@ -5013,7 +4718,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 )
                 match_args_override = next(
                     (
-                        self._get_bool_literal(kw.value)
+                        _get_bool_literal(kw.value)
                         for kw in decorator.keywords
                         if kw.arg == "match_args"
                     ),
@@ -5021,7 +4726,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 )
                 kw_only_override = next(
                     (
-                        self._get_bool_literal(kw.value)
+                        _get_bool_literal(kw.value)
                         for kw in decorator.keywords
                         if kw.arg == "kw_only"
                     ),
@@ -5029,7 +4734,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 )
                 order_override = next(
                     (
-                        self._get_bool_literal(kw.value)
+                        _get_bool_literal(kw.value)
                         for kw in decorator.keywords
                         if kw.arg == "order"
                     ),
@@ -5037,7 +4742,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 )
                 slots_override = next(
                     (
-                        self._get_bool_literal(kw.value)
+                        _get_bool_literal(kw.value)
                         for kw in decorator.keywords
                         if kw.arg == "slots"
                     ),
@@ -5065,7 +4770,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         if metaclass_transform_info is not None:
             hierarchy_transform_infos.append(metaclass_transform_info)
         if hierarchy_transform_infos:
-            merged_hierarchy_info = self._merge_dataclass_transform_infos(
+            merged_hierarchy_info = _merge_dataclass_transform_infos(
                 hierarchy_transform_infos
             )
             # Per the typing spec, a class that directly specifies a
@@ -5077,7 +4782,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 )
             init_override = next(
                 (
-                    self._get_bool_literal(keyword.value)
+                    _get_bool_literal(keyword.value)
                     for keyword in node.keywords
                     if keyword.arg == "init"
                 ),
@@ -5085,7 +4790,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             )
             eq_override = next(
                 (
-                    self._get_bool_literal(keyword.value)
+                    _get_bool_literal(keyword.value)
                     for keyword in node.keywords
                     if keyword.arg == "eq"
                 ),
@@ -5093,7 +4798,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             )
             frozen_override = next(
                 (
-                    self._get_bool_literal(keyword.value)
+                    _get_bool_literal(keyword.value)
                     for keyword in node.keywords
                     if keyword.arg == "frozen"
                 ),
@@ -5101,7 +4806,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             )
             unsafe_hash_override = next(
                 (
-                    self._get_bool_literal(keyword.value)
+                    _get_bool_literal(keyword.value)
                     for keyword in node.keywords
                     if keyword.arg == "unsafe_hash"
                 ),
@@ -5109,7 +4814,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             )
             match_args_override = next(
                 (
-                    self._get_bool_literal(keyword.value)
+                    _get_bool_literal(keyword.value)
                     for keyword in node.keywords
                     if keyword.arg == "match_args"
                 ),
@@ -5117,7 +4822,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             )
             kw_only_override = next(
                 (
-                    self._get_bool_literal(keyword.value)
+                    _get_bool_literal(keyword.value)
                     for keyword in node.keywords
                     if keyword.arg == "kw_only"
                 ),
@@ -5125,7 +4830,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             )
             order_override = next(
                 (
-                    self._get_bool_literal(keyword.value)
+                    _get_bool_literal(keyword.value)
                     for keyword in node.keywords
                     if keyword.arg == "order"
                 ),
@@ -5133,7 +4838,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             )
             slots_override = next(
                 (
-                    self._get_bool_literal(keyword.value)
+                    _get_bool_literal(keyword.value)
                     for keyword in node.keywords
                     if keyword.arg == "slots"
                 ),
@@ -5174,9 +4879,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             transform_infos.append(merged_hierarchy_info)
 
         if transform_infos:
-            merged_transform_info = self._merge_dataclass_transform_infos(
-                transform_infos
-            )
+            merged_transform_info = _merge_dataclass_transform_infos(transform_infos)
             return _ClassDataclassSemantics(
                 is_dataclass=True,
                 init=merged_transform_info.init_default,
@@ -5190,7 +4893,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 field_specifiers=merged_transform_info.field_specifiers,
                 is_transform_provider=is_transform_provider,
                 transform_info=(
-                    self._merge_dataclass_transform_infos(transform_provider_infos)
+                    _merge_dataclass_transform_infos(transform_provider_infos)
                     if transform_provider_infos
                     else None
                 ),
@@ -5243,29 +4946,11 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             field_specifiers=(),
             is_transform_provider=is_transform_provider,
             transform_info=(
-                self._merge_dataclass_transform_infos(transform_provider_infos)
+                _merge_dataclass_transform_infos(transform_provider_infos)
                 if transform_provider_infos
                 else None
             ),
         )
-
-    @staticmethod
-    def _synthesize_dataclass_hash_attribute(
-        semantics: _ClassDataclassSemantics,
-    ) -> Value | None:
-        if semantics.unsafe_hash is True:
-            return AnyValue(AnySource.inference)
-        if semantics.eq is False:
-            return AnyValue(AnySource.inference)
-        if (
-            semantics.eq is True
-            and semantics.frozen is False
-            and semantics.unsafe_hash is False
-        ):
-            return KnownValue(None)
-        if semantics.eq is True and semantics.frozen is True:
-            return AnyValue(AnySource.inference)
-        return None
 
     def _apply_dataclass_hash_semantics(
         self,
@@ -5276,75 +4961,22 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             return
         if "__hash__" in synthetic_class.class_attributes:
             return
-        synthesized_hash = self._synthesize_dataclass_hash_attribute(semantics)
+        synthesized_hash = _synthesize_dataclass_hash_attribute(semantics)
         if synthesized_hash is not None:
             synthetic_class.class_attributes["__hash__"] = synthesized_hash
-
-    @staticmethod
-    def _class_body_defines_slots(node: ast.ClassDef) -> bool:
-        for statement in node.body:
-            if isinstance(statement, ast.Assign):
-                for target in statement.targets:
-                    if isinstance(target, ast.Name) and target.id == "__slots__":
-                        return True
-            elif isinstance(statement, ast.AnnAssign) and isinstance(
-                statement.target, ast.Name
-            ):
-                if statement.target.id == "__slots__":
-                    return True
-        return False
 
     def _check_dataclass_slots_definition(
         self, node: ast.ClassDef, semantics: _ClassDataclassSemantics
     ) -> None:
         if semantics.slots is not True:
             return
-        if not self._class_body_defines_slots(node):
+        if not _class_body_defines_slots(node):
             return
         self._show_error_if_checking(
             node,
             "Class cannot define __slots__ when dataclass slots=True",
             error_code=ErrorCode.invalid_annotation,
         )
-
-    @staticmethod
-    def _known_string_sequence_values(value: Value | None) -> tuple[str, ...] | None:
-        if value is None:
-            return None
-        value = replace_fallback(value)
-        if isinstance(value, KnownValue):
-            raw = value.val
-            if isinstance(raw, str):
-                return (raw,)
-            if isinstance(raw, (tuple, list, set, frozenset)):
-                return tuple(item for item in raw if isinstance(item, str))
-            return None
-        if isinstance(value, SequenceValue):
-            members = value.get_member_sequence()
-            if members is None:
-                return None
-            output: list[str] = []
-            for member in members:
-                member = replace_fallback(member)
-                if isinstance(member, KnownValue) and isinstance(member.val, str):
-                    output.append(member.val)
-                else:
-                    return None
-            return tuple(output)
-        return None
-
-    @staticmethod
-    def _normalize_slot_names(raw_names: Iterable[str]) -> tuple[tuple[str, ...], bool]:
-        names: list[str] = []
-        has_dict = False
-        for name in raw_names:
-            if name == "__dict__":
-                has_dict = True
-                continue
-            if name == "__weakref__":
-                continue
-            names.append(name)
-        return tuple(names), has_dict
 
     def _apply_dataclass_slots_semantics(
         self,
@@ -5353,7 +4985,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     ) -> None:
         if not semantics.is_dataclass:
             return
-        self._record_dataclass_slots_flag(synthetic_class, semantics)
+        _record_dataclass_slots_flag(synthetic_class, semantics)
         if semantics.slots is not True:
             return
         if "__slots__" in synthetic_class.class_attributes:
@@ -5363,43 +4995,15 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             return
         synthetic_class.class_attributes["__slots__"] = KnownValue(slot_names)
 
-    @staticmethod
-    def _record_dataclass_slots_flag(
-        synthetic_class: SyntheticClassObjectValue, semantics: _ClassDataclassSemantics
-    ) -> None:
-        if not semantics.is_dataclass:
-            synthetic_class.class_attributes.pop("%dataclass_slots", None)
-            synthetic_class.class_attributes.pop("%dataclass_init", None)
-            synthetic_class.class_attributes.pop("%dataclass_match_args", None)
-            return
-        if isinstance(semantics.slots, bool):
-            synthetic_class.class_attributes["%dataclass_slots"] = KnownValue(
-                semantics.slots
-            )
-        else:
-            synthetic_class.class_attributes.pop("%dataclass_slots", None)
-        if isinstance(semantics.init, bool):
-            synthetic_class.class_attributes["%dataclass_init"] = KnownValue(
-                semantics.init
-            )
-        else:
-            synthetic_class.class_attributes.pop("%dataclass_init", None)
-        if isinstance(semantics.match_args, bool):
-            synthetic_class.class_attributes["%dataclass_match_args"] = KnownValue(
-                semantics.match_args
-            )
-        else:
-            synthetic_class.class_attributes.pop("%dataclass_match_args", None)
-
     def _dataclass_slot_names_from_synthetic_class(
         self, synthetic_class: SyntheticClassObjectValue
     ) -> tuple[str, ...] | None:
-        local_names = self._known_string_sequence_values(
+        local_names = _known_string_sequence_values(
             synthetic_class.class_attributes.get("%dataclass_field_order")
         )
         if local_names is None or not local_names:
             classvar_names = set(
-                self._known_string_sequence_values(
+                _known_string_sequence_values(
                     synthetic_class.class_attributes.get("%classvars")
                 )
                 or ()
@@ -5413,71 +5017,22 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 and name not in classvar_names
             )
         initvar_names = set(
-            self._known_string_sequence_values(
+            _known_string_sequence_values(
                 synthetic_class.class_attributes.get("%dataclass_initvar_fields")
             )
             or ()
         )
         return tuple(name for name in local_names if name not in initvar_names)
 
-    @staticmethod
-    def _is_dataclass_kw_only_marker_value(value: Value) -> bool:
-        marker = getattr(dataclasses, "KW_ONLY", None)
-        if marker is None:
-            return False
-        value = replace_fallback(value)
-        if isinstance(value, AnnotatedValue):
-            return NameCheckVisitor._is_dataclass_kw_only_marker_value(value.value)
-        if isinstance(value, MultiValuedValue):
-            return any(
-                NameCheckVisitor._is_dataclass_kw_only_marker_value(subval)
-                for subval in value.vals
-            )
-        return isinstance(value, KnownValue) and value.val is marker
-
     def _is_dataclass_kw_only_marker_annotation(self, node: ast.expr) -> bool:
         if isinstance(node, ast.Name):
             value = self.scopes.get(node.id, node, self.state, can_assign_ctx=self)
-            return self._is_dataclass_kw_only_marker_value(value)
+            return _is_dataclass_kw_only_marker_value(value)
         if isinstance(node, ast.Attribute):
             with self.catch_errors():
                 value = self.visit(node)
-            return self._is_dataclass_kw_only_marker_value(value)
+            return _is_dataclass_kw_only_marker_value(value)
         return False
-
-    @staticmethod
-    def _value_matches_dataclass_field_specifier(
-        value: Value, field_specifier: Value
-    ) -> bool:
-        value = replace_fallback(value)
-        field_specifier = replace_fallback(field_specifier)
-        if isinstance(value, AnnotatedValue):
-            return NameCheckVisitor._value_matches_dataclass_field_specifier(
-                value.value, field_specifier
-            )
-        if isinstance(field_specifier, AnnotatedValue):
-            return NameCheckVisitor._value_matches_dataclass_field_specifier(
-                value, field_specifier.value
-            )
-        if isinstance(value, MultiValuedValue):
-            return any(
-                NameCheckVisitor._value_matches_dataclass_field_specifier(
-                    subval, field_specifier
-                )
-                for subval in value.vals
-            )
-        if isinstance(field_specifier, MultiValuedValue):
-            return any(
-                NameCheckVisitor._value_matches_dataclass_field_specifier(value, subval)
-                for subval in field_specifier.vals
-            )
-        if isinstance(value, KnownValue) and isinstance(field_specifier, KnownValue):
-            return value.val is field_specifier.val
-        if isinstance(value, SyntheticClassObjectValue) and isinstance(
-            field_specifier, SyntheticClassObjectValue
-        ):
-            return value.class_type == field_specifier.class_type
-        return value == field_specifier
 
     def _is_dataclass_field_call(self, expr: ast.expr) -> bool:
         if not isinstance(expr, ast.Call):
@@ -5490,28 +5045,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         if isinstance(callee, KnownValue) and callee.val is dataclass_field:
             return True
         return any(
-            self._value_matches_dataclass_field_specifier(callee, field_specifier)
+            _value_matches_dataclass_field_specifier(callee, field_specifier)
             for field_specifier in self.current_class_dataclass_field_specifiers
         )
-
-    @staticmethod
-    def _arguments_from_call_composites(
-        args: Sequence[Composite], keywords: Sequence[tuple[str | None, Composite]]
-    ) -> list[Argument]:
-        return [
-            (
-                (Composite(arg.value.root, arg.varname, arg.node), ARGS)
-                if (
-                    isinstance(arg.value, PartialValue)
-                    and arg.value.operation is PartialValueOperation.UNPACK
-                )
-                else (arg, None)
-            )
-            for arg in args
-        ] + [
-            (value, KWARGS) if keyword is None else (value, keyword)
-            for keyword, value in keywords
-        ]
 
     def _get_bound_args_for_dataclass_field_signature(
         self, signature: Signature, actual_args: ActualArguments, *, is_overload: bool
@@ -5538,7 +5074,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         if not isinstance(signature, (Signature, OverloadedSignature)):
             return None
 
-        arguments = self._arguments_from_call_composites(args, keywords)
+        arguments = _arguments_from_call_composites(args, keywords)
         preprocess_ctx = _DataclassFieldInferenceCallContext(self)
         actual_args = preprocess_args(arguments, preprocess_ctx)
         if actual_args is None:
@@ -5572,29 +5108,29 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         )
         if bound_args is None:
             return _DataclassFieldCallOptions()
-        init = self._dataclass_field_bound_bool_arg(bound_args, "init")
-        kw_only = self._dataclass_field_bound_bool_arg(
+        init = _dataclass_field_bound_bool_arg(bound_args, "init")
+        kw_only = _dataclass_field_bound_bool_arg(
             bound_args, "kw_only", include_default=False
         )
-        alias = self._dataclass_field_bound_str_arg(
+        alias = _dataclass_field_bound_str_arg(
             bound_args, "alias", include_default=False
         )
         has_default = False
-        default_value = self._dataclass_field_bound_arg(
+        default_value = _dataclass_field_bound_arg(
             bound_args, "default", include_default=False
         )
-        if default_value is not None and not self._is_absent_dataclass_default_value(
+        if default_value is not None and not _is_absent_dataclass_default_value(
             default_value
         ):
             has_default = True
         default_factory = None
         for key in ("default_factory", "factory"):
-            factory_value = self._dataclass_field_bound_arg(
+            factory_value = _dataclass_field_bound_arg(
                 bound_args, key, include_default=False
             )
             if factory_value is None:
                 continue
-            if self._is_absent_dataclass_default_value(factory_value):
+            if _is_absent_dataclass_default_value(factory_value):
                 continue
             has_default = True
             default_factory = factory_value
@@ -5606,59 +5142,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             has_default=has_default,
             default_factory=default_factory,
         )
-
-    @staticmethod
-    def _dataclass_field_bound_arg(
-        bound_args: BoundArgs, name: str, *, include_default: bool = True
-    ) -> Value | None:
-        if name not in bound_args:
-            return None
-        if not include_default and bound_args[name][0] is type_evaluation.DEFAULT:
-            return None
-        return bound_args[name][1].value
-
-    @staticmethod
-    def _dataclass_field_bound_bool_arg(
-        bound_args: BoundArgs, name: str, *, include_default: bool = True
-    ) -> bool | None:
-        value = NameCheckVisitor._dataclass_field_bound_arg(
-            bound_args, name, include_default=include_default
-        )
-        if isinstance(value, KnownValue) and isinstance(value.val, bool):
-            return value.val
-        return None
-
-    @staticmethod
-    def _dataclass_field_bound_str_arg(
-        bound_args: BoundArgs, name: str, *, include_default: bool = True
-    ) -> str | None:
-        value = NameCheckVisitor._dataclass_field_bound_arg(
-            bound_args, name, include_default=include_default
-        )
-        if isinstance(value, KnownValue) and isinstance(value.val, str):
-            return value.val
-        return None
-
-    @staticmethod
-    def _is_absent_dataclass_default_value(value: Value) -> bool:
-        value = replace_fallback(value)
-        if isinstance(value, KnownValue):
-            return value.val is Ellipsis or value.val is dataclasses.MISSING
-        return False
-
-    @staticmethod
-    def _callable_return_type_from_signature(
-        signature: MaybeSignature, *, checker: "NameCheckVisitor"
-    ) -> Value | None:
-        if isinstance(signature, BoundMethodSignature):
-            signature = signature.get_signature(ctx=checker)
-        if isinstance(signature, Signature):
-            return signature.return_value
-        if isinstance(signature, OverloadedSignature):
-            if not signature.signatures:
-                return None
-            return unite_values(*(sig.return_value for sig in signature.signatures))
-        return None
 
     def _should_build_dataclass_kw_only_fallback(
         self, node: ast.ClassDef, options: Mapping[str, bool]
@@ -5679,14 +5162,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 return True
         return False
 
-    @staticmethod
-    def _slot_names_from_runtime_slots(value: object) -> tuple[str, ...] | None:
-        if isinstance(value, str):
-            return (value,)
-        if isinstance(value, (tuple, list, set, frozenset)):
-            return tuple(item for item in value if isinstance(item, str))
-        return None
-
     def _slot_state_for_synthetic_class(
         self,
         synthetic_class: SyntheticClassObjectValue,
@@ -5703,12 +5178,12 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         slot_names: set[str] = set()
         has_dict = False
         if "__slots__" in synthetic_class.class_attributes:
-            names = self._known_string_sequence_values(
+            names = _known_string_sequence_values(
                 synthetic_class.class_attributes.get("__slots__")
             )
             if names is None:
                 return None
-            normalized_names, local_has_dict = self._normalize_slot_names(names)
+            normalized_names, local_has_dict = _normalize_slot_names(names)
             slot_names.update(normalized_names)
             has_dict = has_dict or local_has_dict
         elif synthetic_class.class_attributes.get("%dataclass_slots") == KnownValue(
@@ -5748,10 +5223,10 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             if "__slots__" not in base.__dict__:
                 has_dict = True
                 continue
-            names = self._slot_names_from_runtime_slots(base.__dict__["__slots__"])
+            names = _slot_names_from_runtime_slots(base.__dict__["__slots__"])
             if names is None:
                 return None
-            normalized_names, local_has_dict = self._normalize_slot_names(names)
+            normalized_names, local_has_dict = _normalize_slot_names(names)
             slot_names.update(normalized_names)
             has_dict = has_dict or local_has_dict
             saw_slots = True
@@ -6005,20 +5480,10 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             )
             return
 
-    @staticmethod
-    def _get_dataclass_post_init_node(
-        node: ast.ClassDef,
-    ) -> ast.FunctionDef | ast.AsyncFunctionDef | None:
-        for stmt in node.body:
-            if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                if stmt.name == "__post_init__":
-                    return stmt
-        return None
-
     def _check_dataclass_post_init_signature(
         self, node: ast.ClassDef, dataclass_class: SyntheticClassObjectValue
     ) -> None:
-        post_init_node = self._get_dataclass_post_init_node(node)
+        post_init_node = _get_dataclass_post_init_node(node)
         if post_init_node is None:
             return
         post_init_value = dataclass_class.class_attributes.get("__post_init__")
@@ -6066,25 +5531,25 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             node,
         )
 
-        field_order = self._known_string_sequence_values(
+        field_order = _known_string_sequence_values(
             dataclass_class.class_attributes.get("%dataclass_field_order")
         )
         if not field_order:
             return
         default_fields = set(
-            self._known_string_sequence_values(
+            _known_string_sequence_values(
                 dataclass_class.class_attributes.get("%dataclass_default_fields")
             )
             or ()
         )
         init_false_fields = set(
-            self._known_string_sequence_values(
+            _known_string_sequence_values(
                 dataclass_class.class_attributes.get("%dataclass_init_false_fields")
             )
             or ()
         )
         kw_only_fields = set(
-            self._known_string_sequence_values(
+            _known_string_sequence_values(
                 dataclass_class.class_attributes.get("%dataclass_kw_only_fields")
             )
             or ()
@@ -6104,21 +5569,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     error_code=ErrorCode.invalid_annotation,
                 )
                 return
-
-    @staticmethod
-    def _compose_variance_polarity(polarity: int, variance: Variance) -> int:
-        if polarity == 0 or variance is Variance.INVARIANT:
-            return 0
-        if variance is Variance.COVARIANT:
-            return polarity
-        return -polarity
-
-    @staticmethod
-    def _record_variance_polarity(used_polarities: set[int], polarity: int) -> None:
-        if polarity == 0:
-            used_polarities.update({-1, 1})
-        else:
-            used_polarities.add(polarity)
 
     def _synthetic_type_params_for_variance(
         self, typ: type | str, arity: int
@@ -6175,7 +5625,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         if isinstance(value, TypeVarValue):
             used_polarities = type_param_polarities.get(value.typevar)
             if used_polarities is not None:
-                self._record_variance_polarity(used_polarities, polarity)
+                _record_variance_polarity(used_polarities, polarity)
             return
         if isinstance(value, GenericValue):
             type_parameters = self.get_type_parameters(value.typ)
@@ -6188,9 +5638,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     self._collect_type_param_polarities_from_value(
                         arg,
                         type_param_polarities,
-                        polarity=self._compose_variance_polarity(
-                            polarity, param_variance
-                        ),
+                        polarity=_compose_variance_polarity(polarity, param_variance),
                     )
             else:
                 synthetic_type_params = self._synthetic_type_params_for_variance(
@@ -6206,7 +5654,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                         self._collect_type_param_polarities_from_value(
                             arg,
                             type_param_polarities,
-                            polarity=self._compose_variance_polarity(
+                            polarity=_compose_variance_polarity(
                                 polarity, get_typevar_variance(type_param)
                             ),
                         )
@@ -6238,7 +5686,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     self._collect_type_param_polarities_from_value(
                         type_argument,
                         type_param_polarities,
-                        polarity=self._compose_variance_polarity(
+                        polarity=_compose_variance_polarity(
                             polarity, get_typevar_variance(type_param)
                         ),
                     )
@@ -6298,7 +5746,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         type_param_polarities = {tp.typevar: set() for tp in type_params}
         for base_node in node.bases:
             base = self._value_for_variance_annotation(base_node)
-            if is_protocol and self._is_protocol_base(base):
+            if is_protocol and _is_protocol_base(base):
                 continue
             self._collect_type_param_polarities_from_value(
                 base, type_param_polarities, polarity=1
@@ -6419,58 +5867,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 error_code=ErrorCode.invalid_annotation,
             )
 
-    @staticmethod
-    def _variance_is_compatible_with_usage(
-        variance: Variance, used_polarities: set[int]
-    ) -> bool:
-        if not used_polarities or variance is Variance.INVARIANT:
-            return True
-        if variance is Variance.COVARIANT:
-            return -1 not in used_polarities
-        return 1 not in used_polarities
-
-    @staticmethod
-    def _is_variance_declaration_arg(arg: Value) -> bool:
-        if isinstance(arg, TypeVarValue):
-            return True
-        if isinstance(arg, AnnotatedValue):
-            return NameCheckVisitor._is_variance_declaration_arg(arg.value)
-        if isinstance(arg, KnownValue):
-            type_param = arg.val
-            return (
-                is_instance_of_typing_name(type_param, "TypeVar")
-                or is_instance_of_typing_name(type_param, "TypeVarTuple")
-                or is_instance_of_typing_name(type_param, "ParamSpec")
-            )
-        return False
-
-    @staticmethod
-    def _is_variance_declaration_base(base_value: Value) -> bool:
-        subvals = list(flatten_values(replace_fallback(base_value)))
-        if not subvals:
-            return False
-        for subval in subvals:
-            if isinstance(subval, SyntheticClassObjectValue):
-                subval = subval.class_type
-            if isinstance(subval, GenericValue):
-                typ: object = subval.typ
-                type_args: Sequence[Value] = subval.args
-            elif isinstance(subval, TypedValue):
-                typ = subval.typ
-                type_args = ()
-            elif isinstance(subval, KnownValue):
-                typ = subval.val
-                type_args = ()
-            else:
-                return False
-            if not (is_typing_name(typ, "Generic") or is_typing_name(typ, "Protocol")):
-                return False
-            if type_args and not all(
-                NameCheckVisitor._is_variance_declaration_arg(arg) for arg in type_args
-            ):
-                return False
-        return True
-
     def _check_class_base_type_param_variances(
         self,
         node: ast.ClassDef,
@@ -6501,7 +5897,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
 
         sorted_typevars = sorted(typevars_to_check, key=str)
         for base_node, analyzed_base in zip(node.bases, analyzed_bases):
-            if self._is_variance_declaration_base(analyzed_base):
+            if _is_variance_declaration_base(analyzed_base):
                 continue
             type_param_polarities: dict[object, set[int]] = {
                 typevar: set() for typevar in sorted_typevars
@@ -6513,7 +5909,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             for typevar in sorted_typevars:
                 used_polarities = type_param_polarities[typevar]
                 variance = get_typevar_variance(typevar)
-                if self._variance_is_compatible_with_usage(variance, used_polarities):
+                if _variance_is_compatible_with_usage(variance, used_polarities):
                     continue
                 type_param_name = safe_getattr(typevar, "__name__", str(typevar))
                 self._show_error_if_checking(
@@ -6547,7 +5943,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         if isinstance(class_scope_object, (type, str)):
             if self.checker.make_type_object(class_scope_object).is_protocol:
                 return True
-        return any(self._is_protocol_base(base_value) for base_value in base_values)
+        return any(_is_protocol_base(base_value) for base_value in base_values)
 
     def _align_type_params_with_runtime_class(
         self, class_obj: type | None, type_params: Sequence[TypeVarValue]
@@ -6596,26 +5992,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             seen_default = seen_default or has_default
             previous_was_typevartuple = is_typevartuple
 
-    @staticmethod
-    def _type_param_value_from_value(value: Value) -> TypeVarValue | None:
-        if isinstance(value, InputSigValue) and isinstance(
-            value.input_sig, ParamSpecSig
-        ):
-            return TypeVarValue(value.input_sig.param_spec)
-        try:
-            value = replace_fallback(value)
-        except NotAGradualType:
-            return None
-        if isinstance(value, TypeVarValue):
-            return value
-        if isinstance(value, KnownValue) and (
-            is_instance_of_typing_name(value.val, "TypeVar")
-            or is_instance_of_typing_name(value.val, "TypeVarTuple")
-            or is_instance_of_typing_name(value.val, "ParamSpec")
-        ):
-            return TypeVarValue(value.val, variance=get_typevar_variance(value.val))
-        return None
-
     def _type_param_from_expr_for_default_rules(
         self, node: ast.expr
     ) -> TypeVarValue | None:
@@ -6637,7 +6013,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             return None
         with contextlib.suppress(NotAGradualType):
             value = self.scopes.get(node.id, node, self.state, can_assign_ctx=self)
-            return self._type_param_value_from_value(value)
+            return _type_param_value_from_value(value)
         return None
 
     def _type_params_from_base_annotations_for_default_rules(
@@ -6743,7 +6119,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 bare_count += bare
                 unpacked_count += unpacked
             bare_count = max(bare_count, self._count_typevartuple_name_args(base.slice))
-            starred_count = self._count_starred_type_param_args(base.slice)
+            starred_count = _count_starred_type_param_args(base.slice)
             if bare_count:
                 self._show_error_if_checking(
                     base.slice,
@@ -6767,12 +6143,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 return members
             return [member for _, member in args.members]
         return [args]
-
-    @staticmethod
-    def _count_starred_type_param_args(slice_node: ast.AST) -> int:
-        if isinstance(slice_node, ast.Tuple):
-            return sum(isinstance(elt, ast.Starred) for elt in slice_node.elts)
-        return int(isinstance(slice_node, ast.Starred))
 
     def _count_typevartuple_name_args(self, slice_node: ast.AST) -> int:
         if isinstance(slice_node, ast.Tuple):
@@ -6813,10 +6183,10 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     def _check_protocol_base_validity(
         self, node: ast.ClassDef, base_values: Sequence[Value]
     ) -> None:
-        if not any(self._is_protocol_base(base_value) for base_value in base_values):
+        if not any(_is_protocol_base(base_value) for base_value in base_values):
             return
         for base_node, base_value in zip(node.bases, base_values):
-            if self._is_protocol_base(base_value):
+            if _is_protocol_base(base_value):
                 continue
             if self._is_valid_non_protocol_base_for_protocol(base_value):
                 continue
@@ -6847,21 +6217,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     # For runtime classes, let runtime semantics decide.
                     return True
         return True
-
-    @staticmethod
-    def _is_protocol_base(base_value: Value) -> bool:
-        for subval in flatten_values(replace_fallback(base_value)):
-            if isinstance(subval, SyntheticClassObjectValue):
-                subval = subval.class_type
-            if isinstance(subval, KnownValue):
-                typ: object = subval.val
-            elif isinstance(subval, TypedValue):
-                typ = subval.typ
-            else:
-                continue
-            if is_typing_name(typ, "Protocol"):
-                return True
-        return False
 
     def _get_local_object(self, name: str, node: ast.AST) -> Value:
         if self.scopes.scope_type() == ScopeType.module_scope:
@@ -6930,29 +6285,14 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             qualname_parts.append(name)
         return ".".join(qualname_parts)
 
-    @staticmethod
-    def _mangle_class_attribute_name(class_name: str, attribute_name: str) -> str:
-        if attribute_name.startswith("__") and not attribute_name.endswith("__"):
-            return f"_{class_name}{attribute_name}"
-        return attribute_name
-
     def _get_synthetic_method_attributes(self, node: ast.ClassDef) -> set[str]:
         method_attributes = set()
         for stmt in node.body:
             if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 method_attributes.add(
-                    self._mangle_class_attribute_name(node.name, stmt.name)
+                    _mangle_class_attribute_name(node.name, stmt.name)
                 )
         return method_attributes
-
-    @staticmethod
-    def _return_annotation_contains_self(return_annotation: Value | None) -> bool:
-        if return_annotation is None:
-            return False
-        for subvalue in return_annotation.walk_values():
-            if isinstance(subvalue, TypeVarValue) and subvalue.typevar is SelfT:
-                return True
-        return False
 
     def _return_annotation_node_contains_self(self, annotation: ast.AST | None) -> bool:
         if annotation is None:
@@ -6987,7 +6327,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             if not self._function_returns_self_by_node.get(stmt, False):
                 continue
             self_returning_classmethods.add(
-                self._mangle_class_attribute_name(node.name, stmt.name)
+                _mangle_class_attribute_name(node.name, stmt.name)
             )
         return self_returning_classmethods
 
@@ -6999,15 +6339,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
 
     def _is_current_class_dataclass(self) -> bool:
         return self.current_class_is_dataclass
-
-    @staticmethod
-    def _is_dataclass_classvar_final(expr: AnnotationExpr) -> bool:
-        qualifier_order = [
-            qualifier
-            for qualifier, _ in expr.qualifiers
-            if qualifier in {Qualifier.Final, Qualifier.ClassVar}
-        ]
-        return qualifier_order == [Qualifier.Final, Qualifier.ClassVar]
 
     def _visit_class_and_get_value(
         self, node: ast.ClassDef, current_class: type | str | None
@@ -7381,7 +6712,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         ) as info:
             self._function_decorator_kinds_by_node[node] = info.decorator_kinds
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                contains_self_return = self._return_annotation_contains_self(
+                contains_self_return = _return_annotation_contains_self(
                     info.return_annotation
                 )
                 if not contains_self_return:
@@ -7828,7 +7159,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             )
 
         overload_kinds = {
-            self._method_decorator_kind(decorator_kinds=pending.decorator_kinds)
+            _method_decorator_kind(decorator_kinds=pending.decorator_kinds)
             for pending in overloads
         }
         kind_mismatch = False
@@ -7841,7 +7172,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             )
         elif impl_info is not None:
             (overload_kind,) = overload_kinds
-            impl_kind = self._method_decorator_kind(
+            impl_kind = _method_decorator_kind(
                 decorator_kinds=impl_info.decorator_kinds
             )
             if impl_kind != overload_kind:
@@ -7949,10 +7280,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 pending_block.name
             )
         return should_check_consistency
-
-    @staticmethod
-    def _method_decorator_kind(*, decorator_kinds: Container[FunctionDecorator]) -> str:
-        return FunctionDecorator.method_kind_for(decorator_kinds)
 
     def _is_final_base_method(
         self, current_class: type | str, method_name: str, node: ast.AST
@@ -11099,7 +10426,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             annotation = self._visit_annotation(node.annotation)
             if (
                 self._is_current_class_dataclass()
-                and self._is_dataclass_kw_only_marker_value(annotation)
+                and _is_dataclass_kw_only_marker_value(annotation)
             ):
                 if node.value is not None:
                     self._show_error_if_checking(
@@ -11248,9 +10575,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         if (
             has_classvar
             and is_final
-            and not (
-                is_current_class_dataclass and self._is_dataclass_classvar_final(expr)
-            )
+            and not (is_current_class_dataclass and _is_dataclass_classvar_final(expr))
         ):
             self._show_error_if_checking(
                 node.annotation,
@@ -11367,7 +10692,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     default_factory_sig = self.signature_from_value(
                         dataclass_default_factory
                     )
-                    default_factory_return = self._callable_return_type_from_signature(
+                    default_factory_return = _callable_return_type_from_signature(
                         default_factory_sig, checker=self
                     )
                     if default_factory_return is not None:
@@ -11516,41 +10841,8 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             scope_key, {}
         )
         refs_by_name.setdefault(name, set()).update(
-            self._collect_unguarded_type_alias_refs(value_node)
+            _collect_unguarded_type_alias_refs(value_node)
         )
-
-    @staticmethod
-    def _collect_unguarded_type_alias_refs(value_node: ast.AST) -> set[str]:
-        refs: set[str] = set()
-
-        def walk(node: ast.AST, guarded: bool, allow_string_parse: bool = True) -> None:
-            if isinstance(node, ast.Subscript):
-                walk(node.value, guarded, allow_string_parse)
-                walk(node.slice, True, allow_string_parse)
-                return
-            if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load):
-                if not guarded:
-                    refs.add(node.id)
-                return
-            if (
-                allow_string_parse
-                and isinstance(node, ast.Constant)
-                and isinstance(node.value, str)
-            ):
-                parse_source = node.value
-                if "\n" in parse_source or "\r" in parse_source:
-                    parse_source = f"({parse_source})"
-                try:
-                    parsed = ast.parse(parse_source, mode="eval")
-                except SyntaxError:
-                    return
-                walk(parsed.body, guarded, False)
-                return
-            for child in ast.iter_child_nodes(node):
-                walk(child, guarded, allow_string_parse)
-
-        walk(value_node, False)
-        return refs
 
     def _type_alias_has_unguarded_cycle(self, name: str) -> bool:
         scope_refs = self._type_alias_unguarded_refs_by_scope.get(
@@ -11576,22 +10868,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             for dep in scope_refs.get(name, ())
         )
 
-    @staticmethod
-    def _type_param_identity(value: Value) -> object | None:
-        if isinstance(value, TypeVarValue):
-            return value.typevar
-        if isinstance(value, InputSigValue) and isinstance(
-            value.input_sig, ParamSpecSig
-        ):
-            return value.input_sig.param_spec
-        if isinstance(value, KnownValue) and (
-            is_instance_of_typing_name(value.val, "TypeVar")
-            or is_instance_of_typing_name(value.val, "TypeVarTuple")
-            or is_instance_of_typing_name(value.val, "ParamSpec")
-        ):
-            return value.val
-        return None
-
     def _legacy_typevars_in_nodes(
         self,
         nodes: Iterable[ast.AST],
@@ -11613,7 +10889,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     subnode, error_node=subnode, suppress_errors=True
                 )
                 for subval in flatten_values(resolved, unwrap_annotated=True):
-                    identity = self._type_param_identity(subval)
+                    identity = _type_param_identity(subval)
                     if identity is None:
                         continue
                     if identity not in declared:
@@ -11627,16 +10903,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         return self._legacy_typevars_in_nodes(
             [value_node], declared_type_params, include_active_type_params=False
         )
-
-    @staticmethod
-    def _is_typealiastype_value(value: Value) -> bool:
-        for subval in flatten_values(value, unwrap_annotated=True):
-            if isinstance(subval, KnownValue) and (
-                is_typing_name(subval.val, "TypeAliasType")
-                or is_instance_of_typing_name(subval.val, "TypeAliasType")
-            ):
-                return True
-        return False
 
     def _resolve_call_target_value(self, node: ast.expr) -> Value:
         if isinstance(node, ast.Name):
@@ -11660,41 +10926,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         return AnyValue(AnySource.inference)
 
     def _is_typealiastype_call(self, node: ast.Call) -> bool:
-        return self._is_typealiastype_value(self._resolve_call_target_value(node.func))
-
-    @staticmethod
-    def _get_runtime_type_alias_value_node(node: ast.Call) -> ast.AST | None:
-        if len(node.args) >= 2:
-            return node.args[1]
-        for keyword in node.keywords:
-            if keyword.arg == "value":
-                return keyword.value
-        return None
-
-    @staticmethod
-    def _runtime_type_alias_self_reference(value_node: ast.AST, name: str) -> bool:
-        return any(
-            isinstance(subnode, ast.Name)
-            and isinstance(subnode.ctx, ast.Load)
-            and subnode.id == name
-            for subnode in ast.walk(value_node)
-        )
-
-    @staticmethod
-    def _runtime_type_alias_declared_type_params(
-        params: Sequence[TypeVarLike | TypeVarValue],
-    ) -> Sequence[TypeVarValue]:
-        declared: list[TypeVarValue] = []
-        for param in params:
-            if isinstance(param, TypeVarValue):
-                declared.append(param)
-            elif is_instance_of_typing_name(param, "TypeVarTuple") or is_typing_name(
-                type(param), "TypeVarTuple"
-            ):
-                declared.append(TypeVarValue(param, is_typevartuple=True))
-            else:
-                declared.append(TypeVarValue(param))
-        return declared
+        return _is_typealiastype_value(self._resolve_call_target_value(node.func))
 
     def _extract_runtime_type_alias_type_params(
         self, node: ast.Call
@@ -11722,7 +10954,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             ):
                 params.append(value.input_sig.param_spec)
                 continue
-            identity = self._type_param_identity(value)
+            identity = _type_param_identity(value)
             if identity is not None:
                 params.append(cast(TypeVarLike, identity))
                 continue
@@ -11742,7 +10974,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             node.value
         ):
             return None
-        value_node = self._get_runtime_type_alias_value_node(node.value)
+        value_node = _get_runtime_type_alias_value_node(node.value)
         if value_node is None:
             return None
         name = node.targets[0].id
@@ -11750,13 +10982,13 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             self._record_type_alias_structure(name, node, value_node)
         type_params = self._extract_runtime_type_alias_type_params(node.value)
         declared_type_params = list(
-            self._runtime_type_alias_declared_type_params(type_params)
+            _runtime_type_alias_declared_type_params(type_params)
         )
         if self.current_class_type_params is not None:
             declared_type_params.extend(self.current_class_type_params)
         declared_type_params = list(dict.fromkeys(declared_type_params))
         has_circular_definition = False
-        if self._runtime_type_alias_self_reference(value_node, name):
+        if _runtime_type_alias_self_reference(value_node, name):
             has_circular_definition = True
         if self._type_alias_has_unguarded_cycle(name):
             has_circular_definition = True
@@ -12090,7 +11322,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     isinstance(stripped_root.value, TypeAliasValue)
                     or (
                         self.module is None
-                        and self._should_use_static_annotation_subscript_on_import_failure(
+                        and _should_use_static_annotation_subscript_on_import_failure(
                             stripped_root.value
                         )
                     )
@@ -12106,9 +11338,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     or (
                         isinstance(stripped_root.value, KnownValue)
                         and is_typing_name(stripped_root.value.val, "Literal")
-                        and not self._is_runtime_literal_index(index)
+                        and not _is_runtime_literal_index(index)
                     )
-                    or self._should_use_static_annotation_subscript(stripped_root.value)
+                    or _should_use_static_annotation_subscript(stripped_root.value)
                 ):
                     return_value = PartialValue(
                         PartialValueOperation.SUBSCRIPT,
@@ -12208,40 +11440,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         elif isinstance(value, KnownValue) and isinstance(value.val, tuple):
             return tuple(KnownValue(member) for member in value.val)
         return (value,)
-
-    @staticmethod
-    def _is_runtime_literal_index(value: Value) -> bool:
-        if isinstance(value, KnownValue):
-            return True
-        if isinstance(value, SequenceValue) and value.typ is tuple:
-            members = value.get_member_sequence()
-            return members is not None and all(
-                isinstance(member, KnownValue) for member in members
-            )
-        return False
-
-    @staticmethod
-    def _should_use_static_annotation_subscript(value: Value) -> bool:
-        if not isinstance(value, KnownValue):
-            return False
-        root = value.val
-        return (
-            root is typing.Callable
-            or root is collections.abc.Callable
-            or is_typing_name(root, "Callable")
-            or root is AsynqCallable
-        )
-
-    @staticmethod
-    def _should_use_static_annotation_subscript_on_import_failure(value: Value) -> bool:
-        if not isinstance(value, KnownValue):
-            return False
-        root = value.val
-        return (
-            root is typing.Iterable
-            or root is collections.abc.Iterable
-            or is_typing_name(root, "Iterable")
-        )
 
     def _maybe_subscript_synthetic_class(
         self, value: Value, index: Value, node: ast.Subscript
@@ -13474,6 +12672,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             isinstance(callee_obj, type)
             and is_namedtuple_class(callee_obj)
             and should_disable_runtime_call_for_namedtuple_class(callee_obj)
+            and not ClassesSafeToInstantiate.contains(callee_obj, self.options)
         )
 
     def _specialize_generic_alias_call_return(
@@ -13919,6 +13118,691 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         return self.visit(node)
 
 
+def _maybe_normalize_filename(filename: str) -> str:
+    try:
+        return str(Path(filename).resolve())
+    except OSError:
+        return os.path.abspath(filename)
+
+
+def _classvar_names_from_mapping(attributes: Mapping[str, Value]) -> set[str]:
+    classvars = attributes.get("%classvars")
+    if isinstance(classvars, KnownValue) and isinstance(
+        classvars.val, (set, frozenset, tuple, list)
+    ):
+        return {item for item in classvars.val if isinstance(item, str)}
+    return set()
+
+
+def _is_enum_base_value(base_value: Value) -> bool:
+    base_value = replace_fallback(base_value)
+    if isinstance(base_value, SyntheticClassObjectValue):
+        class_type = base_value.class_type
+        if isinstance(class_type, TypedValue):
+            return _is_enum_base_value(class_type)
+        return False
+    if isinstance(base_value, KnownValue):
+        return isinstance(base_value.val, type) and safe_issubclass(
+            base_value.val, enum.Enum
+        )
+    if isinstance(base_value, TypedValue):
+        return isinstance(base_value.typ, type) and safe_issubclass(
+            base_value.typ, enum.Enum
+        )
+    if isinstance(base_value, SubclassValue) and isinstance(base_value.typ, TypedValue):
+        return isinstance(base_value.typ.typ, type) and safe_issubclass(
+            base_value.typ.typ, enum.Enum
+        )
+    if isinstance(base_value, MultiValuedValue):
+        return any(_is_enum_base_value(subval) for subval in base_value.vals)
+    return False
+
+
+def _is_newtype_base_value(base_value: Value) -> bool:
+    for subval in flatten_values(replace_fallback(base_value)):
+        if not isinstance(subval, KnownValue):
+            continue
+        if isinstance(subval.val, type):
+            continue
+        if safe_hasattr(subval.val, "__supertype__"):
+            return True
+    return False
+
+
+def _is_type_alias_base_value(base_value: Value) -> bool:
+    for subval in flatten_values(base_value, unwrap_annotated=True):
+        if isinstance(subval, TypeAliasValue):
+            return True
+        if isinstance(subval, KnownValue) and (
+            is_typing_name(subval.val, "TypeAliasType")
+            or is_instance_of_typing_name(subval.val, "TypeAliasType")
+        ):
+            return True
+    return False
+
+
+def _is_typeddict_marker_base(base_value: Value) -> bool:
+    return isinstance(base_value, KnownValue) and is_typing_name(
+        base_value.val, "TypedDict"
+    )
+
+
+def _is_namedtuple_marker_base(base_value: Value) -> bool:
+    return isinstance(base_value, KnownValue) and is_typing_name(
+        base_value.val, "NamedTuple"
+    )
+
+
+def _populate_fallback_runtime_class(
+    runtime_class: type, class_scope_values: Mapping[str, Value]
+) -> None:
+    for name, value in class_scope_values.items():
+        if name.startswith("%") or name in runtime_class.__dict__:
+            continue
+        if not isinstance(value, KnownValue):
+            continue
+        try:
+            setattr(runtime_class, name, value.val)
+        except Exception:
+            continue
+
+
+def _mangle_private_enum_name(class_name: str, attr_name: str) -> str | None:
+    if not attr_name.startswith("__") or attr_name.endswith("__"):
+        return None
+    return f"_{class_name}{attr_name}"
+
+
+def _enum_ignore_names(value: Value | None) -> set[str]:
+    if value is None:
+        return set()
+    value = replace_fallback(value)
+    if isinstance(value, KnownValue):
+        if isinstance(value.val, str):
+            return set(value.val.split())
+        if isinstance(value.val, (list, tuple, set)):
+            return {elt for elt in value.val if isinstance(elt, str)}
+    return set()
+
+
+def _iter_enum_assignment_candidates(
+    node: ast.ClassDef,
+) -> Iterable[tuple[str, ast.AST]]:
+    for statement in node.body:
+        if isinstance(statement, ast.Assign):
+            for target in statement.targets:
+                if isinstance(target, ast.Name):
+                    yield target.id, statement
+        elif isinstance(statement, ast.AnnAssign):
+            if isinstance(statement.target, ast.Name):
+                yield statement.target.id, statement
+        elif isinstance(
+            statement, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
+        ):
+            yield statement.name, statement
+
+
+def _enum_statement_member_decorators(statement: ast.AST) -> tuple[bool, bool]:
+    if not isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+        return False, False
+
+    forced_member = False
+    forced_nonmember = False
+    for decorator in statement.decorator_list:
+        target = decorator
+        if isinstance(target, ast.Call):
+            target = target.func
+        if isinstance(target, ast.Name):
+            if target.id == "member":
+                forced_member = True
+            elif target.id == "nonmember":
+                forced_nonmember = True
+        elif (
+            isinstance(target, ast.Attribute)
+            and isinstance(target.value, ast.Name)
+            and target.value.id == "enum"
+        ):
+            if target.attr == "member":
+                forced_member = True
+            elif target.attr == "nonmember":
+                forced_nonmember = True
+    return forced_member, forced_nonmember
+
+
+def _unwrap_enum_member_wrapper(value: Value) -> tuple[Value, bool, bool]:
+    value = replace_fallback(value)
+    member_cls = getattr(enum, "member", None)
+    nonmember_cls = getattr(enum, "nonmember", None)
+
+    if (
+        member_cls is not None
+        and isinstance(value, GenericValue)
+        and value.typ is member_cls
+    ):
+        if value.args:
+            return value.args[0], True, False
+        return AnyValue(AnySource.inference), True, False
+    if (
+        nonmember_cls is not None
+        and isinstance(value, GenericValue)
+        and value.typ is nonmember_cls
+    ):
+        if value.args:
+            return value.args[0], False, True
+        return AnyValue(AnySource.inference), False, True
+
+    if (
+        member_cls is not None
+        and isinstance(value, KnownValue)
+        and isinstance(value.val, member_cls)
+    ):
+        return KnownValue(value.val.value), True, False
+    if (
+        nonmember_cls is not None
+        and isinstance(value, KnownValue)
+        and isinstance(value.val, nonmember_cls)
+    ):
+        return KnownValue(value.val.value), False, True
+    return value, False, False
+
+
+def _is_nonmember_enum_assignment_value(value: Value) -> bool:
+    value = replace_fallback(value)
+    if isinstance(value, (CallableValue, InputSigValue, SyntheticClassObjectValue)):
+        return True
+    if isinstance(value, UnboundMethodValue):
+        return True
+    if isinstance(value, GenericValue):
+        if value.typ in {staticmethod, classmethod, property}:
+            return True
+        if isinstance(value.typ, type) and safe_issubclass(value.typ, type):
+            return True
+    if isinstance(value, KnownValue):
+        if isinstance(value.val, type):
+            return True
+        return _static_hasattr(value.val, "__get__")
+    if isinstance(value, TypedValue):
+        return isinstance(value.typ, type) and safe_issubclass(value.typ, type)
+    return False
+
+
+def _runtime_object_for_enum_member(value: Value) -> object:
+    value = replace_fallback(value)
+    if isinstance(value, KnownValue):
+        return value.val
+    return object()
+
+
+def _get_bool_literal(node: ast.AST) -> bool | None:
+    if isinstance(node, ast.Constant) and isinstance(node.value, bool):
+        return node.value
+    return None
+
+
+def _is_dataclass_decorator_value(value: Value) -> bool:
+    if value is UNINITIALIZED_VALUE:
+        return False
+    value = replace_fallback(value)
+    if isinstance(value, AnnotatedValue):
+        return _is_dataclass_decorator_value(value.value)
+    if isinstance(value, MultiValuedValue):
+        return any(_is_dataclass_decorator_value(subval) for subval in value.vals)
+    return isinstance(value, KnownValue) and value.val is dataclass
+
+
+def _merge_dataclass_transform_infos(
+    infos: Sequence[_DataclassTransformInfo],
+) -> _DataclassTransformInfo:
+    filtered = [info for info in infos]
+    if not filtered:
+        return _DataclassTransformInfo()
+
+    def _merge_bool(values: Sequence[bool | None]) -> bool | None:
+        bool_values = {value for value in values if isinstance(value, bool)}
+        if len(bool_values) == 1:
+            return next(iter(bool_values))
+        return None
+
+    field_specifiers: list[Value] = []
+    for info in filtered:
+        for field_specifier in info.field_specifiers:
+            if field_specifier not in field_specifiers:
+                field_specifiers.append(field_specifier)
+    return _DataclassTransformInfo(
+        init_default=_merge_bool([info.init_default for info in filtered]),
+        eq_default=_merge_bool([info.eq_default for info in filtered]),
+        frozen_default=_merge_bool([info.frozen_default for info in filtered]),
+        unsafe_hash_default=_merge_bool(
+            [info.unsafe_hash_default for info in filtered]
+        ),
+        match_args_default=_merge_bool([info.match_args_default for info in filtered]),
+        kw_only_default=_merge_bool([info.kw_only_default for info in filtered]),
+        order_default=_merge_bool([info.order_default for info in filtered]),
+        slots_default=_merge_bool([info.slots_default for info in filtered]),
+        field_specifiers=tuple(field_specifiers),
+    )
+
+
+def _is_dataclass_transform_marker_value(value: Value) -> bool:
+    if value is UNINITIALIZED_VALUE:
+        return False
+    value = replace_fallback(value)
+    if isinstance(value, AnnotatedValue):
+        return _is_dataclass_transform_marker_value(value.value)
+    if isinstance(value, MultiValuedValue):
+        return any(
+            _is_dataclass_transform_marker_value(subval) for subval in value.vals
+        )
+    return isinstance(value, KnownValue) and is_typing_name(
+        value.val, "dataclass_transform"
+    )
+
+
+def _synthesize_dataclass_hash_attribute(
+    semantics: _ClassDataclassSemantics,
+) -> Value | None:
+    if semantics.unsafe_hash is True:
+        return AnyValue(AnySource.inference)
+    if semantics.eq is False:
+        return AnyValue(AnySource.inference)
+    if (
+        semantics.eq is True
+        and semantics.frozen is False
+        and semantics.unsafe_hash is False
+    ):
+        return KnownValue(None)
+    if semantics.eq is True and semantics.frozen is True:
+        return AnyValue(AnySource.inference)
+    return None
+
+
+def _class_body_defines_slots(node: ast.ClassDef) -> bool:
+    for statement in node.body:
+        if isinstance(statement, ast.Assign):
+            for target in statement.targets:
+                if isinstance(target, ast.Name) and target.id == "__slots__":
+                    return True
+        elif isinstance(statement, ast.AnnAssign) and isinstance(
+            statement.target, ast.Name
+        ):
+            if statement.target.id == "__slots__":
+                return True
+    return False
+
+
+def _known_string_sequence_values(value: Value | None) -> tuple[str, ...] | None:
+    if value is None:
+        return None
+    value = replace_fallback(value)
+    if isinstance(value, KnownValue):
+        raw = value.val
+        if isinstance(raw, str):
+            return (raw,)
+        if isinstance(raw, (tuple, list, set, frozenset)):
+            return tuple(item for item in raw if isinstance(item, str))
+        return None
+    if isinstance(value, SequenceValue):
+        members = value.get_member_sequence()
+        if members is None:
+            return None
+        output: list[str] = []
+        for member in members:
+            member = replace_fallback(member)
+            if isinstance(member, KnownValue) and isinstance(member.val, str):
+                output.append(member.val)
+            else:
+                return None
+        return tuple(output)
+    return None
+
+
+def _normalize_slot_names(raw_names: Iterable[str]) -> tuple[tuple[str, ...], bool]:
+    names: list[str] = []
+    has_dict = False
+    for name in raw_names:
+        if name == "__dict__":
+            has_dict = True
+            continue
+        if name == "__weakref__":
+            continue
+        names.append(name)
+    return tuple(names), has_dict
+
+
+def _record_dataclass_slots_flag(
+    synthetic_class: SyntheticClassObjectValue, semantics: _ClassDataclassSemantics
+) -> None:
+    if not semantics.is_dataclass:
+        synthetic_class.class_attributes.pop("%dataclass_slots", None)
+        synthetic_class.class_attributes.pop("%dataclass_init", None)
+        synthetic_class.class_attributes.pop("%dataclass_match_args", None)
+        return
+    if isinstance(semantics.slots, bool):
+        synthetic_class.class_attributes["%dataclass_slots"] = KnownValue(
+            semantics.slots
+        )
+    else:
+        synthetic_class.class_attributes.pop("%dataclass_slots", None)
+    if isinstance(semantics.init, bool):
+        synthetic_class.class_attributes["%dataclass_init"] = KnownValue(semantics.init)
+    else:
+        synthetic_class.class_attributes.pop("%dataclass_init", None)
+    if isinstance(semantics.match_args, bool):
+        synthetic_class.class_attributes["%dataclass_match_args"] = KnownValue(
+            semantics.match_args
+        )
+    else:
+        synthetic_class.class_attributes.pop("%dataclass_match_args", None)
+
+
+def _is_dataclass_kw_only_marker_value(value: Value) -> bool:
+    marker = getattr(dataclasses, "KW_ONLY", None)
+    if marker is None:
+        return False
+    value = replace_fallback(value)
+    if isinstance(value, AnnotatedValue):
+        return _is_dataclass_kw_only_marker_value(value.value)
+    if isinstance(value, MultiValuedValue):
+        return any(_is_dataclass_kw_only_marker_value(subval) for subval in value.vals)
+    return isinstance(value, KnownValue) and value.val is marker
+
+
+def _value_matches_dataclass_field_specifier(
+    value: Value, field_specifier: Value
+) -> bool:
+    value = replace_fallback(value)
+    field_specifier = replace_fallback(field_specifier)
+    if isinstance(value, AnnotatedValue):
+        return _value_matches_dataclass_field_specifier(value.value, field_specifier)
+    if isinstance(field_specifier, AnnotatedValue):
+        return _value_matches_dataclass_field_specifier(value, field_specifier.value)
+    if isinstance(value, MultiValuedValue):
+        return any(
+            _value_matches_dataclass_field_specifier(subval, field_specifier)
+            for subval in value.vals
+        )
+    if isinstance(field_specifier, MultiValuedValue):
+        return any(
+            _value_matches_dataclass_field_specifier(value, subval)
+            for subval in field_specifier.vals
+        )
+    if isinstance(value, KnownValue) and isinstance(field_specifier, KnownValue):
+        return value.val is field_specifier.val
+    if isinstance(value, SyntheticClassObjectValue) and isinstance(
+        field_specifier, SyntheticClassObjectValue
+    ):
+        return value.class_type == field_specifier.class_type
+    return value == field_specifier
+
+
+def _arguments_from_call_composites(
+    args: Sequence[Composite], keywords: Sequence[tuple[str | None, Composite]]
+) -> list[Argument]:
+    return [
+        (
+            (Composite(arg.value.root, arg.varname, arg.node), ARGS)
+            if (
+                isinstance(arg.value, PartialValue)
+                and arg.value.operation is PartialValueOperation.UNPACK
+            )
+            else (arg, None)
+        )
+        for arg in args
+    ] + [
+        (value, KWARGS) if keyword is None else (value, keyword)
+        for keyword, value in keywords
+    ]
+
+
+def _dataclass_field_bound_arg(
+    bound_args: BoundArgs, name: str, *, include_default: bool = True
+) -> Value | None:
+    if name not in bound_args:
+        return None
+    if not include_default and bound_args[name][0] is type_evaluation.DEFAULT:
+        return None
+    return bound_args[name][1].value
+
+
+def _dataclass_field_bound_bool_arg(
+    bound_args: BoundArgs, name: str, *, include_default: bool = True
+) -> bool | None:
+    value = _dataclass_field_bound_arg(
+        bound_args, name, include_default=include_default
+    )
+    if isinstance(value, KnownValue) and isinstance(value.val, bool):
+        return value.val
+    return None
+
+
+def _dataclass_field_bound_str_arg(
+    bound_args: BoundArgs, name: str, *, include_default: bool = True
+) -> str | None:
+    value = _dataclass_field_bound_arg(
+        bound_args, name, include_default=include_default
+    )
+    if isinstance(value, KnownValue) and isinstance(value.val, str):
+        return value.val
+    return None
+
+
+def _is_absent_dataclass_default_value(value: Value) -> bool:
+    value = replace_fallback(value)
+    if isinstance(value, KnownValue):
+        return value.val is Ellipsis or value.val is dataclasses.MISSING
+    return False
+
+
+def _callable_return_type_from_signature(
+    signature: MaybeSignature, *, checker: "NameCheckVisitor"
+) -> Value | None:
+    if isinstance(signature, BoundMethodSignature):
+        signature = signature.get_signature(ctx=checker)
+    if isinstance(signature, Signature):
+        return signature.return_value
+    if isinstance(signature, OverloadedSignature):
+        if not signature.signatures:
+            return None
+        return unite_values(*(sig.return_value for sig in signature.signatures))
+    return None
+
+
+def _slot_names_from_runtime_slots(value: object) -> tuple[str, ...] | None:
+    if isinstance(value, str):
+        return (value,)
+    if isinstance(value, (tuple, list, set, frozenset)):
+        return tuple(item for item in value if isinstance(item, str))
+    return None
+
+
+def _get_dataclass_post_init_node(
+    node: ast.ClassDef,
+) -> ast.FunctionDef | ast.AsyncFunctionDef | None:
+    for stmt in node.body:
+        if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            if stmt.name == "__post_init__":
+                return stmt
+    return None
+
+
+def _compose_variance_polarity(polarity: int, variance: Variance) -> int:
+    if polarity == 0 or variance is Variance.INVARIANT:
+        return 0
+    if variance is Variance.COVARIANT:
+        return polarity
+    return -polarity
+
+
+def _record_variance_polarity(used_polarities: set[int], polarity: int) -> None:
+    if polarity == 0:
+        used_polarities.update({-1, 1})
+    else:
+        used_polarities.add(polarity)
+
+
+def _variance_is_compatible_with_usage(
+    variance: Variance, used_polarities: set[int]
+) -> bool:
+    if not used_polarities or variance is Variance.INVARIANT:
+        return True
+    if variance is Variance.COVARIANT:
+        return -1 not in used_polarities
+    return 1 not in used_polarities
+
+
+def _is_variance_declaration_arg(arg: Value) -> bool:
+    if isinstance(arg, TypeVarValue):
+        return True
+    if isinstance(arg, AnnotatedValue):
+        return _is_variance_declaration_arg(arg.value)
+    if isinstance(arg, KnownValue):
+        type_param = arg.val
+        return (
+            is_instance_of_typing_name(type_param, "TypeVar")
+            or is_instance_of_typing_name(type_param, "TypeVarTuple")
+            or is_instance_of_typing_name(type_param, "ParamSpec")
+        )
+    return False
+
+
+def _is_variance_declaration_base(base_value: Value) -> bool:
+    subvals = list(flatten_values(replace_fallback(base_value)))
+    if not subvals:
+        return False
+    for subval in subvals:
+        if isinstance(subval, SyntheticClassObjectValue):
+            subval = subval.class_type
+        if isinstance(subval, GenericValue):
+            typ: object = subval.typ
+            type_args: Sequence[Value] = subval.args
+        elif isinstance(subval, TypedValue):
+            typ = subval.typ
+            type_args = ()
+        elif isinstance(subval, KnownValue):
+            typ = subval.val
+            type_args = ()
+        else:
+            return False
+        if not (is_typing_name(typ, "Generic") or is_typing_name(typ, "Protocol")):
+            return False
+        if type_args and not all(
+            _is_variance_declaration_arg(arg) for arg in type_args
+        ):
+            return False
+    return True
+
+
+def _type_param_value_from_value(value: Value) -> TypeVarValue | None:
+    if isinstance(value, InputSigValue) and isinstance(value.input_sig, ParamSpecSig):
+        return TypeVarValue(value.input_sig.param_spec)
+    try:
+        value = replace_fallback(value)
+    except NotAGradualType:
+        return None
+    if isinstance(value, TypeVarValue):
+        return value
+    if isinstance(value, KnownValue) and (
+        is_instance_of_typing_name(value.val, "TypeVar")
+        or is_instance_of_typing_name(value.val, "TypeVarTuple")
+        or is_instance_of_typing_name(value.val, "ParamSpec")
+    ):
+        return TypeVarValue(value.val, variance=get_typevar_variance(value.val))
+    return None
+
+
+def _count_starred_type_param_args(slice_node: ast.AST) -> int:
+    if isinstance(slice_node, ast.Tuple):
+        return sum(isinstance(elt, ast.Starred) for elt in slice_node.elts)
+    return int(isinstance(slice_node, ast.Starred))
+
+
+def _is_protocol_base(base_value: Value) -> bool:
+    for subval in flatten_values(replace_fallback(base_value)):
+        if isinstance(subval, SyntheticClassObjectValue):
+            subval = subval.class_type
+        if isinstance(subval, KnownValue):
+            typ: object = subval.val
+        elif isinstance(subval, TypedValue):
+            typ = subval.typ
+        else:
+            continue
+        if is_typing_name(typ, "Protocol"):
+            return True
+    return False
+
+
+def _mangle_class_attribute_name(class_name: str, attribute_name: str) -> str:
+    if attribute_name.startswith("__") and not attribute_name.endswith("__"):
+        return f"_{class_name}{attribute_name}"
+    return attribute_name
+
+
+def _return_annotation_contains_self(return_annotation: Value | None) -> bool:
+    if return_annotation is None:
+        return False
+    for subvalue in return_annotation.walk_values():
+        if isinstance(subvalue, TypeVarValue) and subvalue.typevar is SelfT:
+            return True
+    return False
+
+
+def _is_dataclass_classvar_final(expr: AnnotationExpr) -> bool:
+    qualifier_order = [
+        qualifier
+        for qualifier, _ in expr.qualifiers
+        if qualifier in {Qualifier.Final, Qualifier.ClassVar}
+    ]
+    return qualifier_order == [Qualifier.Final, Qualifier.ClassVar]
+
+
+def _method_decorator_kind(*, decorator_kinds: Container[FunctionDecorator]) -> str:
+    return FunctionDecorator.method_kind_for(decorator_kinds)
+
+
+def _is_typealiastype_value(value: Value) -> bool:
+    for subval in flatten_values(value, unwrap_annotated=True):
+        if isinstance(subval, KnownValue) and (
+            is_typing_name(subval.val, "TypeAliasType")
+            or is_instance_of_typing_name(subval.val, "TypeAliasType")
+        ):
+            return True
+    return False
+
+
+def _get_runtime_type_alias_value_node(node: ast.Call) -> ast.AST | None:
+    if len(node.args) >= 2:
+        return node.args[1]
+    for keyword in node.keywords:
+        if keyword.arg == "value":
+            return keyword.value
+    return None
+
+
+def _runtime_type_alias_self_reference(value_node: ast.AST, name: str) -> bool:
+    return any(
+        isinstance(subnode, ast.Name)
+        and isinstance(subnode.ctx, ast.Load)
+        and subnode.id == name
+        for subnode in ast.walk(value_node)
+    )
+
+
+def _runtime_type_alias_declared_type_params(
+    params: Sequence[TypeVarLike | TypeVarValue],
+) -> Sequence[TypeVarValue]:
+    declared: list[TypeVarValue] = []
+    for param in params:
+        if isinstance(param, TypeVarValue):
+            declared.append(param)
+        elif is_instance_of_typing_name(param, "TypeVarTuple") or is_typing_name(
+            type(param), "TypeVarTuple"
+        ):
+            declared.append(TypeVarValue(param, is_typevartuple=True))
+        else:
+            declared.append(TypeVarValue(param))
+    return declared
+
+
 def build_stacked_scopes(
     module: types.ModuleType | None,
     simplification_limit: int | None = None,
@@ -13952,6 +13836,87 @@ def build_stacked_scopes(
                     val = KnownValue(value)
             module_vars[key] = val
     return StackedScopes(module_vars, module, simplification_limit=simplification_limit)
+
+
+def _collect_unguarded_type_alias_refs(value_node: ast.AST) -> set[str]:
+    refs: set[str] = set()
+
+    def walk(node: ast.AST, guarded: bool, allow_string_parse: bool = True) -> None:
+        if isinstance(node, ast.Subscript):
+            walk(node.value, guarded, allow_string_parse)
+            walk(node.slice, True, allow_string_parse)
+            return
+        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load):
+            if not guarded:
+                refs.add(node.id)
+            return
+        if (
+            allow_string_parse
+            and isinstance(node, ast.Constant)
+            and isinstance(node.value, str)
+        ):
+            parse_source = node.value
+            if "\n" in parse_source or "\r" in parse_source:
+                parse_source = f"({parse_source})"
+            try:
+                parsed = ast.parse(parse_source, mode="eval")
+            except SyntaxError:
+                return
+            walk(parsed.body, guarded, False)
+            return
+        for child in ast.iter_child_nodes(node):
+            walk(child, guarded, allow_string_parse)
+
+    walk(value_node, False)
+    return refs
+
+
+def _type_param_identity(value: Value) -> object | None:
+    if isinstance(value, TypeVarValue):
+        return value.typevar
+    if isinstance(value, InputSigValue) and isinstance(value.input_sig, ParamSpecSig):
+        return value.input_sig.param_spec
+    if isinstance(value, KnownValue) and (
+        is_instance_of_typing_name(value.val, "TypeVar")
+        or is_instance_of_typing_name(value.val, "TypeVarTuple")
+        or is_instance_of_typing_name(value.val, "ParamSpec")
+    ):
+        return value.val
+    return None
+
+
+def _is_runtime_literal_index(value: Value) -> bool:
+    if isinstance(value, KnownValue):
+        return True
+    if isinstance(value, SequenceValue) and value.typ is tuple:
+        members = value.get_member_sequence()
+        return members is not None and all(
+            isinstance(member, KnownValue) for member in members
+        )
+    return False
+
+
+def _should_use_static_annotation_subscript(value: Value) -> bool:
+    if not isinstance(value, KnownValue):
+        return False
+    root = value.val
+    return (
+        root is typing.Callable
+        or root is collections.abc.Callable
+        or is_typing_name(root, "Callable")
+        or root is AsynqCallable
+    )
+
+
+def _should_use_static_annotation_subscript_on_import_failure(value: Value) -> bool:
+    if not isinstance(value, KnownValue):
+        return False
+    root = value.val
+    return (
+        root is typing.Iterable
+        or root is collections.abc.Iterable
+        or is_typing_name(root, "Iterable")
+    )
 
 
 def _get_task_cls(fn: object) -> type[Any]:

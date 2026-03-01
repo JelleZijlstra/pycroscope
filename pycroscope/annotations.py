@@ -50,7 +50,7 @@ from typing_extensions import NoDefault, ParamSpec, TypedDict
 
 from pycroscope.annotated_types import get_annotated_types_extension
 from pycroscope.input_sig import InputSigValue, ParamSpecSig
-from pycroscope.relations import HashableProtoValue
+from pycroscope.relations import HashableProtoValue, Relation, has_relation
 
 from . import type_evaluation
 from .analysis_lib import object_from_string, override
@@ -760,7 +760,6 @@ def _is_assignable_for_alias_arg(expected: Value, actual: Value, ctx: Context) -
     can_assign_ctx = _get_can_assign_context(ctx)
     if can_assign_ctx is None:
         return True
-    from .relations import Relation, has_relation
 
     result = has_relation(expected, actual, Relation.ASSIGNABLE, can_assign_ctx)
     return not isinstance(result, CanAssignError)

@@ -39,6 +39,7 @@ from . import (
     typeshed,
     typevar,
     value,
+    regex_check,
     yield_checker,
 )
 from .find_unused import used as used
