@@ -130,7 +130,13 @@ from .options import (
 from .patma import PatmaVisitor
 from .predicates import EqualsPredicate, InPredicate
 from .reexport import ImplicitReexportTracker
-from .relations import Relation, check_hashability, has_relation, intersect_multi
+from .relations import (
+    Relation,
+    check_hashability,
+    has_relation,
+    intersect_multi,
+    is_subtype,
+)
 from .safe import (
     all_of_type,
     is_dataclass_type,
@@ -2820,7 +2826,10 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                             "NewType types cannot be used as base classes",
                             error_code=ErrorCode.invalid_base,
                         )
-            if any(_is_enum_base_value(base, self) for base in base_values):
+            if any(
+                is_subtype(SubclassValue(TypedValue(enum.Enum)), base, self)
+                for base in base_values
+            ):
                 self.enum_class_keys.add(class_key)
             self._check_for_final_base_classes(node, base_values)
             keyword_values = [(kw, self.visit(kw.value)) for kw in node.keywords]
@@ -13137,15 +13146,6 @@ def _classvar_names_from_mapping(attributes: Mapping[str, Value]) -> set[str]:
     ):
         return {item for item in classvars.val if isinstance(item, str)}
     return set()
-
-
-def _is_enum_base_value(base_value: Value, ctx: NameCheckVisitor) -> bool:
-    return not isinstance(
-        has_relation(
-            SubclassValue(TypedValue(enum.Enum)), base_value, Relation.SUBTYPE, ctx
-        ),
-        CanAssignError,
-    )
 
 
 def _is_newtype_base_value(base_value: Value) -> bool:
