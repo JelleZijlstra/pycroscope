@@ -5469,14 +5469,18 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             bound_args, "alias", include_default=False
         )
         has_default = False
-        default_value = self._dataclass_field_bound_arg(bound_args, "default")
+        default_value = self._dataclass_field_bound_arg(
+            bound_args, "default", include_default=False
+        )
         if default_value is not None and not self._is_absent_dataclass_default_value(
             default_value
         ):
             has_default = True
         default_factory = None
         for key in ("default_factory", "factory"):
-            factory_value = self._dataclass_field_bound_arg(bound_args, key)
+            factory_value = self._dataclass_field_bound_arg(
+                bound_args, key, include_default=False
+            )
             if factory_value is None:
                 continue
             if self._is_absent_dataclass_default_value(factory_value):
@@ -5493,8 +5497,12 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         )
 
     @staticmethod
-    def _dataclass_field_bound_arg(bound_args: BoundArgs, name: str) -> Value | None:
+    def _dataclass_field_bound_arg(
+        bound_args: BoundArgs, name: str, *, include_default: bool = True
+    ) -> Value | None:
         if name not in bound_args:
+            return None
+        if not include_default and bound_args[name][0] is type_evaluation.DEFAULT:
             return None
         return bound_args[name][1].value
 
@@ -5502,13 +5510,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     def _dataclass_field_bound_bool_arg(
         bound_args: BoundArgs, name: str, *, include_default: bool = True
     ) -> bool | None:
-        if (
-            not include_default
-            and name in bound_args
-            and bound_args[name][0] is type_evaluation.DEFAULT
-        ):
-            return None
-        value = NameCheckVisitor._dataclass_field_bound_arg(bound_args, name)
+        value = NameCheckVisitor._dataclass_field_bound_arg(
+            bound_args, name, include_default=include_default
+        )
         if isinstance(value, KnownValue) and isinstance(value.val, bool):
             return value.val
         return None
@@ -5517,13 +5521,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     def _dataclass_field_bound_str_arg(
         bound_args: BoundArgs, name: str, *, include_default: bool = True
     ) -> str | None:
-        if (
-            not include_default
-            and name in bound_args
-            and bound_args[name][0] is type_evaluation.DEFAULT
-        ):
-            return None
-        value = NameCheckVisitor._dataclass_field_bound_arg(bound_args, name)
+        value = NameCheckVisitor._dataclass_field_bound_arg(
+            bound_args, name, include_default=include_default
+        )
         if isinstance(value, KnownValue) and isinstance(value.val, str):
             return value.val
         return None
@@ -10935,6 +10935,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         dataclass_field_name: str | None = None
         if (
             is_current_class_dataclass
+            and self.scopes.scope_type() == ScopeType.class_scope
             and isinstance(node.target, ast.Name)
             and not has_classvar
         ):

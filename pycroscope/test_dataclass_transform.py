@@ -864,3 +864,31 @@ class TestDataclassTransform(TestNameCheckVisitorBase):
         class BadOrder:  # E: invalid_annotation
             x: int = model_field(factory=lambda: 1)
             y: int
+
+    @assert_passes(allow_import_failures=True)
+    def test_dataclass_transform_non_default_kwargs_do_not_set_default(self):
+        boom = 1 / 0
+
+        from typing import Any, Callable, TypeVar
+
+        from typing_extensions import dataclass_transform
+
+        T = TypeVar("T")
+
+        def model_field(*, default: Any = ..., repr: bool = True) -> Any:
+            return object()
+
+        @dataclass_transform(field_specifiers=(model_field,))
+        def create_model() -> Callable[[type[T]], type[T]]:
+            def decorator(cls: type[T]) -> type[T]:
+                return cls
+
+            return decorator
+
+        @create_model()
+        class Model:
+            x: int = model_field(repr=False)
+            y: int
+
+        Model(1, 2)
+        Model(1)  # E: incompatible_call

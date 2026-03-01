@@ -1041,6 +1041,22 @@ class TestImportFailureHandlingCodeSamples(TestNameCheckVisitorBase):
             a: InitVar[int] = 0
             b: int
 
+        @dataclass
+        class DC4:
+            a: int = field(repr=False)
+            b: int
+
+        @dataclass
+        class DC5:
+            a: int = 0
+            b: int = field(init=False)
+
+            def method(self) -> None:
+                local: int = 0
+                _ = local
+
+        DC4(1, 2)
+
     @assert_passes()
     def test_dataclass_post_init_initvar_semantics(self):
         from dataclasses import InitVar, dataclass, field
