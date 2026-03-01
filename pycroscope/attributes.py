@@ -22,6 +22,7 @@ else:
 
 from .annotated_types import EnumName
 from .annotations import Context, annotation_expr_from_annotations, type_from_runtime
+from .input_sig import FullSignature, InputSigValue
 from .options import Options, PyObjectSequenceOption
 from .safe import (
     is_async_fn,
@@ -810,7 +811,6 @@ def normalize_synthetic_descriptor_attribute(
                 return AnyValue(AnySource.inference)
             return value
         wrapped = next(iter(value.args))
-        from .input_sig import FullSignature, InputSigValue
 
         if isinstance(wrapped, InputSigValue):
             if isinstance(wrapped.input_sig, FullSignature):
@@ -830,7 +830,6 @@ def normalize_synthetic_descriptor_attribute(
                 return AnyValue(AnySource.inference)
             return value
         wrapped = value.args[1] if len(value.args) >= 2 else next(iter(value.args))
-        from .input_sig import FullSignature, InputSigValue
 
         if isinstance(wrapped, InputSigValue):
             if isinstance(wrapped.input_sig, FullSignature):

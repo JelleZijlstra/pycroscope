@@ -161,7 +161,7 @@ class ValidRegex(CustomCheck):
     """
 
     def can_assign(self, value: "Value", ctx: "CanAssignContext") -> "CanAssign":
-        error = pycroscope.implementation.check_regex_in_value(value)
+        error = pycroscope.regex_check.check_regex_in_value(value)
         if error is not None:
             return error
         return {}
