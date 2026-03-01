@@ -188,18 +188,21 @@ class TestAnnotations(TestNameCheckVisitorBase):
             yield 3
 
         def kerodon():
-            # Ideally should be ContextManager[int], but at least
-            # it should not be Iterator[int], which is what pycroscope
-            # used to infer.
-            assert_is_value(capybara(), AnyValue(AnySource.unannotated))
+            assert_is_value(
+                capybara(),
+                GenericValue("contextlib._GeneratorContextManager", [TypedValue(int)]),
+            )
 
             with capybara() as e:
-                assert_is_value(e, AnyValue(AnySource.generic_argument))
+                assert_is_value(e, TypedValue(int))
 
-            assert_is_value(post_capybara(), AnyValue(AnySource.unannotated))
+            assert_is_value(
+                post_capybara(),
+                GenericValue("contextlib._GeneratorContextManager", [TypedValue(int)]),
+            )
 
             with post_capybara() as e:
-                assert_is_value(e, AnyValue(AnySource.generic_argument))
+                assert_is_value(e, TypedValue(int))
 
         @contextmanager
         def post_capybara() -> Generator[int]:

@@ -213,6 +213,16 @@ class TestDecorators(TestNameCheckVisitorBase):
         async def make_cm() -> AsyncGenerator[None]:
             yield
 
+        async def use_cm():
+            assert_is_value(
+                make_cm(),
+                GenericValue(
+                    "contextlib._AsyncGeneratorContextManager", [KnownValue(None)]
+                ),
+            )
+            async with make_cm() as value:
+                assert_is_value(value, KnownValue(None))
+
     @assert_passes()
     def test_contextmanager_generator_variants(self):
         import collections.abc
@@ -233,11 +243,11 @@ class TestDecorators(TestNameCheckVisitorBase):
 
         def capybara():
             with typing_generator() as a:
-                assert_is_value(a, AnyValue(AnySource.generic_argument))
+                assert_is_value(a, TypedValue(int))
             with collections_generator_one() as b:
-                assert_is_value(b, AnyValue(AnySource.generic_argument))
+                assert_is_value(b, TypedValue(int))
             with collections_generator_three() as c:
-                assert_is_value(c, AnyValue(AnySource.generic_argument))
+                assert_is_value(c, TypedValue(int))
 
 
 class TestAsyncGenerator(TestNameCheckVisitorBase):
