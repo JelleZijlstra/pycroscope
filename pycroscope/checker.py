@@ -10,7 +10,7 @@ import enum
 import itertools
 import sys
 import types
-from collections.abc import Callable, Iterable, Iterator, Sequence
+from collections.abc import Callable, Generator, Iterable, Iterator, Sequence
 from contextlib import AbstractContextManager, contextmanager
 from dataclasses import InitVar, dataclass, field
 from dataclasses import replace as dataclass_replace
@@ -480,7 +480,7 @@ class Checker:
     @contextmanager
     def assume_compatibility(
         self, left: TypeObject, right: TypeObject
-    ) -> Iterator[None]:
+    ) -> Generator[None]:
         """Context manager that notes that left and right can be assumed to be compatible."""
         pair = (left, right)
         self.assumed_compatibilities.append(pair)
@@ -498,7 +498,7 @@ class Checker:
     @contextmanager
     def aliases_assume_compatibility(
         self, left: "TypeAliasValue", right: "TypeAliasValue"
-    ) -> Iterator[None]:
+    ) -> Generator[None]:
         pair = (left, right)
         self.alias_assumed_compatibilities.add(pair)
         try:

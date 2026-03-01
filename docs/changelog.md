@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Update internal `@contextmanager` return annotations to use `Generator[...]`, improving compatibility with newer typing/typeshed behavior.
 - Improve protocol compatibility in static fallback mode for unimportable modules: pycroscope now enforces ClassVar-vs-instance member distinctions, writable data-member/property rules (including setter requirements), and supports plain writable attributes for read-only protocol properties.
 - Fix tuple-literal equivalence checks so `Literal[("x",)]` is treated as equivalent to `tuple[Literal["x"]]` in subtype/equivalence relations.
 - Improve dataclass constructor/pattern semantics in static fallback mode: pycroscope now honors class-level `init`/`match_args` settings for `@dataclass` and `@dataclass_transform`, and recognizes `factory=` field specifier defaults when checking generated constructors and `default_factory` return types.

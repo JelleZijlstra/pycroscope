@@ -11,7 +11,7 @@ import inspect
 import sys
 import textwrap
 import typing
-from collections.abc import Callable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Generator, Mapping, Sequence
 from dataclasses import dataclass, replace
 from re import Pattern
 from types import FunctionType, MethodType, ModuleType
@@ -112,7 +112,7 @@ _SELF_PARAM = inspect.Parameter("__self", inspect.Parameter.POSITIONAL_ONLY)
 
 @used  # exposed as an API
 @contextlib.contextmanager
-def with_implementation(fn: object, implementation_fn: Impl) -> Iterator[None]:
+def with_implementation(fn: object, implementation_fn: Impl) -> Generator[None]:
     """Temporarily sets the implementation of fn to be implementation_fn.
 
     This is useful for invoking test_scope to aggregate all calls to a particular function. For
