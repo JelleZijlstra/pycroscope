@@ -576,10 +576,18 @@ class TypeAlias:
     """Value that the type alias evaluates to."""
     type_params: Sequence[TypeVarLike | "TypeVarValue"] | None = None
     """Type parameters of the type alias."""
+    is_evaluating: bool = False
+    """Whether this type alias is currently being evaluated."""
 
     def get_value(self) -> Value:
         if self.evaluated_value is None:
-            self.evaluated_value = self.evaluator()
+            if self.is_evaluating:
+                return AnyValue(AnySource.inference)
+            self.is_evaluating = True
+            try:
+                self.evaluated_value = self.evaluator()
+            finally:
+                self.is_evaluating = False
         return self.evaluated_value
 
     def get_type_params(self) -> Sequence[TypeVarLike | "TypeVarValue"]:
@@ -589,6 +597,59 @@ class TypeAlias:
 
     def get_fallback_value(self) -> Value:
         return self.get_value()
+
+
+def _is_typevartuple_type_param(type_param: TypeVarLike | "TypeVarValue") -> bool:
+    if isinstance(type_param, TypeVarValue):
+        return type_param.is_typevartuple
+    return is_instance_of_typing_name(type_param, "TypeVarTuple") or is_typing_name(
+        type(type_param), "TypeVarTuple"
+    )
+
+
+def _type_alias_substitution_key(
+    type_param: TypeVarLike | "TypeVarValue",
+) -> TypeVarLike:
+    if isinstance(type_param, TypeVarValue):
+        return type_param.typevar
+    return type_param
+
+
+def _match_type_alias_type_arguments(
+    type_params: Sequence[TypeVarLike | "TypeVarValue"], type_arguments: Sequence[Value]
+) -> Sequence[tuple[TypeVarLike, Value]] | None:
+    substitution_keys = [_type_alias_substitution_key(param) for param in type_params]
+    variadic_indexes = [
+        i
+        for i, type_param in enumerate(type_params)
+        if _is_typevartuple_type_param(type_param)
+    ]
+    if len(variadic_indexes) > 1:
+        return None
+    if not variadic_indexes:
+        if len(substitution_keys) != len(type_arguments):
+            return None
+        return list(zip(substitution_keys, type_arguments))
+    variadic_index = variadic_indexes[0]
+    minimum_args = len(substitution_keys) - 1
+    if len(type_arguments) < minimum_args:
+        return None
+    suffix_count = len(substitution_keys) - variadic_index - 1
+    variadic_end = len(type_arguments) - suffix_count
+    variadic_members = [
+        (False, arg) for arg in type_arguments[variadic_index:variadic_end]
+    ]
+    matched: list[tuple[TypeVarLike, Value]] = []
+    for i, key in enumerate(substitution_keys):
+        if i < variadic_index:
+            argument = type_arguments[i]
+        elif i == variadic_index:
+            argument = SequenceValue(tuple, variadic_members)
+        else:
+            suffix_index = i - variadic_index - 1
+            argument = type_arguments[variadic_end + suffix_index]
+        matched.append((key, argument))
+    return matched
 
 
 @dataclass(frozen=True)
@@ -610,13 +671,13 @@ class TypeAliasValue(Value):
             for type_param in type_params
         ]
         if self.type_arguments:
-            if len(substitution_keys) != len(self.type_arguments):
+            substitutions = _match_type_alias_type_arguments(
+                type_params, self.type_arguments
+            )
+            if substitutions is None:
                 # TODO this should be an error
                 return AnyValue(AnySource.inference)
-            typevars = {
-                type_param: arg
-                for type_param, arg in zip(substitution_keys, self.type_arguments)
-            }
+            typevars = dict(substitutions)
             val = val.substitute_typevars(typevars)
         elif substitution_keys:
             # Unsubscripted aliases default type parameters to Any.
