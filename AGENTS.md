@@ -18,7 +18,10 @@
 - `test_self.py` is often useful for finding regressions. Run it with the `full` extra enabled or it will be skipped.
 - When fixing regressions found by `test_self.py`, add separate test cases instead of just relying on `test_self.py`.
 - When writing test cases, prefer using code samples (`@assert_passes()`) instead of tests that directly
-  invoke pycroscope functions.
+  invoke pycroscope functions. Code samples should represent user-written code that triggers the pycroscope
+  feature under test and should not import internal pycroscope functions (except where needed for e.g. `assert_is_value`).
+- Prefer `assert_type()` over `assert_is_value()` for type assertions against types where possible; it's OK to keep
+  `assert_is_value` for more complicated types that cannot be directly represented in user code.
 
 ## Code Conventions
 
@@ -31,6 +34,15 @@
   live in the owning module even when they support special-casing logic.
 - Code that branches on different subclasses of `Value` should take care to cover all cases. Where possible, replace
   code that dispatches on different kinds of values with a call to a general helper function that already knows how
-  to deal with all Values, such as `has_relation`.
+  to deal with all Values, such as `has_relation`. If dispatching on `Value` is necessary, use the following procedure:
+  - Call `pycroscope.value.gradualize` or `pycroscope.value.replace_fallback` to narrow the Value to a
+    fixed set of classes. This will raise `NotAGradualType`
+    when it encounters unexpected Value subclasses. Do not catch this exception; instead add specific handling for those
+    classes. Non-GradualType Value subclasses should be used only in narrow places.
+    `replace_fallback` narrows to a smaller set of Value subclasses (`BasicType` instead of `GradualType`). If you need special handling for some types that are GradualType but not BasicType, do that here.
+  - Perform special handing for `MultiValuedValue` (unions) and `IntersectionValue` (intersections), usually calling the
+    same logic for each member value and aggregating the results.
+  - Now dispatch over all remaining types, which are described by the `SimpleType` union. Use `assert_never()` to ensure
+    all types are covered.
 - Avoid using `@staticmethod` for local helper functions. Use private module-level functions instead.
 - Avoid using function-local imports, except where necessary to avoid an import cycle.
