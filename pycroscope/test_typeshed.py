@@ -659,42 +659,48 @@ class TestGetGenericBases:
             [int_tv],
         )
         self.check(
-            {
-                collections.abc.ItemsView: [int_tv, str_tv],
-                collections.abc.MappingView: [],
-                collections.abc.Set: [int_str_tuple],
-                collections.abc.Collection: [int_str_tuple],
-                collections.abc.Iterable: [int_str_tuple],
-                collections.abc.Container: [int_str_tuple],
-                collections.abc.Sized: [],
-            },
+            self._allow_any_container(
+                {
+                    collections.abc.ItemsView: [int_tv, str_tv],
+                    collections.abc.MappingView: [],
+                    collections.abc.Set: [int_str_tuple],
+                    collections.abc.Collection: [int_str_tuple],
+                    collections.abc.Iterable: [int_str_tuple],
+                    collections.abc.Container: [int_str_tuple],
+                    collections.abc.Sized: [],
+                }
+            ),
             collections.abc.ItemsView,
             [int_tv, str_tv],
         )
 
         self.check(
-            {
-                collections.deque: [int_tv],
-                collections.abc.MutableSequence: [int_tv],
-                collections.abc.Collection: [int_tv],
-                collections.abc.Reversible: [int_tv],
-                collections.abc.Iterable: [int_tv],
-                collections.abc.Sequence: [int_tv],
-                collections.abc.Container: [int_tv],
-            },
+            self._allow_any_container(
+                {
+                    collections.deque: [int_tv],
+                    collections.abc.MutableSequence: [int_tv],
+                    collections.abc.Collection: [int_tv],
+                    collections.abc.Reversible: [int_tv],
+                    collections.abc.Iterable: [int_tv],
+                    collections.abc.Sequence: [int_tv],
+                    collections.abc.Container: [int_tv],
+                }
+            ),
             collections.deque,
             [int_tv],
         )
         self.check(
-            {
-                collections.defaultdict: [int_tv, str_tv],
-                dict: [int_tv, str_tv],
-                collections.abc.MutableMapping: [int_tv, str_tv],
-                collections.abc.Mapping: [int_tv, str_tv],
-                collections.abc.Collection: [int_tv],
-                collections.abc.Iterable: [int_tv],
-                collections.abc.Container: [int_tv],
-            },
+            self._allow_any_container(
+                {
+                    collections.defaultdict: [int_tv, str_tv],
+                    dict: [int_tv, str_tv],
+                    collections.abc.MutableMapping: [int_tv, str_tv],
+                    collections.abc.Mapping: [int_tv, str_tv],
+                    collections.abc.Collection: [int_tv],
+                    collections.abc.Iterable: [int_tv],
+                    collections.abc.Container: [int_tv],
+                }
+            ),
             collections.defaultdict,
             [int_tv, str_tv],
         )
@@ -718,26 +724,30 @@ class TestGetGenericBases:
             [int_tv],
         )
         self.check(
-            {
-                set: [int_tv],
-                collections.abc.MutableSet: [int_tv],
-                collections.abc.Set: [int_tv],
-                collections.abc.Collection: [int_tv],
-                collections.abc.Iterable: [int_tv],
-                collections.abc.Container: [int_tv],
-            },
+            self._allow_any_container(
+                {
+                    set: [int_tv],
+                    collections.abc.MutableSet: [int_tv],
+                    collections.abc.Set: [int_tv],
+                    collections.abc.Collection: [int_tv],
+                    collections.abc.Iterable: [int_tv],
+                    collections.abc.Container: [int_tv],
+                }
+            ),
             set,
             [int_tv],
         )
         self.check(
-            {
-                dict: [int_tv, str_tv],
-                collections.abc.MutableMapping: [int_tv, str_tv],
-                collections.abc.Mapping: [int_tv, str_tv],
-                collections.abc.Collection: [int_tv],
-                collections.abc.Iterable: [int_tv],
-                collections.abc.Container: [int_tv],
-            },
+            self._allow_any_container(
+                {
+                    dict: [int_tv, str_tv],
+                    collections.abc.MutableMapping: [int_tv, str_tv],
+                    collections.abc.Mapping: [int_tv, str_tv],
+                    collections.abc.Collection: [int_tv],
+                    collections.abc.Iterable: [int_tv],
+                    collections.abc.Container: [int_tv],
+                }
+            ),
             dict,
             [int_tv, str_tv],
         )
