@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Fix `@dataclass_transform` metadata tracking to live on inferred values instead of scope-name side tables, which avoids internal errors in cases like `ParamSpec` declarations and `global`/`nonlocal` references.
 - Tighten ParamSpec specialization checks for generic classes: pycroscope now reports `invalid_annotation` for invalid mixed-generic forms like `C[int, int]` when the second parameter is a `ParamSpec`, while still accepting valid forms like `C[int, [int]]`, `C[int, P]`, `C[int, Concatenate[str, P]]`, and `C[int, ...]`.
 - Improve `Value` dispatch consistency in suggested-type and class-key inference helpers by normalizing through fallback values and handling unions/intersections more consistently.
 - Improve `Value` dispatch robustness in name checking so enum assignment analysis, protocol-base detection, and type-parameter extraction handle unions/intersections consistently and avoid internal errors on non-gradual values.
