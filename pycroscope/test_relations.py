@@ -78,6 +78,27 @@ class TestRelations(TestNameCheckVisitorBase):
             takes_params(paramspec)  # E: incompatible_argument
 
     @assert_passes()
+    def test_paramspec_specialization_requires_list_form_in_mixed_generics(self):
+        from typing import Any, Callable, Concatenate, Generic, TypeVar, cast
+
+        from typing_extensions import ParamSpec
+
+        T = TypeVar("T")
+        P = ParamSpec("P")
+
+        class A(Generic[T, P]):
+            f: Callable[P, int] = cast(Any, "")
+
+        def capybara(
+            ok_list: A[int, [int]],
+            ok_paramspec: A[int, P],
+            ok_concatenate: A[int, Concatenate[str, P]],
+            ok_ellipsis: A[int, ...],
+            bad_scalar: A[int, int],  # E: invalid_annotation
+        ) -> None:
+            print(ok_list, ok_paramspec, ok_concatenate, ok_ellipsis, bad_scalar)
+
+    @assert_passes()
     def test_paramspec_specialization_applies_to_callable_attribute(self):
         from typing import Any, Callable, Generic, cast
 
