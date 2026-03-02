@@ -21,6 +21,7 @@ from .annotations import type_from_runtime, type_from_value
 from .arg_spec import ArgSpecCache, GenericBases
 from .attributes import (
     AttrContext,
+    _synthetic_dataclass_parameter_annotation_for_field,
     get_attribute,
     normalize_synthetic_descriptor_attribute,
 )
@@ -59,6 +60,7 @@ from .value import (
     AnySource,
     AnyValue,
     CallableValue,
+    CanAssignContext,
     CanAssignError,
     GenericValue,
     HasAttrExtension,
@@ -1394,11 +1396,10 @@ class Checker:
                 entries_by_field.pop(name, None)
                 continue
             param_name = aliases.get(name, name)
+            annotation = self._synthetic_dataclass_field_annotation(attr)
             if isinstance(attr, KnownValue):
-                annotation: Value = TypedValue(type(attr.val))
                 default: Value | None = attr if name in default_fields else None
             else:
-                annotation = attr
                 default = KnownValue(...) if name in default_fields else None
             if name not in field_order:
                 field_order.append(name)
@@ -1419,6 +1420,18 @@ class Checker:
         return [
             entries_by_field[name] for name in field_order if name in entries_by_field
         ]
+
+    def _synthetic_dataclass_field_annotation(self, attr: Value) -> Value:
+        ctx = CheckerAttrContext(
+            Composite(AnyValue(AnySource.inference)),
+            "",
+            self.options,
+            skip_mro=False,
+            skip_unwrap=False,
+            prefer_typeshed=False,
+            checker=self,
+        )
+        return _synthetic_dataclass_parameter_annotation_for_field(attr, ctx)
 
     def _iter_synthetic_dataclass_base_field_entries(
         self, base: Value, *, seen: set[int]
@@ -2080,6 +2093,12 @@ class CheckerAttrContext(AttrContext):
 
     def get_signature(self, obj: object) -> MaybeSignature:
         return self.checker.signature_from_value(KnownValue(obj))
+
+    def signature_from_value(self, value: Value) -> MaybeSignature:
+        return self.checker.signature_from_value(value)
+
+    def get_can_assign_context(self) -> CanAssignContext:
+        return self.checker
 
     def get_generic_bases(
         self, typ: type | str, generic_args: Sequence[Value]
