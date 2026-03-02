@@ -328,9 +328,6 @@ class TypeObject:
                 expected = ctx.get_attribute_from_value(
                     self_val, member, prefer_typeshed=True
                 )
-                expected = _maybe_bind_dunder_protocol_member(
-                    expected, member, self_val, ctx
-                )
                 if expected is UNINITIALIZED_VALUE:
                     # In static fallback mode, synthetic protocol members may not have
                     # a retrievable attribute type. Keep enforcing member presence.
@@ -340,9 +337,6 @@ class TypeObject:
             else:
                 expected = ctx.get_attribute_from_value(
                     self_val, member, prefer_typeshed=True
-                )
-                expected = _maybe_bind_dunder_protocol_member(
-                    expected, member, self_val, ctx
                 )
                 if expected is UNINITIALIZED_VALUE:
                     # In static fallback mode, synthetic protocol members may not have
@@ -368,9 +362,6 @@ class TypeObject:
                         if refined_actual is not UNINITIALIZED_VALUE:
                             actual_owner = class_owner
                             actual = refined_actual
-                actual = _maybe_bind_dunder_protocol_member(
-                    actual, member, actual_owner, ctx
-                )
                 if (
                     actual is UNINITIALIZED_VALUE
                     and other_type_obj is not None
@@ -1092,12 +1083,6 @@ def _class_object_value_for_key(
     if isinstance(class_key, type):
         return KnownValue(class_key)
     return None
-
-
-def _maybe_bind_dunder_protocol_member(
-    value: Value, _member: str, _self_value: Value, _ctx: CanAssignContext
-) -> Value:
-    return value
 
 
 def _bind_protocol_call_expected(
