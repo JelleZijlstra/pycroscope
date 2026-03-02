@@ -292,12 +292,7 @@ Two custom checks are exposed by `pycroscope.extensions`:
 
 ## Limitations
 
-Although pycroscope aims to support the full Python type system, support for some features is still missing or incomplete, including:
-
-- TypeVar variance inference (PEP 695)
-- `NewType` over non-trivial types
-- `ParamSpec` (PEP 612)
-- `TypeVarTuple` (PEP 646)
+Although pycroscope aims to support the full Python type system, support for some features is still missing or incomplete, including many more advanced aspects of generics.
 
 More generally, Python is sufficiently dynamic that almost any check like the ones run by pycroscope will inevitably have false positives: cases where the script sees an error, but the code in fact runs fine. Attributes may be added at runtime in hard-to-detect ways, variables may be created by direct manipulation of the `globals()` dictionary, and the `unittest.mock` module can change anything into anything. Although pycroscope has a number of configuration mechanisms to deal with these false positives, it is usually better to write code in a way that doesn't require use of these knobs: code that's easier for the script to understand is probably also easier for humans to understand.
 
