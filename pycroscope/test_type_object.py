@@ -421,7 +421,9 @@ class TestSyntheticType(TestNameCheckVisitorBase):
 
     @assert_passes()
     def test_protocol_member_constraints_must_be_satisfiable(self):
-        from typing import Callable, Protocol, Self, TypeVar
+        from typing import Callable, Protocol, TypeVar
+
+        from typing_extensions import Self
 
         T = TypeVar("T")
 
