@@ -980,12 +980,15 @@ class TypedValue(Value):
     def get_type_object(
         self, ctx: CanAssignContext | None = None
     ) -> "pycroscope.type_object.TypeObject":
-        if self._type_object is None:
-            if ctx is None:
-                # TODO: remoove this behavior and make ctx required
-                return pycroscope.type_object.TypeObject(self.typ)
-            self._type_object = ctx.make_type_object(self.typ)
-        return self._type_object
+        if ctx is None:
+            if self._type_object is None:
+                # TODO: remove this behavior and make ctx required.
+                self._type_object = pycroscope.type_object.TypeObject(self.typ)
+            return self._type_object
+        # `TypeObject` instances are checker-specific (they include checker-
+        # specific synthetic bases/protocol members and protocol caches), so do
+        # not cache them on Value instances that can outlive a single checker.
+        return ctx.make_type_object(self.typ)
 
     def can_assign_thrift_enum(self, other: Value, ctx: CanAssignContext) -> CanAssign:
         if isinstance(other, AnyValue) and not ctx.should_exclude_any():
@@ -3010,7 +3013,6 @@ class GetItemProto(Protocol[T_co]):
 
 
 GetItemProtoValue = GenericValue(GetItemProto, [TypeVarValue(T_co)])
-
 TypingGenericAlias = type(list[int])
 
 

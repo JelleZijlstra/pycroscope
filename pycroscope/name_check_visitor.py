@@ -6041,7 +6041,11 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         self, base_values: Sequence[Value]
     ) -> Sequence[TypeVarValue]:
         seen: set[object] = set()
-        type_params: list[TypeVarValue] = []
+        type_params = list(
+            self._type_params_from_protocol_shorthand_base_values(base_values)
+        )
+        for type_param in type_params:
+            seen.add(type_param.typevar)
         for base in base_values:
             for subval in flatten_values(base):
                 for walked in subval.walk_values():
@@ -6051,6 +6055,58 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                         continue
                     seen.add(walked.typevar)
                     type_params.append(walked)
+        return type_params
+
+    def _type_params_from_protocol_shorthand_base_values(
+        self, base_values: Sequence[Value]
+    ) -> Sequence[TypeVarValue]:
+        """Return type parameters from a ``Protocol[...]`` shorthand base.
+
+        The typing spec dictates that this base controls parameter ordering.
+        """
+        seen: set[object] = set()
+        type_params: list[TypeVarValue] = []
+        for base in base_values:
+            for subval in flatten_values(base):
+                maybe_type_params: list[TypeVarValue] = []
+                if isinstance(subval, GenericValue) and is_typing_name(
+                    subval.typ, "Protocol"
+                ):
+                    for arg in subval.args:
+                        maybe_type_param = _type_param_value_from_value(arg)
+                        if maybe_type_param is not None:
+                            maybe_type_params.append(maybe_type_param)
+                else:
+                    runtime_annotation = self._runtime_annotation_from_value(subval)
+                    origin = typing.get_origin(runtime_annotation)
+                    if origin is not None and is_typing_name(origin, "Protocol"):
+                        for runtime_arg in typing.get_args(runtime_annotation):
+                            if not (
+                                is_instance_of_typing_name(runtime_arg, "TypeVar")
+                                or is_instance_of_typing_name(
+                                    runtime_arg, "TypeVarTuple"
+                                )
+                                or is_instance_of_typing_name(runtime_arg, "ParamSpec")
+                            ):
+                                continue
+                            maybe_type_params.append(
+                                TypeVarValue(
+                                    runtime_arg,
+                                    variance=get_typevar_variance(runtime_arg),
+                                )
+                            )
+                if maybe_type_params and not all(
+                    is_instance_of_typing_name(type_param.typevar, "TypeVar")
+                    for type_param in maybe_type_params
+                ):
+                    continue
+                for maybe_type_param in maybe_type_params:
+                    if maybe_type_param.typevar in seen:
+                        continue
+                    seen.add(maybe_type_param.typevar)
+                    type_params.append(maybe_type_param)
+                if type_params:
+                    return type_params
         return type_params
 
     def _type_params_from_base_values_for_methods(
