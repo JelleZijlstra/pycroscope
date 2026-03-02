@@ -2935,9 +2935,7 @@ def _try_match_typevartuple_var_positional(
         ]
         if len(tv_entries) != 1:
             return None
-        marker_member = tv_entries[0]
         bounds_maps: list[BoundsMap] = []
-        captured_typevartuple_bounds: list[SequenceValue] = []
         for actual_member in actual_members:
             actual_member = replace_known_sequence_value(actual_member)
             if (
@@ -2960,42 +2958,7 @@ def _try_match_typevartuple_var_positional(
                 return None
             if isinstance(tv_map, CanAssignError):
                 return tv_map
-            marker_bounds = tv_map.get(marker_member.typevar, ())
-            lower_bounds = [
-                bound.value for bound in marker_bounds if isinstance(bound, LowerBound)
-            ]
-            if len(lower_bounds) != 1:
-                return CanAssignError(
-                    f"type of parameter {param.name!r} is incompatible"
-                )
-            lower_bound = replace_known_sequence_value(lower_bounds[0])
-            if (
-                not isinstance(lower_bound, SequenceValue)
-                or lower_bound.typ is not tuple
-            ):
-                return CanAssignError(
-                    f"type of parameter {param.name!r} is incompatible"
-                )
-            captured_typevartuple_bounds.append(lower_bound)
-            residual_bounds = {
-                typevar: bounds
-                for typevar, bounds in tv_map.items()
-                if typevar is not marker_member.typevar
-            }
-            if residual_bounds:
-                bounds_maps.append(residual_bounds)
-        merged_captured = _merge_var_positional_typevartuple_captured_bounds(
-            captured_typevartuple_bounds, param_name=param.name, ctx=ctx
-        )
-        if isinstance(merged_captured, CanAssignError):
-            return merged_captured
-        bounds_maps.append(
-            {
-                marker_member.typevar: [
-                    LowerBound(marker_member.typevar, merged_captured)
-                ]
-            }
-        )
+            bounds_maps.append(tv_map)
         return unify_bounds_maps(bounds_maps)
 
     return _match_typevartuple_var_positional_members(
@@ -3074,32 +3037,6 @@ def _contains_typevartuple(value: Value) -> bool:
         isinstance(subval, TypeVarValue) and subval.is_typevartuple
         for subval in value.walk_values()
     )
-
-
-def _merge_var_positional_typevartuple_captured_bounds(
-    captured_bounds: Sequence[SequenceValue], *, param_name: str, ctx: CanAssignContext
-) -> SequenceValue | CanAssignError:
-    if not captured_bounds:
-        return SequenceValue(tuple, [])
-    first_members = captured_bounds[0].get_member_sequence()
-    if first_members is None:
-        return CanAssignError(f"type of parameter {param_name!r} is incompatible")
-    merged_members = list(first_members)
-    for captured in captured_bounds[1:]:
-        members = captured.get_member_sequence()
-        if members is None or len(members) != len(merged_members):
-            return CanAssignError(f"parameter {param_name!r} is not accepted")
-        new_merged_members: list[Value] = []
-        for old_member, member in zip(merged_members, members):
-            if old_member.is_assignable(member, ctx):
-                merged = old_member
-            elif member.is_assignable(old_member, ctx):
-                merged = member
-            else:
-                merged = unite_values(old_member, member)
-            new_merged_members.append(merged)
-        merged_members = new_merged_members
-    return SequenceValue(tuple, [(False, member) for member in merged_members])
 
 
 def _extract_var_positional_members(

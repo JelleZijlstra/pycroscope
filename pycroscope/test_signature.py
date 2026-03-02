@@ -1707,7 +1707,7 @@ class TestUnpack(TestNameCheckVisitorBase):
                 return args[0]
 
             assert_type(func4((0,), (1,)), tuple[int])  # OK
-            func4((0,), (1, 2))  # E: incompatible_argument
+            func4((0,), (1, 2))  # E: incompatible_call
             assert_type(func4((0,), ("1",)), tuple[int | str])  # OK
             """)
 
@@ -1723,7 +1723,7 @@ class TestUnpack(TestNameCheckVisitorBase):
 
             def caller() -> None:
                 assert_type(func5((0,), (1,)), tuple[int])  # OK
-                func5((0,), ("1",))  # E: incompatible_call
+                assert_type(func5((0,), ("1",)), tuple[int | str])  # OK
                 func5((0, 0), (1,))  # E: incompatible_call
             """)
 

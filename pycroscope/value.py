@@ -1086,7 +1086,11 @@ class TypedValue(Value):
             generic_bases = ctx.get_generic_bases(self.typ, args)
         if typ in generic_bases:
             raw_args = list(generic_bases[typ].values())
-            declared_params = ctx.get_type_parameters(typ)
+            if isinstance(typ, super):
+                params_key: type | str = typ.__self_class__
+            else:
+                params_key = typ
+            declared_params = ctx.get_type_parameters(params_key)
             if declared_params and len(declared_params) == len(raw_args):
                 expanded_args: list[Value] = []
                 for declared_param, raw_arg in zip(declared_params, raw_args):

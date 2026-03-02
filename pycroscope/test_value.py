@@ -231,6 +231,22 @@ def test_typed_value_type_object_cache_is_context_local() -> None:
     assert not shared.get_type_object(checker_without_base).is_assignable_to_type(int)
 
 
+def test_get_generic_args_for_type_with_super() -> None:
+    T = typing.TypeVar("T")
+
+    class Base(typing.Generic[T]):
+        pass
+
+    class Child(Base[int]):
+        pass
+
+    super_obj = super(Child, Child)
+    assert TypedValue(Child).get_generic_args_for_type(super_obj, CTX) is None
+    assert TypedValue(super_obj).get_generic_args_for_type(Base, CTX) == [
+        TypedValue(int)
+    ]
+
+
 @runtime_checkable
 class Proto(Protocol):
     def asynq(self) -> None: ...
