@@ -1424,7 +1424,7 @@ class TestOverload(TestNameCheckVisitorBase):
             assert_type(f.__round__(), int)
             assert_type(f.__round__(None), int)
             f.__round__(ndigits=None)  # E: incompatible_call
-            assert_type(f.__round__(1), float | int)
+            assert_is_value(f.__round__(1), TypedValue(float) | TypedValue(int))
 
     @assert_passes()
     def test_runtime(self):

@@ -58,7 +58,7 @@ class TestTypeshedClient(TestNameCheckVisitorBase):
         import math
         from typing import Container
 
-        assert_type(math.exp(1.0), float | int)
+        assert_is_value(math.exp(1.0), TypedValue(float) | TypedValue(int))
         assert_type("".isspace(), bool)
 
         def capybara(x: Container[int]) -> None:

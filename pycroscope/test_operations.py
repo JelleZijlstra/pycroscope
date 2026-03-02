@@ -146,8 +146,8 @@ class TestOperators(TestNameCheckVisitorBase):
             assert_type(1 + int(x), int)
             assert_type(3 * int(x), int)
             assert_type("foo" + str(x), str)
-            assert_type(1 + float(x), float | int)
-            assert_type(1.0 + int(x), float | int)
+            assert_is_value(1 + float(x), TypedValue(float) | TypedValue(int))
+            assert_is_value(1.0 + int(x), TypedValue(float) | TypedValue(int))
             assert_is_value(3 * 3.0 + 1, KnownValue(10.0))
 
     @assert_passes()
@@ -199,7 +199,7 @@ class TestOperators(TestNameCheckVisitorBase):
     @assert_passes()
     def test_int_float_product(self):
         def capybara(f: float, i: int):
-            assert_type(i * f, float | int)
+            assert_is_value(i * f, TypedValue(float) | TypedValue(int))
 
     @assert_passes()
     def test_contains(self):
@@ -341,8 +341,8 @@ class TestAnnotated(TestNameCheckVisitorBase):
             y = 10000 * make_union_in_annotated()
             x = make_union_in_annotated()
             z = x * 1000000
-            assert_type(y, float | int)
-            assert_type(z, float | int)
+            assert_is_value(y, TypedValue(float) | TypedValue(int))
+            assert_is_value(z, TypedValue(float) | TypedValue(int))
 
             want_float_or_int(make_union_in_annotated())
             want_float_or_int(x)

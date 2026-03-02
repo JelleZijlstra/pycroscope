@@ -2585,14 +2585,14 @@ class TestFloatInt(TestNameCheckVisitorBase):
         from typing_extensions import assert_type
 
         def capybara(x: float):
-            assert_type(x, float | int)
+            assert_is_value(x, TypedValue(float) | TypedValue(int))
             assert_type(x, float)
 
             if isinstance(x, float):
                 # can't express this type for assert_type()
                 assert_is_value(x, TypedValue(float))
             else:
-                assert_type(x, int)
+                assert_is_value(x, TypedValue(int))
                 assert_type(x, int)
 
     @assert_passes()
@@ -2600,7 +2600,9 @@ class TestFloatInt(TestNameCheckVisitorBase):
         from typing_extensions import assert_type
 
         def capybara(x: complex):
-            assert_type(x, complex | float | int)
+            assert_is_value(
+                x, TypedValue(complex) | TypedValue(float) | TypedValue(int)
+            )
             assert_type(x, complex)
 
             if isinstance(x, float):
@@ -2617,7 +2619,7 @@ class TestFloatInt(TestNameCheckVisitorBase):
 
         def capybara(x):
             f = cast(float, x)
-            assert_type(f, float | int)
+            assert_is_value(f, TypedValue(float) | TypedValue(int))
             assert_type(f, float)
 
     @assert_passes()
@@ -2628,7 +2630,7 @@ class TestFloatInt(TestNameCheckVisitorBase):
             pass
 
         def capybara(x: MyFloat):
-            assert_type(x, MyFloat)
+            assert_is_value(x, TypedValue(MyFloat))
             assert_type(x, MyFloat)
 
         def caller():
@@ -2643,7 +2645,7 @@ class TestFloatInt(TestNameCheckVisitorBase):
             pass
 
         def capybara(x: MyComplex):
-            assert_type(x, MyComplex)
+            assert_is_value(x, TypedValue(MyComplex))
             assert_type(x, MyComplex)
 
         def caller():
