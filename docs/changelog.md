@@ -1,6 +1,10 @@
 # Changelog
 
-## Unreleased
+## Version 0.3.0 (March 1, 2026)
+
+This release includes a large number of changes aimed at improving compliance with the
+[Python typing spec](https://typing.python.org/en/latest/spec/index.html). While many features are still
+missing or incomplete, there is now some degree of support of all major type system features.
 
 - Reduce name-based method heuristics by checking receiver parameters structurally in more places, which improves consistency for methods that don't use literal `self`/`cls` names.
 - Improve generic protocol checking by honoring `Protocol[...]` type-parameter order and rejecting protocol matches with unsatisfiable cross-member type-variable constraints.
