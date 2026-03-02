@@ -963,6 +963,9 @@ class Signature:
         star_args_consumed = False
         star_kwargs_consumed = False
         param_spec_consumed = False
+        has_paramspec_parameter = (
+            self.get_param_of_kind(ParameterKind.PARAM_SPEC) is not None
+        )
 
         for param in self.parameters.values():
             if param.kind is ParameterKind.POSITIONAL_ONLY:
@@ -1063,6 +1066,13 @@ class Signature:
                         value = actual_args.star_args
                     bound_args[param.name] = position, Composite(value)
                 elif param.name in actual_args.keywords:
+                    if actual_args.param_spec is not None and has_paramspec_parameter:
+                        self.show_call_error(
+                            f"Parameter '{param.name}' may be filled from both"
+                            " ParamSpec and a keyword argument",
+                            ctx,
+                        )
+                        return None
                     definitely_provided, composite = actual_args.keywords[param.name]
                     if (
                         not definitely_provided
@@ -1097,6 +1107,13 @@ class Signature:
                     return None
             elif param.kind is ParameterKind.KEYWORD_ONLY:
                 if param.name in actual_args.keywords:
+                    if actual_args.param_spec is not None and has_paramspec_parameter:
+                        self.show_call_error(
+                            f"Parameter '{param.name}' may be filled from both"
+                            " ParamSpec and a keyword argument",
+                            ctx,
+                        )
+                        return None
                     if param.name in actual_args.pos_or_keyword_params:
                         self.show_call_error(
                             f"Keyword parameter {param.name} should be"
@@ -1978,6 +1995,16 @@ def preprocess_args(
                     )
                 param_spec = arg.value.param_spec
                 param_spec_star_arg = arg
+                processed_args.append(
+                    (
+                        Composite(
+                            InputSigValue(ParamSpecSig(arg.value.param_spec)),
+                            arg.varname,
+                            arg.node,
+                        ),
+                        ParamSpecSig(arg.value.param_spec),
+                    )
+                )
                 continue
             concrete_values = concrete_values_from_iterable(
                 arg.value, ctx.can_assign_ctx
@@ -2076,8 +2103,12 @@ def preprocess_args(
     is_ellipsis: bool = False
     pok_indices = set()
     param_spec = None
+    seen_param_spec = False
 
     for arg, label in processed_args:
+        if seen_param_spec and not isinstance(label, ParamSpecSig):
+            ctx.on_error("Arguments cannot follow ParamSpec.args", node=arg.node)
+            return None
         if label is None or (isinstance(label, PossibleArg) and label.name is None):
             is_required = label is None
             # Should never happen because the parser doesn't let you
@@ -2129,6 +2160,7 @@ def preprocess_args(
                 ctx.on_error("Multiple ParamSpecs passed")
                 continue
             param_spec = label
+            seen_param_spec = True
         elif label is ELLIPSIS:
             is_ellipsis = True
         else:

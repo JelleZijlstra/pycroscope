@@ -26,6 +26,7 @@ from .maybe_asynq import asynq
 from .node_visitor import ErrorContext
 from .options import Options, PyObjectSequenceOption
 from .relations import Relation, has_relation
+from .safe import is_instance_of_typing_name
 from .signature import (
     ParameterKind,
     Signature,
@@ -253,6 +254,43 @@ def _visit_default(node: ast.AST, ctx: Context) -> Value:
     return val
 
 
+def _paramspec_identities_from_value(value: Value) -> set[object]:
+    identities: set[object] = set()
+    for subval in value.walk_values():
+        if isinstance(subval, InputSigValue) and isinstance(
+            subval.input_sig, ParamSpecSig
+        ):
+            identities.add(subval.input_sig.param_spec)
+        elif isinstance(subval, (ParamSpecArgsValue, ParamSpecKwargsValue)):
+            identities.add(subval.param_spec)
+        elif isinstance(subval, TypeVarValue) and is_instance_of_typing_name(
+            subval.typevar, "ParamSpec"
+        ):
+            identities.add(subval.typevar)
+    return identities
+
+
+def _paramspec_identities_from_context(ctx: Context) -> set[object]:
+    info = getattr(ctx, "current_function_info", None)
+    identities: set[object] = set()
+    if isinstance(info, FunctionInfo):
+        for param_info in info.params:
+            identities.update(
+                _paramspec_identities_from_value(param_info.param.annotation)
+            )
+        if info.return_annotation is not None:
+            identities.update(_paramspec_identities_from_value(info.return_annotation))
+        for type_param in info.type_params:
+            if is_instance_of_typing_name(type_param.typevar, "ParamSpec"):
+                identities.add(type_param.typevar)
+    current_class_type_params = getattr(ctx, "current_class_type_params", None)
+    if current_class_type_params is not None:
+        for type_param in current_class_type_params:
+            if is_instance_of_typing_name(type_param.typevar, "ParamSpec"):
+                identities.add(type_param.typevar)
+    return identities
+
+
 def compute_parameters(
     node: FunctionNode,
     enclosing_class: TypedValue | None,
@@ -261,6 +299,7 @@ def compute_parameters(
     is_nested_in_class: bool = False,
     is_staticmethod: bool = False,
     is_classmethod: bool = False,
+    declared_type_params: Sequence[TypeVarValue] = (),
 ) -> Sequence[ParamInfo]:
     """Visits and checks the arguments to a function."""
     from .annotations import has_invalid_paramspec_usage
@@ -330,7 +369,12 @@ def compute_parameters(
     params = []
     tv_index = 1
 
+    paramspecs_in_scope = _paramspec_identities_from_context(ctx)
+    for type_param in declared_type_params:
+        if is_instance_of_typing_name(type_param.typevar, "ParamSpec"):
+            paramspecs_in_scope.add(type_param.typevar)
     seen_paramspec_args: tuple[ast.arg, ParamSpecArgsValue] | None = None
+    paramspec_args_has_intervening_param = False
     value: Value | AnnotationExpr
     for idx, (param, default) in enumerate(zip_longest(args, defaults)):
         assert param is not None, "must have more args than defaults"
@@ -344,6 +388,28 @@ def compute_parameters(
         if arg.annotation is not None:
             value = ctx.expr_of_annotation(arg.annotation)
             inner_value, _ = value.maybe_unqualify(set(Qualifier))
+            if (
+                inner_value is not None
+                and not (
+                    isinstance(inner_value, InputSigValue)
+                    and isinstance(inner_value.input_sig, ParamSpecSig)
+                )
+                and not isinstance(
+                    inner_value, (ParamSpecArgsValue, ParamSpecKwargsValue)
+                )
+            ):
+                paramspecs_in_scope.update(
+                    _paramspec_identities_from_value(inner_value)
+                )
+            allows_paramspec_component = (
+                kind is ParameterKind.VAR_POSITIONAL
+                and isinstance(inner_value, ParamSpecArgsValue)
+                and inner_value.param_spec in paramspecs_in_scope
+            ) or (
+                kind is ParameterKind.VAR_KEYWORD
+                and isinstance(inner_value, ParamSpecKwargsValue)
+                and inner_value.param_spec in paramspecs_in_scope
+            )
             if isinstance(inner_value, InputSigValue):
                 if isinstance(inner_value.input_sig, ParamSpecSig):
                     ctx.show_error(
@@ -359,8 +425,10 @@ def compute_parameters(
                     )
                 value = AnyValue(AnySource.error)
             else:
-                if inner_value is not None and has_invalid_paramspec_usage(
-                    inner_value, ctx
+                if (
+                    inner_value is not None
+                    and has_invalid_paramspec_usage(inner_value, ctx)
+                    and not allows_paramspec_component
                 ):
                     ctx.show_error(
                         arg,
@@ -427,9 +495,26 @@ def compute_parameters(
                 value = unite_values(value, default)
 
         value = translate_vararg_type(kind, value, ctx, error_ctx=ctx, node=arg)
+        if seen_paramspec_args is not None:
+            _, ps_args = seen_paramspec_args
+            matches_trailing_kwargs = (
+                kind is ParameterKind.VAR_KEYWORD
+                and isinstance(value, ParamSpecKwargsValue)
+                and value.param_spec is ps_args.param_spec
+            )
+            if not matches_trailing_kwargs:
+                paramspec_args_has_intervening_param = True
         if isinstance(value, ParamSpecArgsValue):
             if kind is ParameterKind.VAR_POSITIONAL:
-                seen_paramspec_args = (arg, value)
+                if value.param_spec in paramspecs_in_scope:
+                    seen_paramspec_args = (arg, value)
+                    paramspec_args_has_intervening_param = False
+                else:
+                    ctx.show_error(
+                        arg,
+                        "ParamSpec cannot be used in this annotation context",
+                        error_code=ErrorCode.invalid_annotation,
+                    )
             else:
                 ctx.show_error(
                     arg,
@@ -438,7 +523,13 @@ def compute_parameters(
                 )
         elif isinstance(value, ParamSpecKwargsValue):
             if kind is ParameterKind.VAR_KEYWORD:
-                if seen_paramspec_args is not None:
+                if value.param_spec not in paramspecs_in_scope:
+                    ctx.show_error(
+                        arg,
+                        "ParamSpec cannot be used in this annotation context",
+                        error_code=ErrorCode.invalid_annotation,
+                    )
+                elif seen_paramspec_args is not None:
                     _, ps_args = seen_paramspec_args
                     if ps_args.param_spec is not value.param_spec:
                         ctx.show_error(
@@ -446,6 +537,16 @@ def compute_parameters(
                             "The same ParamSpec must be used on *args and **kwargs",
                             error_code=ErrorCode.invalid_annotation,
                         )
+                        seen_paramspec_args = None
+                    elif paramspec_args_has_intervening_param:
+                        ctx.show_error(
+                            arg,
+                            "ParamSpec.args and ParamSpec.kwargs must be adjacent",
+                            error_code=ErrorCode.invalid_annotation,
+                        )
+                        seen_paramspec_args = None
+                    else:
+                        seen_paramspec_args = None
                 else:
                     ctx.show_error(
                         arg,
@@ -471,10 +572,25 @@ def compute_parameters(
                     f"Parameter {name} overlaps with TypedDict key in **kwargs",
                     error_code=ErrorCode.invalid_annotation,
                 )
+        elif kind is ParameterKind.VAR_KEYWORD and seen_paramspec_args is not None:
+            ctx.show_error(
+                arg,
+                "ParamSpec.args must be used together with ParamSpec.kwargs",
+                error_code=ErrorCode.invalid_annotation,
+            )
+            seen_paramspec_args = None
 
         param = SigParameter(arg.arg, kind, default, value)
         info = ParamInfo(param, arg, is_self)
         params.append(info)
+
+    if seen_paramspec_args is not None:
+        ps_args_arg, _ = seen_paramspec_args
+        ctx.show_error(
+            ps_args_arg,
+            "ParamSpec.args must be used together with ParamSpec.kwargs",
+            error_code=ErrorCode.invalid_annotation,
+        )
 
     return params
 
@@ -582,6 +698,47 @@ class IsGeneratorVisitor(ast.NodeVisitor):
         pass
 
 
+def _signature_params_from_function_params(
+    params: Sequence[ParamInfo],
+) -> list[SigParameter]:
+    normalized: list[SigParameter] = []
+    pending_param: SigParameter | None = None
+    pending_paramspec: ParamSpecArgsValue | None = None
+    for param_info in params:
+        param = param_info.param
+        annotation = param.get_annotation()
+        if pending_param is not None and pending_paramspec is not None:
+            is_matching_kwargs = (
+                param.kind is ParameterKind.VAR_KEYWORD
+                and isinstance(annotation, ParamSpecKwargsValue)
+                and annotation.param_spec is pending_paramspec.param_spec
+            )
+            if is_matching_kwargs:
+                normalized.append(
+                    SigParameter(
+                        param.name,
+                        ParameterKind.PARAM_SPEC,
+                        annotation=InputSigValue(ParamSpecSig(annotation.param_spec)),
+                    )
+                )
+                pending_param = None
+                pending_paramspec = None
+                continue
+            normalized.append(pending_param)
+            pending_param = None
+            pending_paramspec = None
+        if param.kind is ParameterKind.VAR_POSITIONAL and isinstance(
+            annotation, ParamSpecArgsValue
+        ):
+            pending_param = param
+            pending_paramspec = annotation
+            continue
+        normalized.append(param)
+    if pending_param is not None:
+        normalized.append(pending_param)
+    return normalized
+
+
 def compute_value_of_function(
     info: FunctionInfo, ctx: Context, *, result: Value | None = None
 ) -> Value:
@@ -599,7 +756,7 @@ def compute_value_of_function(
             result = make_coro_type(result)
     sig = Signature.make(
         mark_ellipsis_style_any_tail_parameters(
-            [param_info.param for param_info in info.params]
+            _signature_params_from_function_params(info.params)
         ),
         result,
         has_return_annotation=info.return_annotation is not None,

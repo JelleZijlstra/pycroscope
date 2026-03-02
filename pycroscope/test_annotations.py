@@ -2253,19 +2253,63 @@ class TestParamSpec(TestNameCheckVisitorBase):
 
     @assert_passes()
     def test_param_spec_errors(self):
-        from typing import Callable, TypeVar
+        from typing import Callable, Concatenate, TypeVar
 
         from typing_extensions import ParamSpec
 
         P = ParamSpec("P")
         T = TypeVar("T")
 
+        _bad_stored_args: P.args  # E: invalid_annotation
+        _bad_stored_kwargs: P.kwargs  # E: invalid_annotation
+
+        def bad_component_mixup(
+            *args: P.kwargs,  # E: invalid_annotation
+            **kwargs: P.args,  # E: invalid_annotation
+        ) -> None:
+            pass
+
+        def bad_only_args(*args: P.args) -> None:  # E: invalid_annotation
+            pass
+
+        def bad_only_kwargs(**kwargs: P.kwargs) -> None:  # E: invalid_annotation
+            pass
+
+        def bad_non_paramspec_kwargs(
+            *args: P.args, **kwargs: object  # E: invalid_annotation
+        ) -> None:
+            pass
+
+        def bad_intervening_param(
+            *args: P.args,  # E: invalid_annotation
+            x: int,
+            **kwargs: P.kwargs,  # E: invalid_annotation
+        ) -> None:
+            pass
+
         def apply(func: Callable[P, T], *args: P.args, **kwargs: P.kwargs) -> None:
             func(*args)  # E: incompatible_call
-            func(*args, *args, **kwargs)  # E: incompatible_call
+            func(*args, *args, **kwargs)  # E: incompatible_call  # E: incompatible_call
             func(**kwargs)  # E: incompatible_call
             func(*args, **kwargs, **kwargs)  # E: incompatible_call
             func(*args, **kwargs)
+            func(1, *args, **kwargs)  # E: incompatible_call
+
+        def apply_with_prefix(
+            func: Callable[Concatenate[int, P], T], *args: P.args, **kwargs: P.kwargs
+        ) -> None:
+            func(1, *args, **kwargs)
+            func(*args, 1, **kwargs)  # E: incompatible_call
+
+        def outer(func: Callable[P, None]) -> Callable[P, None]:
+            def with_head(x: int, *args: P.args, **kwargs: P.kwargs) -> None:
+                func(*args, **kwargs)
+
+            def forward(*args: P.args, **kwargs: P.kwargs) -> None:
+                with_head(1, *args, **kwargs)
+                with_head(x=1, *args, **kwargs)  # E: incompatible_call
+
+            return forward
 
     def test_invalid_paramspec_usage_on_overloaded_signature(self):
         overloaded = OverloadedSignature(
