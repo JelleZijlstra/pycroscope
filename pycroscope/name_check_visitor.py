@@ -1343,6 +1343,7 @@ class _PendingOverload:
     node: FunctionDefNode
     signature: ConcreteSignature | None
     decorator_kinds: frozenset[FunctionDecorator]
+    dataclass_transform_info: DataclassTransformInfo | None = None
 
 
 @dataclass
@@ -6740,13 +6741,20 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     info_for_computed_value = replace(info, decorators=decorators)
             computed_function = compute_value_of_function(info_for_computed_value, self)
             static_overload_signature: OverloadedSignature | None = None
+            overload_dataclass_transform_info: DataclassTransformInfo | None = None
             if (
                 FunctionDecorator.overload not in info.decorator_kinds
                 and FunctionDecorator.evaluated not in info.decorator_kinds
             ):
                 static_overload_signature = self._get_pending_overload_signature(node)
+                overload_dataclass_transform_info = (
+                    self._get_pending_overload_dataclass_transform_info(node)
+                )
             self._check_overload_implementation_consistency(
-                node, info, computed_function
+                node,
+                info,
+                computed_function,
+                direct_dataclass_transform_info=direct_dataclass_transform_info,
             )
             if potential_function is None:
                 if static_overload_signature is not None:
@@ -6759,10 +6767,25 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 FunctionDecorator.overload not in info.decorator_kinds
                 and FunctionDecorator.evaluated not in info.decorator_kinds
             ):
-                if direct_dataclass_transform_info is not None:
+                merged_dataclass_transform_info = direct_dataclass_transform_info
+                if overload_dataclass_transform_info is not None:
+                    if merged_dataclass_transform_info is None:
+                        merged_dataclass_transform_info = (
+                            overload_dataclass_transform_info
+                        )
+                    else:
+                        merged_dataclass_transform_info = (
+                            _merge_dataclass_transform_infos(
+                                [
+                                    merged_dataclass_transform_info,
+                                    overload_dataclass_transform_info,
+                                ]
+                            )
+                        )
+                if merged_dataclass_transform_info is not None:
                     val = annotate_value(
                         val,
-                        [DataclassTransformExtension(direct_dataclass_transform_info)],
+                        [DataclassTransformExtension(merged_dataclass_transform_info)],
                     )
                 self._set_name_in_scope(node.name, node, val)
                 self._record_synthetic_property_metadata(node, info)
@@ -6959,6 +6982,28 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             return OverloadedSignature(signatures)
         return None
 
+    def _get_pending_overload_dataclass_transform_info(
+        self, node: FunctionDefNode
+    ) -> DataclassTransformInfo | None:
+        if not self._is_checking():
+            return None
+        current_scope = self.scopes.current_scope()
+        scope_key = id(current_scope)
+        pending_block = self._pending_overload_blocks.get(scope_key)
+        if pending_block is not None and pending_block.scope is not current_scope:
+            self._pending_overload_blocks.pop(scope_key, None)
+            pending_block = None
+        if pending_block is None or pending_block.name != node.name:
+            return None
+        infos = [
+            pending.dataclass_transform_info
+            for pending in pending_block.overloads
+            if pending.dataclass_transform_info is not None
+        ]
+        if not infos:
+            return None
+        return _merge_dataclass_transform_infos(infos)
+
     def _flush_pending_overload_blocks(self) -> None:
         if not self._is_checking():
             return
@@ -6977,7 +7022,12 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         self._finalize_pending_overload_block(pending_block, implementation=None)
 
     def _check_overload_implementation_consistency(
-        self, node: FunctionDefNode, info: FunctionInfo, computed_function: Value
+        self,
+        node: FunctionDefNode,
+        info: FunctionInfo,
+        computed_function: Value,
+        *,
+        direct_dataclass_transform_info: DataclassTransformInfo | None,
     ) -> None:
         if not self._is_checking():
             return
@@ -7015,7 +7065,10 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             self._pending_overload_blocks[scope_key] = pending_block
         pending_block.overloads.append(
             _PendingOverload(
-                node=node, signature=signature, decorator_kinds=info.decorator_kinds
+                node=node,
+                signature=signature,
+                decorator_kinds=info.decorator_kinds,
+                dataclass_transform_info=direct_dataclass_transform_info,
             )
         )
 
@@ -7072,16 +7125,29 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         self, pending_block: _PendingOverloadBlock
     ) -> None:
         signatures: list[Signature] = []
+        transform_infos: list[DataclassTransformInfo] = []
         for pending in pending_block.overloads:
             signature = pending.signature
             if isinstance(signature, Signature):
                 signatures.append(signature)
             elif isinstance(signature, OverloadedSignature):
                 signatures.extend(signature.signatures)
+            if pending.dataclass_transform_info is not None:
+                transform_infos.append(pending.dataclass_transform_info)
         if signatures:
-            pending_block.scope.variables[pending_block.name] = CallableValue(
+            value: Value = CallableValue(
                 OverloadedSignature(signatures), types.FunctionType
             )
+            if transform_infos:
+                value = annotate_value(
+                    value,
+                    [
+                        DataclassTransformExtension(
+                            _merge_dataclass_transform_infos(transform_infos)
+                        )
+                    ],
+                )
+            pending_block.scope.variables[pending_block.name] = value
 
     def _validate_overload_block(
         self,
