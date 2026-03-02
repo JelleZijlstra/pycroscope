@@ -60,6 +60,7 @@ from .value import (
     AnySource,
     AnyValue,
     CallableValue,
+    CanAssignContext,
     CanAssignError,
     GenericValue,
     HasAttrExtension,
@@ -2096,7 +2097,7 @@ class CheckerAttrContext(AttrContext):
     def signature_from_value(self, value: Value) -> MaybeSignature:
         return self.checker.signature_from_value(value)
 
-    def get_can_assign_context(self) -> object:
+    def get_can_assign_context(self) -> CanAssignContext:
         return self.checker
 
     def get_generic_bases(

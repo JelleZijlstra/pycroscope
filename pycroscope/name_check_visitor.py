@@ -657,7 +657,7 @@ class _AttrContext(CheckerAttrContext):
 
     def clone_for_attribute_lookup(
         self, root_composite: Composite, attr: str
-    ) -> _AttrContext:
+    ) -> "_AttrContext":
         return _AttrContext(
             root_composite,
             attr,
