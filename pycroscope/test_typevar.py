@@ -585,7 +585,7 @@ class TestSolve(TestNameCheckVisitorBase):
         def capybara(si: SupportsIndex):
             assert_type(f(1), int)
             assert_type(f(si), SupportsIndex)
-            assert_is_value(f(1.0), TypedValue(float) | TypedValue(int))
+            assert_type(f(1.0), float | int)
 
     @assert_passes()
     def test_lots_of_constraints(self):

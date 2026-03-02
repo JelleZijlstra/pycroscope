@@ -131,7 +131,7 @@ class TestOperators(TestNameCheckVisitorBase):
     @assert_passes(settings={ErrorCode.value_always_true: False})
     def test_not(self):
         def capybara(x):
-            assert_is_value(not x, TypedValue(bool), skip_annotated=True)
+            assert_type(not x, bool)
             assert_is_value(not True, KnownValue(False))
 
     @assert_passes()
@@ -146,8 +146,8 @@ class TestOperators(TestNameCheckVisitorBase):
             assert_type(1 + int(x), int)
             assert_type(3 * int(x), int)
             assert_type("foo" + str(x), str)
-            assert_is_value(1 + float(x), TypedValue(float) | TypedValue(int))
-            assert_is_value(1.0 + int(x), TypedValue(float) | TypedValue(int))
+            assert_type(1 + float(x), float | int)
+            assert_type(1.0 + int(x), float | int)
             assert_is_value(3 * 3.0 + 1, KnownValue(10.0))
 
     @assert_passes()
@@ -199,7 +199,7 @@ class TestOperators(TestNameCheckVisitorBase):
     @assert_passes()
     def test_int_float_product(self):
         def capybara(f: float, i: int):
-            assert_is_value(i * f, TypedValue(float) | TypedValue(int))
+            assert_type(i * f, float | int)
 
     @assert_passes()
     def test_contains(self):
@@ -239,17 +239,15 @@ class TestCompare(TestNameCheckVisitorBase):
                 return 3.14
 
         def capybara(x: X):
-            assert_is_value(
-                x == 1, TypedValue(float) | TypedValue(int), skip_annotated=True
-            )
-            assert_is_value(x == "x", TypedValue(bool), skip_annotated=True)
+            assert_type(x == 1, float | int)
+            assert_type(x == "x", bool)
 
         class Container:
             def __contains__(self, x: int) -> bool:
                 return x < 3
 
         def pacarana(x: Container):
-            assert_is_value(1 in x, TypedValue(bool), skip_annotated=True)
+            assert_type(1 in x, bool)
             "4" in x  # E: incompatible_argument
 
         def comparison(i: int, f: float, s: str, os: Optional[str]):
