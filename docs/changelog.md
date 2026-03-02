@@ -3,6 +3,7 @@
 ## Unreleased
 
 - Improve generic-base-class analysis in static fallback mode for unimportable modules: pycroscope now preserves generic base mappings and type-parameter ordering more accurately, reports duplicate/conflicting generic base type-variable declarations, and rejects `Generic`/`Generic[...]` used as type annotations outside base-class lists.
+- Preserve literal type arguments when inferring generic class-syntax `NamedTuple` constructor return types (for example, `Box(1)` now infers `Box[Literal[1]]`).
 
 ## Version 0.3.0 (March 1, 2026)
 
@@ -11,6 +12,7 @@ This release includes a large number of changes aimed at improving compliance wi
 missing or incomplete, there is now some degree of support of all major type system features.
 
 - Improve `TypeVarTuple` solving for repeated tuple-parameter uses (for example `def f(*args: tuple[*Ts])`): incompatible tuple shapes across arguments are now rejected, and same-length element mismatches are inferred as per-position unions.
+- Remove additional name-based receiver checks in protocol and call-signature handling, so nonstandard receiver names no longer affect protocol-member binding or TypedDict-backed dict-method checks.
 - Reduce name-based method heuristics by checking receiver parameters structurally in more places, which improves consistency for methods that don't use literal `self`/`cls` names.
 - Improve generic protocol checking by honoring `Protocol[...]` type-parameter order and rejecting protocol matches with unsatisfiable cross-member type-variable constraints.
 - Improve method-receiver handling by using inferred receiver semantics instead of hard-coded `self`/`cls` names, so checks for `Final` instance attributes, protocol-member synthesis, enum `_value_` assignments, and receiver attribute writes now behave correctly with nonstandard receiver names.

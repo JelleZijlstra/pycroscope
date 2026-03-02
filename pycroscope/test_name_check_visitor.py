@@ -724,7 +724,7 @@ class TestImportFailureHandlingCodeSamples(TestNameCheckVisitorBase):
     def test_namedtuple_after_import_failure(self):
         boom = 1 / 0
 
-        from typing import Generic, NamedTuple, TypeVar
+        from typing import Generic, Literal, NamedTuple, TypeVar
 
         from typing_extensions import assert_type
 
@@ -758,9 +758,9 @@ class TestImportFailureHandlingCodeSamples(TestNameCheckVisitorBase):
             value: T
 
         pr = Property("", 3.4)
-        assert_type(pr, Property[float])
-        assert_type(pr[1], float)
-        assert_type(pr.value, float)
+        assert_type(pr, Property[Literal[3.4]])
+        assert_type(pr[1], Literal[3.4])
+        assert_type(pr.value, Literal[3.4])
         Property[str]("", 3.1)  # E: incompatible_argument
 
         class PointWithName(Point):
@@ -3769,6 +3769,28 @@ class TestAnnAssign(TestNameCheckVisitorBase):
             def assign(this) -> None:  # E: method_first_arg
                 this.disallowed = 1  # E: invalid_annotation
                 this.allowed = 1
+
+    @assert_passes(allow_import_failures=True)
+    def test_protocol_staticmethod_with_receiver_param_is_incompatible(self):
+        from typing import Protocol
+
+        import does_not_exist  # noqa: F401
+
+        class Proto(Protocol):
+            def method1(self, a: int, b: int) -> float: ...
+
+        class Good:
+            @staticmethod
+            def method1(a: int, b: int) -> float:
+                return 0
+
+        class Bad:
+            @staticmethod
+            def method1(self, a: int, b: int) -> float:
+                return 0
+
+        ok: Proto = Good()
+        bad: Proto = Bad()  # E: incompatible_assignment
 
     @assert_passes()
     def test_inconsistent_type(self):

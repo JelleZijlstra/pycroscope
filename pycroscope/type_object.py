@@ -302,7 +302,9 @@ class TypeObject:
                                 expected_signature
                             )
                         expected = CallableValue(expected_signature)
-                expected = _bind_protocol_call_expected(expected, other_val, ctx)
+                expected = _bind_protocol_call_expected(
+                    expected, other_val, ctx, protocol_self_value=self_val
+                )
                 expected = expected.substitute_typevars({SelfT: other_val})
                 if other_type_obj is not None and other_type_obj.is_protocol:
                     actual = _get_protocol_call_member_value(
@@ -326,9 +328,6 @@ class TypeObject:
                 expected = ctx.get_attribute_from_value(
                     self_val, member, prefer_typeshed=True
                 )
-                expected = _maybe_bind_dunder_protocol_member(
-                    expected, member, self_val, ctx
-                )
                 if expected is UNINITIALIZED_VALUE:
                     # In static fallback mode, synthetic protocol members may not have
                     # a retrievable attribute type. Keep enforcing member presence.
@@ -339,9 +338,6 @@ class TypeObject:
                 expected = ctx.get_attribute_from_value(
                     self_val, member, prefer_typeshed=True
                 )
-                expected = _maybe_bind_dunder_protocol_member(
-                    expected, member, self_val, ctx
-                )
                 if expected is UNINITIALIZED_VALUE:
                     # In static fallback mode, synthetic protocol members may not have
                     # a retrievable attribute type. Keep enforcing member presence.
@@ -349,8 +345,7 @@ class TypeObject:
                 if protocol_self_typevar_map:
                     expected = expected.substitute_typevars(protocol_self_typevar_map)
                 expected = expected.substitute_typevars({SelfT: other_val})
-                actual_owner: Value = other_val
-                actual = ctx.get_attribute_from_value(actual_owner, member)
+                actual = ctx.get_attribute_from_value(other_val, member)
                 if (
                     class_object_check
                     and other_type_key is not None
@@ -364,11 +359,7 @@ class TypeObject:
                             class_owner, member
                         )
                         if refined_actual is not UNINITIALIZED_VALUE:
-                            actual_owner = class_owner
                             actual = refined_actual
-                actual = _maybe_bind_dunder_protocol_member(
-                    actual, member, actual_owner, ctx
-                )
                 if (
                     actual is UNINITIALIZED_VALUE
                     and other_type_obj is not None
@@ -1014,25 +1005,71 @@ def _should_refine_class_object_member_lookup(
 
 
 def _callable_value_missing_receiver(value: Value, ctx: CanAssignContext) -> bool:
-    valid_self_names = {"self", "cls", "_self", "__self"}
     signature = ctx.signature_from_value(value)
     if isinstance(signature, BoundMethodSignature):
         return True
     if isinstance(signature, Signature):
-        first = next(iter(signature.parameters.values()), None)
-        return first is None or first.name not in valid_self_names
+        return signature.bind_self(ctx=ctx) is None
     if isinstance(signature, OverloadedSignature):
-        first_params = [
-            next(iter(subsig.parameters.values()), None)
-            for subsig in signature.signatures
-        ]
-        if not first_params:
+        if not signature.signatures:
             return True
-        return any(
-            param is None or param.name not in valid_self_names
-            for param in first_params
-        )
+        return any(subsig.bind_self(ctx=ctx) is None for subsig in signature.signatures)
     return False
+
+
+def _signature_has_receiver_parameter(
+    signature: Signature,
+    self_value: Value,
+    *,
+    ctx: CanAssignContext,
+    member: str,
+    allow_any_annotation: bool = False,
+) -> bool:
+    first_parameter = next(iter(signature.parameters.values()), None)
+    if first_parameter is None or first_parameter.kind not in (
+        ParameterKind.POSITIONAL_ONLY,
+        ParameterKind.POSITIONAL_OR_KEYWORD,
+    ):
+        return False
+    annotation = replace_fallback(first_parameter.annotation)
+    if allow_any_annotation and isinstance(annotation, AnyValue):
+        return True
+    if isinstance(annotation, AnyValue):
+        return False
+    if any(
+        isinstance(subval, TypeVarValue) and subval.typevar is SelfT
+        for subval in annotation.walk_values()
+    ):
+        return True
+    annotation_key = _receiver_key_from_value(annotation)
+    self_key = _receiver_key_from_value(self_value)
+    if annotation_key is not None and self_key is not None:
+        if annotation_key == self_key or stringify_object(
+            annotation_key
+        ) == stringify_object(self_key):
+            return True
+        if isinstance(annotation_key, str) and isinstance(self_key, type):
+            return annotation_key.rsplit(".", maxsplit=1)[-1] == self_key.__name__
+        if isinstance(annotation_key, type) and isinstance(self_key, str):
+            return self_key.rsplit(".", maxsplit=1)[-1] == annotation_key.__name__
+        if not isinstance(annotation_key, str) and not isinstance(self_key, str):
+            return False
+        return not isinstance(
+            get_tv_map(first_parameter.annotation, self_value, ctx), CanAssignError
+        )
+    return not isinstance(
+        get_tv_map(first_parameter.annotation, self_value, ctx), CanAssignError
+    )
+
+
+def _receiver_key_from_value(value: Value) -> type | str | None:
+    key = _class_key_from_value(value)
+    if key is not None:
+        return key
+    narrowed = replace_fallback(value)
+    if isinstance(narrowed, KnownValue) and not isinstance(narrowed.val, type):
+        return type(narrowed.val)
+    return None
 
 
 def _class_object_value_for_key(
@@ -1046,49 +1083,12 @@ def _class_object_value_for_key(
     return None
 
 
-def _maybe_bind_dunder_protocol_member(
-    value: Value, member: str, self_value: Value, ctx: CanAssignContext
-) -> Value:
-    def _has_self_parameter(sig: Signature | OverloadedSignature) -> bool:
-        def _first_parameter_name(signature: Signature) -> str | None:
-            return (
-                next(iter(signature.parameters.values())).name
-                if signature.parameters
-                else None
-            )
-
-        if isinstance(sig, Signature):
-            return _first_parameter_name(sig) in {"self", "cls"}
-        return all(
-            _first_parameter_name(subsig) in {"self", "cls"}
-            for subsig in sig.signatures
-        )
-
-    if not (member.startswith("__") and member.endswith("__")):
-        return value
-    if value is UNINITIALIZED_VALUE:
-        return value
-    unwrapped = replace_fallback(value)
-    if not isinstance(unwrapped, CallableValue):
-        return value
-    signature = unwrapped.signature
-    if isinstance(signature, BoundMethodSignature):
-        return value
-    if isinstance(
-        signature, (Signature, OverloadedSignature)
-    ) and not _has_self_parameter(signature):
-        return value
-    if isinstance(signature, (Signature, OverloadedSignature)):
-        bound = signature.bind_self(
-            self_value=self_value, self_annotation_value=None, ctx=ctx
-        )
-        if bound is not None:
-            return CallableValue(bound, unwrapped.typ)
-    return value
-
-
 def _bind_protocol_call_expected(
-    value: Value, self_value: Value, ctx: CanAssignContext
+    value: Value,
+    self_value: Value,
+    ctx: CanAssignContext,
+    *,
+    protocol_self_value: Value | None = None,
 ) -> Value:
     unwrapped = replace_fallback(value)
     if not isinstance(unwrapped, CallableValue):
@@ -1096,18 +1096,31 @@ def _bind_protocol_call_expected(
     signature = unwrapped.signature
     if isinstance(signature, BoundMethodSignature):
         return value
+    receiver_reference = (
+        self_value if protocol_self_value is None else protocol_self_value
+    )
+    allow_any_annotation = protocol_self_value is not None
     if isinstance(signature, (Signature, OverloadedSignature)):
         if isinstance(signature, Signature):
-            first_params = [next(iter(signature.parameters.values()), None)]
+            has_receiver_parameter = _signature_has_receiver_parameter(
+                signature,
+                receiver_reference,
+                ctx=ctx,
+                member="__call__",
+                allow_any_annotation=allow_any_annotation,
+            )
         else:
-            first_params = [
-                next(iter(sig.parameters.values()), None)
+            has_receiver_parameter = all(
+                _signature_has_receiver_parameter(
+                    sig,
+                    receiver_reference,
+                    ctx=ctx,
+                    member="__call__",
+                    allow_any_annotation=allow_any_annotation,
+                )
                 for sig in signature.signatures
-            ]
-        if not all(
-            param is not None and param.name in {"self", "cls", "__self"}
-            for param in first_params
-        ):
+            )
+        if not has_receiver_parameter:
             return value
         bound = signature.bind_self(self_value=self_value, ctx=ctx)
         if bound is not None:
@@ -1134,7 +1147,9 @@ def _get_protocol_call_member_value(
         )
     if call_member is UNINITIALIZED_VALUE:
         return call_member
-    return _bind_protocol_call_expected(call_member, self_value, ctx)
+    return _bind_protocol_call_expected(
+        call_member, self_value, ctx, protocol_self_value=self_value
+    )
 
 
 def _should_mark_protocol_call_tail(value: Value) -> bool:

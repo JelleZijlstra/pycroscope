@@ -36,6 +36,7 @@ generics_typevartuple_unpack
 literals_literalstring
 literals_parameterizations
 literals_semantics
+namedtuples_define_class
 overloads_definitions_stub
 overloads_basic
 protocols_class_objects

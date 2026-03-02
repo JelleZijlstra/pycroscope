@@ -751,8 +751,18 @@ class Signature:
                     used_any = False
             else:
                 value_to_check = composite.value
+                first_parameter = next(iter(self.parameters.values()), None)
+                is_receiver_parameter = (
+                    first_parameter is param
+                    and param.kind
+                    in (
+                        ParameterKind.POSITIONAL_ONLY,
+                        ParameterKind.POSITIONAL_OR_KEYWORD,
+                    )
+                    and self._is_method_like_typeguard_callable()
+                )
                 if (
-                    param.name == "self"
+                    is_receiver_parameter
                     and isinstance(param_typ, GenericValue)
                     and param_typ.typ
                     in {dict, collections.abc.Mapping, collections.abc.MutableMapping}

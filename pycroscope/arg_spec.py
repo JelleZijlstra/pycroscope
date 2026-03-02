@@ -79,7 +79,6 @@ from .value import (
     GenericValue,
     KnownValue,
     KVPair,
-    MultiValuedValue,
     NewTypeValue,
     ParamSpecArgsValue,
     ParamSpecKwargsValue,
@@ -93,8 +92,6 @@ from .value import (
     is_async_iterable,
     is_iterable,
     make_coro_type,
-    replace_fallback,
-    unite_values,
 )
 
 _GET_OVERLOADS = []
@@ -1131,9 +1128,7 @@ class ArgSpecCache:
                     if field is None:
                         inferred_args.append(AnyValue(AnySource.generic_argument))
                         continue
-                    inferred_args.append(
-                        self._widen_namedtuple_typevar_arg(ctx.vars[field])
-                    )
+                    inferred_args.append(ctx.vars[field])
                 return GenericValue(obj, inferred_args)
 
             impl = infer_return_type
@@ -1142,22 +1137,6 @@ class ArgSpecCache:
         return Signature.make(
             params, return_type, callable=obj, allow_call=allow_call, impl=impl
         )
-
-    def _widen_namedtuple_typevar_arg(self, value: Value) -> Value:
-        value = replace_fallback(value)
-        if isinstance(value, KnownValue):
-            return type_from_runtime(type(value.val), ctx=self.default_context)
-        if isinstance(value, GenericValue):
-            return value
-        if isinstance(value, TypedValue):
-            return value
-        if isinstance(value, AnyValue):
-            return value
-        if isinstance(value, MultiValuedValue):
-            return unite_values(
-                *[self._widen_namedtuple_typevar_arg(subval) for subval in value.vals]
-            )
-        return AnyValue(AnySource.generic_argument)
 
     def _maybe_make_overloaded_signature(
         self, overloads: Sequence[Callable[..., Any]], impl: Impl | None, is_asynq: bool
