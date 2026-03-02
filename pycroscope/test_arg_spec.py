@@ -341,7 +341,7 @@ class TestClassInstantiation(TestNameCheckVisitorBase):
                 pass
 
         def capybara(t: Type[A]) -> None:
-            assert_is_value(t(1), TypedValue(A))
+            assert_type(t(1), A)
             t("x")  # E: incompatible_argument
 
     @assert_passes()
@@ -366,7 +366,7 @@ class TestClassInstantiation(TestNameCheckVisitorBase):
             )
 
         def capybara():
-            assert_is_value(Cls(x=3), TypedValue(Cls))
+            assert_type(Cls(x=3), Cls)
             Cls()  # E: incompatible_call
             Cls(1)  # E: incompatible_call
 
@@ -396,12 +396,12 @@ class TestNamedTuple(TestNameCheckVisitorBase):
         def capybara():
             NT(filed=3)  # E: incompatible_call
             nt2 = make_nt()
-            assert_is_value(nt2, TypedValue(NT))
-            assert_is_value(nt2.field, TypedValue(int))
+            assert_type(nt2, NT)
+            assert_type(nt2.field, int)
 
             CustomNew("x")  # E: incompatible_argument
             cn = CustomNew(a=3)
-            assert_is_value(cn, TypedValue(CustomNew))
+            assert_type(cn, CustomNew)
 
 
 class TestBuiltinMethods(TestNameCheckVisitorBase):

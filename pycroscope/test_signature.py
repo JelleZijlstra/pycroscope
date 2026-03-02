@@ -499,7 +499,7 @@ class TestProperty(TestNameCheckVisitorBase):
         from pycroscope.tests import PropertyObject
 
         def capybara(uid):
-            assert_is_value(PropertyObject(uid).string_property, TypedValue(str))
+            assert_type(PropertyObject(uid).string_property, str)
 
     @assert_passes()
     def test_local_return(self):
@@ -509,7 +509,7 @@ class TestProperty(TestNameCheckVisitorBase):
                 return str(1)
 
         def capybara() -> None:
-            assert_is_value(X().foo, TypedValue(str))
+            assert_type(X().foo, str)
 
 
 class TestShadowing(TestNameCheckVisitorBase):
@@ -682,8 +682,8 @@ class TestCalls(TestNameCheckVisitorBase):
                 return x
 
         def caller() -> None:
-            assert_is_value(Capybara.hutia(1), TypedValue(int))
-            assert_is_value(Capybara.hutia("x"), TypedValue(str))
+            assert_type(Capybara.hutia(1), int)
+            assert_type(Capybara.hutia("x"), str)
 
     @assert_passes()
     def test_staticmethod_bad_arg(self):
@@ -712,7 +712,7 @@ class TestCalls(TestNameCheckVisitorBase):
 
         def capybara(x):
             obj = WithCall()
-            assert_is_value(obj, TypedValue(WithCall))
+            assert_type(obj, WithCall)
             assert_is_value(obj(x), AnyValue(AnySource.unannotated))
 
     @assert_passes()
@@ -723,8 +723,8 @@ class TestCalls(TestNameCheckVisitorBase):
 
         def capybara(x: int):
             obj = WithCall()
-            assert_is_value(obj, TypedValue(WithCall))
-            assert_is_value(obj(x), TypedValue(int))
+            assert_type(obj, WithCall)
+            assert_type(obj(x), int)
             obj("x")  # E: incompatible_argument
 
     @assert_passes()
@@ -739,9 +739,9 @@ class TestCalls(TestNameCheckVisitorBase):
 
         def capybara(x: int):
             obj = WithCall()
-            assert_is_value(obj, TypedValue(WithCall))
-            assert_is_value(obj(x), TypedValue(int))
-            assert_is_value(obj("x"), TypedValue(int))
+            assert_type(obj, WithCall)
+            assert_type(obj(x), int)
+            assert_type(obj("x"), int)
 
             obj2 = WithWrongAnnotation()
             obj2(1)  # E: not_callable
@@ -771,7 +771,7 @@ class TestCalls(TestNameCheckVisitorBase):
     def test_type_inference_for_type_call(self):
         def fn():
             capybara = int("3")
-            assert_is_value(capybara, TypedValue(int))
+            assert_type(capybara, int)
 
     @assert_passes()
     def test_required_kwonly_args(self):
@@ -927,17 +927,14 @@ class TestCalls(TestNameCheckVisitorBase):
 
         class A:
             def __init__(self) -> None:
-                assert_is_value(self, TypedValue(A))
+                assert_type(self, A)
 
         A.__name__ = "B"
         A.__init__.__name__ = "B"
 
         def capybara():
-            assert_is_value(A(), TypedValue(A))
-            assert_is_value(
-                pycroscope.tests.WhatIsMyName(),
-                TypedValue(pycroscope.tests.WhatIsMyName),
-            )
+            assert_type(A(), A)
+            assert_type(pycroscope.tests.WhatIsMyName(), pycroscope.tests.WhatIsMyName)
 
     @assert_passes()
     def test_star_args(self):
@@ -1124,8 +1121,8 @@ class TestOverload(TestNameCheckVisitorBase):
         from pycroscope.tests import overloaded
 
         def capybara():
-            assert_is_value(overloaded(), TypedValue(int))
-            assert_is_value(overloaded("x"), TypedValue(str))
+            assert_type(overloaded(), int)
+            assert_type(overloaded("x"), str)
             overloaded(1)  # E: incompatible_argument
             overloaded("x", "y")  # E: incompatible_call
 
@@ -1152,8 +1149,8 @@ class TestOverload(TestNameCheckVisitorBase):
                 raise TypeError("too many arguments")
 
         def capybara():
-            assert_is_value(overloaded(), TypedValue(int))
-            assert_is_value(overloaded("x"), TypedValue(str))
+            assert_type(overloaded(), int)
+            assert_type(overloaded("x"), str)
             overloaded(1)  # E: incompatible_argument
             overloaded("a", "b")  # E: incompatible_call
 
@@ -1180,8 +1177,8 @@ class TestOverload(TestNameCheckVisitorBase):
                 raise TypeError("too many arguments")
 
         def capybara():
-            assert_is_value(overloaded(), TypedValue(int))
-            assert_is_value(overloaded("x"), TypedValue(str))
+            assert_type(overloaded(), int)
+            assert_type(overloaded("x"), str)
             overloaded(1)  # E: incompatible_argument
             overloaded("a", "b")  # E: incompatible_call
 
@@ -1401,7 +1398,7 @@ class TestOverload(TestNameCheckVisitorBase):
                 pass
 
         def capybara():
-            assert_is_value(Outer.Inner(), TypedValue(Outer.Inner))
+            assert_type(Outer.Inner(), Outer.Inner)
 
     @assert_passes()
     def test_typeshed_overload(self):
@@ -1424,8 +1421,8 @@ class TestOverload(TestNameCheckVisitorBase):
         def pacarana(f: float):
             # https://github.com/python/cpython/issues/120080
             assert isinstance(f, float)
-            assert_is_value(f.__round__(), TypedValue(int))
-            assert_is_value(f.__round__(None), TypedValue(int))
+            assert_type(f.__round__(), int)
+            assert_type(f.__round__(None), int)
             f.__round__(ndigits=None)  # E: incompatible_call
             assert_is_value(f.__round__(1), TypedValue(float) | TypedValue(int))
 
@@ -1451,8 +1448,8 @@ class TestOverload(TestNameCheckVisitorBase):
             raise NotImplementedError
 
         def capybara():
-            assert_is_value(f(1), TypedValue(str))
-            assert_is_value(f(""), TypedValue(int))
+            assert_type(f(1), str)
+            assert_type(f(""), int)
 
     @assert_passes()
     def test_bound_args_first(self):
@@ -1525,7 +1522,7 @@ class TestSelfAnnotation(TestNameCheckVisitorBase):
                 return 1
 
         def caller(ci: Capybara[int], cs: Capybara[str]):
-            assert_is_value(ci.method(), TypedValue(int))
+            assert_type(ci.method(), int)
             cs.method()  # E: incompatible_argument
 
     @assert_passes()
@@ -1540,7 +1537,7 @@ class TestSelfAnnotation(TestNameCheckVisitorBase):
                 return 1
 
         def caller(ci: Capybara[int], cs: Capybara[str]):
-            assert_is_value(ci.prop, TypedValue(int))
+            assert_type(ci.prop, int)
             cs.prop  # E: incompatible_argument
 
 

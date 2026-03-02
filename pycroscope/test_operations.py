@@ -86,7 +86,7 @@ class TestBoolOp(TestNameCheckVisitorBase):
             else:
                 cond = None
                 cond2 = None
-            assert_is_value(cond, MultiValuedValue([TypedValue(str), KnownValue(None)]))
+            assert_type(cond, str | None)
             assert_is_value(
                 cond2, MultiValuedValue([KnownValue(True), KnownValue(None)])
             )
@@ -160,10 +160,10 @@ class TestOperators(TestNameCheckVisitorBase):
             z: Union[int, float],
             a: Union[int, float],
         ) -> None:
-            assert_is_value(x * 3, TypedValue(int) | TypedValue(str))
+            assert_type(x * 3, int | str)
 
             x + y  # E: unsupported_operation
-            assert_is_value(z + a, TypedValue(int) | TypedValue(float))
+            assert_type(z + a, int | float)
 
     @assert_passes()
     def test_rop(self):
@@ -185,11 +185,11 @@ class TestOperators(TestNameCheckVisitorBase):
         def capybara(x):
             ha = HasAdd()
             hr = HasRadd()
-            assert_is_value(1 + hr, TypedValue(HasRadd))
+            assert_type(1 + hr, HasRadd)
             assert_is_value(x + hr, AnyValue(AnySource.from_another))
-            assert_is_value(ha + 1, TypedValue(HasAdd))
+            assert_type(ha + 1, HasAdd)
             assert_is_value(ha + x, AnyValue(AnySource.from_another))
-            assert_is_value(HasBoth() + HasBoth(), TypedValue(HasBoth))
+            assert_type(HasBoth() + HasBoth(), HasBoth)
 
     @assert_passes()
     def test_unsupported_unary_op(self):
@@ -253,10 +253,10 @@ class TestCompare(TestNameCheckVisitorBase):
             "4" in x  # E: incompatible_argument
 
         def comparison(i: int, f: float, s: str, os: Optional[str]):
-            assert_is_value(i < i, TypedValue(bool))
-            assert_is_value(i < f, TypedValue(bool))
-            assert_is_value(i <= f, TypedValue(bool))
-            assert_is_value(s >= s, TypedValue(bool))
+            assert_type(i < i, bool)
+            assert_type(i < f, bool)
+            assert_type(i <= f, bool)
+            assert_type(s >= s, bool)
             i < s  # E: unsupported_operation
             s >= f  # E: unsupported_operation
             # TODO: These don't throw errors because None.__lt__ exists at runtime.

@@ -316,7 +316,7 @@ class TestBundledStubs(TestNameCheckVisitorBase):
 
         def capybara(x: ast.Yield):
             assert_type(x, ast.Yield)
-            assert_is_value(x.value, TypedValue(ast.expr) | KnownValue(None))
+            assert_type(x.value, ast.expr | None)
 
     @assert_passes()
     def test_import_typeddicts(self):
@@ -348,19 +348,13 @@ class TestBundledStubs(TestNameCheckVisitorBase):
             assert_is_value(
                 open(unannotated), GenericValue(IO, [AnyValue(AnySource.explicit)])
             )
-            assert_is_value(
-                open("r" if unannotated else "rb"),
-                TypedValue(TextIO) | TypedValue(BinaryIO),
-            )
+            assert_type(open("r" if unannotated else "rb"), TextIO | BinaryIO)
             assert_type(open2("r"), TextIO)
             assert_type(open2("rb"), BinaryIO)
             assert_is_value(
                 open2(unannotated), GenericValue(IO, [AnyValue(AnySource.explicit)])
             )
-            assert_is_value(
-                open2("r" if unannotated else "rb"),
-                TypedValue(TextIO) | TypedValue(BinaryIO),
-            )
+            assert_type(open2("r" if unannotated else "rb"), TextIO | BinaryIO)
 
     @assert_passes()
     def test_recursive_base(self):

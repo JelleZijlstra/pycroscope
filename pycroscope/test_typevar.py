@@ -8,7 +8,6 @@ from .value import (
     AnyValue,
     GenericValue,
     KnownValue,
-    MultiValuedValue,
     TypedValue,
     assert_is_value,
 )
@@ -71,8 +70,8 @@ class TestTypeVar(TestNameCheckVisitorBase):
             return arg
 
         def capybara(x: Optional[int]):
-            assert_is_value(x, MultiValuedValue([KnownValue(None), TypedValue(int)]))
-            assert_is_value(assert_not_none(x), TypedValue(int))
+            assert_type(x, int | None)
+            assert_type(assert_not_none(x), int)
 
     @assert_passes()
     def test_only_T(self):
@@ -116,7 +115,7 @@ class TestTypeVar(TestNameCheckVisitorBase):
                 self.x = x
 
         def capybara(i: int) -> None:
-            assert_is_value(Capybara(i).x, TypedValue(int))
+            assert_type(Capybara(i).x, int)
 
     @assert_passes()
     def test_generic_base(self):
@@ -401,7 +400,7 @@ class TestTypeVar(TestNameCheckVisitorBase):
                 return default
 
         def capybara(d: Dict[str, str], key: str) -> None:
-            assert_is_value(dictget(d, key), TypedValue(str) | KnownValue(None))
+            assert_type(dictget(d, key), str | None)
             assert_is_value(dictget(d, key, 1), TypedValue(str) | KnownValue(1))
 
     @assert_passes()
@@ -474,7 +473,7 @@ class TestSolve(TestNameCheckVisitorBase):
 
         def take_tv(t: AnyStr) -> AnyStr:
             if isinstance(t, StrSub):
-                assert_is_value(t, TypedValue(StrSub))
+                assert_type(t, StrSub)
                 return t
             else:
                 return t
@@ -489,7 +488,7 @@ class TestSolve(TestNameCheckVisitorBase):
             return seq
 
         def take_union(seq: Union[bytes, str]) -> None:
-            assert_is_value(take_seq(seq), TypedValue(bytes) | TypedValue(str))
+            assert_type(take_seq(seq), bytes | str)
 
     @assert_passes()
     def test_tv_union_list(self):
@@ -517,8 +516,8 @@ class TestSolve(TestNameCheckVisitorBase):
             return x
 
         def capybara(u: Union[str, bytes]) -> None:
-            assert_is_value(pick_first("a", "b"), TypedValue(str))
-            assert_is_value(pick_first(b"a", b"b"), TypedValue(bytes))
+            assert_type(pick_first("a", "b"), str)
+            assert_type(pick_first(b"a", b"b"), bytes)
             pick_first(u, "b")  # E: incompatible_argument
             pick_first(u, b"b")  # E: incompatible_argument
             pick_first("a", b"b")  # E: incompatible_call
@@ -557,7 +556,7 @@ class TestSolve(TestNameCheckVisitorBase):
 
         def capybara():
             m = min(E)
-            assert_is_value(m, TypedValue(E))
+            assert_type(m, E)
 
     @assert_passes()
     def test_constraints(self):
@@ -570,7 +569,7 @@ class TestSolve(TestNameCheckVisitorBase):
 
         def pacarana() -> None:
             assert_is_value(g([]), AnyValue(AnySource.inference))
-            assert_is_value(g([1]), GenericValue(list, [TypedValue(int)]))
+            assert_type(g([1]), list[int])
 
     @assert_passes()
     def test_redundant_constraints(self):
@@ -584,8 +583,8 @@ class TestSolve(TestNameCheckVisitorBase):
             return x
 
         def capybara(si: SupportsIndex):
-            assert_is_value(f(1), TypedValue(int))
-            assert_is_value(f(si), TypedValue(SupportsIndex))
+            assert_type(f(1), int)
+            assert_type(f(si), SupportsIndex)
             assert_is_value(f(1.0), TypedValue(float) | TypedValue(int))
 
     @assert_passes()

@@ -2,7 +2,7 @@
 from .extensions import is_keyword, is_of_type, is_positional, is_provided, show_error
 from .test_name_check_visitor import TestNameCheckVisitorBase
 from .test_node_visitor import assert_passes
-from .value import AnySource, AnyValue, KnownValue, TypedValue, assert_is_value
+from .value import AnySource, AnyValue, KnownValue, assert_is_value
 
 
 class TestTypeEvaluation(TestNameCheckVisitorBase):
@@ -58,10 +58,7 @@ class TestTypeEvaluation(TestNameCheckVisitorBase):
             assert_type(is_of_type_evaluated(1), str)
             assert_type(is_of_type_evaluated(2), int)
             assert_type(is_of_type_evaluated(unannotated), int)
-            assert_is_value(
-                is_of_type_evaluated(2 if unannotated else 1),
-                TypedValue(int) | TypedValue(str),
-            )
+            assert_type(is_of_type_evaluated(2 if unannotated else 1), int | str)
 
     @assert_passes()
     def test_not(self):
@@ -88,10 +85,7 @@ class TestTypeEvaluation(TestNameCheckVisitorBase):
             assert_type(not_evaluated(1), int)
             assert_type(not_evaluated(2), str)
             assert_type(not_evaluated(unannotated), str)
-            assert_is_value(
-                not_evaluated(2 if unannotated else 1),
-                TypedValue(int) | TypedValue(str),
-            )
+            assert_type(not_evaluated(2 if unannotated else 1), int | str)
 
     @assert_passes()
     def test_compare(self):
@@ -371,9 +365,7 @@ class TestBoolOp(TestNameCheckVisitorBase):
         ) -> None:
             assert_type(use_and(1, "x"), str)
             assert_type(use_and(a, b), int)
-            assert_is_value(
-                use_and(maybe_a, maybe_b), TypedValue(str) | TypedValue(int)
-            )
+            assert_type(use_and(maybe_a, maybe_b), str | int)
 
     @assert_passes()
     def test_or(self):
@@ -397,7 +389,7 @@ class TestBoolOp(TestNameCheckVisitorBase):
             assert_type(use_or("y"), str)
             assert_type(use_or(b), int)
             assert_type(use_or(x_or_y), str)
-            assert_is_value(use_or(x_or_z), TypedValue(str) | TypedValue(int))
+            assert_type(use_or(x_or_z), str | int)
 
     @assert_passes()
     def test_literal_or(self):

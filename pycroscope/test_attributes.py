@@ -46,7 +46,7 @@ class TestAttributes(TestNameCheckVisitorBase):
         def kerodon():
             c = Capybara(42, 43)
             assert_is_value(c.value, AnyValue(AnySource.unannotated))
-            assert_is_value(c.int_value, TypedValue(int))
+            assert_type(c.int_value, int)
 
     @assert_passes()
     def test_attribute_in_annotations(self):
@@ -55,7 +55,7 @@ class TestAttributes(TestNameCheckVisitorBase):
             kerodon_id: object = None
 
         def capybara():
-            assert_is_value(Capybara.kerodon_id, TypedValue(object))
+            assert_type(Capybara.kerodon_id, object)
             c = Capybara()
             return c.capybara_id
 
@@ -109,9 +109,9 @@ class TestAttributes(TestNameCheckVisitorBase):
             pass
 
         def capybara(obj: X[int], c1: Child1, c2: Child2[bool]) -> None:
-            assert_is_value(obj.x, TypedValue(int))
-            assert_is_value(c1.x, TypedValue(str))
-            assert_is_value(c2.x, TypedValue(bool))
+            assert_type(obj.x, int)
+            assert_type(c1.x, str)
+            assert_type(c2.x, bool)
 
     @assert_passes()
     def test_attribute_union(self):
@@ -125,9 +125,9 @@ class TestAttributes(TestNameCheckVisitorBase):
             y: bytes
 
         def capybara() -> None:
-            assert_is_value(A().x, TypedValue(int))
-            assert_is_value(C().y, TypedValue(bytes))
-            assert_is_value(C().x, TypedValue(str))
+            assert_type(A().x, int)
+            assert_type(C().y, bytes)
+            assert_type(C().x, str)
 
     @assert_passes()
     def test_name_py3(self):
@@ -143,7 +143,7 @@ class TestAttributes(TestNameCheckVisitorBase):
                 self.answer = PropertyObject(aid)
 
             def tree(self):
-                assert_is_value(self.answer, TypedValue(PropertyObject))
+                assert_type(self.answer, PropertyObject)
                 return []
 
     @assert_passes()
@@ -190,8 +190,8 @@ class TestAttributes(TestNameCheckVisitorBase):
             a: int
 
         def capybara(dc: DC, nt: NT) -> None:
-            assert_is_value(dc.a, TypedValue(int))
-            assert_is_value(nt.a, TypedValue(int))
+            assert_type(dc.a, int)
+            assert_type(nt.a, int)
 
             dc.b  # E: undefined_attribute
             nt.b  # E: undefined_attribute
@@ -205,7 +205,7 @@ class TestAttributes(TestNameCheckVisitorBase):
             a: int
 
         def capybara(bm: BM) -> None:
-            assert_is_value(bm.a, TypedValue(int))
+            assert_type(bm.a, int)
 
             bm.b  # E: undefined_attribute
 
@@ -278,7 +278,7 @@ class TestAttributes(TestNameCheckVisitorBase):
         # missing_generic_parameters is a bit questionable here, but the
         # class really is defined as generic in typeshed.
         def capybara(c: staticmethod):  # E: missing_generic_parameters
-            assert_is_value(c.__isabstractmethod__, TypedValue(bool))
+            assert_type(c.__isabstractmethod__, bool)
 
     @assert_passes()
     def test_no_attribute_for_typeshed_class():
@@ -334,15 +334,8 @@ class TestAttributes(TestNameCheckVisitorBase):
         annotated_global: Optional[str] = None
 
         def capybara():
-            assert_is_value(
-                test_attributes._global_dict,
-                GenericValue(
-                    dict, [TypedValue(int) | TypedValue(str), TypedValue(bytes)]
-                ),
-            )
-            assert_is_value(
-                annotated_global, MultiValuedValue([TypedValue(str), KnownValue(None)])
-            )
+            assert_type(test_attributes._global_dict, dict[int | str, bytes])
+            assert_type(annotated_global, str | None)
 
     @assert_passes()
     def test_unwrap_mvv(self):
@@ -375,7 +368,7 @@ class TestAttributes(TestNameCheckVisitorBase):
 
         def capybara():
             c = C()
-            assert_is_value(c.f(), TypedValue(int))
+            assert_type(c.f(), int)
 
 
 class TestHasAttrExtension(TestNameCheckVisitorBase):
@@ -414,7 +407,7 @@ class TestHasAttrExtension(TestNameCheckVisitorBase):
 
         def inty_capybara(x: Literal[1]) -> None:
             if has_int_attr(x, "inty"):
-                assert_is_value(x.inty, TypedValue(int))
+                assert_type(x.inty, int)
 
     @assert_passes()
     def test_multi_hasattr(self):
@@ -453,4 +446,4 @@ class TestClassAttributeTransformer(TestNameCheckVisitorBase):
             foo = StringField()
 
         def capybara(c: Capybara):
-            assert_is_value(c.foo, TypedValue(str))
+            assert_type(c.foo, str)

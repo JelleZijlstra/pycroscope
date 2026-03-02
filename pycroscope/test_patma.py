@@ -48,7 +48,7 @@ class TestPatma(TestNameCheckVisitorBase):
                         ),
                     )
                 case [1, *x]:
-                    assert_is_value(x, GenericValue(list, [TypedValue(int)]))
+                    assert_type(x, list[int])
 
             match obj:
                 case [*x]:
