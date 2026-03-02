@@ -2756,6 +2756,16 @@ def _typevartuple_param_index(params: Sequence[SigParameter]) -> int | None:
 
 def _widen_typevartuple_inferred_value(value: Value) -> Value:
     value = replace_known_sequence_value(value)
+    if isinstance(value, SequenceValue):
+        if value.typ is tuple:
+            return SequenceValue(
+                tuple,
+                [
+                    (is_many, _widen_typevartuple_inferred_value(member))
+                    for is_many, member in value.members
+                ],
+            )
+        return value
     if isinstance(value, KnownValue):
         if isinstance(value.val, float):
             return TypedValue(float) | TypedValue(int)
@@ -2896,6 +2906,59 @@ def _try_match_typevartuple_var_positional(
     if actual_members is None:
         return None
 
+    # Handle *args: tuple[<element>] where <element> includes a TypeVarTuple.
+    # In this form, every runtime argument must match the same element type, so
+    # we accumulate constraints from each positional argument.
+    if (
+        len(expected_members) == 1
+        and expected_members[0][0]
+        and _contains_typevartuple(expected_members[0][1])
+    ):
+        expected = expected_members[0][1]
+        repeated_members = _extract_var_positional_members(expected)
+        if repeated_members is None:
+            return None
+        bounds_maps: list[BoundsMap] = []
+        for actual_member in actual_members:
+            actual_member = replace_known_sequence_value(actual_member)
+            if (
+                not isinstance(actual_member, SequenceValue)
+                or actual_member.typ is not tuple
+            ):
+                return CanAssignError(
+                    f"type of parameter {param.name!r} is incompatible"
+                )
+            actual_tuple_members = actual_member.get_member_sequence()
+            if actual_tuple_members is None:
+                return None
+            tv_map = _match_typevartuple_var_positional_members(
+                param_name=param.name,
+                expected_members=repeated_members,
+                actual_members=actual_tuple_members,
+                ctx=ctx,
+            )
+            if tv_map is None:
+                return None
+            if isinstance(tv_map, CanAssignError):
+                return tv_map
+            bounds_maps.append(tv_map)
+        return unify_bounds_maps(bounds_maps)
+
+    return _match_typevartuple_var_positional_members(
+        param_name=param.name,
+        expected_members=expected_members,
+        actual_members=actual_members,
+        ctx=ctx,
+    )
+
+
+def _match_typevartuple_var_positional_members(
+    *,
+    param_name: str,
+    expected_members: tuple[tuple[bool, Value], ...],
+    actual_members: Sequence[Value],
+    ctx: CanAssignContext,
+) -> CanAssign | None:
     tv_entries = [
         (i, member)
         for i, (is_many, member) in enumerate(expected_members)
@@ -2914,7 +2977,7 @@ def _try_match_typevartuple_var_positional(
     prefix = marker_index
     suffix = len(expected_members) - marker_index - 1
     if len(actual_members) < prefix + suffix:
-        return CanAssignError(f"parameter {param.name!r} is not accepted")
+        return CanAssignError(f"parameter {param_name!r} is not accepted")
 
     bounds_maps: list[BoundsMap] = []
     for i in range(prefix):
@@ -2923,7 +2986,7 @@ def _try_match_typevartuple_var_positional(
         tv_map = has_relation(expected, actual, Relation.ASSIGNABLE, ctx)
         if isinstance(tv_map, CanAssignError):
             return CanAssignError(
-                f"type of parameter {param.name!r} is incompatible", [tv_map]
+                f"type of parameter {param_name!r} is incompatible", [tv_map]
             )
         bounds_maps.append(tv_map)
 
@@ -2933,7 +2996,7 @@ def _try_match_typevartuple_var_positional(
         tv_map = has_relation(expected, actual, Relation.ASSIGNABLE, ctx)
         if isinstance(tv_map, CanAssignError):
             return CanAssignError(
-                f"type of parameter {param.name!r} is incompatible", [tv_map]
+                f"type of parameter {param_name!r} is incompatible", [tv_map]
             )
         bounds_maps.append(tv_map)
 
@@ -2952,6 +3015,13 @@ def _try_match_typevartuple_var_positional(
     return unify_bounds_maps(bounds_maps)
 
 
+def _contains_typevartuple(value: Value) -> bool:
+    return any(
+        isinstance(subval, TypeVarValue) and subval.is_typevartuple
+        for subval in value.walk_values()
+    )
+
+
 def _extract_var_positional_members(
     annotation: Value,
 ) -> tuple[tuple[bool, Value], ...] | None:
@@ -2960,6 +3030,12 @@ def _extract_var_positional_members(
         annotation = annotation.value
     if isinstance(annotation, SequenceValue) and annotation.typ is tuple:
         return annotation.members
+    if (
+        isinstance(annotation, GenericValue)
+        and annotation.typ is tuple
+        and len(annotation.args) == 1
+    ):
+        return ((True, annotation.args[0]),)
     if (
         isinstance(annotation, PartialValue)
         and annotation.operation is PartialValueOperation.SUBSCRIPT
