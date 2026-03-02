@@ -1707,8 +1707,8 @@ class TestUnpack(TestNameCheckVisitorBase):
                 return args[0]
 
             assert_type(func4((0,), (1,)), tuple[int])  # OK
-            func4((0,), (1, 2))  # E: incompatible_call
-            func4((0,), ("1",))  # E: incompatible_call
+            func4((0,), (1, 2))  # E: incompatible_argument
+            assert_type(func4((0,), ("1",)), tuple[int | str])  # OK
             """)
 
     @skip_before((3, 11))
