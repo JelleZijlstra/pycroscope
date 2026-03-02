@@ -656,7 +656,7 @@ class TestImportFailureHandlingCodeSamples(TestNameCheckVisitorBase):
     def test_namedtuple_after_import_failure(self):
         boom = 1 / 0
 
-        from typing import Generic, NamedTuple, TypeVar
+        from typing import Generic, Literal, NamedTuple, TypeVar
 
         from typing_extensions import assert_type
 
@@ -690,9 +690,9 @@ class TestImportFailureHandlingCodeSamples(TestNameCheckVisitorBase):
             value: T
 
         pr = Property("", 3.4)
-        assert_type(pr, Property[float])
-        assert_type(pr[1], float)
-        assert_type(pr.value, float)
+        assert_type(pr, Property[Literal[3.4]])
+        assert_type(pr[1], Literal[3.4])
+        assert_type(pr.value, Literal[3.4])
         Property[str]("", 3.1)  # E: incompatible_argument
 
         class PointWithName(Point):
