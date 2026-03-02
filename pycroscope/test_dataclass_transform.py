@@ -6,6 +6,70 @@ from .test_node_visitor import assert_passes
 
 class TestDataclassTransform(TestNameCheckVisitorBase):
     @assert_passes()
+    def test_dataclass_transform_function_provider_in_same_module(self):
+        from dataclasses import dataclass
+        from typing import TypeVar
+
+        from typing_extensions import dataclass_transform
+
+        T = TypeVar("T")
+
+        @dataclass_transform()
+        def model(cls: type[T]) -> type[T]:
+            return dataclass(cls)
+
+        @model
+        class Customer:
+            id: int
+            name: str
+
+        Customer(id=1, name="")
+
+        def check_errors() -> None:
+            Customer(name="")  # E: incompatible_call
+            Customer(id=1, unknown="")  # E: incompatible_call
+
+    @assert_passes()
+    def test_dataclass_transform_overload_provider_in_same_module(self):
+        from dataclasses import dataclass
+        from typing import Any, Callable, TypeVar, overload
+
+        from typing_extensions import dataclass_transform
+
+        T = TypeVar("T")
+
+        @overload
+        @dataclass_transform(kw_only_default=True)
+        def model(cls: T) -> T: ...
+
+        @overload
+        def model(*, kw_only: bool = True) -> Callable[[T], T]: ...
+
+        def model(*args: Any, **kwargs: Any) -> Any:
+            def decorator(cls: type[T]) -> type[T]:
+                return dataclass(cls, kw_only=kwargs.get("kw_only", True))
+
+            if args and len(args) == 1 and isinstance(args[0], type):
+                return decorator(args[0])
+            return decorator
+
+        @model
+        class Customer1:
+            id: int
+            name: str
+
+        @model(kw_only=False)
+        class Customer2:
+            id: int
+            name: str
+
+        Customer1(id=1, name="")
+        Customer2(1, "")
+
+        def check_errors() -> None:
+            Customer1(1, "")  # E: incompatible_call
+
+    @assert_passes()
     def test_dataclass_transform_decorator_base_and_metaclass(self):
         from dataclasses import dataclass
         from typing import Callable, TypeVar

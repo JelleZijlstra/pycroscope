@@ -221,6 +221,8 @@ from .value import (
     CanAssignError,
     ConstraintExtension,
     CustomCheckExtension,
+    DataclassTransformExtension,
+    DataclassTransformInfo,
     DefiniteValueExtension,
     DeprecatedExtension,
     DictIncompleteValue,
@@ -233,7 +235,6 @@ from .value import (
     KVPair,
     MultiValuedValue,
     NoReturnConstraintExtension,
-    NotAGradualType,
     OverlapMode,
     PartialValue,
     PartialValueOperation,
@@ -328,10 +329,7 @@ _TYPING_CONSTRUCTS_WITH_NAME_ARG: dict[str, str] = {
 
 
 def _is_known_none_annotation(value: Value) -> bool:
-    try:
-        return replace_fallback(value) == KnownNone
-    except NotAGradualType:
-        return False
+    return replace_fallback(value) == KnownNone
 
 
 BINARY_OPERATION_TO_DESCRIPTION_AND_METHOD = {
@@ -670,19 +668,6 @@ class _SyntheticTypedDictContext:
 
 
 @dataclass(frozen=True)
-class _DataclassTransformInfo:
-    init_default: bool | None = None
-    eq_default: bool | None = None
-    frozen_default: bool | None = None
-    unsafe_hash_default: bool | None = None
-    match_args_default: bool | None = None
-    kw_only_default: bool | None = None
-    order_default: bool | None = None
-    slots_default: bool | None = None
-    field_specifiers: tuple[Value, ...] = ()
-
-
-@dataclass(frozen=True)
 class _ClassDataclassSemantics:
     is_dataclass: bool
     init: bool | None
@@ -695,7 +680,7 @@ class _ClassDataclassSemantics:
     kw_only_default: bool
     field_specifiers: tuple[Value, ...]
     is_transform_provider: bool
-    transform_info: _DataclassTransformInfo | None = None
+    transform_info: DataclassTransformInfo | None = None
 
 
 class ComprehensionLengthInferenceLimit(IntegerOption):
@@ -1358,6 +1343,7 @@ class _PendingOverload:
     node: FunctionDefNode
     signature: ConcreteSignature | None
     decorator_kinds: frozenset[FunctionDecorator]
+    dataclass_transform_info: DataclassTransformInfo | None = None
 
 
 @dataclass
@@ -1492,9 +1478,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     final_members_requiring_init: dict[type | str, dict[str, ast.AST]]
     enum_class_keys: set[type | str]
     enum_value_type_by_class: dict[type | str, Value]
-    _dataclass_transform_info_by_scope_name: dict[
-        int, dict[str, _DataclassTransformInfo]
-    ]
     yield_checker: YieldChecker
 
     def __init__(
@@ -1625,7 +1608,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         self.final_members_requiring_init = {}
         self.enum_class_keys = set()
         self.enum_value_type_by_class = {}
-        self._dataclass_transform_info_by_scope_name = {}
         self._fill_method_cache()
 
     def get_local_return_value(self, sig: MaybeSignature) -> Value | None:
@@ -2003,6 +1985,11 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                         ):
                             current_scope.variables[varname] = value
                             return value, EMPTY_ORIGIN
+                    if isinstance(value, AnnotatedValue) and value.has_metadata_of_type(
+                        DataclassTransformExtension
+                    ):
+                        current_scope.variables[varname] = value
+                        return value, EMPTY_ORIGIN
                 return existing, EMPTY_ORIGIN
         if scope_type == ScopeType.class_scope:
             if value is not None:
@@ -2013,14 +2000,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         origin = current_scope.set(varname, value, lookup_node, self.state)
         if scope_type == ScopeType.class_scope:
             self._set_synthetic_class_attribute(varname, value)
-        if (
-            dataclass_transform_info := self._get_dataclass_transform_info_from_value(
-                value
-            )
-        ) is not None:
-            self._record_dataclass_transform_info_for_scope_name(
-                varname, dataclass_transform_info
-            )
         return value, origin
 
     def _get_synthetic_class_for_current_scope(
@@ -4242,28 +4221,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             return True, None
         return True, options.get("frozen", False)
 
-    def _record_dataclass_transform_info_for_scope_name(
-        self, name: str, info: _DataclassTransformInfo
-    ) -> None:
-        scope_id = id(self.scopes.current_scope())
-        mapping = self._dataclass_transform_info_by_scope_name.setdefault(scope_id, {})
-        existing = mapping.get(name)
-        if existing is None:
-            mapping[name] = info
-            return
-        mapping[name] = _merge_dataclass_transform_infos((existing, info))
-
-    def _get_dataclass_transform_info_for_name(
-        self, name: str
-    ) -> _DataclassTransformInfo | None:
-        for scope in reversed(self.scopes.scopes):
-            info = self._dataclass_transform_info_by_scope_name.get(id(scope), {}).get(
-                name
-            )
-            if info is not None:
-                return info
-        return None
-
     def _extract_dataclass_transform_field_specifiers(
         self, value: Value
     ) -> tuple[Value, ...]:
@@ -4302,13 +4259,13 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
 
     def _get_direct_dataclass_transform_info(
         self, decorators: Sequence[ast.expr]
-    ) -> _DataclassTransformInfo | None:
-        infos: list[_DataclassTransformInfo] = []
+    ) -> DataclassTransformInfo | None:
+        infos: list[DataclassTransformInfo] = []
         for decorator in decorators:
             if isinstance(decorator, ast.Call):
                 if not self._is_dataclass_transform_marker_target(decorator.func):
                     continue
-                info = _DataclassTransformInfo(
+                info = DataclassTransformInfo(
                     init_default=True,
                     eq_default=True,
                     frozen_default=False,
@@ -4367,7 +4324,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 infos.append(info)
             elif self._is_dataclass_transform_marker_target(decorator):
                 infos.append(
-                    _DataclassTransformInfo(
+                    DataclassTransformInfo(
                         init_default=True,
                         eq_default=True,
                         frozen_default=False,
@@ -4385,7 +4342,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
 
     def _get_dataclass_transform_info_from_runtime_object(
         self, obj: object
-    ) -> _DataclassTransformInfo | None:
+    ) -> DataclassTransformInfo | None:
         raw = safe_getattr(obj, "__dataclass_transform__", None)
         if not isinstance(raw, Mapping):
             return None
@@ -4423,7 +4380,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 if value not in field_specifier_values:
                     field_specifier_values.append(value)
 
-        return _DataclassTransformInfo(
+        return DataclassTransformInfo(
             init_default=init_default,
             eq_default=eq_default,
             frozen_default=frozen_default,
@@ -4437,7 +4394,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
 
     def _get_dataclass_transform_info_from_synthetic_class(
         self, value: SyntheticClassObjectValue
-    ) -> _DataclassTransformInfo | None:
+    ) -> DataclassTransformInfo | None:
         transform_marker = value.class_attributes.get("%dataclass_transform")
         if not (
             isinstance(transform_marker, KnownValue) and transform_marker.val is True
@@ -4526,7 +4483,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             ]
             field_specifiers = tuple(values)
 
-        return _DataclassTransformInfo(
+        return DataclassTransformInfo(
             init_default=init_default,
             eq_default=eq_default,
             frozen_default=frozen_default,
@@ -4540,9 +4497,23 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
 
     def _get_dataclass_transform_info_from_value(
         self, value: Value
-    ) -> _DataclassTransformInfo | None:
+    ) -> DataclassTransformInfo | None:
         if value is UNINITIALIZED_VALUE:
             return None
+        if isinstance(value, (ReferencingValue, InputSigValue)):
+            return None
+        if isinstance(value, AnnotatedValue):
+            infos = [
+                extension.info
+                for extension in value.get_metadata_of_type(DataclassTransformExtension)
+            ]
+            if (
+                value_info := self._get_dataclass_transform_info_from_value(value.value)
+            ) is not None:
+                infos.append(value_info)
+            if not infos:
+                return None
+            return _merge_dataclass_transform_infos(infos)
         if isinstance(value, PartialValue):
             if (
                 info := self._get_dataclass_transform_info_from_value(
@@ -4551,12 +4522,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             ) is not None:
                 return info
             return self._get_dataclass_transform_info_from_value(value.root)
-        try:
-            value = replace_fallback(value)
-        except NotAGradualType:
-            return None
-        if isinstance(value, AnnotatedValue):
-            return self._get_dataclass_transform_info_from_value(value.value)
+        value = replace_fallback(value)
         if isinstance(value, MultiValuedValue):
             infos = [
                 info
@@ -4606,12 +4572,8 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
 
     def _get_dataclass_transform_info_for_decorator_target(
         self, target: ast.expr
-    ) -> _DataclassTransformInfo | None:
+    ) -> DataclassTransformInfo | None:
         if isinstance(target, ast.Name):
-            if (
-                info := self._get_dataclass_transform_info_for_name(target.id)
-            ) is not None:
-                return info
             value = self.scopes.get(target.id, target, self.state, can_assign_ctx=self)
             return self._get_dataclass_transform_info_from_value(value)
         with self.catch_errors() as errors:
@@ -4701,7 +4663,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 transform_info=None,
             )
 
-        transform_infos: list[_DataclassTransformInfo] = []
+        transform_infos: list[DataclassTransformInfo] = []
         for decorator in node.decorator_list:
             target = decorator.func if isinstance(decorator, ast.Call) else decorator
             info = self._get_dataclass_transform_info_for_decorator_target(target)
@@ -6034,10 +5996,8 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             return None
         if not isinstance(node, ast.Name):
             return None
-        with contextlib.suppress(NotAGradualType):
-            value = self.scopes.get(node.id, node, self.state, can_assign_ctx=self)
-            return _type_param_value_from_value(value)
-        return None
+        value = self.scopes.get(node.id, node, self.state, can_assign_ctx=self)
+        return _type_param_value_from_value(value)
 
     def _type_params_from_base_annotations_for_default_rules(
         self, base_nodes: Sequence[ast.expr]
@@ -6715,15 +6675,11 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             )
 
     def visit_FunctionDef(self, node: FunctionDefNode) -> Value:
-        direct_dataclass_transform_info: _DataclassTransformInfo | None = None
+        direct_dataclass_transform_info: DataclassTransformInfo | None = None
         if not isinstance(node, ast.Lambda):
             direct_dataclass_transform_info = self._get_direct_dataclass_transform_info(
                 node.decorator_list
             )
-            if direct_dataclass_transform_info is not None:
-                self._record_dataclass_transform_info_for_scope_name(
-                    node.name, direct_dataclass_transform_info
-                )
         potential_function = self._get_potential_function(node)
         with self.compute_function_info(
             node,
@@ -6786,13 +6742,20 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     info_for_computed_value = replace(info, decorators=decorators)
             computed_function = compute_value_of_function(info_for_computed_value, self)
             static_overload_signature: OverloadedSignature | None = None
+            overload_dataclass_transform_info: DataclassTransformInfo | None = None
             if (
                 FunctionDecorator.overload not in info.decorator_kinds
                 and FunctionDecorator.evaluated not in info.decorator_kinds
             ):
                 static_overload_signature = self._get_pending_overload_signature(node)
+                overload_dataclass_transform_info = (
+                    self._get_pending_overload_dataclass_transform_info(node)
+                )
             self._check_overload_implementation_consistency(
-                node, info, computed_function
+                node,
+                info,
+                computed_function,
+                direct_dataclass_transform_info=direct_dataclass_transform_info,
             )
             if potential_function is None:
                 if static_overload_signature is not None:
@@ -6805,9 +6768,25 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 FunctionDecorator.overload not in info.decorator_kinds
                 and FunctionDecorator.evaluated not in info.decorator_kinds
             ):
-                if direct_dataclass_transform_info is not None:
-                    self._record_dataclass_transform_info_for_scope_name(
-                        node.name, direct_dataclass_transform_info
+                merged_dataclass_transform_info = direct_dataclass_transform_info
+                if overload_dataclass_transform_info is not None:
+                    if merged_dataclass_transform_info is None:
+                        merged_dataclass_transform_info = (
+                            overload_dataclass_transform_info
+                        )
+                    else:
+                        merged_dataclass_transform_info = (
+                            _merge_dataclass_transform_infos(
+                                [
+                                    merged_dataclass_transform_info,
+                                    overload_dataclass_transform_info,
+                                ]
+                            )
+                        )
+                if merged_dataclass_transform_info is not None:
+                    val = annotate_value(
+                        val,
+                        [DataclassTransformExtension(merged_dataclass_transform_info)],
                     )
                 self._set_name_in_scope(node.name, node, val)
                 self._record_synthetic_property_metadata(node, info)
@@ -7004,6 +6983,28 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             return OverloadedSignature(signatures)
         return None
 
+    def _get_pending_overload_dataclass_transform_info(
+        self, node: FunctionDefNode
+    ) -> DataclassTransformInfo | None:
+        if not self._is_checking():
+            return None
+        current_scope = self.scopes.current_scope()
+        scope_key = id(current_scope)
+        pending_block = self._pending_overload_blocks.get(scope_key)
+        if pending_block is not None and pending_block.scope is not current_scope:
+            self._pending_overload_blocks.pop(scope_key, None)
+            pending_block = None
+        if pending_block is None or pending_block.name != node.name:
+            return None
+        infos = [
+            pending.dataclass_transform_info
+            for pending in pending_block.overloads
+            if pending.dataclass_transform_info is not None
+        ]
+        if not infos:
+            return None
+        return _merge_dataclass_transform_infos(infos)
+
     def _flush_pending_overload_blocks(self) -> None:
         if not self._is_checking():
             return
@@ -7022,7 +7023,12 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         self._finalize_pending_overload_block(pending_block, implementation=None)
 
     def _check_overload_implementation_consistency(
-        self, node: FunctionDefNode, info: FunctionInfo, computed_function: Value
+        self,
+        node: FunctionDefNode,
+        info: FunctionInfo,
+        computed_function: Value,
+        *,
+        direct_dataclass_transform_info: DataclassTransformInfo | None,
     ) -> None:
         if not self._is_checking():
             return
@@ -7060,7 +7066,10 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             self._pending_overload_blocks[scope_key] = pending_block
         pending_block.overloads.append(
             _PendingOverload(
-                node=node, signature=signature, decorator_kinds=info.decorator_kinds
+                node=node,
+                signature=signature,
+                decorator_kinds=info.decorator_kinds,
+                dataclass_transform_info=direct_dataclass_transform_info,
             )
         )
 
@@ -7117,16 +7126,29 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         self, pending_block: _PendingOverloadBlock
     ) -> None:
         signatures: list[Signature] = []
+        transform_infos: list[DataclassTransformInfo] = []
         for pending in pending_block.overloads:
             signature = pending.signature
             if isinstance(signature, Signature):
                 signatures.append(signature)
             elif isinstance(signature, OverloadedSignature):
                 signatures.extend(signature.signatures)
+            if pending.dataclass_transform_info is not None:
+                transform_infos.append(pending.dataclass_transform_info)
         if signatures:
-            pending_block.scope.variables[pending_block.name] = CallableValue(
+            value: Value = CallableValue(
                 OverloadedSignature(signatures), types.FunctionType
             )
+            if transform_infos:
+                value = annotate_value(
+                    value,
+                    [
+                        DataclassTransformExtension(
+                            _merge_dataclass_transform_infos(transform_infos)
+                        )
+                    ],
+                )
+            pending_block.scope.variables[pending_block.name] = value
 
     def _validate_overload_block(
         self,
@@ -11882,10 +11904,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     ) -> Value | None:
         if value is UNINITIALIZED_VALUE:
             return None
-        try:
-            value = replace_fallback(value)
-        except NotAGradualType:
-            return None
+        value = replace_fallback(value)
         if isinstance(value, AnyValue):
             return None
         if isinstance(value, AnnotatedValue):
@@ -13378,6 +13397,8 @@ def _get_bool_literal(node: ast.AST) -> bool | None:
 def _is_dataclass_decorator_value(value: Value) -> bool:
     if value is UNINITIALIZED_VALUE:
         return False
+    if isinstance(value, (ReferencingValue, InputSigValue)):
+        return False
     value = replace_fallback(value)
     if isinstance(value, AnnotatedValue):
         return _is_dataclass_decorator_value(value.value)
@@ -13387,11 +13408,11 @@ def _is_dataclass_decorator_value(value: Value) -> bool:
 
 
 def _merge_dataclass_transform_infos(
-    infos: Sequence[_DataclassTransformInfo],
-) -> _DataclassTransformInfo:
+    infos: Sequence[DataclassTransformInfo],
+) -> DataclassTransformInfo:
     filtered = [info for info in infos]
     if not filtered:
-        return _DataclassTransformInfo()
+        return DataclassTransformInfo()
 
     def _merge_bool(values: Sequence[bool | None]) -> bool | None:
         bool_values = {value for value in values if isinstance(value, bool)}
@@ -13404,7 +13425,7 @@ def _merge_dataclass_transform_infos(
         for field_specifier in info.field_specifiers:
             if field_specifier not in field_specifiers:
                 field_specifiers.append(field_specifier)
-    return _DataclassTransformInfo(
+    return DataclassTransformInfo(
         init_default=_merge_bool([info.init_default for info in filtered]),
         eq_default=_merge_bool([info.eq_default for info in filtered]),
         frozen_default=_merge_bool([info.frozen_default for info in filtered]),
@@ -13421,6 +13442,8 @@ def _merge_dataclass_transform_infos(
 
 def _is_dataclass_transform_marker_value(value: Value) -> bool:
     if value is UNINITIALIZED_VALUE:
+        return False
+    if isinstance(value, (ReferencingValue, InputSigValue)):
         return False
     value = replace_fallback(value)
     if isinstance(value, AnnotatedValue):
