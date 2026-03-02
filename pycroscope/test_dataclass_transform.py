@@ -6,6 +6,30 @@ from .test_node_visitor import assert_passes
 
 class TestDataclassTransform(TestNameCheckVisitorBase):
     @assert_passes()
+    def test_dataclass_transform_function_provider_in_same_module(self):
+        from dataclasses import dataclass
+        from typing import TypeVar
+
+        from typing_extensions import dataclass_transform
+
+        T = TypeVar("T")
+
+        @dataclass_transform()
+        def model(cls: type[T]) -> type[T]:
+            return dataclass(cls)
+
+        @model
+        class Customer:
+            id: int
+            name: str
+
+        Customer(id=1, name="")
+
+        def check_errors() -> None:
+            Customer(name="")  # E: incompatible_call
+            Customer(id=1, unknown="")  # E: incompatible_call
+
+    @assert_passes()
     def test_dataclass_transform_decorator_base_and_metaclass(self):
         from dataclasses import dataclass
         from typing import Callable, TypeVar

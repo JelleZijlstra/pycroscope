@@ -1984,6 +1984,11 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                         ):
                             current_scope.variables[varname] = value
                             return value, EMPTY_ORIGIN
+                    if isinstance(value, AnnotatedValue) and value.has_metadata_of_type(
+                        DataclassTransformExtension
+                    ):
+                        current_scope.variables[varname] = value
+                        return value, EMPTY_ORIGIN
                 return existing, EMPTY_ORIGIN
         if scope_type == ScopeType.class_scope:
             if value is not None:
