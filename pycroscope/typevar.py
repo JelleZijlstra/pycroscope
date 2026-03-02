@@ -6,8 +6,6 @@ TypeVar solver.
 
 from collections.abc import Iterable, Sequence
 
-from typing_extensions import assert_never
-
 import pycroscope
 
 from .analysis_lib import Sentinel
@@ -173,7 +171,7 @@ def solve(bounds: Iterable[Bound], ctx: CanAssignContext) -> Value | CanAssignEr
                 is_typevartuple = True
             options = bound.constraints
         else:
-            assert_never(bound)
+            raise AssertionError(f"unrecognized bound {bound!r}")
 
     if is_typevartuple and isinstance(bottom, Value) and isinstance(top, Value):
         compatibility = has_relation(bottom, top, Relation.CONSISTENT, ctx)
