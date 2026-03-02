@@ -345,8 +345,7 @@ class TypeObject:
                 if protocol_self_typevar_map:
                     expected = expected.substitute_typevars(protocol_self_typevar_map)
                 expected = expected.substitute_typevars({SelfT: other_val})
-                actual_owner: Value = other_val
-                actual = ctx.get_attribute_from_value(actual_owner, member)
+                actual = ctx.get_attribute_from_value(other_val, member)
                 if (
                     class_object_check
                     and other_type_key is not None
@@ -360,7 +359,6 @@ class TypeObject:
                             class_owner, member
                         )
                         if refined_actual is not UNINITIALIZED_VALUE:
-                            actual_owner = class_owner
                             actual = refined_actual
                 if (
                     actual is UNINITIALIZED_VALUE
