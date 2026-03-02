@@ -405,17 +405,20 @@ class TestNamedTuple(TestNameCheckVisitorBase):
 
     @assert_passes()
     def test_generic_preserves_literal_argument(self):
+        import sys
         from typing import Generic, Literal, NamedTuple, TypeVar
 
         T = TypeVar("T")
 
-        class Box(NamedTuple, Generic[T]):
-            item: T
-
         def capybara():
-            box = Box(1)
-            assert_type(box, Box[Literal[1]])
-            assert_type(box.item, Literal[1])
+            if sys.version_info >= (3, 11):
+
+                class Box(NamedTuple, Generic[T]):
+                    item: T
+
+                box = Box(1)
+                assert_type(box, Box[Literal[1]])
+                assert_type(box.item, Literal[1])
 
 
 class TestBuiltinMethods(TestNameCheckVisitorBase):
