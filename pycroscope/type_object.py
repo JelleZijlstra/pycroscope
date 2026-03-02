@@ -6,7 +6,7 @@ An object that represents a type.
 
 import collections.abc
 import inspect
-from collections.abc import Callable, Container, Sequence
+from collections.abc import Callable, Container, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from typing import cast, get_origin
 from unittest import mock
@@ -263,8 +263,11 @@ class TypeObject:
             and _get_synthetic_class_for_key(protocol_type_key, ctx) is not None
         )
         class_object_check = _is_definitely_class_object_value(other_val)
-        use_descriptor_rules = apply_synthetic_member_rules or class_object_check
         for member in self.protocol_members:
+            is_dunder_member = member.startswith("__") and member.endswith("__")
+            use_descriptor_rules = apply_synthetic_member_rules or (
+                class_object_check and not is_dunder_member
+            )
             # For __call__, we check compatibility with the other object itself.
             if member == "__call__":
                 expected = UNINITIALIZED_VALUE
@@ -387,9 +390,6 @@ class TypeObject:
                         ctx,
                         class_object_access=class_object_check,
                     )
-                    skip_classvar_check = member.startswith("__") and member.endswith(
-                        "__"
-                    )
                     if class_object_check and expected_desc.is_classvar:
                         can_assign = CanAssignError(
                             f"Protocol member {member!r} is a ClassVar"
@@ -409,7 +409,7 @@ class TypeObject:
                         )
                     elif (
                         not class_object_check
-                        and not skip_classvar_check
+                        and not is_dunder_member
                         and expected_desc.is_classvar != actual_desc.is_classvar
                     ):
                         can_assign = CanAssignError(
@@ -758,10 +758,10 @@ def _is_member_defined_on_class_key(
 
     if isinstance(class_key, type):
         base_dict = safe_getattr(class_key, "__dict__", None)
-        if isinstance(base_dict, dict) and member in base_dict:
+        if isinstance(base_dict, Mapping) and member in base_dict:
             return True
         annotations = safe_getattr(class_key, "__annotations__", None)
-        if isinstance(annotations, dict) and member in annotations:
+        if isinstance(annotations, Mapping) and member in annotations:
             return True
 
     return any(
@@ -981,6 +981,8 @@ def _is_member_from_metaclass(
 def _should_refine_class_object_member_lookup(
     actual: Value, class_key: type | str, member: str, ctx: CanAssignContext
 ) -> bool:
+    if _is_member_from_metaclass(class_key, member, ctx):
+        return False
     if actual is UNINITIALIZED_VALUE:
         return True
     try:
