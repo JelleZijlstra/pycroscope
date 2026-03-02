@@ -3405,6 +3405,22 @@ class TestAnnAssign(TestNameCheckVisitorBase):
             def method(self) -> None:
                 self.initialized_in_init = 2  # E: incompatible_assignment
 
+    @assert_passes()
+    def test_final_instance_attributes_with_nonstandard_receiver_name(self):
+        from typing_extensions import Final
+
+        class Capybara:
+            def __init__(this) -> None:  # E: method_first_arg
+                this.initialized_in_init: Final[int]
+
+    @assert_passes()
+    def test_attribute_assignment_with_nonstandard_receiver_name(self):
+        class Capybara:
+            x: int
+
+            def method(this, value: object) -> None:  # E: method_first_arg
+                this.x = value
+
     @assert_passes(allow_import_failures=True)
     def test_final_decorator_in_unimportable_module(self):
         from typing import final
@@ -3674,6 +3690,17 @@ class TestAnnAssign(TestNameCheckVisitorBase):
             @abstractmethod
             def close(self) -> None:
                 raise NotImplementedError
+
+    @assert_passes()
+    def test_protocol_receiver_assignment_with_nonstandard_receiver_name(self):
+        from typing import Protocol
+
+        class Proto(Protocol):
+            allowed: int
+
+            def assign(this) -> None:  # E: method_first_arg
+                this.disallowed = 1  # E: invalid_annotation
+                this.allowed = 1
 
     @assert_passes()
     def test_inconsistent_type(self):

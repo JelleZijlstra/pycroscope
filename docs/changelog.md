@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Improve method-receiver handling by using inferred receiver semantics instead of hard-coded `self`/`cls` names, so checks for `Final` instance attributes, protocol-member synthesis, enum `_value_` assignments, and receiver attribute writes now behave correctly with nonstandard receiver names.
 - Improve protocol/class-object conformance for class-object assignments: pycroscope now enforces method/property/class-variable compatibility more accurately (including static-fallback analysis for unimportable modules).
 - Fix `@dataclass_transform` metadata tracking to live on inferred values instead of scope-name side tables, which avoids internal errors in cases like `ParamSpec` declarations and `global`/`nonlocal` references.
 - Improve `ParamSpec` component checking and forwarding: pycroscope now rejects more invalid `P.args`/`P.kwargs` annotation and call forms, accepts valid `Concatenate` forwarding patterns like `foo(1, *args, **kwargs)`, and no longer reports `generics_paramspec_components` as a known conformance failure.

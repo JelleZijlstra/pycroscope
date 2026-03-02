@@ -72,6 +72,17 @@ class TestEnum(TestNameCheckVisitorBase):
             a = 1
             b = 1  # E: duplicate_enum_member
 
+    @assert_passes()
+    def test_value_assignment_with_nonstandard_receiver_name(self):
+        import enum
+
+        class Foo(enum.Enum):
+            _value_: int
+            a = 1
+
+            def __init__(this, value: object) -> None:  # E: method_first_arg
+                this._value_ = value  # E: invalid_annotation
+
 
 class TestNarrowing(TestNameCheckVisitorBase):
     @assert_passes()
