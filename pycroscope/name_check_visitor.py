@@ -2611,7 +2611,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             return None
         child_bound = child_sig.bind_self(ctx=self)
         if child_bound is None:
-            return CanAssignError(f"{child_value} is missing a 'self' argument")
+            return CanAssignError(f"{child_value} is missing a receiver argument")
         return base_bound.can_assign(child_bound, self)
 
     def _check_for_class_variable_redefinition(
@@ -3149,10 +3149,19 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 if type_param_values
                 else self._type_params_from_base_values(base_values)
             )
-            if not type_param_values:
+            analyzed_base_values = self._base_values_for_generic_analysis(
+                node, base_values
+            )
+            if (
+                not type_param_values
+                and self.module is None
+                and not effective_type_param_values
+                and analyzed_base_values is not base_values
+            ):
                 effective_type_param_values = (
                     self._order_type_params_by_base_annotation_appearance(
-                        node.bases, effective_type_param_values
+                        node.bases,
+                        self._type_params_from_base_values(analyzed_base_values),
                     )
                 )
             if not effective_type_param_values and is_protocol_class:
@@ -3171,7 +3180,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     for type_param in protocol_type_params
                 ):
                     effective_type_param_values = protocol_type_params
-            if not effective_type_param_values:
+            if not effective_type_param_values and self.module is None:
                 # In static-fallback mode we can lose Generic[...] type arguments
                 # from base values; recover from base annotation expressions.
                 recovered_type_param_values = (
@@ -3179,20 +3188,68 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                         node.bases
                     )
                 )
-                if recovered_type_param_values:
+                if any(
+                    is_instance_of_typing_name(type_param.typevar, "ParamSpec")
+                    for type_param in recovered_type_param_values
+                ):
                     effective_type_param_values = recovered_type_param_values
             registered_type_param_values = self._align_type_params_with_runtime_class(
                 runtime_class_for_type_params, effective_type_param_values
             )
+            has_explicit_constructor = any(
+                isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef))
+                and statement.name in {"__init__", "__new__"}
+                for statement in node.body
+            )
+            if (
+                not registered_type_param_values
+                and not type_param_values
+                and self.module is None
+                and not dataclass_semantics.is_dataclass
+                and not has_explicit_constructor
+            ):
+                recovered_registration_type_params = (
+                    self._type_params_from_base_annotations_for_default_rules(
+                        node.bases
+                    )
+                )
+                if recovered_registration_type_params:
+                    registered_type_param_values = (
+                        self._align_type_params_with_runtime_class(
+                            runtime_class_for_type_params,
+                            self._order_type_params_by_base_annotation_appearance(
+                                node.bases, recovered_registration_type_params
+                            ),
+                        )
+                    )
+            if (
+                registered_type_param_values
+                and not type_param_values
+                and self.module is None
+                and not dataclass_semantics.is_dataclass
+                and not has_explicit_constructor
+            ):
+                registered_type_param_values = (
+                    self._order_type_params_by_base_annotation_appearance(
+                        node.bases, registered_type_param_values
+                    )
+                )
             method_type_params = (
                 type_param_values
                 if type_param_values
                 else self._type_params_from_base_values_for_methods(base_values)
             )
-            if not type_param_values:
+            if (
+                not type_param_values
+                and self.module is None
+                and analyzed_base_values is not base_values
+            ):
                 method_type_params = (
                     self._order_type_params_by_base_annotation_appearance(
-                        node.bases, method_type_params
+                        node.bases,
+                        self._type_params_from_base_values_for_methods(
+                            analyzed_base_values
+                        ),
                     )
                 )
             if (
@@ -3328,6 +3385,13 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                         )
                     else:
                         synthetic_class.class_attributes.pop("%self_classmethods", None)
+                    staticmethods = self._get_synthetic_staticmethod_attributes(node)
+                    if staticmethods:
+                        synthetic_class.class_attributes["%staticmethods"] = KnownValue(
+                            frozenset(staticmethods)
+                        )
+                    else:
+                        synthetic_class.class_attributes.pop("%staticmethods", None)
                     if isinstance(metaclass_value, Value):
                         synthetic_class.class_attributes["%metaclass"] = metaclass_value
                     synthetic_class.method_attributes.clear()
@@ -3372,6 +3436,15 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 else:
                     dataclass_metadata_class.class_attributes.pop(
                         "%self_classmethods", None
+                    )
+                staticmethods = self._get_synthetic_staticmethod_attributes(node)
+                if staticmethods:
+                    dataclass_metadata_class.class_attributes["%staticmethods"] = (
+                        KnownValue(frozenset(staticmethods))
+                    )
+                else:
+                    dataclass_metadata_class.class_attributes.pop(
+                        "%staticmethods", None
                     )
                 if isinstance(metaclass_value, Value):
                     dataclass_metadata_class.class_attributes["%metaclass"] = (
@@ -5536,7 +5609,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         expected_params = [
             SigParameter(
                 "self",
-                ParameterKind.POSITIONAL_OR_KEYWORD,
+                ParameterKind.POSITIONAL_ONLY,
                 annotation=AnyValue(AnySource.inference),
             ),
             *post_init_params,
@@ -6221,6 +6294,16 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     ) -> Sequence[Value]:
         if self.module is not None:
             return base_values
+        if not any(isinstance(base_node, ast.Subscript) for base_node in node.bases):
+            return base_values
+        if node.bases and all(
+            isinstance(base_node, ast.Subscript)
+            and self._is_type_parameter_base(base_value)
+            for base_node, base_value in zip(node.bases, base_values)
+        ):
+            # Generic[T] / Protocol[T] bases usually preserve enough runtime
+            # information even in static fallback mode.
+            return base_values
         analyzed_bases = [
             self._value_for_variance_annotation(base_node) for base_node in node.bases
         ]
@@ -6516,6 +6599,21 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     _mangle_class_attribute_name(node.name, stmt.name)
                 )
         return method_attributes
+
+    def _get_synthetic_staticmethod_attributes(self, node: ast.ClassDef) -> set[str]:
+        staticmethod_attributes = set()
+        for stmt in node.body:
+            if not isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            decorator_kinds = self._function_decorator_kinds_by_node.get(
+                stmt, frozenset()
+            )
+            if FunctionDecorator.staticmethod not in decorator_kinds:
+                continue
+            staticmethod_attributes.add(
+                _mangle_class_attribute_name(node.name, stmt.name)
+            )
+        return staticmethod_attributes
 
     def _return_annotation_node_contains_self(self, annotation: ast.AST | None) -> bool:
         if annotation is None:
@@ -11848,21 +11946,26 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         )
 
     def _get_dunder(self, node: ast.AST, callee_val: Value, method_name: str) -> Value:
+        synthetic_lookup_val = callee_val
         if isinstance(callee_val, AnnotatedValue):
+            is_dunder = method_name.startswith("__") and method_name.endswith("__")
             has_explicit_method = any(
                 extension.attribute_name == KnownValue(method_name)
                 for extension in callee_val.get_metadata_of_type(HasAttrExtension)
             )
-            if has_explicit_method:
+            if has_explicit_method and not is_dunder:
                 return self.get_attribute(
                     Composite(callee_val),
                     method_name,
                     node,
                     ignore_none=self.options.get_value_for(IgnoreNoneAttributes),
                 )
+            synthetic_lookup_val = callee_val.value
         fallback_lookup_val = callee_val.get_type_value()
-        if isinstance(callee_val, TypedValue) and isinstance(callee_val.typ, str):
-            synthetic_class = self.checker.get_synthetic_class(callee_val.typ)
+        if isinstance(synthetic_lookup_val, TypedValue) and isinstance(
+            synthetic_lookup_val.typ, str
+        ):
+            synthetic_class = self.checker.get_synthetic_class(synthetic_lookup_val.typ)
             if synthetic_class is not None:
                 method_object = self.get_attribute(
                     Composite(synthetic_class),
@@ -11872,7 +11975,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 )
                 if method_object is not UNINITIALIZED_VALUE:
                     synthetic_typevars = self._get_synthetic_instance_typevars(
-                        callee_val
+                        synthetic_lookup_val
                     )
                     if synthetic_typevars:
                         if isinstance(method_object, KnownValueWithTypeVars):
