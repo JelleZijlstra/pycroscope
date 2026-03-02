@@ -473,7 +473,7 @@ class TestImportFailureHandlingCodeSamples(TestNameCheckVisitorBase):
 
         class SymbolTable(dict[str, list[Node]]): ...
 
-        def takes_dict(x: dict): ...
+        def takes_dict(x: dict): ...  # E: missing_generic_parameters
 
         def takes_dict_typed(x: dict[str, list[Node]]): ...
 
@@ -482,10 +482,10 @@ class TestImportFailureHandlingCodeSamples(TestNameCheckVisitorBase):
         def test_symbol_table(s: SymbolTable):
             takes_dict(s)
             takes_dict_typed(s)
-            takes_dict_incorrect(s)  # E
+            takes_dict_incorrect(s)  # E: incompatible_argument
 
-        def func1(y: Generic[T]):  # E
-            _x: Generic  # E
+        def func1(y: Generic[T]):  # E: invalid_annotation
+            _x: Generic  # E: invalid_annotation
 
         class LinkedList(Iterable[T], Container[T]): ...
 
@@ -493,16 +493,16 @@ class TestImportFailureHandlingCodeSamples(TestNameCheckVisitorBase):
             assert_type(iter(l), Iterator[int])
             assert_type(l.__contains__(1), bool)
 
-        _linked_list_invalid: LinkedList[int, int]  # E
+        _linked_list_invalid: LinkedList[int, int]  # E: invalid_annotation
 
         class MyDict(Mapping[str, T]): ...
 
         def test_my_dict(d: MyDict[int]):
             assert_type(d["a"], int)
 
-        _my_dict_invalid: MyDict[int, int]  # E
+        _my_dict_invalid: MyDict[int, int]  # E: invalid_annotation
 
-        class BadClass1(Generic[T, T]):  # E
+        class BadClass1(Generic[T, T]):  # E: invalid_annotation
             pass
 
         class Parent1(Generic[T1, T2]): ...
@@ -523,7 +523,9 @@ class TestImportFailureHandlingCodeSamples(TestNameCheckVisitorBase):
 
         class Parent(Grandparent[T1, T2]): ...
 
-        class BadChild(Parent[T1, T2], Grandparent[T2, T1]): ...  # E
+        class BadChild(
+            Parent[T1, T2], Grandparent[T2, T1]  # E: invalid_annotation
+        ): ...
 
     @assert_passes(allow_import_failures=True)
     def test_overload_fallback_after_import_failure(self):
