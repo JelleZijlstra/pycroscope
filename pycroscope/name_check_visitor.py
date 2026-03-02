@@ -2815,6 +2815,8 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 self._check_typevartuple_usage_in_type_parameter_bases(
                     node, base_values
                 )
+                self._check_duplicate_type_params_in_generic_bases(node, base_values)
+                self._check_inconsistent_generic_base_specialization(node, base_values)
                 self._check_protocol_base_validity(node, base_values)
                 for base_node, base_value in zip(node.bases, base_values):
                     if _is_type_alias_base_value(base_value):
@@ -2879,7 +2881,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             class_scope_object: type | str | None = class_obj
             dataclass_metadata_class: SyntheticClassObjectValue | None = None
             dataclass_check_class: SyntheticClassObjectValue | None = None
-            synthetic_base_values = tuple(base_values) or (KnownValue(object),)
+            synthetic_base_values = tuple(
+                self._base_values_for_generic_analysis(node, base_values)
+            ) or (KnownValue(object),)
             if synthetic_typeddict is not None:
                 self._validate_typeddict_class_syntax(node)
             elif class_obj is None:
@@ -3145,6 +3149,12 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 if type_param_values
                 else self._type_params_from_base_values(base_values)
             )
+            if not type_param_values:
+                effective_type_param_values = (
+                    self._order_type_params_by_base_annotation_appearance(
+                        node.bases, effective_type_param_values
+                    )
+                )
             if not effective_type_param_values and is_protocol_class:
                 # Runtime protocol classes often expose no generic parameters;
                 # recover class type parameters from protocol bases.
@@ -3169,10 +3179,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                         node.bases
                     )
                 )
-                if any(
-                    is_instance_of_typing_name(type_param.typevar, "ParamSpec")
-                    for type_param in recovered_type_param_values
-                ):
+                if recovered_type_param_values:
                     effective_type_param_values = recovered_type_param_values
             registered_type_param_values = self._align_type_params_with_runtime_class(
                 runtime_class_for_type_params, effective_type_param_values
@@ -3182,6 +3189,12 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 if type_param_values
                 else self._type_params_from_base_values_for_methods(base_values)
             )
+            if not type_param_values:
+                method_type_params = (
+                    self._order_type_params_by_base_annotation_appearance(
+                        node.bases, method_type_params
+                    )
+                )
             if (
                 not method_type_params
                 and effective_type_param_values
@@ -3202,6 +3215,12 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 if (base_values or class_obj is not None)
                 else [KnownValue(object)]
             )
+            if self.module is None and node.bases:
+                # In static fallback mode, runtime subscripting of class bases can lose
+                # generic information. Recover base values from annotation syntax.
+                base_values_for_registration = list(
+                    self._base_values_for_generic_analysis(node, base_values)
+                )
             if should_register_generic_bases:
                 self.checker.register_synthetic_type_bases(
                     generic_class_key,
@@ -6085,6 +6104,27 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     type_params.append(type_param)
         return type_params
 
+    def _order_type_params_by_base_annotation_appearance(
+        self, base_nodes: Sequence[ast.expr], type_params: Sequence[TypeVarValue]
+    ) -> Sequence[TypeVarValue]:
+        annotation_order = self._type_params_from_base_annotations_for_default_rules(
+            base_nodes
+        )
+        if not annotation_order:
+            return type_params
+        by_identity = {type_param.typevar: type_param for type_param in type_params}
+        merged = [
+            by_identity.get(type_param.typevar, type_param)
+            for type_param in annotation_order
+        ]
+        seen = {type_param.typevar for type_param in merged}
+        for type_param in type_params:
+            if type_param.typevar in seen:
+                continue
+            seen.add(type_param.typevar)
+            merged.append(type_param)
+        return merged
+
     def _type_params_from_protocol_shorthand_base_values(
         self, base_values: Sequence[Value]
     ) -> Sequence[TypeVarValue]:
@@ -6176,6 +6216,87 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     )
         return type_params
 
+    def _base_values_for_generic_analysis(
+        self, node: ast.ClassDef, base_values: Sequence[Value]
+    ) -> Sequence[Value]:
+        if self.module is not None:
+            return base_values
+        analyzed_bases = [
+            self._value_for_variance_annotation(base_node) for base_node in node.bases
+        ]
+        if analyzed_bases:
+            return analyzed_bases
+        return base_values
+
+    def _check_duplicate_type_params_in_generic_bases(
+        self, node: ast.ClassDef, base_values: Sequence[Value]
+    ) -> None:
+        analyzed_bases = self._base_values_for_generic_analysis(node, base_values)
+        for base_node, base_value in zip(node.bases, analyzed_bases):
+            if not isinstance(base_node, ast.Subscript):
+                continue
+            if not self._is_generic_type_parameter_base(base_value):
+                continue
+            seen: set[object] = set()
+            for arg_value in self._type_param_base_arg_values(base_node.slice):
+                type_param = _type_param_identity(arg_value)
+                if type_param is None:
+                    continue
+                if type_param in seen:
+                    self._show_error_if_checking(
+                        base_node.slice,
+                        "Type parameter list cannot contain duplicate type variables",
+                        error_code=ErrorCode.invalid_annotation,
+                    )
+                    return
+                seen.add(type_param)
+
+    def _check_inconsistent_generic_base_specialization(
+        self, node: ast.ClassDef, base_values: Sequence[Value]
+    ) -> None:
+        analyzed_bases = self._base_values_for_generic_analysis(node, base_values)
+        seen_mappings: dict[type | str, dict[TypeVarLike, Value]] = {}
+        for base_node, base_value in zip(node.bases, analyzed_bases):
+            for subval in flatten_values(replace_fallback(base_value)):
+                converted: Value = subval
+                if isinstance(converted, KnownValue):
+                    converted = self.arg_spec_cache._type_from_base(converted.val)
+                elif isinstance(converted, SyntheticClassObjectValue):
+                    converted = converted.class_type
+                if not isinstance(converted, TypedValue):
+                    continue
+                base_typ = converted.typ
+                generic_args = (
+                    converted.args if isinstance(converted, GenericValue) else ()
+                )
+                for gb_typ, tv_map in self.checker.get_generic_bases(
+                    base_typ, generic_args
+                ).items():
+                    existing_map = seen_mappings.setdefault(gb_typ, {})
+                    for type_param, value in tv_map.items():
+                        existing = existing_map.get(type_param)
+                        if existing is None:
+                            existing_map[type_param] = value
+                        elif (
+                            existing != value
+                            and not isinstance(existing, AnyValue)
+                            and not isinstance(value, AnyValue)
+                        ):
+                            existing_identity = _type_param_identity(existing)
+                            value_identity = _type_param_identity(value)
+                            if (
+                                existing_identity is None
+                                or value_identity is None
+                                or existing_identity == value_identity
+                            ):
+                                continue
+                            self._show_error_if_checking(
+                                base_node,
+                                "Inconsistent type variable order in base classes",
+                                error_code=ErrorCode.invalid_annotation,
+                            )
+                            return
+
     def _check_typevartuple_usage_in_type_parameter_bases(
         self, node: ast.ClassDef, base_values: Sequence[Value]
     ) -> None:
@@ -6259,6 +6380,26 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             if is_typing_name(candidate, "Generic") or is_typing_name(
                 candidate, "Protocol"
             ):
+                return True
+        return False
+
+    def _is_generic_type_parameter_base(self, value: Value) -> bool:
+        for subval in flatten_values(replace_fallback(value)):
+            candidate: object
+            if isinstance(subval, SyntheticClassObjectValue):
+                subval = subval.class_type
+            if isinstance(subval, GenericValue):
+                candidate = subval.typ
+            elif isinstance(subval, TypedValue):
+                candidate = subval.typ
+            elif isinstance(subval, KnownValue):
+                candidate = subval.val
+            else:
+                continue
+            origin = get_origin(candidate)
+            if origin is not None:
+                candidate = origin
+            if is_typing_name(candidate, "Generic"):
                 return True
         return False
 
@@ -8254,8 +8395,31 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     def _visit_annotation(self, node: ast.AST) -> Value:
         with override(self, "in_annotation", True):
             val = self.visit(node)
+            if self._is_invalid_generic_annotation_node(node):
+                self._show_error_if_checking(
+                    node,
+                    "Generic[...] is valid only as a base class",
+                    error_code=ErrorCode.invalid_annotation,
+                )
             self.check_for_missing_generic_params(node, val)
             return val
+
+    def _is_invalid_generic_annotation_node(self, node: ast.AST) -> bool:
+        target = node.value if isinstance(node, ast.Subscript) else node
+        value = value_from_ast(target, visitor=self, error_on_unrecognized=False)
+        for subval in flatten_values(replace_fallback(value)):
+            candidate: object
+            if isinstance(subval, SyntheticClassObjectValue):
+                subval = subval.class_type
+            if isinstance(subval, KnownValue):
+                candidate = subval.val
+            elif isinstance(subval, TypedValue):
+                candidate = subval.typ
+            else:
+                continue
+            if is_typing_name(candidate, "Generic"):
+                return True
+        return False
 
     def check_for_missing_generic_params(self, node: ast.AST, value: Value) -> None:
         if not isinstance(value, KnownValue):
@@ -11661,6 +11825,17 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         normalized_members = tuple(_normalize_member(member) for member in members)
         if self.checker.get_synthetic_class(synthetic_typ) is None:
             return None
+        type_parameters = self.checker.get_type_parameters(synthetic_typ)
+        if type_parameters and len(type_parameters) != len(normalized_members):
+            self._show_error_if_checking(
+                node,
+                (
+                    f"Expected {len(type_parameters)} type arguments for "
+                    f"{stringify_object(synthetic_typ)}"
+                ),
+                error_code=ErrorCode.invalid_annotation,
+            )
+            return AnyValue(AnySource.error)
         generic_bases = self.checker.get_generic_bases(synthetic_typ, ())
         if not generic_bases.get(synthetic_typ):
             return None
@@ -11700,7 +11875,16 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                         callee_val
                     )
                     if synthetic_typevars:
-                        if isinstance(method_object, KnownValue):
+                        if isinstance(method_object, KnownValueWithTypeVars):
+                            merged_typevars = {
+                                typevar: value.substitute_typevars(synthetic_typevars)
+                                for typevar, value in method_object.typevars.items()
+                            }
+                            merged_typevars.update(synthetic_typevars)
+                            method_object = KnownValueWithTypeVars(
+                                method_object.val, merged_typevars
+                            )
+                        elif isinstance(method_object, KnownValue):
                             method_object = KnownValueWithTypeVars(
                                 method_object.val, synthetic_typevars
                             )
@@ -11727,18 +11911,20 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     def _get_synthetic_instance_typevars(self, value: TypedValue) -> TypeVarMap:
         if not isinstance(value.typ, str):
             return {}
-        generic_args: Sequence[Value]
-        if isinstance(value, GenericValue):
-            generic_args = value.args
-        else:
-            generic_args = ()
-        generic_bases = self.checker.get_generic_bases(value.typ, generic_args)
-        declared = generic_bases.get(value.typ)
-        if not declared or not generic_args:
+        if not isinstance(value, GenericValue):
             return {}
-        typevars = [
-            val.typevar for val in declared.values() if isinstance(val, TypeVarValue)
-        ]
+        generic_args = value.args
+        declared_type_params = self.checker.get_type_parameters(value.typ)
+        if not declared_type_params:
+            return {}
+        typevars: list[TypeVarLike] = []
+        for type_param in declared_type_params:
+            if isinstance(type_param, TypeVarValue):
+                typevars.append(type_param.typevar)
+            elif isinstance(type_param, InputSigValue) and isinstance(
+                type_param.input_sig, ParamSpecSig
+            ):
+                typevars.append(type_param.input_sig.param_spec)
         return dict(zip(typevars, generic_args))
 
     def _check_dunder_call_or_catch(

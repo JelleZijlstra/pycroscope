@@ -2194,6 +2194,10 @@ ParamSpecLike = typing_extensions.ParamSpec | typing.ParamSpec
 
 
 def set_self(value: Value, self_value: Value) -> Value:
+    if isinstance(value, KnownValueWithTypeVars):
+        merged_typevars = dict(value.typevars)
+        merged_typevars[SelfT] = self_value
+        return KnownValueWithTypeVars(value.val, merged_typevars)
     return value.substitute_typevars({SelfT: self_value})
 
 

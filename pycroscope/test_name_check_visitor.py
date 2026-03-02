@@ -458,6 +458,74 @@ class TestImportFailureHandlingCodeSamples(TestNameCheckVisitorBase):
         takes_dict(CustomDict({"num": 1}))
 
     @assert_passes(allow_import_failures=True)
+    def test_generic_base_classes_after_import_failure(self):
+        from collections.abc import Container, Iterable, Iterator, Mapping
+        from typing import Generic, TypeVar, assert_type
+
+        boom = 1 / 0
+
+        T = TypeVar("T")
+        T1 = TypeVar("T1")
+        T2 = TypeVar("T2")
+        T3 = TypeVar("T3")
+
+        class Node: ...
+
+        class SymbolTable(dict[str, list[Node]]): ...
+
+        def takes_dict(x: dict): ...
+
+        def takes_dict_typed(x: dict[str, list[Node]]): ...
+
+        def takes_dict_incorrect(x: dict[str, list[object]]): ...
+
+        def test_symbol_table(s: SymbolTable):
+            takes_dict(s)
+            takes_dict_typed(s)
+            takes_dict_incorrect(s)  # E
+
+        def func1(y: Generic[T]):  # E
+            _x: Generic  # E
+
+        class LinkedList(Iterable[T], Container[T]): ...
+
+        def test_linked_list(l: LinkedList[int]):
+            assert_type(iter(l), Iterator[int])
+            assert_type(l.__contains__(1), bool)
+
+        _linked_list_invalid: LinkedList[int, int]  # E
+
+        class MyDict(Mapping[str, T]): ...
+
+        def test_my_dict(d: MyDict[int]):
+            assert_type(d["a"], int)
+
+        _my_dict_invalid: MyDict[int, int]  # E
+
+        class BadClass1(Generic[T, T]):  # E
+            pass
+
+        class Parent1(Generic[T1, T2]): ...
+
+        class Parent2(Generic[T1, T2]): ...
+
+        class Child(Parent1[T1, T3], Parent2[T2, T3]): ...
+
+        def takes_parent1(x: Parent1[int, bytes]): ...
+
+        def takes_parent2(x: Parent2[str, bytes]): ...
+
+        child: Child[int, bytes, str] = Child()
+        takes_parent1(child)
+        takes_parent2(child)
+
+        class Grandparent(Generic[T1, T2]): ...
+
+        class Parent(Grandparent[T1, T2]): ...
+
+        class BadChild(Parent[T1, T2], Grandparent[T2, T1]): ...  # E
+
+    @assert_passes(allow_import_failures=True)
     def test_overload_fallback_after_import_failure(self):
         from typing import assert_type, overload
 

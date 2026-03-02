@@ -1302,7 +1302,11 @@ def _substitute_typevars(
             if isinstance(val, TypeVarValue)
         ]
         tv_map = dict(zip(typevars, generic_args))
-        result = result.substitute_typevars(tv_map)
+        if isinstance(result, KnownValueWithTypeVars):
+            merged_typevars = {**result.typevars, **tv_map}
+            result = KnownValueWithTypeVars(result.val, merged_typevars)
+        else:
+            result = result.substitute_typevars(tv_map)
     return result
 
 
