@@ -3309,6 +3309,13 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                         )
                     else:
                         synthetic_class.class_attributes.pop("%self_classmethods", None)
+                    staticmethods = self._get_synthetic_staticmethod_attributes(node)
+                    if staticmethods:
+                        synthetic_class.class_attributes["%staticmethods"] = KnownValue(
+                            frozenset(staticmethods)
+                        )
+                    else:
+                        synthetic_class.class_attributes.pop("%staticmethods", None)
                     if isinstance(metaclass_value, Value):
                         synthetic_class.class_attributes["%metaclass"] = metaclass_value
                     synthetic_class.method_attributes.clear()
@@ -3353,6 +3360,15 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 else:
                     dataclass_metadata_class.class_attributes.pop(
                         "%self_classmethods", None
+                    )
+                staticmethods = self._get_synthetic_staticmethod_attributes(node)
+                if staticmethods:
+                    dataclass_metadata_class.class_attributes["%staticmethods"] = (
+                        KnownValue(frozenset(staticmethods))
+                    )
+                else:
+                    dataclass_metadata_class.class_attributes.pop(
+                        "%staticmethods", None
                     )
                 if isinstance(metaclass_value, Value):
                     dataclass_metadata_class.class_attributes["%metaclass"] = (
@@ -6375,6 +6391,21 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     _mangle_class_attribute_name(node.name, stmt.name)
                 )
         return method_attributes
+
+    def _get_synthetic_staticmethod_attributes(self, node: ast.ClassDef) -> set[str]:
+        staticmethod_attributes = set()
+        for stmt in node.body:
+            if not isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            decorator_kinds = self._function_decorator_kinds_by_node.get(
+                stmt, frozenset()
+            )
+            if FunctionDecorator.staticmethod not in decorator_kinds:
+                continue
+            staticmethod_attributes.add(
+                _mangle_class_attribute_name(node.name, stmt.name)
+            )
+        return staticmethod_attributes
 
     def _return_annotation_node_contains_self(self, annotation: ast.AST | None) -> bool:
         if annotation is None:

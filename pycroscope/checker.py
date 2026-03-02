@@ -1949,9 +1949,16 @@ class Checker:
             initvar_fields.update(
                 name for name in initvar_names.val if isinstance(name, str)
             )
+        staticmethod_fields = _synthetic_staticmethod_names(value)
         metadata = [
             HasAttrExtension(
-                KnownValue(name), self._make_any_base_attribute(name, attr)
+                KnownValue(name),
+                self._make_any_base_attribute(
+                    name,
+                    attr,
+                    self_annotation_value=value.class_type,
+                    is_staticmethod=name in staticmethod_fields,
+                ),
             )
             for name, attr in value.class_attributes.items()
             if not name.startswith("%") and name not in initvar_fields
@@ -1964,43 +1971,40 @@ class Checker:
             return annotate_value(instance, metadata)
         return instance
 
-    def _make_any_base_attribute(self, name: str, attr: Value) -> Value:
+    def _make_any_base_attribute(
+        self,
+        name: str,
+        attr: Value,
+        *,
+        self_annotation_value: Value | None = None,
+        is_staticmethod: bool = False,
+    ) -> Value:
         attr = normalize_synthetic_descriptor_attribute(attr)
         if isinstance(attr, CallableValue):
-            maybe_bound = self._bind_synthetic_method(attr.signature)
+            if is_staticmethod:
+                return attr
+            maybe_bound = self._bind_synthetic_method(
+                attr.signature, self_annotation_value=self_annotation_value
+            )
             if maybe_bound is not None:
                 return CallableValue(maybe_bound)
             return attr
         return _normalize_synthetic_attribute(attr)
 
     def _bind_synthetic_method(
-        self, signature: ConcreteSignature
+        self,
+        signature: ConcreteSignature,
+        *,
+        self_annotation_value: Value | None = None,
     ) -> ConcreteSignature | None:
-        def _has_bindable_receiver_param(sig: Signature) -> bool:
-            if not sig.parameters:
-                return False
-            first_param = next(iter(sig.parameters.values()))
-            return first_param.kind in (
-                ParameterKind.POSITIONAL_ONLY,
-                ParameterKind.POSITIONAL_OR_KEYWORD,
-                ParameterKind.VAR_POSITIONAL,
-                ParameterKind.ELLIPSIS,
-            )
-
-        if isinstance(signature, Signature):
-            if not _has_bindable_receiver_param(signature):
-                return None
-        elif isinstance(signature, OverloadedSignature):
-            if not all(
-                _has_bindable_receiver_param(sig) for sig in signature.signatures
-            ):
-                return None
-        bound = make_bound_method(
-            signature, Composite(AnyValue(AnySource.from_another)), ctx=self
+        bound = signature.bind_self(
+            self_value=AnyValue(AnySource.from_another),
+            self_annotation_value=self_annotation_value,
+            ctx=self,
         )
         if bound is None:
             return None
-        return bound.get_signature(ctx=self)
+        return bound
 
     def get_attribute_from_value(
         self, root_value: Value, attribute: str, *, prefer_typeshed: bool = False
@@ -2043,6 +2047,55 @@ def _normalize_synthetic_attribute(attr: Value) -> Value:
         if new_vals != tuple(attr.vals):
             return unite_values(*new_vals)
     return attr
+
+
+def _synthetic_staticmethod_names(
+    synthetic_class: SyntheticClassObjectValue,
+) -> set[str]:
+    staticmethods = synthetic_class.class_attributes.get("%staticmethods")
+    if isinstance(staticmethods, KnownValue) and isinstance(
+        staticmethods.val, (set, frozenset, tuple, list)
+    ):
+        return {name for name in staticmethods.val if isinstance(name, str)}
+    return set()
+
+
+def _is_synthetic_staticmethod_attribute(
+    synthetic_class: SyntheticClassObjectValue,
+    attr_name: str,
+    checker: Checker,
+    *,
+    seen: set[int],
+) -> bool:
+    synthetic_id = id(synthetic_class)
+    if synthetic_id in seen:
+        return False
+    seen.add(synthetic_id)
+    if attr_name in _synthetic_staticmethod_names(synthetic_class):
+        return True
+    for base in synthetic_class.base_classes:
+        for base_value in flatten_values(base, unwrap_annotated=True):
+            base_value = replace_fallback(base_value)
+            synthetic_base: SyntheticClassObjectValue | None = None
+            if isinstance(base_value, SyntheticClassObjectValue):
+                synthetic_base = base_value
+            elif isinstance(base_value, GenericValue) and isinstance(
+                base_value.typ, (type, str)
+            ):
+                synthetic_base = checker.get_synthetic_class(base_value.typ)
+            elif isinstance(base_value, TypedValue) and isinstance(
+                base_value.typ, (type, str)
+            ):
+                synthetic_base = checker.get_synthetic_class(base_value.typ)
+            elif isinstance(base_value, KnownValue) and isinstance(
+                base_value.val, type
+            ):
+                synthetic_base = checker.get_synthetic_class(base_value.val)
+            if synthetic_base is not None and _is_synthetic_staticmethod_attribute(
+                synthetic_base, attr_name, checker, seen=seen
+            ):
+                return True
+    return False
 
 
 EXCLUDED_PROTOCOL_MEMBERS: set[str] = {
@@ -2141,7 +2194,19 @@ class CheckerAttrContext(AttrContext):
     def bind_synthetic_instance_attribute(self, attr_name: str, value: Value) -> Value:
         value = _normalize_synthetic_attribute(value)
         if isinstance(value, CallableValue):
-            maybe_bound = self.checker._bind_synthetic_method(value.signature)
+            root_value = replace_fallback(self.root_value)
+            synthetic_root: SyntheticClassObjectValue | None = None
+            if isinstance(root_value, GenericValue) and isinstance(root_value.typ, str):
+                synthetic_root = self.checker.get_synthetic_class(root_value.typ)
+            elif isinstance(root_value, TypedValue) and isinstance(root_value.typ, str):
+                synthetic_root = self.checker.get_synthetic_class(root_value.typ)
+            if synthetic_root is not None and _is_synthetic_staticmethod_attribute(
+                synthetic_root, attr_name, self.checker, seen=set()
+            ):
+                return value
+            maybe_bound = self.checker._bind_synthetic_method(
+                value.signature, self_annotation_value=self.root_value
+            )
             if maybe_bound is not None:
                 return CallableValue(maybe_bound)
         return value
