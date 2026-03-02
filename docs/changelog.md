@@ -5,6 +5,7 @@
 - Improve generic-base-class analysis in static fallback mode for unimportable modules: pycroscope now preserves generic base mappings and type-parameter ordering more accurately, reports duplicate/conflicting generic base type-variable declarations, and rejects `Generic`/`Generic[...]` used as type annotations outside base-class lists.
 - Preserve literal type arguments when inferring generic class-syntax `NamedTuple` constructor return types (for example, `Box(1)` now infers `Box[Literal[1]]`).
 - Improve `TypeVarTuple` handling for generic classes in static-fallback analysis: pycroscope now preserves variadic argument lengths and `NewType` members during inference, and correctly reports incompatible tuple lengths across repeated uses.
+- Fix static-fallback generic-class specialization with `TypeVarTuple` bases so annotations like `Array[Height, Width]` no longer spuriously report wrong type-argument arity after an import-time runtime failure in the same module.
 - Generalize repeated `TypeVarTuple` inference so same-length element mismatches merge to per-position unions across call contexts (including `*args: tuple[*Ts]` and callable packs), while still rejecting mismatched tuple lengths.
 
 ## Version 0.3.0 (March 1, 2026)

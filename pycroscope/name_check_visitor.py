@@ -11960,14 +11960,35 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         if self.checker.get_synthetic_class(synthetic_typ) is None:
             return None
         type_parameters = self.checker.get_type_parameters(synthetic_typ)
-        if type_parameters and len(type_parameters) != len(normalized_members):
-            self._show_error_if_checking(
-                node,
-                (
-                    f"Expected {len(type_parameters)} type arguments for "
+        variadic_type_param_indexes = [
+            i
+            for i, type_param in enumerate(type_parameters)
+            if isinstance(type_param, TypeVarValue) and type_param.is_typevartuple
+        ]
+        if len(variadic_type_param_indexes) > 1:
+            return None
+        expected_len: int | None
+        if variadic_type_param_indexes:
+            # A TypeVarTuple can absorb any number of type arguments.
+            expected_len = len(type_parameters) - 1
+            is_valid_type_arg_count = len(normalized_members) >= expected_len
+        else:
+            expected_len = len(type_parameters)
+            is_valid_type_arg_count = expected_len == len(normalized_members)
+
+        if type_parameters and not is_valid_type_arg_count:
+            if variadic_type_param_indexes:
+                expected_type_arg_message = (
+                    f"Expected at least {expected_len} type arguments for "
                     f"{stringify_object(synthetic_typ)}"
-                ),
-                error_code=ErrorCode.invalid_annotation,
+                )
+            else:
+                expected_type_arg_message = (
+                    f"Expected {expected_len} type arguments for "
+                    f"{stringify_object(synthetic_typ)}"
+                )
+            self._show_error_if_checking(
+                node, expected_type_arg_message, error_code=ErrorCode.invalid_annotation
             )
             return AnyValue(AnySource.error)
         generic_bases = self.checker.get_generic_bases(synthetic_typ, ())
