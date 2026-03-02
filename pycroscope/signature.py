@@ -752,9 +752,14 @@ class Signature:
             else:
                 value_to_check = composite.value
                 first_parameter = next(iter(self.parameters.values()), None)
-                is_receiver_parameter = first_parameter is param and param.kind in (
-                    ParameterKind.POSITIONAL_ONLY,
-                    ParameterKind.POSITIONAL_OR_KEYWORD,
+                is_receiver_parameter = (
+                    first_parameter is param
+                    and param.kind
+                    in (
+                        ParameterKind.POSITIONAL_ONLY,
+                        ParameterKind.POSITIONAL_OR_KEYWORD,
+                    )
+                    and self._is_method_like_typeguard_callable()
                 )
                 if (
                     is_receiver_parameter

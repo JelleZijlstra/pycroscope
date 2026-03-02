@@ -64,6 +64,21 @@ from .value import (
 
 SYNTHETIC_PROPERTY_GETTER_PREFIX = "%property_getter:"
 SYNTHETIC_PROPERTY_SETTER_PREFIX = "%property_setter:"
+_ZERO_ARG_DUNDER_MEMBERS = frozenset(
+    {
+        "__bool__",
+        "__bytes__",
+        "__complex__",
+        "__float__",
+        "__hash__",
+        "__index__",
+        "__int__",
+        "__iter__",
+        "__len__",
+        "__repr__",
+        "__str__",
+    }
+)
 
 
 def _as_concrete_signature(
@@ -1032,6 +1047,7 @@ def _signature_has_receiver_parameter(
     signature: Signature,
     self_value: Value,
     *,
+    ctx: CanAssignContext,
     member: str,
     allow_any_annotation: bool = False,
 ) -> bool:
@@ -1044,18 +1060,42 @@ def _signature_has_receiver_parameter(
     annotation = replace_fallback(first_parameter.annotation)
     if allow_any_annotation and isinstance(annotation, AnyValue):
         return True
+    if isinstance(annotation, AnyValue):
+        return False
     if any(
         isinstance(subval, TypeVarValue) and subval.typevar is SelfT
         for subval in annotation.walk_values()
     ):
         return True
-    annotation_key = _class_key_from_value(annotation)
-    self_key = _class_key_from_value(replace_fallback(self_value))
-    if annotation_key is None or self_key is None:
-        return False
-    return annotation_key == self_key or stringify_object(
-        annotation_key
-    ) == stringify_object(self_key)
+    annotation_key = _receiver_key_from_value(annotation)
+    self_key = _receiver_key_from_value(self_value)
+    if annotation_key is not None and self_key is not None:
+        if annotation_key == self_key or stringify_object(
+            annotation_key
+        ) == stringify_object(self_key):
+            return True
+        if isinstance(annotation_key, str) and isinstance(self_key, type):
+            return annotation_key.rsplit(".", maxsplit=1)[-1] == self_key.__name__
+        if isinstance(annotation_key, type) and isinstance(self_key, str):
+            return self_key.rsplit(".", maxsplit=1)[-1] == annotation_key.__name__
+        if not isinstance(annotation_key, str) and not isinstance(self_key, str):
+            return False
+        return not isinstance(
+            get_tv_map(first_parameter.annotation, self_value, ctx), CanAssignError
+        )
+    return not isinstance(
+        get_tv_map(first_parameter.annotation, self_value, ctx), CanAssignError
+    )
+
+
+def _receiver_key_from_value(value: Value) -> type | str | None:
+    key = _class_key_from_value(value)
+    if key is not None:
+        return key
+    narrowed = replace_fallback(value)
+    if isinstance(narrowed, KnownValue) and not isinstance(narrowed.val, type):
+        return type(narrowed.val)
+    return None
 
 
 def _class_object_value_for_key(
@@ -1073,13 +1113,22 @@ def _maybe_bind_dunder_protocol_member(
     value: Value, member: str, self_value: Value, ctx: CanAssignContext
 ) -> Value:
     def _has_receiver_parameter(sig: Signature | OverloadedSignature) -> bool:
+        allow_unannotated_receiver = member in _ZERO_ARG_DUNDER_MEMBERS
         if isinstance(sig, Signature):
             return _signature_has_receiver_parameter(
-                sig, self_value, member=member, allow_any_annotation=False
+                sig,
+                self_value,
+                ctx=ctx,
+                member=member,
+                allow_any_annotation=allow_unannotated_receiver,
             )
         return all(
             _signature_has_receiver_parameter(
-                subsig, self_value, member=member, allow_any_annotation=False
+                subsig,
+                self_value,
+                ctx=ctx,
+                member=member,
+                allow_any_annotation=allow_unannotated_receiver,
             )
             for subsig in sig.signatures
         )
@@ -1129,6 +1178,7 @@ def _bind_protocol_call_expected(
             has_receiver_parameter = _signature_has_receiver_parameter(
                 signature,
                 receiver_reference,
+                ctx=ctx,
                 member="__call__",
                 allow_any_annotation=allow_any_annotation,
             )
@@ -1137,6 +1187,7 @@ def _bind_protocol_call_expected(
                 _signature_has_receiver_parameter(
                     sig,
                     receiver_reference,
+                    ctx=ctx,
                     member="__call__",
                     allow_any_annotation=allow_any_annotation,
                 )
