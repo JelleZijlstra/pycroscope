@@ -224,9 +224,7 @@ class TestScoping(TestNameCheckVisitorBase):
     def test_args_kwargs_annotated(self):
         def capybara(*args: int, **kwargs: int):
             assert_is_value(args, GenericValue(tuple, [TypedValue(int)]))
-            assert_is_value(
-                kwargs, GenericValue(dict, [TypedValue(str), TypedValue(int)])
-            )
+            assert_type(kwargs, dict[str, int])
 
     @assert_passes()
     def test_internal_imports(self):
@@ -288,7 +286,7 @@ class TestTry(TestNameCheckVisitorBase):
                 x = 3
                 assert_is_value(x, KnownValue(3))
             except NameError as e:
-                assert_is_value(e, TypedValue(NameError))
+                assert_type(e, NameError)
                 x = 4
                 assert_is_value(x, KnownValue(4))
             except (RuntimeError, ValueError) as e:
@@ -484,9 +482,9 @@ class TestLoops(TestNameCheckVisitorBase):
         def huge_range():
             for i in range(1000000000):
                 # We don't create the whole Union
-                assert_is_value(i, TypedValue(int))
+                assert_type(i, int)
             # But we do recognize that the iterable is nonempty
-            assert_is_value(i, TypedValue(int))
+            assert_type(i, int)
 
     @assert_passes()
     def test_range_always_entered(self):
@@ -557,11 +555,11 @@ class TestLoops(TestNameCheckVisitorBase):
 
                 def do_something(y: int) -> int:
                     if x:
-                        assert_is_value(do_something(y), TypedValue(int))
+                        assert_type(do_something(y), int)
                         do_something("x")  # E: incompatible_argument
                     return y
 
-                assert_is_value(do_something(x), TypedValue(int))
+                assert_type(do_something(x), int)
                 do_something("x")  # E: incompatible_argument
 
 
@@ -829,7 +827,7 @@ class TestLeavesScope(TestNameCheckVisitorBase):
                 # after the assert False, but True and None still work.
                 x = None
             y = None
-            assert_is_value(y, KnownValue(None))
+            assert_type(y, None)
             assert_is_value(x, MultiValuedValue([KnownValue(True), KnownValue(None)]))
 
     @assert_passes()
@@ -855,7 +853,7 @@ class TestLeavesScope(TestNameCheckVisitorBase):
             assert_is_value(x, MultiValuedValue([TypedValue(int), TypedValue(str)]))
 
             assert isinstance(x, str), needs_int(x)
-            assert_is_value(x, TypedValue(str))
+            assert_type(x, str)
 
     @assert_passes()
     def test_no_cross_function_propagation(self):
@@ -889,7 +887,7 @@ class TestConstraints(TestNameCheckVisitorBase):
     @assert_passes()
     def test_bool_narrowing(self):
         def capybara(x: bool):
-            assert_is_value(x, TypedValue(bool))
+            assert_type(x, bool)
             if x is True:
                 assert_is_value(x, KnownValue(True))
             else:
@@ -956,28 +954,28 @@ class TestConstraints(TestNameCheckVisitorBase):
         def capybara(x):
             assert_is_value(x, AnyValue(AnySource.unannotated))
             if isinstance(x, int):
-                assert_is_value(x, TypedValue(int))
+                assert_type(x, int)
             else:
                 assert_is_value(x, AnyValue(AnySource.unannotated))
 
             if isinstance(x, A):
-                assert_is_value(x, TypedValue(A))
+                assert_type(x, A)
                 if isinstance(x, B):
-                    assert_is_value(x, TypedValue(B))
+                    assert_type(x, B)
                     if isinstance(x, C):
                         # Incompatible constraints result in NoReturn.
                         assert_is_value(x, NO_RETURN_VALUE)
             if isinstance(x, B):
-                assert_is_value(x, TypedValue(B))
+                assert_type(x, B)
                 if isinstance(x, A):
                     # Less precise constraints are ignored.
-                    assert_is_value(x, TypedValue(B))
+                    assert_type(x, B)
 
             x = B()
-            assert_is_value(x, TypedValue(B))
+            assert_type(x, B)
             if isinstance(x, A):
                 # Don't widen the type to A.
-                assert_is_value(x, TypedValue(B))
+                assert_type(x, B)
 
     @assert_passes()
     def test_isinstance_multiple_types(self):
@@ -996,7 +994,7 @@ class TestConstraints(TestNameCheckVisitorBase):
             if isinstance(x, (int, str)):
                 assert_is_value(x, MultiValuedValue([TypedValue(int), TypedValue(str)]))
             else:
-                assert_is_value(x, TypedValue(list))
+                assert_type(x, list)
 
             assert_is_value(
                 x,
@@ -1005,7 +1003,7 @@ class TestConstraints(TestNameCheckVisitorBase):
             if isinstance(x, int) or isinstance(x, str):
                 assert_is_value(x, MultiValuedValue([TypedValue(int), TypedValue(str)]))
             else:
-                assert_is_value(x, TypedValue(list))
+                assert_type(x, list)
 
     @assert_passes()
     def test_complex_boolean(self):
@@ -1102,13 +1100,13 @@ class TestConstraints(TestNameCheckVisitorBase):
             attr: Optional[A]
 
         def capybara(b: B):
-            assert_is_value(b, TypedValue(B))
-            assert_is_value(b.attr, TypedValue(A) | KnownValue(None))
+            assert_type(b, B)
+            assert_type(b.attr, A | None)
             if b.attr is not None:
-                assert_is_value(b.attr, TypedValue(A))
-                assert_is_value(b.attr.attr, TypedValue(int) | TypedValue(str))
+                assert_type(b.attr, A)
+                assert_type(b.attr.attr, int | str)
                 if isinstance(b.attr.attr, int):
-                    assert_is_value(b.attr.attr, TypedValue(int))
+                    assert_type(b.attr.attr, int)
 
     @assert_passes()
     def test_nested_scope(self):
@@ -1120,7 +1118,7 @@ class TestConstraints(TestNameCheckVisitorBase):
 
         def capybara(a: A, iterable):
             if isinstance(a, B):
-                assert_is_value(a, TypedValue(B))
+                assert_type(a, B)
                 lst = [a for _ in iterable]
                 assert_is_value(lst, SequenceValue(list, [(True, TypedValue(B))]))
 
@@ -1162,7 +1160,7 @@ class TestConstraints(TestNameCheckVisitorBase):
         def mara(cond, cond2):
             assert_is_value(cond, AnyValue(AnySource.unannotated))
             assert_is_instance(cond, int)
-            assert_is_value(cond, TypedValue(int))
+            assert_type(cond, int)
 
             assert_is_instance(cond2, (int, str))
             assert_is_value(cond2, MultiValuedValue([TypedValue(int), TypedValue(str)]))
@@ -1331,10 +1329,10 @@ class TestConstraints(TestNameCheckVisitorBase):
         from typing import Optional
 
         def capybara(x: Optional[int]) -> None:
-            assert_is_value(x, MultiValuedValue([TypedValue(int), KnownValue(None)]))
+            assert_type(x, int | None)
             if not x:
                 x = int(0)
-            assert_is_value(x, TypedValue(int))
+            assert_type(x, int)
 
     @assert_passes()
     def test_reset_on_assignment(self):
@@ -1357,18 +1355,16 @@ class TestConstraints(TestNameCheckVisitorBase):
 
         def capybara() -> None:
             x = kerodon()
-            assert_is_value(x, MultiValuedValue([TypedValue(int), KnownValue(None)]))
+            assert_type(x, int | None)
 
             if x:
-                assert_is_value(x, TypedValue(int))
+                assert_type(x, int)
             else:
-                assert_is_value(
-                    x, MultiValuedValue([TypedValue(int), KnownValue(None)])
-                )
+                assert_type(x, int | None)
             if x is not None:
-                assert_is_value(x, TypedValue(int))
+                assert_type(x, int)
             else:
-                assert_is_value(x, KnownValue(None))
+                assert_type(x, None)
 
     @assert_passes()
     def test_constraint_in_nested_scope(self):
@@ -1378,12 +1374,12 @@ class TestConstraints(TestNameCheckVisitorBase):
             if x is None:
                 return
 
-            assert_is_value(x, TypedValue(int))
+            assert_type(x, int)
 
             def nested():
-                assert_is_value(x, TypedValue(int))
+                assert_type(x, int)
 
-            return [assert_is_value(x, TypedValue(int)) for _ in z]
+            return [assert_type(x, int) for _ in z]
 
     @assert_passes()
     def test_repeated_constraints(self):
@@ -1533,7 +1529,7 @@ class TestConstraints(TestNameCheckVisitorBase):
                 return None
 
         def capybara(x, y):
-            assert_is_value(maybe_int(x), TypedValue(int) | KnownValue(None))
+            assert_type(maybe_int(x), int | None)
 
             lst = [maybe_int(elt) for elt in y]
             assert_is_value(
@@ -1598,7 +1594,7 @@ class TestConstraints(TestNameCheckVisitorBase):
         from pycroscope.value import HasAttrExtension
 
         def capybara(x: Optional[int]):
-            assert_is_value(x, MultiValuedValue([KnownValue(None), TypedValue(int)]))
+            assert_type(x, int | None)
             while x is not None and hasattr(x, "name"):
                 assert_is_value(
                     x,
@@ -1619,7 +1615,7 @@ class TestConstraints(TestNameCheckVisitorBase):
         ext = HasAttrExtension(KnownValue("name"), AnyValue(AnySource.inference))
 
         def capybara(x: int) -> None:
-            assert_is_value(x, TypedValue(int))
+            assert_type(x, int)
             if hasattr(x, "name"):
                 assert_is_value(x, AnnotatedValue(TypedValue(int), [ext]))
             assert_is_value(x, TypedValue(int) | AnnotatedValue(TypedValue(int), [ext]))
@@ -1632,7 +1628,7 @@ class TestConstraints(TestNameCheckVisitorBase):
         ext = CustomCheckExtension(Gt(5))
 
         def capybara(x: int) -> None:
-            assert_is_value(x, TypedValue(int))
+            assert_type(x, int)
             if x > 5:
                 assert_is_value(x, AnnotatedValue(TypedValue(int), [ext]))
             assert_is_value(x, TypedValue(int) | AnnotatedValue(TypedValue(int), [ext]))
@@ -1668,7 +1664,7 @@ class TestConstraints(TestNameCheckVisitorBase):
                     MultiValuedValue([AnyValue(AnySource.unannotated), KnownValue("")]),
                 )
                 if isinstance(self.value, Foo) and self.value.has_images():
-                    assert_is_value(self.value, TypedValue(Foo))
+                    assert_type(self.value, Foo)
                 else:
                     assert_is_value(
                         self.value,
@@ -1720,7 +1716,7 @@ class TestConstraints(TestNameCheckVisitorBase):
             elif x == "x":
                 assert_is_value(x, KnownValue("x"))
             else:
-                assert_is_value(x, TypedValue(int))
+                assert_type(x, int)
 
         def moco(x: Union[Literal["x"], int]):
             assert_is_value(x, KnownValue("x") | TypedValue(int))
@@ -1811,7 +1807,7 @@ class TestComposite(TestNameCheckVisitorBase):
                 if cond:
                     self.x = int(val)
                 x = self.x
-                assert_is_value(x, TypedValue(int))
+                assert_type(x, int)
 
     @assert_passes()
     def test_attribute_to_never(self):
@@ -1835,11 +1831,11 @@ class TestComposite(TestNameCheckVisitorBase):
             def eat(self, val):
                 self.x = val
                 if isinstance(self.x, int):
-                    assert_is_value(self.x, TypedValue(int))
+                    assert_type(self.x, int)
 
             def eat_no_assign(self):
                 if isinstance(self.x, int):
-                    assert_is_value(self.x, TypedValue(int))
+                    assert_type(self.x, int)
 
     @assert_passes()
     def test_subscript(self):
@@ -1850,9 +1846,9 @@ class TestComposite(TestNameCheckVisitorBase):
             x["a"] = 1
             assert_is_value(x["a"], KnownValue(1))
             if isinstance(x["c"], int):
-                assert_is_value(x["c"], TypedValue(int))
+                assert_type(x["c"], int)
             if x["b"] is None:
-                assert_is_value(x["b"], KnownValue(None))
+                assert_type(x["b"], None)
 
     @assert_passes()
     def test_unhashable_subscript(self):
@@ -1875,12 +1871,12 @@ class TestInvalidation(TestNameCheckVisitorBase):
             condition = isinstance(x, int)
             assert_is_value(x, AnyValue(AnySource.unannotated))
             if condition:
-                assert_is_value(x, TypedValue(int))
+                assert_type(x, int)
 
             condition = isinstance(y, int) if x else isinstance(y, str)
             assert_is_value(y, AnyValue(AnySource.unannotated))
             if condition:
-                assert_is_value(y, TypedValue(int) | TypedValue(str))
+                assert_type(y, int | str)
 
     @assert_passes()
     def test_invalidated(self) -> None:
@@ -1911,7 +1907,7 @@ class TestInvalidation(TestNameCheckVisitorBase):
         def capybara():
             x = make_optional()
             while x:
-                assert_is_value(x, TypedValue(str))
+                assert_type(x, str)
                 x = make_optional()
 
     @assert_passes()
@@ -1937,12 +1933,12 @@ class TestInvalidation(TestNameCheckVisitorBase):
             has_bias = key is not None
             data = []
             for _ in file_list:
-                assert_is_value(key, TypedValue(int) | KnownValue(None))
+                assert_type(key, int | None)
                 if has_bias:
-                    assert_is_value(key, TypedValue(int))
+                    assert_type(key, int)
                     data = [ids, data[key]]
                 else:
-                    assert_is_value(key, KnownValue(None))
+                    assert_type(key, None)
                     data = [ids]
 
     @assert_passes()
@@ -1958,11 +1954,11 @@ class TestInvalidation(TestNameCheckVisitorBase):
 
         def capybara(key: Optional[int]):
             has_bias = key is not None
-            assert_is_value(key, TypedValue(int) | KnownValue(None))
+            assert_type(key, int | None)
             if has_bias:
-                assert_is_value(key, TypedValue(int))
+                assert_type(key, int)
             else:
-                assert_is_value(key, KnownValue(None))
+                assert_type(key, None)
 
 
 class TestClassNesting(TestNameCheckVisitorBase):
@@ -1975,7 +1971,7 @@ class TestClassNesting(TestNameCheckVisitorBase):
                     print(neochoerus)  # E: undefined_name
 
             def method(self, cap: Capybaras):
-                assert_is_value(cap, TypedValue(Caviids.Capybaras))
+                assert_type(cap, Caviids.Capybaras)
 
     @assert_passes()
     def test_class_in_function(self):

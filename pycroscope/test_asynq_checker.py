@@ -381,7 +381,7 @@ class TestAsyncMethods(TestAsynqBase):
         @asynq()
         def use_capybara(x):
             cap = Capybara(x)
-            assert_is_value((yield cap.get_async()), TypedValue(int))
+            assert_type((yield cap.get_async()), int)
             pool = multiprocessing.Pool()
             # should not try to use map_async
             pool.map(len, [(1,)])

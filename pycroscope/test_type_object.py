@@ -14,7 +14,6 @@ from .value import (
     CallableValue,
     GenericValue,
     IntersectionValue,
-    KnownValue,
     MultiValuedValue,
     SubclassValue,
     SyntheticClassObjectValue,
@@ -279,7 +278,7 @@ class TestSyntheticType(TestNameCheckVisitorBase):
                     [AnyValue(AnySource.explicit), CallableValue(sig)],
                 ),
             )
-            assert_is_value(c._clear_cache(), KnownValue(None))
+            assert_type(c._clear_cache(), None)
             assert_type(c(), int)
             c.doesnt_exist  # E: undefined_attribute
 

@@ -49,9 +49,7 @@ class TestAnnotations(TestNameCheckVisitorBase):
             assert_is_value(
                 capybara(), MultiValuedValue([TypedValue(int), TypedValue(str)])
             )
-            assert_is_value(
-                kerodon(), MultiValuedValue([TypedValue(int), KnownValue(None)])
-            )
+            assert_type(kerodon(), int | None)
             assert_is_value(
                 complex(),
                 MultiValuedValue(
@@ -66,12 +64,7 @@ class TestAnnotations(TestNameCheckVisitorBase):
                     ]
                 ),
             )
-            assert_is_value(
-                union_in_subscript(),
-                GenericValue(
-                    list, [MultiValuedValue([TypedValue(str), TypedValue(int)])]
-                ),
-            )
+            assert_type(union_in_subscript(), list[str | int])
 
         def rgx(m: Match[str], p: Pattern[bytes]) -> None:
             assert_is_value(p, GenericValue(_Pattern, [TypedValue(bytes)]))
@@ -95,8 +88,8 @@ class TestAnnotations(TestNameCheckVisitorBase):
         def capybara(
             x: List[int], y: List, z: List[Any]  # E: missing_generic_parameters
         ) -> None:
-            assert_is_value(x, GenericValue(list, [TypedValue(int)]))
-            assert_is_value(y, TypedValue(list))
+            assert_type(x, list[int])
+            assert_type(y, list)
             assert_is_value(z, GenericValue(list, [AnyValue(AnySource.explicit)]))
 
     @assert_passes()
@@ -104,7 +97,7 @@ class TestAnnotations(TestNameCheckVisitorBase):
         from typing import SupportsInt
 
         def capybara(z: SupportsInt) -> None:
-            assert_is_value(z, TypedValue(SupportsInt))
+            assert_type(z, SupportsInt)
 
         def mara():
             capybara(1.0)
@@ -121,10 +114,10 @@ class TestAnnotations(TestNameCheckVisitorBase):
     def test_self_type(self):
         class Capybara:
             def f(self: int) -> None:
-                assert_is_value(self, TypedValue(int))
+                assert_type(self, int)
 
             def g(self) -> None:
-                assert_is_value(self, TypedValue(Capybara))
+                assert_type(self, Capybara)
 
     @assert_passes()
     def test_newtype(self):
@@ -163,8 +156,8 @@ class TestAnnotations(TestNameCheckVisitorBase):
         from typing_extensions import Literal
 
         def capybara(x: Literal[True], y: Literal[True, False]) -> None:
-            assert_is_value(x, KnownValue(True))
-            assert_is_value(y, MultiValuedValue([KnownValue(True), KnownValue(False)]))
+            assert_type(x, Literal[True])
+            assert_type(y, Literal[True, False])
 
     @assert_passes()
     def test_literal_in_union(self):
@@ -176,7 +169,7 @@ class TestAnnotations(TestNameCheckVisitorBase):
             from typing_extensions import Literal
 
         def capybara(x: Union[int, Literal["epoch"], None]) -> None:
-            assert_is_value(x, TypedValue(int) | KnownValue("epoch") | KnownValue(None))
+            assert_type(x, int | Literal["epoch"] | None)
 
     @assert_passes()
     def test_contextmanager(self):
@@ -194,7 +187,7 @@ class TestAnnotations(TestNameCheckVisitorBase):
             )
 
             with capybara() as e:
-                assert_is_value(e, TypedValue(int))
+                assert_type(e, int)
 
             assert_is_value(
                 post_capybara(),
@@ -202,7 +195,7 @@ class TestAnnotations(TestNameCheckVisitorBase):
             )
 
             with post_capybara() as e:
-                assert_is_value(e, TypedValue(int))
+                assert_type(e, int)
 
         @contextmanager
         def post_capybara() -> Generator[int]:
@@ -226,7 +219,7 @@ class TestAnnotations(TestNameCheckVisitorBase):
                 f(), GenericValue("contextlib.AbstractContextManager", expected_args)
             )
             with f() as x:
-                assert_is_value(x, TypedValue(int))
+                assert_type(x, int)
 
     @assert_passes()
     def test_none_annotations(self):
@@ -240,8 +233,8 @@ class TestAnnotations(TestNameCheckVisitorBase):
         def check() -> None:
             # Make sure we don't infer None if __init__ is annotated
             # as returning None.
-            assert_is_value(Capybara(), TypedValue(Capybara))
-            assert_is_value(mara(), KnownValue(None))
+            assert_type(Capybara(), Capybara)
+            assert_type(mara(), None)
 
     @assert_passes()
     def test_annotations_function(self):
@@ -263,11 +256,11 @@ class TestAnnotations(TestNameCheckVisitorBase):
                 pass
 
             def eat(self, x: Capybara):
-                assert_is_value(self, TypedValue(Caviidae))
+                assert_type(self, Caviidae)
 
             @staticmethod
             def static(x: "Caviidae"):
-                assert_is_value(x, TypedValue(Caviidae))
+                assert_type(x, Caviidae)
 
     @assert_passes()
     def test_incompatible_annotations(self):
@@ -344,9 +337,9 @@ class TestAnnotations(TestNameCheckVisitorBase):
             g = property(get_g)
 
         def user(c: Capybara) -> None:
-            assert_is_value(c.f, TypedValue(int))
-            assert_is_value(c.get_g(), TypedValue(int))
-            assert_is_value(c.g, TypedValue(int))
+            assert_type(c.f, int)
+            assert_type(c.get_g(), int)
+            assert_type(c.g, int)
 
     @assert_passes()
     def test_annotations_override_return(self):
@@ -378,7 +371,7 @@ class TestAnnotations(TestNameCheckVisitorBase):
         def capybara(y):
             x: int = y
             assert_is_value(y, AnyValue(AnySource.unannotated))
-            assert_is_value(x, TypedValue(int))
+            assert_type(x, int)
 
     @assert_passes()
     def test_incompatible_annassign(self):
@@ -401,7 +394,7 @@ class TestAnnotations(TestNameCheckVisitorBase):
             assert_is_value(y, make_simple_sequence(tuple, [TypedValue(int)]))
             t_str_int = make_simple_sequence(tuple, [TypedValue(str), TypedValue(int)])
             assert_is_value(z, t_str_int)
-            assert_is_value(omega, t_str_int | KnownValue(None))
+            assert_type(omega, tuple[str, int] | None)
             assert_is_value(empty, SequenceValue(tuple, []))
 
     @assert_passes()
@@ -419,7 +412,7 @@ class TestAnnotations(TestNameCheckVisitorBase):
             assert_is_value(y, make_simple_sequence(tuple, [TypedValue(int)]))
             t_str_int = make_simple_sequence(tuple, [TypedValue(str), TypedValue(int)])
             assert_is_value(z, t_str_int)
-            assert_is_value(omega, t_str_int | KnownValue(None))
+            assert_type(omega, tuple[str, int] | None)
             assert_is_value(empty, SequenceValue(tuple, []))
 
     @assert_passes()
@@ -442,7 +435,7 @@ class TestAnnotations(TestNameCheckVisitorBase):
             assert_is_value(y, make_simple_sequence(tuple, [TypedValue(int)]))
             t_str_int = make_simple_sequence(tuple, [TypedValue(str), TypedValue(int)])
             assert_is_value(z, t_str_int)
-            assert_is_value(omega, t_str_int | KnownValue(None))
+            assert_type(omega, tuple[str, int] | None)
             assert_is_value(empty, SequenceValue(tuple, []))
             for t in kappa:
                 assert_is_value(t, t_str_int)
@@ -470,7 +463,7 @@ class TestAnnotations(TestNameCheckVisitorBase):
                 assert_is_value(y, make_simple_sequence(tuple, [TypedValue(int)]))
                 t_str_int = make_simple_sequence(tuple, [TypedValue(str), TypedValue(int)])
                 assert_is_value(z, t_str_int)
-                assert_is_value(omega, t_str_int | KnownValue(None))
+                assert_type(omega, tuple[str, int] | None)
                 assert_is_value(empty, SequenceValue(tuple, []))
                 for t in kappa:
                     assert_is_value(t, t_str_int)
@@ -560,9 +553,9 @@ class TestAnnotations(TestNameCheckVisitorBase):
         from typing import Optional
 
         def capybara(x: "X", y: "Optional[X]", z: "typing.Optional[X]"):
-            assert_is_value(x, TypedValue(X))
-            assert_is_value(y, MultiValuedValue([KnownValue(None), TypedValue(X)]))
-            assert_is_value(z, MultiValuedValue([KnownValue(None), TypedValue(X)]))
+            assert_type(x, X)
+            assert_type(y, X | None)
+            assert_type(z, X | None)
 
         class X:
             pass
@@ -572,8 +565,8 @@ class TestAnnotations(TestNameCheckVisitorBase):
         from typing import List
 
         def capybara(x: "List[int]") -> "List[str]":
-            assert_is_value(x, GenericValue(list, [TypedValue(int)]))
-            assert_is_value(capybara(x), GenericValue(list, [TypedValue(str)]))
+            assert_type(x, list[int])
+            assert_type(capybara(x), list[str])
             return []
 
     @assert_passes()
@@ -616,9 +609,9 @@ class TestAnnotations(TestNameCheckVisitorBase):
             assert_is_value(y, KnownValue(4))
 
             z: Final[int] = 4
-            assert_is_value(z, TypedValue(int))
+            assert_type(z, int)
 
-            assert_is_value(Mara().x, TypedValue(str))
+            assert_type(Mara().x, str)
 
     @assert_passes()
     def test_type(self):
@@ -657,7 +650,7 @@ class TestAnnotations(TestNameCheckVisitorBase):
             assert_is_value(x, GenericValue(Queue, [TypedValue(I)]))
 
         def capybara(x: list[int], y: tuple[int, str], z: tuple[int, ...]) -> None:
-            assert_is_value(x, GenericValue(list, [TypedValue(int)]))
+            assert_type(x, list[int])
             assert_is_value(
                 y, make_simple_sequence(tuple, [TypedValue(int), TypedValue(str)])
             )
@@ -668,8 +661,8 @@ class TestAnnotations(TestNameCheckVisitorBase):
             from __future__ import annotations
 
             def capybara(x: int | None, y: int | str) -> None:
-                assert_is_value(x, MultiValuedValue([TypedValue(int), KnownValue(None)]))
-                assert_is_value(y, MultiValuedValue([TypedValue(int), TypedValue(str)]))
+                assert_type(x, int | None)
+                assert_type(y, int | str)
 
             def caller():
                 capybara(1, 2)
@@ -679,8 +672,8 @@ class TestAnnotations(TestNameCheckVisitorBase):
     @assert_passes()
     def test_pep604_runtime(self):
         def capybara(x: int | None, y: int | str) -> None:
-            assert_is_value(x, MultiValuedValue([TypedValue(int), KnownValue(None)]))
-            assert_is_value(y, MultiValuedValue([TypedValue(int), TypedValue(str)]))
+            assert_type(x, int | None)
+            assert_type(y, int | str)
 
         def caller():
             capybara(1, 2)
@@ -691,8 +684,8 @@ class TestAnnotations(TestNameCheckVisitorBase):
         from typing_extensions import Literal
 
         def capybara(x: "int | str", y: "Literal[-1]"):
-            assert_is_value(x, TypedValue(int) | TypedValue(str))
-            assert_is_value(y, KnownValue(-1))
+            assert_type(x, int | str)
+            assert_type(y, Literal[-1])
 
     @assert_passes()
     def test_double_subscript(self):
@@ -731,8 +724,8 @@ class TestAnnotations(TestNameCheckVisitorBase):
             y: Alias
 
         def caller(c: Capybara):
-            assert_is_value(c.x, TypedValue(str))
-            assert_is_value(c.y, TypedValue(int))
+            assert_type(c.x, str)
+            assert_type(c.y, int)
             assert_is_value(c.Alias, KnownValue(int))
 
 
@@ -862,12 +855,12 @@ class TestCallable(TestNameCheckVisitorBase):
             takes_seq: Callable[[Sequence[T]], T],
             two_args: Callable[[int, str], bytes],
         ):
-            assert_is_value(x(), TypedValue(int))
-            assert_is_value(x(arg=3), TypedValue(int))
-            assert_is_value(y(1), TypedValue(str))
+            assert_type(x(), int)
+            assert_type(x(arg=3), int)
+            assert_type(y(1), str)
             assert_is_value(id_func(1), KnownValue(1))
-            assert_is_value(takes_seq([int("1")]), TypedValue(int))
-            assert_is_value(two_args(1, "x"), TypedValue(bytes))
+            assert_type(takes_seq([int("1")]), int)
+            assert_type(two_args(1, "x"), bytes)
 
     @assert_passes()
     def test_stringified(self):
@@ -882,12 +875,12 @@ class TestCallable(TestNameCheckVisitorBase):
             takes_seq: "Callable[[Sequence[T]], T]",
             two_args: "Callable[[int, str], bytes]",
         ):
-            assert_is_value(x(), TypedValue(int))
-            assert_is_value(x(arg=3), TypedValue(int))
-            assert_is_value(y(1), TypedValue(str))
+            assert_type(x(), int)
+            assert_type(x(arg=3), int)
+            assert_type(y(1), str)
             assert_is_value(id_func(1), KnownValue(1))
-            assert_is_value(takes_seq([int("1")]), TypedValue(int))
-            assert_is_value(two_args(1, "x"), TypedValue(bytes))
+            assert_type(takes_seq([int("1")]), int)
+            assert_type(two_args(1, "x"), bytes)
 
     @assert_passes()
     def test_invalid_callable_annotations(self):
@@ -927,12 +920,12 @@ class TestCallable(TestNameCheckVisitorBase):
             takes_seq: Callable[[Sequence[T]], T],
             two_args: Callable[[int, str], bytes],
         ):
-            assert_is_value(x(), TypedValue(int))
-            assert_is_value(x(arg=3), TypedValue(int))
-            assert_is_value(y(1), TypedValue(str))
+            assert_type(x(), int)
+            assert_type(x(arg=3), int)
+            assert_type(y(1), str)
             assert_is_value(id_func(1), KnownValue(1))
-            assert_is_value(takes_seq([int("1")]), TypedValue(int))
-            assert_is_value(two_args(1, "x"), TypedValue(bytes))
+            assert_type(takes_seq([int("1")]), int)
+            assert_type(two_args(1, "x"), bytes)
 
     @assert_passes()
     def test_known_value(self):
@@ -1100,9 +1093,9 @@ class TestCallable(TestNameCheckVisitorBase):
             func: AsynqCallable[[int], str],
             func2: Optional[AsynqCallable[[int], str]] = None,
         ) -> None:
-            assert_is_value(func(1), TypedValue(str))
+            assert_type(func(1), str)
             val = yield func.asynq(1)
-            assert_is_value(val, TypedValue(str))
+            assert_type(val, str)
             yield caller.asynq(func_example)
             if func2 is not None:
                 yield func2.asynq(1)
@@ -1130,10 +1123,8 @@ class TestCallable(TestNameCheckVisitorBase):
 
         @asynq()
         def caller():
-            assert_is_value(amap(mapper, [1]), GenericValue(list, [TypedValue(str)]))
-            assert_is_value(
-                (yield amap.asynq(mapper, [1])), GenericValue(list, [TypedValue(str)])
-            )
+            assert_type(amap(mapper, [1]), list[str])
+            assert_type((yield amap.asynq(mapper, [1])), list[str])
 
     @assert_passes()
     def test_bare_callable(self):
@@ -1218,12 +1209,12 @@ class TestTypeVar(TestNameCheckVisitorBase):
             return x
 
         def capybara(s: str, b: bytes, sb: Union[str, bytes], unannotated):
-            assert_is_value(f("x"), TypedValue(str))
-            assert_is_value(f(b"x"), TypedValue(bytes))
-            assert_is_value(f(s), TypedValue(str))
-            assert_is_value(f(b), TypedValue(bytes))
+            assert_type(f("x"), str)
+            assert_type(f(b"x"), bytes)
+            assert_type(f(s), str)
+            assert_type(f(b), bytes)
             result = f(sb)
-            assert_is_value(result, TypedValue(str) | TypedValue(bytes))
+            assert_type(result, str | bytes)
             f(3)  # E: incompatible_argument
             assert_is_value(f(unannotated), AnyValue(AnySource.unannotated))
 
@@ -1232,7 +1223,7 @@ class TestTypeVar(TestNameCheckVisitorBase):
         import re
 
         def capybara():
-            assert_is_value(re.escape("x"), TypedValue(str))
+            assert_type(re.escape("x"), str)
 
     @assert_passes()
     def test_callable_compatibility(self):
@@ -1265,17 +1256,17 @@ class TestTypeVar(TestNameCheckVisitorBase):
             f: Callable[[AnyStr], AnyStr], s: Union[str, bytes]
         ) -> str:
             if isinstance(s, str):
-                assert_is_value(f(s), TypedValue(str))
+                assert_type(f(s), str)
             else:
-                assert_is_value(f(s), TypedValue(bytes))
+                assert_type(f(s), bytes)
             return ""
 
         def want_bounded_func(f: Callable[[IntT], IntT], i: int) -> None:
             assert_is_value(f(True), KnownValue(True))
-            assert_is_value(f(i), TypedValue(int))
+            assert_type(f(i), int)
 
         def want_str_func(f: Callable[[str], str]):
-            assert_is_value(f("x"), TypedValue(str))
+            assert_type(f("x"), str)
 
         def anystr_func(s: AnyStr) -> AnyStr:
             return s
@@ -1320,9 +1311,9 @@ class TestParameterTypeGuard(TestNameCheckVisitorBase):
             return isinstance(x, int)
 
         def capybara(x: object) -> None:
-            assert_is_value(x, TypedValue(object))
+            assert_type(x, object)
             if is_int(x):
-                assert_is_value(x, TypedValue(int))
+                assert_type(x, int)
 
     @assert_passes()
     def test_generic(self):
@@ -1372,16 +1363,16 @@ class TestParameterTypeGuard(TestNameCheckVisitorBase):
             pass
 
         def capybara(obj: A) -> None:
-            assert_is_value(obj, TypedValue(A))
+            assert_type(obj, A)
             if obj.is_b():
-                assert_is_value(obj, TypedValue(B))
+                assert_type(obj, B)
             else:
-                assert_is_value(obj, TypedValue(A))
+                assert_type(obj, A)
 
         def narrow_union(union: Union[B, C]) -> None:
-            assert_is_value(union, TypedValue(B) | TypedValue(C))
+            assert_type(union, B | C)
             if union.is_b():
-                assert_is_value(union, TypedValue(B))
+                assert_type(union, B)
 
 
 class TestNoReturnGuard(TestNameCheckVisitorBase):
@@ -1396,7 +1387,7 @@ class TestNoReturnGuard(TestNameCheckVisitorBase):
 
         def capybara(x):
             assert_is_int(x)
-            assert_is_value(x, TypedValue(int))
+            assert_type(x, int)
 
 
 class TestTypeGuard(TestNameCheckVisitorBase):
@@ -1414,13 +1405,13 @@ class TestTypeGuard(TestNameCheckVisitorBase):
 
         def capybara(x: Union[int, str]):
             if is_int(x):
-                assert_is_value(x, TypedValue(int))
+                assert_type(x, int)
             else:
                 assert_is_value(x, MultiValuedValue([TypedValue(int), TypedValue(str)]))
 
         def pacarana(x: Union[int, str]):
             if is_quoted_int(x):
-                assert_is_value(x, TypedValue(int))
+                assert_type(x, int)
             else:
                 assert_is_value(x, MultiValuedValue([TypedValue(int), TypedValue(str)]))
 
@@ -1435,7 +1426,7 @@ class TestTypeGuard(TestNameCheckVisitorBase):
 
         def capybara(x: Union[int, str]):
             if is_int(x):
-                assert_is_value(x, TypedValue(int))
+                assert_type(x, int)
             else:
                 assert_is_value(x, MultiValuedValue([TypedValue(int), TypedValue(str)]))
 
@@ -1452,11 +1443,11 @@ class TestTypeGuard(TestNameCheckVisitorBase):
         def capybara(x: Union[int, str]):
             cls = Cls()
             if cls.is_int(x):
-                assert_is_value(x, TypedValue(int))
-                assert_is_value(cls, TypedValue(Cls))
+                assert_type(x, int)
+                assert_type(cls, Cls)
             else:
                 assert_is_value(x, MultiValuedValue([TypedValue(int), TypedValue(str)]))
-                assert_is_value(cls, TypedValue(Cls))
+                assert_type(cls, Cls)
 
     @assert_passes()
     def test_staticmethod(self) -> None:
@@ -1471,12 +1462,12 @@ class TestTypeGuard(TestNameCheckVisitorBase):
 
         def capybara(x: Union[int, str]):
             if Cls().is_int(x):
-                assert_is_value(x, TypedValue(int))
+                assert_type(x, int)
             else:
                 assert_is_value(x, MultiValuedValue([TypedValue(int), TypedValue(str)]))
             assert_is_value(x, MultiValuedValue([TypedValue(int), TypedValue(str)]))
             if Cls.is_int(x):
-                assert_is_value(x, TypedValue(int))
+                assert_type(x, int)
 
 
 class TestCustomCheck(TestNameCheckVisitorBase):
@@ -1709,10 +1700,10 @@ class TestExternalType(TestNameCheckVisitorBase):
                 ExternalType["builtins.str"], ExternalType["builtins.int"]
             ] = 1,
         ) -> None:
-            assert_is_value(x, TypedValue(str))
-            assert_is_value(y, TypedValue(os.stat_result))
+            assert_type(x, str)
+            assert_type(y, os.stat_result)
             assert_is_value(z, AnnotatedValue(TypedValue(str), [KnownValue(1)]))
-            assert_is_value(omega, TypedValue(str) | TypedValue(int))
+            assert_type(omega, str | int)
 
         def user():
             sr = os.stat_result((1,) * 10)
@@ -2050,14 +2041,14 @@ class TestParamSpec(TestNameCheckVisitorBase):
             raise NotImplementedError
 
         def capybara() -> None:
-            assert_is_value(wrapped(1), TypedValue(str))
+            assert_type(wrapped(1), str)
 
             refined = wrapper(wrapped)
-            assert_is_value(refined(1), GenericValue(list, [TypedValue(str)]))
+            assert_type(refined(1), list[str])
             refined("too", "many", "arguments")  # E: incompatible_call
 
             quoted_refined = quoted_wrapper(wrapped)
-            assert_is_value(quoted_refined(1), GenericValue(list, [TypedValue(str)]))
+            assert_type(quoted_refined(1), list[str])
             quoted_refined("too", "many", "arguments")  # E: incompatible_call
 
     @assert_passes()
@@ -2081,16 +2072,14 @@ class TestParamSpec(TestNameCheckVisitorBase):
             raise NotImplementedError
 
         def capybara() -> None:
-            assert_is_value(wrapped(1), TypedValue(str))
+            assert_type(wrapped(1), str)
 
             refined = wrapper(wrapped)
-            assert_is_value(refined("x", 1), GenericValue(list, [TypedValue(str)]))
+            assert_type(refined("x", 1), list[str])
             refined(1)  # E: incompatible_call
 
             quoted_refined = quoted_wrapper(wrapped)
-            assert_is_value(
-                quoted_refined("x", 1), GenericValue(list, [TypedValue(str)])
-            )
+            assert_type(quoted_refined("x", 1), list[str])
             quoted_refined(1)  # E: incompatible_call
 
     @assert_passes()
@@ -2338,11 +2327,11 @@ class TestTypeAlias(TestNameCheckVisitorBase):
         Z: "TypeAlias" = int
 
         def capybara(x: X, y: Y, x_quoted: "X", y_quoted: "Y", z: Z) -> None:
-            assert_is_value(x, TypedValue(int))
-            assert_is_value(y, TypedValue(int))
-            assert_is_value(x_quoted, TypedValue(int))
-            assert_is_value(y_quoted, TypedValue(int))
-            assert_is_value(z, TypedValue(int))
+            assert_type(x, int)
+            assert_type(y, int)
+            assert_type(x_quoted, int)
+            assert_type(y_quoted, int)
+            assert_type(z, int)
 
     @assert_passes()
     def test_bare_paramspec_is_invalid(self):
@@ -2596,14 +2585,14 @@ class TestFloatInt(TestNameCheckVisitorBase):
         from typing_extensions import assert_type
 
         def capybara(x: float):
-            assert_is_value(x, TypedValue(float) | TypedValue(int))
+            assert_type(x, float | int)
             assert_type(x, float)
 
             if isinstance(x, float):
                 # can't express this type for assert_type()
                 assert_is_value(x, TypedValue(float))
             else:
-                assert_is_value(x, TypedValue(int))
+                assert_type(x, int)
                 assert_type(x, int)
 
     @assert_passes()
@@ -2611,9 +2600,7 @@ class TestFloatInt(TestNameCheckVisitorBase):
         from typing_extensions import assert_type
 
         def capybara(x: complex):
-            assert_is_value(
-                x, TypedValue(complex) | TypedValue(float) | TypedValue(int)
-            )
+            assert_type(x, complex | float | int)
             assert_type(x, complex)
 
             if isinstance(x, float):
@@ -2630,7 +2617,7 @@ class TestFloatInt(TestNameCheckVisitorBase):
 
         def capybara(x):
             f = cast(float, x)
-            assert_is_value(f, TypedValue(float) | TypedValue(int))
+            assert_type(f, float | int)
             assert_type(f, float)
 
     @assert_passes()
@@ -2641,7 +2628,7 @@ class TestFloatInt(TestNameCheckVisitorBase):
             pass
 
         def capybara(x: MyFloat):
-            assert_is_value(x, TypedValue(MyFloat))
+            assert_type(x, MyFloat)
             assert_type(x, MyFloat)
 
         def caller():
@@ -2656,7 +2643,7 @@ class TestFloatInt(TestNameCheckVisitorBase):
             pass
 
         def capybara(x: MyComplex):
-            assert_is_value(x, TypedValue(MyComplex))
+            assert_type(x, MyComplex)
             assert_type(x, MyComplex)
 
         def caller():

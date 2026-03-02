@@ -46,7 +46,7 @@ class TestBadAsyncYield(TestNameCheckVisitorBase):
             val = yield ConstFuture(3)
             assert_is_value(val, KnownValue(3))
             val2 = yield None
-            assert_is_value(val2, KnownValue(None))
+            assert_type(val2, None)
 
             if condition:
                 task = ConstFuture(4)

@@ -24,7 +24,7 @@ class TestNestedFunction(TestNameCheckVisitorBase):
             class NestedClass(object):
                 pass
 
-            assert_is_value(nested(), KnownValue(None))
+            assert_type(nested(), None)
             nested(1)  # E: incompatible_call
             assert_is_value(
                 NestedClass,
@@ -130,7 +130,7 @@ class TestFunctionDefinitions(TestNameCheckVisitorBase):
             assert_type(a, int)
 
         def g(a: Optional[str] = None, /, b: int = 1) -> None:
-            assert_is_value(a, TypedValue(str) | KnownValue(None))
+            assert_type(a, str | None)
             assert_type(b, int)
 
         def h(a, b: int = 1, /, c: int = 2) -> None:  # E: missing_parameter_annotation
@@ -227,7 +227,7 @@ class TestDecorators(TestNameCheckVisitorBase):
                 ),
             )
             async with make_cm() as value:
-                assert_is_value(value, KnownValue(None))
+                assert_type(value, None)
 
     @assert_passes()
     def test_contextmanager_generator_variants(self):

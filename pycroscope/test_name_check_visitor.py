@@ -1298,8 +1298,8 @@ class TestNameCheckVisitor(TestNameCheckVisitorBase):
                     "Local", TypedValue(f"{__name__}.outer.<locals>.Local")
                 ),
             )
-            assert_is_value(Local.static_method(), TypedValue(int))
-            assert_is_value(Local.plus_one(1), TypedValue(int))
+            assert_type(Local.static_method(), int)
+            assert_type(Local.plus_one(1), int)
             return Local
 
         assert_is_value(
@@ -1320,10 +1320,10 @@ class TestNameCheckVisitor(TestNameCheckVisitorBase):
             class Child(Base):
                 pass
 
-            assert_is_value(Child.base_method(), TypedValue(int))
+            assert_type(Child.base_method(), int)
             return Child
 
-        assert_is_value(outer().base_method(), TypedValue(int))
+        assert_type(outer().base_method(), int)
 
     @assert_passes()
     def test_synthetic_class_inherits_runtime_base_attributes(self):
@@ -1336,10 +1336,10 @@ class TestNameCheckVisitor(TestNameCheckVisitorBase):
             class Child(RuntimeBase):
                 pass
 
-            assert_is_value(Child.runtime_method(), TypedValue(str))
+            assert_type(Child.runtime_method(), str)
             return Child
 
-        assert_is_value(outer().runtime_method(), TypedValue(str))
+        assert_type(outer().runtime_method(), str)
 
     @assert_passes()
     def test_typedvalue_accepts_function_local_synthetic_class(self):
@@ -1694,7 +1694,7 @@ class TestNameCheckVisitor(TestNameCheckVisitorBase):
     def test_self_type_inference(self):
         class Capybara(object):
             def get(self, i):
-                assert_is_value(self, TypedValue(Capybara))
+                assert_type(self, Capybara)
                 return self[i]
 
     @assert_passes()
@@ -1819,7 +1819,7 @@ class TestNameCheckVisitor(TestNameCheckVisitorBase):
             answer = PropertyObject(aid)
             print(answer)
             answer = PropertyObject(aid)
-            assert_is_value(answer, TypedValue(PropertyObject))
+            assert_type(answer, PropertyObject)
 
     @assert_passes()
     def test_duplicate_method(self):
@@ -1881,7 +1881,7 @@ class TestSubclassValue(TestNameCheckVisitorBase):
 
         def capybara(x: TI, y: str):
             assert_is_value(x, SubclassValue(TypedValue(int)))
-            assert_is_value(y, TypedValue(str))
+            assert_type(y, str)
 
     @assert_passes()
     def test_type_any(self):
@@ -1892,7 +1892,7 @@ class TestSubclassValue(TestNameCheckVisitorBase):
 
         def capybara():
             f(1)
-            assert_is_value(f(1), TypedValue(type))
+            assert_type(f(1), type)
 
     @assert_passes()
     def test_call_method_through_type(self):
@@ -1917,7 +1917,7 @@ class TestSubclassValue(TestNameCheckVisitorBase):
             pass
 
         def capybara(enum: Type[Enum]) -> None:
-            assert_is_value(enum["x"], TypedValue(bytes))
+            assert_type(enum["x"], bytes)
 
     @assert_passes()
     def test_metaclass_call(self):
@@ -1931,7 +1931,7 @@ class TestSubclassValue(TestNameCheckVisitorBase):
             pass
 
         def capybara(cls: Type[C]) -> None:
-            assert_is_value(cls("x"), TypedValue(bytes))
+            assert_type(cls("x"), bytes)
 
     @assert_passes()
     def test_default_constructor_call(self):
@@ -2255,7 +2255,7 @@ class TestClassAttributeChecker(TestNameCheckVisitorBase):
 
         class Neochoerus(Capybara):
             def eat(self):
-                assert_is_value(self.obj, TypedValue(str))
+                assert_type(self.obj, str)
 
     @assert_passes()
     def test_unexamined_base(self):
@@ -2312,7 +2312,7 @@ class TestBadRaise(TestNameCheckVisitorBase):
         def bad_type():
             # make sure this isn't inferenced to KnownValue, so this tests what it's supposed to
             # test
-            assert_is_value(int("3"), TypedValue(int))
+            assert_type(int("3"), int)
             raise int("3")  # E: bad_exception
 
         def wrong_type():
@@ -2522,8 +2522,8 @@ class TestImports(TestNameCheckVisitorBase):
             import inspect
 
             assert_is_value(inspect.signature, KnownValue(_inspect.signature))
-            assert_is_value(inspect.signature(capybara), TypedValue(inspect.Signature))
-            assert_is_value(_inspect.signature(capybara), TypedValue(inspect.Signature))
+            assert_type(inspect.signature(capybara), inspect.Signature)
+            assert_type(_inspect.signature(capybara), inspect.Signature)
 
     @assert_passes()
     def test_local_import_from(self):
@@ -2692,8 +2692,8 @@ class TestIterationTarget(TestNameCheckVisitorBase):
 
         def capybara(it: ItemsView[int, str]):
             for k, v in it:
-                assert_is_value(k, TypedValue(int))
-                assert_is_value(v, TypedValue(str))
+                assert_type(k, int)
+                assert_type(v, str)
 
     @assert_passes()
     def test_incomplete(self):
@@ -2783,7 +2783,7 @@ class TestIterationTarget(TestNameCheckVisitorBase):
 
         def capybara():
             for x in HasGetItem():
-                assert_is_value(x, TypedValue(str))
+                assert_type(x, str)
 
             for x in BadGetItem():  # E: unsupported_operation
                 assert_is_value(x, AnyValue(AnySource.error))
@@ -3155,11 +3155,11 @@ class TestUnpacking(TestNameCheckVisitorBase):
             assert_is_value(b, KnownValue(2))
 
             c, d = lst
-            assert_is_value(c, TypedValue(int))
-            assert_is_value(d, TypedValue(int))
+            assert_type(c, int)
+            assert_type(d, int)
 
             e, f = (lst, 42)
-            assert_is_value(e, GenericValue(list, [TypedValue(int)]))
+            assert_type(e, list[int])
             assert_is_value(f, KnownValue(42))
 
             g, h = union
@@ -3321,7 +3321,7 @@ class TestFStrings(TestNameCheckVisitorBase):
     def test_fstr(self):
         def capybara(x):
             y = f"{x} stuff"
-            assert_is_value(y, TypedValue(str))
+            assert_type(y, str)
 
     @assert_passes()
     def test_undefined_name(self):
@@ -3370,12 +3370,12 @@ class TestAnnAssign(TestNameCheckVisitorBase):
             x: Final = 3
             assert_is_value(x, KnownValue(3))
             y: int = 3
-            assert_is_value(y, TypedValue(int))
+            assert_type(y, int)
             z: bytes
             print(z)  # E: undefined_name
 
             y: bytes = b"ytes"  # E: already_declared
-            assert_is_value(y, TypedValue(bytes))
+            assert_type(y, bytes)
 
     @assert_passes()
     def test_final(self):
@@ -3706,7 +3706,7 @@ class TestAnnAssign(TestNameCheckVisitorBase):
     def test_inconsistent_type(self):
         def capybara():
             x: int = 1
-            assert_is_value(x, TypedValue(int))
+            assert_type(x, int)
             x = "x"  # E: incompatible_assignment
 
             y: int = "y"  # E: incompatible_assignment
@@ -3716,13 +3716,13 @@ class TestAnnAssign(TestNameCheckVisitorBase):
     def test_class_scope(self):
         class Capybara:
             x: int = 0
-            assert_is_value(x, TypedValue(int))
+            assert_type(x, int)
 
             def __init__(self) -> None:
                 self.y: object = 3
 
             def method(self):
-                assert_is_value(self.y, TypedValue(object))
+                assert_type(self.y, object)
 
     @assert_passes()
     def test_loop(self):
@@ -3735,11 +3735,11 @@ class TestAnnAssign(TestNameCheckVisitorBase):
     @assert_passes()
     def test_module_scope(self):
         x: int = 3
-        assert_is_value(x, TypedValue(int))
+        assert_type(x, int)
 
         if __name__ == "__main__":
             y: int = 3
-            assert_is_value(y, TypedValue(int))
+            assert_type(y, int)
 
 
 class TestWhile(TestNameCheckVisitorBase):
@@ -3783,7 +3783,7 @@ class TestWith(TestNameCheckVisitorBase):
                 assert_is_value(e, AnyValue(AnySource.error))
 
             with GoodCM() as e:
-                assert_is_value(e, TypedValue(int))
+                assert_type(e, int)
 
     @assert_passes()
     def test_async_with(self) -> None:
@@ -3812,7 +3812,7 @@ class TestWith(TestNameCheckVisitorBase):
                 assert_is_value(e, AnyValue(AnySource.error))
 
             async with GoodCM() as e:
-                assert_is_value(e, TypedValue(int))
+                assert_type(e, int)
 
 
 class HasGetattr(object):
@@ -3956,12 +3956,12 @@ class TestWalrus(TestNameCheckVisitorBase):
 
         def capybara():
             if x := opt():
-                assert_is_value(x, TypedValue(int))
-            assert_is_value(x, TypedValue(int) | KnownValue(None))
+                assert_type(x, int)
+            assert_type(x, int | None)
 
             if (y := opt()) is not None:
-                assert_is_value(y, TypedValue(int))
-            assert_is_value(y, TypedValue(int) | KnownValue(None))
+                assert_type(y, int)
+            assert_type(y, int | None)
 
     @assert_passes()
     def test_and(self):
@@ -3972,8 +3972,8 @@ class TestWalrus(TestNameCheckVisitorBase):
 
         def capybara(cond):
             if (x := opt()) and cond:
-                assert_is_value(x, TypedValue(int))
-            assert_is_value(x, TypedValue(int) | KnownValue(None))
+                assert_type(x, int)
+            assert_type(x, int | None)
 
         def func(myvar: str, strset: Set[str]) -> None:
             if (encoder_type := myvar) and myvar in strset:
@@ -4002,7 +4002,7 @@ class TestWalrus(TestNameCheckVisitorBase):
 
         def capybara(elts: List[Optional[int]]) -> None:
             if any((x := i) is not None for i in elts):
-                assert_is_value(x, TypedValue(int) | KnownValue(None))
+                assert_type(x, int | None)
                 print(i)  # E: undefined_name
 
 
@@ -4012,8 +4012,8 @@ class TestUnion(TestNameCheckVisitorBase):
         from typing import Optional
 
         def capybara(x: Optional[str], y: Optional[str]) -> Optional[str]:
-            assert_is_value(x, TypedValue(str) | KnownValue(None))
-            assert_is_value(y, TypedValue(str) | KnownValue(None))
+            assert_type(x, str | None)
+            assert_type(y, str | None)
             return x or y
 
 
@@ -4110,18 +4110,18 @@ class TestContextManagerWithSuppression(TestNameCheckVisitorBase):
             if isinstance(x, int):
                 with MaybeSuppressException():
                     raise ValueError
-            assert_is_value(x, TypedValue(str))
+            assert_type(x, str)
 
         def use_nested_contexts():
             b = 2
             with SuppressException(), EmptyContext() as b:
-                assert_is_value(b, KnownValue(None))
+                assert_type(b, None)
             assert_is_value(b, KnownValue(2) | KnownValue(None))
 
             c = 2  # E: unused_assignment
             with EmptyContext() as c, SuppressException():
-                assert_is_value(c, KnownValue(None))
-            assert_is_value(c, KnownValue(None))
+                assert_type(c, None)
+            assert_type(c, None)
 
     @assert_passes()
     def test_possibly_undefined_with_leaves_scope(self):
@@ -4203,13 +4203,13 @@ class TestContextManagerWithSuppression(TestNameCheckVisitorBase):
         async def use_async_nested_contexts():
             b = 2
             async with AsyncSuppressException(), AsyncEmptyContext() as b:
-                assert_is_value(b, KnownValue(None))
+                assert_type(b, None)
             assert_is_value(b, KnownValue(2) | KnownValue(None))
 
             c = 2  # E: unused_assignment
             async with AsyncEmptyContext() as c, AsyncSuppressException():
-                assert_is_value(c, KnownValue(None))
-            assert_is_value(c, KnownValue(None))
+                assert_type(c, None)
+            assert_type(c, None)
 
     def test_async_contextlib_manager(self):
         import contextlib

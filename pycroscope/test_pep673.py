@@ -1,7 +1,6 @@
 # static analysis: ignore
 from .test_name_check_visitor import TestNameCheckVisitorBase
 from .test_node_visitor import assert_passes
-from .value import GenericValue, KnownValue, TypedValue, assert_is_value
 
 
 class TestPEP673(TestNameCheckVisitorBase):
@@ -114,7 +113,7 @@ class TestPEP673(TestNameCheckVisitorBase):
 
         def capybara(o: OrdinalLinkedList):
             # Unfortunately we don't fully support the example in
-            assert_is_value(o.next, KnownValue(None) | TypedValue(OrdinalLinkedList))
+            assert_type(o.next, OrdinalLinkedList | None)
 
     @assert_passes()
     def test_generic(self):
@@ -144,9 +143,7 @@ class TestPEP673(TestNameCheckVisitorBase):
             children: ClassVar[List[Self]]
 
         def capybara():
-            assert_is_value(
-                Registry.children, GenericValue(list, [TypedValue(Registry)])
-            )
+            assert_type(Registry.children, list[Registry])
 
     @assert_passes()
     def test_stub(self):
