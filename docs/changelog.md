@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Reduce name-based method heuristics by checking receiver parameters structurally in more places, which improves consistency for methods that don't use literal `self`/`cls` names.
 - Improve method-receiver handling by using inferred receiver semantics instead of hard-coded `self`/`cls` names, so checks for `Final` instance attributes, protocol-member synthesis, enum `_value_` assignments, and receiver attribute writes now behave correctly with nonstandard receiver names.
 - Improve protocol/class-object conformance for class-object assignments: pycroscope now enforces method/property/class-variable compatibility more accurately (including static-fallback analysis for unimportable modules).
 - Fix `@dataclass_transform` metadata tracking to live on inferred values instead of scope-name side tables, which avoids internal errors in cases like `ParamSpec` declarations and `global`/`nonlocal` references.

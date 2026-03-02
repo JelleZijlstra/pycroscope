@@ -358,7 +358,6 @@ def compute_parameters(
                 and is_nested_in_class
                 and not is_staticmethod
                 and not isinstance(node, ast.Lambda)
-                and arg.arg in {"self", "cls"}
             )
             if (
                 kind is ParameterKind.POSITIONAL_OR_KEYWORD

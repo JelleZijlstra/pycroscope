@@ -1961,16 +1961,23 @@ class Checker:
     def _bind_synthetic_method(
         self, signature: ConcreteSignature
     ) -> ConcreteSignature | None:
-        def _first_parameter_name(sig: Signature) -> str | None:
-            return next(iter(sig.parameters.values())).name if sig.parameters else None
+        def _has_bindable_receiver_param(sig: Signature) -> bool:
+            if not sig.parameters:
+                return False
+            first_param = next(iter(sig.parameters.values()))
+            return first_param.kind in (
+                ParameterKind.POSITIONAL_ONLY,
+                ParameterKind.POSITIONAL_OR_KEYWORD,
+                ParameterKind.VAR_POSITIONAL,
+                ParameterKind.ELLIPSIS,
+            )
 
         if isinstance(signature, Signature):
-            if _first_parameter_name(signature) not in {"self", "cls"}:
+            if not _has_bindable_receiver_param(signature):
                 return None
         elif isinstance(signature, OverloadedSignature):
             if not all(
-                _first_parameter_name(sig) in {"self", "cls"}
-                for sig in signature.signatures
+                _has_bindable_receiver_param(sig) for sig in signature.signatures
             ):
                 return None
         bound = make_bound_method(
