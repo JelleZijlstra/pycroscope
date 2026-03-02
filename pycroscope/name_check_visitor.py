@@ -2611,7 +2611,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             return None
         child_bound = child_sig.bind_self(ctx=self)
         if child_bound is None:
-            return CanAssignError(f"{child_value} is missing a 'self' argument")
+            return CanAssignError(f"{child_value} is missing a receiver argument")
         return base_bound.can_assign(child_bound, self)
 
     def _check_for_class_variable_redefinition(
@@ -5517,7 +5517,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         expected_params = [
             SigParameter(
                 "self",
-                ParameterKind.POSITIONAL_OR_KEYWORD,
+                ParameterKind.POSITIONAL_ONLY,
                 annotation=AnyValue(AnySource.inference),
             ),
             *post_init_params,

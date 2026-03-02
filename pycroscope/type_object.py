@@ -1014,25 +1014,34 @@ def _should_refine_class_object_member_lookup(
 
 
 def _callable_value_missing_receiver(value: Value, ctx: CanAssignContext) -> bool:
-    valid_self_names = {"self", "cls", "_self", "__self"}
     signature = ctx.signature_from_value(value)
     if isinstance(signature, BoundMethodSignature):
         return True
     if isinstance(signature, Signature):
-        first = next(iter(signature.parameters.values()), None)
-        return first is None or first.name not in valid_self_names
+        return signature.bind_self(ctx=ctx) is None
     if isinstance(signature, OverloadedSignature):
-        first_params = [
-            next(iter(subsig.parameters.values()), None)
-            for subsig in signature.signatures
-        ]
-        if not first_params:
+        if not signature.signatures:
             return True
-        return any(
-            param is None or param.name not in valid_self_names
-            for param in first_params
-        )
+        return any(subsig.bind_self(ctx=ctx) is None for subsig in signature.signatures)
     return False
+
+
+def _signature_has_receiver_parameter(signature: Signature, self_value: Value) -> bool:
+    first_parameter = next(iter(signature.parameters.values()), None)
+    if first_parameter is None or first_parameter.kind not in (
+        ParameterKind.POSITIONAL_ONLY,
+        ParameterKind.POSITIONAL_OR_KEYWORD,
+    ):
+        return False
+    annotation = replace_fallback(first_parameter.annotation)
+    if any(
+        isinstance(subval, TypeVarValue) and subval.typevar is SelfT
+        for subval in annotation.walk_values()
+    ):
+        return True
+    annotation_key = _class_key_from_value(annotation)
+    self_key = _class_key_from_value(replace_fallback(self_value))
+    return annotation_key is not None and annotation_key == self_key
 
 
 def _class_object_value_for_key(
@@ -1049,18 +1058,11 @@ def _class_object_value_for_key(
 def _maybe_bind_dunder_protocol_member(
     value: Value, member: str, self_value: Value, ctx: CanAssignContext
 ) -> Value:
-    def _has_self_parameter(sig: Signature | OverloadedSignature) -> bool:
-        def _first_parameter_name(signature: Signature) -> str | None:
-            return (
-                next(iter(signature.parameters.values())).name
-                if signature.parameters
-                else None
-            )
-
+    def _has_receiver_parameter(sig: Signature | OverloadedSignature) -> bool:
         if isinstance(sig, Signature):
-            return _first_parameter_name(sig) in {"self", "cls"}
+            return _signature_has_receiver_parameter(sig, self_value)
         return all(
-            _first_parameter_name(subsig) in {"self", "cls"}
+            _signature_has_receiver_parameter(subsig, self_value)
             for subsig in sig.signatures
         )
 
@@ -1076,7 +1078,7 @@ def _maybe_bind_dunder_protocol_member(
         return value
     if isinstance(
         signature, (Signature, OverloadedSignature)
-    ) and not _has_self_parameter(signature):
+    ) and not _has_receiver_parameter(signature):
         return value
     if isinstance(signature, (Signature, OverloadedSignature)):
         bound = signature.bind_self(
@@ -1098,16 +1100,15 @@ def _bind_protocol_call_expected(
         return value
     if isinstance(signature, (Signature, OverloadedSignature)):
         if isinstance(signature, Signature):
-            first_params = [next(iter(signature.parameters.values()), None)]
+            has_receiver_parameter = _signature_has_receiver_parameter(
+                signature, self_value
+            )
         else:
-            first_params = [
-                next(iter(sig.parameters.values()), None)
+            has_receiver_parameter = all(
+                _signature_has_receiver_parameter(sig, self_value)
                 for sig in signature.signatures
-            ]
-        if not all(
-            param is not None and param.name in {"self", "cls", "__self"}
-            for param in first_params
-        ):
+            )
+        if not has_receiver_parameter:
             return value
         bound = signature.bind_self(self_value=self_value, ctx=ctx)
         if bound is not None:

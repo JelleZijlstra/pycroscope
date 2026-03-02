@@ -571,6 +571,21 @@ class TestCalls(TestNameCheckVisitorBase):
         print(ok, bad)
 
     @assert_passes()
+    def test_typed_dict_dict_receiver_with_nonstandard_parameter_name(self):
+        from typing_extensions import TypedDict, assert_type
+
+        class TD(TypedDict):
+            a: int
+            b: int
+
+        class DictOps:
+            def pop(receiver: dict[str, int], key: str) -> int:  # E: method_first_arg
+                return receiver.pop(key)
+
+        def capybara(td: TD) -> None:
+            assert_type(DictOps.pop(td, "a"), int)
+
+    @assert_passes()
     def test_error_location(self):
         def two_args(x: str, y: int) -> None:
             pass
