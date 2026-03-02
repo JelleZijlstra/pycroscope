@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Preserve literal type arguments when inferring generic class-syntax `NamedTuple` constructor return types (for example, `Box(1)` now infers `Box[Literal[1]]`).
+
 ## Version 0.3.0 (March 1, 2026)
 
 This release includes a large number of changes aimed at improving compliance with the

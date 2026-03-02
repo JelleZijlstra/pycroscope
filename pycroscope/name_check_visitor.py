@@ -7692,7 +7692,18 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             if isinstance(value.typ, str):
                 return value.typ in {"builtins.type", "type"}
             return False
-        return False
+        if isinstance(
+            value,
+            (
+                AnyValue,
+                SyntheticModuleValue,
+                UnboundMethodValue,
+                TypeFormValue,
+                PredicateValue,
+            ),
+        ):
+            return False
+        assert_never(value)
 
     def _is_assignment_to_classvar_through_instance(
         self, node: ast.Attribute, root_value: Value
@@ -7711,14 +7722,34 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             return self._namedtuple_fields_for_simple_attribute_root(value.value)
         if isinstance(value, (MultiValuedValue, IntersectionValue)):
             return None
-        typ: type | None = None
-        if isinstance(value, KnownValue) and not isinstance(value.val, type):
+        if isinstance(value, KnownValue):
+            if isinstance(value.val, type):
+                return None
             typ = type(value.val)
-        elif isinstance(value, GenericValue) and isinstance(value.typ, type):
+        elif isinstance(value, GenericValue):
+            if not isinstance(value.typ, type):
+                return None
             typ = value.typ
-        elif isinstance(value, TypedValue) and isinstance(value.typ, type):
+        elif isinstance(value, TypedValue):
+            if not isinstance(value.typ, type):
+                return None
             typ = value.typ
-        if typ is None or not is_namedtuple_class(typ):
+        elif isinstance(
+            value,
+            (
+                AnyValue,
+                SyntheticClassObjectValue,
+                SyntheticModuleValue,
+                UnboundMethodValue,
+                SubclassValue,
+                TypeFormValue,
+                PredicateValue,
+            ),
+        ):
+            return None
+        else:
+            assert_never(value)
+        if not is_namedtuple_class(typ):
             return None
         fields = safe_getattr(typ, "_fields", None)
         if not isinstance(fields, tuple):
@@ -13533,7 +13564,6 @@ def _runtime_object_for_enum_member(value: Value) -> object:
     ):
         return object()
     assert_never(value)
-    return object()
 
 
 def _get_bool_literal(node: ast.AST) -> bool | None:
@@ -13891,7 +13921,6 @@ def _is_variance_declaration_arg(arg: Value) -> bool:
     ):
         return False
     assert_never(arg)
-    return False
 
 
 def _is_variance_declaration_base(base_value: Value) -> bool:
@@ -13977,7 +14006,6 @@ def _type_param_value_from_value(value: Value) -> TypeVarValue | None:
     ):
         return None
     assert_never(value)
-    return None
 
 
 def _count_starred_type_param_args(slice_node: ast.AST) -> int:
@@ -14017,7 +14045,6 @@ def _is_protocol_base(base_value: Value) -> bool:
     ):
         return False
     assert_never(base_value)
-    return False
 
 
 def _mangle_class_attribute_name(class_name: str, attribute_name: str) -> str:
