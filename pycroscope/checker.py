@@ -1967,8 +1967,6 @@ class Checker:
     def _make_any_base_attribute(self, name: str, attr: Value) -> Value:
         attr = normalize_synthetic_descriptor_attribute(attr)
         if isinstance(attr, CallableValue):
-            if _is_dunder(name):
-                return attr
             maybe_bound = self._bind_synthetic_method(attr.signature)
             if maybe_bound is not None:
                 return CallableValue(maybe_bound)
@@ -2141,4 +2139,9 @@ class CheckerAttrContext(AttrContext):
         return self.attr != "__call__"
 
     def bind_synthetic_instance_attribute(self, attr_name: str, value: Value) -> Value:
-        return _normalize_synthetic_attribute(value)
+        value = _normalize_synthetic_attribute(value)
+        if isinstance(value, CallableValue):
+            maybe_bound = self.checker._bind_synthetic_method(value.signature)
+            if maybe_bound is not None:
+                return CallableValue(maybe_bound)
+        return value

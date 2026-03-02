@@ -64,21 +64,6 @@ from .value import (
 
 SYNTHETIC_PROPERTY_GETTER_PREFIX = "%property_getter:"
 SYNTHETIC_PROPERTY_SETTER_PREFIX = "%property_setter:"
-_ZERO_ARG_DUNDER_MEMBERS = frozenset(
-    {
-        "__bool__",
-        "__bytes__",
-        "__complex__",
-        "__float__",
-        "__hash__",
-        "__index__",
-        "__int__",
-        "__iter__",
-        "__len__",
-        "__repr__",
-        "__str__",
-    }
-)
 
 
 def _as_concrete_signature(
@@ -1110,53 +1095,8 @@ def _class_object_value_for_key(
 
 
 def _maybe_bind_dunder_protocol_member(
-    value: Value, member: str, self_value: Value, ctx: CanAssignContext
+    value: Value, _member: str, _self_value: Value, _ctx: CanAssignContext
 ) -> Value:
-    def _has_receiver_parameter(sig: Signature | OverloadedSignature) -> bool:
-        # For these receiver-only dunders, missing/self-like annotations are common
-        # (especially in synthetic/import-failure flows), so allow Any-typed first
-        # parameters as receiver candidates. Applying this broadly would double-bind
-        # methods like __contains__ or __getitem__.
-        allow_unannotated_receiver = member in _ZERO_ARG_DUNDER_MEMBERS
-        if isinstance(sig, Signature):
-            return _signature_has_receiver_parameter(
-                sig,
-                self_value,
-                ctx=ctx,
-                member=member,
-                allow_any_annotation=allow_unannotated_receiver,
-            )
-        return all(
-            _signature_has_receiver_parameter(
-                subsig,
-                self_value,
-                ctx=ctx,
-                member=member,
-                allow_any_annotation=allow_unannotated_receiver,
-            )
-            for subsig in sig.signatures
-        )
-
-    if not (member.startswith("__") and member.endswith("__")):
-        return value
-    if value is UNINITIALIZED_VALUE:
-        return value
-    unwrapped = replace_fallback(value)
-    if not isinstance(unwrapped, CallableValue):
-        return value
-    signature = unwrapped.signature
-    if isinstance(signature, BoundMethodSignature):
-        return value
-    if isinstance(
-        signature, (Signature, OverloadedSignature)
-    ) and not _has_receiver_parameter(signature):
-        return value
-    if isinstance(signature, (Signature, OverloadedSignature)):
-        bound = signature.bind_self(
-            self_value=self_value, self_annotation_value=None, ctx=ctx
-        )
-        if bound is not None:
-            return CallableValue(bound, unwrapped.typ)
     return value
 
 
