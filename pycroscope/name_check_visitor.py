@@ -11704,21 +11704,26 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         )
 
     def _get_dunder(self, node: ast.AST, callee_val: Value, method_name: str) -> Value:
+        synthetic_lookup_val = callee_val
         if isinstance(callee_val, AnnotatedValue):
+            is_dunder = method_name.startswith("__") and method_name.endswith("__")
             has_explicit_method = any(
                 extension.attribute_name == KnownValue(method_name)
                 for extension in callee_val.get_metadata_of_type(HasAttrExtension)
             )
-            if has_explicit_method:
+            if has_explicit_method and not is_dunder:
                 return self.get_attribute(
                     Composite(callee_val),
                     method_name,
                     node,
                     ignore_none=self.options.get_value_for(IgnoreNoneAttributes),
                 )
+            synthetic_lookup_val = callee_val.value
         fallback_lookup_val = callee_val.get_type_value()
-        if isinstance(callee_val, TypedValue) and isinstance(callee_val.typ, str):
-            synthetic_class = self.checker.get_synthetic_class(callee_val.typ)
+        if isinstance(synthetic_lookup_val, TypedValue) and isinstance(
+            synthetic_lookup_val.typ, str
+        ):
+            synthetic_class = self.checker.get_synthetic_class(synthetic_lookup_val.typ)
             if synthetic_class is not None:
                 method_object = self.get_attribute(
                     Composite(synthetic_class),
@@ -11728,7 +11733,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 )
                 if method_object is not UNINITIALIZED_VALUE:
                     synthetic_typevars = self._get_synthetic_instance_typevars(
-                        callee_val
+                        synthetic_lookup_val
                     )
                     if synthetic_typevars:
                         if isinstance(method_object, KnownValue):
