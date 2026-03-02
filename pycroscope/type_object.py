@@ -42,7 +42,6 @@ from .value import (
     IntersectionValue,
     KnownValue,
     MultiValuedValue,
-    NotAGradualType,
     PredicateValue,
     SelfT,
     SimpleType,
@@ -985,10 +984,7 @@ def _should_refine_class_object_member_lookup(
         return False
     if actual is UNINITIALIZED_VALUE:
         return True
-    try:
-        unwrapped = replace_fallback(actual)
-    except NotAGradualType:
-        return False
+    unwrapped = replace_fallback(actual)
     if isinstance(unwrapped, AnyValue):
         return True
     if not _is_member_method(class_key, member, ctx, seen=set()):
@@ -1051,10 +1047,7 @@ def _maybe_bind_dunder_protocol_member(
         return value
     if value is UNINITIALIZED_VALUE:
         return value
-    try:
-        unwrapped = replace_fallback(value)
-    except NotAGradualType:
-        return value
+    unwrapped = replace_fallback(value)
     if not isinstance(unwrapped, CallableValue):
         return value
     signature = unwrapped.signature
@@ -1076,10 +1069,7 @@ def _maybe_bind_dunder_protocol_member(
 def _bind_protocol_call_expected(
     value: Value, self_value: Value, ctx: CanAssignContext
 ) -> Value:
-    try:
-        unwrapped = replace_fallback(value)
-    except NotAGradualType:
-        return value
+    unwrapped = replace_fallback(value)
     if not isinstance(unwrapped, CallableValue):
         return value
     signature = unwrapped.signature

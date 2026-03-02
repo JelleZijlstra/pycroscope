@@ -52,7 +52,6 @@ from pycroscope.value import (
     LowerBound,
     MultiValuedValue,
     NewTypeValue,
-    NotAGradualType,
     ParamSpecArgsValue,
     ParamSpecKwargsValue,
     PartialValue,
@@ -896,19 +895,10 @@ def _extract_type_form(value: Value, ctx: CanAssignContext) -> Value | CanAssign
     and a small set of type-like wrappers (for example ``SubclassValue``). If the
     input cannot be interpreted as a valid TypeForm expression, return ``CanAssignError``.
     """
-    try:
-        value = gradualize(value)
-    except NotAGradualType:
-        fallback = value.get_fallback_value()
-        if fallback is not None:
-            return _extract_type_form(fallback, ctx)
-        return CanAssignError(f"{value} is not a TypeForm")
+    value = gradualize(value)
 
     if isinstance(value, TypeFormValue):
-        try:
-            return gradualize(value.inner_type)
-        except NotAGradualType:
-            return CanAssignError(f"{value} is not a TypeForm")
+        return gradualize(value.inner_type)
     if isinstance(value, AnnotatedValue):
         # Annotated metadata is ignored for implicit TypeForm extraction.
         return _extract_type_form(value.value, ctx)
@@ -926,10 +916,7 @@ def _extract_type_form(value: Value, ctx: CanAssignContext) -> Value | CanAssign
             if isinstance(subval_as_type, CanAssignError):
                 return subval_as_type
             vals.append(subval_as_type)
-        try:
-            return gradualize(unite_values(*vals))
-        except NotAGradualType:
-            return CanAssignError(f"{value} is not a TypeForm")
+        return gradualize(unite_values(*vals))
     if isinstance(value, KnownValue):
         from pycroscope.annotations import type_from_runtime, type_from_value
 
@@ -940,10 +927,7 @@ def _extract_type_form(value: Value, ctx: CanAssignContext) -> Value | CanAssign
             type_form = type_from_runtime(value.val, visitor=ctx, suppress_errors=True)
         if type_form == AnyValue(AnySource.error):
             return CanAssignError(f"{value} is not a TypeForm")
-        try:
-            extracted = gradualize(type_form)
-        except NotAGradualType:
-            return CanAssignError(f"{value} is not a TypeForm")
+        extracted = gradualize(type_form)
         if isinstance(extracted, TypeVarValue) and (
             extracted.typevar is SelfT or extracted.is_typevartuple
         ):
