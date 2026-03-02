@@ -1113,6 +1113,10 @@ def _maybe_bind_dunder_protocol_member(
     value: Value, member: str, self_value: Value, ctx: CanAssignContext
 ) -> Value:
     def _has_receiver_parameter(sig: Signature | OverloadedSignature) -> bool:
+        # For these receiver-only dunders, missing/self-like annotations are common
+        # (especially in synthetic/import-failure flows), so allow Any-typed first
+        # parameters as receiver candidates. Applying this broadly would double-bind
+        # methods like __contains__ or __getitem__.
         allow_unannotated_receiver = member in _ZERO_ARG_DUNDER_MEMBERS
         if isinstance(sig, Signature):
             return _signature_has_receiver_parameter(
