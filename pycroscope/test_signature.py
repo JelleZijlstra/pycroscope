@@ -1681,6 +1681,21 @@ class TestUnpack(TestNameCheckVisitorBase):
             allow_import_failures=True,
         )
 
+    @skip_before((3, 11))
+    def test_var_positional_typevartuple_consistent_tuple_args(self):
+        self.assert_passes("""
+            from typing import TypeVarTuple, assert_type
+
+            Ts = TypeVarTuple("Ts")
+
+            def func4(*args: tuple[*Ts]) -> tuple[*Ts]:
+                return args[0]
+
+            assert_type(func4((0,), (1,)), tuple[int])  # OK
+            func4((0,), (1, 2))  # E: incompatible_call
+            assert_type(func4((0,), ("1",)), tuple[int | str])  # OK
+            """)
+
 
 class TestTooManyPosArgs(TestNameCheckVisitorBase):
     def test_basic(self):

@@ -6,6 +6,7 @@ This release includes a large number of changes aimed at improving compliance wi
 [Python typing spec](https://typing.python.org/en/latest/spec/index.html). While many features are still
 missing or incomplete, there is now some degree of support of all major type system features.
 
+- Improve `TypeVarTuple` solving for repeated tuple-parameter uses (for example `def f(*args: tuple[*Ts])`): incompatible tuple shapes across arguments are now rejected, and same-length element mismatches are inferred as per-position unions.
 - Reduce name-based method heuristics by checking receiver parameters structurally in more places, which improves consistency for methods that don't use literal `self`/`cls` names.
 - Improve generic protocol checking by honoring `Protocol[...]` type-parameter order and rejecting protocol matches with unsatisfiable cross-member type-variable constraints.
 - Improve method-receiver handling by using inferred receiver semantics instead of hard-coded `self`/`cls` names, so checks for `Final` instance attributes, protocol-member synthesis, enum `_value_` assignments, and receiver attribute writes now behave correctly with nonstandard receiver names.

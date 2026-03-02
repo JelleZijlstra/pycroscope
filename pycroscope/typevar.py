@@ -21,16 +21,49 @@ from .value import (
     KnownValue,
     LowerBound,
     OrBound,
+    SequenceValue,
     TypedValue,
     TypeVarLike,
     TypeVarMap,
     UpperBound,
     Value,
+    replace_known_sequence_value,
     unite_values,
 )
 
 BOTTOM = Sentinel("<bottom>")
 TOP = Sentinel("<top>")
+
+
+def _as_fixed_tuple_members(value: Value) -> Sequence[Value] | None:
+    value = replace_known_sequence_value(value)
+    if not isinstance(value, SequenceValue) or value.typ is not tuple:
+        return None
+    return value.get_member_sequence()
+
+
+def _merge_typevartuple_lower_bounds(
+    lower1: Value, lower2: Value, ctx: CanAssignContext
+) -> Value | CanAssignError | None:
+    members1 = _as_fixed_tuple_members(lower1)
+    members2 = _as_fixed_tuple_members(lower2)
+    if members1 is None or members2 is None:
+        return None
+    if len(members1) != len(members2):
+        return CanAssignError(
+            "Incompatible bounds on type variable",
+            [CanAssignError(str(lower1)), CanAssignError(str(lower2))],
+        )
+    merged_members = []
+    for member1, member2 in zip(members1, members2):
+        if member1.is_assignable(member2, ctx):
+            merged = member1
+        elif member2.is_assignable(member1, ctx):
+            merged = member2
+        else:
+            merged = unite_values(member1, member2)
+        merged_members.append((False, merged))
+    return SequenceValue(tuple, merged_members)
 
 
 def resolve_bounds_map(
@@ -61,9 +94,30 @@ def solve(bounds: Iterable[Bound], ctx: CanAssignContext) -> Value | CanAssignEr
     bottom = BOTTOM
     top = TOP
     options = None
+    is_typevartuple = False
 
     for bound in bounds:
         if isinstance(bound, LowerBound):
+            if is_instance_of_typing_name(bound.typevar, "TypeVarTuple"):
+                is_typevartuple = True
+                if bottom is not BOTTOM:
+                    merged = _merge_typevartuple_lower_bounds(bottom, bound.value, ctx)
+                    if isinstance(merged, CanAssignError):
+                        return merged
+                    if isinstance(merged, Value):
+                        bottom = merged
+                        continue
+                    compatibility = has_relation(
+                        bottom, bound.value, Relation.CONSISTENT, ctx
+                    )
+                    if isinstance(compatibility, CanAssignError):
+                        return CanAssignError(
+                            "Incompatible bounds on type variable",
+                            [
+                                CanAssignError(str(bottom)),
+                                CanAssignError(str(bound.value)),
+                            ],
+                        )
             # Ignore lower bounds to Any
             if isinstance(bound.value, AnyValue) and bottom is not BOTTOM:
                 continue
@@ -78,6 +132,8 @@ def solve(bounds: Iterable[Bound], ctx: CanAssignContext) -> Value | CanAssignEr
                 # TODO shouldn't this use intersection?
                 bottom = unite_values(bottom, bound.value)
         elif isinstance(bound, UpperBound):
+            if is_instance_of_typing_name(bound.typevar, "TypeVarTuple"):
+                is_typevartuple = True
             if top is TOP or top.is_assignable(bound.value, ctx):
                 top = bound.value
             elif bound.value.is_assignable(top, ctx):
@@ -111,9 +167,19 @@ def solve(bounds: Iterable[Bound], ctx: CanAssignContext) -> Value | CanAssignEr
             # TODO figure out how to handle this
             continue
         elif isinstance(bound, IsOneOf):
+            if is_instance_of_typing_name(bound.typevar, "TypeVarTuple"):
+                is_typevartuple = True
             options = bound.constraints
         else:
             assert False, f"unrecognized bound {bound}"
+
+    if is_typevartuple and isinstance(bottom, Value) and isinstance(top, Value):
+        compatibility = has_relation(bottom, top, Relation.CONSISTENT, ctx)
+        if isinstance(compatibility, CanAssignError):
+            return CanAssignError(
+                "Incompatible bounds on type variable",
+                [CanAssignError(str(bottom)), CanAssignError(str(top))],
+            )
 
     if bottom is BOTTOM:
         if top is TOP:
