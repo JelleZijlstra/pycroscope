@@ -6682,6 +6682,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 is_nested_in_class=is_nested_in_class,
                 is_classmethod=FunctionDecorator.classmethod in decorator_kinds,
                 is_staticmethod=FunctionDecorator.staticmethod in decorator_kinds,
+                declared_type_params=type_params,
             )
             if isinstance(node, ast.Lambda) or node.returns is None:
                 return_annotation = None

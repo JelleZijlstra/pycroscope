@@ -846,6 +846,8 @@ def has_invalid_paramspec_usage(
 ) -> bool:
     if _is_paramspec_annotation(value):
         return True
+    if isinstance(value, (ParamSpecArgsValue, ParamSpecKwargsValue)):
+        return True
     if isinstance(value, AnnotatedValue):
         return has_invalid_paramspec_usage(value.value, can_assign_ctx)
     if isinstance(value, MultiValuedValue):
