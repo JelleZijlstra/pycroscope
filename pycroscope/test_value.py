@@ -221,6 +221,16 @@ def test_typed_value() -> None:
     assert_can_assign(TypedValue(type), SubclassValue(TypedValue(float)))
 
 
+def test_typed_value_type_object_cache_is_context_local() -> None:
+    shared = TypedValue("pkg.A")
+    checker_with_base = Checker()
+    checker_with_base.register_synthetic_type_bases("pkg.A", [TypedValue(int)])
+    checker_without_base = Checker()
+
+    assert shared.get_type_object(checker_with_base).is_assignable_to_type(int)
+    assert not shared.get_type_object(checker_without_base).is_assignable_to_type(int)
+
+
 @runtime_checkable
 class Proto(Protocol):
     def asynq(self) -> None: ...

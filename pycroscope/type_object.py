@@ -50,12 +50,16 @@ from .value import (
     SyntheticModuleValue,
     TypedValue,
     TypeFormValue,
+    TypeVarLike,
+    TypeVarValue,
     UnboundMethodValue,
     Value,
     flatten_values,
+    get_tv_map,
     replace_fallback,
     stringify_object,
     unify_bounds_maps,
+    unite_values,
 )
 
 SYNTHETIC_PROPERTY_GETTER_PREFIX = "%property_getter:"
@@ -188,13 +192,12 @@ class TypeObject:
                 return CanAssignError(
                     f"Cannot assign super object {other_val} to protocol {self}"
                 )
-            self_basic = replace_fallback(self_val)
             use_cache = not isinstance(self_val, AnnotatedValue) and not isinstance(
                 other_val, AnnotatedValue
             )
             cache_key: tuple[Value, Value] | None = None
             if use_cache:
-                cache_key = (self_basic, other_basic)
+                cache_key = (self_val, other_val)
                 bounds_map = self._protocol_positive_cache.get(cache_key)
                 if bounds_map is not None:
                     return bounds_map
@@ -257,6 +260,12 @@ class TypeObject:
             protocol_type_key = self.typ
         else:
             protocol_type_key = None
+        if len(self.protocol_members) > 1:
+            protocol_self_typevar_map = _collect_protocol_self_typevar_map(
+                protocol_type_key, self.protocol_members, other_val, ctx
+            )
+        else:
+            protocol_self_typevar_map = {}
         apply_synthetic_member_rules = (
             isinstance(protocol_type_key, str)
             and _get_synthetic_class_for_key(protocol_type_key, ctx) is not None
@@ -337,6 +346,8 @@ class TypeObject:
                     # In static fallback mode, synthetic protocol members may not have
                     # a retrievable attribute type. Keep enforcing member presence.
                     expected = AnyValue(AnySource.inference)
+                if protocol_self_typevar_map:
+                    expected = expected.substitute_typevars(protocol_self_typevar_map)
                 expected = expected.substitute_typevars({SelfT: other_val})
                 actual_owner: Value = other_val
                 actual = ctx.get_attribute_from_value(actual_owner, member)
@@ -460,7 +471,17 @@ class TypeObject:
             if isinstance(can_assign, CanAssignError):
                 return can_assign
             bounds_maps.append(can_assign)
-        return unify_bounds_maps(bounds_maps)
+        bounds_map = unify_bounds_maps(bounds_maps)
+        # Protocol members can introduce shared type-variable constraints; reject
+        # matches where those constraints cannot be solved consistently.
+        from .typevar import resolve_bounds_map
+
+        _, errors = resolve_bounds_map(bounds_map, ctx)
+        if errors:
+            return CanAssignError(
+                "Conflicting type constraints for protocol members", list(errors)
+            )
+        return bounds_map
 
     def overrides_eq(self, self_val: Value, ctx: CanAssignContext) -> bool:
         if self.typ is type(None):
@@ -1139,6 +1160,66 @@ def _mark_protocol_call_signature_tail(
             replace(sig, parameters={param.name: param for param in marked_params})
         )
     return OverloadedSignature(marked_signatures)
+
+
+def _collect_protocol_self_typevar_map(
+    protocol_key: type | str | None,
+    protocol_members: set[str],
+    receiver_value: Value,
+    ctx: CanAssignContext,
+) -> dict[TypeVarLike, Value]:
+    """Collect typevar substitutions implied by receiver annotations.
+
+    This propagates `self: T` constraints across protocol members.
+    """
+    if not isinstance(protocol_key, type):
+        return {}
+
+    tv_map: dict[TypeVarLike, Value] = {}
+    for member in protocol_members:
+        descriptor = inspect.getattr_static(protocol_key, member, UNINITIALIZED_VALUE)
+        if descriptor is UNINITIALIZED_VALUE:
+            continue
+        if isinstance(descriptor, property):
+            callable_obj = descriptor.fget
+        elif isinstance(descriptor, (staticmethod, classmethod)):
+            callable_obj = None
+        elif inspect.isfunction(descriptor):
+            callable_obj = descriptor
+        else:
+            callable_obj = None
+        if callable_obj is None:
+            continue
+        signature = _as_concrete_signature(
+            ctx.signature_from_value(KnownValue(callable_obj)), ctx
+        )
+        if signature is None:
+            continue
+        signatures = (
+            signature.signatures
+            if isinstance(signature, OverloadedSignature)
+            else [signature]
+        )
+        for concrete in signatures:
+            parameters = list(concrete.parameters.values())
+            if not parameters:
+                continue
+            self_annotation = parameters[0].annotation
+            if not any(
+                isinstance(subvalue, TypeVarValue)
+                for subvalue in self_annotation.walk_values()
+            ):
+                continue
+            inferred = get_tv_map(self_annotation, receiver_value, ctx)
+            if isinstance(inferred, CanAssignError):
+                continue
+            for typevar, value in inferred.items():
+                existing = tv_map.get(typevar)
+                if existing is None:
+                    tv_map[typevar] = value
+                elif existing != value:
+                    tv_map[typevar] = unite_values(existing, value)
+    return tv_map
 
 
 def _should_use_permissive_dunder_hash(val: Value) -> bool:

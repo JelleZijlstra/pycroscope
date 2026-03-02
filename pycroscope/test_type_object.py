@@ -395,6 +395,71 @@ class TestSyntheticType(TestNameCheckVisitorBase):
             v4: Proto7[float, object] = p6  # E: incompatible_assignment
             print(v1, v2, v3, v4)
 
+    @assert_passes()
+    def test_protocol_shorthand_type_parameter_order(self):
+        from typing import Iterator, Protocol, TypeVar
+
+        S = TypeVar("S")
+        T_co = TypeVar("T_co", covariant=True)
+
+        class Iterable(Protocol[T_co]):
+            def __iter__(self) -> Iterator[T_co]: ...
+
+        class Proto1(Iterable[T_co], Protocol[S, T_co]):
+            def method1(self, x: S) -> S: ...
+
+        class Concrete1:
+            def __iter__(self) -> Iterator[int]:
+                return iter((1, 2, 3))
+
+            def method1(self, x: str) -> str:
+                return x
+
+        ok: Proto1[str, int] = Concrete1()
+        bad: Proto1[int, str] = Concrete1()  # E: incompatible_assignment
+        print(ok, bad)
+
+    @assert_passes()
+    def test_protocol_member_constraints_must_be_satisfiable(self):
+        from typing import Callable, Protocol, Self, TypeVar
+
+        T = TypeVar("T")
+
+        class HasPropertyProto(Protocol):
+            @property
+            def f(self: T) -> T: ...
+
+            def m(self, item: T, callback: Callable[[T], str]) -> str: ...
+
+        class ConcreteHasProperty1:
+            @property
+            def f(self: T) -> T:
+                return self
+
+            def m(self, item: T, callback: Callable[[T], str]) -> str:
+                return ""
+
+        class ConcreteHasProperty2:
+            @property
+            def f(self) -> Self:
+                return self
+
+            def m(self, item: int, callback: Callable[[int], str]) -> str:
+                return ""
+
+        class ConcreteHasProperty4:
+            @property
+            def f(self) -> Self:
+                return self
+
+            def m(self, item: str, callback: Callable[[int], str]) -> str:
+                return ""
+
+        hp1: HasPropertyProto = ConcreteHasProperty1()
+        hp2: HasPropertyProto = ConcreteHasProperty2()  # E: incompatible_assignment
+        hp4: HasPropertyProto = ConcreteHasProperty4()  # E: incompatible_assignment
+        print(hp1, hp2, hp4)
+
     @assert_passes(allow_import_failures=True)
     def test_protocol_member_semantics_after_import_failure(self):
         from dataclasses import dataclass
