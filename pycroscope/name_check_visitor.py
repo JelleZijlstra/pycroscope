@@ -7476,24 +7476,41 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             )
 
     def _is_allowed_instance_final_annotation_target(
-        self, target: ast.Attribute
+        self, target: ast.Attribute, root_value: Value
     ) -> bool:
         return (
             self.current_function_name == "__init__"
-            and isinstance(target.value, ast.Name)
-            and target.value.id == "self"
+            and self._is_current_method_receiver_node(target.value)
+            and self._is_class_object_attribute_root(root_value) is False
         )
+
+    def _current_method_receiver_name(self) -> str | None:
+        info = self.current_function_info
+        if info is None:
+            return None
+        for param_info in info.params:
+            if param_info.is_self:
+                return param_info.param.name
+        return None
+
+    def _is_current_method_receiver_node(self, node: ast.AST) -> bool:
+        if not isinstance(node, ast.Name):
+            return False
+        receiver_name = self._current_method_receiver_name()
+        return receiver_name is not None and node.id == receiver_name
 
     def _class_key_for_attribute_target(
         self, node: ast.Attribute, root_value: Value
     ) -> type | str | None:
+        class_key = self._class_key_from_attribute_root_value(root_value)
+        if class_key is not None:
+            return class_key
         if (
-            isinstance(node.value, ast.Name)
-            and node.value.id in {"self", "cls"}
-            and self.current_class_key is not None
+            self.current_class_key is not None
+            and self._is_current_method_receiver_node(node.value)
         ):
             return self.current_class_key
-        return self._class_key_from_attribute_root_value(root_value)
+        return None
 
     def _class_key_from_attribute_root_value(
         self, root_value: Value
@@ -10474,8 +10491,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 if (
                     isinstance(target, ast.Attribute)
                     and target.attr == "_value_"
-                    and isinstance(target.value, ast.Name)
-                    and target.value.id in {"self", "cls"}
+                    and self._is_current_method_receiver_node(target.value)
                 ):
                     self._check_declared_enum_value_type(enum_value_type, value, node)
 
@@ -10665,7 +10681,10 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     ] = node
 
         if is_final and isinstance(node.target, ast.Attribute):
-            if not self._is_allowed_instance_final_annotation_target(node.target):
+            target_root_value = self.composite_from_node(node.target.value).value
+            if not self._is_allowed_instance_final_annotation_target(
+                node.target, target_root_value
+            ):
                 self._show_error_if_checking(
                     node.annotation,
                     "Final instance attributes may be declared only in __init__",
@@ -11964,7 +11983,12 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     ) -> None:
         if self.being_assigned is None:
             return
-        if isinstance(node.value, ast.Name) and node.value.id in {"self", "cls"}:
+        if (
+            self.current_class_key is not None
+            and self._is_current_method_receiver_node(node.value)
+            and self._class_key_for_attribute_target(node, root_composite.value)
+            == self.current_class_key
+        ):
             return
         expected = self._get_attribute_value_for_assignment(
             root_composite, node.attr, node
@@ -12910,12 +12934,12 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     ) -> None:
         if not self._is_checking() or self.being_assigned is None:
             return
-        if not isinstance(node.value, ast.Name) or node.value.id not in {"self", "cls"}:
+        if not self._is_current_method_receiver_node(node.value):
             return
         class_key = self._class_key_for_attribute_target(node, root_value)
-        if class_key is None:
+        if class_key is None or class_key != self.current_class_key:
             return
-        if node.value.id == "self":
+        if self._is_class_object_attribute_root(root_value) is False:
             class_type = self.checker.make_type_object(class_key)
             if class_type.is_protocol:
                 if node.attr not in class_type.protocol_members:
