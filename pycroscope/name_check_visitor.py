@@ -3161,16 +3161,38 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     for type_param in protocol_type_params
                 ):
                     effective_type_param_values = protocol_type_params
+            if not effective_type_param_values:
+                # In static-fallback mode we can lose Generic[...] type arguments
+                # from base values; recover from base annotation expressions.
+                recovered_type_param_values = (
+                    self._type_params_from_base_annotations_for_default_rules(
+                        node.bases
+                    )
+                )
+                if any(
+                    is_instance_of_typing_name(type_param.typevar, "ParamSpec")
+                    for type_param in recovered_type_param_values
+                ):
+                    effective_type_param_values = recovered_type_param_values
             registered_type_param_values = self._align_type_params_with_runtime_class(
                 runtime_class_for_type_params, effective_type_param_values
             )
+            method_type_params = (
+                type_param_values
+                if type_param_values
+                else self._type_params_from_base_values_for_methods(base_values)
+            )
+            if (
+                not method_type_params
+                and effective_type_param_values
+                and any(
+                    is_instance_of_typing_name(type_param.typevar, "ParamSpec")
+                    for type_param in effective_type_param_values
+                )
+            ):
+                method_type_params = effective_type_param_values
             method_type_param_values = self._align_type_params_with_runtime_class(
-                runtime_class_for_type_params,
-                (
-                    type_param_values
-                    if type_param_values
-                    else self._type_params_from_base_values_for_methods(base_values)
-                ),
+                runtime_class_for_type_params, method_type_params
             )
             should_register_generic_bases = synthetic_typeddict is None and (
                 isinstance(generic_class_key, str) or bool(registered_type_param_values)
@@ -6045,12 +6067,18 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         for base in base_values:
             for subval in flatten_values(base):
                 for walked in subval.walk_values():
-                    if not isinstance(walked, TypeVarValue):
+                    if isinstance(walked, TypeVarValue):
+                        type_param = walked
+                    elif isinstance(walked, InputSigValue) and isinstance(
+                        walked.input_sig, ParamSpecSig
+                    ):
+                        type_param = TypeVarValue(walked.input_sig.param_spec)
+                    else:
                         continue
-                    if walked.typevar in seen:
+                    if type_param.typevar in seen:
                         continue
-                    seen.add(walked.typevar)
-                    type_params.append(walked)
+                    seen.add(type_param.typevar)
+                    type_params.append(type_param)
         return type_params
 
     def _type_params_from_base_values_for_methods(
@@ -11537,24 +11565,42 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             if (
                 isinstance(normalized, AnyValue)
                 and normalized.source is AnySource.error
-                and isinstance(member, (TypedValue, GenericValue))
-                and isinstance(member.typ, (type, str))
             ):
-                return member
+                sequence_normalized = replace_known_sequence_value(member)
+                if sequence_normalized != member:
+                    return sequence_normalized
+                if isinstance(member, (TypedValue, GenericValue)) and isinstance(
+                    member.typ, (type, str)
+                ):
+                    return member
             return normalized
 
-        synthetic_typ: str
-        if isinstance(value, SyntheticClassObjectValue):
+        synthetic_typ: type | str
+        root_for_partial: Value
+        if isinstance(value, KnownValue) and isinstance(value.val, type):
+            synthetic_class = self.checker.get_synthetic_class(value.val)
+            if (
+                synthetic_class is None
+                or not isinstance(synthetic_class.class_type, TypedValue)
+                or not isinstance(synthetic_class.class_type.typ, str)
+            ):
+                return None
+            synthetic_typ = synthetic_class.class_type.typ
+            root_for_partial = TypedValue(synthetic_typ)
+        elif isinstance(value, SyntheticClassObjectValue):
             class_type = value.class_type
             if not isinstance(class_type, TypedValue) or not isinstance(
                 class_type.typ, str
             ):
                 return None
             synthetic_typ = class_type.typ
+            root_for_partial = value
         elif isinstance(value, TypedValue) and isinstance(value.typ, str):
             synthetic_typ = value.typ
+            root_for_partial = value
         else:
             return None
+
         members = self._maybe_unpack_tuple(index)
         normalized_members = tuple(_normalize_member(member) for member in members)
         if self.checker.get_synthetic_class(synthetic_typ) is None:
@@ -11564,7 +11610,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             return None
         return PartialValue(
             PartialValueOperation.SUBSCRIPT,
-            value,
+            root_for_partial,
             node,
             members,
             GenericValue(synthetic_typ, list(normalized_members)),

@@ -1362,12 +1362,42 @@ def _type_from_subscripted_value(
     if isinstance(root, SyntheticClassObjectValue) and isinstance(
         root.class_type, TypedValue
     ):
-        return GenericValue(
-            root.class_type.typ, [_type_from_value(elt, ctx) for elt in members]
+        synthetic_typ = root.class_type.typ
+        can_assign_ctx = _get_can_assign_context(ctx)
+        synthetic_type_params: Sequence[Value] = ()
+        if can_assign_ctx is not None:
+            synthetic_type_params = can_assign_ctx.get_type_parameters(synthetic_typ)
+        if len(synthetic_type_params) == len(members):
+            typed_members = [
+                _type_from_value_type_alias_arg(elt, type_param, ctx)
+                for elt, type_param in zip(members, synthetic_type_params)
+            ]
+        else:
+            typed_members = [_type_from_value(elt, ctx) for elt in members]
+        typed_members = _normalize_paramspec_generic_args(
+            synthetic_type_params, typed_members, ctx
         )
+        return GenericValue(synthetic_typ, typed_members)
 
     if isinstance(root, TypedValue) and isinstance(root.typ, str):
-        return GenericValue(root.typ, [_type_from_value(elt, ctx) for elt in members])
+        synthetic_typ = root.typ
+        can_assign_ctx = _get_can_assign_context(ctx)
+        synthetic_type_params_for_str: Sequence[Value] = ()
+        if can_assign_ctx is not None:
+            synthetic_type_params_for_str = can_assign_ctx.get_type_parameters(
+                synthetic_typ
+            )
+        if len(synthetic_type_params_for_str) == len(members):
+            typed_members = [
+                _type_from_value_type_alias_arg(elt, type_param, ctx)
+                for elt, type_param in zip(members, synthetic_type_params_for_str)
+            ]
+        else:
+            typed_members = [_type_from_value(elt, ctx) for elt in members]
+        typed_members = _normalize_paramspec_generic_args(
+            synthetic_type_params_for_str, typed_members, ctx
+        )
+        return GenericValue(synthetic_typ, typed_members)
     if isinstance(root, TypeAliasValue):
         type_params = tuple(root.alias.get_type_params())
         if len(members) == len(type_params):

@@ -30,6 +30,7 @@ from .input_sig import (
     InputSigValue,
     ParamSpecSig,
     assert_input_sig,
+    coerce_paramspec_specialization_to_input_sig,
     extract_type_params,
     input_sigs_have_relation,
 )
@@ -1730,12 +1731,11 @@ class Signature:
                     tv = input_sig.param_spec
                     if tv in typevars:
                         replacement_value = typevars[tv]
-                        if isinstance(replacement_value, AnyValue) or (
-                            isinstance(replacement_value, SequenceValue)
-                            and replacement_value.typ in (list, tuple)
-                        ):
-                            params.append((name, param))
-                            continue
+                        replacement_value = (
+                            coerce_paramspec_specialization_to_input_sig(
+                                replacement_value
+                            )
+                        )
                         replacement = assert_input_sig(replacement_value)
                         new_val = replacement.substitute_typevars(typevars)
                         if isinstance(new_val, ParamSpecSig):

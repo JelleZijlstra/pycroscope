@@ -806,6 +806,14 @@ def _normalize_generic_arg_for_relation(arg: Value) -> Value:
     return arg
 
 
+def _coerce_paramspec_generic_arg_for_relation(arg: Value, *, other: Value) -> Value:
+    if isinstance(other, pycroscope.input_sig.InputSigValue) and not isinstance(
+        other.input_sig, pycroscope.input_sig.ParamSpecSig
+    ):
+        return pycroscope.input_sig.coerce_paramspec_specialization_to_input_sig(arg)
+    return arg
+
+
 def _has_relation_for_generic_arg_pair(
     left: Value,
     right: Value,
@@ -814,6 +822,8 @@ def _has_relation_for_generic_arg_pair(
 ) -> CanAssign:
     left = _normalize_generic_arg_for_relation(left)
     right = _normalize_generic_arg_for_relation(right)
+    left = _coerce_paramspec_generic_arg_for_relation(left, other=right)
+    right = _coerce_paramspec_generic_arg_for_relation(right, other=left)
     if isinstance(left, pycroscope.input_sig.InputSigValue) and isinstance(
         right, pycroscope.input_sig.InputSigValue
     ):

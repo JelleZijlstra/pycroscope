@@ -120,6 +120,32 @@ class TestRelations(TestNameCheckVisitorBase):
             x.f(0, "", "")  # E: incompatible_argument
 
     @assert_passes()
+    def test_paramspec_constructor_inference_matches_list_specialization(self):
+        from typing import Callable, Generic, TypeVar
+
+        from typing_extensions import ParamSpec, assert_type
+
+        U = TypeVar("U")
+        P = ParamSpec("P")
+
+        class Y(Generic[U, P]):
+            f: Callable[P, str]
+            prop: U
+
+            def __init__(self, f: Callable[P, str], prop: U) -> None:
+                self.f = f
+                self.prop = prop
+
+        def callback_a(q: int, /) -> str:
+            raise NotImplementedError
+
+        def capybara(x: int) -> None:
+            y1 = Y(callback_a, x)
+            assert_type(y1, Y[int, [int]])
+            y2 = y1.f
+            assert_type(y2, Callable[[int], str])
+
+    @assert_passes()
     def test_paramspec_specialization_through_inherited_generic_bases(self):
         from typing import Any, Callable, Generic, TypeVar, cast
 

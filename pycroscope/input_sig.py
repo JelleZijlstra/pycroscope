@@ -11,18 +11,23 @@ from pycroscope.relations import Relation
 from pycroscope.safe import is_instance_of_typing_name, is_typing_name
 from pycroscope.stacked_scopes import Composite
 from pycroscope.value import (
+    AnySource,
     AnyValue,
     Bound,
     CanAssign,
     CanAssignContext,
     CanAssignError,
+    KnownValue,
     LowerBound,
+    SequenceValue,
+    TypedValue,
     TypeVarLike,
     TypeVarMap,
     TypeVarValue,
     UpperBound,
     Value,
     get_typevar_variance,
+    replace_known_sequence_value,
 )
 
 ParamSpecLike = typing_extensions.ParamSpec | typing.ParamSpec
@@ -230,3 +235,48 @@ def wrap_type_param(type_param: TypeVarLike) -> Value:
         return TypeVarValue(type_param, variance=get_typevar_variance(type_param))
     else:
         raise TypeError(f"Unsupported type parameter: {type_param!r}")
+
+
+def coerce_paramspec_specialization_to_input_sig(value: Value) -> Value:
+    """Convert class-generic ParamSpec list/tuple forms to InputSigValue.
+
+    ParamSpec class specialization can be represented as tuple/list values
+    (e.g. ``C[[int, str]]``). Some inference paths produce full signatures
+    directly, so we normalize list/tuple form to an equivalent FullSignature
+    when needed.
+    """
+
+    if isinstance(value, InputSigValue):
+        return value
+    if isinstance(value, TypeVarValue) and is_instance_of_typing_name(
+        value.typevar, "ParamSpec"
+    ):
+        return value
+    if isinstance(value, AnyValue):
+        return InputSigValue(ELLIPSIS)
+    value = replace_known_sequence_value(value)
+    if not isinstance(value, SequenceValue) or value.typ not in (list, tuple):
+        return value
+
+    members = value.get_member_sequence()
+    if members is None:
+        return AnyValue(AnySource.generic_argument)
+
+    # Import lazily to avoid circular imports: signature imports Relation.
+    from pycroscope.signature import ParameterKind, Signature, SigParameter
+
+    params = [
+        SigParameter(
+            f"@{i}",
+            kind=ParameterKind.POSITIONAL_ONLY,
+            annotation=(
+                TypedValue(member.val)
+                if isinstance(member, KnownValue) and isinstance(member.val, type)
+                else member
+            ),
+        )
+        for i, member in enumerate(members)
+    ]
+    return InputSigValue(
+        FullSignature(Signature.make(params, AnyValue(AnySource.generic_argument)))
+    )

@@ -22,7 +22,11 @@ else:
 
 from .annotated_types import EnumName
 from .annotations import Context, annotation_expr_from_annotations, type_from_runtime
-from .input_sig import FullSignature, InputSigValue
+from .input_sig import (
+    FullSignature,
+    InputSigValue,
+    coerce_paramspec_specialization_to_input_sig,
+)
 from .options import Options, PyObjectSequenceOption
 from .relations import Relation, has_relation
 from .safe import (
@@ -64,7 +68,6 @@ from .value import (
     PredicateValue,
     Qualifier,
     SelfTVV,
-    SequenceValue,
     SubclassValue,
     SyntheticClassObjectValue,
     SyntheticEnumMember,
@@ -1277,24 +1280,6 @@ def _substitute_typevars(
     provider: object,
     ctx: AttrContext,
 ) -> Value:
-    def _coerce_paramspec_value(value: Value) -> Value:
-        if isinstance(value, SequenceValue) and value.typ in (list, tuple):
-            members = value.get_member_sequence()
-            if members is None:
-                return AnyValue(AnySource.generic_argument)
-            params = [
-                SigParameter(
-                    f"@{i}", kind=ParameterKind.POSITIONAL_ONLY, annotation=member
-                )
-                for i, member in enumerate(members)
-            ]
-            return InputSigValue(
-                FullSignature(
-                    Signature.make(params, AnyValue(AnySource.generic_argument))
-                )
-            )
-        return value
-
     if isinstance(typ, (type, str)):
         generic_bases = ctx.get_generic_bases(typ, generic_args)
     else:
@@ -1303,7 +1288,7 @@ def _substitute_typevars(
         provider_typevars = generic_bases[provider]
         substituted_typevars = {
             typevar: (
-                _coerce_paramspec_value(value)
+                coerce_paramspec_specialization_to_input_sig(value)
                 if is_instance_of_typing_name(typevar, "ParamSpec")
                 else value
             )
