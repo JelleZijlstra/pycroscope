@@ -951,7 +951,7 @@ class TestIntegration(TestNameCheckVisitorBase):
                 return paca(*args, **kwargs)
 
             assert_type(wrapper("hello"), str)
-            wrapper(1)  # TODO should fail
+            wrapper(1)  # E: incompatible_argument
 
     @assert_passes()
     def test_independent_generics(self):

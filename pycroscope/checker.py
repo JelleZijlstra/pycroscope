@@ -26,6 +26,11 @@ from .attributes import (
     normalize_synthetic_descriptor_attribute,
 )
 from .extensions import get_overloads as get_runtime_overloads
+from .input_sig import (
+    InputSigValue,
+    ParamSpecSig,
+    coerce_paramspec_specialization_to_input_sig,
+)
 from .node_visitor import Failure
 from .options import Options, PyObjectSequenceOption
 from .reexport import ImplicitReexportTracker
@@ -388,7 +393,7 @@ class Checker:
 
         substitution_map: dict[TypeVarLike, Value] = {}
         synthetic_type_params = synthetic_bases.get(typ, {})
-        if not synthetic_type_params and isinstance(typ, str):
+        if not synthetic_type_params:
             synthetic_class = self.get_synthetic_class(typ)
             if synthetic_class is not None and isinstance(
                 synthetic_class.class_type, TypedValue
@@ -397,13 +402,25 @@ class Checker:
                     synthetic_class.class_type.typ, {}
                 )
         for i, type_param_value in enumerate(synthetic_type_params.values()):
-            if not isinstance(type_param_value, TypeVarValue):
+            if isinstance(type_param_value, TypeVarValue):
+                type_param: TypeVarLike = type_param_value.typevar
+                is_paramspec = is_instance_of_typing_name(type_param, "ParamSpec")
+            elif isinstance(type_param_value, InputSigValue) and isinstance(
+                type_param_value.input_sig, ParamSpecSig
+            ):
+                type_param = type_param_value.input_sig.param_spec
+                is_paramspec = True
+            else:
                 continue
             try:
                 concrete_arg = generic_args[i]
             except IndexError:
                 concrete_arg = AnyValue(AnySource.generic_argument)
-            substitution_map[type_param_value.typevar] = concrete_arg
+            if is_paramspec:
+                concrete_arg = coerce_paramspec_specialization_to_input_sig(
+                    concrete_arg
+                )
+            substitution_map[type_param] = concrete_arg
 
         merged = {base: dict(tv_map) for base, tv_map in generic_bases.items()}
         for base, tv_map in synthetic_bases.items():
@@ -418,7 +435,7 @@ class Checker:
         synthetic_bases = self._get_synthetic_generic_bases(typ)
         if synthetic_bases is not None and typ in synthetic_bases:
             return list(synthetic_bases[typ].values())
-        if synthetic_bases is not None and isinstance(typ, str):
+        if synthetic_bases is not None:
             synthetic_class = self.get_synthetic_class(typ)
             if synthetic_class is not None and isinstance(
                 synthetic_class.class_type, TypedValue

@@ -83,7 +83,6 @@ from .value import (
     NewTypeValue,
     ParamSpecArgsValue,
     ParamSpecKwargsValue,
-    SequenceValue,
     SubclassValue,
     TypedDictEntry,
     TypedDictValue,
@@ -1260,8 +1259,7 @@ class ArgSpecCache:
                 elif isinstance(tv_value, InputSigValue) and isinstance(
                     tv_value.input_sig, ParamSpecSig
                 ):
-                    if isinstance(value, SequenceValue) and value.typ in (list, tuple):
-                        paramspec_generic_arg_map[tv_value.input_sig.param_spec] = value
+                    paramspec_generic_arg_map[tv_value.input_sig.param_spec] = value
 
         def _substitute_base_arg(value: Value) -> Value:
             if (
