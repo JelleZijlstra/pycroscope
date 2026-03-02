@@ -24,6 +24,7 @@ from .annotated_types import EnumName
 from .annotations import Context, annotation_expr_from_annotations, type_from_runtime
 from .input_sig import FullSignature, InputSigValue
 from .options import Options, PyObjectSequenceOption
+from .relations import Relation, has_relation
 from .safe import (
     is_async_fn,
     is_bound_classmethod,
@@ -33,8 +34,10 @@ from .safe import (
     safe_issubclass,
 )
 from .signature import (
+    BoundMethodSignature,
     InvalidSignature,
     MaybeSignature,
+    OverloadedSignature,
     ParameterKind,
     Signature,
     SigParameter,
@@ -46,6 +49,7 @@ from .value import (
     AnySource,
     AnyValue,
     CallableValue,
+    CanAssignError,
     CustomCheckExtension,
     GenericBases,
     GenericValue,
@@ -124,6 +128,12 @@ class AttrContext:
     def get_signature(self, obj: object) -> MaybeSignature:
         return None
 
+    def signature_from_value(self, value: Value) -> MaybeSignature:
+        return None
+
+    def get_can_assign_context(self) -> object | None:
+        return None
+
     def get_generic_bases(
         self, typ: type | str, generic_args: Sequence[Value]
     ) -> GenericBases:
@@ -137,6 +147,18 @@ class AttrContext:
 
     def should_include_synthetic_methods(self) -> bool:
         return False
+
+    def clone_for_attribute_lookup(
+        self, root_composite: Composite, attr: str
+    ) -> "AttrContext":
+        return replace(
+            self,
+            root_composite=root_composite,
+            attr=attr,
+            skip_mro=False,
+            skip_unwrap=False,
+            prefer_typeshed=False,
+        )
 
 
 def get_attribute(ctx: AttrContext) -> Value:
@@ -401,6 +423,10 @@ def _get_attribute_from_synthetic_type(
     synthetic_class = ctx.get_synthetic_class(fq_name)
     if synthetic_class is not None:
         result = _get_direct_attribute_from_synthetic_class(synthetic_class, ctx.attr)
+        if result is not UNINITIALIZED_VALUE:
+            result = _maybe_resolve_synthetic_dataclass_descriptor_attribute(
+                synthetic_class, ctx.attr, result, ctx, on_class=False
+            )
         if result is UNINITIALIZED_VALUE:
             result = _get_synthetic_dataclass_attribute(
                 synthetic_class, ctx, on_class=False
@@ -497,6 +523,9 @@ def _get_attribute_from_synthetic_class_inner(
 ) -> Value:
     direct = _get_direct_attribute_from_synthetic_class(self_value, ctx.attr)
     if direct is not UNINITIALIZED_VALUE:
+        direct = _maybe_resolve_synthetic_dataclass_descriptor_attribute(
+            self_value, ctx.attr, direct, ctx, on_class=True
+        )
         return direct
     dataclass_attr = _get_synthetic_dataclass_attribute(self_value, ctx, on_class=True)
     if dataclass_attr is not UNINITIALIZED_VALUE:
@@ -694,11 +723,7 @@ def _get_synthetic_dataclass_init_parameters(
             continue
 
         parameter_name = aliases.get(field_name, field_name)
-        annotation: Value
-        if isinstance(attr, KnownValue):
-            annotation = TypedValue(type(attr.val))
-        else:
-            annotation = attr
+        annotation = _synthetic_dataclass_parameter_annotation_for_field(attr, ctx)
 
         parameter = SigParameter(
             parameter_name,
@@ -748,6 +773,182 @@ def _synthetic_dataclass_init_callable_value(
     except InvalidSignature:
         return AnyValue(AnySource.inference)
     return CallableValue(signature)
+
+
+def _synthetic_dataclass_parameter_annotation_for_field(
+    attr: Value, ctx: AttrContext
+) -> Value:
+    descriptor_set_type = _synthetic_descriptor_set_type(attr, ctx)
+    if descriptor_set_type is not None:
+        return descriptor_set_type
+    if isinstance(attr, KnownValue):
+        return TypedValue(type(attr.val))
+    return attr
+
+
+def _synthetic_descriptor_set_type(descriptor: Value, ctx: AttrContext) -> Value | None:
+    signature = _synthetic_descriptor_method_signature_any(descriptor, "__set__", ctx)
+    if signature is None:
+        return None
+    signatures = (
+        [signature] if isinstance(signature, Signature) else signature.signatures
+    )
+    for set_signature in signatures:
+        positional_params = [
+            parameter
+            for parameter in set_signature.parameters.values()
+            if parameter.kind
+            in (ParameterKind.POSITIONAL_ONLY, ParameterKind.POSITIONAL_OR_KEYWORD)
+        ]
+        if len(positional_params) >= 3:
+            return positional_params[2].annotation
+        if len(positional_params) >= 2:
+            return positional_params[1].annotation
+    return None
+
+
+def _synthetic_descriptor_get_type(
+    descriptor: Value, *, on_class: bool, instance_value: Value, ctx: AttrContext
+) -> Value | None:
+    match = _synthetic_descriptor_method_match(
+        descriptor,
+        "__get__",
+        [
+            KnownValue(None) if on_class else instance_value,
+            AnyValue(AnySource.inference),
+        ],
+        ctx,
+    )
+    if match is None:
+        return None
+    get_signature, _ = match
+    return get_signature.return_value
+
+
+def _synthetic_descriptor_method_match(
+    descriptor: Value, method_name: str, args: Sequence[Value], ctx: AttrContext
+) -> tuple[Signature, int] | None:
+    signature = _synthetic_descriptor_method_signature_any(descriptor, method_name, ctx)
+    if signature is None:
+        return None
+    selected = _select_matching_synthetic_signature(signature, args, ctx)
+    if selected is not None:
+        return selected, 0
+    # Synthetic dunder methods are often exposed unbound; retry with the
+    # descriptor value as an explicit first argument.
+    selected = _select_matching_synthetic_signature(signature, [descriptor, *args], ctx)
+    if selected is None:
+        return None
+    return selected, 1
+
+
+def _synthetic_descriptor_method_signature_any(
+    descriptor: Value, method_name: str, ctx: AttrContext
+) -> Signature | OverloadedSignature | None:
+    descriptor = replace_fallback(descriptor)
+    if isinstance(descriptor, AnnotatedValue):
+        return _synthetic_descriptor_method_signature_any(
+            descriptor.value, method_name, ctx
+        )
+    if not isinstance(
+        descriptor, (KnownValue, TypedValue, GenericValue, SyntheticClassObjectValue)
+    ):
+        return None
+    method_ctx = ctx.clone_for_attribute_lookup(Composite(descriptor), method_name)
+    method_value = get_attribute(method_ctx)
+    if method_value is UNINITIALIZED_VALUE:
+        return None
+    return _signature_from_synthetic_attribute(method_value, method_ctx)
+
+
+def _signature_from_synthetic_attribute(
+    value: Value, ctx: AttrContext
+) -> Signature | OverloadedSignature | None:
+    signature = ctx.signature_from_value(value)
+    if signature is None and isinstance(value, KnownValue):
+        signature = ctx.get_signature(value.val)
+    can_assign_ctx = ctx.get_can_assign_context()
+    if isinstance(signature, BoundMethodSignature):
+        if can_assign_ctx is None:
+            return None
+        signature = signature.get_signature(ctx=can_assign_ctx)
+    if isinstance(signature, (Signature, OverloadedSignature)):
+        return signature
+    return None
+
+
+def _select_matching_synthetic_signature(
+    signature: Signature | OverloadedSignature, args: Sequence[Value], ctx: AttrContext
+) -> Signature | None:
+    if isinstance(signature, Signature):
+        if _signature_accepts_args(signature, args, ctx):
+            return signature
+        return None
+    for overload in signature.signatures:
+        if _signature_accepts_args(overload, args, ctx):
+            return overload
+    return None
+
+
+def _signature_accepts_args(
+    signature: Signature, args: Sequence[Value], ctx: AttrContext
+) -> bool:
+    can_assign_ctx = ctx.get_can_assign_context()
+    if can_assign_ctx is None:
+        return False
+    positional_params = [
+        parameter
+        for parameter in signature.parameters.values()
+        if parameter.kind
+        in (ParameterKind.POSITIONAL_ONLY, ParameterKind.POSITIONAL_OR_KEYWORD)
+    ]
+    variadic_param = signature.get_param_of_kind(ParameterKind.VAR_POSITIONAL)
+    if len(args) > len(positional_params) and variadic_param is None:
+        return False
+    for index, arg in enumerate(args):
+        if index < len(positional_params):
+            parameter = positional_params[index]
+        elif variadic_param is not None:
+            parameter = variadic_param
+        else:
+            return False
+        can_assign = has_relation(
+            parameter.annotation, arg, Relation.ASSIGNABLE, can_assign_ctx
+        )
+        if isinstance(can_assign, CanAssignError):
+            return False
+    for parameter in positional_params[len(args) :]:
+        if parameter.default is None:
+            return False
+    return True
+
+
+def _maybe_resolve_synthetic_dataclass_descriptor_attribute(
+    synthetic_class: SyntheticClassObjectValue,
+    attr_name: str,
+    value: Value,
+    ctx: AttrContext,
+    *,
+    on_class: bool,
+) -> Value:
+    if (
+        not synthetic_class.is_dataclass
+        or attr_name in synthetic_class.method_attributes
+        or (attr_name.startswith("__") and attr_name.endswith("__"))
+    ):
+        return value
+    descriptor_get_type = _synthetic_descriptor_get_type(
+        value, on_class=on_class, instance_value=ctx.root_value, ctx=ctx
+    )
+    if descriptor_get_type is not None:
+        return descriptor_get_type
+    if not on_class and isinstance(value, AnnotatedValue):
+        inner_value = replace_fallback(value.value)
+        if isinstance(inner_value, KnownValue):
+            return annotate_value(TypedValue(type(inner_value.val)), value.metadata)
+    if not on_class and isinstance(value, KnownValue):
+        return TypedValue(type(value.val))
+    return value
 
 
 def _get_synthetic_dataclass_attribute(

@@ -655,6 +655,21 @@ class _AttrContext(CheckerAttrContext):
                 return CallableValue(bound_signature)
         return super().bind_synthetic_instance_attribute(attr_name, value)
 
+    def clone_for_attribute_lookup(
+        self, root_composite: Composite, attr: str
+    ) -> _AttrContext:
+        return _AttrContext(
+            root_composite,
+            attr,
+            self.visitor,
+            node=self.node,
+            ignore_none=self.ignore_none,
+            skip_mro=False,
+            skip_unwrap=False,
+            prefer_typeshed=False,
+            record_reads=self.record_reads,
+        )
+
 
 @dataclass
 class _SyntheticTypedDictContext:
@@ -11777,6 +11792,13 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             ):
                 self._check_attribute_assignment_type(node, root_composite)
                 self._record_synthetic_attr_set(node, root_composite.value)
+            should_record_type_attr_set = (
+                not is_final_assignment
+                and not is_classvar_instance_assignment
+                and not is_frozen_dataclass_assignment
+                and not is_namedtuple_field
+                and not is_slots_assignment
+            )
             if (
                 composite is not None
                 and self.scopes.scope_type() == ScopeType.function_scope
@@ -11788,21 +11810,21 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             if isinstance(root_composite.value, TypedValue):
                 typ = root_composite.value.typ
                 if isinstance(typ, type):
-                    if not is_slots_assignment:
+                    if should_record_type_attr_set:
                         self._record_type_attr_set(
                             typ, node.attr, node, self.being_assigned
                         )
             elif isinstance(root_composite.value, GenericValue):
                 typ = root_composite.value.typ
                 if isinstance(typ, type):
-                    if not is_slots_assignment:
+                    if should_record_type_attr_set:
                         self._record_type_attr_set(
                             typ, node.attr, node, self.being_assigned
                         )
             elif isinstance(root_composite.value, KnownValue) and not isinstance(
                 root_composite.value.val, type
             ):
-                if not is_slots_assignment:
+                if should_record_type_attr_set:
                     self._record_type_attr_set(
                         type(root_composite.value.val),
                         node.attr,

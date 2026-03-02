@@ -892,3 +892,61 @@ class TestDataclassTransform(TestNameCheckVisitorBase):
 
         Model(1, 2)
         Model(1)  # E: incompatible_call
+
+    @assert_passes(allow_import_failures=True)
+    def test_dataclass_transform_descriptor_fields_after_import_failure(self):
+        boom = 1 / 0
+
+        from typing import Any, Generic, TypeVar, assert_type, overload
+
+        from typing_extensions import dataclass_transform
+
+        T = TypeVar("T")
+
+        class DataDescriptor:
+            @overload
+            def __get__(self, instance: None, owner: Any) -> "DataDescriptor": ...
+
+            @overload
+            def __get__(self, instance: object, owner: Any) -> int: ...
+
+            def __get__(
+                self, instance: object | None, owner: Any
+            ) -> "DataDescriptor | int":
+                raise NotImplementedError
+
+            def __set__(self, instance: object, value: int) -> None:
+                raise NotImplementedError
+
+        class ReadDescriptor(Generic[T]):
+            @overload
+            def __get__(self, instance: None, owner: Any) -> list[T]: ...
+
+            @overload
+            def __get__(self, instance: object, owner: Any) -> T: ...
+
+            def __get__(self, instance: object | None, owner: Any) -> list[T] | T:
+                raise NotImplementedError
+
+        @dataclass_transform()
+        def model(cls: type[T]) -> type[T]:
+            return cls
+
+        @model
+        class TransformModel:
+            b: ReadDescriptor[int]
+            a: DataDescriptor = DataDescriptor()
+            c: ReadDescriptor[str] = ReadDescriptor()
+
+        assert_type(TransformModel.a, DataDescriptor)
+        assert_type(TransformModel.b, list[int])
+        assert_type(TransformModel.c, list[str])
+
+        transformed = TransformModel(ReadDescriptor(), 1, ReadDescriptor())
+        assert_type(transformed.a, int)
+        assert_type(transformed.b, int)
+        assert_type(transformed.c, str)
+
+        # E: incompatible_argument
+        TransformModel(ReadDescriptor(), DataDescriptor(), ReadDescriptor())
+        TransformModel(1, 2, 3)  # E: incompatible_argument # E: incompatible_argument
