@@ -26,7 +26,7 @@ from .maybe_asynq import asynq
 from .node_visitor import ErrorContext
 from .options import Options, PyObjectSequenceOption
 from .relations import Relation, has_relation
-from .safe import is_instance_of_typing_name
+from .safe import is_instance_of_typing_name, is_typing_name
 from .signature import (
     ParameterKind,
     Signature,
@@ -47,6 +47,7 @@ from .value import (
     ParamSpecKwargsValue,
     Qualifier,
     SubclassValue,
+    TypeAliasValue,
     TypedDictValue,
     TypedValue,
     TypeVarValue,
@@ -291,6 +292,27 @@ def _paramspec_identities_from_context(ctx: Context) -> set[object]:
     return identities
 
 
+def _is_invalid_generic_annotation_value(value: Value) -> bool:
+    if isinstance(value, TypeAliasValue):
+        target = value.get_value()
+        if isinstance(target, GenericValue) and is_typing_name(target.typ, "Generic"):
+            return True
+    for subval in value.walk_values():
+        if isinstance(subval, KnownValue):
+            if is_typing_name(subval.val, "Generic"):
+                return True
+        elif isinstance(subval, TypedValue):
+            if is_typing_name(subval.typ, "Generic"):
+                return True
+        elif isinstance(subval, TypeAliasValue):
+            target = subval.get_value()
+            if isinstance(target, GenericValue) and is_typing_name(
+                target.typ, "Generic"
+            ):
+                return True
+    return False
+
+
 def compute_parameters(
     node: FunctionNode,
     enclosing_class: TypedValue | None,
@@ -424,6 +446,15 @@ def compute_parameters(
                     )
                 value = AnyValue(AnySource.error)
             else:
+                if inner_value is not None and _is_invalid_generic_annotation_value(
+                    inner_value
+                ):
+                    ctx.show_error(
+                        arg,
+                        "Generic[...] is valid only as a base class",
+                        error_code=ErrorCode.invalid_annotation,
+                    )
+                    value = AnyValue(AnySource.error)
                 if (
                     inner_value is not None
                     and has_invalid_paramspec_usage(inner_value, ctx)
