@@ -401,7 +401,12 @@ class Checker:
                 synthetic_type_params = synthetic_bases.get(
                     synthetic_class.class_type.typ, {}
                 )
-        for i, type_param_value in enumerate(synthetic_type_params.values()):
+        specialized_args = self.arg_spec_cache._specialize_generic_type_params(
+            tuple(synthetic_type_params.values()), generic_args
+        )
+        for type_param_value, concrete_arg in zip(
+            synthetic_type_params.values(), specialized_args
+        ):
             if isinstance(type_param_value, TypeVarValue):
                 type_param: TypeVarLike = type_param_value.typevar
                 is_paramspec = is_instance_of_typing_name(type_param, "ParamSpec")
@@ -412,10 +417,6 @@ class Checker:
                 is_paramspec = True
             else:
                 continue
-            try:
-                concrete_arg = generic_args[i]
-            except IndexError:
-                concrete_arg = AnyValue(AnySource.generic_argument)
             if is_paramspec:
                 concrete_arg = coerce_paramspec_specialization_to_input_sig(
                     concrete_arg

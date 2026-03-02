@@ -38,6 +38,7 @@ from pycroscope.value import (
     AnySource,
     AnyValue,
     BasicType,
+    BoundsMap,
     CallableValue,
     CanAssign,
     CanAssignContext,
@@ -743,33 +744,53 @@ def _has_relation(
             generic_args = right.get_generic_args_for_type(left.typ, ctx)
             # If we don't think it's a generic base, try super;
             # runtime isinstance() may disagree.
-            if generic_args is not None and len(left.args) == len(generic_args):
-                variances = _get_generic_variances(left.typ, len(left.args), ctx)
-                strict_invariant = not isinstance(
-                    right, (SequenceValue, DictIncompleteValue)
-                )
-                bounds_maps = []
-                for i, (my_arg, their_arg, variance) in enumerate(
-                    zip(left.args, generic_args, variances)
-                ):
-                    can_assign = _has_relation_for_generic_arg(
-                        my_arg,
-                        their_arg,
-                        relation,
-                        variance,
-                        ctx,
-                        strict_invariant=strict_invariant,
+            if generic_args is not None:
+                if len(left.args) != len(generic_args):
+                    declared_type_params = ctx.get_type_parameters(left.typ)
+                    packed_generic_args = _pack_typevartuple_generic_args(
+                        declared_type_params, generic_args
                     )
-                    if isinstance(can_assign, CanAssignError):
-                        return _maybe_specify_error_for_generic(
-                            i, left, right, can_assign, relation, ctx
+                    if packed_generic_args is not None and len(left.args) == len(
+                        packed_generic_args
+                    ):
+                        generic_args = packed_generic_args
+                    elif (
+                        _declares_typevartuple(declared_type_params)
+                        and not _args_contain_typevartuple(left.args)
+                        and not _contains_error_any_in_sequence(
+                            [*left.args, *generic_args]
                         )
-                    bounds_maps.append(can_assign)
-                if not bounds_maps:
-                    return CanAssignError(
-                        f"{right} is not {relation.description} to {left}"
+                    ):
+                        return CanAssignError(
+                            f"{right} is not {relation.description} to {left}"
+                        )
+                if len(left.args) == len(generic_args):
+                    variances = _get_generic_variances(left.typ, len(left.args), ctx)
+                    strict_invariant = not isinstance(
+                        right, (SequenceValue, DictIncompleteValue)
                     )
-                return unify_bounds_maps(bounds_maps)
+                    bounds_maps = []
+                    for i, (my_arg, their_arg, variance) in enumerate(
+                        zip(left.args, generic_args, variances)
+                    ):
+                        can_assign = _has_relation_for_generic_arg(
+                            my_arg,
+                            their_arg,
+                            relation,
+                            variance,
+                            ctx,
+                            strict_invariant=strict_invariant,
+                        )
+                        if isinstance(can_assign, CanAssignError):
+                            return _maybe_specify_error_for_generic(
+                                i, left, right, can_assign, relation, ctx
+                            )
+                        bounds_maps.append(can_assign)
+                    if not bounds_maps:
+                        return CanAssignError(
+                            f"{right} is not {relation.description} to {left}"
+                        )
+                    return unify_bounds_maps(bounds_maps)
 
     if isinstance(left, TypedValue):
         left_tobj = left.get_type_object(ctx)
@@ -1375,9 +1396,177 @@ def _has_relation_sequence(
             f" {stringify_object(left.typ)}"
         )
 
+    captured_typevartuple = _try_capture_single_typevartuple_sequence(
+        left, right, relation, ctx
+    )
+    if captured_typevartuple is not None:
+        return captured_typevartuple
+
     return _has_relation_lazy_sequence(
         _LazySequenceValue(left), _LazySequenceValue(right), relation, ctx
     )
+
+
+def _widen_typevartuple_bound_member(value: Value) -> Value:
+    if isinstance(value, KnownValue):
+        value = replace_known_sequence_value(value)
+    if isinstance(value, SequenceValue):
+        if value.typ is tuple:
+            return SequenceValue(
+                tuple,
+                [
+                    (is_many, _widen_typevartuple_bound_member(member))
+                    for is_many, member in value.members
+                ],
+            )
+        return value
+    if isinstance(value, KnownValue):
+        if isinstance(value.val, float):
+            return TypedValue(float) | TypedValue(int)
+        if isinstance(value.val, complex):
+            return TypedValue(complex) | TypedValue(float) | TypedValue(int)
+        return TypedValue(type(value.val))
+    return value
+
+
+def _capture_typevartuple_bounds_from_side(
+    template: SequenceValue,
+    actual: SequenceValue,
+    relation: Literal[Relation.SUBTYPE, Relation.ASSIGNABLE],
+    ctx: CanAssignContext,
+    *,
+    use_upper_bound: bool,
+) -> CanAssign | None:
+    typevartuple_entries = [
+        (i, member)
+        for i, (is_many, member) in enumerate(template.members)
+        if is_many and isinstance(member, TypeVarValue) and member.is_typevartuple
+    ]
+    if len(typevartuple_entries) != 1:
+        return None
+    if any(
+        is_many
+        for i, (is_many, _member) in enumerate(template.members)
+        if i != typevartuple_entries[0][0]
+    ):
+        return None
+    if any(is_many for is_many, _member in actual.members):
+        return None
+
+    marker_index, marker_member = typevartuple_entries[0]
+    prefix = marker_index
+    suffix = len(template.members) - marker_index - 1
+    if len(actual.members) < prefix + suffix:
+        return CanAssignError(f"{actual} is not {relation.description} {template}")
+
+    bounds_maps: list[BoundsMap] = []
+    for i in range(prefix):
+        expected = template.members[i][1]
+        got = actual.members[i][1]
+        bounds = _has_relation(gradualize(expected), gradualize(got), relation, ctx)
+        if isinstance(bounds, CanAssignError):
+            return bounds
+        bounds_maps.append(bounds)
+
+    for i in range(1, suffix + 1):
+        expected = template.members[-i][1]
+        got = actual.members[-i][1]
+        bounds = _has_relation(gradualize(expected), gradualize(got), relation, ctx)
+        if isinstance(bounds, CanAssignError):
+            return bounds
+        bounds_maps.append(bounds)
+
+    middle_start = prefix
+    middle_end = len(actual.members) - suffix
+    captured = SequenceValue(
+        tuple,
+        [
+            (False, _widen_typevartuple_bound_member(member))
+            for _is_many, member in actual.members[middle_start:middle_end]
+        ],
+    )
+    bound = (
+        UpperBound(marker_member.typevar, captured)
+        if use_upper_bound
+        else LowerBound(marker_member.typevar, captured)
+    )
+    bounds_maps.append(
+        {marker_member.typevar: [bound, *marker_member.get_inherent_bounds()]}
+    )
+    return unify_bounds_maps(bounds_maps)
+
+
+def _try_capture_single_typevartuple_sequence(
+    left: SequenceValue,
+    right: SequenceValue,
+    relation: Literal[Relation.SUBTYPE, Relation.ASSIGNABLE],
+    ctx: CanAssignContext,
+) -> CanAssign | None:
+    # tuple[*Ts] compared to a concrete tuple is common in generic call
+    # inference. Capture this directly to avoid losing constraints in
+    # many-path tuple decomposition.
+    left_capture = _capture_typevartuple_bounds_from_side(
+        left, right, relation, ctx, use_upper_bound=False
+    )
+    if left_capture is not None:
+        return left_capture
+    return _capture_typevartuple_bounds_from_side(
+        right, left, relation, ctx, use_upper_bound=True
+    )
+
+
+def _declares_typevartuple(type_params: Sequence[Value]) -> bool:
+    return any(
+        isinstance(type_param, TypeVarValue) and type_param.is_typevartuple
+        for type_param in type_params
+    )
+
+
+def _args_contain_typevartuple(args: Sequence[Value]) -> bool:
+    return any(isinstance(arg, TypeVarValue) and arg.is_typevartuple for arg in args)
+
+
+def _contains_error_any_in_sequence(values: Sequence[Value]) -> bool:
+    return any(
+        isinstance(subval, AnyValue) and subval.source is AnySource.error
+        for value in values
+        for subval in value.walk_values()
+    )
+
+
+def _pack_typevartuple_generic_args(
+    declared_type_params: Sequence[Value], generic_args: Sequence[Value]
+) -> list[Value] | None:
+    variadic_indexes = [
+        i
+        for i, type_param in enumerate(declared_type_params)
+        if isinstance(type_param, TypeVarValue) and type_param.is_typevartuple
+    ]
+    if len(variadic_indexes) != 1:
+        return None
+
+    variadic_index = variadic_indexes[0]
+    minimum_args = len(declared_type_params) - 1
+    if len(generic_args) < minimum_args:
+        return None
+
+    suffix_count = len(declared_type_params) - variadic_index - 1
+    variadic_end = len(generic_args) - suffix_count
+    packed: list[Value] = []
+    for i in range(len(declared_type_params)):
+        if i < variadic_index:
+            packed.append(generic_args[i])
+        elif i == variadic_index:
+            packed.append(
+                SequenceValue(
+                    tuple,
+                    [(False, arg) for arg in generic_args[variadic_index:variadic_end]],
+                )
+            )
+        else:
+            suffix_index = i - variadic_index - 1
+            packed.append(generic_args[variadic_end + suffix_index])
+    return packed
 
 
 def _map_relation(relation: Literal[Relation.SUBTYPE, Relation.ASSIGNABLE]) -> Relation:

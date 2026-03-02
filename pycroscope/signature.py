@@ -2928,6 +2928,13 @@ def _try_match_typevartuple_var_positional(
         repeated_members = _extract_var_positional_members(expected)
         if repeated_members is None:
             return None
+        tv_entries = [
+            member
+            for is_many, member in repeated_members
+            if is_many and isinstance(member, TypeVarValue) and member.is_typevartuple
+        ]
+        if len(tv_entries) != 1:
+            return None
         bounds_maps: list[BoundsMap] = []
         for actual_member in actual_members:
             actual_member = replace_known_sequence_value(actual_member)
