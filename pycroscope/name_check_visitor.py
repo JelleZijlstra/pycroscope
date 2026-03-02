@@ -3154,9 +3154,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 if protocol_type_params and all(
                     not (
                         is_instance_of_typing_name(type_param.typevar, "ParamSpec")
-                        or is_instance_of_typing_name(
-                            type_param.typevar, "TypeVarTuple"
-                        )
+                        or type_param.is_typevartuple
                     )
                     for type_param in protocol_type_params
                 ):
@@ -3171,6 +3169,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 )
                 if any(
                     is_instance_of_typing_name(type_param.typevar, "ParamSpec")
+                    or type_param.is_typevartuple
                     for type_param in recovered_type_param_values
                 ):
                     effective_type_param_values = recovered_type_param_values
@@ -3187,6 +3186,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 and effective_type_param_values
                 and any(
                     is_instance_of_typing_name(type_param.typevar, "ParamSpec")
+                    or type_param.is_typevartuple
                     for type_param in effective_type_param_values
                 )
             ):
@@ -6009,9 +6009,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         previous_was_typevartuple = False
         for type_param in type_params:
             has_default = self._type_param_has_default(type_param)
-            is_typevartuple = type_param.is_typevartuple or is_instance_of_typing_name(
-                type_param.typevar, "TypeVarTuple"
-            )
+            is_typevartuple = type_param.is_typevartuple
             is_typevar = is_instance_of_typing_name(type_param.typevar, "TypeVar")
             if seen_default and not has_default:
                 self._show_error_if_checking(
@@ -6137,6 +6135,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                                 TypeVarValue(
                                     runtime_arg,
                                     variance=get_typevar_variance(runtime_arg),
+                                    is_typevartuple=is_instance_of_typing_name(
+                                        runtime_arg, "TypeVarTuple"
+                                    ),
                                 )
                             )
                 if maybe_type_params and not all(
@@ -6160,7 +6161,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         if type_params_from_bases and all(
             not (
                 is_instance_of_typing_name(type_param.typevar, "ParamSpec")
-                or is_instance_of_typing_name(type_param.typevar, "TypeVarTuple")
+                or type_param.is_typevartuple
             )
             for type_param in type_params_from_bases
         ):
@@ -6187,7 +6188,11 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     seen.add(runtime_arg)
                     type_params.append(
                         TypeVarValue(
-                            runtime_arg, variance=get_typevar_variance(runtime_arg)
+                            runtime_arg,
+                            variance=get_typevar_variance(runtime_arg),
+                            is_typevartuple=is_instance_of_typing_name(
+                                runtime_arg, "TypeVarTuple"
+                            ),
                         )
                     )
         return type_params
@@ -14020,12 +14025,17 @@ def _type_param_value_from_value(value: Value) -> TypeVarValue | None:
                 return None
         return result
     if isinstance(value, KnownValue):
+        is_typevartuple = is_instance_of_typing_name(value.val, "TypeVarTuple")
         if (
             is_instance_of_typing_name(value.val, "TypeVar")
-            or is_instance_of_typing_name(value.val, "TypeVarTuple")
+            or is_typevartuple
             or is_instance_of_typing_name(value.val, "ParamSpec")
         ):
-            return TypeVarValue(value.val, variance=get_typevar_variance(value.val))
+            return TypeVarValue(
+                value.val,
+                variance=get_typevar_variance(value.val),
+                is_typevartuple=is_typevartuple,
+            )
         return None
     if isinstance(
         value,

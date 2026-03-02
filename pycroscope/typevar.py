@@ -61,7 +61,10 @@ def _merge_typevartuple_lower_bounds(
         elif member2.is_assignable(member1, ctx):
             merged = member2
         else:
-            merged = unite_values(member1, member2)
+            return CanAssignError(
+                "Incompatible bounds on type variable",
+                [CanAssignError(str(lower1)), CanAssignError(str(lower2))],
+            )
         merged_members.append((False, merged))
     return SequenceValue(tuple, merged_members)
 

@@ -1085,7 +1085,30 @@ class TypedValue(Value):
         else:
             generic_bases = ctx.get_generic_bases(self.typ, args)
         if typ in generic_bases:
-            return list(generic_bases[typ].values())
+            raw_args = list(generic_bases[typ].values())
+            declared_params = ctx.get_type_parameters(typ)
+            if declared_params and len(declared_params) == len(raw_args):
+                expanded_args: list[Value] = []
+                for declared_param, raw_arg in zip(declared_params, raw_args):
+                    if (
+                        isinstance(declared_param, TypeVarValue)
+                        and declared_param.is_typevartuple
+                    ):
+                        normalized_arg = replace_known_sequence_value(raw_arg)
+                        if (
+                            isinstance(normalized_arg, SequenceValue)
+                            and normalized_arg.typ is tuple
+                            and all(
+                                not is_many for is_many, _ in normalized_arg.members
+                            )
+                        ):
+                            expanded_args.extend(
+                                member for _, member in normalized_arg.members
+                            )
+                            continue
+                    expanded_args.append(raw_arg)
+                return expanded_args
+            return raw_args
         return None
 
     def get_generic_arg_for_type(
@@ -1223,9 +1246,25 @@ class GenericValue(TypedValue):
             yield from arg.walk_values()
 
     def substitute_typevars(self, typevars: TypeVarMap) -> Value:
-        return GenericValue(
-            self.typ, [arg.substitute_typevars(typevars) for arg in self.args]
-        )
+        new_args: list[Value] = []
+        for arg in self.args:
+            substituted = arg.substitute_typevars(typevars)
+            if (
+                isinstance(arg, TypeVarValue)
+                and arg.is_typevartuple
+                and substituted is not arg
+            ):
+                if isinstance(substituted, KnownValue):
+                    substituted = replace_known_sequence_value(substituted)
+                if (
+                    isinstance(substituted, SequenceValue)
+                    and substituted.typ is tuple
+                    and all(not is_many for is_many, _ in substituted.members)
+                ):
+                    new_args.extend(member for _, member in substituted.members)
+                    continue
+            new_args.append(substituted)
+        return GenericValue(self.typ, new_args)
 
     def simplify(self) -> Value:
         return GenericValue(self.typ, [arg.simplify() for arg in self.args])

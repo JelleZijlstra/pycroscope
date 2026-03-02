@@ -82,6 +82,7 @@ from .value import (
     NewTypeValue,
     ParamSpecArgsValue,
     ParamSpecKwargsValue,
+    SequenceValue,
     SubclassValue,
     TypedDictEntry,
     TypedDictValue,
@@ -1228,11 +1229,10 @@ class ArgSpecCache:
             typing_extensions.ParamSpec | typing.ParamSpec, Value
         ] = {}
         if substitute_typevars:
-            for i, tv_value in enumerate(my_typevars.values()):
-                try:
-                    value = generic_args[i]
-                except IndexError:
-                    value = AnyValue(AnySource.generic_argument)
+            specialized_args = self._specialize_generic_type_params(
+                tuple(my_typevars.values()), generic_args
+            )
+            for tv_value, value in zip(my_typevars.values(), specialized_args):
                 if isinstance(tv_value, TypeVarValue):
                     tv_map[tv_value.typevar] = value
                 elif isinstance(tv_value, InputSigValue) and isinstance(
@@ -1255,6 +1255,59 @@ class ArgSpecCache:
             base: {tv: _substitute_base_arg(value) for tv, value in args.items()}
             for base, args in generic_bases.items()
         }
+
+    def _specialize_generic_type_params(
+        self, type_params: Sequence[Value], generic_args: Sequence[Value]
+    ) -> list[Value]:
+        """Map concrete generic args to declared type parameters.
+
+        TypeVarTuple parameters consume zero or more type arguments and are
+        represented as tuple values during substitution.
+        """
+
+        default = AnyValue(AnySource.generic_argument)
+        if not type_params:
+            return []
+
+        variadic_indexes = [
+            i
+            for i, type_param in enumerate(type_params)
+            if isinstance(type_param, TypeVarValue) and type_param.is_typevartuple
+        ]
+        if len(variadic_indexes) != 1 or not generic_args:
+            return [
+                generic_args[i] if i < len(generic_args) else default
+                for i in range(len(type_params))
+            ]
+
+        variadic_index = variadic_indexes[0]
+        suffix_count = len(type_params) - variadic_index - 1
+        variadic_end = len(generic_args) - suffix_count
+        if variadic_end < variadic_index:
+            variadic_end = variadic_index
+
+        specialized: list[Value] = []
+        for i in range(len(type_params)):
+            if i < variadic_index:
+                value = generic_args[i] if i < len(generic_args) else default
+            elif i == variadic_index:
+                value = SequenceValue(
+                    tuple,
+                    [
+                        (False, member)
+                        for member in generic_args[variadic_index:variadic_end]
+                    ],
+                )
+            else:
+                suffix_index = i - variadic_index - 1
+                source_index = variadic_end + suffix_index
+                value = (
+                    generic_args[source_index]
+                    if source_index < len(generic_args)
+                    else default
+                )
+            specialized.append(value)
+        return specialized
 
     def _get_generic_bases_cached(self, typ: type | str) -> GenericBases:
         try:

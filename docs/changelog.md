@@ -3,6 +3,7 @@
 ## Unreleased
 
 - Preserve literal type arguments when inferring generic class-syntax `NamedTuple` constructor return types (for example, `Box(1)` now infers `Box[Literal[1]]`).
+- Improve `TypeVarTuple` handling for generic classes in static-fallback analysis: pycroscope now preserves variadic argument lengths and `NewType` members during inference, and correctly reports incompatible tuple lengths across repeated uses.
 
 ## Version 0.3.0 (March 1, 2026)
 
