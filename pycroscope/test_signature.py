@@ -1729,7 +1729,8 @@ class TestUnpack(TestNameCheckVisitorBase):
 
     @skip_before((3, 11))
     def test_typevartuple_generic_class_static_fallback(self):
-        self.assert_passes("""
+        self.assert_passes(
+            """
             from typing import Generic, NewType, TypeVarTuple, assert_type
 
             Shape = TypeVarTuple("Shape")
@@ -1743,6 +1744,9 @@ class TestUnpack(TestNameCheckVisitorBase):
 
             assert_type(Array((Height(1), Width(2))), Array[Height, Width])
 
+            class Bad(Generic[Shape]):  # E: invalid_annotation
+                ...
+
             def multiply(x: Array[*Shape], y: Array[*Shape]) -> Array[*Shape]:
                 raise NotImplementedError
 
@@ -1751,7 +1755,10 @@ class TestUnpack(TestNameCheckVisitorBase):
             def check(x: Array[Height], z: Array[Height, Width]) -> None:
                 assert_type(multiply(x, x), Array[Height])
                 multiply(x, z)  # E: incompatible_call
-            """)
+            """,
+            allow_import_failures=True,
+            allow_runtime_module_load_failure=True,
+        )
 
 
 class TestTooManyPosArgs(TestNameCheckVisitorBase):
