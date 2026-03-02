@@ -147,6 +147,36 @@ class TestNumerics(TestNameCheckVisitorBase):
 
 class TestSyntheticType(TestNameCheckVisitorBase):
     @assert_passes()
+    def test_callable_protocol_nonstandard_receiver_name(self):
+        from typing import Protocol
+
+        class CallableProto(Protocol):
+            def __call__(receiver, x: int) -> int: ...  # E: method_first_arg
+
+        def identity(x: int) -> int:
+            return x
+
+        def capybara() -> None:
+            fn: CallableProto = identity
+            print(fn)
+
+    @assert_passes()
+    def test_dunder_protocol_nonstandard_receiver_name(self):
+        from collections.abc import Iterator
+        from typing import Protocol
+
+        class IterableProto(Protocol):
+            def __iter__(receiver) -> Iterator[int]: ...  # E: method_first_arg
+
+        class WithIter:
+            def __iter__(self) -> Iterator[int]:
+                yield 1
+
+        def capybara() -> None:
+            value: IterableProto = WithIter()
+            print(value)
+
+    @assert_passes()
     def test_overloaded_callable_protocols(self):
         from typing import Protocol
 

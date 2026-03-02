@@ -3702,6 +3702,28 @@ class TestAnnAssign(TestNameCheckVisitorBase):
                 this.disallowed = 1  # E: invalid_annotation
                 this.allowed = 1
 
+    @assert_passes(allow_import_failures=True)
+    def test_protocol_staticmethod_with_receiver_param_is_incompatible(self):
+        from typing import Protocol
+
+        import does_not_exist  # noqa: F401
+
+        class Proto(Protocol):
+            def method1(self, a: int, b: int) -> float: ...
+
+        class Good:
+            @staticmethod
+            def method1(a: int, b: int) -> float:
+                return 0
+
+        class Bad:
+            @staticmethod
+            def method1(self, a: int, b: int) -> float:
+                return 0
+
+        ok: Proto = Good()
+        bad: Proto = Bad()  # E: incompatible_assignment
+
     @assert_passes()
     def test_inconsistent_type(self):
         def capybara():
