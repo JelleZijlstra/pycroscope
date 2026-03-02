@@ -18,7 +18,15 @@ from .functions import AsyncFunctionKind
 from .maybe_asynq import asynq
 from .options import Options, PyObjectSequenceOption, StringSequenceOption
 from .safe import is_async_fn, safe_getattr, safe_hasattr
-from .value import KnownValue, TypedValue, UnboundMethodValue, Value, replace_fallback
+from .value import (
+    IntersectionValue,
+    KnownValue,
+    MultiValuedValue,
+    TypedValue,
+    UnboundMethodValue,
+    Value,
+    replace_fallback,
+)
 
 
 class ClassesCheckedForAsynq(PyObjectSequenceOption[type]):
@@ -179,9 +187,14 @@ def is_impure_async_fn(value: Value) -> bool:
     """
     if asynq is None:
         return False
+    value = replace_fallback(value)
+    if isinstance(value, MultiValuedValue):
+        return any(is_impure_async_fn(subval) for subval in value.vals)
+    if isinstance(value, IntersectionValue):
+        return any(is_impure_async_fn(subval) for subval in value.vals)
     if isinstance(value, KnownValue):
         return is_async_fn(value.val) and not asynq.is_pure_async_fn(value.val)
-    elif isinstance(value, UnboundMethodValue):
+    if isinstance(value, UnboundMethodValue):
         method = value.get_method()
         if method is None:
             return False
@@ -192,14 +205,26 @@ def is_impure_async_fn(value: Value) -> bool:
 def get_pure_async_equivalent(value: Value) -> str:
     """Returns the pure-async equivalent of an async function."""
     assert is_impure_async_fn(value), f"{value} is not an impure async function"
+    value = replace_fallback(value)
+    if isinstance(value, MultiValuedValue):
+        impure_vals = [subval for subval in value.vals if is_impure_async_fn(subval)]
+        if len(impure_vals) == 1:
+            return get_pure_async_equivalent(impure_vals[0])
+        raise AssertionError(
+            f"cannot get pure async equivalent of ambiguous value {value}"
+        )
+    if isinstance(value, IntersectionValue):
+        for subval in value.vals:
+            if is_impure_async_fn(subval):
+                return get_pure_async_equivalent(subval)
+        raise AssertionError(f"cannot get pure async equivalent of {value}")
     if isinstance(value, KnownValue):
         return f"{_stringify_obj(value.val)}.asynq"
-    elif isinstance(value, UnboundMethodValue):
+    if isinstance(value, UnboundMethodValue):
         return _stringify_async_fn(
             UnboundMethodValue(value.attr_name, value.composite, "asynq")
         )
-    else:
-        assert False, f"cannot get pure async equivalent of {value}"
+    raise AssertionError(f"cannot get pure async equivalent of {value}")
 
 
 def _stringify_async_fn(value: Value) -> str:

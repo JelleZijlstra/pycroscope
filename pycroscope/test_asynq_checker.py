@@ -28,7 +28,7 @@ from .test_name_check_visitor import (
 )
 from .test_node_visitor import assert_passes
 from .tests import ASYNQ_METHOD_NAME
-from .value import KnownValue, TypedValue, UnboundMethodValue
+from .value import IntersectionValue, KnownValue, TypedValue, UnboundMethodValue
 
 
 class AsynqVisitor(ConfiguredNameCheckVisitor):
@@ -459,6 +459,10 @@ def test_is_impure_async_fn():
             "async_method", Composite(TypedValue(PropertyObject)), "asynq"
         )
     )
+    assert is_impure_async_fn(KnownValue(async_fn) | KnownValue(async_fn.asynq))
+    assert is_impure_async_fn(
+        IntersectionValue((KnownValue(async_fn), TypedValue(object)))
+    )
 
 
 def test_get_pure_async_equivalent():
@@ -479,4 +483,7 @@ def test_get_pure_async_equivalent():
         == get_pure_async_equivalent(
             UnboundMethodValue("async_method", Composite(TypedValue(PropertyObject)))
         )
+    )
+    assert "pycroscope.asynq_tests.async_fn.asynq" == get_pure_async_equivalent(
+        KnownValue(async_fn) | KnownValue(async_fn.asynq)
     )

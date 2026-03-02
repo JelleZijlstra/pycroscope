@@ -14,6 +14,7 @@ from .value import (
     NO_RETURN_VALUE,
     AnyValue,
     CanAssignContext,
+    IntersectionValue,
     KnownValue,
     MultiValuedValue,
     SubclassValue,
@@ -39,8 +40,10 @@ def is_universally_assignable(value: Value, target_value: Value) -> bool:
         return all(
             is_universally_assignable(subval, target_value) for subval in value.vals
         )
-    elif isinstance(value, TypeVarValue):
-        return True
+    elif isinstance(value, IntersectionValue):
+        return all(
+            is_universally_assignable(subval, target_value) for subval in value.vals
+        )
     return False
 
 
