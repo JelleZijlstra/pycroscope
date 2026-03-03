@@ -6,6 +6,48 @@ from .test_node_visitor import assert_passes
 
 class TestDataclassTransform(TestNameCheckVisitorBase):
     @assert_passes()
+    def test_non_typing_decorator_named_dataclass_transform(self):
+        from typing import Callable, TypeVar
+
+        T = TypeVar("T")
+
+        def dataclass_transform() -> Callable[[T], T]:
+            def decorator(cls: T) -> T:
+                return cls
+
+            return decorator
+
+        @dataclass_transform()
+        def model(cls: type[T]) -> type[T]:
+            return cls
+
+        @model
+        class Customer:
+            id: int
+            name: str
+
+        def check_errors() -> None:
+            Customer(id=1, name="")  # E: incompatible_call
+
+    @assert_passes()
+    def test_non_typing_class_decorator_named_dataclass_transform(self):
+        def dataclass_transform():
+            def decorator(cls: type[object]) -> type[object]:
+                return cls
+
+            return decorator
+
+        @dataclass_transform()
+        class BaseModel:
+            pass
+
+        class Customer(BaseModel):
+            id: int
+
+        def check_errors() -> None:
+            Customer(id=1)  # E: incompatible_call
+
+    @assert_passes()
     def test_dataclass_transform_function_provider_in_same_module(self):
         from dataclasses import dataclass
         from typing import TypeVar

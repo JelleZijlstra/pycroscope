@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Fix `@dataclass_transform` marker recognition to use inferred decorator values, so unrelated decorators named `dataclass_transform` are no longer treated as PEP 681 markers. Also improve support for other dynamic variations on dataclass_transform and dataclass decorators.
 - Improve recursive protocol matching with `@classmethod` members: pycroscope now preserves classmethod parameter constraints and `Self` specialization in synthetic static-fallback analysis, fixing false protocol incompatibilities and downstream `Any` inference.
 - Improve generic-base-class analysis in static fallback mode for unimportable modules: pycroscope now preserves generic base mappings and type-parameter ordering more accurately, reports duplicate/conflicting generic base type-variable declarations, and rejects `Generic`/`Generic[...]` used as type annotations outside base-class lists.
 - Preserve literal type arguments when inferring generic class-syntax `NamedTuple` constructor return types (for example, `Box(1)` now infers `Box[Literal[1]]`).

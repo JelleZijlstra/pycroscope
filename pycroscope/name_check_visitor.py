@@ -103,6 +103,7 @@ from .functions import (
     AsyncFunctionKind,
     AsyncProxyDecorators,
     AsynqDecorators,
+    DecoratorValues,
     FunctionDecorator,
     FunctionDefNode,
     FunctionInfo,
@@ -221,6 +222,7 @@ from .value import (
     CanAssignError,
     ConstraintExtension,
     CustomCheckExtension,
+    DataclassTransformDecoratorExtension,
     DataclassTransformExtension,
     DataclassTransformInfo,
     DefiniteValueExtension,
@@ -690,6 +692,37 @@ class _SyntheticTypedDictContext:
 
 
 @dataclass(frozen=True)
+class DataclassInfo:
+    init: bool
+    eq: bool
+    frozen: bool | None
+    unsafe_hash: bool
+    match_args: bool
+    order: bool
+    slots: bool
+    kw_only_default: bool
+    field_specifiers: tuple[Value, ...]
+
+    @classmethod
+    def from_transform_info_and_options(
+        cls, info: DataclassTransformInfo, keywords: Mapping[str, ast.expr]
+    ) -> "DataclassInfo":
+        return DataclassInfo(
+            init=_extract_bool(keywords.get("init"), True),
+            eq=_extract_bool(keywords.get("eq"), info.eq_default),
+            frozen=_extract_bool(keywords.get("frozen"), info.frozen_default),
+            unsafe_hash=_extract_bool(keywords.get("unsafe_hash"), False),
+            match_args=_extract_bool(keywords.get("match_args"), True),
+            order=_extract_bool(keywords.get("order"), info.order_default),
+            slots=_extract_bool(keywords.get("slots"), False),
+            kw_only_default=_extract_bool(
+                keywords.get("kw_only"), info.kw_only_default
+            ),
+            field_specifiers=info.field_specifiers,
+        )
+
+
+@dataclass(frozen=True)
 class _ClassDataclassSemantics:
     is_dataclass: bool
     init: bool | None
@@ -699,7 +732,7 @@ class _ClassDataclassSemantics:
     match_args: bool | None
     order: bool | None
     slots: bool | None
-    kw_only_default: bool
+    kw_only_default: bool | None
     field_specifiers: tuple[Value, ...]
     is_transform_provider: bool
     transform_info: DataclassTransformInfo | None = None
@@ -1464,9 +1497,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     checker: Checker
     collector: CallSiteCollector | None
     current_class: type | str | None
-    current_class_is_dataclass: bool
-    current_class_dataclass_field_specifiers: tuple[Value, ...]
-    current_class_dataclass_kw_only_default: bool
+    current_dataclass_info: DataclassInfo | None
     current_class_key: type | str | None
     current_class_type_params: Sequence[TypeVarValue] | None
     _active_pep695_type_params: list[set[object]]
@@ -1541,9 +1572,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         self.match_subject = Composite(AnyValue(AnySource.inference))
         # current class (for inferring the type of cls and self arguments)
         self.current_class = None
-        self.current_class_is_dataclass = False
-        self.current_class_dataclass_field_specifiers = ()
-        self.current_class_dataclass_kw_only_default = False
+        self.current_dataclass_info = None
         self.current_class_key = None
         self.current_class_type_params = None
         self._active_pep695_type_params = []
@@ -2774,8 +2803,21 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         ):
             yield
 
+    def visit_decorator_list(self, decorators: list[ast.expr]) -> DecoratorValues:
+        result = []
+        for decorator in decorators:
+            if isinstance(decorator, ast.Call):
+                callee = self.visit(decorator.func)
+                value = self.visit_Call(decorator, callee=callee)
+                if self.annotate:
+                    decorator.inferred_value = value
+            else:
+                callee = value = self.visit(decorator)
+            result.append((callee, value, decorator))
+        return result
+
     def visit_ClassDef(self, node: ast.ClassDef) -> Value:
-        decorator_values = self._generic_visit_list(node.decorator_list)
+        decorator_values = self.visit_decorator_list(node.decorator_list)
         class_obj = self._get_current_class_object(node)
         class_key: type | str = (
             class_obj
@@ -2783,7 +2825,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             else self._get_synthetic_class_fq_name(node)
         )
         self.enum_value_type_by_class.pop(class_key, None)
-        if any(self._is_final_decorator_value(value) for value in decorator_values):
+        if any(
+            self._is_final_decorator_value(value) for _, value, _ in decorator_values
+        ):
             self.final_class_keys.add(class_key)
         if sys.version_info >= (3, 12) and node.type_params:
             ctx = self.scopes.add_scope(
@@ -2792,15 +2836,14 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         else:
             ctx = contextlib.nullcontext()
         with ctx:
-            declared_type_params = cast(
-                Sequence[ast.AST], getattr(node, "type_params", ())
-            )
-            if sys.version_info >= (3, 12) and declared_type_params:
+            if sys.version_info >= (3, 12) and node.type_params:
+                declared_type_params = node.type_params
                 type_param_values = list(
                     self.visit_type_param_values(declared_type_params)
                 )
             else:
                 type_param_values = []
+                declared_type_params = []
             if self._is_checking() and type_param_values:
                 legacy_typevars = self._legacy_typevars_in_nodes(
                     [
@@ -2850,8 +2893,18 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 class_obj=class_obj,
                 base_values=base_values,
                 keyword_values=keyword_values,
+                decorator_values=decorator_values,
             )
-            if self._is_checking() and dataclass_semantics.is_dataclass:
+            direct_dataclass_transform_info = self._get_direct_dataclass_transform_info(
+                decorator_values
+            )
+            dataclass_transform_info = self._get_class_transform_provider_info(
+                class_obj=class_obj,
+                base_values=base_values,
+                keyword_values=keyword_values,
+                direct_dataclass_transform_info=direct_dataclass_transform_info,
+            )
+            if self._is_checking() and dataclass_semantics is not None:
                 self._check_dataclass_inheritance(
                     node, base_values, dataclass_semantics.frozen
                 )
@@ -2868,7 +2921,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 and not node.keywords
             ):
                 fallback_runtime_class = self._make_dataclass_related_fallback_class(
-                    node, base_values
+                    node, base_values, decorator_values
                 )
                 if fallback_runtime_class is None:
                     fallback_runtime_class = (
@@ -2907,87 +2960,37 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     node.name,
                     synthetic_class_type,
                     base_classes=synthetic_base_values,
-                    is_dataclass=dataclass_semantics.is_dataclass,
+                    is_dataclass=dataclass_semantics is not None,
                     dataclass_frozen=(
                         dataclass_semantics.frozen
-                        if dataclass_semantics.is_dataclass
+                        if dataclass_semantics is not None
                         else None
                     ),
                     dataclass_order=(
                         dataclass_semantics.order
-                        if dataclass_semantics.is_dataclass
+                        if dataclass_semantics is not None
                         else None
                     ),
                 )
-                if dataclass_semantics.is_transform_provider:
+                if dataclass_transform_info is not None:
                     synthetic_class.class_attributes["%dataclass_transform"] = (
                         KnownValue(True)
                     )
-                    if dataclass_semantics.transform_info is not None and isinstance(
-                        dataclass_semantics.transform_info.init_default, bool
-                    ):
-                        synthetic_class.class_attributes[
-                            "%dataclass_transform_init_default"
-                        ] = KnownValue(dataclass_semantics.transform_info.init_default)
-                    if dataclass_semantics.transform_info is not None and isinstance(
-                        dataclass_semantics.transform_info.eq_default, bool
-                    ):
-                        synthetic_class.class_attributes[
-                            "%dataclass_transform_eq_default"
-                        ] = KnownValue(dataclass_semantics.transform_info.eq_default)
-                    if dataclass_semantics.transform_info is not None and isinstance(
-                        dataclass_semantics.transform_info.frozen_default, bool
-                    ):
-                        synthetic_class.class_attributes[
-                            "%dataclass_transform_frozen_default"
-                        ] = KnownValue(
-                            dataclass_semantics.transform_info.frozen_default
-                        )
-                    if dataclass_semantics.transform_info is not None and isinstance(
-                        dataclass_semantics.transform_info.unsafe_hash_default, bool
-                    ):
-                        synthetic_class.class_attributes[
-                            "%dataclass_transform_unsafe_hash_default"
-                        ] = KnownValue(
-                            dataclass_semantics.transform_info.unsafe_hash_default
-                        )
-                    if dataclass_semantics.transform_info is not None and isinstance(
-                        dataclass_semantics.transform_info.match_args_default, bool
-                    ):
-                        synthetic_class.class_attributes[
-                            "%dataclass_transform_match_args_default"
-                        ] = KnownValue(
-                            dataclass_semantics.transform_info.match_args_default
-                        )
-                    if dataclass_semantics.transform_info is not None and isinstance(
-                        dataclass_semantics.transform_info.kw_only_default, bool
-                    ):
-                        synthetic_class.class_attributes[
-                            "%dataclass_transform_kw_only_default"
-                        ] = KnownValue(
-                            dataclass_semantics.transform_info.kw_only_default
-                        )
-                    if dataclass_semantics.transform_info is not None and isinstance(
-                        dataclass_semantics.transform_info.order_default, bool
-                    ):
-                        synthetic_class.class_attributes[
-                            "%dataclass_transform_order_default"
-                        ] = KnownValue(dataclass_semantics.transform_info.order_default)
-                    if dataclass_semantics.transform_info is not None and isinstance(
-                        dataclass_semantics.transform_info.slots_default, bool
-                    ):
-                        synthetic_class.class_attributes[
-                            "%dataclass_transform_slots_default"
-                        ] = KnownValue(dataclass_semantics.transform_info.slots_default)
-                    if (
-                        dataclass_semantics.transform_info is not None
-                        and dataclass_semantics.transform_info.field_specifiers
-                    ):
-                        synthetic_class.class_attributes[
-                            "%dataclass_transform_field_specifiers"
-                        ] = KnownValue(
-                            tuple(dataclass_semantics.transform_info.field_specifiers)
-                        )
+                    synthetic_class.class_attributes[
+                        "%dataclass_transform_eq_default"
+                    ] = KnownValue(dataclass_transform_info.eq_default)
+                    synthetic_class.class_attributes[
+                        "%dataclass_transform_frozen_default"
+                    ] = KnownValue(dataclass_transform_info.frozen_default)
+                    synthetic_class.class_attributes[
+                        "%dataclass_transform_kw_only_default"
+                    ] = KnownValue(dataclass_transform_info.kw_only_default)
+                    synthetic_class.class_attributes[
+                        "%dataclass_transform_order_default"
+                    ] = KnownValue(dataclass_transform_info.order_default)
+                    synthetic_class.class_attributes[
+                        "%dataclass_transform_field_specifiers"
+                    ] = KnownValue(tuple(dataclass_transform_info.field_specifiers))
                 synthetic_methods = self._get_synthetic_method_attributes(node)
                 synthetic_class.method_attributes.update(synthetic_methods)
                 for method_name in synthetic_methods:
@@ -3005,8 +3008,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     # resolve even when no runtime class object exists.
                     self.scopes.set(node.name, synthetic_class, node, self.state)
             elif (
-                dataclass_semantics.is_dataclass
-                or dataclass_semantics.is_transform_provider
+                dataclass_semantics is not None or dataclass_transform_info is not None
             ):
                 existing = self.checker.get_synthetic_class(class_obj)
                 if existing is None:
@@ -3014,15 +3016,15 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                         node.name,
                         TypedValue(class_obj),
                         base_classes=synthetic_base_values,
-                        is_dataclass=dataclass_semantics.is_dataclass,
+                        is_dataclass=dataclass_semantics is not None,
                         dataclass_frozen=(
                             dataclass_semantics.frozen
-                            if dataclass_semantics.is_dataclass
+                            if dataclass_semantics is not None
                             else None
                         ),
                         dataclass_order=(
                             dataclass_semantics.order
-                            if dataclass_semantics.is_dataclass
+                            if dataclass_semantics is not None
                             else None
                         ),
                     )
@@ -3031,91 +3033,38 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     existing = replace(
                         existing,
                         base_classes=synthetic_base_values,
-                        is_dataclass=dataclass_semantics.is_dataclass,
+                        is_dataclass=dataclass_semantics is not None,
                         dataclass_frozen=(
                             dataclass_semantics.frozen
-                            if dataclass_semantics.is_dataclass
+                            if dataclass_semantics is not None
                             else None
                         ),
                         dataclass_order=(
                             dataclass_semantics.order
-                            if dataclass_semantics.is_dataclass
+                            if dataclass_semantics is not None
                             else None
                         ),
                     )
                     self.checker.register_synthetic_class(existing)
-                if dataclass_semantics.is_transform_provider:
+                if dataclass_transform_info is not None:
                     existing.class_attributes["%dataclass_transform"] = KnownValue(True)
-                    if dataclass_semantics.transform_info is not None and isinstance(
-                        dataclass_semantics.transform_info.init_default, bool
-                    ):
-                        existing.class_attributes[
-                            "%dataclass_transform_init_default"
-                        ] = KnownValue(dataclass_semantics.transform_info.init_default)
-                    if dataclass_semantics.transform_info is not None and isinstance(
-                        dataclass_semantics.transform_info.eq_default, bool
-                    ):
-                        existing.class_attributes["%dataclass_transform_eq_default"] = (
-                            KnownValue(dataclass_semantics.transform_info.eq_default)
-                        )
-                    if dataclass_semantics.transform_info is not None and isinstance(
-                        dataclass_semantics.transform_info.frozen_default, bool
-                    ):
-                        existing.class_attributes[
-                            "%dataclass_transform_frozen_default"
-                        ] = KnownValue(
-                            dataclass_semantics.transform_info.frozen_default
-                        )
-                    if dataclass_semantics.transform_info is not None and isinstance(
-                        dataclass_semantics.transform_info.unsafe_hash_default, bool
-                    ):
-                        existing.class_attributes[
-                            "%dataclass_transform_unsafe_hash_default"
-                        ] = KnownValue(
-                            dataclass_semantics.transform_info.unsafe_hash_default
-                        )
-                    if dataclass_semantics.transform_info is not None and isinstance(
-                        dataclass_semantics.transform_info.match_args_default, bool
-                    ):
-                        existing.class_attributes[
-                            "%dataclass_transform_match_args_default"
-                        ] = KnownValue(
-                            dataclass_semantics.transform_info.match_args_default
-                        )
-                    if dataclass_semantics.transform_info is not None and isinstance(
-                        dataclass_semantics.transform_info.kw_only_default, bool
-                    ):
-                        existing.class_attributes[
-                            "%dataclass_transform_kw_only_default"
-                        ] = KnownValue(
-                            dataclass_semantics.transform_info.kw_only_default
-                        )
-                    if dataclass_semantics.transform_info is not None and isinstance(
-                        dataclass_semantics.transform_info.order_default, bool
-                    ):
-                        existing.class_attributes[
-                            "%dataclass_transform_order_default"
-                        ] = KnownValue(dataclass_semantics.transform_info.order_default)
-                    if dataclass_semantics.transform_info is not None and isinstance(
-                        dataclass_semantics.transform_info.slots_default, bool
-                    ):
-                        existing.class_attributes[
-                            "%dataclass_transform_slots_default"
-                        ] = KnownValue(dataclass_semantics.transform_info.slots_default)
-                    if (
-                        dataclass_semantics.transform_info is not None
-                        and dataclass_semantics.transform_info.field_specifiers
-                    ):
-                        existing.class_attributes[
-                            "%dataclass_transform_field_specifiers"
-                        ] = KnownValue(
-                            tuple(dataclass_semantics.transform_info.field_specifiers)
-                        )
+                    existing.class_attributes["%dataclass_transform_eq_default"] = (
+                        KnownValue(dataclass_transform_info.eq_default)
+                    )
+                    existing.class_attributes["%dataclass_transform_frozen_default"] = (
+                        KnownValue(dataclass_transform_info.frozen_default)
+                    )
+                    existing.class_attributes[
+                        "%dataclass_transform_kw_only_default"
+                    ] = KnownValue(dataclass_transform_info.kw_only_default)
+                    existing.class_attributes["%dataclass_transform_order_default"] = (
+                        KnownValue(dataclass_transform_info.order_default)
+                    )
+                    existing.class_attributes[
+                        "%dataclass_transform_field_specifiers"
+                    ] = KnownValue(tuple(dataclass_transform_info.field_specifiers))
                 else:
                     existing.class_attributes.pop("%dataclass_transform", None)
-                    existing.class_attributes.pop(
-                        "%dataclass_transform_init_default", None
-                    )
                     existing.class_attributes.pop(
                         "%dataclass_transform_eq_default", None
                     )
@@ -3123,19 +3072,10 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                         "%dataclass_transform_frozen_default", None
                     )
                     existing.class_attributes.pop(
-                        "%dataclass_transform_unsafe_hash_default", None
-                    )
-                    existing.class_attributes.pop(
-                        "%dataclass_transform_match_args_default", None
-                    )
-                    existing.class_attributes.pop(
                         "%dataclass_transform_kw_only_default", None
                     )
                     existing.class_attributes.pop(
                         "%dataclass_transform_order_default", None
-                    )
-                    existing.class_attributes.pop(
-                        "%dataclass_transform_slots_default", None
                     )
                     existing.class_attributes.pop(
                         "%dataclass_transform_field_specifiers", None
@@ -3211,7 +3151,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 not registered_type_param_values
                 and not type_param_values
                 and self.module is None
-                and not dataclass_semantics.is_dataclass
+                and dataclass_semantics is None
                 and not has_explicit_constructor
             ):
                 recovered_registration_type_params = (
@@ -3232,7 +3172,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 registered_type_param_values
                 and not type_param_values
                 and self.module is None
-                and not dataclass_semantics.is_dataclass
+                and dataclass_semantics is None
                 and not has_explicit_constructor
             ):
                 registered_type_param_values = (
@@ -3295,19 +3235,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 self._active_pep695_type_param_scope(type_param_values),
                 override(self, "current_synthetic_typeddict", synthetic_typeddict),
                 override(self, "current_class_key", class_key),
-                override(
-                    self, "current_class_is_dataclass", dataclass_semantics.is_dataclass
-                ),
-                override(
-                    self,
-                    "current_class_dataclass_field_specifiers",
-                    dataclass_semantics.field_specifiers,
-                ),
-                override(
-                    self,
-                    "current_class_dataclass_kw_only_default",
-                    dataclass_semantics.kw_only_default,
-                ),
+                override(self, "current_dataclass_info", dataclass_semantics),
                 override(
                     self, "current_class_type_params", tuple(method_type_param_values)
                 ),
@@ -3317,7 +3245,10 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 )
             if type_param_values and synthetic_typeddict is None:
                 inferred_type_params = self._infer_class_type_param_variances(
-                    node, type_param_values, base_values
+                    node,
+                    type_param_values,
+                    base_values,
+                    dataclass_semantics=dataclass_semantics,
                 )
                 registered_inferred_type_params = (
                     self._align_type_params_with_runtime_class(
@@ -3423,7 +3354,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     )
                     self.checker.register_synthetic_class(synthetic_class)
                     value = synthetic_class
-                if dataclass_semantics.is_dataclass:
+                if dataclass_semantics is not None:
                     dataclass_check_class = synthetic_class
                 if isinstance(metaclass_value, Value):
                     synthetic_class.class_attributes["%metaclass"] = metaclass_value
@@ -3482,14 +3413,16 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     dataclass_metadata_class, dataclass_semantics
                 )
                 self.checker.register_synthetic_class(dataclass_metadata_class)
-                if dataclass_semantics.is_dataclass:
+                if dataclass_semantics is not None:
                     dataclass_check_class = dataclass_metadata_class
             if (
                 self._is_checking()
-                and dataclass_semantics.is_dataclass
+                and dataclass_semantics is not None
                 and dataclass_check_class is not None
             ):
-                self._check_dataclass_field_default_order(node, dataclass_check_class)
+                self._check_dataclass_field_default_order(
+                    node, dataclass_check_class, decorator_values
+                )
                 self._check_dataclass_post_init_signature(node, dataclass_check_class)
         value_to_store: Value | None = value
         if (
@@ -3874,10 +3807,13 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             return None
 
     def _make_dataclass_related_fallback_class(
-        self, node: ast.ClassDef, base_values: Sequence[Value]
+        self,
+        node: ast.ClassDef,
+        base_values: Sequence[Value],
+        decorator_values: DecoratorValues,
     ) -> type | None:
-        is_dataclass_class, options = self._get_dataclass_decorator_options(node)
-        if not is_dataclass_class or options is None:
+        options = self._get_dataclass_decorator_options(decorator_values)
+        if options is None:
             return None
         if not self._should_build_dataclass_kw_only_fallback(node, options):
             return None
@@ -4342,150 +4278,31 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         return _is_dataclass_decorator_value(value)
 
     def _get_dataclass_decorator_options(
-        self, node: ast.ClassDef
-    ) -> tuple[bool, dict[str, bool] | None]:
-        for decorator in node.decorator_list:
-            if isinstance(decorator, ast.Call):
-                if not self._is_dataclass_decorator_target(decorator.func):
-                    continue
-                options: dict[str, bool] = {}
-                for kw in decorator.keywords:
-                    if kw.arg is None:
-                        return True, None
-                    value = _get_bool_literal(kw.value)
-                    if value is None:
-                        return True, None
-                    options[kw.arg] = value
-                return True, options
-            if self._is_dataclass_decorator_target(decorator):
-                return True, {}
-        return False, None
-
-    def _get_dataclass_decorator_status(
-        self, node: ast.ClassDef
-    ) -> tuple[bool, bool | None]:
-        is_dataclass_class, options = self._get_dataclass_decorator_options(node)
-        if not is_dataclass_class:
-            return False, None
-        if options is None:
-            return True, None
-        return True, options.get("frozen", False)
-
-    def _extract_dataclass_transform_field_specifiers(
-        self, value: Value
-    ) -> tuple[Value, ...]:
-        value = replace_fallback(value)
-        if isinstance(value, AnnotatedValue):
-            return self._extract_dataclass_transform_field_specifiers(value.value)
-        if isinstance(value, MultiValuedValue):
-            field_specifiers: list[Value] = []
-            for subval in value.vals:
-                for (
-                    field_specifier
-                ) in self._extract_dataclass_transform_field_specifiers(subval):
-                    if field_specifier not in field_specifiers:
-                        field_specifiers.append(field_specifier)
-            return tuple(field_specifiers)
-        if isinstance(value, SequenceValue):
-            members = value.get_member_sequence()
-            if members is None:
-                return ()
-            return tuple(members)
-        if isinstance(value, KnownValue) and isinstance(
-            value.val, (tuple, list, set, frozenset)
-        ):
-            return tuple(KnownValue(item) for item in value.val)
-        return ()
-
-    def _is_dataclass_transform_marker_target(self, target: ast.expr) -> bool:
-        if isinstance(target, ast.Attribute):
-            return target.attr == "dataclass_transform"
-        if not isinstance(target, ast.Name):
-            return False
-        if target.id == "dataclass_transform":
-            return True
-        value = self.scopes.get(target.id, target, self.state, can_assign_ctx=self)
-        return _is_dataclass_transform_marker_value(value)
+        self, decorator_values: DecoratorValues
+    ) -> dict[str, bool] | None:
+        for decorator, _, expr in decorator_values:
+            if _is_known_decorator(decorator, dataclasses.dataclass):
+                options = {}
+                if isinstance(expr, ast.Call):
+                    for kw in expr.keywords:
+                        if kw.arg is None:
+                            continue
+                        value = _get_bool_literal(kw.value)
+                        if value is None:
+                            continue
+                        options[kw.arg] = value
+                return options
+        return None
 
     def _get_direct_dataclass_transform_info(
-        self, decorators: Sequence[ast.expr]
+        self, decorator_values: DecoratorValues
     ) -> DataclassTransformInfo | None:
         infos: list[DataclassTransformInfo] = []
-        for decorator in decorators:
-            if isinstance(decorator, ast.Call):
-                if not self._is_dataclass_transform_marker_target(decorator.func):
-                    continue
-                info = DataclassTransformInfo(
-                    init_default=True,
-                    eq_default=True,
-                    frozen_default=False,
-                    unsafe_hash_default=False,
-                    match_args_default=True,
-                    kw_only_default=False,
-                    order_default=False,
-                    slots_default=None,
-                    field_specifiers=(),
-                )
-                for kw in decorator.keywords:
-                    if kw.arg is None:
-                        continue
-                    if kw.arg == "init_default":
-                        bool_value = _get_bool_literal(kw.value)
-                        if bool_value is not None:
-                            info = replace(info, init_default=bool_value)
-                    elif kw.arg == "eq_default":
-                        bool_value = _get_bool_literal(kw.value)
-                        if bool_value is not None:
-                            info = replace(info, eq_default=bool_value)
-                    elif kw.arg == "frozen_default":
-                        bool_value = _get_bool_literal(kw.value)
-                        if bool_value is not None:
-                            info = replace(info, frozen_default=bool_value)
-                    elif kw.arg == "unsafe_hash_default":
-                        bool_value = _get_bool_literal(kw.value)
-                        if bool_value is not None:
-                            info = replace(info, unsafe_hash_default=bool_value)
-                    elif kw.arg == "match_args_default":
-                        bool_value = _get_bool_literal(kw.value)
-                        if bool_value is not None:
-                            info = replace(info, match_args_default=bool_value)
-                    elif kw.arg == "kw_only_default":
-                        bool_value = _get_bool_literal(kw.value)
-                        if bool_value is not None:
-                            info = replace(info, kw_only_default=bool_value)
-                    elif kw.arg == "order_default":
-                        bool_value = _get_bool_literal(kw.value)
-                        if bool_value is not None:
-                            info = replace(info, order_default=bool_value)
-                    elif kw.arg == "slots_default":
-                        bool_value = _get_bool_literal(kw.value)
-                        if bool_value is not None:
-                            info = replace(info, slots_default=bool_value)
-                    elif kw.arg == "field_specifiers":
-                        with self.catch_errors() as errors:
-                            field_specifier_value = self.visit(kw.value)
-                        if not errors:
-                            info = replace(
-                                info,
-                                field_specifiers=self._extract_dataclass_transform_field_specifiers(
-                                    field_specifier_value
-                                ),
-                            )
-                infos.append(info)
-            elif self._is_dataclass_transform_marker_target(decorator):
-                infos.append(
-                    DataclassTransformInfo(
-                        init_default=True,
-                        eq_default=True,
-                        frozen_default=False,
-                        unsafe_hash_default=False,
-                        match_args_default=True,
-                        kw_only_default=False,
-                        order_default=False,
-                        slots_default=None,
-                        field_specifiers=(),
-                    )
-                )
+        for _, value, _ in decorator_values:
+            _, exts = unannotate_value(value, DataclassTransformDecoratorExtension)
+            if exts:
+                for ext in exts:
+                    infos.append(ext.info)
         if not infos:
             return None
         return _merge_dataclass_transform_infos(infos)
@@ -4497,30 +4314,18 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         if not isinstance(raw, Mapping):
             return None
 
-        init_default = raw.get("init_default", True)
-        if not isinstance(init_default, bool):
-            init_default = None
         eq_default = raw.get("eq_default", True)
         if not isinstance(eq_default, bool):
-            eq_default = None
+            eq_default = True
         frozen_default = raw.get("frozen_default", False)
         if not isinstance(frozen_default, bool):
-            frozen_default = None
-        unsafe_hash_default = raw.get("unsafe_hash_default", False)
-        if not isinstance(unsafe_hash_default, bool):
-            unsafe_hash_default = None
-        match_args_default = raw.get("match_args_default", True)
-        if not isinstance(match_args_default, bool):
-            match_args_default = None
+            frozen_default = False
         kw_only_default = raw.get("kw_only_default", False)
         if not isinstance(kw_only_default, bool):
-            kw_only_default = None
+            kw_only_default = False
         order_default = raw.get("order_default", False)
         if not isinstance(order_default, bool):
-            order_default = None
-        slots_default = raw.get("slots_default")
-        if not isinstance(slots_default, bool):
-            slots_default = None
+            order_default = False
 
         field_specifier_values: list[Value] = []
         raw_field_specifiers = raw.get("field_specifiers", ())
@@ -4531,14 +4336,10 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     field_specifier_values.append(value)
 
         return DataclassTransformInfo(
-            init_default=init_default,
             eq_default=eq_default,
             frozen_default=frozen_default,
-            unsafe_hash_default=unsafe_hash_default,
-            match_args_default=match_args_default,
             kw_only_default=kw_only_default,
             order_default=order_default,
-            slots_default=slots_default,
             field_specifiers=tuple(field_specifier_values),
         )
 
@@ -4551,23 +4352,14 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         ):
             return None
 
-        init_default: bool | None = None
-        raw_init_default = value.class_attributes.get(
-            "%dataclass_transform_init_default"
-        )
-        if isinstance(raw_init_default, KnownValue) and isinstance(
-            raw_init_default.val, bool
-        ):
-            init_default = raw_init_default.val
-
-        eq_default: bool | None = None
+        eq_default: bool = True
         raw_eq_default = value.class_attributes.get("%dataclass_transform_eq_default")
         if isinstance(raw_eq_default, KnownValue) and isinstance(
             raw_eq_default.val, bool
         ):
             eq_default = raw_eq_default.val
 
-        frozen_default: bool | None = None
+        frozen_default: bool = False
         raw_frozen_default = value.class_attributes.get(
             "%dataclass_transform_frozen_default"
         )
@@ -4576,25 +4368,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         ):
             frozen_default = raw_frozen_default.val
 
-        unsafe_hash_default: bool | None = None
-        raw_unsafe_hash_default = value.class_attributes.get(
-            "%dataclass_transform_unsafe_hash_default"
-        )
-        if isinstance(raw_unsafe_hash_default, KnownValue) and isinstance(
-            raw_unsafe_hash_default.val, bool
-        ):
-            unsafe_hash_default = raw_unsafe_hash_default.val
-
-        match_args_default: bool | None = None
-        raw_match_args_default = value.class_attributes.get(
-            "%dataclass_transform_match_args_default"
-        )
-        if isinstance(raw_match_args_default, KnownValue) and isinstance(
-            raw_match_args_default.val, bool
-        ):
-            match_args_default = raw_match_args_default.val
-
-        kw_only_default: bool | None = None
+        kw_only_default: bool = False
         raw_kw_only_default = value.class_attributes.get(
             "%dataclass_transform_kw_only_default"
         )
@@ -4603,7 +4377,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         ):
             kw_only_default = raw_kw_only_default.val
 
-        order_default: bool | None = None
+        order_default: bool = False
         raw_order_default = value.class_attributes.get(
             "%dataclass_transform_order_default"
         )
@@ -4611,15 +4385,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             raw_order_default.val, bool
         ):
             order_default = raw_order_default.val
-
-        slots_default: bool | None = None
-        raw_slots_default = value.class_attributes.get(
-            "%dataclass_transform_slots_default"
-        )
-        if isinstance(raw_slots_default, KnownValue) and isinstance(
-            raw_slots_default.val, bool
-        ):
-            slots_default = raw_slots_default.val
 
         field_specifiers: tuple[Value, ...] = ()
         raw_field_specifiers = value.class_attributes.get(
@@ -4634,14 +4399,10 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             field_specifiers = tuple(values)
 
         return DataclassTransformInfo(
-            init_default=init_default,
             eq_default=eq_default,
             frozen_default=frozen_default,
-            unsafe_hash_default=unsafe_hash_default,
-            match_args_default=match_args_default,
             kw_only_default=kw_only_default,
             order_default=order_default,
-            slots_default=slots_default,
             field_specifiers=field_specifiers,
         )
 
@@ -4720,17 +4481,47 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             return self._get_dataclass_transform_info_from_runtime_object(value.typ)
         return None
 
-    def _get_dataclass_transform_info_for_decorator_target(
-        self, target: ast.expr
+    def _get_class_transform_provider_info(
+        self,
+        *,
+        class_obj: type | None,
+        base_values: Sequence[Value],
+        keyword_values: Sequence[tuple[ast.keyword, Value]],
+        direct_dataclass_transform_info: DataclassTransformInfo | None,
     ) -> DataclassTransformInfo | None:
-        if isinstance(target, ast.Name):
-            value = self.scopes.get(target.id, target, self.state, can_assign_ctx=self)
-            return self._get_dataclass_transform_info_from_value(value)
-        with self.catch_errors() as errors:
-            value = self.visit(target)
-        if errors:
+        infos = [
+            info
+            for base_value in base_values
+            if (info := self._get_dataclass_transform_info_from_value(base_value))
+            is not None
+        ]
+        metaclass_transform_info = next(
+            (
+                info
+                for keyword, value in keyword_values
+                if keyword.arg == "metaclass"
+                and (info := self._get_dataclass_transform_info_from_value(value))
+                is not None
+            ),
+            None,
+        )
+        if metaclass_transform_info is not None:
+            infos.append(metaclass_transform_info)
+        if direct_dataclass_transform_info is not None:
+            infos.append(direct_dataclass_transform_info)
+        if (
+            class_obj is not None
+            and (
+                runtime_transform_info := self._get_dataclass_transform_info_from_runtime_object(
+                    class_obj
+                )
+            )
+            is not None
+        ):
+            infos.append(runtime_transform_info)
+        if not infos:
             return None
-        return self._get_dataclass_transform_info_from_value(value)
+        return _merge_dataclass_transform_infos(infos)
 
     def _get_class_dataclass_semantics(
         self,
@@ -4739,10 +4530,40 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         class_obj: type | None,
         base_values: Sequence[Value],
         keyword_values: Sequence[tuple[ast.keyword, Value]],
-    ) -> _ClassDataclassSemantics:
-        direct_transform_info = self._get_direct_dataclass_transform_info(
-            node.decorator_list
-        )
+        decorator_values: DecoratorValues,
+    ) -> DataclassInfo | None:
+        final_info: DataclassInfo | None = None
+        dataclass_options = self._get_dataclass_decorator_options(decorator_values)
+        if dataclass_options is not None:
+            final_info = DataclassInfo(
+                init=dataclass_options.get("init", True),
+                eq=dataclass_options.get("eq", True),
+                frozen=dataclass_options.get("frozen", False),
+                unsafe_hash=dataclass_options.get("unsafe_hash", False),
+                match_args=dataclass_options.get("match_args", True),
+                order=dataclass_options.get("order", False),
+                slots=dataclass_options.get("slots", False),
+                kw_only_default=dataclass_options.get("kw_only", False),
+                field_specifiers=(KnownValue(dataclass_field),),
+            )
+
+        for target_value, _, decorator in decorator_values:
+            info = self._get_dataclass_transform_info_from_value(target_value)
+            if info is None:
+                continue
+            if final_info is not None:
+                self._show_error_if_checking(
+                    decorator,
+                    "Multiple dataclass transforms on the same class are not supported",
+                    ErrorCode.multiple_dataclass_transform,
+                )
+                continue
+            if isinstance(decorator, ast.Call):
+                keywords = _extract_keywords(decorator.keywords)
+            else:
+                keywords = {}
+            final_info = DataclassInfo.from_transform_info_and_options(info, keywords)
+
         base_transform_infos = [
             info
             for base_value in base_values
@@ -4760,302 +4581,65 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             None,
         )
 
-        transform_provider_infos = list(base_transform_infos)
-        if metaclass_transform_info is not None:
-            transform_provider_infos.append(metaclass_transform_info)
-        if direct_transform_info is not None:
-            transform_provider_infos.append(direct_transform_info)
-        if (
-            class_obj is not None
-            and (
-                runtime_transform_info := self._get_dataclass_transform_info_from_runtime_object(
-                    class_obj
+        if base_transform_infos or metaclass_transform_info:
+            class_keywords = _extract_keywords(node.keywords)
+        else:
+            class_keywords = {}
+
+        for base_transform_info in base_transform_infos:
+            if final_info is not None:
+                self._show_error_if_checking(
+                    node,
+                    "Cannot combine dataclass transform from base class with dataclass decorator",
+                    ErrorCode.multiple_dataclass_transform,
                 )
-            )
-            is not None
-        ):
-            transform_provider_infos.append(runtime_transform_info)
-        is_transform_provider = bool(transform_provider_infos)
-
-        is_dataclass_class, dataclass_options = self._get_dataclass_decorator_options(
-            node
-        )
-        if is_dataclass_class:
-            init = None
-            eq = None
-            frozen = None
-            unsafe_hash = None
-            match_args = None
-            order = None
-            slots = None
-            kw_only_default = False
-            if dataclass_options is not None:
-                init = dataclass_options.get("init", True)
-                eq = dataclass_options.get("eq", True)
-                frozen = dataclass_options.get("frozen", False)
-                unsafe_hash = dataclass_options.get("unsafe_hash", False)
-                match_args = dataclass_options.get("match_args", True)
-                order = dataclass_options.get("order", False)
-                slots = dataclass_options.get("slots", False)
-                kw_only_default = dataclass_options.get("kw_only", False)
-            return _ClassDataclassSemantics(
-                is_dataclass=True,
-                init=init,
-                eq=eq,
-                frozen=frozen,
-                unsafe_hash=unsafe_hash,
-                match_args=match_args,
-                order=order,
-                slots=slots,
-                kw_only_default=kw_only_default,
-                field_specifiers=(KnownValue(dataclass_field),),
-                is_transform_provider=is_transform_provider,
-                transform_info=None,
-            )
-
-        transform_infos: list[DataclassTransformInfo] = []
-        for decorator in node.decorator_list:
-            target = decorator.func if isinstance(decorator, ast.Call) else decorator
-            info = self._get_dataclass_transform_info_for_decorator_target(target)
-            if info is None:
                 continue
-            if isinstance(decorator, ast.Call):
-                init_override = next(
-                    (
-                        _get_bool_literal(kw.value)
-                        for kw in decorator.keywords
-                        if kw.arg == "init"
-                    ),
-                    None,
-                )
-                eq_override = next(
-                    (
-                        _get_bool_literal(kw.value)
-                        for kw in decorator.keywords
-                        if kw.arg == "eq"
-                    ),
-                    None,
-                )
-                frozen_override = next(
-                    (
-                        _get_bool_literal(kw.value)
-                        for kw in decorator.keywords
-                        if kw.arg == "frozen"
-                    ),
-                    None,
-                )
-                unsafe_hash_override = next(
-                    (
-                        _get_bool_literal(kw.value)
-                        for kw in decorator.keywords
-                        if kw.arg == "unsafe_hash"
-                    ),
-                    None,
-                )
-                match_args_override = next(
-                    (
-                        _get_bool_literal(kw.value)
-                        for kw in decorator.keywords
-                        if kw.arg == "match_args"
-                    ),
-                    None,
-                )
-                kw_only_override = next(
-                    (
-                        _get_bool_literal(kw.value)
-                        for kw in decorator.keywords
-                        if kw.arg == "kw_only"
-                    ),
-                    None,
-                )
-                order_override = next(
-                    (
-                        _get_bool_literal(kw.value)
-                        for kw in decorator.keywords
-                        if kw.arg == "order"
-                    ),
-                    None,
-                )
-                slots_override = next(
-                    (
-                        _get_bool_literal(kw.value)
-                        for kw in decorator.keywords
-                        if kw.arg == "slots"
-                    ),
-                    None,
-                )
-                if init_override is not None:
-                    info = replace(info, init_default=init_override)
-                if eq_override is not None:
-                    info = replace(info, eq_default=eq_override)
-                if frozen_override is not None:
-                    info = replace(info, frozen_default=frozen_override)
-                if unsafe_hash_override is not None:
-                    info = replace(info, unsafe_hash_default=unsafe_hash_override)
-                if match_args_override is not None:
-                    info = replace(info, match_args_default=match_args_override)
-                if kw_only_override is not None:
-                    info = replace(info, kw_only_default=kw_only_override)
-                if order_override is not None:
-                    info = replace(info, order_default=order_override)
-                if slots_override is not None:
-                    info = replace(info, slots_default=slots_override)
-            transform_infos.append(info)
+            final_info = DataclassInfo.from_transform_info_and_options(
+                base_transform_info, class_keywords
+            )
 
-        hierarchy_transform_infos = list(base_transform_infos)
         if metaclass_transform_info is not None:
-            hierarchy_transform_infos.append(metaclass_transform_info)
-        if hierarchy_transform_infos:
-            merged_hierarchy_info = _merge_dataclass_transform_infos(
-                hierarchy_transform_infos
-            )
-            # Per the typing spec, a class that directly specifies a
-            # dataclass_transform-decorated metaclass is considered neither frozen
-            # nor non-frozen for inheritance checks.
-            if metaclass_transform_info is not None and not base_transform_infos:
-                merged_hierarchy_info = replace(
-                    merged_hierarchy_info, frozen_default=None
+            if final_info is not None:
+                self._show_error_if_checking(
+                    node,
+                    "Cannot combine dataclass transform from metaclass with "
+                    "dataclass decorator or base class transform",
+                    ErrorCode.multiple_dataclass_transform,
                 )
-            init_override = next(
-                (
-                    _get_bool_literal(keyword.value)
-                    for keyword in node.keywords
-                    if keyword.arg == "init"
-                ),
-                None,
-            )
-            eq_override = next(
-                (
-                    _get_bool_literal(keyword.value)
-                    for keyword in node.keywords
-                    if keyword.arg == "eq"
-                ),
-                None,
-            )
-            frozen_override = next(
-                (
-                    _get_bool_literal(keyword.value)
-                    for keyword in node.keywords
-                    if keyword.arg == "frozen"
-                ),
-                None,
-            )
-            unsafe_hash_override = next(
-                (
-                    _get_bool_literal(keyword.value)
-                    for keyword in node.keywords
-                    if keyword.arg == "unsafe_hash"
-                ),
-                None,
-            )
-            match_args_override = next(
-                (
-                    _get_bool_literal(keyword.value)
-                    for keyword in node.keywords
-                    if keyword.arg == "match_args"
-                ),
-                None,
-            )
-            kw_only_override = next(
-                (
-                    _get_bool_literal(keyword.value)
-                    for keyword in node.keywords
-                    if keyword.arg == "kw_only"
-                ),
-                None,
-            )
-            order_override = next(
-                (
-                    _get_bool_literal(keyword.value)
-                    for keyword in node.keywords
-                    if keyword.arg == "order"
-                ),
-                None,
-            )
-            slots_override = next(
-                (
-                    _get_bool_literal(keyword.value)
-                    for keyword in node.keywords
-                    if keyword.arg == "slots"
-                ),
-                None,
-            )
-            if init_override is not None:
-                merged_hierarchy_info = replace(
-                    merged_hierarchy_info, init_default=init_override
+            else:
+                final_info = DataclassInfo.from_transform_info_and_options(
+                    metaclass_transform_info, class_keywords
                 )
-            if eq_override is not None:
-                merged_hierarchy_info = replace(
-                    merged_hierarchy_info, eq_default=eq_override
-                )
-            if frozen_override is not None:
-                merged_hierarchy_info = replace(
-                    merged_hierarchy_info, frozen_default=frozen_override
-                )
-            if unsafe_hash_override is not None:
-                merged_hierarchy_info = replace(
-                    merged_hierarchy_info, unsafe_hash_default=unsafe_hash_override
-                )
-            if match_args_override is not None:
-                merged_hierarchy_info = replace(
-                    merged_hierarchy_info, match_args_default=match_args_override
-                )
-            if kw_only_override is not None:
-                merged_hierarchy_info = replace(
-                    merged_hierarchy_info, kw_only_default=kw_only_override
-                )
-            if order_override is not None:
-                merged_hierarchy_info = replace(
-                    merged_hierarchy_info, order_default=order_override
-                )
-            if slots_override is not None:
-                merged_hierarchy_info = replace(
-                    merged_hierarchy_info, slots_default=slots_override
-                )
-            transform_infos.append(merged_hierarchy_info)
+                if "frozen" not in class_keywords:
+                    # Per the typing spec, a class that directly specifies a
+                    # dataclass_transform-decorated metaclass is considered neither frozen
+                    # nor non-frozen for inheritance checks.
+                    final_info = replace(final_info, frozen=None)
 
-        if transform_infos:
-            merged_transform_info = _merge_dataclass_transform_infos(transform_infos)
-            return _ClassDataclassSemantics(
-                is_dataclass=True,
-                init=merged_transform_info.init_default,
-                eq=merged_transform_info.eq_default,
-                frozen=merged_transform_info.frozen_default,
-                unsafe_hash=merged_transform_info.unsafe_hash_default,
-                match_args=merged_transform_info.match_args_default,
-                order=merged_transform_info.order_default,
-                slots=merged_transform_info.slots_default,
-                kw_only_default=bool(merged_transform_info.kw_only_default),
-                field_specifiers=merged_transform_info.field_specifiers,
-                is_transform_provider=is_transform_provider,
-                transform_info=(
-                    _merge_dataclass_transform_infos(transform_provider_infos)
-                    if transform_provider_infos
-                    else None
-                ),
-            )
-
-        if class_obj is not None and is_dataclass_type(class_obj):
+        if (
+            final_info is None
+            and class_obj is not None
+            and is_dataclass_type(class_obj)
+        ):
             dataclass_params = safe_getattr(class_obj, "__dataclass_params__", None)
             init = safe_getattr(dataclass_params, "init", None)
             if not isinstance(init, bool):
-                init = None
+                init = True
             eq = safe_getattr(dataclass_params, "eq", None)
             if not isinstance(eq, bool):
-                eq = None
+                eq = True
             frozen = safe_getattr(dataclass_params, "frozen", None)
             if not isinstance(frozen, bool):
-                frozen = None
+                frozen = False
             unsafe_hash = safe_getattr(dataclass_params, "unsafe_hash", None)
             if not isinstance(unsafe_hash, bool):
-                unsafe_hash = None
+                unsafe_hash = False
             match_args = "__match_args__" in class_obj.__dict__
             order = safe_getattr(dataclass_params, "order", None)
             if not isinstance(order, bool):
-                order = None
+                order = True
             slots = "__slots__" in class_obj.__dict__
-            return _ClassDataclassSemantics(
-                is_dataclass=True,
+            return DataclassInfo(
                 init=init,
                 eq=eq,
                 frozen=frozen,
@@ -5065,35 +4649,16 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 slots=slots,
                 kw_only_default=False,
                 field_specifiers=(KnownValue(dataclass_field),),
-                is_transform_provider=is_transform_provider,
-                transform_info=None,
             )
 
-        return _ClassDataclassSemantics(
-            is_dataclass=False,
-            init=None,
-            eq=None,
-            frozen=None,
-            unsafe_hash=None,
-            match_args=None,
-            order=None,
-            slots=None,
-            kw_only_default=False,
-            field_specifiers=(),
-            is_transform_provider=is_transform_provider,
-            transform_info=(
-                _merge_dataclass_transform_infos(transform_provider_infos)
-                if transform_provider_infos
-                else None
-            ),
-        )
+        return final_info
 
     def _apply_dataclass_hash_semantics(
         self,
         synthetic_class: SyntheticClassObjectValue,
-        semantics: _ClassDataclassSemantics,
+        semantics: DataclassInfo | None,
     ) -> None:
-        if not semantics.is_dataclass:
+        if semantics is None:
             return
         if "__hash__" in synthetic_class.class_attributes:
             return
@@ -5102,7 +4667,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             synthetic_class.class_attributes["__hash__"] = synthesized_hash
 
     def _check_dataclass_slots_definition(
-        self, node: ast.ClassDef, semantics: _ClassDataclassSemantics
+        self, node: ast.ClassDef, semantics: DataclassInfo
     ) -> None:
         if semantics.slots is not True:
             return
@@ -5117,9 +4682,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     def _apply_dataclass_slots_semantics(
         self,
         synthetic_class: SyntheticClassObjectValue,
-        semantics: _ClassDataclassSemantics,
+        semantics: DataclassInfo | None,
     ) -> None:
-        if not semantics.is_dataclass:
+        if semantics is None:
             return
         _record_dataclass_slots_flag(synthetic_class, semantics)
         if semantics.slots is not True:
@@ -5180,9 +4745,11 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     def _is_dataclass_field_callee(self, callee: Value) -> bool:
         if isinstance(callee, KnownValue) and callee.val is dataclass_field:
             return True
+        if self.current_dataclass_info is None:
+            return False
         return any(
             _value_matches_dataclass_field_specifier(callee, field_specifier)
-            for field_specifier in self.current_class_dataclass_field_specifiers
+            for field_specifier in self.current_dataclass_info.field_specifiers
         )
 
     def _get_bound_args_for_dataclass_field_signature(
@@ -5652,16 +5219,19 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             )
 
     def _check_dataclass_field_default_order(
-        self, node: ast.ClassDef, dataclass_class: SyntheticClassObjectValue
+        self,
+        node: ast.ClassDef,
+        dataclass_class: SyntheticClassObjectValue,
+        decorator_values: DecoratorValues,
     ) -> None:
         raw_init = dataclass_class.class_attributes.get("%dataclass_init")
         if isinstance(raw_init, KnownValue) and raw_init.val is False:
             return
         error_node = next(
             (
-                decorator
-                for decorator in node.decorator_list
-                if self._is_dataclass_decorator(decorator)
+                deco_node
+                for deco_value, _, deco_node in decorator_values
+                if deco_value == KnownValue(dataclass)
             ),
             node,
         )
@@ -5864,10 +5434,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 )
             return
 
-    def _is_frozen_dataclass(self, node: ast.ClassDef) -> bool:
-        is_dataclass_class, frozen = self._get_dataclass_decorator_status(node)
-        return is_dataclass_class and frozen is True
-
     def _infer_class_type_param_variances(
         self,
         node: ast.ClassDef,
@@ -5875,6 +5441,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         base_values: Sequence[Value],
         *,
         is_protocol: bool = False,
+        dataclass_semantics: DataclassInfo | None = None,
     ) -> Sequence[TypeVarValue]:
         if not type_params:
             return type_params
@@ -5887,7 +5454,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 base, type_param_polarities, polarity=1
             )
 
-        frozen_dataclass = self._is_frozen_dataclass(node)
+        frozen_dataclass = (
+            dataclass_semantics is not None and dataclass_semantics.frozen
+        )
         for statement in node.body:
             if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 if statement.name in {"__init__", "__new__"}:
@@ -5983,7 +5552,11 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         if not checked_type_params:
             return
         inferred_type_params = self._infer_class_type_param_variances(
-            node, checked_type_params, base_values, is_protocol=True
+            node,
+            checked_type_params,
+            base_values,
+            is_protocol=True,
+            dataclass_semantics=None,
         )
         for declared_type_param, inferred_type_param in zip(
             checked_type_params, inferred_type_params
@@ -6700,7 +6273,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         return None
 
     def _is_current_class_dataclass(self) -> bool:
-        return self.current_class_is_dataclass
+        return self.current_dataclass_info is not None
 
     def _visit_class_and_get_value(
         self, node: ast.ClassDef, current_class: type | str | None
@@ -7054,11 +6627,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             )
 
     def visit_FunctionDef(self, node: FunctionDefNode) -> Value:
-        direct_dataclass_transform_info: DataclassTransformInfo | None = None
-        if not isinstance(node, ast.Lambda):
-            direct_dataclass_transform_info = self._get_direct_dataclass_transform_info(
-                node.decorator_list
-            )
         potential_function = self._get_potential_function(node)
         with self.compute_function_info(
             node,
@@ -7080,6 +6648,12 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     )
                 self._function_returns_self_by_node[node] = contains_self_return
             self.yield_checker.reset_yield_checks()
+
+            direct_dataclass_transform_info: DataclassTransformInfo | None = None
+            if not isinstance(node, ast.Lambda):
+                direct_dataclass_transform_info = (
+                    self._get_direct_dataclass_transform_info(info.decorators)
+                )
 
             if FunctionDecorator.final in info.decorator_kinds:
                 in_class = self.node_context.includes(ast.ClassDef)
@@ -7781,10 +7355,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
 
     def _is_final_decorator_value(self, value: Value) -> bool:
         return isinstance(value, KnownValue) and is_typing_name(value.val, "final")
-
-    def _is_dataclass_decorator(self, decorator: ast.expr) -> bool:
-        target = decorator.func if isinstance(decorator, ast.Call) else decorator
-        return self._is_dataclass_decorator_target(target)
 
     def _record_final_member(self, class_key: type | str, member_name: str) -> None:
         self.final_member_names_by_class.setdefault(class_key, set()).add(member_name)
@@ -11058,7 +10628,10 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         is_current_class_dataclass = self._is_current_class_dataclass()
         has_default = node.value is not None
         init = True
-        kw_only = self.current_class_dataclass_kw_only_default
+        kw_only = (
+            self.current_dataclass_info is not None
+            and self.current_dataclass_info.kw_only_default
+        )
         alias: str | None = None
         is_dataclass_field_call = False
         dataclass_default_factory: Value | None = None
@@ -12703,8 +12276,8 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
 
     # Call nodes
 
-    def visit_Call(self, node: ast.Call) -> Value:
-        callee_wrapped = self.visit(node.func)
+    def visit_Call(self, node: ast.Call, *, callee: Value | None = None) -> Value:
+        callee_wrapped = callee if callee is not None else self.visit(node.func)
         args = [self.composite_from_node(arg) for arg in node.args]
         if node.keywords:
             keywords = [
@@ -13917,78 +13490,70 @@ def _runtime_object_for_enum_member(value: Value) -> object:
     assert_never(value)
 
 
+def _extract_keywords(keywords: Sequence[ast.keyword]) -> dict[str, ast.expr]:
+    keywords_dict = {}
+    for keyword in keywords:
+        if keyword.arg is None:
+            continue
+        keywords_dict[keyword.arg] = keyword.value
+    return keywords_dict
+
+
+def _extract_bool(expr: ast.expr | None, default: bool) -> bool:
+    if expr is None:
+        return default
+    value = _get_bool_literal(expr)
+    if value is None:
+        return default
+    return value
+
+
 def _get_bool_literal(node: ast.AST) -> bool | None:
     if isinstance(node, ast.Constant) and isinstance(node.value, bool):
         return node.value
     return None
 
 
-def _is_dataclass_decorator_value(value: Value) -> bool:
+def _is_known_decorator(value: Value, decorator: object) -> bool:
     if value is UNINITIALIZED_VALUE:
         return False
     if isinstance(value, (ReferencingValue, InputSigValue)):
         return False
     value = replace_fallback(value)
-    if isinstance(value, AnnotatedValue):
-        return _is_dataclass_decorator_value(value.value)
-    if isinstance(value, MultiValuedValue):
-        return any(_is_dataclass_decorator_value(subval) for subval in value.vals)
-    return isinstance(value, KnownValue) and value.val is dataclass
+    return isinstance(value, KnownValue) and value.val is decorator
+
+
+def _is_dataclass_decorator_value(value: Value) -> bool:
+    return _is_known_decorator(value, dataclasses.dataclass)
 
 
 def _merge_dataclass_transform_infos(
     infos: Sequence[DataclassTransformInfo],
 ) -> DataclassTransformInfo:
-    filtered = [info for info in infos]
-    if not filtered:
-        return DataclassTransformInfo()
 
-    def _merge_bool(values: Sequence[bool | None]) -> bool | None:
+    def _merge_bool(values: Sequence[bool | None]) -> bool:
         bool_values = {value for value in values if isinstance(value, bool)}
-        if len(bool_values) == 1:
-            return next(iter(bool_values))
-        return None
+        return next(iter(bool_values))
 
     field_specifiers: list[Value] = []
-    for info in filtered:
+    for info in infos:
         for field_specifier in info.field_specifiers:
             if field_specifier not in field_specifiers:
                 field_specifiers.append(field_specifier)
     return DataclassTransformInfo(
-        init_default=_merge_bool([info.init_default for info in filtered]),
-        eq_default=_merge_bool([info.eq_default for info in filtered]),
-        frozen_default=_merge_bool([info.frozen_default for info in filtered]),
-        unsafe_hash_default=_merge_bool(
-            [info.unsafe_hash_default for info in filtered]
-        ),
-        match_args_default=_merge_bool([info.match_args_default for info in filtered]),
-        kw_only_default=_merge_bool([info.kw_only_default for info in filtered]),
-        order_default=_merge_bool([info.order_default for info in filtered]),
-        slots_default=_merge_bool([info.slots_default for info in filtered]),
+        eq_default=_merge_bool([info.eq_default for info in infos]),
+        frozen_default=_merge_bool([info.frozen_default for info in infos]),
+        kw_only_default=_merge_bool([info.kw_only_default for info in infos]),
+        order_default=_merge_bool([info.order_default for info in infos]),
         field_specifiers=tuple(field_specifiers),
     )
 
 
-def _is_dataclass_transform_marker_value(value: Value) -> bool:
-    if value is UNINITIALIZED_VALUE:
-        return False
-    if isinstance(value, (ReferencingValue, InputSigValue)):
-        return False
-    value = replace_fallback(value)
-    if isinstance(value, AnnotatedValue):
-        return _is_dataclass_transform_marker_value(value.value)
-    if isinstance(value, MultiValuedValue):
-        return any(
-            _is_dataclass_transform_marker_value(subval) for subval in value.vals
-        )
-    return isinstance(value, KnownValue) and is_typing_name(
-        value.val, "dataclass_transform"
-    )
-
-
 def _synthesize_dataclass_hash_attribute(
-    semantics: _ClassDataclassSemantics,
+    semantics: DataclassInfo | None,
 ) -> Value | None:
+    if semantics is None:
+        return None
     if semantics.unsafe_hash is True:
         return AnyValue(AnySource.inference)
     if semantics.eq is False:
@@ -14058,29 +13623,18 @@ def _normalize_slot_names(raw_names: Iterable[str]) -> tuple[tuple[str, ...], bo
 
 
 def _record_dataclass_slots_flag(
-    synthetic_class: SyntheticClassObjectValue, semantics: _ClassDataclassSemantics
+    synthetic_class: SyntheticClassObjectValue, semantics: DataclassInfo | None
 ) -> None:
-    if not semantics.is_dataclass:
+    if semantics is None:
         synthetic_class.class_attributes.pop("%dataclass_slots", None)
         synthetic_class.class_attributes.pop("%dataclass_init", None)
         synthetic_class.class_attributes.pop("%dataclass_match_args", None)
         return
-    if isinstance(semantics.slots, bool):
-        synthetic_class.class_attributes["%dataclass_slots"] = KnownValue(
-            semantics.slots
-        )
-    else:
-        synthetic_class.class_attributes.pop("%dataclass_slots", None)
-    if isinstance(semantics.init, bool):
-        synthetic_class.class_attributes["%dataclass_init"] = KnownValue(semantics.init)
-    else:
-        synthetic_class.class_attributes.pop("%dataclass_init", None)
-    if isinstance(semantics.match_args, bool):
-        synthetic_class.class_attributes["%dataclass_match_args"] = KnownValue(
-            semantics.match_args
-        )
-    else:
-        synthetic_class.class_attributes.pop("%dataclass_match_args", None)
+    synthetic_class.class_attributes["%dataclass_slots"] = KnownValue(semantics.slots)
+    synthetic_class.class_attributes["%dataclass_init"] = KnownValue(semantics.init)
+    synthetic_class.class_attributes["%dataclass_match_args"] = KnownValue(
+        semantics.match_args
+    )
 
 
 def _is_dataclass_kw_only_marker_value(value: Value) -> bool:

@@ -184,6 +184,10 @@ ErrorCode = ErrorRegistry(
         Error("unsafe_comparison", "Non-overlapping equality checks"),
         Error("must_use", "Value cannot be discarded"),
         Error("invalid_regex", "Invalid regular expression"),
+        Error(
+            "multiple_dataclass_transform",
+            "Multiple dataclass transforms on the same class",
+        ),
     ]
 )
 

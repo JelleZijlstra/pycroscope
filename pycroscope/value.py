@@ -2590,26 +2590,18 @@ class DefiniteValueExtension(Extension):
 
 @dataclass(frozen=True)
 class DataclassTransformInfo:
-    init_default: bool | None = None
-    eq_default: bool | None = None
-    frozen_default: bool | None = None
-    unsafe_hash_default: bool | None = None
-    match_args_default: bool | None = None
-    kw_only_default: bool | None = None
-    order_default: bool | None = None
-    slots_default: bool | None = None
+    eq_default: bool = True
+    frozen_default: bool = False
+    kw_only_default: bool = False
+    order_default: bool = False
     field_specifiers: tuple[Value, ...] = ()
 
     def substitute_typevars(self, typevars: TypeVarMap) -> "DataclassTransformInfo":
         return DataclassTransformInfo(
-            init_default=self.init_default,
             eq_default=self.eq_default,
             frozen_default=self.frozen_default,
-            unsafe_hash_default=self.unsafe_hash_default,
-            match_args_default=self.match_args_default,
             kw_only_default=self.kw_only_default,
             order_default=self.order_default,
-            slots_default=self.slots_default,
             field_specifiers=tuple(
                 value.substitute_typevars(typevars) for value in self.field_specifiers
             ),
@@ -2624,8 +2616,21 @@ class DataclassTransformInfo:
 class DataclassTransformExtension(Extension):
     info: DataclassTransformInfo
 
-    def substitute_typevars(self, typevars: TypeVarMap) -> "Extension":
+    def substitute_typevars(self, typevars: TypeVarMap) -> Extension:
         return DataclassTransformExtension(self.info.substitute_typevars(typevars))
+
+    def walk_values(self) -> Iterable[Value]:
+        yield from self.info.walk_values()
+
+
+@dataclass(frozen=True)
+class DataclassTransformDecoratorExtension(Extension):
+    info: DataclassTransformInfo
+
+    def substitute_typevars(self, typevars: TypeVarMap) -> Extension:
+        return DataclassTransformDecoratorExtension(
+            self.info.substitute_typevars(typevars)
+        )
 
     def walk_values(self) -> Iterable[Value]:
         yield from self.info.walk_values()
