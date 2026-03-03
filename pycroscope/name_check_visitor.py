@@ -3627,6 +3627,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             # check-phase result.
             value_to_store = None
         value, _ = self._set_name_in_scope(node.name, node, value_to_store)
+        self._finalize_synthetic_abstract_members(
+            node, class_key, is_protocol_class=is_protocol_class
+        )
         self._check_for_uninitialized_final_members(class_key)
         return value
 
@@ -7567,6 +7570,107 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
 
     def _is_final_decorator_value(self, value: Value) -> bool:
         return isinstance(value, KnownValue) and is_typing_name(value.val, "final")
+
+    def _finalize_synthetic_abstract_members(
+        self, node: ast.ClassDef, class_key: type | str, *, is_protocol_class: bool
+    ) -> None:
+        if not self._is_checking() or not isinstance(class_key, str):
+            return
+
+        required = set(self._synthetic_abstract_methods.get(class_key, set()))
+        for base_key in self.checker.get_generic_bases(class_key):
+            if base_key == class_key:
+                continue
+            required |= self._required_abstract_members_for_base(base_key)
+
+        if is_protocol_class:
+            required |= self._protocol_required_members_from_class_body(node)
+
+        provided = self._concrete_member_names_for_current_class(
+            node, class_key, is_protocol_class=is_protocol_class
+        )
+        for base_key in self.checker.get_generic_bases(class_key):
+            if base_key == class_key:
+                continue
+            provided |= self._concrete_member_names_for_base(base_key)
+
+        self._synthetic_abstract_methods[class_key] = required - provided
+
+    def _required_abstract_members_for_base(self, class_key: type | str) -> set[str]:
+        if isinstance(class_key, str):
+            return set(self._synthetic_abstract_methods.get(class_key, set()))
+        abstract_methods = safe_getattr(class_key, "__abstractmethods__", ())
+        if not isinstance(abstract_methods, (set, frozenset, tuple, list)):
+            return set()
+        return {name for name in abstract_methods if isinstance(name, str)}
+
+    def _concrete_member_names_for_current_class(
+        self, node: ast.ClassDef, class_key: str, *, is_protocol_class: bool
+    ) -> set[str]:
+        provided = self._concrete_member_names_for_base(class_key)
+        provided -= self._uninitialized_classvar_names_from_class_body(node)
+        if is_protocol_class:
+            provided -= self._protocol_required_members_from_class_body(node)
+        return provided
+
+    def _concrete_member_names_for_base(self, class_key: type | str) -> set[str]:
+        if isinstance(class_key, str):
+            synthetic_class = self.checker.get_synthetic_class(class_key)
+            if synthetic_class is None:
+                return set()
+            provided = {
+                name
+                for name in synthetic_class.class_attributes
+                if not name.startswith("%")
+            }
+            return provided - self._required_abstract_members_for_base(class_key)
+
+        class_dict = safe_getattr(class_key, "__dict__", None)
+        if not isinstance(class_dict, Mapping):
+            return set()
+        provided = {name for name in class_dict if isinstance(name, str)}
+        return provided - self._required_abstract_members_for_base(class_key)
+
+    def _protocol_required_members_from_class_body(
+        self, node: ast.ClassDef
+    ) -> set[str]:
+        required = set(self._uninitialized_classvar_names_from_class_body(node))
+        for statement in node.body:
+            if not isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            decorator_kinds = self._function_decorator_kinds_by_node.get(
+                statement, frozenset()
+            )
+            if (
+                FunctionDecorator.abstractmethod in decorator_kinds
+                or self._has_only_docstring_and_stub(statement)
+            ):
+                required.add(statement.name)
+        return required
+
+    def _uninitialized_classvar_names_from_class_body(
+        self, node: ast.ClassDef
+    ) -> set[str]:
+        classvars = set()
+        for statement in node.body:
+            if (
+                isinstance(statement, ast.AnnAssign)
+                and statement.value is None
+                and isinstance(statement.target, ast.Name)
+                and self._annotation_has_classvar_qualifier(statement.annotation)
+            ):
+                classvars.add(statement.target.id)
+        return classvars
+
+    def _annotation_has_classvar_qualifier(self, annotation: ast.expr) -> bool:
+        try:
+            annotation_expr = annotation_expr_from_ast(
+                annotation, visitor=self, suppress_errors=True
+            )
+        except Exception:
+            return False
+        _, qualifiers = annotation_expr.maybe_unqualify(set(Qualifier))
+        return Qualifier.ClassVar in qualifiers
 
     def _record_final_member(self, class_key: type | str, member_name: str) -> None:
         self.final_member_names_by_class.setdefault(class_key, set()).add(member_name)
@@ -12453,7 +12557,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         if isinstance(value, KnownValue):
             return None
         if isinstance(value, SequenceValue):
-            return TypedValue(value.typ)
+            return value
         return value
 
     def _check_attribute_assignment_type(
@@ -12466,6 +12570,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             and self._is_current_method_receiver_node(node.value)
             and self._class_key_for_attribute_target(node, root_composite.value)
             == self.current_class_key
+            and not self._is_protocol_base_member_assignment(
+                self.current_class_key, node.attr
+            )
         ):
             return
         expected = self._get_attribute_value_for_assignment(
@@ -12485,6 +12592,17 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 error_code=ErrorCode.incompatible_assignment,
                 detail=can_assign.display(),
             )
+
+    def _is_protocol_base_member_assignment(
+        self, class_key: type | str, member_name: str
+    ) -> bool:
+        for base_key in self.checker.get_generic_bases(class_key):
+            if base_key == class_key:
+                continue
+            type_object = self.checker.make_type_object(base_key)
+            if member_name in type_object.protocol_members:
+                return True
+        return False
 
     def get_attribute(
         self,
@@ -12738,6 +12856,8 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             )
             return AnyValue(AnySource.error)
 
+        self._check_unsafe_super_protocol_call(node)
+
         return_value = self.check_call(
             node, callee_wrapped, args, keywords, allow_call=self.in_annotation
         )
@@ -12772,6 +12892,52 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         ):
             return annotate_value(return_value, [AssertErrorExtension()])
         return return_value
+
+    def _check_unsafe_super_protocol_call(self, node: ast.Call) -> None:
+        if not self._is_checking() or self.module is not None:
+            return
+        member_name = self._super_call_member_name(node)
+        if member_name is None:
+            return
+        class_key = self.current_class_key
+        if class_key is None:
+            return
+        for base_key in self._direct_base_class_keys(class_key):
+            if member_name in self._required_abstract_members_for_base(base_key):
+                self._show_error_if_checking(
+                    node.func,
+                    "Call to abstract protocol member via super() has no default implementation",
+                    error_code=ErrorCode.bad_super_call,
+                )
+                return
+
+    def _super_call_member_name(self, node: ast.Call) -> str | None:
+        if not isinstance(node.func, ast.Attribute):
+            return None
+        inner_call = node.func.value
+        if not isinstance(inner_call, ast.Call):
+            return None
+        if (
+            not isinstance(inner_call.func, ast.Name)
+            or inner_call.func.id != "super"
+            or inner_call.args
+            or inner_call.keywords
+        ):
+            return None
+        return node.func.attr
+
+    def _direct_base_class_keys(self, class_key: type | str) -> list[type | str]:
+        if isinstance(class_key, str):
+            synthetic_class = self.checker.get_synthetic_class(class_key)
+            if synthetic_class is None:
+                return []
+            keys: list[type | str] = []
+            for base_value in synthetic_class.base_classes:
+                base_key = self._base_class_key_from_value(base_value)
+                if base_key is not None:
+                    keys.append(base_key)
+            return keys
+        return [base for base in safe_getattr(class_key, "__bases__", ())]
 
     def _can_perform_call(
         self, args: Iterable[Value], keywords: Iterable[tuple[str | None, Value]]
