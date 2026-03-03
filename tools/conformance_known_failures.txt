@@ -30,7 +30,6 @@ generics_typevartuple_specialization
 generics_typevartuple_unpack
 overloads_definitions_stub
 protocols_class_objects
-protocols_explicit
 
 # Weird TypeVarTuple inference rule in the spec
 generics_typevartuple_args

@@ -3620,6 +3620,80 @@ class TestAnnAssign(TestNameCheckVisitorBase):
         f2: SizedClosableFlush = FlushOnly()  # E: incompatible_assignment
 
     @assert_passes(allow_import_failures=True)
+    def test_explicit_protocol_abstract_instantiation_in_unimportable_module(self):
+        from abc import ABC, abstractmethod
+        from typing import ClassVar, Protocol
+
+        import does_not_exist  # noqa: F401
+
+        class PColor(Protocol):
+            @abstractmethod
+            def draw(self) -> str: ...
+
+        class BadColor(PColor):
+            def draw(self) -> str:
+                return super().draw()  # E: bad_super_call
+
+        class RGB(Protocol):
+            rgb: tuple[int, int, int]
+
+            @abstractmethod
+            def intensity(self) -> int:
+                return 1
+
+            def transparency(self) -> int: ...
+
+        class Point(RGB):
+            def __init__(self, blue: str) -> None:
+                self.rgb = 0, 0, blue  # E: incompatible_assignment
+
+        Point("")  # E: incompatible_call
+
+        class Proto1(Protocol):
+            cm1: ClassVar[int]
+
+        class Concrete1(Proto1):
+            pass
+
+        Concrete1()  # E: incompatible_call
+
+        class Proto5(Protocol):
+            def method1(self) -> int: ...
+
+        class Concrete5(Proto5):
+            pass
+
+        Concrete5()  # E: incompatible_call
+
+        class Proto7(Protocol):
+            @abstractmethod
+            def method1(self) -> None: ...
+
+        class Mixin7(Proto7, ABC):
+            def method1(self) -> None:
+                pass
+
+        class Concrete7A(Proto7):
+            pass
+
+        class Concrete7B(Mixin7, Proto7):
+            pass
+
+        Concrete7A()  # E: incompatible_call
+        Concrete7B()
+
+    @assert_passes()
+    def test_protocol_base_member_assignment_type(self):
+        from typing import Protocol
+
+        class RGB(Protocol):
+            rgb: tuple[int, int, int]
+
+        class Point(RGB):
+            def __init__(self, blue: str) -> None:
+                self.rgb = 0, 0, blue  # E: incompatible_assignment
+
+    @assert_passes(allow_import_failures=True)
     def test_protocol_class_object_method_and_property_shapes(self):
         from typing import Any, Protocol
 
