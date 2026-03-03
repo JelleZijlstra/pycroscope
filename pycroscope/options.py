@@ -225,7 +225,7 @@ class ConcatenatedOption(ConfigOption[Sequence[T]]):
 
 
 class StringSequenceOption(ConcatenatedOption[str]):
-    default_value: Sequence[str] = []
+    default_value: ClassVar[Sequence[str]] = []
 
     @classmethod
     def parse(

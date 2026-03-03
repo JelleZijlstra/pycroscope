@@ -335,7 +335,7 @@ class TreatClassAttributeAsAny(PyObjectSequenceOption[_TCAA]):
 
     """
 
-    default_value: Sequence[_TCAA] = [
+    default_value: ClassVar[Sequence[_TCAA]] = [
         lambda cls_val: cls_val is None or cls_val is NotImplemented
     ]
     name = "treat_class_attribute_as_any"
