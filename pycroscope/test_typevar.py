@@ -784,6 +784,12 @@ class TestGenericClasses(TestNameCheckVisitorBase):
             Node[str]("")
             Node[str](0)  # E: incompatible_argument
 
+            Node[int].label = 1  # E: incompatible_assignment
+            Node[int].label  # E: undefined_attribute
+            Node.label = 1  # E: incompatible_assignment
+            Node.label  # E: undefined_attribute
+            type(n1).label  # E: undefined_attribute
+
     @skip_before((3, 12))
     def test_infer_variance_from_member_annotations(self):
         self.assert_passes("""
