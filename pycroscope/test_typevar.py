@@ -700,6 +700,63 @@ class TestGenericClasses(TestNameCheckVisitorBase):
                 C(s)  # E: incompatible_argument
         """)
 
+    @skip_before((3, 12))
+    def test_reject_subscripted_generic_or_protocol_bases_with_pep695_syntax(self):
+        self.assert_passes(
+            """
+            from typing import Generic, Protocol
+
+            class BadGeneric[T](Generic[T]):  # E: invalid_annotation
+                ...
+
+            class BadProtocol[T](Protocol[T]):  # E: invalid_annotation
+                ...
+
+            class GoodProtocol[T](Protocol):
+                ...
+        """,
+            allow_import_failures=True,
+        )
+
+    @skip_before((3, 12))
+    def test_pep695_protocol_variance_is_inferred_without_errors(self):
+        self.assert_passes("""
+            from typing import Protocol
+
+            class Reader[T](Protocol):
+                def get(self) -> T: ...
+
+            class Writer[T](Protocol):
+                def put(self, value: T) -> None: ...
+        """)
+
+    @skip_before((3, 12))
+    def test_pep695_type_parameter_forward_refs_in_bounds(self):
+        self.assert_passes("""
+            class Box[T: ForwardReference[int]]:
+                ...
+
+            class Choice[T: (ForwardReference[int], "ForwardReference[str]", bytes)]:
+                ...
+
+            class ForwardReference[T]:
+                ...
+        """)
+
+    @skip_before((3, 12))
+    def test_pep695_type_parameter_bound_and_constraint_validation(self):
+        self.assert_passes("""
+            class Outer[V]:
+                class BadBound[T: dict[str, V]]:  # E: invalid_annotation
+                    ...
+
+            class BadConstraints0[T: ()]:  # E: invalid_annotation
+                ...
+
+            class BadConstraints1[T: (str,)]:  # E: invalid_annotation
+                ...
+        """)
+
     @assert_passes()
     def test_legacy_generic_alias_constructor_call_preserves_type_args(self):
         from typing import Generic, TypeVar
