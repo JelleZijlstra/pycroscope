@@ -2157,6 +2157,20 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     def _is_classvar_member(self, class_key: type | str, attr_name: str) -> bool:
         return attr_name in self._classvar_names_for_class_key(class_key, set())
 
+    def _is_direct_classvar_member(self, class_key: type | str, attr_name: str) -> bool:
+        synthetic_class: SyntheticClassObjectValue | None = None
+        if isinstance(class_key, type):
+            synthetic_class = self.checker.get_synthetic_class(class_key)
+        elif isinstance(class_key, str):
+            synthetic_class = self._synthetic_classes_by_name.get(class_key)
+        if synthetic_class is not None and attr_name in _classvar_names_from_mapping(
+            synthetic_class.class_attributes
+        ):
+            return True
+        if isinstance(class_key, type):
+            return attr_name in self._runtime_classvar_names_for_class(class_key)
+        return False
+
     def _classvar_names_for_class_key(
         self, class_key: type | str, seen: set[type | str]
     ) -> set[str]:
@@ -2498,7 +2512,15 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             return
         if varname.startswith("__") and not varname.endswith("__"):
             return
+        is_annotated_assignment = (
+            isinstance(self.current_statement, ast.AnnAssign)
+            and isinstance(self.current_statement.target, ast.Name)
+            and self.current_statement.target.id == varname
+        )
         base_attributes = list(self._get_base_class_attributes(varname, node))
+        child_is_classvar = is_annotated_assignment and self._is_direct_classvar_member(
+            self.current_class, varname
+        )
         saw_final_member = False
         for base_class, base_value in base_attributes:
             if self._is_final_member(base_class, varname, base_value):
@@ -2511,6 +2533,24 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         if saw_final_member:
             return
         for base_class, base_value in base_attributes:
+            if is_annotated_assignment:
+                base_is_classvar = self._is_direct_classvar_member(base_class, varname)
+                if child_is_classvar and not base_is_classvar:
+                    self._show_error_if_checking(
+                        node,
+                        f"Class variable {varname} cannot override instance variable from"
+                        f" base class {base_class}",
+                        ErrorCode.incompatible_override,
+                    )
+                    continue
+                if base_is_classvar and not child_is_classvar:
+                    self._show_error_if_checking(
+                        node,
+                        f"Instance variable {varname} cannot override class variable from"
+                        f" base class {base_class}",
+                        ErrorCode.incompatible_override,
+                    )
+                    continue
             can_assign = self._can_assign_to_base(base_value, value, base_class, node)
             if isinstance(can_assign, CanAssignError):
                 error = CanAssignError(
