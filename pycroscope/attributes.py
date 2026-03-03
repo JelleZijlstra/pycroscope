@@ -76,7 +76,6 @@ from .value import (
     TypedDictValue,
     TypedValue,
     TypeFormValue,
-    TypeVarLike,
     TypeVarValue,
     UnboundMethodValue,
     Value,
@@ -1297,7 +1296,7 @@ def _substitute_typevars(
         }
         result = result.substitute_typevars(substituted_typevars)
     if generic_args and typ in generic_bases:
-        ordered_typevars: list[TypeVarLike | None] = [
+        ordered_typevars = [
             val.typevar if isinstance(val, TypeVarValue) else None
             for val in generic_bases[typ].values()
         ]
