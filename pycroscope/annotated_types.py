@@ -10,6 +10,8 @@ from dataclasses import dataclass
 from datetime import datetime, timezone, tzinfo
 from typing import Any
 
+from typing_extensions import assert_never
+
 from pycroscope.value import CanAssign, CanAssignContext, Value, flatten_values
 
 from .extensions import CustomCheck, PredicateCheck
@@ -22,9 +24,18 @@ from .value import (
     DictIncompleteValue,
     IntersectionValue,
     KnownValue,
+    MultiValuedValue,
     PredicateValue,
     SequenceValue,
+    SimpleType,
+    SubclassValue,
+    SyntheticClassObjectValue,
+    SyntheticModuleValue,
     TypedDictValue,
+    TypedValue,
+    TypeFormValue,
+    UnboundMethodValue,
+    replace_fallback,
     unannotate,
 )
 
@@ -294,13 +305,15 @@ class Predicate(AnnotatedTypesCheck):
 
 
 def _min_len_of_value(val: Value) -> int | None:
-    if isinstance(val, SequenceValue):
-        return sum(is_many is False for is_many, _ in val.members)
-    elif isinstance(val, PredicateValue):
-        if isinstance(val.predicate, MinLen) and isinstance(val.predicate.value, int):
-            return val.predicate.value
+    val = replace_fallback(val)
+    if isinstance(val, MultiValuedValue):
+        minima = [_min_len_of_value(subval) for subval in val.vals]
+        if any(minimum is None for minimum in minima):
+            return None
+        if minima:
+            return min(minimum for minimum in minima if minimum is not None)
         return None
-    elif isinstance(val, IntersectionValue):
+    if isinstance(val, IntersectionValue):
         minima = []
         for subval in val.vals:
             sub_min = _min_len_of_value(subval)
@@ -309,27 +322,47 @@ def _min_len_of_value(val: Value) -> int | None:
         if minima:
             return max(minima)
         return None
-    elif isinstance(val, DictIncompleteValue):
-        return sum(pair.is_required and not pair.is_many for pair in val.kv_pairs)
-    elif isinstance(val, TypedDictValue):
-        return sum(entry.required for entry in val.items.values())
-    else:
+    return _min_len_of_simple_value(val)
+
+
+def _min_len_of_simple_value(val: SimpleType) -> int | None:
+    if isinstance(val, SequenceValue):
+        return sum(is_many is False for is_many, _ in val.members)
+    if isinstance(val, PredicateValue):
+        if isinstance(val.predicate, MinLen) and isinstance(val.predicate.value, int):
+            return val.predicate.value
         return None
+    if isinstance(val, DictIncompleteValue):
+        return sum(pair.is_required and not pair.is_many for pair in val.kv_pairs)
+    if isinstance(val, TypedDictValue):
+        return sum(entry.required for entry in val.items.values())
+    if isinstance(
+        val,
+        (
+            AnyValue,
+            KnownValue,
+            SyntheticClassObjectValue,
+            SyntheticModuleValue,
+            UnboundMethodValue,
+            TypedValue,
+            SubclassValue,
+            TypeFormValue,
+        ),
+    ):
+        return None
+    assert_never(val)
 
 
 def _max_len_of_value(val: Value) -> int | None:
-    if isinstance(val, SequenceValue):
-        maximum = 0
-        for is_many, _ in val.members:
-            if is_many:
-                return None
-            maximum += 1
-        return maximum
-    elif isinstance(val, PredicateValue):
-        if isinstance(val.predicate, MaxLen) and isinstance(val.predicate.value, int):
-            return val.predicate.value
+    val = replace_fallback(val)
+    if isinstance(val, MultiValuedValue):
+        maxima = [_max_len_of_value(subval) for subval in val.vals]
+        if any(maximum is None for maximum in maxima):
+            return None
+        if maxima:
+            return max(maximum for maximum in maxima if maximum is not None)
         return None
-    elif isinstance(val, IntersectionValue):
+    if isinstance(val, IntersectionValue):
         maxima = []
         for subval in val.vals:
             sub_max = _max_len_of_value(subval)
@@ -338,7 +371,22 @@ def _max_len_of_value(val: Value) -> int | None:
         if maxima:
             return min(maxima)
         return None
-    elif isinstance(val, DictIncompleteValue):
+    return _max_len_of_simple_value(val)
+
+
+def _max_len_of_simple_value(val: SimpleType) -> int | None:
+    if isinstance(val, SequenceValue):
+        maximum = 0
+        for is_many, _ in val.members:
+            if is_many:
+                return None
+            maximum += 1
+        return maximum
+    if isinstance(val, PredicateValue):
+        if isinstance(val.predicate, MaxLen) and isinstance(val.predicate.value, int):
+            return val.predicate.value
+        return None
+    if isinstance(val, DictIncompleteValue):
         maximum = 0
         for pair in val.kv_pairs:
             if pair.is_many:
@@ -346,10 +394,23 @@ def _max_len_of_value(val: Value) -> int | None:
             if pair.is_required:
                 maximum += 1
         return maximum
-    elif isinstance(val, TypedDictValue):
+    if isinstance(val, TypedDictValue):
         if val.extra_keys is not NO_RETURN_VALUE:
             # May have arbitrary number of extra keys
             return None
         return len(val.items)
-    else:
+    if isinstance(
+        val,
+        (
+            AnyValue,
+            KnownValue,
+            SyntheticClassObjectValue,
+            SyntheticModuleValue,
+            UnboundMethodValue,
+            TypedValue,
+            SubclassValue,
+            TypeFormValue,
+        ),
+    ):
         return None
+    assert_never(val)

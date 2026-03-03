@@ -12,6 +12,8 @@ from collections.abc import Callable, Generator
 from dataclasses import dataclass, field
 from typing import Any
 
+from typing_extensions import assert_never
+
 from .analysis_lib import override
 from .error_code import ErrorCode
 from .functions import AsyncFunctionKind
@@ -19,10 +21,17 @@ from .maybe_asynq import asynq
 from .options import Options, PyObjectSequenceOption, StringSequenceOption
 from .safe import is_async_fn, safe_getattr, safe_hasattr
 from .value import (
+    AnyValue,
     IntersectionValue,
     KnownValue,
     MultiValuedValue,
+    PredicateValue,
+    SimpleType,
+    SubclassValue,
+    SyntheticClassObjectValue,
+    SyntheticModuleValue,
     TypedValue,
+    TypeFormValue,
     UnboundMethodValue,
     Value,
     replace_fallback,
@@ -192,6 +201,10 @@ def is_impure_async_fn(value: Value) -> bool:
         return any(is_impure_async_fn(subval) for subval in value.vals)
     if isinstance(value, IntersectionValue):
         return any(is_impure_async_fn(subval) for subval in value.vals)
+    return _is_impure_async_simple(value)
+
+
+def _is_impure_async_simple(value: SimpleType) -> bool:
     if isinstance(value, KnownValue):
         return is_async_fn(value.val) and not asynq.is_pure_async_fn(value.val)
     if isinstance(value, UnboundMethodValue):
@@ -199,7 +212,20 @@ def is_impure_async_fn(value: Value) -> bool:
         if method is None:
             return False
         return is_async_fn(method) and not asynq.is_pure_async_fn(method)
-    return False
+    if isinstance(
+        value,
+        (
+            AnyValue,
+            SyntheticClassObjectValue,
+            SyntheticModuleValue,
+            TypedValue,
+            SubclassValue,
+            TypeFormValue,
+            PredicateValue,
+        ),
+    ):
+        return False
+    assert_never(value)
 
 
 def get_pure_async_equivalent(value: Value) -> str:
