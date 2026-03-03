@@ -1557,7 +1557,12 @@ class Checker:
             )
             if sig is not None:
                 return sig
-        if isinstance(value, TypeAliasValue) and value.runtime_allows_value_call:
+        if (
+            isinstance(value, TypeAliasValue)
+            and value.runtime_allows_value_call
+            and not value.type_arguments
+            and not value.alias.get_type_params()
+        ):
             alias_value = value.get_value()
             # Explicit TypeAlias declarations can denote class objects (e.g.
             # `Alias: TypeAlias = list`) that should remain callable.

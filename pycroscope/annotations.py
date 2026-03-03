@@ -1426,13 +1426,19 @@ def _type_from_subscripted_value(
         else:
             args_vals = [_type_from_value(member, ctx) for member in members]
         args_vals = _validate_type_alias_arg_values(type_params, args_vals, ctx)
-        return TypeAliasValue(
+        alias_value = TypeAliasValue(
             root.name,
             root.module,
             root.alias,
             tuple(args_vals),
             runtime_allows_value_call=root.runtime_allows_value_call,
         )
+        if root.runtime_allows_value_call:
+            # Explicit `TypeAlias` declarations should behave like expanded types in
+            # annotation contexts so generic solving can bind function/class type
+            # variables precisely even when runtime module loading fails.
+            return alias_value.get_value()
+        return alias_value
 
     assert isinstance(root, Value)
     if not isinstance(root, KnownValue):
