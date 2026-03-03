@@ -745,14 +745,25 @@ def _has_relation(
             # If we don't think it's a generic base, try super;
             # runtime isinstance() may disagree.
             if generic_args is not None:
+                comparison_left = left
+                declared_type_params = ctx.get_type_parameters(left.typ)
                 if len(left.args) != len(generic_args):
-                    declared_type_params = ctx.get_type_parameters(left.typ)
                     packed_generic_args = _pack_typevartuple_generic_args(
                         declared_type_params, generic_args
+                    )
+                    packed_left_args = _pack_typevartuple_generic_args(
+                        declared_type_params, left.args
                     )
                     if packed_generic_args is not None and len(left.args) == len(
                         packed_generic_args
                     ):
+                        generic_args = packed_generic_args
+                    elif (
+                        packed_left_args is not None
+                        and packed_generic_args is not None
+                        and len(packed_left_args) == len(packed_generic_args)
+                    ):
+                        comparison_left = GenericValue(left.typ, packed_left_args)
                         generic_args = packed_generic_args
                     elif (
                         _declares_typevartuple(declared_type_params)
@@ -764,14 +775,16 @@ def _has_relation(
                         return CanAssignError(
                             f"{right} is not {relation.description} to {left}"
                         )
-                if len(left.args) == len(generic_args):
-                    variances = _get_generic_variances(left.typ, len(left.args), ctx)
+                if len(comparison_left.args) == len(generic_args):
+                    variances = _get_generic_variances(
+                        comparison_left.typ, len(comparison_left.args), ctx
+                    )
                     strict_invariant = not isinstance(
                         right, (SequenceValue, DictIncompleteValue)
                     )
                     bounds_maps = []
                     for i, (my_arg, their_arg, variance) in enumerate(
-                        zip(left.args, generic_args, variances)
+                        zip(comparison_left.args, generic_args, variances)
                     ):
                         can_assign = _has_relation_for_generic_arg(
                             my_arg,
@@ -783,7 +796,7 @@ def _has_relation(
                         )
                         if isinstance(can_assign, CanAssignError):
                             return _maybe_specify_error_for_generic(
-                                i, left, right, can_assign, relation, ctx
+                                i, comparison_left, right, can_assign, relation, ctx
                             )
                         bounds_maps.append(can_assign)
                     if not bounds_maps:
@@ -1251,6 +1264,11 @@ def _has_relation_lazy_sequence(
     len_a = len(a)
     len_b = len(b)
 
+    if relation is Relation.ASSIGNABLE:
+        # tuple[*tuple[Any, ...]] is consistently compatible with all tuple shapes.
+        if _is_unbounded_any_lazy_sequence(a) or _is_unbounded_any_lazy_sequence(b):
+            return {}
+
     # Is either empty?
     if len_a == 0:
         if len_b == 0:
@@ -1355,6 +1373,13 @@ def _has_relation_lazy_sequence(
         b_decomposed = [b_dd for b_d in b_decomposed for b_dd in b_d.decompose_right()]
 
     return _has_relation_lazy_seq_multi(a_decomposed, b_decomposed, relation, ctx)
+
+
+def _is_unbounded_any_lazy_sequence(seq: _LazySequenceValue) -> bool:
+    if len(seq) != 1:
+        return False
+    is_many, member = seq[0]
+    return is_many and isinstance(member, AnyValue)
 
 
 def _has_relation_lazy_seq_multi(
@@ -1546,6 +1571,15 @@ def _pack_typevartuple_generic_args(
         return None
 
     variadic_index = variadic_indexes[0]
+    if len(generic_args) == len(declared_type_params):
+        variadic_arg = generic_args[variadic_index]
+        if (
+            isinstance(variadic_arg, SequenceValue)
+            and variadic_arg.typ is tuple
+            and any(is_many for is_many, _ in variadic_arg.members)
+        ):
+            return list(generic_args)
+
     minimum_args = len(declared_type_params) - 1
     if len(generic_args) < minimum_args:
         return None

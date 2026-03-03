@@ -474,6 +474,8 @@ def _contains_unpack_annotation_value(value: Value) -> bool:
             _contains_unpack_annotation_value(member) for member in value.members
         )
     if isinstance(value, SequenceValue):
+        if any(is_many for is_many, _ in value.members):
+            return True
         return any(
             _contains_unpack_annotation_value(member) for _, member in value.members
         )
@@ -12033,13 +12035,14 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                         and is_typing_name(stripped_root.value.val, "Literal")
                         and not _is_runtime_literal_index(index)
                     )
+                    or _contains_unpack_annotation_value(index)
                     or _should_use_static_annotation_subscript(stripped_root.value)
                 ):
                     return_value = PartialValue(
                         PartialValueOperation.SUBSCRIPT,
                         stripped_root.value,
                         node,
-                        self._maybe_unpack_tuple(index),
+                        self._maybe_unpack_tuple(index, node),
                         TypedValue(types.GenericAlias),
                     )
                 else:
@@ -12123,13 +12126,30 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             )
             return AnyValue(AnySource.error)
 
-    def _maybe_unpack_tuple(self, value: Value) -> tuple[Value, ...]:
+    def _maybe_unpack_tuple(
+        self, value: Value, node: ast.AST | None = None
+    ) -> tuple[Value, ...]:
         if isinstance(value, SequenceValue) and value.typ is tuple:
             members = value.get_member_sequence()
             if members is not None:
                 return tuple(members)
-            else:
-                return (AnyValue(AnySource.inference),)
+            if node is not None and self.in_annotation:
+                unpacked_members = []
+                for is_many, member in value.members:
+                    if is_many:
+                        unpacked_members.append(
+                            PartialValue(
+                                PartialValueOperation.UNPACK,
+                                member,
+                                node,
+                                (),
+                                AnyValue(AnySource.inference),
+                            )
+                        )
+                    else:
+                        unpacked_members.append(member)
+                return tuple(unpacked_members)
+            return (AnyValue(AnySource.inference),)
         elif isinstance(value, KnownValue) and isinstance(value.val, tuple):
             return tuple(KnownValue(member) for member in value.val)
         return (value,)
