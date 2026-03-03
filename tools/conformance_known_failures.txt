@@ -10,7 +10,6 @@ annotations_generators
 callables_protocol
 constructors_call_metaclass
 constructors_call_new
-dataclasses_inheritance
 dataclasses_transform_converter
 directives_deprecated
 directives_type_checking
@@ -30,7 +29,6 @@ generics_typevartuple_callable
 generics_typevartuple_concat
 generics_typevartuple_specialization
 generics_typevartuple_unpack
-literals_literalstring
 overloads_definitions_stub
 protocols_class_objects
 protocols_explicit

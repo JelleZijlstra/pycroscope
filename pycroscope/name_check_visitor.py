@@ -2157,6 +2157,20 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     def _is_classvar_member(self, class_key: type | str, attr_name: str) -> bool:
         return attr_name in self._classvar_names_for_class_key(class_key, set())
 
+    def _is_direct_classvar_member(self, class_key: type | str, attr_name: str) -> bool:
+        synthetic_class: SyntheticClassObjectValue | None = None
+        if isinstance(class_key, type):
+            synthetic_class = self.checker.get_synthetic_class(class_key)
+        elif isinstance(class_key, str):
+            synthetic_class = self._synthetic_classes_by_name.get(class_key)
+        if synthetic_class is not None and attr_name in _classvar_names_from_mapping(
+            synthetic_class.class_attributes
+        ):
+            return True
+        if isinstance(class_key, type):
+            return attr_name in self._runtime_classvar_names_for_class(class_key)
+        return False
+
     def _classvar_names_for_class_key(
         self, class_key: type | str, seen: set[type | str]
     ) -> set[str]:
@@ -2498,7 +2512,15 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             return
         if varname.startswith("__") and not varname.endswith("__"):
             return
+        is_annotated_assignment = (
+            isinstance(self.current_statement, ast.AnnAssign)
+            and isinstance(self.current_statement.target, ast.Name)
+            and self.current_statement.target.id == varname
+        )
         base_attributes = list(self._get_base_class_attributes(varname, node))
+        child_is_classvar = is_annotated_assignment and self._is_direct_classvar_member(
+            self.current_class, varname
+        )
         saw_final_member = False
         for base_class, base_value in base_attributes:
             if self._is_final_member(base_class, varname, base_value):
@@ -2511,6 +2533,24 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         if saw_final_member:
             return
         for base_class, base_value in base_attributes:
+            if is_annotated_assignment:
+                base_is_classvar = self._is_direct_classvar_member(base_class, varname)
+                if child_is_classvar and not base_is_classvar:
+                    self._show_error_if_checking(
+                        node,
+                        f"Class variable {varname} cannot override instance variable from"
+                        f" base class {base_class}",
+                        ErrorCode.incompatible_override,
+                    )
+                    continue
+                if base_is_classvar and not child_is_classvar:
+                    self._show_error_if_checking(
+                        node,
+                        f"Instance variable {varname} cannot override class variable from"
+                        f" base class {base_class}",
+                        ErrorCode.incompatible_override,
+                    )
+                    continue
             can_assign = self._can_assign_to_base(base_value, value, base_class, node)
             if isinstance(can_assign, CanAssignError):
                 error = CanAssignError(
@@ -8822,8 +8862,15 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
 
     # Literals and displays
 
+    def _is_literal_string_compatible(self, val: Value) -> bool:
+        return is_subtype(TypedValue(str, literal_only=True), val, self)
+
     def visit_JoinedStr(self, node: ast.JoinedStr) -> Value:
         elements = self._generic_visit_list(node.values)
+        if all(self._is_literal_string_compatible(elt) for elt in elements):
+            fallback = TypedValue(str, literal_only=True)
+        else:
+            fallback = TypedValue(str)
         limit = self.options.get_value_for(UnionSimplificationLimit)
         possible_values: list[list[str]] = [[]]
         for elt in elements:
@@ -8834,9 +8881,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             to_add = []
             for subval in subvals:
                 if not isinstance(subval, KnownValue):
-                    return TypedValue(str)
+                    return fallback
                 if not isinstance(subval.val, str):
-                    return TypedValue(str)
+                    return fallback
                 to_add.append(subval.val)
             possible_values = [
                 lst + [new_elt] for lst in possible_values for new_elt in to_add
@@ -8845,24 +8892,41 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
 
     def visit_FormattedValue(self, node: ast.FormattedValue) -> Value:
         val = self.visit(node.value)
+        value_is_literal_string = self._is_literal_string_compatible(val)
         format_spec_val = (
             self.visit(node.format_spec) if node.format_spec else KnownValue("")
+        )
+        format_spec_is_literal_string = (
+            self._is_literal_string_compatible(format_spec_val)
+            if node.format_spec
+            else True
         )
         if isinstance(format_spec_val, KnownValue) and isinstance(
             format_spec_val.val, str
         ):
             format_spec = format_spec_val.val
+            possible_vals = []
+            for subval in flatten_values(val):
+                possible_vals.append(
+                    self._visit_single_formatted_value(subval, node, format_spec)
+                )
+            result = unite_and_simplify(
+                *possible_vals,
+                limit=self.options.get_value_for(UnionSimplificationLimit),
+            )
         else:
             # TODO: statically check whether the format specifier is valid.
+            result = TypedValue(str)
+
+        if not (value_is_literal_string and format_spec_is_literal_string):
             return TypedValue(str)
-        possible_vals = []
-        for subval in flatten_values(val):
-            possible_vals.append(
-                self._visit_single_formatted_value(subval, node, format_spec)
-            )
-        return unite_and_simplify(
-            *possible_vals, limit=self.options.get_value_for(UnionSimplificationLimit)
-        )
+
+        if all(
+            isinstance(subval, KnownValue) and isinstance(subval.val, str)
+            for subval in flatten_values(result)
+        ):
+            return result
+        return TypedValue(str, literal_only=True)
 
     def _visit_single_formatted_value(
         self, val: Value, node: ast.FormattedValue, format_spec: str
