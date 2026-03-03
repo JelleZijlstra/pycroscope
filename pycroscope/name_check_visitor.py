@@ -2080,6 +2080,8 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     if isinstance(synthetic_value, KnownValue):
                         synthetic_value = TypedValue(type(synthetic_value.val))
         synthetic_class.class_attributes[synthetic_name] = synthetic_value
+        if not synthetic_name.startswith("%"):
+            self._discard_synthetic_instance_only_annotation_name(synthetic_name)
 
     def _record_synthetic_classvar_name(self, name: str) -> None:
         synthetic_class = self._get_synthetic_class_for_current_scope()
@@ -2097,6 +2099,41 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         synthetic_class.class_attributes["%classvars"] = KnownValue(
             frozenset(classvar_names)
         )
+
+    def _record_synthetic_instance_only_annotation_name(self, name: str) -> None:
+        synthetic_class = self._get_synthetic_class_for_current_scope()
+        if synthetic_class is None:
+            return
+        existing = synthetic_class.class_attributes.get("%instance_only_annotations")
+        names: set[str] = set()
+        if isinstance(existing, KnownValue) and isinstance(
+            existing.val, (set, frozenset, tuple, list)
+        ):
+            names.update(item for item in existing.val if isinstance(item, str))
+        names.add(name)
+        synthetic_class.class_attributes["%instance_only_annotations"] = KnownValue(
+            frozenset(names)
+        )
+
+    def _discard_synthetic_instance_only_annotation_name(self, name: str) -> None:
+        synthetic_class = self._get_synthetic_class_for_current_scope()
+        if synthetic_class is None:
+            return
+        existing = synthetic_class.class_attributes.get("%instance_only_annotations")
+        if not isinstance(existing, KnownValue) or not isinstance(
+            existing.val, (set, frozenset, tuple, list)
+        ):
+            return
+        names = {item for item in existing.val if isinstance(item, str)}
+        if name not in names:
+            return
+        names.discard(name)
+        if names:
+            synthetic_class.class_attributes["%instance_only_annotations"] = KnownValue(
+                frozenset(names)
+            )
+        else:
+            synthetic_class.class_attributes.pop("%instance_only_annotations", None)
 
     def _record_synthetic_property_metadata(
         self, node: FunctionDefNode, info: FunctionInfo
@@ -2227,11 +2264,121 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         for name, annotation in annotations.items():
             if not isinstance(name, str):
                 continue
-            origin = get_origin(annotation)
-            if is_typing_name(annotation, "ClassVar") or is_typing_name(
-                origin, "ClassVar"
-            ):
+            if _is_runtime_classvar_annotation(annotation):
                 names.add(name)
+        return names
+
+    def _class_attribute_names_for_class_key(self, class_key: type | str) -> set[str]:
+        names: set[str] = set()
+        synthetic_class: SyntheticClassObjectValue | None = None
+        if isinstance(class_key, type):
+            synthetic_class = self.checker.get_synthetic_class(class_key)
+        elif isinstance(class_key, str):
+            synthetic_class = self._synthetic_classes_by_name.get(class_key)
+        if synthetic_class is not None:
+            names.update(
+                name
+                for name in synthetic_class.class_attributes
+                if isinstance(name, str) and not name.startswith("%")
+            )
+        if isinstance(class_key, type):
+            class_dict = safe_getattr(class_key, "__dict__", None)
+            if isinstance(class_dict, Mapping):
+                names.update(name for name in class_dict if isinstance(name, str))
+        return names
+
+    def _is_instance_only_member(self, class_key: type | str, attr_name: str) -> bool:
+        return attr_name in self._instance_only_annotation_names_for_class_key(
+            class_key, set()
+        )
+
+    def _instance_only_annotation_names_for_class_key(
+        self, class_key: type | str, seen: set[type | str]
+    ) -> set[str]:
+        if class_key in seen:
+            return set()
+        seen.add(class_key)
+        names: set[str] = set()
+        blocked_names = self._class_attribute_names_for_class_key(class_key)
+        synthetic_class: SyntheticClassObjectValue | None = None
+        if isinstance(class_key, type):
+            synthetic_class = self.checker.get_synthetic_class(class_key)
+        elif isinstance(class_key, str):
+            synthetic_class = self._synthetic_classes_by_name.get(class_key)
+        if synthetic_class is not None:
+            names.update(
+                _instance_only_names_from_mapping(synthetic_class.class_attributes)
+            )
+            for base in synthetic_class.base_classes:
+                for base_value in flatten_values(base, unwrap_annotated=True):
+                    base_key: type | str | None = None
+                    if isinstance(base_value, SyntheticClassObjectValue):
+                        class_type = base_value.class_type
+                        if isinstance(class_type, TypedValue) and isinstance(
+                            class_type.typ, (type, str)
+                        ):
+                            base_key = class_type.typ
+                    elif isinstance(base_value, GenericValue) and isinstance(
+                        base_value.typ, (type, str)
+                    ):
+                        base_key = base_value.typ
+                    elif isinstance(base_value, TypedValue) and isinstance(
+                        base_value.typ, (type, str)
+                    ):
+                        base_key = base_value.typ
+                    elif isinstance(base_value, KnownValue) and isinstance(
+                        base_value.val, type
+                    ):
+                        base_key = base_value.val
+                    if base_key is not None:
+                        names.update(
+                            name
+                            for name in (
+                                self._instance_only_annotation_names_for_class_key(
+                                    base_key, seen
+                                )
+                            )
+                            if name not in blocked_names
+                        )
+        if isinstance(class_key, type):
+            names.update(
+                self._runtime_instance_only_annotation_names_for_class(class_key)
+            )
+            for base_class in self.checker.get_generic_bases(class_key):
+                if base_class != class_key:
+                    names.update(
+                        name
+                        for name in self._instance_only_annotation_names_for_class_key(
+                            base_class, seen
+                        )
+                        if name not in blocked_names
+                    )
+        else:
+            for base_class in self.checker.get_generic_bases(class_key):
+                if base_class != class_key:
+                    names.update(
+                        name
+                        for name in self._instance_only_annotation_names_for_class_key(
+                            base_class, seen
+                        )
+                        if name not in blocked_names
+                    )
+        return names
+
+    def _runtime_instance_only_annotation_names_for_class(self, cls: type) -> set[str]:
+        annotations = safe_getattr(cls, "__annotations__", None)
+        if not isinstance(annotations, Mapping):
+            return set()
+        class_dict = safe_getattr(cls, "__dict__", None)
+        names: set[str] = set()
+        for name, annotation in annotations.items():
+            if not isinstance(name, str):
+                continue
+            if _is_runtime_classvar_annotation(annotation):
+                continue
+            if isinstance(class_dict, Mapping) and name in class_dict:
+                continue
+            names.add(name)
         return names
 
     def _contains_classvar_type_parameter(self, value: Value) -> bool:
@@ -7514,12 +7661,21 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     def _class_key_from_attribute_root_value(
         self, root_value: Value
     ) -> type | str | None:
+        if (
+            isinstance(root_value, PartialValue)
+            and root_value.operation is PartialValueOperation.SUBSCRIPT
+            and self._is_class_object_attribute_root(root_value.root) is True
+        ):
+            return self._class_key_from_attribute_root_value(root_value.root)
         root_value = replace_fallback(root_value)
         if isinstance(root_value, AnnotatedValue):
             return self._class_key_from_attribute_root_value(root_value.value)
         if isinstance(root_value, KnownValue):
             if isinstance(root_value.val, type):
                 return root_value.val
+            origin = get_origin(root_value.val)
+            if isinstance(origin, type):
+                return origin
             return type(root_value.val)
         if isinstance(root_value, GenericValue):
             if isinstance(root_value.typ, (type, str)):
@@ -7568,6 +7724,13 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         return True
 
     def _is_class_object_attribute_root(self, value: Value) -> bool | None:
+        if (
+            isinstance(value, PartialValue)
+            and value.operation is PartialValueOperation.SUBSCRIPT
+            and self._is_class_object_attribute_root(value.root) is True
+        ):
+            # Preserve class-object-ness for subscripted class objects such as C[T].
+            return True
         value = replace_fallback(value)
         if isinstance(value, AnnotatedValue):
             return self._is_class_object_attribute_root(value.value)
@@ -7590,7 +7753,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 return next(iter(kinds))
             return None
         if isinstance(value, KnownValue):
-            return isinstance(value.val, type)
+            if isinstance(value.val, type):
+                return True
+            return isinstance(get_origin(value.val), type)
         if isinstance(value, SyntheticClassObjectValue):
             return True
         if isinstance(value, SubclassValue):
@@ -7628,6 +7793,111 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             return False
         is_class_object = self._is_class_object_attribute_root(root_value)
         return is_class_object is False
+
+    def _is_assignment_to_instance_member_through_class(
+        self, node: ast.Attribute, root_value: Value
+    ) -> bool:
+        class_key = self._class_key_for_attribute_target(node, root_value)
+        if class_key is None or not self._is_instance_only_member(class_key, node.attr):
+            return False
+        is_class_object = self._is_class_object_attribute_root(root_value)
+        return is_class_object is True
+
+    def _class_key_from_type_call_expr(
+        self, call_expr: ast.AST | None
+    ) -> type | str | None:
+        call_node = call_expr
+        if (
+            not isinstance(call_node, ast.Call)
+            or len(call_node.args) != 1
+            or call_node.keywords
+        ):
+            return None
+        is_builtin_type_name = (
+            isinstance(call_node.func, ast.Name) and call_node.func.id == "type"
+        )
+        with self.catch_errors():
+            callee_value = replace_fallback(
+                self.composite_from_node(call_node.func).value
+            )
+        is_type_callee = (
+            (isinstance(callee_value, KnownValue) and callee_value.val is type)
+            or (isinstance(callee_value, TypedValue) and callee_value.typ is type)
+            or (
+                isinstance(callee_value, SubclassValue)
+                and isinstance(callee_value.typ, TypedValue)
+                and callee_value.typ.typ is type
+            )
+        )
+        if not is_type_callee and not is_builtin_type_name:
+            return None
+        with self.catch_errors():
+            argument_value = self.composite_from_node(call_node.args[0]).value
+        return self._class_key_from_attribute_root_value(argument_value)
+
+    def _is_subscripted_class_alias_value(self, value: Value) -> bool:
+        if (
+            isinstance(value, PartialValue)
+            and value.operation is PartialValueOperation.SUBSCRIPT
+        ):
+            return self._is_class_object_attribute_root(value.root) is True
+        value = replace_fallback(value)
+        if isinstance(value, AnnotatedValue):
+            return self._is_subscripted_class_alias_value(value.value)
+        if isinstance(value, MultiValuedValue):
+            return any(
+                self._is_subscripted_class_alias_value(subval) for subval in value.vals
+            )
+        if isinstance(value, IntersectionValue):
+            return any(
+                self._is_subscripted_class_alias_value(subval) for subval in value.vals
+            )
+        if isinstance(value, KnownValue):
+            return isinstance(get_origin(value.val), type)
+        return False
+
+    def _should_check_plain_class_object_instance_member_access(
+        self, class_key: type | str
+    ) -> bool:
+        if self._is_enum_class_key(class_key):
+            return False
+        if isinstance(class_key, type):
+            is_dataclass, _ = self._get_dataclass_status_for_type(class_key)
+            if is_dataclass:
+                return False
+        elif isinstance(class_key, str):
+            synthetic_class = self._synthetic_classes_by_name.get(class_key)
+            if synthetic_class is not None and synthetic_class.is_dataclass:
+                return False
+        return True
+
+    def _is_instance_member_accessed_through_class(
+        self, root_composite: Composite, attr_name: str, node: ast.AST | None = None
+    ) -> bool:
+        call_expr: ast.AST | None = root_composite.node
+        if isinstance(node, ast.Attribute):
+            call_expr = node.value
+        type_call_key = self._class_key_from_type_call_expr(call_expr)
+        if type_call_key is not None and self._is_instance_only_member(
+            type_call_key, attr_name
+        ):
+            return True
+        if not self._is_subscripted_class_alias_value(root_composite.value):
+            class_key = self._class_key_from_attribute_root_value(root_composite.value)
+            if (
+                class_key is None
+                or self._is_class_object_attribute_root(root_composite.value)
+                is not True
+                or not self._should_check_plain_class_object_instance_member_access(
+                    class_key
+                )
+            ):
+                return False
+            return self._is_instance_only_member(class_key, attr_name)
+        class_key = self._class_key_from_attribute_root_value(root_composite.value)
+        return class_key is not None and self._is_instance_only_member(
+            class_key, attr_name
+        )
 
     def _namedtuple_fields_for_simple_attribute_root(
         self, value: Value
@@ -10749,11 +11019,13 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             elif self.current_class_key is not None:
                 self._record_final_member(self.current_class_key, node.target.attr)
 
-        if (
+        is_class_annotation_without_value = (
             node.value is None
             and self.current_synthetic_typeddict is None
             and isinstance(node.target, ast.Name)
-        ):
+            and self.scopes.scope_type() == ScopeType.class_scope
+        )
+        if is_class_annotation_without_value:
             self._set_synthetic_class_attribute(
                 node.target.id, expected_type or AnyValue(AnySource.error)
             )
@@ -10870,6 +11142,10 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             override(self, "ann_assign_type", (expected_type, is_final)),
         ):
             self.visit(node.target)
+
+        if is_class_annotation_without_value and not has_classvar:
+            assert isinstance(node.target, ast.Name)
+            self._record_synthetic_instance_only_annotation_name(node.target.id)
 
     def _record_synthetic_typeddict_item(
         self,
@@ -11952,9 +12228,23 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     f"Cannot assign to class variable {node.attr!r} via instance",
                     error_code=ErrorCode.incompatible_assignment,
                 )
+            is_instance_member_class_assignment = (
+                not is_final_assignment
+                and not is_classvar_instance_assignment
+                and self._is_assignment_to_instance_member_through_class(
+                    node, root_composite.value
+                )
+            )
+            if is_instance_member_class_assignment:
+                self._show_error_if_checking(
+                    node,
+                    f"Cannot assign to instance attribute {node.attr!r} via class object",
+                    error_code=ErrorCode.incompatible_assignment,
+                )
             is_frozen_dataclass_assignment = (
                 not is_final_assignment
                 and not is_classvar_instance_assignment
+                and not is_instance_member_class_assignment
                 and self._is_assignment_to_frozen_dataclass_attribute(
                     root_composite.value
                 )
@@ -11973,6 +12263,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             is_slots_assignment = (
                 not is_final_assignment
                 and not is_classvar_instance_assignment
+                and not is_instance_member_class_assignment
                 and not is_frozen_dataclass_assignment
                 and not is_namedtuple_field
                 and self._is_assignment_to_non_slot_attribute(
@@ -11988,6 +12279,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             if (
                 not is_final_assignment
                 and not is_classvar_instance_assignment
+                and not is_instance_member_class_assignment
                 and not is_frozen_dataclass_assignment
                 and not is_namedtuple_field
                 and not is_slots_assignment
@@ -11997,6 +12289,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             should_record_type_attr_set = (
                 not is_final_assignment
                 and not is_classvar_instance_assignment
+                and not is_instance_member_class_assignment
                 and not is_frozen_dataclass_assignment
                 and not is_namedtuple_field
                 and not is_slots_assignment
@@ -12190,6 +12483,15 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 varname=root_composite.varname,
                 node=root_composite.node,
             )
+        if self._is_instance_member_accessed_through_class(root_composite, attr, node):
+            if node is not None:
+                self._show_error_if_checking(
+                    node,
+                    f"{root_composite.value} has no attribute {attr!r}",
+                    ErrorCode.undefined_attribute,
+                )
+                return AnyValue(AnySource.error)
+            return UNINITIALIZED_VALUE
         if is_union(root_composite.value):
             results = []
             for subval in flatten_values(root_composite.value):
@@ -13397,6 +13699,15 @@ def _classvar_names_from_mapping(attributes: Mapping[str, Value]) -> set[str]:
     return set()
 
 
+def _instance_only_names_from_mapping(attributes: Mapping[str, Value]) -> set[str]:
+    raw = attributes.get("%instance_only_annotations")
+    if isinstance(raw, KnownValue) and isinstance(
+        raw.val, (set, frozenset, tuple, list)
+    ):
+        return {item for item in raw.val if isinstance(item, str)}
+    return set()
+
+
 def _is_newtype_base_value(base_value: Value) -> bool:
     for subval in flatten_values(replace_fallback(base_value)):
         if not isinstance(subval, KnownValue):
@@ -14320,6 +14631,13 @@ def _has_annotation_for_attr(typ: type, attr: str) -> bool:
     except Exception:
         # __annotations__ doesn't exist or isn't a dict
         return False
+
+
+def _is_runtime_classvar_annotation(annotation: object) -> bool:
+    origin = get_origin(annotation)
+    if is_typing_name(annotation, "ClassVar") or is_typing_name(origin, "ClassVar"):
+        return True
+    return isinstance(annotation, str) and "ClassVar" in annotation
 
 
 def _is_typing_alias_value(value: object) -> bool:
