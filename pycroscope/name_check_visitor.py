@@ -2802,6 +2802,8 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             if isinstance(decorator, ast.Call):
                 callee = self.visit(decorator.func)
                 value = self.visit_Call(decorator, callee=callee)
+                if self.annotate:
+                    decorator.inferred_value = value
             else:
                 callee = value = self.visit(decorator)
             result.append((callee, value, decorator))
@@ -2886,8 +2888,14 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 keyword_values=keyword_values,
                 decorator_values=decorator_values,
             )
-            dataclass_transform_info = self._get_direct_dataclass_transform_info(
+            direct_dataclass_transform_info = self._get_direct_dataclass_transform_info(
                 decorator_values
+            )
+            dataclass_transform_info = self._get_class_transform_provider_info(
+                class_obj=class_obj,
+                base_values=base_values,
+                keyword_values=keyword_values,
+                direct_dataclass_transform_info=direct_dataclass_transform_info,
             )
             if self._is_checking() and dataclass_semantics is not None:
                 self._check_dataclass_inheritance(
@@ -4451,6 +4459,48 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 )
             return self._get_dataclass_transform_info_from_runtime_object(value.typ)
         return None
+
+    def _get_class_transform_provider_info(
+        self,
+        *,
+        class_obj: type | None,
+        base_values: Sequence[Value],
+        keyword_values: Sequence[tuple[ast.keyword, Value]],
+        direct_dataclass_transform_info: DataclassTransformInfo | None,
+    ) -> DataclassTransformInfo | None:
+        infos = [
+            info
+            for base_value in base_values
+            if (info := self._get_dataclass_transform_info_from_value(base_value))
+            is not None
+        ]
+        metaclass_transform_info = next(
+            (
+                info
+                for keyword, value in keyword_values
+                if keyword.arg == "metaclass"
+                and (info := self._get_dataclass_transform_info_from_value(value))
+                is not None
+            ),
+            None,
+        )
+        if metaclass_transform_info is not None:
+            infos.append(metaclass_transform_info)
+        if direct_dataclass_transform_info is not None:
+            infos.append(direct_dataclass_transform_info)
+        if (
+            class_obj is not None
+            and (
+                runtime_transform_info := self._get_dataclass_transform_info_from_runtime_object(
+                    class_obj
+                )
+            )
+            is not None
+        ):
+            infos.append(runtime_transform_info)
+        if not infos:
+            return None
+        return _merge_dataclass_transform_infos(infos)
 
     def _get_class_dataclass_semantics(
         self,
