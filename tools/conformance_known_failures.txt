@@ -32,7 +32,6 @@ generics_typevartuple_callable
 generics_typevartuple_concat
 generics_typevartuple_specialization
 generics_typevartuple_unpack
-literals_literalstring
 literals_parameterizations
 literals_semantics
 namedtuples_define_class

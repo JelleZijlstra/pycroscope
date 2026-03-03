@@ -8862,8 +8862,15 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
 
     # Literals and displays
 
+    def _is_literal_string_compatible(self, val: Value) -> bool:
+        return is_subtype(TypedValue(str, literal_only=True), val, self)
+
     def visit_JoinedStr(self, node: ast.JoinedStr) -> Value:
         elements = self._generic_visit_list(node.values)
+        if all(self._is_literal_string_compatible(elt) for elt in elements):
+            fallback = TypedValue(str, literal_only=True)
+        else:
+            fallback = TypedValue(str)
         limit = self.options.get_value_for(UnionSimplificationLimit)
         possible_values: list[list[str]] = [[]]
         for elt in elements:
@@ -8874,9 +8881,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             to_add = []
             for subval in subvals:
                 if not isinstance(subval, KnownValue):
-                    return TypedValue(str)
+                    return fallback
                 if not isinstance(subval.val, str):
-                    return TypedValue(str)
+                    return fallback
                 to_add.append(subval.val)
             possible_values = [
                 lst + [new_elt] for lst in possible_values for new_elt in to_add
@@ -8885,24 +8892,41 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
 
     def visit_FormattedValue(self, node: ast.FormattedValue) -> Value:
         val = self.visit(node.value)
+        value_is_literal_string = self._is_literal_string_compatible(val)
         format_spec_val = (
             self.visit(node.format_spec) if node.format_spec else KnownValue("")
+        )
+        format_spec_is_literal_string = (
+            self._is_literal_string_compatible(format_spec_val)
+            if node.format_spec
+            else True
         )
         if isinstance(format_spec_val, KnownValue) and isinstance(
             format_spec_val.val, str
         ):
             format_spec = format_spec_val.val
+            possible_vals = []
+            for subval in flatten_values(val):
+                possible_vals.append(
+                    self._visit_single_formatted_value(subval, node, format_spec)
+                )
+            result = unite_and_simplify(
+                *possible_vals,
+                limit=self.options.get_value_for(UnionSimplificationLimit),
+            )
         else:
             # TODO: statically check whether the format specifier is valid.
+            result = TypedValue(str)
+
+        if not (value_is_literal_string and format_spec_is_literal_string):
             return TypedValue(str)
-        possible_vals = []
-        for subval in flatten_values(val):
-            possible_vals.append(
-                self._visit_single_formatted_value(subval, node, format_spec)
-            )
-        return unite_and_simplify(
-            *possible_vals, limit=self.options.get_value_for(UnionSimplificationLimit)
-        )
+
+        if all(
+            isinstance(subval, KnownValue) and isinstance(subval.val, str)
+            for subval in flatten_values(result)
+        ):
+            return result
+        return TypedValue(str, literal_only=True)
 
     def _visit_single_formatted_value(
         self, val: Value, node: ast.FormattedValue, format_spec: str
