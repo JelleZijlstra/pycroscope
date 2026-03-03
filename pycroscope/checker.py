@@ -2029,6 +2029,8 @@ class Checker:
     ) -> CallableValue:
         if self_annotation_value is None:
             return normalized_attr
+        if not isinstance(self_annotation_value, (TypedValue, TypeVarValue)):
+            return normalized_attr
         raw_attr = replace_fallback(raw_attr)
         if not (
             isinstance(raw_attr, GenericValue)
