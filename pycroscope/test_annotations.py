@@ -2373,14 +2373,9 @@ class TestTypeAlias(TestNameCheckVisitorBase):
 
     @assert_passes()
     def test_explicit_type_alias_generics_and_paramspec(self):
-        from typing import (
-            Callable,
-            Concatenate,
-            ParamSpec,
-            TypeAlias,
-            TypeVar,
-            assert_type,
-        )
+        from typing import Callable, Concatenate, ParamSpec, TypeAlias, TypeVar
+
+        from typing_extensions import assert_type
 
         P = ParamSpec("P")
         R = TypeVar("R")
