@@ -1498,6 +1498,7 @@ def _type_from_subscripted_value(
     root: Value, members: Sequence[Value], ctx: Context
 ) -> Value:
     if isinstance(root, GenericValue):
+        typed_members: list[Value] | None = None
         packed_variadic_members = _pack_typevartuple_args_from_unpack_members(
             root.args, members, ctx
         )
@@ -1508,6 +1509,7 @@ def _type_from_subscripted_value(
                 _type_from_value_type_alias_arg(member, root_arg, ctx)
                 for member, root_arg in zip(members, root.args)
             ]
+        if typed_members is not None:
             typed_members = _normalize_paramspec_generic_args(
                 root.args, typed_members, ctx
             )
