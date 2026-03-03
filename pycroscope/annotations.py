@@ -855,9 +855,9 @@ def has_invalid_paramspec_usage(
             has_invalid_paramspec_usage(subval, can_assign_ctx) for subval in value.vals
         )
     if isinstance(value, TypeAliasValue):
-        type_params = tuple(value.alias.get_type_params())
-        if len(type_params) == len(value.type_arguments):
-            for type_param, type_arg in zip(type_params, value.type_arguments):
+        alias_type_params = tuple(value.alias.get_type_params())
+        if len(alias_type_params) == len(value.type_arguments):
+            for type_param, type_arg in zip(alias_type_params, value.type_arguments):
                 if _is_paramspec_annotation(type_arg):
                     if not _is_paramspec_type_param(type_param):
                         return True
