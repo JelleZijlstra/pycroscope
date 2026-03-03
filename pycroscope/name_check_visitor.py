@@ -13240,6 +13240,13 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         return val
 
     def _get_instantiable_protocol_class_name(self, value: Value) -> str | None:
+        value = replace_fallback(value)
+        if isinstance(value, AnnotatedValue):
+            return self._get_instantiable_protocol_class_name(value.value)
+        if isinstance(value, SubclassValue):
+            # ``type[Proto]`` may refer to concrete implementers. Rejecting calls
+            # here causes spurious "Cannot instantiate protocol class" errors.
+            return None
         if self._is_class_object_attribute_root(value) is not True:
             return None
         class_key = self._base_class_key_from_value(value)

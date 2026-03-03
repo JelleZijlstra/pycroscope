@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Fix protocol constructor-call handling for abstract class objects: pycroscope no longer reports spurious `Cannot instantiate protocol class ...` errors when calling through values typed as `type[Proto]` that may refer to concrete implementers.
 - Improve explicit-protocol checks in import-failure fallback mode: pycroscope now rejects abstract `super()` protocol calls without defaults, enforces protocol-declared member assignment types, and correctly flags instantiation of explicit protocol implementers that still have abstract members.
 - Fix override checking for class and dataclass attributes so pycroscope now reports `incompatible_override` when `ClassVar` and instance variables override each other across inheritance.
 - Fix generic type-erasure class attribute checks: pycroscope now rejects class-object reads/writes of instance-only annotated attributes (including specialized generic aliases like `Node[int].label`), instead of allowing runtime import side effects to mask these errors.
