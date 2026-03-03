@@ -17,3 +17,12 @@ class TestLiteralString(TestNameCheckVisitorBase):
             f(y)
             f("x")
             assert_is_value(f("x"), TypedValue(str, literal_only=True))
+
+    @assert_passes()
+    def test_f_strings(self):
+        from typing_extensions import LiteralString
+
+        def capybara(a: LiteralString, b: LiteralString, non_literal: str):
+            assert_is_value(f"{a} {b}", TypedValue(str, literal_only=True))
+            assert_is_value(f"{a} {non_literal}", TypedValue(str))
+            assert_is_value(f"{1}", TypedValue(str))

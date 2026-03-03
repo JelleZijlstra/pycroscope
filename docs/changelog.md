@@ -4,6 +4,7 @@
 
 - Fix override checking for class and dataclass attributes so pycroscope now reports `incompatible_override` when `ClassVar` and instance variables override each other across inheritance.
 - Fix generic type-erasure class attribute checks: pycroscope now rejects class-object reads/writes of instance-only annotated attributes (including specialized generic aliases like `Node[int].label`), instead of allowing runtime import side effects to mask these errors.
+- Improve `LiteralString` inference for f-strings: pycroscope now preserves `LiteralString` for f-strings whose formatted expressions are all `LiteralString`-compatible, and falls back to `str` when any expression is not `LiteralString`.
 - Fix `@dataclass_transform` marker recognition to use inferred decorator values, so unrelated decorators named `dataclass_transform` are no longer treated as PEP 681 markers. Also improve support for other dynamic variations on dataclass_transform and dataclass decorators.
 - Improve `annotated_types` length-check metadata handling for unions/intersections by normalizing through fallback values and computing `MinLen`/`MaxLen` bounds more consistently.
 - Improve recursive protocol matching with `@classmethod` members: pycroscope now preserves classmethod parameter constraints and `Self` specialization in synthetic static-fallback analysis, fixing false protocol incompatibilities and downstream `Any` inference.
