@@ -5,10 +5,8 @@ aliases_explicit
 aliases_implicit
 aliases_recursive
 aliases_type_statement
-aliases_typealiastype
 annotations_forward_refs
 annotations_generators
-annotations_typeexpr
 callables_protocol
 constructors_call_metaclass
 constructors_call_new
@@ -27,21 +25,37 @@ generics_self_usage
 generics_syntax_infer_variance
 generics_syntax_scoping
 generics_type_erasure
-generics_typevartuple_args
 generics_typevartuple_basic
 generics_typevartuple_callable
 generics_typevartuple_concat
 generics_typevartuple_specialization
 generics_typevartuple_unpack
 literals_literalstring
-literals_parameterizations
-literals_semantics
-namedtuples_define_class
 overloads_definitions_stub
-overloads_basic
 protocols_class_objects
 protocols_explicit
+
+# Weird TypeVarTuple inference rule in the spec
+generics_typevartuple_args
+
+# Too precise value for a global
 protocols_generic
-qualifiers_annotated
+overloads_basic
+
+# Never/Any assignability
 specialtypes_never
+
+# Allows reassignment of function parameters to a new type
+literals_semantics
+
+# Fails to reject various weird annotations
+aliases_typealiastype
+annotations_typeexpr
+literals_parameterizations
+qualifiers_annotated
+
+# pycroscope doesn't handle relations between TypedDict and dict etc. correctly
 typeddicts_type_consistency
+
+# pycroscope uses Literal[] over float
+namedtuples_define_class
