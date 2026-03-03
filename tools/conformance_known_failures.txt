@@ -29,7 +29,6 @@ generics_typevartuple_concat
 generics_typevartuple_specialization
 generics_typevartuple_unpack
 overloads_definitions_stub
-protocols_class_objects
 
 # Weird TypeVarTuple inference rule in the spec
 generics_typevartuple_args
@@ -37,6 +36,9 @@ generics_typevartuple_args
 # Too precise value for a global
 protocols_generic
 overloads_basic
+
+# Abstract type[Proto] still allows protocol class objects in some paths.
+protocols_class_objects
 
 # Never/Any assignability
 specialtypes_never

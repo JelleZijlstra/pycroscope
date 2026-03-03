@@ -3769,6 +3769,24 @@ class TestAnnAssign(TestNameCheckVisitorBase):
         factory: Factory = Concrete
         created: Concrete = factory(1)
 
+    @assert_passes()
+    def test_type_protocol_constructor_call_allows_concrete_implementers(self):
+        from typing import Protocol, cast
+
+        class Proto(Protocol):
+            def meth(self) -> int: ...
+
+        class Concrete:
+            def meth(self) -> int:
+                return 1
+
+        def call_it(cls: type[Proto]) -> int:
+            return cls().meth()
+
+        call_it(cast(type[Proto], Concrete))
+        impl = cast(type[Proto], Concrete)
+        impl().meth()
+
     @assert_passes(allow_import_failures=True)
     def test_self_methods_in_unimportable_generic_module(self):
         from typing import Generic, TypeVar
