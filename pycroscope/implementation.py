@@ -68,6 +68,8 @@ from .value import (
     CallableValue,
     CanAssignContext,
     CanAssignError,
+    DataclassTransformDecoratorExtension,
+    DataclassTransformInfo,
     DictIncompleteValue,
     GenericValue,
     HasAttrGuardExtension,
@@ -2530,6 +2532,53 @@ def _namedtuple_impl(ctx: CallContext) -> Value:
     return AnyValue(AnySource.inference)
 
 
+def _enforce_literal_bool(ctx: CallContext, arg_name: str, default: bool) -> bool:
+    arg_value = replace_fallback(ctx.vars[arg_name])
+    if isinstance(arg_value, KnownValue) and isinstance(arg_value.val, bool):
+        return arg_value.val
+    ctx.show_error(
+        f"{arg_name} argument must be a literal bool",
+        ErrorCode.incompatible_call,
+        arg=arg_name,
+    )
+    return default
+
+
+def _dataclass_transform_impl(ctx: CallContext) -> Value:
+    eq_default = _enforce_literal_bool(ctx, "eq_default", True)
+    frozen_default = _enforce_literal_bool(ctx, "frozen_default", False)
+    kw_only_default = _enforce_literal_bool(ctx, "kw_only_default", False)
+    order_default = _enforce_literal_bool(ctx, "order_default", False)
+    field_specifiers = concrete_values_from_iterable(
+        ctx.vars.get("field_specifiers", KnownValue(())), ctx.visitor
+    )
+    if isinstance(field_specifiers, CanAssignError):
+        ctx.show_error(
+            "field_specifiers argument must be a tuple of dataclass field specifier"
+            " classes",
+            arg="field_specifiers",
+            detail=str(field_specifiers),
+        )
+        field_specifiers = ()
+    elif isinstance(field_specifiers, Value):
+        ctx.show_error(
+            "field_specifiers argument must be a tuple of dataclass field specifiers",
+            arg="field_specifiers",
+        )
+        field_specifiers = ()
+
+    extension = DataclassTransformDecoratorExtension(
+        info=DataclassTransformInfo(
+            eq_default=eq_default,
+            frozen_default=frozen_default,
+            kw_only_default=kw_only_default,
+            order_default=order_default,
+            field_specifiers=tuple(field_specifiers),
+        )
+    )
+    return AnnotatedValue(TypedValue(_IdentityCallable), [extension])
+
+
 _POS_ONLY = ParameterKind.POSITIONAL_ONLY
 _ENCODING_PARAMETER = SigParameter(
     "encoding", annotation=TypedValue(str), default=KnownValue("")
@@ -2538,6 +2587,10 @@ _ENCODING_PARAMETER = SigParameter(
 T = TypeVar("T")
 K = TypeVar("K")
 V = TypeVar("V")
+
+
+class _IdentityCallable:
+    def __call__(self, arg: T, /) -> T: ...
 
 
 def get_default_argspecs() -> dict[object, Signature]:
@@ -3158,6 +3211,49 @@ def get_default_argspecs() -> dict[object, Signature]:
                 callable=namedtuple_func,
                 impl=_namedtuple_impl,
                 allow_call=True,
+            )
+            signatures.append(sig)
+        try:
+            dataclass_transform_func = getattr(mod, "dataclass_transform")
+        except AttributeError:
+            pass
+        else:
+            sig = Signature.make(
+                [
+                    SigParameter(
+                        "eq_default",
+                        ParameterKind.KEYWORD_ONLY,
+                        default=KnownValue(True),
+                        annotation=TypedValue(bool),
+                    ),
+                    SigParameter(
+                        "order_default",
+                        ParameterKind.KEYWORD_ONLY,
+                        default=KnownValue(False),
+                        annotation=TypedValue(bool),
+                    ),
+                    SigParameter(
+                        "kw_only_default",
+                        ParameterKind.KEYWORD_ONLY,
+                        default=KnownValue(False),
+                        annotation=TypedValue(bool),
+                    ),
+                    SigParameter(
+                        "frozen_default",
+                        ParameterKind.KEYWORD_ONLY,
+                        default=KnownValue(False),
+                        annotation=TypedValue(bool),
+                    ),
+                    SigParameter(
+                        "field_specifiers",
+                        ParameterKind.KEYWORD_ONLY,
+                        default=KnownValue(()),
+                        annotation=GenericValue(tuple, [CallableValue(ANY_SIGNATURE)]),
+                    ),
+                ],
+                return_annotation=TypedValue(_IdentityCallable),
+                callable=dataclass_transform_func,
+                impl=_dataclass_transform_impl,
             )
             signatures.append(sig)
     return {sig.callable: sig for sig in signatures}

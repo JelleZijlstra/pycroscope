@@ -14,7 +14,7 @@ import types
 from collections.abc import Container, Iterable, Sequence
 from dataclasses import dataclass, replace
 from itertools import zip_longest
-from typing import TypeVar
+from typing import TypeAlias, TypeVar
 
 from typing_extensions import Protocol
 
@@ -76,6 +76,12 @@ AsyncGeneratorValue = GenericValue(
 )
 
 
+# a list of tuples of (decorator function, applied decorator function, AST node). These are
+# different for decorators that take arguments, like @asynq(): the first element will be the
+# asynq function and the second will be the result of calling asynq().
+DecoratorValues: TypeAlias = list[tuple[Value, Value, ast.expr]]
+
+
 def _type_param_identities_for_class(enclosing_class: TypedValue | None) -> set[object]:
     if not isinstance(enclosing_class, GenericValue):
         return set()
@@ -126,10 +132,7 @@ class FunctionInfo:
     async_kind: AsyncFunctionKind
     decorator_kinds: frozenset[FunctionDecorator]
     is_nested_in_class: bool
-    # a list of tuples of (decorator function, applied decorator function, AST node). These are
-    # different for decorators that take arguments, like @asynq(): the first element will be the
-    # asynq function and the second will be the result of calling asynq().
-    decorators: list[tuple[Value, Value, ast.AST]]
+    decorators: DecoratorValues
     node: FunctionNode
     params: Sequence[ParamInfo]
     return_annotation: Value | None
