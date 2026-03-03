@@ -1557,6 +1557,31 @@ class Checker:
             )
             if sig is not None:
                 return sig
+        if (
+            isinstance(value, TypeAliasValue)
+            and value.runtime_allows_value_call
+            and not value.type_arguments
+            and not value.alias.get_type_params()
+        ):
+            alias_value = value.get_value()
+            # Explicit TypeAlias declarations can denote class objects (e.g.
+            # `Alias: TypeAlias = list`) that should remain callable.
+            if isinstance(alias_value, KnownValue) and isinstance(
+                alias_value.val, type
+            ):
+                return self.signature_from_value(
+                    alias_value,
+                    get_return_override=get_return_override,
+                    get_call_attribute=get_call_attribute,
+                )
+            if isinstance(alias_value, TypedValue) and isinstance(
+                alias_value.typ, type
+            ):
+                return self.signature_from_value(
+                    KnownValue(alias_value.typ),
+                    get_return_override=get_return_override,
+                    get_call_attribute=get_call_attribute,
+                )
         value = replace_fallback(value)
         if isinstance(value, KnownValue):
             origin = safe_getattr(value.val, "__origin__", None)

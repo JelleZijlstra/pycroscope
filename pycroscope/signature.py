@@ -1756,12 +1756,34 @@ class Signature:
                             )
                             params.append((name, new_param))
                         elif isinstance(new_val, AnySig):
-                            new_param = SigParameter(
-                                param.name,
-                                ParameterKind.PARAM_SPEC,
-                                annotation=InputSigValue(new_val),
-                            )
-                            params.append((param.name, new_param))
+                            if not params:
+                                params.append((ELLIPSIS_PARAM.name, ELLIPSIS_PARAM))
+                            else:
+                                marker = AnyValue(AnySource.ellipsis_callable)
+                                var_args_name = f"@{len(params)}"
+                                params.append(
+                                    (
+                                        var_args_name,
+                                        SigParameter(
+                                            var_args_name,
+                                            kind=ParameterKind.VAR_POSITIONAL,
+                                            annotation=GenericValue(tuple, [marker]),
+                                        ),
+                                    )
+                                )
+                                var_kwargs_name = f"@{len(params)}"
+                                params.append(
+                                    (
+                                        var_kwargs_name,
+                                        SigParameter(
+                                            var_kwargs_name,
+                                            kind=ParameterKind.VAR_KEYWORD,
+                                            annotation=GenericValue(
+                                                dict, [TypedValue(str), marker]
+                                            ),
+                                        ),
+                                    )
+                                )
                         elif isinstance(new_val, ActualArguments):
                             new_param = SigParameter(
                                 param.name,
@@ -1770,7 +1792,22 @@ class Signature:
                             )
                             params.append((param.name, new_param))
                         elif isinstance(new_val, FullSignature):
-                            params += list(new_val.sig.parameters.items())
+                            existing_names = {param_name for param_name, _ in params}
+                            next_unnamed_index = len(existing_names)
+                            for replacement_param in new_val.sig.parameters.values():
+                                replacement_name = replacement_param.name
+                                if replacement_name in existing_names:
+                                    while True:
+                                        candidate = f"@{next_unnamed_index}"
+                                        next_unnamed_index += 1
+                                        if candidate not in existing_names:
+                                            replacement_name = candidate
+                                            replacement_param = replace(
+                                                replacement_param, name=candidate
+                                            )
+                                            break
+                                existing_names.add(replacement_name)
+                                params.append((replacement_name, replacement_param))
                         else:
                             assert_never(new_val)
                     else:

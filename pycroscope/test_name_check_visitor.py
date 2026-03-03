@@ -376,6 +376,18 @@ class TestImportFailureHandling(TestNameCheckVisitorBase):
         type.unknown  # E: undefined_attribute
 
     @assert_passes(allow_import_failures=True)
+    def test_explicit_type_alias_callability_after_import_failure(self):
+        from typing import TypeAlias
+
+        _bad_type1: type[int, str]  # E: invalid_annotation
+
+        ListAlias: TypeAlias = list
+        ListOrSetAlias: TypeAlias = list | set
+        _x: list[str] = ListAlias()
+        _x2: ListAlias[int]  # E: invalid_annotation
+        _x3 = ListOrSetAlias()  # E: not_callable
+
+    @assert_passes(allow_import_failures=True)
     def test_type_object_name_attribute_after_import_failure(self):
         from typing import Type
 
