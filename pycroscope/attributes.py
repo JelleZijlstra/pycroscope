@@ -1296,12 +1296,15 @@ def _substitute_typevars(
         }
         result = result.substitute_typevars(substituted_typevars)
     if generic_args and typ in generic_bases:
-        typevars = [
-            val.typevar
+        ordered_typevars = [
+            val.typevar if isinstance(val, TypeVarValue) else None
             for val in generic_bases[typ].values()
-            if isinstance(val, TypeVarValue)
         ]
-        tv_map = dict(zip(typevars, generic_args))
+        tv_map = {
+            typevar: arg
+            for typevar, arg in zip(ordered_typevars, generic_args)
+            if typevar is not None
+        }
         if isinstance(result, KnownValueWithTypeVars):
             merged_typevars = {**result.typevars, **tv_map}
             result = KnownValueWithTypeVars(result.val, merged_typevars)

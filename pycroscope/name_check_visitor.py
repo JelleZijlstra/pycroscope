@@ -624,6 +624,13 @@ class _AttrContext(CheckerAttrContext):
             if not should_bind:
                 return super().bind_synthetic_instance_attribute(attr_name, value)
             if synthetic_class is not None:
+                if self.checker.is_synthetic_classmethod_attribute(
+                    synthetic_class, attr_name
+                ):
+                    # classmethod attributes are already descriptor-adjusted by
+                    # synthetic attribute normalization; binding again drops one
+                    # real parameter.
+                    return super().bind_synthetic_instance_attribute(attr_name, value)
                 raw_attr = synthetic_class.class_attributes.get(attr_name)
                 if raw_attr is not None:
                     raw_attr = replace_fallback(raw_attr)
@@ -3305,6 +3312,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     self_returning_classmethods = (
                         self._get_synthetic_self_returning_classmethods(node)
                     )
+                    classmethods = self._get_synthetic_classmethod_attributes(node)
                     # Keep the prebound synthetic class object and fill in the
                     # discovered class attributes on that same object so
                     # references captured during class analysis (including bases
@@ -3316,6 +3324,12 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                         )
                     else:
                         synthetic_class.class_attributes.pop("%self_classmethods", None)
+                    if classmethods:
+                        synthetic_class.class_attributes["%classmethods"] = KnownValue(
+                            frozenset(classmethods)
+                        )
+                    else:
+                        synthetic_class.class_attributes.pop("%classmethods", None)
                     staticmethods = self._get_synthetic_staticmethod_attributes(node)
                     if staticmethods:
                         synthetic_class.class_attributes["%staticmethods"] = KnownValue(
@@ -3359,6 +3373,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 self_returning_classmethods = (
                     self._get_synthetic_self_returning_classmethods(node)
                 )
+                classmethods = self._get_synthetic_classmethod_attributes(node)
                 dataclass_metadata_class.class_attributes.update(class_attributes)
                 if self_returning_classmethods:
                     dataclass_metadata_class.class_attributes["%self_classmethods"] = (
@@ -3368,6 +3383,12 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     dataclass_metadata_class.class_attributes.pop(
                         "%self_classmethods", None
                     )
+                if classmethods:
+                    dataclass_metadata_class.class_attributes["%classmethods"] = (
+                        KnownValue(frozenset(classmethods))
+                    )
+                else:
+                    dataclass_metadata_class.class_attributes.pop("%classmethods", None)
                 staticmethods = self._get_synthetic_staticmethod_attributes(node)
                 if staticmethods:
                     dataclass_metadata_class.class_attributes["%staticmethods"] = (
@@ -6192,6 +6213,21 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 _mangle_class_attribute_name(node.name, stmt.name)
             )
         return staticmethod_attributes
+
+    def _get_synthetic_classmethod_attributes(self, node: ast.ClassDef) -> set[str]:
+        classmethod_attributes = set()
+        for stmt in node.body:
+            if not isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            decorator_kinds = self._function_decorator_kinds_by_node.get(
+                stmt, frozenset()
+            )
+            if FunctionDecorator.classmethod not in decorator_kinds:
+                continue
+            classmethod_attributes.add(
+                _mangle_class_attribute_name(node.name, stmt.name)
+            )
+        return classmethod_attributes
 
     def _return_annotation_node_contains_self(self, annotation: ast.AST | None) -> bool:
         if annotation is None:
