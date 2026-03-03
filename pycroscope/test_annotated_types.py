@@ -194,6 +194,10 @@ class TestAnnotatedTypesAnnotations(TestNameCheckVisitorBase):
             max_6: Annotated[str, MaxLen(6)],
             exactly_5: Annotated[str, Len(5, 5)],
             td: TD3to5,
+            u_3_or_4: tuple[int, int, int] | tuple[int, int, int, int],
+            u_5_or_6: (
+                tuple[int, int, int, int, int] | tuple[int, int, int, int, int, int]
+            ),
             unannotated,
         ) -> None:
             takes_min_len_5((1, 2, 3, 4))  # E: incompatible_argument
@@ -219,10 +223,16 @@ class TestAnnotatedTypesAnnotations(TestNameCheckVisitorBase):
             takes_max_len_5(td)  # E: incompatible_argument
             takes_max_len_5((i, *unannotated))  # E: incompatible_argument
 
+            takes_min_len_5(u_5_or_6)
+            takes_max_len_5(u_5_or_6)  # E: incompatible_argument
+            takes_max_len_5(u_3_or_4)
+            takes_min_len_5(u_3_or_4)  # E: incompatible_argument
+
             takes_3_to_5((1, 2))  # E: incompatible_argument
             takes_3_to_5((1, 2, 3))
             takes_3_to_5(exactly_5)
             takes_3_to_5(td)  # E: incompatible_argument
+            takes_3_to_5(u_3_or_4)
 
     @skip_if_not_installed("annotated_types")
     @assert_passes()
