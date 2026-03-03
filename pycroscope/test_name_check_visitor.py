@@ -815,6 +815,21 @@ class TestImportFailureHandlingCodeSamples(TestNameCheckVisitorBase):
             frozen.value = 2  # E: incompatible_assignment
 
     @assert_passes()
+    def test_dataclass_rejects_classvar_instance_override_mismatch(self):
+        from dataclasses import dataclass
+        from typing import ClassVar
+
+        @dataclass
+        class Base:
+            x: int
+            y: ClassVar[int] = 1
+
+        @dataclass
+        class Child(Base):
+            x: ClassVar[int]  # E: incompatible_override
+            y: int  # E: incompatible_override
+
+    @assert_passes()
     def test_frozen_dataclass_disallows_intersection_attribute_assignment(self):
         from dataclasses import dataclass
 
@@ -853,6 +868,23 @@ class TestImportFailureHandlingCodeSamples(TestNameCheckVisitorBase):
         @dataclass(frozen=True)
         class FrozenChild(Mutable):  # E: invalid_base
             pass
+
+    @assert_passes(allow_import_failures=True)
+    def test_dataclass_classvar_instance_override_mismatch_after_import_failure(self):
+        boom = 1 / 0
+
+        from dataclasses import dataclass
+        from typing import ClassVar
+
+        @dataclass
+        class Base:
+            x: int
+            y: ClassVar[int] = 1
+
+        @dataclass
+        class Child(Base):
+            x: ClassVar[int]  # E: incompatible_override
+            y: int  # E: incompatible_override
 
     @assert_passes()
     def test_dataclass_hashability(self):
@@ -3971,6 +4003,28 @@ class TestIncompatibleOverride(TestNameCheckVisitorBase):
             @property
             def f(self):
                 pass
+
+    @assert_passes()
+    def test_classvar_instance_override_mismatch(self):
+        from typing import ClassVar
+
+        class Base:
+            x: int
+            y: ClassVar[int] = 1
+
+        class Child(Base):
+            x: ClassVar[int]  # E: incompatible_override
+            y: int  # E: incompatible_override
+
+    @assert_passes()
+    def test_unannotated_protocol_classvar_override(self):
+        from typing import ClassVar, Protocol
+
+        class Proto(Protocol):
+            z: ClassVar[int]
+
+        class ProtoImpl(Proto):
+            z = 0
 
     @assert_passes()
     def test_property_annotated(self):
