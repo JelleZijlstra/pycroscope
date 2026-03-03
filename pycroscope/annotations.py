@@ -940,6 +940,22 @@ def _type_from_value_type_alias_arg(
                     [(False, _type_from_value(member, ctx)) for member in members],
                 )
         return arg
+    if _is_typevartuple_type_param(cast(TypeVarLike | TypeVarValue, type_param)):
+        expr = _annotation_expr_from_value(arg, ctx)
+        unpacked, qualifiers = expr.unqualify({Qualifier.Unpack})
+        if Qualifier.Unpack in qualifiers:
+            unpacked_members = _unpack_value(unpacked)
+            if unpacked_members is None:
+                ctx.show_error(f"Invalid usage of Unpack with {unpacked}")
+                return AnyValue(AnySource.error)
+            if (
+                len(unpacked_members) == 1
+                and unpacked_members[0][0]
+                and isinstance(unpacked_members[0][1], TypeVarValue)
+                and unpacked_members[0][1].is_typevartuple
+            ):
+                return unpacked_members[0][1]
+            return SequenceValue(tuple, list(unpacked_members))
     return _type_from_value(arg, ctx)
 
 
@@ -986,6 +1002,162 @@ def _normalize_paramspec_generic_args(
             for type_param, arg in zip(type_params, args)
         ]
     return list(args)
+
+
+def _normalize_generic_unpack_members(
+    members: Sequence[Value], ctx: Context
+) -> list[tuple[bool, Value]] | None:
+    normalized_members: list[tuple[bool, Value]] = []
+    saw_unpack = False
+    for member in members:
+        if _is_unpack_annotation_member(member):
+            saw_unpack = True
+            expr = _annotation_expr_from_value(member, ctx)
+            unpacked, qualifiers = expr.unqualify({Qualifier.Unpack})
+            if Qualifier.Unpack not in qualifiers:
+                normalized_members.append((False, _type_from_value(unpacked, ctx)))
+                continue
+            unpacked_members = _unpack_value(unpacked)
+            if unpacked_members is None:
+                ctx.show_error(f"Invalid usage of Unpack with {unpacked}")
+                normalized_members.append((False, AnyValue(AnySource.error)))
+                continue
+            for is_many, unpacked_member in unpacked_members:
+                normalized_members.append(
+                    (is_many, _type_from_value(unpacked_member, ctx))
+                )
+            continue
+        normalized_members.append((False, _type_from_value(member, ctx)))
+    if not saw_unpack:
+        return None
+    return normalized_members
+
+
+def _pack_typevartuple_args_from_unpack_members(
+    type_params: Sequence[object], members: Sequence[Value], ctx: Context
+) -> list[Value] | None:
+    if not any(_is_unpack_annotation_member(member) for member in members):
+        return None
+    normalized_members = _normalize_generic_unpack_members(members, ctx)
+    if normalized_members is None or not any(
+        is_many for is_many, _ in normalized_members
+    ):
+        return None
+    if (
+        len(normalized_members) == 1
+        and normalized_members[0][0]
+        and isinstance(normalized_members[0][1], TypeVarValue)
+        and normalized_members[0][1].is_typevartuple
+    ):
+        return None
+
+    variadic_indexes = [
+        i
+        for i, type_param in enumerate(type_params)
+        if _is_typevartuple_type_param(cast(TypeVarLike | TypeVarValue, type_param))
+    ]
+    if len(variadic_indexes) != 1:
+        return None
+
+    variadic_index = variadic_indexes[0]
+    minimum_args = len(type_params) - 1
+    if len(normalized_members) < minimum_args:
+        return None
+
+    suffix_count = len(type_params) - variadic_index - 1
+    variadic_end = len(normalized_members) - suffix_count
+    if variadic_end < variadic_index:
+        return None
+
+    prefix_members = normalized_members[:variadic_index]
+    suffix_members = normalized_members[variadic_end:]
+    if any(is_many for is_many, _ in prefix_members) or any(
+        is_many for is_many, _ in suffix_members
+    ):
+        return None
+
+    packed: list[Value] = []
+    for i in range(len(type_params)):
+        if i < variadic_index:
+            packed.append(prefix_members[i][1])
+        elif i == variadic_index:
+            packed.append(
+                SequenceValue(tuple, normalized_members[variadic_index:variadic_end])
+            )
+        else:
+            suffix_index = i - variadic_index - 1
+            packed.append(suffix_members[suffix_index][1])
+    return packed
+
+
+def _pack_typevartuple_runtime_args(
+    type_params: Sequence[object], args: Sequence[object], ctx: Context
+) -> list[Value] | None:
+    if not any(_is_unpack_runtime_arg(arg) for arg in args):
+        return None
+    normalized_members: list[tuple[bool, Value]] = []
+    for arg in args:
+        if _is_unpack_runtime_arg(arg):
+            expr = _annotation_expr_from_runtime(arg, ctx)
+            unpacked, qualifiers = expr.unqualify({Qualifier.Unpack})
+            if Qualifier.Unpack not in qualifiers:
+                normalized_members.append((False, unpacked))
+                continue
+            unpacked_members = _unpack_value(unpacked)
+            if unpacked_members is None:
+                ctx.show_error(f"Invalid usage of Unpack with {unpacked}")
+                normalized_members.append((False, AnyValue(AnySource.error)))
+                continue
+            normalized_members.extend(unpacked_members)
+            continue
+        normalized_members.append((False, _type_from_runtime(arg, ctx)))
+    if not any(is_many for is_many, _ in normalized_members):
+        return None
+    if (
+        len(normalized_members) == 1
+        and normalized_members[0][0]
+        and isinstance(normalized_members[0][1], TypeVarValue)
+        and normalized_members[0][1].is_typevartuple
+    ):
+        return None
+
+    variadic_indexes = [
+        i
+        for i, type_param in enumerate(type_params)
+        if _is_typevartuple_type_param(cast(TypeVarLike | TypeVarValue, type_param))
+    ]
+    if len(variadic_indexes) != 1:
+        return None
+
+    variadic_index = variadic_indexes[0]
+    minimum_args = len(type_params) - 1
+    if len(normalized_members) < minimum_args:
+        return None
+
+    suffix_count = len(type_params) - variadic_index - 1
+    variadic_end = len(normalized_members) - suffix_count
+    if variadic_end < variadic_index:
+        return None
+
+    prefix_members = normalized_members[:variadic_index]
+    suffix_members = normalized_members[variadic_end:]
+    if any(is_many for is_many, _ in prefix_members) or any(
+        is_many for is_many, _ in suffix_members
+    ):
+        return None
+
+    packed: list[Value] = []
+    for i in range(len(type_params)):
+        if i < variadic_index:
+            packed.append(prefix_members[i][1])
+        elif i == variadic_index:
+            packed.append(
+                SequenceValue(tuple, normalized_members[variadic_index:variadic_end])
+            )
+        else:
+            suffix_index = i - variadic_index - 1
+            packed.append(suffix_members[suffix_index][1])
+    return packed
 
 
 def _validate_type_alias_arg_values(
@@ -1326,7 +1498,12 @@ def _type_from_subscripted_value(
     root: Value, members: Sequence[Value], ctx: Context
 ) -> Value:
     if isinstance(root, GenericValue):
-        if len(root.args) == len(members):
+        packed_variadic_members = _pack_typevartuple_args_from_unpack_members(
+            root.args, members, ctx
+        )
+        if packed_variadic_members is not None:
+            typed_members = packed_variadic_members
+        elif len(root.args) == len(members):
             typed_members = [
                 _type_from_value_type_alias_arg(member, root_arg, ctx)
                 for member, root_arg in zip(members, root.args)
@@ -1385,7 +1562,12 @@ def _type_from_subscripted_value(
         synthetic_type_params: Sequence[Value] = ()
         if can_assign_ctx is not None:
             synthetic_type_params = can_assign_ctx.get_type_parameters(synthetic_typ)
-        if len(synthetic_type_params) == len(members):
+        packed_variadic_members = _pack_typevartuple_args_from_unpack_members(
+            synthetic_type_params, members, ctx
+        )
+        if packed_variadic_members is not None:
+            typed_members = packed_variadic_members
+        elif len(synthetic_type_params) == len(members):
             typed_members = [
                 _type_from_value_type_alias_arg(elt, type_param, ctx)
                 for elt, type_param in zip(members, synthetic_type_params)
@@ -1405,7 +1587,12 @@ def _type_from_subscripted_value(
             synthetic_type_params_for_str = can_assign_ctx.get_type_parameters(
                 synthetic_typ
             )
-        if len(synthetic_type_params_for_str) == len(members):
+        packed_variadic_members = _pack_typevartuple_args_from_unpack_members(
+            synthetic_type_params_for_str, members, ctx
+        )
+        if packed_variadic_members is not None:
+            typed_members = packed_variadic_members
+        elif len(synthetic_type_params_for_str) == len(members):
             typed_members = [
                 _type_from_value_type_alias_arg(elt, type_param, ctx)
                 for elt, type_param in zip(members, synthetic_type_params_for_str)
@@ -1565,7 +1752,12 @@ def _type_from_subscripted_value(
         )
     elif isinstance(root, type):
         type_params = _get_generic_type_parameters_for_annotation(root, ctx)
-        if len(type_params) == len(members):
+        packed_variadic_members = _pack_typevartuple_args_from_unpack_members(
+            type_params, members, ctx
+        )
+        if packed_variadic_members is not None:
+            typed_members = packed_variadic_members
+        elif len(type_params) == len(members):
             typed_members = [
                 _type_from_value_type_alias_arg(elt, type_param, ctx)
                 for elt, type_param in zip(members, type_params)
@@ -2088,7 +2280,12 @@ def _value_of_origin_args(
             type_params = _get_generic_type_parameters_for_annotation(
                 runtime_origin, ctx
             )
-            if len(type_params) == len(args):
+            packed_variadic_members = _pack_typevartuple_runtime_args(
+                type_params, args, ctx
+            )
+            if packed_variadic_members is not None:
+                args_vals = packed_variadic_members
+            elif len(type_params) == len(args):
                 args_vals = [
                     _type_from_runtime_type_alias_arg(arg, type_param, ctx)
                     for arg, type_param in zip(args, type_params)
