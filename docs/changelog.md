@@ -3,6 +3,7 @@
 ## Unreleased
 
 - Improve explicit-protocol checks in import-failure fallback mode: pycroscope now rejects abstract `super()` protocol calls without defaults, enforces protocol-declared member assignment types, and correctly flags instantiation of explicit protocol implementers that still have abstract members.
+- Improve explicit `TypeAlias` handling: pycroscope now preserves generic alias metadata (including `ParamSpec`) for `Alias: TypeAlias = ...`, reports invalid alias specializations more consistently, and treats unsubscripted `Callable[P, T]` aliases as `Callable[..., T]`.
 - Fix override checking for class and dataclass attributes so pycroscope now reports `incompatible_override` when `ClassVar` and instance variables override each other across inheritance.
 - Fix generic type-erasure class attribute checks: pycroscope now rejects class-object reads/writes of instance-only annotated attributes (including specialized generic aliases like `Node[int].label`), instead of allowing runtime import side effects to mask these errors.
 - Improve `LiteralString` inference for f-strings: pycroscope now preserves `LiteralString` for f-strings whose formatted expressions are all `LiteralString`-compatible, and falls back to `str` when any expression is not `LiteralString`.

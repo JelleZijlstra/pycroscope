@@ -855,6 +855,15 @@ def has_invalid_paramspec_usage(
             has_invalid_paramspec_usage(subval, can_assign_ctx) for subval in value.vals
         )
     if isinstance(value, TypeAliasValue):
+        type_params = tuple(value.alias.get_type_params())
+        if len(type_params) == len(value.type_arguments):
+            for type_param, type_arg in zip(type_params, value.type_arguments):
+                if _is_paramspec_annotation(type_arg):
+                    if not _is_paramspec_type_param(type_param):
+                        return True
+                elif has_invalid_paramspec_usage(type_arg, can_assign_ctx):
+                    return True
+            return False
         return any(
             has_invalid_paramspec_usage(type_arg, can_assign_ctx)
             for type_arg in value.type_arguments
@@ -983,7 +992,8 @@ def _validate_type_alias_arg_values(
     type_params: Sequence[TypeVarLike | TypeVarValue],
     args_vals: Sequence[Value],
     ctx: Context,
-) -> None:
+) -> list[Value]:
+    normalized_args = list(args_vals)
     validated_type_params = tuple(
         tv if isinstance(tv, TypeVarValue) else make_type_var_value(tv, ctx)
         for tv in type_params
@@ -994,8 +1004,15 @@ def _validate_type_alias_arg_values(
             f"Expected {len(type_params)} type arguments for type alias,"
             f" got {len(args_vals)}"
         )
-        return
-    for type_param, arg in matched_args:
+        return normalized_args
+    for i, (type_param, arg) in enumerate(matched_args):
+        if _is_paramspec_type_param(type_param):
+            normalized = _normalize_paramspec_generic_arg(
+                arg, allow_flat_form=len(validated_type_params) == 1, ctx=ctx
+            )
+            if len(validated_type_params) == len(args_vals):
+                normalized_args[i] = normalized
+            continue
         if type_param.bound is not None and not _is_assignable_for_alias_arg(
             type_param.bound, arg, ctx
         ):
@@ -1010,6 +1027,7 @@ def _validate_type_alias_arg_values(
             ctx.show_error(
                 f"Type argument {arg} is not compatible with constraints ({constraint_list})"
             )
+    return normalized_args
 
 
 def _paramspec_value_from_concatenate_members(
@@ -1407,8 +1425,14 @@ def _type_from_subscripted_value(
             ]
         else:
             args_vals = [_type_from_value(member, ctx) for member in members]
-        _validate_type_alias_arg_values(type_params, args_vals, ctx)
-        return TypeAliasValue(root.name, root.module, root.alias, tuple(args_vals))
+        args_vals = _validate_type_alias_arg_values(type_params, args_vals, ctx)
+        return TypeAliasValue(
+            root.name,
+            root.module,
+            root.alias,
+            tuple(args_vals),
+            runtime_allows_value_call=root.runtime_allows_value_call,
+        )
 
     assert isinstance(root, Value)
     if not isinstance(root, KnownValue):
@@ -1426,7 +1450,7 @@ def _type_from_subscripted_value(
             ]
         else:
             args_vals = [_type_from_value(member, ctx) for member in members]
-        _validate_type_alias_arg_values(type_params, args_vals, ctx)
+        args_vals = _validate_type_alias_arg_values(type_params, args_vals, ctx)
         alias = ctx.get_type_alias(
             root,
             lambda: type_from_runtime(alias_object.__value__, ctx=ctx),
@@ -2107,7 +2131,7 @@ def _value_of_origin_args(
             ]
         else:
             args_vals = [_type_from_runtime(val, ctx) for val in args]
-        _validate_type_alias_arg_values(type_params, args_vals, ctx)
+        args_vals = _validate_type_alias_arg_values(type_params, args_vals, ctx)
         alias = ctx.get_type_alias(
             val,
             lambda: type_from_runtime(alias_object.__value__, ctx=ctx),

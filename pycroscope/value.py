@@ -663,6 +663,7 @@ class TypeAliasValue(Value):
     """Module where the type alias is defined."""
     alias: TypeAlias = field(compare=False, hash=False)
     type_arguments: Sequence[Value] = ()
+    runtime_allows_value_call: bool = False
 
     def get_value(self) -> Value:
         val = self.alias.get_value()

@@ -259,6 +259,14 @@ def _is_type_alias_symbol(ctx: AttrContext) -> bool:
     for origin in varname.origin:
         if type_alias_node is not None and isinstance(origin, type_alias_node):
             return True
+        if isinstance(origin, ast.AnnAssign):
+            annotation = origin.annotation
+            if isinstance(annotation, ast.Name) and annotation.id == "TypeAlias":
+                return True
+            if isinstance(annotation, ast.Attribute) and annotation.attr == "TypeAlias":
+                return True
+            if isinstance(annotation, ast.Constant) and annotation.value == "TypeAlias":
+                return True
         if isinstance(origin, import_nodes):
             return True
     return False

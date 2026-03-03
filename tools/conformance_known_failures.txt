@@ -1,7 +1,6 @@
 # Case names (conformance test stem) expected to fail in pycroscope.
 # If a listed case starts passing, or an unlisted case starts failing,
 # the conformance CI workflow should fail and this file should be updated.
-aliases_explicit
 aliases_implicit
 aliases_recursive
 aliases_type_statement

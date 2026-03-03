@@ -51,7 +51,12 @@ from unittest.mock import ANY
 import typeshed_client
 from typing_extensions import NoDefault, Protocol, assert_never, is_typeddict
 
-from pycroscope.input_sig import ActualArguments, InputSigValue, ParamSpecSig
+from pycroscope.input_sig import (
+    ActualArguments,
+    InputSigValue,
+    ParamSpecSig,
+    extract_type_params,
+)
 
 from . import attributes, format_strings, importer, node_visitor, type_evaluation
 from .analysis_lib import (
@@ -2026,6 +2031,14 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     ):
                         current_scope.variables[varname] = value
                         return value, EMPTY_ORIGIN
+                    if isinstance(existing, TypeAliasValue) and not isinstance(
+                        value, TypeAliasValue
+                    ):
+                        # Keep explicit TypeAlias declarations usable at runtime
+                        # (e.g. ListAlias()) while still preserving alias metadata
+                        # in declared_types for annotation contexts.
+                        current_scope.variables[varname] = value
+                        return value, EMPTY_ORIGIN
                     # Generic aliases like list[int]() evaluate at runtime to plain
                     # instances (e.g. []), so preserve static generic information.
                     if isinstance(existing, KnownValue) and isinstance(
@@ -2909,6 +2922,10 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     self._maybe_record_usage(
                         defining_scope.scope_object, node.id, value
                     )
+            if self.in_annotation:
+                declared_type = defining_scope.get_declared_type(node.id)
+                if isinstance(declared_type, TypeAliasValue):
+                    value = declared_type
         if value is UNINITIALIZED_VALUE:
             if suppress_errors or node.id in self.options.get_value_for(ExtraBuiltins):
                 self.log(logging.INFO, "ignoring undefined name", node.id)
@@ -10953,6 +10970,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         )
 
     def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
+        explicit_type_alias_assignment_value: TypeAliasValue | None = None
         if self.current_synthetic_typeddict is None:
             annotation = self._visit_annotation(node.annotation)
             if (
@@ -11024,6 +11042,22 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     "ParamSpec cannot be used in this annotation context",
                     error_code=ErrorCode.invalid_annotation,
                 )
+            if isinstance(node.target, ast.Name) and alias_type is not None:
+                type_params = self._infer_type_alias_type_params(node.value, alias_type)
+                explicit_type_alias_assignment_value = TypeAliasValue(
+                    node.target.id,
+                    self.module.__name__ if self.module is not None else "",
+                    TypeAlias(
+                        lambda value_node=node.value: annotation_expr_from_ast(
+                            value_node, visitor=self, suppress_errors=True
+                        ).to_value(allow_qualifiers=True, allow_empty=True),
+                        lambda type_params=tuple(type_params): type_params,
+                    ),
+                    runtime_allows_value_call=True,
+                )
+            # `TypeAlias` marks this assignment as an alias declaration, not a
+            # variable declaration of the marker type itself.
+            expected_type = None
         if self.current_synthetic_typeddict is not None and isinstance(
             node.target, ast.Name
         ):
@@ -11159,96 +11193,111 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             )
 
         if node.value is not None:
-            is_yield = isinstance(node.value, ast.Yield)
-            value = self.visit(node.value)
-            if (
-                dataclass_field_name is not None
-                and isinstance(node.value, ast.Call)
-                and (
-                    inferred_options := self._dataclass_field_call_options_by_node.pop(
-                        id(node.value), None
-                    )
-                )
-                is not None
-            ):
-                is_dataclass_field_call = True
-                dataclass_default_factory = inferred_options.default_factory
-                has_default = inferred_options.has_default or any(
-                    kw.arg in {"default", "default_factory", "factory"}
-                    for kw in node.value.keywords
-                )
-                if inferred_options.init is not None:
-                    init = inferred_options.init
-                if inferred_options.kw_only is not None:
-                    kw_only = inferred_options.kw_only
-                if inferred_options.alias is not None:
-                    alias = inferred_options.alias
-                init_keyword = next(
-                    (kw.value for kw in node.value.keywords if kw.arg == "init"), None
-                )
-                if isinstance(init_keyword, ast.Constant) and isinstance(
-                    init_keyword.value, bool
+            if explicit_type_alias_assignment_value is not None:
+                if self.annotate:
+                    with self.catch_errors():
+                        self.visit(node.value)
+                is_yield = False
+                alias_runtime_value = explicit_type_alias_assignment_value.get_value()
+                if isinstance(alias_runtime_value, TypedValue) and isinstance(
+                    alias_runtime_value.typ, type
                 ):
-                    init = init_keyword.value
-                kw_only_keyword = next(
-                    (kw.value for kw in node.value.keywords if kw.arg == "kw_only"),
-                    None,
-                )
-                if isinstance(kw_only_keyword, ast.Constant) and isinstance(
-                    kw_only_keyword.value, bool
-                ):
-                    kw_only = kw_only_keyword.value
-                alias_keyword = next(
-                    (kw.value for kw in node.value.keywords if kw.arg == "alias"), None
-                )
-                if isinstance(alias_keyword, ast.Constant) and isinstance(
-                    alias_keyword.value, str
-                ):
-                    alias = alias_keyword.value
-
-            if expected_type is not None:
-                if not (is_current_class_dataclass and is_dataclass_field_call):
-                    can_assign = has_relation(
-                        expected_type, value, Relation.ASSIGNABLE, self
-                    )
-                    if isinstance(can_assign, CanAssignError):
-                        self._show_error_if_checking(
-                            node,
-                            f"Incompatible assignment: expected {expected_type}, got"
-                            f" {value}",
-                            error_code=ErrorCode.incompatible_assignment,
-                            detail=can_assign.display(),
-                        )
-                # We set the declared type on initial assignment, so that the
-                # annotation can be used to adjust pycroscope's type inference.
-                value = expected_type
-
+                    value = KnownValue(alias_runtime_value.typ)
+                else:
+                    value = explicit_type_alias_assignment_value
+            else:
+                is_yield = isinstance(node.value, ast.Yield)
+                value = self.visit(node.value)
                 if (
-                    is_current_class_dataclass
-                    and is_dataclass_field_call
-                    and dataclass_default_factory is not None
-                ):
-                    default_factory_sig = self.signature_from_value(
-                        dataclass_default_factory
-                    )
-                    default_factory_return = _callable_return_type_from_signature(
-                        default_factory_sig, checker=self
-                    )
-                    if default_factory_return is not None:
-                        can_assign_return = has_relation(
-                            expected_type,
-                            default_factory_return,
-                            Relation.ASSIGNABLE,
-                            self,
+                    dataclass_field_name is not None
+                    and isinstance(node.value, ast.Call)
+                    and (
+                        inferred_options := self._dataclass_field_call_options_by_node.pop(
+                            id(node.value), None
                         )
-                        if isinstance(can_assign_return, CanAssignError):
+                    )
+                    is not None
+                ):
+                    is_dataclass_field_call = True
+                    dataclass_default_factory = inferred_options.default_factory
+                    has_default = inferred_options.has_default or any(
+                        kw.arg in {"default", "default_factory", "factory"}
+                        for kw in node.value.keywords
+                    )
+                    if inferred_options.init is not None:
+                        init = inferred_options.init
+                    if inferred_options.kw_only is not None:
+                        kw_only = inferred_options.kw_only
+                    if inferred_options.alias is not None:
+                        alias = inferred_options.alias
+                    init_keyword = next(
+                        (kw.value for kw in node.value.keywords if kw.arg == "init"),
+                        None,
+                    )
+                    if isinstance(init_keyword, ast.Constant) and isinstance(
+                        init_keyword.value, bool
+                    ):
+                        init = init_keyword.value
+                    kw_only_keyword = next(
+                        (kw.value for kw in node.value.keywords if kw.arg == "kw_only"),
+                        None,
+                    )
+                    if isinstance(kw_only_keyword, ast.Constant) and isinstance(
+                        kw_only_keyword.value, bool
+                    ):
+                        kw_only = kw_only_keyword.value
+                    alias_keyword = next(
+                        (kw.value for kw in node.value.keywords if kw.arg == "alias"),
+                        None,
+                    )
+                    if isinstance(alias_keyword, ast.Constant) and isinstance(
+                        alias_keyword.value, str
+                    ):
+                        alias = alias_keyword.value
+
+                if expected_type is not None:
+                    if not (is_current_class_dataclass and is_dataclass_field_call):
+                        can_assign = has_relation(
+                            expected_type, value, Relation.ASSIGNABLE, self
+                        )
+                        if isinstance(can_assign, CanAssignError):
                             self._show_error_if_checking(
                                 node,
-                                "Dataclass default_factory return type is incompatible"
-                                f" with field type {expected_type}",
+                                f"Incompatible assignment: expected {expected_type}, got"
+                                f" {value}",
                                 error_code=ErrorCode.incompatible_assignment,
-                                detail=can_assign_return.display(),
+                                detail=can_assign.display(),
                             )
+                    # We set the declared type on initial assignment, so that the
+                    # annotation can be used to adjust pycroscope's type inference.
+                    value = expected_type
+
+                    if (
+                        is_current_class_dataclass
+                        and is_dataclass_field_call
+                        and dataclass_default_factory is not None
+                    ):
+                        default_factory_sig = self.signature_from_value(
+                            dataclass_default_factory
+                        )
+                        default_factory_return = _callable_return_type_from_signature(
+                            default_factory_sig, checker=self
+                        )
+                        if default_factory_return is not None:
+                            can_assign_return = has_relation(
+                                expected_type,
+                                default_factory_return,
+                                Relation.ASSIGNABLE,
+                                self,
+                            )
+                            if isinstance(can_assign_return, CanAssignError):
+                                self._show_error_if_checking(
+                                    node,
+                                    "Dataclass default_factory return type is incompatible"
+                                    f" with field type {expected_type}",
+                                    error_code=ErrorCode.incompatible_assignment,
+                                    detail=can_assign_return.display(),
+                                )
 
         else:
             is_yield = False
@@ -11264,10 +11313,14 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 alias=alias,
             )
 
+        ann_assign_declared_type = expected_type
+        if explicit_type_alias_assignment_value is not None:
+            ann_assign_declared_type = explicit_type_alias_assignment_value
+
         with (
             override(self, "being_assigned", value),
             self.yield_checker.check_yield_result_assignment(is_yield),
-            override(self, "ann_assign_type", (expected_type, is_final)),
+            override(self, "ann_assign_type", (ann_assign_declared_type, is_final)),
         ):
             self.visit(node.target)
 
@@ -11446,6 +11499,64 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         return self._legacy_typevars_in_nodes(
             [value_node], declared_type_params, include_active_type_params=False
         )
+
+    def _infer_type_alias_type_params(
+        self, value_node: ast.AST, value: Value
+    ) -> tuple[TypeVarLike, ...]:
+        type_params: list[TypeVarLike] = []
+        seen_identities: set[object] = set()
+
+        def maybe_record_type_param(resolved: Value) -> None:
+            for subval in flatten_values(resolved, unwrap_annotated=True):
+                identity = _type_param_identity(subval)
+                if identity is None or identity in seen_identities:
+                    continue
+                seen_identities.add(identity)
+                if isinstance(subval, TypeVarValue):
+                    type_params.append(subval.typevar)
+                elif isinstance(subval, InputSigValue) and isinstance(
+                    subval.input_sig, ParamSpecSig
+                ):
+                    type_params.append(subval.input_sig.param_spec)
+                elif isinstance(subval, KnownValue) and (
+                    is_instance_of_typing_name(subval.val, "TypeVar")
+                    or is_instance_of_typing_name(subval.val, "TypeVarTuple")
+                    or is_instance_of_typing_name(subval.val, "ParamSpec")
+                ):
+                    type_params.append(cast(TypeVarLike, subval.val))
+                break
+
+        def walk(node: ast.AST, *, allow_string_parse: bool = True) -> None:
+            if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load):
+                resolved, _ = self.resolve_name(
+                    node, error_node=node, suppress_errors=True
+                )
+                maybe_record_type_param(resolved)
+                return
+            if (
+                allow_string_parse
+                and isinstance(node, ast.Constant)
+                and isinstance(node.value, str)
+            ):
+                parse_source = node.value
+                if "\n" in parse_source or "\r" in parse_source:
+                    parse_source = f"({parse_source})"
+                try:
+                    parsed = ast.parse(parse_source, mode="eval")
+                except SyntaxError:
+                    return
+                walk(parsed.body, allow_string_parse=False)
+                return
+            for child in ast.iter_child_nodes(node):
+                walk(child, allow_string_parse=allow_string_parse)
+
+        walk(value_node)
+        for type_param in extract_type_params(value):
+            if type_param in seen_identities:
+                continue
+            seen_identities.add(type_param)
+            type_params.append(type_param)
+        return tuple(type_params)
 
     def _resolve_call_target_value(self, node: ast.expr) -> Value:
         if isinstance(node, ast.Name):
@@ -12694,6 +12805,18 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             prefer_typeshed=prefer_typeshed,
         )
         result = attributes.get_attribute(ctx)
+        if (
+            result is UNINITIALIZED_VALUE
+            and node is not None
+            and isinstance(root_composite.value, TypeAliasValue)
+            and attributes._is_type_alias_symbol(ctx)
+        ):
+            self._show_error_if_checking(
+                node,
+                f"{root_composite.value} has no attribute {attr!r}",
+                ErrorCode.undefined_attribute,
+            )
+            return AnyValue(AnySource.error)
         if result is UNINITIALIZED_VALUE and use_fallback and node is not None:
             return self._get_attribute_fallback(root_composite.value, attr, node)
         return result
