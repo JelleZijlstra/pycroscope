@@ -2822,6 +2822,10 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 self._check_typevartuple_usage_in_type_parameter_bases(
                     node, base_values
                 )
+                if sys.version_info >= (3, 12) and declared_type_params:
+                    self._check_pep695_type_parameter_base_compatibility(
+                        node, base_values
+                    )
                 self._check_duplicate_type_params_in_generic_bases(node, base_values)
                 self._check_inconsistent_generic_base_specialization(node, base_values)
                 self._check_protocol_base_validity(node, base_values)
@@ -5965,6 +5969,10 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         base_values: Sequence[Value],
         class_scope_object: type | str | None,
     ) -> None:
+        if sys.version_info >= (3, 12) and node.type_params:
+            # PEP 695 class type parameters infer variance, so explicit
+            # protocol variance checks for legacy TypeVars don't apply.
+            return
         if not self._is_protocol_class(base_values, class_scope_object):
             return
         if not type_params and isinstance(class_scope_object, (type, str)):
@@ -6444,6 +6452,23 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     "Only one TypeVarTuple can be used in a type parameter list",
                     error_code=ErrorCode.invalid_annotation,
                 )
+
+    def _check_pep695_type_parameter_base_compatibility(
+        self, node: ast.ClassDef, base_values: Sequence[Value]
+    ) -> None:
+        analyzed_bases = self._base_values_for_generic_analysis(node, base_values)
+        for base_node, base_value in zip(node.bases, analyzed_bases):
+            if not isinstance(base_node, ast.Subscript):
+                continue
+            if not self._is_type_parameter_base(base_value):
+                continue
+            self._show_error_if_checking(
+                base_node,
+                "Class definition cannot specialize Generic or Protocol bases"
+                " when using type parameter syntax",
+                error_code=ErrorCode.invalid_annotation,
+            )
+            return
 
     def _type_param_base_arg_values(self, slice_node: ast.AST) -> Sequence[Value]:
         args = safe_getattr(slice_node, "inferred_value", None)
@@ -11531,6 +11556,30 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
 
     if sys.version_info >= (3, 12):
 
+        def _pep695_type_param_expr_needs_string_forward_ref(
+            self, node: ast.expr
+        ) -> bool:
+            root: ast.expr = node
+            while isinstance(root, ast.Subscript):
+                root = root.value
+            while isinstance(root, ast.Attribute):
+                root = root.value
+            if not isinstance(root, ast.Name):
+                return False
+            resolved, _ = self.resolve_name(root, error_node=root, suppress_errors=True)
+            return isinstance(resolved, AnyValue) and resolved.source is AnySource.error
+
+        def _type_from_pep695_type_param_expr(self, node: ast.expr) -> Value:
+            if isinstance(node, ast.Constant) and isinstance(node.value, str):
+                return type_from_value(
+                    KnownValue(node.value), self, node, suppress_errors=True
+                )
+            if self._pep695_type_param_expr_needs_string_forward_ref(node):
+                return type_from_value(
+                    KnownValue(ast.unparse(node)), self, node, suppress_errors=True
+                )
+            return type_from_value(self.visit(node), self, node)
+
         def visit_TypeAlias(self, node: ast.TypeAlias) -> Value:
             assert isinstance(node.name, ast.Name)
             name = node.name.id
@@ -11621,27 +11670,42 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             bound = constraints = default = None
             if node.bound is not None:
                 if isinstance(node.bound, ast.Tuple):
-                    constraints = [self.visit(elt) for elt in node.bound.elts]
+                    constraints = [
+                        self._type_from_pep695_type_param_expr(elt)
+                        for elt in node.bound.elts
+                    ]
+                    if len(constraints) < 2:
+                        self._show_error_if_checking(
+                            node.bound,
+                            "TypeVar constraints must contain at least two types",
+                            error_code=ErrorCode.invalid_annotation,
+                        )
+                    for elt, constraint in zip(node.bound.elts, constraints):
+                        message = self._typevar_invalid_bound_message(
+                            constraint, is_constraint=True
+                        )
+                        if message is not None:
+                            self._show_error_if_checking(
+                                elt, message, error_code=ErrorCode.invalid_annotation
+                            )
                 else:
-                    bound = self.visit(node.bound)
+                    bound = self._type_from_pep695_type_param_expr(node.bound)
+                    message = self._typevar_invalid_bound_message(bound)
+                    if message is not None:
+                        self._show_error_if_checking(
+                            node.bound, message, error_code=ErrorCode.invalid_annotation
+                        )
             if sys.version_info >= (3, 13):
                 if node.default_value is not None:
-                    default = self.visit(node.default_value)
+                    default = self._type_from_pep695_type_param_expr(node.default_value)
             tv = TypeVar(node.name)
             typevar = TypeVarValue(
                 tv,
-                bound=type_from_value(bound, self, node) if bound is not None else None,
-                constraints=(
-                    tuple(type_from_value(c, self, node) for c in constraints)
-                    if constraints is not None
-                    else ()
-                ),
-                default=(
-                    type_from_value(default, self, node)
-                    if default is not None
-                    else None
-                ),
+                bound=bound,
+                constraints=tuple(constraints) if constraints is not None else (),
+                default=default if default is not None else None,
             )
+            self._check_typevar_default_constraints(typevar, node)
             self._set_name_in_scope(node.name, node, typevar)
             return typevar
 
@@ -12811,18 +12875,27 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             if keyword != "bound":
                 continue
             bound = composite.value
-            if not self._is_invalid_typevar_bound(bound):
+            message = self._typevar_invalid_bound_message(bound)
+            if message is None:
                 continue
-            if isinstance(bound, KnownValue) and is_typing_name(bound.val, "TypedDict"):
-                message = "TypedDict cannot be used as a TypeVar bound"
-            else:
-                message = "TypeVar bound cannot be parameterized by type variables"
             error_node = composite.node if composite.node is not None else node
             if error_node is None:
                 continue
             self._show_error_if_checking(
                 error_node, message, error_code=ErrorCode.invalid_annotation
             )
+
+    def _typevar_invalid_bound_message(
+        self, value: Value, *, is_constraint: bool = False
+    ) -> str | None:
+        if not self._is_invalid_typevar_bound(value):
+            return None
+        if isinstance(value, KnownValue) and is_typing_name(value.val, "TypedDict"):
+            kind = "constraint" if is_constraint else "bound"
+            return f"TypedDict cannot be used as a TypeVar {kind}"
+        if is_constraint:
+            return "TypeVar constraint cannot be parameterized by type variables"
+        return "TypeVar bound cannot be parameterized by type variables"
 
     def _check_typevar_default_constraints(
         self, typevar: TypeVarValue, node: ast.AST | None

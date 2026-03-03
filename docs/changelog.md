@@ -4,6 +4,7 @@
 
 - Improve recursive protocol matching with `@classmethod` members: pycroscope now preserves classmethod parameter constraints and `Self` specialization in synthetic static-fallback analysis, fixing false protocol incompatibilities and downstream `Any` inference.
 - Improve generic-base-class analysis in static fallback mode for unimportable modules: pycroscope now preserves generic base mappings and type-parameter ordering more accurately, reports duplicate/conflicting generic base type-variable declarations, and rejects `Generic`/`Generic[...]` used as type annotations outside base-class lists.
+- Improve PEP 695 generic declaration checks: pycroscope now rejects `Generic[...]`/`Protocol[...]` specialization in `class C[T]` bases, handles forward references in type-parameter bounds/constraints without spurious `undefined_name` errors, and reports invalid type-parameter constraint tuples with fewer than two types.
 - Preserve literal type arguments when inferring generic class-syntax `NamedTuple` constructor return types (for example, `Box(1)` now infers `Box[Literal[1]]`).
 - Improve `TypeVarTuple` handling for generic classes in static-fallback analysis: pycroscope now preserves variadic argument lengths and `NewType` members during inference, and correctly reports incompatible tuple lengths across repeated uses.
 - Fix static-fallback generic-class specialization with `TypeVarTuple` bases so annotations like `Array[Height, Width]` no longer spuriously report wrong type-argument arity after an import-time runtime failure in the same module.
