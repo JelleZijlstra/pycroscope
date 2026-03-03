@@ -87,6 +87,7 @@ from .value import (
     VariableNameValue,
     annotate_value,
     flatten_values,
+    get_tv_map,
     has_any_base_value,
     is_union,
     replace_fallback,
@@ -1951,6 +1952,7 @@ class Checker:
                 name for name in initvar_names.val if isinstance(name, str)
             )
         staticmethod_fields = _synthetic_staticmethod_names(value)
+        classmethod_fields = _synthetic_classmethod_names(value)
         metadata = [
             HasAttrExtension(
                 KnownValue(name),
@@ -1959,6 +1961,7 @@ class Checker:
                     attr,
                     self_annotation_value=value.class_type,
                     is_staticmethod=name in staticmethod_fields,
+                    is_classmethod=name in classmethod_fields,
                 ),
             )
             for name, attr in value.class_attributes.items()
@@ -1979,11 +1982,17 @@ class Checker:
         *,
         self_annotation_value: Value | None = None,
         is_staticmethod: bool = False,
+        is_classmethod: bool = False,
     ) -> Value:
+        raw_attr = attr
         attr = normalize_synthetic_descriptor_attribute(attr)
         if isinstance(attr, CallableValue):
             if is_staticmethod:
                 return attr
+            if is_classmethod:
+                return self._specialize_synthetic_classmethod(
+                    raw_attr, attr, self_annotation_value=self_annotation_value
+                )
             maybe_bound = self._bind_synthetic_method(
                 attr.signature, self_annotation_value=self_annotation_value
             )
@@ -1999,13 +2008,47 @@ class Checker:
         self_annotation_value: Value | None = None,
     ) -> ConcreteSignature | None:
         bound = signature.bind_self(
-            self_value=AnyValue(AnySource.from_another),
+            self_value=(
+                self_annotation_value
+                if self_annotation_value is not None
+                else AnyValue(AnySource.from_another)
+            ),
             self_annotation_value=self_annotation_value,
             ctx=self,
         )
         if bound is None:
             return None
         return bound
+
+    def _specialize_synthetic_classmethod(
+        self,
+        raw_attr: Value,
+        normalized_attr: CallableValue,
+        *,
+        self_annotation_value: Value | None,
+    ) -> CallableValue:
+        if self_annotation_value is None:
+            return normalized_attr
+        raw_attr = replace_fallback(raw_attr)
+        if not (
+            isinstance(raw_attr, GenericValue)
+            and raw_attr.typ is classmethod
+            and raw_attr.args
+        ):
+            return normalized_attr
+        inferred = get_tv_map(
+            raw_attr.args[0], SubclassValue(self_annotation_value), self
+        )
+        if isinstance(inferred, CanAssignError):
+            return normalized_attr
+        return CallableValue(normalized_attr.signature.substitute_typevars(inferred))
+
+    def is_synthetic_classmethod_attribute(
+        self, synthetic_class: SyntheticClassObjectValue, attr_name: str
+    ) -> bool:
+        return _is_synthetic_classmethod_attribute(
+            synthetic_class, attr_name, self, seen=set()
+        )
 
     def get_attribute_from_value(
         self, root_value: Value, attribute: str, *, prefer_typeshed: bool = False
@@ -2061,6 +2104,17 @@ def _synthetic_staticmethod_names(
     return set()
 
 
+def _synthetic_classmethod_names(
+    synthetic_class: SyntheticClassObjectValue,
+) -> set[str]:
+    classmethods = synthetic_class.class_attributes.get("%classmethods")
+    if isinstance(classmethods, KnownValue) and isinstance(
+        classmethods.val, (set, frozenset, tuple, list)
+    ):
+        return {name for name in classmethods.val if isinstance(name, str)}
+    return set()
+
+
 def _is_synthetic_staticmethod_attribute(
     synthetic_class: SyntheticClassObjectValue,
     attr_name: str,
@@ -2093,6 +2147,44 @@ def _is_synthetic_staticmethod_attribute(
             ):
                 synthetic_base = checker.get_synthetic_class(base_value.val)
             if synthetic_base is not None and _is_synthetic_staticmethod_attribute(
+                synthetic_base, attr_name, checker, seen=seen
+            ):
+                return True
+    return False
+
+
+def _is_synthetic_classmethod_attribute(
+    synthetic_class: SyntheticClassObjectValue,
+    attr_name: str,
+    checker: Checker,
+    *,
+    seen: set[int],
+) -> bool:
+    synthetic_id = id(synthetic_class)
+    if synthetic_id in seen:
+        return False
+    seen.add(synthetic_id)
+    if attr_name in _synthetic_classmethod_names(synthetic_class):
+        return True
+    for base in synthetic_class.base_classes:
+        for base_value in flatten_values(base, unwrap_annotated=True):
+            base_value = replace_fallback(base_value)
+            synthetic_base: SyntheticClassObjectValue | None = None
+            if isinstance(base_value, SyntheticClassObjectValue):
+                synthetic_base = base_value
+            elif isinstance(base_value, GenericValue) and isinstance(
+                base_value.typ, (type, str)
+            ):
+                synthetic_base = checker.get_synthetic_class(base_value.typ)
+            elif isinstance(base_value, TypedValue) and isinstance(
+                base_value.typ, (type, str)
+            ):
+                synthetic_base = checker.get_synthetic_class(base_value.typ)
+            elif isinstance(base_value, KnownValue) and isinstance(
+                base_value.val, type
+            ):
+                synthetic_base = checker.get_synthetic_class(base_value.val)
+            if synthetic_base is not None and _is_synthetic_classmethod_attribute(
                 synthetic_base, attr_name, checker, seen=seen
             ):
                 return True
@@ -2201,9 +2293,22 @@ class CheckerAttrContext(AttrContext):
                 synthetic_root = self.checker.get_synthetic_class(root_value.typ)
             elif isinstance(root_value, TypedValue) and isinstance(root_value.typ, str):
                 synthetic_root = self.checker.get_synthetic_class(root_value.typ)
-            if synthetic_root is not None and _is_synthetic_staticmethod_attribute(
-                synthetic_root, attr_name, self.checker, seen=set()
+            if synthetic_root is not None and (
+                _is_synthetic_staticmethod_attribute(
+                    synthetic_root, attr_name, self.checker, seen=set()
+                )
+                or _is_synthetic_classmethod_attribute(
+                    synthetic_root, attr_name, self.checker, seen=set()
+                )
             ):
+                raw_attr = synthetic_root.class_attributes.get(attr_name)
+                if raw_attr is not None and not any(
+                    isinstance(subval, TypeVarValue)
+                    for subval in root_value.walk_values()
+                ):
+                    return self.checker._specialize_synthetic_classmethod(
+                        raw_attr, value, self_annotation_value=root_value
+                    )
                 return value
             maybe_bound = self.checker._bind_synthetic_method(
                 value.signature, self_annotation_value=self.root_value

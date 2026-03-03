@@ -43,7 +43,6 @@ overloads_basic
 protocols_class_objects
 protocols_explicit
 protocols_generic
-protocols_recursive
 qualifiers_annotated
 specialtypes_never
 typeddicts_type_consistency
