@@ -816,6 +816,7 @@ class TestGenericClasses(TestNameCheckVisitorBase):
             Node.label  # E: undefined_attribute
             type(n1).label  # E: undefined_attribute
 
+    @skip_before((3, 12))
     @assert_passes(allow_import_failures=True)
     def test_legacy_typevar_infer_variance_after_import_failure(self):
         from typing import Generic, Iterator, TypeVar
