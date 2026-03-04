@@ -524,7 +524,11 @@ def _contains_unpack_annotation_value(value: Value) -> bool:
 
 def _is_typevartuple_annotation_value(value: Value) -> bool:
     if isinstance(value, TypeVarValue):
-        return value.is_typevartuple
+        return (
+            value.is_typevartuple
+            or is_instance_of_typing_name(value.typevar, "TypeVarTuple")
+            or is_typing_name(type(value.typevar), "TypeVarTuple")
+        )
     if not isinstance(value, KnownValue):
         return False
     return is_instance_of_typing_name(value.val, "TypeVarTuple") or is_typing_name(
@@ -12485,7 +12489,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         variadic_type_param_indexes = [
             i
             for i, type_param in enumerate(type_parameters)
-            if isinstance(type_param, TypeVarValue) and type_param.is_typevartuple
+            if _is_typevartuple_annotation_value(type_param)
         ]
         if len(variadic_type_param_indexes) > 1:
             return None
@@ -12993,6 +12997,18 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         expected = self._get_attribute_value_for_assignment(
             root_composite, node.attr, node
         )
+        if expected is UNINITIALIZED_VALUE:
+            class_key = self._class_key_for_attribute_target(node, root_composite.value)
+            if (
+                class_key is not None
+                and self.checker.make_type_object(class_key).is_protocol
+            ):
+                self._show_error_if_checking(
+                    node,
+                    f"{root_composite.value} has no attribute {node.attr!r}",
+                    ErrorCode.undefined_attribute,
+                )
+            return
         expected_type = self._normalize_expected_attribute_type_for_assignment(expected)
         if expected_type is None:
             return
@@ -15173,6 +15189,12 @@ def _type_param_value_from_value(value: Value) -> TypeVarValue | None:
     if value in (VOID, UNINITIALIZED_VALUE) or isinstance(value, ReferencingValue):
         return None
     if isinstance(value, TypeVarValue):
+        if value.is_typevartuple:
+            return value
+        if is_instance_of_typing_name(value.typevar, "TypeVarTuple") or is_typing_name(
+            type(value.typevar), "TypeVarTuple"
+        ):
+            return replace(value, is_typevartuple=True)
         return value
     value = replace_fallback(value)
     if isinstance(value, MultiValuedValue):

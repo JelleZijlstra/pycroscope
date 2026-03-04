@@ -1242,6 +1242,23 @@ def _get_attribute_from_typed(
         return KnownValue(typ)
     elif ctx.attr == "__dict__":
         return TypedValue(dict)
+    elif ctx.attr in {"__name__", "__qualname__", "__module__"} and (
+        typ in {types.FunctionType, types.BuiltinFunctionType}
+    ):
+        # These are writable instance attributes on function objects. Returning
+        # class-level literals like Literal["function"] is too strict.
+        return TypedValue(str)
+    elif ctx.attr in {"__name__", "__qualname__", "__module__"} and getattr(
+        typ, "_is_protocol", False
+    ):
+        # Protocol base classes expose class identity literals at runtime
+        # (e.g. Literal["typing"]), but protocol members should use str.
+        return TypedValue(str)
+    elif ctx.attr == "__annotations__" and typ in {
+        types.FunctionType,
+        types.BuiltinFunctionType,
+    }:
+        return GenericValue(dict, [TypedValue(str), AnyValue(AnySource.explicit)])
     elif ctx.attr == "__hash__":
         synthetic_class = ctx.get_synthetic_class(typ)
         if synthetic_class is not None:
@@ -1431,6 +1448,12 @@ class KnownAttributeHook(PyObjectSequenceOption[_KAH]):
 
 def _get_attribute_from_known(obj: object, ctx: AttrContext) -> Value:
     ctx.record_attr_read(type(obj))
+
+    if isinstance(obj, (types.FunctionType, types.BuiltinFunctionType)):
+        if ctx.attr in {"__name__", "__qualname__", "__module__"}:
+            return TypedValue(str)
+        if ctx.attr == "__annotations__":
+            return GenericValue(dict, [TypedValue(str), AnyValue(AnySource.explicit)])
 
     if (obj is None or obj is NoneType) and ctx.should_ignore_none_attributes():
         # This usually indicates some context is set to None

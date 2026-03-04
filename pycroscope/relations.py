@@ -26,6 +26,7 @@ from pycroscope.extensions import PredicateCheck
 from pycroscope.find_unused import used
 from pycroscope.safe import (
     is_instance_of_typing_name,
+    is_typing_name,
     safe_equals,
     safe_isinstance,
     safe_issubclass,
@@ -753,6 +754,22 @@ def _has_relation(
                 comparison_left = left
                 declared_type_params = ctx.get_type_parameters(left.typ)
                 if len(left.args) != len(generic_args):
+                    if len(comparison_left.args) == 1:
+                        unpacked_left = _unpack_fixed_tuple_generic_arg(
+                            comparison_left.args[0]
+                        )
+                        if unpacked_left is not None and len(unpacked_left) == len(
+                            generic_args
+                        ):
+                            comparison_left = GenericValue(left.typ, unpacked_left)
+                    if len(generic_args) == 1:
+                        unpacked_generic_args = _unpack_fixed_tuple_generic_arg(
+                            generic_args[0]
+                        )
+                        if unpacked_generic_args is not None and len(
+                            comparison_left.args
+                        ) == len(unpacked_generic_args):
+                            generic_args = unpacked_generic_args
                     packed_generic_args = _pack_typevartuple_generic_args(
                         declared_type_params, generic_args
                     )
@@ -978,7 +995,7 @@ def _extract_type_form(value: Value, ctx: CanAssignContext) -> Value | CanAssign
             return CanAssignError(f"{value} is not a TypeForm")
         extracted = gradualize(type_form)
         if isinstance(extracted, TypeVarValue) and (
-            extracted.typevar is SelfT or extracted.is_typevartuple
+            extracted.typevar is SelfT or _is_typevartuple_typevar_value(extracted)
         ):
             return CanAssignError(f"{value} is not a TypeForm")
         if isinstance(extracted, (ParamSpecArgsValue, ParamSpecKwargsValue)):
@@ -1470,7 +1487,9 @@ def _capture_typevartuple_bounds_from_side(
     typevartuple_entries = [
         (i, member)
         for i, (is_many, member) in enumerate(template.members)
-        if is_many and isinstance(member, TypeVarValue) and member.is_typevartuple
+        if is_many
+        and isinstance(member, TypeVarValue)
+        and _is_typevartuple_typevar_value(member)
     ]
     if len(typevartuple_entries) != 1:
         return None
@@ -1545,15 +1564,27 @@ def _try_capture_single_typevartuple_sequence(
     )
 
 
+def _is_typevartuple_typevar_value(value: TypeVarValue) -> bool:
+    return (
+        value.is_typevartuple
+        or is_instance_of_typing_name(value.typevar, "TypeVarTuple")
+        or is_typing_name(type(value.typevar), "TypeVarTuple")
+    )
+
+
 def _declares_typevartuple(type_params: Sequence[Value]) -> bool:
     return any(
-        isinstance(type_param, TypeVarValue) and type_param.is_typevartuple
+        isinstance(type_param, TypeVarValue)
+        and _is_typevartuple_typevar_value(type_param)
         for type_param in type_params
     )
 
 
 def _args_contain_typevartuple(args: Sequence[Value]) -> bool:
-    return any(isinstance(arg, TypeVarValue) and arg.is_typevartuple for arg in args)
+    return any(
+        isinstance(arg, TypeVarValue) and _is_typevartuple_typevar_value(arg)
+        for arg in args
+    )
 
 
 def _contains_error_any_in_sequence(values: Sequence[Value]) -> bool:
@@ -1564,13 +1595,23 @@ def _contains_error_any_in_sequence(values: Sequence[Value]) -> bool:
     )
 
 
+def _unpack_fixed_tuple_generic_arg(value: Value) -> list[Value] | None:
+    normalized = replace_known_sequence_value(value)
+    if isinstance(normalized, SequenceValue) and normalized.typ is tuple:
+        members = normalized.get_member_sequence()
+        if members is not None:
+            return list(members)
+    return None
+
+
 def _pack_typevartuple_generic_args(
     declared_type_params: Sequence[Value], generic_args: Sequence[Value]
 ) -> list[Value] | None:
     variadic_indexes = [
         i
         for i, type_param in enumerate(declared_type_params)
-        if isinstance(type_param, TypeVarValue) and type_param.is_typevartuple
+        if isinstance(type_param, TypeVarValue)
+        and _is_typevartuple_typevar_value(type_param)
     ]
     if len(variadic_indexes) != 1:
         return None
