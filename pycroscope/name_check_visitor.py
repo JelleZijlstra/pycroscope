@@ -340,6 +340,15 @@ def _drop_uninitialized_value(value: Value) -> Value:
     return value
 
 
+def _runtime_union_operand_from_value(value: Value) -> object | None:
+    value = replace_fallback(value)
+    if isinstance(value, KnownValue):
+        return value.val
+    if isinstance(value, TypedValue) and isinstance(value.typ, type):
+        return value.typ
+    return None
+
+
 T = TypeVar("T")
 U = TypeVar("U")
 T_co = TypeVar("T_co", covariant=True)
@@ -10272,6 +10281,32 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             # In static fallback mode class objects may be synthetic and cannot
             # be OR'd at runtime. Preserve both sides for annotation evaluation.
             return unite_values(left, right)
+        if (
+            isinstance(op, ast.BitOr)
+            and _is_valid_implicit_type_alias_name_value(left)
+            and _is_valid_implicit_type_alias_name_value(right)
+        ):
+            # Preserve type-form expressions in value position (for example
+            # assert_type(x, A | B)) instead of relying only on runtime
+            # __or__/__ror__ behavior, which can lose class-object information.
+            left_runtime = _runtime_union_operand_from_value(left)
+            right_runtime = _runtime_union_operand_from_value(right)
+            if left_runtime is not None and right_runtime is not None:
+                try:
+                    runtime_lhs: Any = left_runtime
+                    return KnownValue(runtime_lhs | right_runtime)
+                except Exception:
+                    runtime_value = AnyValue(AnySource.inference)
+            else:
+                with self.catch_errors() as runtime_errors:
+                    runtime_value = self._visit_binop_no_mvv(
+                        left_composite, op, right_composite, source_node, allow_call
+                    )
+                if runtime_errors:
+                    runtime_value = AnyValue(AnySource.inference)
+            return PartialValue(
+                PartialValueOperation.BITOR, left, source_node, (right,), runtime_value
+            )
 
         if (
             isinstance(op, ast.Mod)
@@ -15855,9 +15890,21 @@ def _is_valid_inferred_type_alias_type_param(type_param: object) -> bool:
 
 
 def _is_valid_implicit_type_alias_name_value(value: Value) -> bool:
-    value = replace_fallback(value)
     if isinstance(value, AnnotatedValue):
         return _is_valid_implicit_type_alias_name_value(value.value)
+    if isinstance(value, PartialValue):
+        if value.operation is PartialValueOperation.BITOR:
+            return _is_valid_implicit_type_alias_name_value(value.root) and all(
+                _is_valid_implicit_type_alias_name_value(member)
+                for member in value.members
+            )
+        if value.operation is PartialValueOperation.SUBSCRIPT:
+            return _is_valid_implicit_type_alias_name_value(value.root) and all(
+                _is_valid_implicit_type_alias_name_value(member)
+                for member in value.members
+            )
+        return False
+    value = replace_fallback(value)
     if isinstance(value, MultiValuedValue):
         return all(
             _is_valid_implicit_type_alias_name_value(subval) for subval in value.vals
@@ -15869,10 +15916,7 @@ def _is_valid_implicit_type_alias_name_value(value: Value) -> bool:
     if isinstance(
         value,
         (
-            AnyValue,
-            GenericValue,
             SyntheticClassObjectValue,
-            TypedValue,
             TypeAliasValue,
             TypeFormValue,
             TypeVarValue,
@@ -15880,8 +15924,20 @@ def _is_valid_implicit_type_alias_name_value(value: Value) -> bool:
         ),
     ):
         return True
+    if isinstance(value, TypedValue):
+        if isinstance(value.typ, type):
+            return safe_issubclass(value.typ, type)
+        return isinstance(value.typ, str) and value.typ in {"builtins.type", "type"}
+    if isinstance(value, GenericValue):
+        if isinstance(value.typ, type):
+            return safe_issubclass(value.typ, type)
+        return isinstance(value.typ, str) and value.typ in {"builtins.type", "type"}
+    if isinstance(value, AnyValue):
+        return False
     if isinstance(value, KnownValue):
-        return isinstance(value.val, type) or _is_typing_alias_value(value.val)
+        return isinstance(value.val, (type, GenericAlias)) or _is_typing_alias_value(
+            value.val
+        )
     return False
 
 
