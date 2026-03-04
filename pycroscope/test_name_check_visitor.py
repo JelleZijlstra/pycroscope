@@ -185,6 +185,16 @@ class TestImportFailureHandling(TestNameCheckVisitorBase):
         def f():
             return missing_name  # E: undefined_name
 
+    @assert_passes(allow_import_failures=True)
+    def test_top_level_name_ordering_after_import_failure(self):
+        boom = 1 / 0
+
+        print(later_name)  # E: undefined_name
+        later_name = 1
+
+        def f() -> int:
+            return later_name
+
     @assert_passes(allow_runtime_module_load_failure=True)
     def test_import_failure_is_ignorable(self):
         a = 1  # static analysis: ignore[import_failed]
