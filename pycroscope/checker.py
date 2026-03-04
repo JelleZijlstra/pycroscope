@@ -1054,6 +1054,31 @@ class Checker:
             return init_sig
         return None
 
+    def _runtime_metaclass_call_overrides_constructor(
+        self, typ: type, *, instance_type: Value
+    ) -> bool:
+        metaclass = type(typ)
+        if "__call__" not in safe_getattr(metaclass, "__dict__", {}):
+            return False
+        call_method = safe_getattr(metaclass, "__call__", None)
+        if call_method is None:
+            return False
+        meta_sig: MaybeSignature = self._get_runtime_overloaded_method_signature(
+            metaclass, "__call__"
+        )
+        if meta_sig is None:
+            meta_sig = self.arg_spec_cache.get_argspec(call_method)
+        concrete = self._bind_constructor_like_signature(
+            meta_sig,
+            self_value=SubclassValue.make(instance_type),
+            self_annotation_value=SubclassValue.make(instance_type),
+        )
+        if concrete is None or self._is_uninformative_constructor_signature(concrete):
+            return False
+        return not self._is_passthrough_metaclass_call_signature(
+            concrete, instance_type=instance_type
+        )
+
     def _runtime_init_self_annotation_matches(
         self,
         origin: type,
@@ -2011,7 +2036,17 @@ class Checker:
                     return origin_argspec
             argspec = self.arg_spec_cache.get_argspec(value.val)
             if isinstance(value.val, type):
+                runtime_instance_type: Value | None = None
                 if self._runtime_has_explicit_new_return_annotation(value.val):
+                    runtime_instance_type = self._runtime_constructor_instance_value(
+                        value.val
+                    )
+                if (
+                    runtime_instance_type is not None
+                    and not self._runtime_metaclass_call_overrides_constructor(
+                        value.val, instance_type=runtime_instance_type
+                    )
+                ):
                     runtime_constructor_sig = self._get_runtime_constructor_signature(
                         value.val
                     )
