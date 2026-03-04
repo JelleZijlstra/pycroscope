@@ -59,15 +59,15 @@ class TestRecursion(TestNameCheckVisitorBase):
         RecursiveContainer: TypeAlias = Union[list["RecursiveContainer"], int]
         _ok: RecursiveContainer = [1, [2]]
 
-        RecursiveUnion: TypeAlias = Union[
+        RecursiveUnion: TypeAlias = Union[  # E: invalid_annotation
             "RecursiveUnion", int
-        ]  # E: invalid_annotation
-        MutualReference1: TypeAlias = Union[
+        ]
+        MutualReference1: TypeAlias = Union[  # E: invalid_annotation
             "MutualReference2", int
-        ]  # E: invalid_annotation
-        MutualReference2: TypeAlias = Union[
+        ]
+        MutualReference2: TypeAlias = Union[  # E: invalid_annotation
             "MutualReference1", str
-        ]  # E: invalid_annotation
+        ]
 
     @assert_passes()
     def test_implicit_union_alias_runtime_call(self):
