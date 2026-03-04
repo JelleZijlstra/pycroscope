@@ -14995,6 +14995,8 @@ def _type_param_identity(value: Value) -> object | None:
         or is_instance_of_typing_name(value.val, "ParamSpec")
     ):
         return value.val
+    if isinstance(value, KnownValue):
+        return None
     if isinstance(
         value,
         (
