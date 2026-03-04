@@ -622,8 +622,8 @@ class TestImportFailureHandlingCodeSamples(TestNameCheckVisitorBase):
         class GenericMeta(type, Generic[T]): ...
 
         class GenericMetaInstance(
-            metaclass=GenericMeta[T]
-        ): ...  # E: invalid_annotation
+            metaclass=GenericMeta[T]  # E: invalid_annotation
+        ): ...
 
     @assert_passes(allow_import_failures=True)
     def test_typeddict_class_syntax_after_import_failure(self):

@@ -546,8 +546,8 @@ class TestSolve(TestNameCheckVisitorBase):
 
         class C(Generic[T]):
             BadConstraint = TypeVar(
-                "BadConstraint", str, list[T]
-            )  # E: invalid_annotation
+                "BadConstraint", str, list[T]  # E: invalid_annotation
+            )
 
     @assert_passes()
     def test_tv_sequence(self):
