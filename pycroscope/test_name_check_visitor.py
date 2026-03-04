@@ -2341,9 +2341,7 @@ class TestSubclassValue(TestNameCheckVisitorBase):
 
     @assert_passes()
     def test_constructor_ignores_init_when_new_returns_noreturn(self):
-        from typing import Never
-
-        from typing_extensions import assert_type
+        from typing_extensions import Never, assert_type
 
         class C:
             def __new__(cls) -> Never:
