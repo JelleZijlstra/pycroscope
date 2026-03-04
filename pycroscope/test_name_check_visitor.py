@@ -2325,6 +2325,67 @@ class TestSubclassValue(TestNameCheckVisitorBase):
         r(1)  # E: incompatible_call
 
     @assert_passes()
+    def test_constructor_ignores_init_when_new_returns_any(self):
+        from typing import Any
+
+        class C:
+            def __new__(cls) -> Any:
+                return super().__new__(cls)
+
+            def __init__(self, x: int) -> None:
+                pass
+
+        def capybara() -> None:
+            C()
+            C(1)  # E: incompatible_call
+
+    @assert_passes()
+    def test_constructor_ignores_init_when_new_returns_noreturn(self):
+        from typing import Never
+
+        from typing_extensions import assert_type
+
+        class C:
+            def __new__(cls) -> Never:
+                raise NotImplementedError
+
+            def __init__(self, x: int) -> None:
+                pass
+
+        def capybara() -> None:
+            assert_type(C(), Never)
+            C(1)  # E: incompatible_call
+
+    @assert_passes()
+    def test_constructor_ignores_init_when_new_may_return_non_instance(self):
+        from typing import Any
+
+        class C:
+            def __new__(cls) -> "C | Any":
+                return 0
+
+            def __init__(self, x: int) -> None:
+                pass
+
+        def capybara() -> None:
+            C()
+            C(1)  # E: incompatible_call
+
+    @assert_passes()
+    def test_constructor_subscript_respects_new_cls_annotation(self):
+        from typing import Generic, TypeVar
+
+        T = TypeVar("T")
+
+        class C(Generic[T]):
+            def __new__(cls: "type[C[int]]") -> "C[int]":
+                return super().__new__(cls)
+
+        C()
+        C[int]()
+        C[str]()  # E: incompatible_call
+
+    @assert_passes()
     def test_init_self_annotation_disallows_class_scoped_typevars(self):
         from typing import Generic, TypeVar
 
