@@ -11708,6 +11708,8 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             for type_param in self._infer_type_alias_type_params(node.value, alias_type)
             if _is_valid_inferred_type_alias_type_param(type_param)
         )
+        if not type_params:
+            return None
         alias = TypeAlias(
             lambda value_node=node.value: annotation_expr_from_ast(
                 value_node, visitor=self, suppress_errors=True
@@ -12867,6 +12869,36 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 )
                 return AnyValue(AnySource.error)
             return UNINITIALIZED_VALUE
+        # TypeAliasValue may fall back to a union or intersection. Unwrap those
+        # fallback values for regular attribute lookup so attributes.get_attribute()
+        # never receives a MultiValuedValue/IntersectionValue directly.
+        is_type_alias_symbol = False
+        if isinstance(root_composite.value, TypeAliasValue):
+            is_type_alias_symbol = attributes._is_type_alias_symbol(
+                _AttrContext(
+                    root_composite,
+                    attr,
+                    self,
+                    node=node,
+                    ignore_none=ignore_none,
+                    prefer_typeshed=prefer_typeshed,
+                    record_reads=False,
+                )
+            )
+        if not is_type_alias_symbol:
+            resolved_value = root_composite.value
+            while True:
+                fallback = resolved_value.get_fallback_value()
+                if fallback is None:
+                    break
+                resolved_value = fallback
+            if resolved_value is not root_composite.value and (
+                is_union(resolved_value)
+                or isinstance(resolved_value, IntersectionValue)
+            ):
+                root_composite = Composite(
+                    resolved_value, root_composite.varname, root_composite.node
+                )
         if is_union(root_composite.value):
             results = []
             for subval in flatten_values(root_composite.value):

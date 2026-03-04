@@ -3373,26 +3373,18 @@ def namedtuple_members_from_value(
 
     if isinstance(value, GenericValue) and isinstance(value.typ, type):
         namedtuple_type = value.typ
-        type_arguments = value.args
+        type_parameters = tuple(getattr(namedtuple_type, "__parameters__", ()))
+        tv_map: TypeVarMap = {
+            typevar: arg for typevar, arg in zip(type_parameters, value.args)
+        }
     elif isinstance(value, TypedValue) and isinstance(value.typ, type):
         namedtuple_type = value.typ
-        type_arguments = ()
+        tv_map = {}
     else:
         return None
 
     if not is_namedtuple_class(namedtuple_type):
         return None
-
-    raw_type_parameters = getattr(namedtuple_type, "__parameters__", ())
-    if isinstance(raw_type_parameters, tuple):
-        type_parameters = raw_type_parameters
-    elif isinstance(raw_type_parameters, list):
-        type_parameters = tuple(raw_type_parameters)
-    else:
-        type_parameters = ()
-    tv_map: TypeVarMap = {
-        typevar: arg for typevar, arg in zip(type_parameters, type_arguments)
-    }
 
     fields_obj = safe_getattr(namedtuple_type, "_fields", None)
     if not isinstance(fields_obj, tuple):

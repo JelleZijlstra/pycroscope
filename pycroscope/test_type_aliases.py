@@ -81,6 +81,23 @@ class TestRecursion(TestNameCheckVisitorBase):
             x3 = ListOrSetAlias()  # E: incompatible_call
             return x3
 
+    @assert_passes()
+    def test_generic_implicit_alias_attribute_access(self):
+        from typing import TypeVar
+
+        T = TypeVar("T")
+        SequenceAlias = list[T] | tuple[T, ...]
+
+        def f(seq: SequenceAlias[int]) -> int:
+            return seq.count(1)
+
+    @assert_passes()
+    def test_non_generic_implicit_alias_isinstance_runtime_classinfo(self):
+        AstType = type[int] | tuple[type[int], ...]
+
+        def includes(typ: AstType) -> bool:
+            return isinstance(1, typ)
+
 
 class TestTypeAliasType(TestNameCheckVisitorBase):
     @assert_passes()
