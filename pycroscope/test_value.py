@@ -13,6 +13,7 @@ from typing_extensions import Protocol, runtime_checkable
 from pycroscope.test_node_visitor import skip_if_not_installed
 
 from . import tests, value
+from .annotated_types import MinLen
 from .checker import Checker
 from .name_check_visitor import NameCheckVisitor
 from .relations import _extract_type_form, intersect_values
@@ -803,6 +804,29 @@ def test_intersection_value() -> None:
     assert_can_assign(never, never)
     assert_can_assign(NO_RETURN_VALUE, never)
     assert_can_assign(never, NO_RETURN_VALUE)
+
+
+def test_unannotated_any_intersection_simplifies() -> None:
+    unannotated = AnyValue(AnySource.unannotated)
+    explicit = AnyValue(AnySource.explicit)
+    min_len_1 = value.PredicateValue(MinLen(1))
+
+    assert intersect_values(unannotated, TypedValue(int), CTX) == TypedValue(int)
+    assert intersect_values(TypedValue(int), unannotated, CTX) == TypedValue(int)
+
+    assert intersect_values(unannotated, min_len_1, CTX) == value.IntersectionValue(
+        (unannotated, min_len_1)
+    )
+    assert intersect_values(min_len_1, unannotated, CTX) == value.IntersectionValue(
+        (min_len_1, unannotated)
+    )
+
+    assert intersect_values(explicit, TypedValue(int), CTX) == value.IntersectionValue(
+        (explicit, TypedValue(int))
+    )
+    assert intersect_values(TypedValue(int), explicit, CTX) == value.IntersectionValue(
+        (TypedValue(int), explicit)
+    )
 
 
 def test_typeform_intersection_simplification() -> None:

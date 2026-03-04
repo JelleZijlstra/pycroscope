@@ -6,7 +6,6 @@ from .stacked_scopes import ScopeType, uniq_chain
 from .test_name_check_visitor import TestNameCheckVisitorBase
 from .test_node_visitor import assert_passes, skip_if_not_installed
 from .value import (
-    NO_RETURN_VALUE,
     UNINITIALIZED_VALUE,
     AnnotatedValue,
     AnySource,
@@ -958,18 +957,20 @@ class TestConstraints(TestNameCheckVisitorBase):
             else:
                 assert_is_value(x, AnyValue(AnySource.unannotated))
 
-            if isinstance(x, A):
-                assert_type(x, A)
-                if isinstance(x, B):
-                    assert_type(x, B)
-                    if isinstance(x, C):
-                        # Incompatible constraints result in NoReturn.
-                        assert_is_value(x, NO_RETURN_VALUE)
-            if isinstance(x, B):
-                assert_type(x, B)
-                if isinstance(x, A):
+            y: object = x
+            if isinstance(y, A):
+                assert_type(y, A)
+                if isinstance(y, B):
+                    assert_type(y, B)
+                    if isinstance(y, C):
+                        assert_is_value(y, TypedValue(B) & TypedValue(C))
+
+            z: object = x
+            if isinstance(z, B):
+                assert_type(z, B)
+                if isinstance(z, A):
                     # Less precise constraints are ignored.
-                    assert_type(x, B)
+                    assert_type(z, B)
 
             x = B()
             assert_type(x, B)
@@ -1040,6 +1041,7 @@ class TestConstraints(TestNameCheckVisitorBase):
 
     @assert_passes()
     def test_isinstance_mapping(self):
+        import collections.abc
         from typing import Any, Mapping, Union
 
         from typing_extensions import assert_type
@@ -1051,7 +1053,14 @@ class TestConstraints(TestNameCheckVisitorBase):
         def foo(x: Union[A, Mapping[str, Any]]) -> None:
             # This is tricky because Mapping is not an instance of type.
             if isinstance(x, Mapping):
-                assert_type(x, Mapping[str, Any])
+                assert_is_value(
+                    x,
+                    (TypedValue(A) & TypedValue(collections.abc.Mapping))
+                    | GenericValue(
+                        collections.abc.Mapping,
+                        [TypedValue(str), AnyValue(AnySource.explicit)],
+                    ),
+                )
             else:
                 assert_type(x, A)
 
@@ -1680,8 +1689,8 @@ class TestConstraints(TestNameCheckVisitorBase):
                     self.value,
                     MultiValuedValue(
                         [
-                            TypedValue(Foo),
                             AnyValue(AnySource.unannotated),
+                            TypedValue(Foo),
                             KnownValue(""),
                         ]
                     ),
@@ -1760,7 +1769,7 @@ class TestConstraints(TestNameCheckVisitorBase):
         def agouti(x: Annotated[Optional[str], 1]) -> None:
             assert_is_value(x, AnnotatedUnion)
             if isinstance(x, str):
-                assert_is_value(x, AnnotatedValue(TypedValue(str), [KnownValue(1)]))
+                assert_is_value(x, TypedValue(str))
             else:
                 assert_is_value(x, AnnotatedValue(KnownValue(None), [KnownValue(1)]))
 
@@ -1846,7 +1855,7 @@ class TestComposite(TestNameCheckVisitorBase):
             x["a"] = 1
             assert_is_value(x["a"], KnownValue(1))
             if isinstance(x["c"], int):
-                assert_type(x["c"], int)
+                assert_is_value(x["c"], AnyValue(AnySource.explicit) & TypedValue(int))
             if x["b"] is None:
                 assert_type(x["b"], None)
 

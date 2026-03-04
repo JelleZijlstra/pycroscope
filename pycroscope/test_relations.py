@@ -257,7 +257,7 @@ class TestIntersections(TestNameCheckVisitorBase):
                 assert_type(x, Never)
 
                 assert_type(y, Intersection[A, B])
-                assert_type(y.x, Intersection[int, Any])
+                assert_type(y.x, int)
 
     @assert_passes()
     def test_nested_annotation_only_attribute(self):

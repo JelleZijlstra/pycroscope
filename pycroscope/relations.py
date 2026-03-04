@@ -113,6 +113,11 @@ _RELATION_CACHE_MAX_SIZE = 200_000
 _RELATION_CACHE_EMPTY = object()
 
 
+_COLLAPSIBLE_ANY_SOURCES = frozenset(
+    {AnySource.unannotated, AnySource.from_another, AnySource.inference}
+)
+
+
 def _get_relation_cache(ctx: CanAssignContext) -> MutableMapping[object, object] | None:
     if ctx.has_active_relation_assumptions():
         return None
@@ -2183,7 +2188,11 @@ def subtract_values(left: Value, right: Value, ctx: CanAssignContext) -> Gradual
     if decomposed is None:
         decomposed = (left,)
     for subval in decomposed:
-        if is_subtype(subval, right, ctx):
+        if isinstance(subval, AnyValue):
+            vals.append(subval)
+            continue
+        # Remove members that are assignable to `right`.
+        if is_assignable(right, subval, ctx):
             continue
         vals.append(subval)
     return gradualize(unite_values(*vals))
@@ -2287,10 +2296,21 @@ def _simple_intersection(
     if right == TypedValue(object):
         return left
 
-    # Intersections with Any don't simplify
+    # Keep Any & Predicate intersections explicit so runtime operation checks can
+    # strip predicate-only refinements and recover the base type.
+    if isinstance(left, AnyValue) and isinstance(right, PredicateValue):
+        return Irreducible
+    if isinstance(right, AnyValue) and isinstance(left, PredicateValue):
+        return Irreducible
+
+    # Intersections with internal Any sources collapse to the other side.
     if isinstance(left, AnyValue):
+        if left.source in _COLLAPSIBLE_ANY_SOURCES:
+            return right
         return Irreducible
     if isinstance(right, AnyValue):
+        if right.source in _COLLAPSIBLE_ANY_SOURCES:
+            return left
         return Irreducible
 
     # If one is a subtype of the other, the narrower type prevails

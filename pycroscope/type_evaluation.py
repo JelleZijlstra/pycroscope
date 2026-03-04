@@ -16,7 +16,6 @@ from typing import Any, Literal
 from pycroscope.relations import is_assignable_with_reason, is_subtype_with_reason
 
 from .analysis_lib import Sentinel
-from .predicates import IsAssignablePredicate
 from .stacked_scopes import (
     Constraint,
     ConstraintType,
@@ -426,12 +425,7 @@ class ConditionEvaluator(ast.NodeVisitor):
             varname_node.id, op, val, NO_RETURN_VALUE, typ, exclude_any=exclude_any
         )
         constraint = Constraint(
-            VarnameWithOrigin(""),
-            ConstraintType.predicate,
-            True,
-            IsAssignablePredicate(
-                typ, self.ctx.can_assign_context, positive_only=False
-            ),
+            VarnameWithOrigin(""), ConstraintType.intersect_with, True, typ
         )
         if isinstance(can_assign, CanAssignError):
             pair = decompose_union(typ, val, self.ctx.can_assign_context, exclude_any)
