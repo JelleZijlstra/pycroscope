@@ -3135,6 +3135,8 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 self._check_typevartuple_usage_in_type_parameter_bases(
                     node, base_values
                 )
+                self._check_type_parameter_base_argument_validity(node, base_values)
+                self._check_type_parameter_base_coverage(node, base_values)
                 if sys.version_info >= (3, 12) and declared_type_params:
                     self._check_pep695_type_parameter_base_compatibility(
                         node, base_values
@@ -3162,6 +3164,8 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 self.enum_class_keys.add(class_key)
             self._check_for_final_base_classes(node, base_values)
             keyword_values = [(kw, self.visit(kw.value)) for kw in node.keywords]
+            if self._is_checking():
+                self._check_generic_metaclass_keyword(keyword_values)
             dataclass_semantics = self._get_class_dataclass_semantics(
                 node,
                 class_obj=class_obj,
@@ -6016,13 +6020,10 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     ) -> Sequence[TypeVarValue]:
         seen: set[object] = set()
         type_params: list[TypeVarValue] = []
-        for base_node in base_nodes:
-            if not isinstance(base_node, ast.Subscript):
-                continue
-            maybe_members = (
-                base_node.slice.elts
-                if isinstance(base_node.slice, ast.Tuple)
-                else [base_node.slice]
+
+        def _collect_from_base_slice(base_slice: ast.expr) -> None:
+            maybe_members: Sequence[ast.expr] = (
+                base_slice.elts if isinstance(base_slice, ast.Tuple) else [base_slice]
             )
             for member in maybe_members:
                 maybe_type_param = self._type_param_from_expr_for_default_rules(member)
@@ -6032,6 +6033,25 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     continue
                 seen.add(maybe_type_param.typevar)
                 type_params.append(maybe_type_param)
+
+        # Generic[...] / Protocol[...] bases control declaration order.
+        for base_node in base_nodes:
+            if not isinstance(base_node, ast.Subscript):
+                continue
+            root_value = safe_getattr(base_node.value, "inferred_value", None)
+            if root_value is None:
+                root_value = value_from_ast(
+                    base_node.value, visitor=self, error_on_unrecognized=False
+                )
+            if not self._is_type_parameter_base(root_value):
+                continue
+            _collect_from_base_slice(base_node.slice)
+            break
+
+        for base_node in base_nodes:
+            if not isinstance(base_node, ast.Subscript):
+                continue
+            _collect_from_base_slice(base_node.slice)
         return type_params
 
     def _type_params_from_base_values(
@@ -6084,9 +6104,10 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     def _type_params_from_protocol_shorthand_base_values(
         self, base_values: Sequence[Value]
     ) -> Sequence[TypeVarValue]:
-        """Return type parameters from a ``Protocol[...]`` shorthand base.
+        """Return type parameters from a shorthand type-parameter base.
 
-        The typing spec dictates that this base controls parameter ordering.
+        ``Protocol[...]`` controls parameter ordering per spec. In static-fallback
+        mode, we also use ``Generic[...]`` as a declaration-order source.
         """
         seen: set[object] = set()
         type_params: list[TypeVarValue] = []
@@ -6100,10 +6121,22 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                         maybe_type_param = _type_param_value_from_value(arg)
                         if maybe_type_param is not None:
                             maybe_type_params.append(maybe_type_param)
+                elif (
+                    self.module is None
+                    and isinstance(subval, GenericValue)
+                    and is_typing_name(subval.typ, "Generic")
+                ):
+                    for arg in subval.args:
+                        maybe_type_param = _type_param_value_from_value(arg)
+                        if maybe_type_param is not None:
+                            maybe_type_params.append(maybe_type_param)
                 else:
                     runtime_annotation = self._runtime_annotation_from_value(subval)
                     origin = typing.get_origin(runtime_annotation)
-                    if origin is not None and is_typing_name(origin, "Protocol"):
+                    if origin is not None and (
+                        is_typing_name(origin, "Protocol")
+                        or (self.module is None and is_typing_name(origin, "Generic"))
+                    ):
                         for runtime_arg in typing.get_args(runtime_annotation):
                             if not (
                                 is_instance_of_typing_name(runtime_arg, "TypeVar")
@@ -6122,11 +6155,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                                     ),
                                 )
                             )
-                if maybe_type_params and not all(
-                    is_instance_of_typing_name(type_param.typevar, "TypeVar")
-                    for type_param in maybe_type_params
-                ):
-                    continue
                 for maybe_type_param in maybe_type_params:
                     if maybe_type_param.typevar in seen:
                         continue
@@ -6186,10 +6214,17 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             return base_values
         if not any(isinstance(base_node, ast.Subscript) for base_node in node.bases):
             return base_values
-        if node.bases and all(
-            isinstance(base_node, ast.Subscript)
-            and self._is_type_parameter_base(base_value)
-            for base_node, base_value in zip(node.bases, base_values)
+        if (
+            node.bases
+            and all(
+                isinstance(base_node, ast.Subscript)
+                and self._is_type_parameter_base(base_value)
+                for base_node, base_value in zip(node.bases, base_values)
+            )
+            and all(
+                self._type_parameter_base_has_runtime_args(base_value)
+                for base_value in base_values
+            )
         ):
             # Generic[T] / Protocol[T] bases usually preserve enough runtime
             # information even in static fallback mode.
@@ -6223,6 +6258,69 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     )
                     return
                 seen.add(type_param)
+
+    def _check_type_parameter_base_argument_validity(
+        self, node: ast.ClassDef, base_values: Sequence[Value]
+    ) -> None:
+        analyzed_bases = self._base_values_for_generic_analysis(node, base_values)
+        for base_node, base_value in zip(node.bases, analyzed_bases):
+            if not isinstance(base_node, ast.Subscript):
+                continue
+            if not self._is_type_parameter_base(base_value):
+                continue
+            arg_nodes: Sequence[ast.expr] = (
+                base_node.slice.elts
+                if isinstance(base_node.slice, ast.Tuple)
+                else [base_node.slice]
+            )
+            for arg_node in arg_nodes:
+                if self._type_param_from_expr_for_default_rules(arg_node) is not None:
+                    continue
+                self._show_error_if_checking(
+                    base_node.slice,
+                    "All arguments to Generic or Protocol must be type variables",
+                    error_code=ErrorCode.invalid_annotation,
+                )
+                return
+
+    def _check_type_parameter_base_coverage(
+        self, node: ast.ClassDef, base_values: Sequence[Value]
+    ) -> None:
+        analyzed_bases = self._base_values_for_generic_analysis(node, base_values)
+        explicit_type_params: set[object] = set()
+        explicit_base: ast.Subscript | None = None
+        for base_node, base_value in zip(node.bases, analyzed_bases):
+            if not isinstance(base_node, ast.Subscript):
+                continue
+            if not self._is_type_parameter_base(base_value):
+                continue
+            if explicit_base is None:
+                explicit_base = base_node
+            arg_nodes: Sequence[ast.expr] = (
+                base_node.slice.elts
+                if isinstance(base_node.slice, ast.Tuple)
+                else [base_node.slice]
+            )
+            for arg_node in arg_nodes:
+                maybe_type_param = self._type_param_from_expr_for_default_rules(
+                    arg_node
+                )
+                if maybe_type_param is None:
+                    continue
+                explicit_type_params.add(maybe_type_param.typevar)
+        if explicit_base is None:
+            return
+        all_class_type_params = {
+            type_param.typevar
+            for type_param in self._type_params_from_base_values(analyzed_bases)
+        }
+        if all_class_type_params <= explicit_type_params:
+            return
+        self._show_error_if_checking(
+            explicit_base,
+            "All type parameters for the class must appear within Generic or Protocol",
+            error_code=ErrorCode.invalid_annotation,
+        )
 
     def _check_inconsistent_generic_base_specialization(
         self, node: ast.ClassDef, base_values: Sequence[Value]
@@ -6370,6 +6468,35 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             if is_typing_name(candidate, "Generic") or is_typing_name(
                 candidate, "Protocol"
             ):
+                return True
+        return False
+
+    def _type_parameter_base_has_runtime_args(self, value: Value) -> bool:
+        for subval in flatten_values(replace_fallback(value)):
+            candidate: object
+            if isinstance(subval, SyntheticClassObjectValue):
+                subval = subval.class_type
+            if isinstance(subval, GenericValue):
+                if (
+                    is_typing_name(subval.typ, "Generic")
+                    or is_typing_name(subval.typ, "Protocol")
+                ) and subval.args:
+                    return True
+                candidate = subval.typ
+            elif isinstance(subval, TypedValue):
+                candidate = subval.typ
+            elif isinstance(subval, KnownValue):
+                candidate = subval.val
+            else:
+                continue
+            origin = get_origin(candidate)
+            if origin is None:
+                continue
+            if not (
+                is_typing_name(origin, "Generic") or is_typing_name(origin, "Protocol")
+            ):
+                continue
+            if get_args(candidate):
                 return True
         return False
 
@@ -10060,6 +10187,27 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         allow_call = allow_call and method not in self.options.get_value_for(
             DisallowCallsToDunders
         )
+        same_tv_constraints = _same_constrained_typevar_constraints(left, right)
+        if same_tv_constraints is not None:
+            left_typevar = _as_typevar_value(left)
+            preserves_typevar = left_typevar is not None
+            possibilities = []
+            for constraint in same_tv_constraints:
+                result = self._visit_binop_no_mvv(
+                    Composite(constraint, left_composite.varname, left_composite.node),
+                    op,
+                    Composite(
+                        constraint, right_composite.varname, right_composite.node
+                    ),
+                    source_node,
+                    allow_call,
+                )
+                possibilities.append(result)
+                if preserves_typevar and result != constraint:
+                    preserves_typevar = False
+            if preserves_typevar and left_typevar is not None:
+                return left_typevar
+            return unite_values(*possibilities)
 
         if is_inplace:
             assert imethod is not None, f"no inplace method available for {op}"
@@ -13558,6 +13706,43 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 error_node, message, error_code=ErrorCode.invalid_annotation
             )
 
+    def _check_invalid_typevar_constraints(
+        self, callee: Value, args: Sequence[Composite], node: ast.AST | None = None
+    ) -> None:
+        if not (
+            isinstance(callee, KnownValue) and is_typing_name(callee.val, "TypeVar")
+        ):
+            return
+        if len(args) <= 2:
+            return
+        for composite in args[1:]:
+            message = self._typevar_invalid_bound_message(
+                composite.value, is_constraint=True
+            )
+            if message is None:
+                continue
+            error_node = composite.node if composite.node is not None else node
+            if error_node is None:
+                continue
+            self._show_error_if_checking(
+                error_node, message, error_code=ErrorCode.invalid_annotation
+            )
+
+    def _check_generic_metaclass_keyword(
+        self, keyword_values: Sequence[tuple[ast.keyword, Value]]
+    ) -> None:
+        for keyword_node, keyword_value in keyword_values:
+            if keyword_node.arg != "metaclass":
+                continue
+            if not isinstance(replace_fallback(keyword_value), GenericValue):
+                continue
+            self._show_error_if_checking(
+                keyword_node.value,
+                "Generic metaclasses are not supported",
+                error_code=ErrorCode.invalid_annotation,
+            )
+            return
+
     def _typevar_invalid_bound_message(
         self, value: Value, *, is_constraint: bool = False
     ) -> str | None:
@@ -13856,6 +14041,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             return AnyValue(AnySource.error)
 
         self._check_invalid_typevar_bound(callee_wrapped, keywords, node=node)
+        self._check_invalid_typevar_constraints(callee_wrapped, args, node=node)
         self._check_assignment_target_name_match(node, callee_wrapped, args, keywords)
 
         protocol_class_name = self._get_instantiable_protocol_class_name(callee_wrapped)
@@ -15555,6 +15741,40 @@ def _is_valid_implicit_type_alias_name_value(value: Value) -> bool:
     if isinstance(value, KnownValue):
         return isinstance(value.val, type) or _is_typing_alias_value(value.val)
     return False
+
+
+def _as_typevar_value(value: Value) -> TypeVarValue | None:
+    while isinstance(value, AnnotatedValue):
+        value = value.value
+    if isinstance(value, TypeVarValue):
+        return value
+    return None
+
+
+def _same_constrained_typevar_constraints(
+    left: Value, right: Value
+) -> Sequence[Value] | None:
+    left_typevar = _as_typevar_value(left)
+    right_typevar = _as_typevar_value(right)
+    if left_typevar is None or right_typevar is None:
+        return None
+    if (
+        left_typevar.typevar is not right_typevar.typevar
+        and left_typevar.typevar != right_typevar.typevar
+    ):
+        return None
+    left_constraints = tuple(left_typevar.constraints)
+    right_constraints = tuple(right_typevar.constraints)
+    if not left_constraints or len(left_constraints) != len(right_constraints):
+        return None
+    if any(
+        left_constraint != right_constraint
+        for left_constraint, right_constraint in zip(
+            left_constraints, right_constraints
+        )
+    ):
+        return None
+    return left_constraints
 
 
 def _type_param_identity(value: Value) -> object | None:
