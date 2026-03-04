@@ -1466,30 +1466,38 @@ def _require_min_argument_count(
 def _annotation_expr_from_subscripted_value(
     root: Value, node: ast.AST, members: Sequence[Value], ctx: Context
 ) -> AnnotationExpr:
-    if not isinstance(root, KnownValue):
-        val = _type_from_subscripted_value(root, members, ctx)
-        return AnnotationExpr(ctx, val)
-    root_val = root.val
-    if is_typing_name(root_val, "Annotated"):
-        if not _require_min_argument_count(members, 2, "Annotated", ctx):
-            return AnnotationExpr(ctx, AnyValue(AnySource.error))
-        origin, *metadata = members
-        origin_expr = _annotation_expr_from_value(origin, ctx)
-        return origin_expr.add_metadata(translate_annotated_metadata(metadata, ctx))
-    for qualifier in (
-        Qualifier.Required,
-        Qualifier.NotRequired,
-        Qualifier.ReadOnly,
-        Qualifier.Final,
-        Qualifier.ClassVar,
-        Qualifier.InitVar,
-        Qualifier.Unpack,
-    ):
-        if is_typing_name(root_val, qualifier.name):
-            if not _require_exact_argument_count(members, 1, qualifier.name, ctx):
+    root_val: object | None = None
+    if isinstance(root, KnownValue):
+        root_val = root.val
+    elif isinstance(root, TypedValue):
+        root_val = root.typ
+    elif isinstance(root, GenericValue):
+        root_val = root.typ
+
+    if root_val is not None:
+        if is_typing_name(root_val, "Annotated"):
+            if not _require_min_argument_count(members, 2, "Annotated", ctx):
                 return AnnotationExpr(ctx, AnyValue(AnySource.error))
-            inner = _annotation_expr_from_value(members[0], ctx)
-            return inner.add_qualifier(qualifier, node)
+            origin, *metadata = members
+            origin_expr = _annotation_expr_from_value(origin, ctx)
+            return origin_expr.add_metadata(translate_annotated_metadata(metadata, ctx))
+        for qualifier in (
+            Qualifier.Required,
+            Qualifier.NotRequired,
+            Qualifier.ReadOnly,
+            Qualifier.Final,
+            Qualifier.ClassVar,
+            Qualifier.InitVar,
+            Qualifier.Unpack,
+        ):
+            is_qualifier = is_typing_name(root_val, qualifier.name)
+            if not is_qualifier and qualifier is Qualifier.InitVar:
+                is_qualifier = root_val is InitVar
+            if is_qualifier:
+                if not _require_exact_argument_count(members, 1, qualifier.name, ctx):
+                    return AnnotationExpr(ctx, AnyValue(AnySource.error))
+                inner = _annotation_expr_from_value(members[0], ctx)
+                return inner.add_qualifier(qualifier, node)
     val = _type_from_subscripted_value(root, members, ctx)
     return AnnotationExpr(ctx, val)
 

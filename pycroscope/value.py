@@ -694,6 +694,27 @@ class TypeAliasValue(Value):
     def get_fallback_value(self) -> Value:
         return self.get_value()
 
+    def substitute_typevars(self, typevars: TypeVarMap) -> "TypeAliasValue":
+        if not self.type_arguments:
+            return self
+        substituted_type_arguments = tuple(
+            arg.substitute_typevars(typevars) for arg in self.type_arguments
+        )
+        if all(
+            safe_equals(existing, substituted)
+            for existing, substituted in zip(
+                self.type_arguments, substituted_type_arguments
+            )
+        ):
+            return self
+        return TypeAliasValue(
+            self.name,
+            self.module,
+            self.alias,
+            substituted_type_arguments,
+            runtime_allows_value_call=self.runtime_allows_value_call,
+        )
+
     def is_type(self, typ: type) -> bool:
         return self.get_value().is_type(typ)
 
