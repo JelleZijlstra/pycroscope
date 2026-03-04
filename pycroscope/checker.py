@@ -693,32 +693,6 @@ class Checker:
     def _is_uninformative_constructor_signature(
         self, signature: ConcreteSignature
     ) -> bool:
-        def _is_any_vararg(annotation: Value) -> bool:
-            if isinstance(annotation, AnyValue):
-                return True
-            if (
-                isinstance(annotation, GenericValue)
-                and annotation.typ is tuple
-                and len(annotation.args) == 1
-                and isinstance(annotation.args[0], AnyValue)
-            ):
-                return True
-            return False
-
-        def _is_any_kwarg(annotation: Value) -> bool:
-            if isinstance(annotation, AnyValue):
-                return True
-            if (
-                isinstance(annotation, GenericValue)
-                and annotation.typ is dict
-                and len(annotation.args) == 2
-                and isinstance(annotation.args[0], TypedValue)
-                and annotation.args[0].typ is str
-                and isinstance(annotation.args[1], AnyValue)
-            ):
-                return True
-            return False
-
         if signature is ANY_SIGNATURE:
             return True
         if isinstance(signature, OverloadedSignature):
@@ -737,12 +711,130 @@ class Checker:
             len(params) == 2
             and params[0].kind is ParameterKind.VAR_POSITIONAL
             and params[1].kind is ParameterKind.VAR_KEYWORD
-            and _is_any_vararg(params[0].annotation)
-            and _is_any_kwarg(params[1].annotation)
+            and self._is_any_vararg_annotation(params[0].annotation)
+            and self._is_any_kwarg_annotation(params[1].annotation)
             and isinstance(signature.return_value, AnyValue)
         ):
             return True
         return False
+
+    def _is_any_vararg_annotation(self, annotation: Value) -> bool:
+        if isinstance(annotation, AnyValue):
+            return True
+        if (
+            isinstance(annotation, GenericValue)
+            and annotation.typ is tuple
+            and len(annotation.args) == 1
+            and isinstance(annotation.args[0], AnyValue)
+        ):
+            return True
+        return False
+
+    def _is_any_kwarg_annotation(self, annotation: Value) -> bool:
+        if isinstance(annotation, AnyValue):
+            return True
+        if (
+            isinstance(annotation, GenericValue)
+            and annotation.typ is dict
+            and len(annotation.args) == 2
+            and isinstance(annotation.args[0], TypedValue)
+            and annotation.args[0].typ is str
+            and isinstance(annotation.args[1], AnyValue)
+        ):
+            return True
+        return False
+
+    def _is_permissive_annotated_value(self, annotation: Value) -> bool:
+        if isinstance(annotation, AnyValue):
+            return True
+        root = replace_fallback(annotation)
+        return isinstance(root, TypedValue) and root.typ is object
+
+    def _is_permissive_vararg_annotation(self, annotation: Value) -> bool:
+        if self._is_permissive_annotated_value(annotation):
+            return True
+        if (
+            isinstance(annotation, GenericValue)
+            and annotation.typ is tuple
+            and len(annotation.args) == 1
+            and self._is_permissive_annotated_value(annotation.args[0])
+        ):
+            return True
+        return False
+
+    def _is_permissive_kwarg_annotation(self, annotation: Value) -> bool:
+        if self._is_permissive_annotated_value(annotation):
+            return True
+        key_annotation: Value | None = None
+        if isinstance(annotation, GenericValue) and annotation.typ is dict:
+            if len(annotation.args) == 2:
+                key_annotation = replace_fallback(annotation.args[0])
+        if (
+            isinstance(annotation, GenericValue)
+            and annotation.typ is dict
+            and len(annotation.args) == 2
+            and isinstance(key_annotation, TypedValue)
+            and key_annotation.typ is str
+            and self._is_permissive_annotated_value(annotation.args[1])
+        ):
+            return True
+        return False
+
+    def _has_permissive_constructor_parameters(self, signature: Signature) -> bool:
+        params = list(signature.parameters.values())
+        if (
+            len(params) == 1
+            and params[0].kind is ParameterKind.ELLIPSIS
+            and isinstance(params[0].annotation, AnyValue)
+        ):
+            return True
+        return (
+            len(params) == 2
+            and params[0].kind is ParameterKind.VAR_POSITIONAL
+            and params[1].kind is ParameterKind.VAR_KEYWORD
+            and self._is_permissive_vararg_annotation(params[0].annotation)
+            and self._is_permissive_kwarg_annotation(params[1].annotation)
+        )
+
+    def _is_passthrough_metaclass_call_signature(
+        self, signature: ConcreteSignature, *, instance_type: Value
+    ) -> bool:
+        signatures = (
+            signature.signatures
+            if isinstance(signature, OverloadedSignature)
+            else [signature]
+        )
+        for sig in signatures:
+            if not self._has_permissive_constructor_parameters(sig):
+                return False
+            if isinstance(sig.return_value, AnyValue):
+                continue
+            if instance_type.is_assignable(
+                sig.return_value, self
+            ) and sig.return_value.is_assignable(instance_type, self):
+                continue
+            if isinstance(replace_fallback(sig.return_value), TypeVarValue):
+                continue
+            if self._value_nominal_class_name(
+                sig.return_value
+            ) == self._value_nominal_class_name(instance_type):
+                continue
+            return False
+        return bool(signatures)
+
+    def _value_nominal_class_name(self, value: Value) -> str | None:
+        root = replace_fallback(value)
+        if isinstance(root, GenericValue):
+            typ = root.typ
+        elif isinstance(root, TypedValue):
+            typ = root.typ
+        else:
+            return None
+        if isinstance(typ, str):
+            return typ.rsplit(".", maxsplit=1)[-1]
+        if isinstance(typ, type):
+            return typ.__name__
+        return None
 
     def _bind_constructor_like_signature(
         self,
@@ -1111,6 +1203,7 @@ class Checker:
         self,
         value: SyntheticClassObjectValue,
         *,
+        instance_type: Value,
         get_return_override: Callable[[MaybeSignature], Value | None],
         get_call_attribute: Callable[[Value], Value] | None,
     ) -> ConcreteSignature | None:
@@ -1153,6 +1246,10 @@ class Checker:
             self_annotation_value=value,
         )
         if concrete is None or self._is_uninformative_constructor_signature(concrete):
+            return None
+        if self._is_passthrough_metaclass_call_signature(
+            concrete, instance_type=instance_type
+        ):
             return None
         return concrete
 
@@ -1205,6 +1302,7 @@ class Checker:
 
         metaclass_call = self._get_synthetic_metaclass_call_signature(
             value,
+            instance_type=instance_type,
             get_return_override=get_return_override,
             get_call_attribute=get_call_attribute,
         )

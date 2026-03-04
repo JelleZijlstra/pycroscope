@@ -2092,6 +2092,43 @@ class TestSubclassValue(TestNameCheckVisitorBase):
         def capybara(cls: Type[C]) -> None:
             assert_type(cls("x"), bytes)
 
+    @assert_passes(allow_import_failures=True)
+    def test_constructor_metaclass_passthrough_call_uses_constructor_signature(self):
+        from typing import TypeVar
+
+        import does_not_exist  # noqa: F401
+        from typing_extensions import Self
+
+        T = TypeVar("T")
+
+        class Meta(type):
+            def __call__(self: type[T], *args: object, **kwargs: object) -> T:
+                return super().__call__(*args, **kwargs)
+
+        class C(metaclass=Meta):
+            def __new__(cls, x: int) -> Self:
+                return super().__new__(cls)
+
+        def capybara() -> None:
+            C()  # E: incompatible_call
+            C(1)
+
+    @assert_passes(allow_import_failures=True)
+    def test_constructor_custom_metaclass_call_still_overrides(self):
+        import does_not_exist  # noqa: F401
+        from typing_extensions import Self, assert_type
+
+        class Meta(type):
+            def __call__(self, *args: object, **kwargs: object) -> int:
+                return 1
+
+        class C(metaclass=Meta):
+            def __new__(cls, x: int) -> Self:
+                return super().__new__(cls)
+
+        def capybara() -> None:
+            assert_type(C(), int)
+
     @assert_passes()
     def test_default_constructor_call(self):
         class C:

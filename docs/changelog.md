@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Fix constructor-call checking with generic metaclass passthrough methods: when a metaclass `__call__` is just `*args/**kwargs -> T`, pycroscope now falls back to class `__new__`/`__init__` signatures instead of incorrectly accepting missing constructor arguments.
 - Improve `@dataclass_transform` converter support: synthesized constructor argument types and dataclass field assignment checks now use converter input types, and `default_factory` checks now validate against converter inputs instead of converted field types.
 - Fix `TypeVarTuple` concatenation in generic-class specialization so annotations like `Array[Batch, *Shape]` now infer as `Array[Batch, ...]` rather than collapsing to a single tuple type argument.
 - Improve callback-protocol compatibility for callable metadata members: pycroscope now treats function `__name__`/`__module__`/`__qualname__` as `str`, avoids false protocol override/assignment errors for these members, and reports unknown attribute writes on protocol-typed callables.
