@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- Add a global `typeshed_path` option to override the typeshed root pycroscope uses for typeshed-client resolution, so you can point pycroscope at a custom/local typeshed checkout.
+- Add a global `typeshed_path` option to override the typeshed root pycroscope uses for typeshed-client resolution, accepting either a directory with `VERSIONS` or one with `stdlib/VERSIONS`, and now reporting a clear error if neither exists.
 - Improve PEP 695 scoping checks by rejecting type-parameter bounds/constraints that depend on other type parameters, and preserve module execution order in import-failure fallback mode so top-level uses before assignment now report `undefined_name`.
 - Improve variance and generic-call checking in static fallback mode for unimportable modules: legacy `TypeVar(..., infer_variance=True)` now infers class variance from member usage, legacy `Generic[T]` classes preserve their type parameters more reliably, and generic `@dataclass` constructor calls retain explicit type arguments.
 - Improve type-inference handling of `|` type expressions in value position: pycroscope now preserves and resolves type-form unions (including metaclass types) without relying solely on runtime `__or__`/`__ror__`, fixing `assert_type(...)` checks like `constructors_call_metaclass.py`.

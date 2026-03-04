@@ -16,12 +16,13 @@ from pathlib import Path
 from typing import Generic, List, NewType, Type, TypeVar, Union
 from urllib.error import HTTPError
 
+import pytest
 import typing_extensions
 from typeshed_client import Resolver, get_search_context
 
 from .checker import Checker
 from .extensions import evaluated
-from .options import Options
+from .options import InvalidConfigOption, Options
 from .signature import OverloadedSignature, Signature, SigParameter
 from .test_arg_spec import ClassWithCall
 from .test_config import TEST_OPTIONS
@@ -200,6 +201,29 @@ class TestTypeshedClient(TestNameCheckVisitorBase):
             tsf = TypeshedFinder.make(Checker(), options, verbose=True)
 
             assert tsf.resolver.ctx.typeshed == temp_dir
+
+    def test_override_typeshed_path_with_stdlib_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir_str:
+            temp_dir = Path(temp_dir_str)
+            stdlib = temp_dir / "stdlib"
+            stdlib.mkdir()
+            (stdlib / "VERSIONS").write_text("typing: 3.8\n")
+            (stdlib / "typing.pyi").write_text("Alias = int\n")
+            (temp_dir / "@python2").mkdir()
+
+            options = Options.from_option_list([TypeshedPath(temp_dir)])
+            tsf = TypeshedFinder.make(Checker(), options, verbose=True)
+
+            assert tsf.resolver.ctx.typeshed == stdlib
+
+    def test_override_typeshed_path_without_versions_errors(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir_str:
+            temp_dir = Path(temp_dir_str)
+            (temp_dir / "stdlib").mkdir()
+
+            options = Options.from_option_list([TypeshedPath(temp_dir)])
+            with pytest.raises(InvalidConfigOption, match="typeshed_path.*VERSIONS"):
+                TypeshedFinder.make(Checker(), options, verbose=True)
 
 
 _EXPECTED_TYPED_DICTS = {
