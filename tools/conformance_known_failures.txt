@@ -1,8 +1,6 @@
 # Case names (conformance test stem) expected to fail in pycroscope.
 # If a listed case starts passing, or an unlisted case starts failing,
 # the conformance CI workflow should fail and this file should be updated.
-aliases_implicit
-aliases_recursive
 aliases_type_statement
 annotations_forward_refs
 annotations_generators
@@ -45,6 +43,7 @@ specialtypes_never
 literals_semantics
 
 # Fails to reject various weird annotations
+aliases_implicit
 aliases_typealiastype
 annotations_typeexpr
 literals_parameterizations

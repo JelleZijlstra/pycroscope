@@ -35,6 +35,52 @@ class TestRecursion(TestNameCheckVisitorBase):
             f([1, 2, 3])
             f([[{1}]])  # E: incompatible_argument
 
+    @assert_passes()
+    def test_recursive_generic_implicit_alias_specialization(self):
+        from typing import TypeVar
+
+        T1 = TypeVar("T1", str, int)
+        T2 = TypeVar("T2")
+
+        GenericTypeAlias1 = list["GenericTypeAlias1[T1]" | T1]
+        GenericTypeAlias2 = list["GenericTypeAlias2[T1, T2]" | T1 | T2]
+
+        g2: GenericTypeAlias1[str] = ["hi", "bye", [""], [["hi"]]]
+        g3: GenericTypeAlias1[str] = ["hi", [2.4]]  # E: incompatible_assignment
+        g6: GenericTypeAlias2[str, int] = [  # E: incompatible_assignment
+            [3, ["hi", 3, [3.4]]],
+            "hi",
+        ]
+
+    @assert_passes()
+    def test_explicit_typealias_cycle_detection(self):
+        from typing import TypeAlias, Union
+
+        RecursiveContainer: TypeAlias = Union[list["RecursiveContainer"], int]
+        _ok: RecursiveContainer = [1, [2]]
+
+        RecursiveUnion: TypeAlias = Union[
+            "RecursiveUnion", int
+        ]  # E: invalid_annotation
+        MutualReference1: TypeAlias = Union[
+            "MutualReference2", int
+        ]  # E: invalid_annotation
+        MutualReference2: TypeAlias = Union[
+            "MutualReference1", str
+        ]  # E: invalid_annotation
+
+    @assert_passes()
+    def test_implicit_union_alias_runtime_call(self):
+        ListAlias = list
+        ListOrSetAlias = list | set
+
+        x1: list[str] = ListAlias()
+        x2 = ListAlias[int]()
+
+        def bad_calls():
+            x3 = ListOrSetAlias()  # E: incompatible_call
+            return x3
+
 
 class TestTypeAliasType(TestNameCheckVisitorBase):
     @assert_passes()

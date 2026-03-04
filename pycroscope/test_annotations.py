@@ -1945,6 +1945,27 @@ class TestRequired(TestNameCheckVisitorBase):
             D.final_classvar = 10  # E: incompatible_assignment
 
     @assert_passes()
+    def test_dataclass_final_assert_type_not_runtime_polluted(self):
+        from dataclasses import dataclass
+        from typing import ClassVar, Final, assert_type
+
+        @dataclass
+        class D:
+            final_no_default: Final[int]
+            final_with_default: Final[str] = "foo"
+            final_classvar: ClassVar[Final[int]] = 4
+
+        d = D(final_no_default=1, final_with_default="bar")
+        assert_type(d.final_no_default, int)
+        assert_type(d.final_with_default, str)
+
+        D.final_classvar = 10  # E: incompatible_assignment
+        d.final_no_default = 10  # E: incompatible_assignment
+        d.final_with_default = "baz"  # E: incompatible_assignment
+        D.final_no_default = 10  # E: incompatible_assignment
+        D.final_with_default = "baz"  # E: incompatible_assignment
+
+    @assert_passes()
     def test_non_dataclass_still_rejects_classvar_final(self):
         from typing import TYPE_CHECKING, ClassVar
 

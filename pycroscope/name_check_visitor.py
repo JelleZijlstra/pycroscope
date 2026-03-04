@@ -2051,6 +2051,23 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                         ):
                             current_scope.variables[varname] = value
                             return value, EMPTY_ORIGIN
+                    # Runtime module loading can execute later statements before
+                    # analysis and leave stale concrete dataclass instances in
+                    # module scope. Prefer static constructor result types for
+                    # local dataclass instances so late runtime side effects
+                    # don't leak into earlier annotation checks.
+                    if isinstance(existing, KnownValue) and isinstance(
+                        value, TypedValue
+                    ):
+                        if (
+                            isinstance(value.typ, type)
+                            and is_dataclass_type(value.typ)
+                            and safe_isinstance(existing.val, value.typ)
+                            and self.module is not None
+                            and value.typ.__module__ == self.module.__name__
+                        ):
+                            current_scope.variables[varname] = value
+                            return value, EMPTY_ORIGIN
                     if isinstance(value, AnnotatedValue) and value.has_metadata_of_type(
                         DataclassTransformExtension
                     ):
@@ -10897,6 +10914,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
 
     def visit_Assign(self, node: ast.Assign) -> None:
         is_yield = isinstance(node.value, ast.Yield)
+        implicit_type_alias_assignment_value = (
+            self._make_implicit_type_alias_assignment_value(node)
+        )
         runtime_type_alias_value = self._make_runtime_type_alias_assignment_value(node)
         if runtime_type_alias_value is not None:
             if self.annotate:
@@ -10946,6 +10966,12 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 for name in names:
                     self.current_enum_members.by_name[name] = value.val
                     self.current_enum_members.by_value.setdefault(value.val, name)
+
+        if implicit_type_alias_assignment_value is not None and self._is_checking():
+            name, alias_value = implicit_type_alias_assignment_value
+            self.scopes.current_scope().set_declared_type(
+                name, alias_value, False, node
+            )
 
         enum_value_type = (
             self.enum_value_type_by_class.get(self.current_class_key)
@@ -11018,6 +11044,17 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             }
             expected_type, qualifiers = expr.maybe_unqualify(qualifiers)
         if Qualifier.TypeAlias in qualifiers and node.value is not None:
+            if isinstance(node.target, ast.Name):
+                if self._is_collecting():
+                    self._record_type_alias_structure(node.target.id, node, node.value)
+                if self._is_checking() and self._type_alias_has_unguarded_cycle(
+                    node.target.id
+                ):
+                    self._show_error_if_checking(
+                        node,
+                        f"Type alias {node.target.id} has a circular definition",
+                        error_code=ErrorCode.invalid_annotation,
+                    )
             alias_expr = annotation_expr_from_ast(
                 node.value, self, suppress_errors=self._is_collecting()
             )
@@ -11620,6 +11657,71 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 error_code=ErrorCode.invalid_annotation,
             )
         return params
+
+    def _make_implicit_type_alias_assignment_value(
+        self, node: ast.Assign
+    ) -> tuple[str, TypeAliasValue] | None:
+        if (
+            len(node.targets) != 1
+            or not isinstance(node.targets[0], ast.Name)
+            or self.current_synthetic_typeddict is not None
+            or self.current_enum_members is not None
+            or self.scopes.scope_type()
+            not in (ScopeType.module_scope, ScopeType.class_scope)
+            or isinstance(node.value, ast.Call)
+        ):
+            return None
+        if isinstance(node.value, ast.JoinedStr) or (
+            isinstance(node.value, ast.Constant) and isinstance(node.value.value, str)
+        ):
+            return None
+        target_name = node.targets[0].id
+        if isinstance(node.value, ast.Name):
+            resolved, _ = self.resolve_name(
+                node.value, error_node=node.value, suppress_errors=True
+            )
+            if not _is_valid_implicit_type_alias_name_value(resolved):
+                return None
+        with self.catch_errors() as alias_errors:
+            alias_expr = annotation_expr_from_ast(
+                node.value, visitor=self, suppress_errors=False
+            )
+            alias_type = alias_expr.to_value(allow_qualifiers=True, allow_empty=True)
+        if any(
+            caught["error_code"] == ErrorCode.invalid_annotation
+            for caught in alias_errors
+        ):
+            return None
+        if alias_expr.qualifiers:
+            return None
+        if isinstance(alias_type, InputSigValue):
+            return None
+        if isinstance(alias_type, AnyValue):
+            if alias_type.source is not AnySource.explicit:
+                return None
+            if not _is_explicit_any_alias_expr(node.value):
+                return None
+        if isinstance(alias_type, SubclassValue):
+            return None
+        type_params = tuple(
+            type_param
+            for type_param in self._infer_type_alias_type_params(node.value, alias_type)
+            if _is_valid_inferred_type_alias_type_param(type_param)
+        )
+        alias = TypeAlias(
+            lambda value_node=node.value: annotation_expr_from_ast(
+                value_node, visitor=self, suppress_errors=True
+            ).to_value(allow_qualifiers=True, allow_empty=True),
+            lambda type_params=tuple(type_params): type_params,
+        )
+        return (
+            target_name,
+            TypeAliasValue(
+                target_name,
+                self.module.__name__ if self.module is not None else "",
+                alias,
+            ),
+        )
 
     def _make_runtime_type_alias_assignment_value(
         self, node: ast.Assign
@@ -13403,6 +13505,15 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             return class_key.rsplit(".", 1)[-1]
         return None
 
+    def _is_non_instantiable_union_runtime_value(self, value: Value) -> bool:
+        value = replace_fallback(value)
+        if not isinstance(value, KnownValue):
+            return False
+        if value.val is typing.Union:
+            return True
+        origin = get_origin(value.val)
+        return origin is typing.Union or origin is types.UnionType
+
     def _check_call_no_mvv(
         self,
         node: ast.AST | None,
@@ -13444,6 +13555,15 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 self._show_error_if_checking(
                     node,
                     f"Cannot instantiate abstract class {callee_wrapped.name}",
+                    error_code=ErrorCode.incompatible_call,
+                )
+            return AnyValue(AnySource.error)
+
+        if self._is_non_instantiable_union_runtime_value(callee_wrapped):
+            if node is not None:
+                self._show_error_if_checking(
+                    node,
+                    "Cannot instantiate union",
                     error_code=ErrorCode.incompatible_call,
                 )
             return AnyValue(AnySource.error)
@@ -14834,7 +14954,9 @@ def _collect_unguarded_type_alias_refs(value_node: ast.AST) -> set[str]:
     def walk(node: ast.AST, guarded: bool, allow_string_parse: bool = True) -> None:
         if isinstance(node, ast.Subscript):
             walk(node.value, guarded, allow_string_parse)
-            walk(node.slice, True, allow_string_parse)
+            walk(
+                node.slice, not _is_union_subscript_root(node.value), allow_string_parse
+            )
             return
         if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load):
             if not guarded:
@@ -14859,6 +14981,64 @@ def _collect_unguarded_type_alias_refs(value_node: ast.AST) -> set[str]:
 
     walk(value_node, False)
     return refs
+
+
+def _is_union_subscript_root(node: ast.expr) -> bool:
+    return (
+        isinstance(node, ast.Name)
+        and node.id == "Union"
+        or isinstance(node, ast.Attribute)
+        and node.attr == "Union"
+    )
+
+
+def _is_explicit_any_alias_expr(node: ast.AST) -> bool:
+    return (
+        isinstance(node, ast.Name)
+        and node.id == "Any"
+        or (isinstance(node, ast.Attribute) and node.attr == "Any")
+    )
+
+
+def _is_valid_inferred_type_alias_type_param(type_param: object) -> bool:
+    if isinstance(type_param, TypeVarValue):
+        return True
+    return (
+        is_instance_of_typing_name(type_param, "TypeVar")
+        or is_instance_of_typing_name(type_param, "TypeVarTuple")
+        or is_instance_of_typing_name(type_param, "ParamSpec")
+    )
+
+
+def _is_valid_implicit_type_alias_name_value(value: Value) -> bool:
+    value = replace_fallback(value)
+    if isinstance(value, AnnotatedValue):
+        return _is_valid_implicit_type_alias_name_value(value.value)
+    if isinstance(value, MultiValuedValue):
+        return all(
+            _is_valid_implicit_type_alias_name_value(subval) for subval in value.vals
+        )
+    if isinstance(value, IntersectionValue):
+        return all(
+            _is_valid_implicit_type_alias_name_value(subval) for subval in value.vals
+        )
+    if isinstance(
+        value,
+        (
+            AnyValue,
+            GenericValue,
+            SyntheticClassObjectValue,
+            TypedValue,
+            TypeAliasValue,
+            TypeFormValue,
+            TypeVarValue,
+            SubclassValue,
+        ),
+    ):
+        return True
+    if isinstance(value, KnownValue):
+        return isinstance(value.val, type) or _is_typing_alias_value(value.val)
+    return False
 
 
 def _type_param_identity(value: Value) -> object | None:

@@ -694,6 +694,27 @@ class TypeAliasValue(Value):
     def get_fallback_value(self) -> Value:
         return self.get_value()
 
+    def substitute_typevars(self, typevars: TypeVarMap) -> "TypeAliasValue":
+        if not self.type_arguments:
+            return self
+        substituted_type_arguments = tuple(
+            arg.substitute_typevars(typevars) for arg in self.type_arguments
+        )
+        if all(
+            safe_equals(existing, substituted)
+            for existing, substituted in zip(
+                self.type_arguments, substituted_type_arguments
+            )
+        ):
+            return self
+        return TypeAliasValue(
+            self.name,
+            self.module,
+            self.alias,
+            substituted_type_arguments,
+            runtime_allows_value_call=self.runtime_allows_value_call,
+        )
+
     def is_type(self, typ: type) -> bool:
         return self.get_value().is_type(typ)
 
@@ -3352,18 +3373,26 @@ def namedtuple_members_from_value(
 
     if isinstance(value, GenericValue) and isinstance(value.typ, type):
         namedtuple_type = value.typ
-        type_parameters = tuple(getattr(namedtuple_type, "__parameters__", ()))
-        tv_map: TypeVarMap = {
-            typevar: arg for typevar, arg in zip(type_parameters, value.args)
-        }
+        type_arguments = value.args
     elif isinstance(value, TypedValue) and isinstance(value.typ, type):
         namedtuple_type = value.typ
-        tv_map = {}
+        type_arguments = ()
     else:
         return None
 
     if not is_namedtuple_class(namedtuple_type):
         return None
+
+    raw_type_parameters = getattr(namedtuple_type, "__parameters__", ())
+    if isinstance(raw_type_parameters, tuple):
+        type_parameters = raw_type_parameters
+    elif isinstance(raw_type_parameters, list):
+        type_parameters = tuple(raw_type_parameters)
+    else:
+        type_parameters = ()
+    tv_map: TypeVarMap = {
+        typevar: arg for typevar, arg in zip(type_parameters, type_arguments)
+    }
 
     fields_obj = safe_getattr(namedtuple_type, "_fields", None)
     if not isinstance(fields_obj, tuple):
