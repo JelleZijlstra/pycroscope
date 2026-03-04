@@ -8,7 +8,7 @@ import ast
 import inspect
 import sys
 import types
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from enum import Enum
 from typing import Any, ClassVar, cast, get_origin
@@ -637,6 +637,24 @@ def _iter_synthetic_dataclass_base_init_parameters(
     )
 
 
+def _synthetic_dataclass_converter_input_types(
+    synthetic_class: SyntheticClassObjectValue,
+) -> dict[str, Value]:
+    raw_converter_input_types = synthetic_class.class_attributes.get(
+        "%dataclass_converter_input_types"
+    )
+    if not (
+        isinstance(raw_converter_input_types, KnownValue)
+        and isinstance(raw_converter_input_types.val, Mapping)
+    ):
+        return {}
+    return {
+        field_name: input_type
+        for field_name, input_type in raw_converter_input_types.val.items()
+        if isinstance(field_name, str) and isinstance(input_type, Value)
+    }
+
+
 def _get_synthetic_dataclass_init_parameters(
     synthetic_class: SyntheticClassObjectValue,
     ctx: AttrContext,
@@ -706,6 +724,7 @@ def _get_synthetic_dataclass_init_parameters(
             for field_name, alias in alias_names.val.items()
             if isinstance(field_name, str) and isinstance(alias, str)
         }
+    converter_input_types = _synthetic_dataclass_converter_input_types(synthetic_class)
 
     ordered_fields: list[str] = []
     order = synthetic_class.class_attributes.get("%dataclass_field_order")
@@ -735,7 +754,9 @@ def _get_synthetic_dataclass_init_parameters(
             continue
 
         parameter_name = aliases.get(field_name, field_name)
-        annotation = _synthetic_dataclass_parameter_annotation_for_field(attr, ctx)
+        annotation = converter_input_types.get(field_name)
+        if annotation is None:
+            annotation = _synthetic_dataclass_parameter_annotation_for_field(attr, ctx)
 
         parameter = SigParameter(
             parameter_name,

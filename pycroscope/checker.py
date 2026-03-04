@@ -21,6 +21,7 @@ from .annotations import type_from_runtime, type_from_value
 from .arg_spec import ArgSpecCache, GenericBases
 from .attributes import (
     AttrContext,
+    _synthetic_dataclass_converter_input_types,
     _synthetic_dataclass_parameter_annotation_for_field,
     get_attribute,
     normalize_synthetic_descriptor_attribute,
@@ -1389,6 +1390,7 @@ class Checker:
                 for field_name, alias in alias_names.val.items()
                 if isinstance(field_name, str) and isinstance(alias, str)
             }
+        converter_input_types = _synthetic_dataclass_converter_input_types(value)
         ordered_fields: list[str] = []
         order = value.class_attributes.get("%dataclass_field_order")
         if isinstance(order, KnownValue) and isinstance(order.val, (tuple, list)):
@@ -1415,7 +1417,9 @@ class Checker:
                 entries_by_field.pop(name, None)
                 continue
             param_name = aliases.get(name, name)
-            annotation = self._synthetic_dataclass_field_annotation(attr)
+            annotation = converter_input_types.get(name)
+            if annotation is None:
+                annotation = self._synthetic_dataclass_field_annotation(attr)
             if isinstance(attr, KnownValue):
                 default: Value | None = attr if name in default_fields else None
             else:
