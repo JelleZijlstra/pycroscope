@@ -10853,6 +10853,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
 
     def visit_Expr(self, node: ast.Expr) -> Value:
         value = self.visit(node.value)
+        self._validate_runtime_type_expression(node.value)
         if _is_asynq_future(value):
             new_node = ast.Expr(value=ast.Yield(value=node.value))
             replacement = self.replace_node(node, new_node)
@@ -10964,6 +10965,95 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     and self._is_current_method_receiver_node(target.value)
                 ):
                     self._check_declared_enum_value_type(enum_value_type, value, node)
+
+    def _make_implicit_runtime_type_alias_assignment_value(
+        self, node: ast.Assign, assigned_value: Value
+    ) -> TypeAliasValue | None:
+        if len(node.targets) != 1 or not isinstance(node.targets[0], ast.Name):
+            return None
+
+        runtime_type_params: tuple[TypeVarLike | TypeVarValue, ...] | None = None
+        if isinstance(assigned_value, KnownValue):
+            maybe_runtime_type_params = safe_getattr(
+                assigned_value.val, "__parameters__", ()
+            )
+            if (
+                isinstance(maybe_runtime_type_params, tuple)
+                and maybe_runtime_type_params
+            ):
+                runtime_type_params = cast(
+                    tuple[TypeVarLike | TypeVarValue, ...], maybe_runtime_type_params
+                )
+
+        if runtime_type_params is None and not (
+            isinstance(assigned_value, PartialValue)
+            and assigned_value.operation is PartialValueOperation.SUBSCRIPT
+        ):
+            return None
+
+        alias_expr = annotation_expr_from_value(
+            assigned_value,
+            visitor=self,
+            node=node.value,
+            suppress_errors=self._is_collecting(),
+        )
+        alias_value, _ = alias_expr.maybe_unqualify(set(Qualifier))
+        if alias_value is None:
+            return None
+
+        if runtime_type_params is None:
+            inferred_type_params: list[TypeVarLike | TypeVarValue] = []
+            seen_type_params: set[object] = set()
+            for subval in alias_value.walk_values():
+                if isinstance(subval, TypeVarValue):
+                    identity: object = (subval.typevar, subval.is_typevartuple)
+                    if identity in seen_type_params:
+                        continue
+                    seen_type_params.add(identity)
+                    inferred_type_params.append(subval)
+                elif isinstance(subval, InputSigValue) and isinstance(
+                    subval.input_sig, ParamSpecSig
+                ):
+                    identity = subval.input_sig.param_spec
+                    if identity in seen_type_params:
+                        continue
+                    seen_type_params.add(identity)
+                    inferred_type_params.append(subval.input_sig.param_spec)
+            if inferred_type_params:
+                runtime_type_params = tuple(inferred_type_params)
+            else:
+                return None
+
+        alias_name = node.targets[0].id
+        return TypeAliasValue(
+            alias_name,
+            self.module.__name__ if self.module is not None else "",
+            TypeAlias(
+                lambda alias_value=alias_value: alias_value,
+                lambda runtime_type_params=runtime_type_params: runtime_type_params,
+            ),
+            runtime_allows_value_call=True,
+        )
+
+    def _validate_runtime_type_expression(self, node: ast.AST) -> None:
+        if not isinstance(node, ast.Subscript):
+            return
+        has_unpack = False
+        for subnode in ast.walk(node.slice):
+            if isinstance(subnode, ast.Starred):
+                has_unpack = True
+                break
+            if isinstance(subnode, ast.Name) and subnode.id == "Unpack":
+                has_unpack = True
+                break
+            if isinstance(subnode, ast.Attribute) and subnode.attr == "Unpack":
+                has_unpack = True
+                break
+        if not has_unpack:
+            return
+        annotation_expr_from_ast(
+            node, visitor=self, suppress_errors=self._is_collecting()
+        )
 
     def is_in_typeddict_definition(self) -> bool:
         return (
@@ -12013,31 +12103,36 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                         stripped_value, root_composite.varname, root_composite.node
                     )
                 )
-                if self.in_annotation and (
-                    isinstance(stripped_root.value, TypeAliasValue)
-                    or (
-                        self.module is None
-                        and _should_use_static_annotation_subscript_on_import_failure(
-                            stripped_root.value
-                        )
-                    )
-                    or (
-                        isinstance(stripped_root.value, KnownValue)
-                        and (
-                            is_typing_name(stripped_root.value.val, "TypeAliasType")
-                            or is_instance_of_typing_name(
-                                stripped_root.value.val, "TypeAliasType"
+                should_use_static_annotation_subscript = isinstance(
+                    stripped_root.value, TypeAliasValue
+                ) or (
+                    self.in_annotation
+                    and (
+                        (
+                            self.module is None
+                            and _should_use_static_annotation_subscript_on_import_failure(
+                                stripped_root.value
                             )
                         )
+                        or (
+                            isinstance(stripped_root.value, KnownValue)
+                            and (
+                                is_typing_name(stripped_root.value.val, "TypeAliasType")
+                                or is_instance_of_typing_name(
+                                    stripped_root.value.val, "TypeAliasType"
+                                )
+                            )
+                        )
+                        or (
+                            isinstance(stripped_root.value, KnownValue)
+                            and is_typing_name(stripped_root.value.val, "Literal")
+                            and not _is_runtime_literal_index(index)
+                        )
+                        or _contains_unpack_annotation_value(index)
+                        or _should_use_static_annotation_subscript(stripped_root.value)
                     )
-                    or (
-                        isinstance(stripped_root.value, KnownValue)
-                        and is_typing_name(stripped_root.value.val, "Literal")
-                        and not _is_runtime_literal_index(index)
-                    )
-                    or _contains_unpack_annotation_value(index)
-                    or _should_use_static_annotation_subscript(stripped_root.value)
-                ):
+                )
+                if should_use_static_annotation_subscript:
                     return_value = PartialValue(
                         PartialValueOperation.SUBSCRIPT,
                         stripped_root.value,
