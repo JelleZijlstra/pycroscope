@@ -2149,9 +2149,9 @@ class TestSubclassValue(TestNameCheckVisitorBase):
 
     @assert_passes()
     def test_type_form_union_with_metaclass_type(self):
-        from typing import TypeVar, assert_type
+        from typing import TypeVar
 
-        from typing_extensions import Self
+        from typing_extensions import Self, assert_type
 
         T = TypeVar("T")
 
