@@ -602,7 +602,12 @@ class TypeAlias:
 
 def _is_typevartuple_type_param(type_param: TypeVarLike | "TypeVarValue") -> bool:
     if isinstance(type_param, TypeVarValue):
-        return type_param.is_typevartuple
+        if type_param.is_typevartuple:
+            return True
+        typevar = type_param.typevar
+        return is_instance_of_typing_name(typevar, "TypeVarTuple") or is_typing_name(
+            type(typevar), "TypeVarTuple"
+        )
     return is_instance_of_typing_name(type_param, "TypeVarTuple") or is_typing_name(
         type(type_param), "TypeVarTuple"
     )
@@ -1116,10 +1121,9 @@ class TypedValue(Value):
             if declared_params and len(declared_params) == len(raw_args):
                 expanded_args: list[Value] = []
                 for declared_param, raw_arg in zip(declared_params, raw_args):
-                    if (
-                        isinstance(declared_param, TypeVarValue)
-                        and declared_param.is_typevartuple
-                    ):
+                    if isinstance(
+                        declared_param, TypeVarValue
+                    ) and _is_typevartuple_type_param(declared_param):
                         normalized_arg = replace_known_sequence_value(raw_arg)
                         if (
                             isinstance(normalized_arg, SequenceValue)
@@ -1276,8 +1280,29 @@ class GenericValue(TypedValue):
         for arg in self.args:
             substituted = arg.substitute_typevars(typevars)
             if (
+                self.typ is not tuple
+                and self.typ != "builtins.tuple"
+                and isinstance(arg, SequenceValue)
+                and arg.typ is tuple
+                and any(
+                    is_many
+                    and isinstance(member, TypeVarValue)
+                    and _is_typevartuple_type_param(member)
+                    for is_many, member in arg.members
+                )
+            ):
+                if isinstance(substituted, KnownValue):
+                    substituted = replace_known_sequence_value(substituted)
+                if (
+                    isinstance(substituted, SequenceValue)
+                    and substituted.typ is tuple
+                    and all(not is_many for is_many, _ in substituted.members)
+                ):
+                    new_args.extend(member for _, member in substituted.members)
+                    continue
+            if (
                 isinstance(arg, TypeVarValue)
-                and arg.is_typevartuple
+                and _is_typevartuple_type_param(arg)
                 and substituted is not arg
             ):
                 if isinstance(substituted, KnownValue):
@@ -1371,7 +1396,7 @@ class SequenceValue(GenericValue):
             if (
                 is_many
                 and isinstance(member, TypeVarValue)
-                and member.is_typevartuple
+                and _is_typevartuple_type_param(member)
                 and self.typ is tuple
                 and substituted is not member
             ):

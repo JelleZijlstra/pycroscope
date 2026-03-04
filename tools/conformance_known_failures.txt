@@ -4,7 +4,6 @@
 aliases_type_statement
 annotations_forward_refs
 annotations_generators
-callables_protocol
 constructors_call_metaclass
 constructors_call_new
 directives_deprecated
@@ -21,7 +20,6 @@ generics_syntax_infer_variance
 generics_syntax_scoping
 generics_typevartuple_basic
 generics_typevartuple_callable
-generics_typevartuple_concat
 generics_typevartuple_specialization
 overloads_definitions_stub
 
@@ -53,3 +51,6 @@ typeddicts_type_consistency
 
 # pycroscope uses Literal[] over float
 namedtuples_define_class
+
+# Precise Literal inference with TypeVarTuple
+generics_typevartuple_concat

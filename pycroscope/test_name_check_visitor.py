@@ -1365,6 +1365,51 @@ class TestImportFailureHandlingCodeSamples(TestNameCheckVisitorBase):
 
         assert f() == 1
 
+    @assert_passes()
+    def test_unknown_attribute_assignment_on_protocol_typed_callable(self):
+        from typing import Callable, ParamSpec, Protocol, TypeVar, cast
+
+        P = ParamSpec("P")
+        R = TypeVar("R", covariant=True)
+
+        class CallableWithAttr(Protocol[P, R]):
+            other_attribute: int
+
+            def __call__(self, *args: P.args, **kwargs: P.kwargs) -> R: ...
+
+        def decorator(func: Callable[P, R]) -> CallableWithAttr[P, R]:
+            converted = cast(CallableWithAttr[P, R], func)
+            converted.other_attribute = 1
+            converted.missing = 2  # E: undefined_attribute
+            return converted
+
+        @decorator
+        def wrapped(x: int) -> str:
+            return str(x)
+
+    @assert_passes()
+    def test_protocol_with_function_metadata_members_accepts_function(self):
+        from typing import Any, Protocol
+
+        from typing_extensions import assert_type
+
+        class FunctionLike(Protocol):
+            __name__: str
+            __module__: str
+            __qualname__: str
+            __annotations__: dict[str, Any]
+
+            def __call__(self) -> None: ...
+
+        def f() -> None:
+            pass
+
+        wrapped: FunctionLike = f
+        assert_type(f.__name__, str)
+        assert_type(f.__module__, str)
+        assert_type(f.__qualname__, str)
+        assert_type(wrapped.__name__, str)
+
 
 class TestNameCheckVisitor(TestNameCheckVisitorBase):
     @assert_passes(allow_import_failures=True)

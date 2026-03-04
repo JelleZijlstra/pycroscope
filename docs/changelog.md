@@ -3,6 +3,8 @@
 ## Unreleased
 
 - Improve `@dataclass_transform` converter support: synthesized constructor argument types and dataclass field assignment checks now use converter input types, and `default_factory` checks now validate against converter inputs instead of converted field types.
+- Fix `TypeVarTuple` concatenation in generic-class specialization so annotations like `Array[Batch, *Shape]` now infer as `Array[Batch, ...]` rather than collapsing to a single tuple type argument.
+- Improve callback-protocol compatibility for callable metadata members: pycroscope now treats function `__name__`/`__module__`/`__qualname__` as `str`, avoids false protocol override/assignment errors for these members, and reports unknown attribute writes on protocol-typed callables.
 - Fix `TypeVarTuple` unpack handling in generic class annotations: pycroscope now correctly type-checks patterns like `Array[Batch, *tuple[Any, ...], Channels]` and `Array[*tuple[Any, ...]]` in both normal and static-fallback analysis.
 - Fix protocol constructor-call handling for abstract class objects: pycroscope no longer reports spurious `Cannot instantiate protocol class ...` errors when calling through values typed as `type[Proto]` that may refer to concrete implementers.
 - Improve explicit-protocol checks in import-failure fallback mode: pycroscope now rejects abstract `super()` protocol calls without defaults, enforces protocol-declared member assignment types, and correctly flags instantiation of explicit protocol implementers that still have abstract members.

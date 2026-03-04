@@ -1761,6 +1761,39 @@ class TestUnpack(TestNameCheckVisitorBase):
         )
 
     @skip_before((3, 11))
+    def test_typevartuple_concat_generic_class(self):
+        self.assert_passes("""
+            from typing import Generic, NewType, TypeVarTuple, assert_type
+
+            Height = NewType("Height", int)
+            Width = NewType("Width", int)
+            Batch = NewType("Batch", int)
+            Channels = NewType("Channels", int)
+
+            Shape = TypeVarTuple("Shape")
+
+            class Array(Generic[*Shape]):
+                ...
+
+            def add_batch_axis(x: Array[*Shape]) -> Array[Batch, *Shape]:
+                raise NotImplementedError
+
+            def del_batch_axis(x: Array[Batch, *Shape]) -> Array[*Shape]:
+                raise NotImplementedError
+
+            def add_batch_channels(x: Array[*Shape]) -> Array[Batch, *Shape, Channels]:
+                raise NotImplementedError
+
+            def check(a: Array[Height, Width]) -> None:
+                b = add_batch_axis(a)
+                assert_type(b, Array[Batch, Height, Width])
+                c = del_batch_axis(b)
+                assert_type(c, Array[Height, Width])
+                d = add_batch_channels(a)
+                assert_type(d, Array[Batch, Height, Width, Channels])
+            """)
+
+    @skip_before((3, 11))
     def test_typevartuple_unpack_unbounded_tuple_generic_args(self):
         self.assert_passes("""
             from typing import Any, Generic, NewType, TypeVarTuple
