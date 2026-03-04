@@ -999,6 +999,112 @@ class TestDataclassTransform(TestNameCheckVisitorBase):
         Model(1, 2)
         Model(1)  # E: incompatible_call
 
+    @assert_passes()
+    def test_dataclass_transform_converter_field_specifier(self):
+        from typing import Callable, TypeVar
+
+        from typing_extensions import assert_type, dataclass_transform
+
+        T = TypeVar("T")
+        S = TypeVar("S")
+
+        def model_field(
+            *,
+            converter: Callable[[S], T],
+            default: S | None = None,
+            default_factory: Callable[[], S] | None = None,
+        ) -> T:
+            return object()
+
+        @dataclass_transform(field_specifiers=(model_field,))
+        class Base:
+            pass
+
+        def to_int(value: str) -> int:
+            return int(value)
+
+        class ConverterClass:
+            def __init__(self, value: str | bytes) -> None:
+                pass
+
+        class Model(Base):
+            value: int = model_field(converter=to_int)
+            class_value: ConverterClass = model_field(converter=ConverterClass)
+            converted_default: int = model_field(converter=to_int, default_factory=str)
+
+            # E: incompatible_call
+            bad_default: int = model_field(converter=to_int, default_factory=int)
+
+        def check_calls() -> None:
+            model = Model("1", b"3", "2")
+            assert_type(model.value, int)
+            assert_type(model.class_value, ConverterClass)
+
+            model.value = "4"
+            model.class_value = "5"
+            model.class_value = b"6"
+
+            model.value = 4  # E: incompatible_assignment
+            model.class_value = 7  # E: incompatible_assignment
+
+            Model(1, b"3", "2")  # E: incompatible_argument
+            Model("1", 2, "3")  # E: incompatible_argument
+            Model("1", b"3", 2)  # E: incompatible_argument
+
+    @assert_passes(allow_import_failures=True)
+    def test_dataclass_transform_converter_field_specifier_after_import_failure(self):
+        boom = 1 / 0
+
+        from typing import Callable, TypeVar
+
+        from typing_extensions import assert_type, dataclass_transform
+
+        T = TypeVar("T")
+        S = TypeVar("S")
+
+        def model_field(
+            *,
+            converter: Callable[[S], T],
+            default: S | None = None,
+            default_factory: Callable[[], S] | None = None,
+        ) -> T:
+            raise NotImplementedError
+
+        @dataclass_transform(field_specifiers=(model_field,))
+        class Base:
+            pass
+
+        def to_int(value: str) -> int:
+            return int(value)
+
+        class ConverterClass:
+            def __init__(self, value: str | bytes) -> None:
+                pass
+
+        class Model(Base):
+            value: int = model_field(converter=to_int)
+            class_value: ConverterClass = model_field(converter=ConverterClass)
+            converted_default: int = model_field(converter=to_int, default_factory=str)
+
+            # E: incompatible_call
+            bad_default: int = model_field(converter=to_int, default_factory=int)
+
+        def check_calls() -> None:
+            model = Model("1", b"3", "2")
+            assert_type(model.value, int)
+            assert_type(model.class_value, ConverterClass)
+
+            model.value = "4"
+            model.class_value = "5"
+            model.class_value = b"6"
+
+            model.value = 4  # E: incompatible_assignment
+            model.class_value = 7  # E: incompatible_assignment
+
+            Model(1, b"3", "2")  # E: incompatible_argument
+            Model("1", 2, "3")  # E: incompatible_argument
+            Model("1", b"3", 2)  # E: incompatible_argument
+
     @assert_passes(allow_import_failures=True)
     def test_dataclass_transform_descriptor_fields_after_import_failure(self):
         boom = 1 / 0
