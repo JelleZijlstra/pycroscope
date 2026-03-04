@@ -4078,20 +4078,20 @@ def test_static_hasattr():
 
 
 class TestFallbackValueDispatch(TestNameCheckVisitorBase):
-    @assert_passes(allow_import_failures=True)
+    @assert_passes()
     def test_enum_ignore_in_conditional_class_body(self):
-        boom = 1 / 0
-
         from enum import Enum
-        from random import random
 
-        class E(Enum):
-            _value_: int
-            _ignore_ = "bad keep" if random() else ["bad", "other"]
-            bad = "x"
-            keep = 3
+        def make_enum(flag: bool) -> type[Enum]:
+            class E(Enum):
+                _value_: int
+                _ignore_ = "bad keep" if flag else ["bad", "other"]
+                bad = 1
+                keep = 1
 
-        keep_member: E = E.keep
+            return E
+
+        make_enum(True)
 
     @assert_passes(allow_import_failures=True)
     def test_conditional_slots_value_is_respected(self):

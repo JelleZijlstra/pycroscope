@@ -14111,32 +14111,33 @@ def _enum_ignore_names(value: Value | None) -> set[str]:
         member_names = [_enum_ignore_names(subval) for subval in value.vals]
         if not member_names:
             return set()
-        output = member_names[0].copy()
+        shared_names = member_names[0].copy()
         for names in member_names[1:]:
-            output &= names
-        return output
+            shared_names &= names
+        return shared_names
     if isinstance(value, IntersectionValue):
-        output: set[str] = set()
+        intersection_names: set[str] = set()
         for subval in value.vals:
-            output |= _enum_ignore_names(subval)
-        return output
+            intersection_names |= _enum_ignore_names(subval)
+        return intersection_names
     if isinstance(value, KnownValue):
         if isinstance(value.val, str):
             return set(value.val.split())
         if isinstance(value.val, (list, tuple, set)):
             return {elt for elt in value.val if isinstance(elt, str)}
+        return set()
     if isinstance(value, SequenceValue):
         members = value.get_member_sequence()
         if members is None:
             return set()
-        output: set[str] = set()
+        sequence_names: set[str] = set()
         for member in members:
             member = replace_fallback(member)
             if isinstance(member, KnownValue) and isinstance(member.val, str):
-                output.add(member.val)
+                sequence_names.add(member.val)
             else:
                 return set()
-        return output
+        return sequence_names
     if isinstance(
         value,
         (
@@ -14401,16 +14402,16 @@ def _known_string_sequence_values(value: Value | None) -> tuple[str, ...] | None
             return first
         return None
     if isinstance(value, IntersectionValue):
-        members = [
-            member
-            for subval in value.vals
-            if (member := _known_string_sequence_values(subval)) is not None
-        ]
-        if not members:
+        intersection_members: list[tuple[str, ...]] = []
+        for subval in value.vals:
+            member = _known_string_sequence_values(subval)
+            if member is not None:
+                intersection_members.append(member)
+        if not intersection_members:
             return None
-        first = members[0]
-        if all(member == first for member in members[1:]):
-            return first
+        first_member = intersection_members[0]
+        if all(member == first_member for member in intersection_members[1:]):
+            return first_member
         return None
     if isinstance(value, KnownValue):
         raw = value.val
