@@ -15,7 +15,11 @@ import pycroscope
 from . import runtime
 from .analysis_lib import Sentinel
 from .annotated_types import MaxLen, MinLen
-from .annotations import annotation_expr_from_value, type_from_value
+from .annotations import (
+    annotation_expr_from_ast,
+    annotation_expr_from_value,
+    type_from_value,
+)
 from .error_code import ErrorCode
 from .extensions import assert_type, reveal_locals, reveal_type
 from .format_strings import parse_format_string
@@ -2012,10 +2016,25 @@ def _recursive_unanotate(val: Value) -> Value:
         return val
 
 
+def _assert_type_prefers_ast_annotation(node: ast.AST) -> bool:
+    return any(
+        isinstance(subnode, ast.Starred)
+        or isinstance(subnode, ast.Tuple)
+        and not subnode.elts
+        for subnode in ast.walk(node)
+    )
+
+
 def _assert_type_impl(ctx: CallContext) -> Value:
     val = ctx.vars["val"]
     typ = ctx.vars["typ"]
-    expected_type = type_from_value(typ, visitor=ctx.visitor, node=ctx.node)
+    typ_node = ctx.ast_for_arg("typ")
+    if typ_node is not None and _assert_type_prefers_ast_annotation(typ_node):
+        expected_type = annotation_expr_from_ast(
+            typ_node, visitor=ctx.visitor
+        ).to_value()
+    else:
+        expected_type = type_from_value(typ, visitor=ctx.visitor, node=ctx.node)
     can_assign = is_equivalent_with_reason(val, expected_type, ctx.visitor)
     if isinstance(can_assign, CanAssignError):
         ctx.show_error(

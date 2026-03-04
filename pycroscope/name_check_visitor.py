@@ -11860,10 +11860,19 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 node.value, visitor=self, suppress_errors=False
             )
             alias_type = alias_expr.to_value(allow_qualifiers=True, allow_empty=True)
-        if any(
-            caught["error_code"] == ErrorCode.invalid_annotation
+        invalid_annotation_errors = [
+            caught
             for caught in alias_errors
-        ):
+            if caught["error_code"] == ErrorCode.invalid_annotation
+        ]
+        if invalid_annotation_errors:
+            if (
+                self._is_checking()
+                and _looks_like_implicit_type_alias_expr(node.value)
+                and _contains_implicit_type_alias_syntax(node.value)
+                and bool(self._legacy_typevars_in_alias_expr(node.value, ()))
+            ):
+                self.show_caught_errors(invalid_annotation_errors)
             return None
         if alias_expr.qualifiers:
             return None
@@ -12313,6 +12322,11 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                         and not _is_runtime_literal_index(index)
                     )
                     or _contains_unpack_annotation_value(index)
+                    or (
+                        isinstance(index, KnownValue)
+                        and index.val == ()
+                        and self._has_single_typevartuple_parameter(stripped_root.value)
+                    )
                     or _should_use_static_annotation_subscript(stripped_root.value)
                 )
                 if should_use_static_annotation_subscript:
@@ -12431,6 +12445,23 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         elif isinstance(value, KnownValue) and isinstance(value.val, tuple):
             return tuple(KnownValue(member) for member in value.val)
         return (value,)
+
+    def _has_single_typevartuple_parameter(self, value: Value) -> bool:
+        class_type: type | str | None = None
+        if isinstance(value, KnownValue) and isinstance(value.val, type):
+            class_type = value.val
+        elif isinstance(value, SyntheticClassObjectValue) and isinstance(
+            value.class_type, TypedValue
+        ):
+            class_type = value.class_type.typ
+        elif isinstance(value, TypedValue) and isinstance(value.typ, (type, str)):
+            class_type = value.typ
+        if class_type is None:
+            return False
+        type_parameters = self.get_type_parameters(class_type)
+        return len(type_parameters) == 1 and _is_typevartuple_annotation_value(
+            type_parameters[0]
+        )
 
     def _maybe_subscript_synthetic_class(
         self, value: Value, index: Value, node: ast.Subscript
@@ -15437,6 +15468,43 @@ def _is_union_subscript_root(node: ast.expr) -> bool:
         and node.id == "Union"
         or isinstance(node, ast.Attribute)
         and node.attr == "Union"
+    )
+
+
+def _looks_like_implicit_type_alias_expr(node: ast.AST) -> bool:
+    """Heuristic to avoid reporting alias-parse errors for non-type expressions."""
+    if isinstance(node, ast.Name):
+        return True
+    if isinstance(node, ast.Attribute):
+        return _looks_like_implicit_type_alias_expr(node.value)
+    if isinstance(node, ast.Constant):
+        return isinstance(
+            node.value, (str, bytes, int, bool, type(None), type(Ellipsis))
+        )
+    if isinstance(node, ast.Starred):
+        return _looks_like_implicit_type_alias_expr(node.value)
+    if isinstance(node, ast.BinOp):
+        return (
+            isinstance(node.op, ast.BitOr)
+            and _looks_like_implicit_type_alias_expr(node.left)
+            and _looks_like_implicit_type_alias_expr(node.right)
+        )
+    if isinstance(node, ast.Subscript):
+        return _looks_like_implicit_type_alias_expr(
+            node.value
+        ) and _looks_like_implicit_type_alias_expr(node.slice)
+    if isinstance(node, (ast.Tuple, ast.List)):
+        return all(_looks_like_implicit_type_alias_expr(elt) for elt in node.elts)
+    return False
+
+
+def _contains_implicit_type_alias_syntax(node: ast.AST) -> bool:
+    return any(
+        isinstance(subnode, ast.Subscript)
+        or isinstance(subnode, ast.Starred)
+        or isinstance(subnode, ast.BinOp)
+        and isinstance(subnode.op, ast.BitOr)
+        for subnode in ast.walk(node)
     )
 
 

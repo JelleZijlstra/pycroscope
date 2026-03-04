@@ -1287,6 +1287,17 @@ class ArgSpecCache:
             ]
 
         variadic_index = variadic_indexes[0]
+        if len(generic_args) == len(type_params):
+            variadic_arg = generic_args[variadic_index]
+            if (
+                isinstance(variadic_arg, SequenceValue)
+                and variadic_arg.typ is tuple
+                and (
+                    not variadic_arg.members
+                    or any(is_many for is_many, _ in variadic_arg.members)
+                )
+            ):
+                return list(generic_args)
         suffix_count = len(type_params) - variadic_index - 1
         variadic_end = len(generic_args) - suffix_count
         if variadic_end < variadic_index:

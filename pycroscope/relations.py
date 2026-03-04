@@ -1622,7 +1622,10 @@ def _pack_typevartuple_generic_args(
         if (
             isinstance(variadic_arg, SequenceValue)
             and variadic_arg.typ is tuple
-            and any(is_many for is_many, _ in variadic_arg.members)
+            and (
+                not variadic_arg.members
+                or any(is_many for is_many, _ in variadic_arg.members)
+            )
         ):
             return list(generic_args)
 

@@ -1109,6 +1109,20 @@ def _normalize_generic_unpack_members(
     normalized_members: list[tuple[bool, Value]] = []
     saw_unpack = False
     for member in members:
+        if (
+            isinstance(member, KnownValue)
+            and isinstance(member.val, GenericAlias)
+            and getattr(member.val, "__unpacked__", False)
+        ):
+            saw_unpack = True
+            unpacked = _type_from_runtime(member.val, ctx)
+            unpacked_members = _unpack_value(unpacked)
+            if unpacked_members is None:
+                ctx.show_error(f"Invalid usage of Unpack with {unpacked}")
+                normalized_members.append((False, AnyValue(AnySource.error)))
+                continue
+            normalized_members.extend(unpacked_members)
+            continue
         if _is_unpack_annotation_member(member):
             saw_unpack = True
             expr = _annotation_expr_from_value(member, ctx)
@@ -1611,6 +1625,14 @@ def _type_from_subscripted_value(
         )
         if packed_variadic_members is not None:
             typed_members = packed_variadic_members
+        elif (
+            not members
+            and len(root.args) == 1
+            and _is_typevartuple_type_param(
+                cast(TypeVarLike | TypeVarValue, root.args[0])
+            )
+        ):
+            typed_members = [SequenceValue(tuple, [])]
         elif len(root.args) == len(members):
             typed_members = [
                 _type_from_value_type_alias_arg(member, root_arg, ctx)
@@ -1679,6 +1701,14 @@ def _type_from_subscripted_value(
         )
         if packed_variadic_members is not None:
             typed_members = packed_variadic_members
+        elif (
+            not members
+            and len(synthetic_type_params) == 1
+            and _is_typevartuple_type_param(
+                cast(TypeVarLike | TypeVarValue, synthetic_type_params[0])
+            )
+        ):
+            typed_members = [SequenceValue(tuple, [])]
         elif len(synthetic_type_params) == len(members):
             typed_members = [
                 _type_from_value_type_alias_arg(elt, type_param, ctx)
@@ -1704,6 +1734,14 @@ def _type_from_subscripted_value(
         )
         if packed_variadic_members is not None:
             typed_members = packed_variadic_members
+        elif (
+            not members
+            and len(synthetic_type_params_for_str) == 1
+            and _is_typevartuple_type_param(
+                cast(TypeVarLike | TypeVarValue, synthetic_type_params_for_str[0])
+            )
+        ):
+            typed_members = [SequenceValue(tuple, [])]
         elif len(synthetic_type_params_for_str) == len(members):
             typed_members = [
                 _type_from_value_type_alias_arg(elt, type_param, ctx)
@@ -1717,6 +1755,7 @@ def _type_from_subscripted_value(
         return GenericValue(synthetic_typ, typed_members)
     if isinstance(root, TypeAliasValue):
         type_params = tuple(root.alias.get_type_params())
+        type_arguments_are_packed = False
         if any(_is_unpack_annotation_member(member) for member in members):
             normalized_unpack_members = _normalize_generic_unpack_members(members, ctx)
         else:
@@ -1732,6 +1771,7 @@ def _type_from_subscripted_value(
         )
         if packed_variadic_members is not None:
             args_vals = packed_variadic_members
+            type_arguments_are_packed = True
         elif (
             saw_unpack
             and normalized_unpack_members is not None
@@ -1763,6 +1803,8 @@ def _type_from_subscripted_value(
             root.alias,
             tuple(args_vals),
             runtime_allows_value_call=root.runtime_allows_value_call,
+            is_specialized=True,
+            type_arguments_are_packed=type_arguments_are_packed,
         )
         if root.runtime_allows_value_call:
             # Explicit `TypeAlias` declarations should behave like expanded types in
@@ -1797,7 +1839,11 @@ def _type_from_subscripted_value(
             lambda: alias_object.__type_params__,
         )
         return TypeAliasValue(
-            alias_object.__name__, alias_object.__module__, alias, tuple(args_vals)
+            alias_object.__name__,
+            alias_object.__module__,
+            alias,
+            tuple(args_vals),
+            is_specialized=True,
         )
     if root is typing.Union:
         return unite_values(*[_type_from_value(elt, ctx) for elt in members])
@@ -1904,6 +1950,14 @@ def _type_from_subscripted_value(
         )
         if packed_variadic_members is not None:
             typed_members = packed_variadic_members
+        elif (
+            not members
+            and len(type_params) == 1
+            and _is_typevartuple_type_param(
+                cast(TypeVarLike | TypeVarValue, type_params[0])
+            )
+        ):
+            typed_members = [SequenceValue(tuple, [])]
         elif len(type_params) == len(members):
             typed_members = [
                 _type_from_value_type_alias_arg(elt, type_param, ctx)
@@ -2321,7 +2375,10 @@ def _is_tuple(typ: object) -> bool:
 def _is_unpack_annotation_member(member: Value) -> bool:
     if isinstance(member, KnownValue):
         origin = get_origin(member.val)
-        return is_typing_name(origin, "Unpack")
+        return is_typing_name(origin, "Unpack") or (
+            isinstance(member.val, GenericAlias)
+            and getattr(member.val, "__unpacked__", False)
+        )
     if isinstance(member, PartialValue):
         if member.operation is PartialValueOperation.UNPACK:
             return True
