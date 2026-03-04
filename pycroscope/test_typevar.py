@@ -816,6 +816,27 @@ class TestGenericClasses(TestNameCheckVisitorBase):
             Node.label  # E: undefined_attribute
             type(n1).label  # E: undefined_attribute
 
+    @assert_passes(allow_import_failures=True)
+    def test_legacy_typevar_infer_variance_after_import_failure(self):
+        from typing import Generic, Iterator, TypeVar
+
+        X1 = TypeVar("X1", covariant=True, contravariant=True)  # E: incompatible_call
+        T = TypeVar("T", infer_variance=True)
+
+        class Co(Generic[T]):
+            def __iter__(self) -> Iterator[T]:
+                raise NotImplementedError
+
+        class Contra(Generic[T]):
+            def set_value(self, value: T) -> None:
+                raise NotImplementedError
+
+        co_ok: Co[object] = Co[int]()
+        co_bad: Co[int] = Co[object]()  # E: incompatible_assignment
+
+        contra_bad: Contra[object] = Contra[int]()  # E: incompatible_assignment
+        contra_ok: Contra[int] = Contra[object]()
+
     @skip_before((3, 12))
     def test_infer_variance_from_member_annotations(self):
         self.assert_passes("""

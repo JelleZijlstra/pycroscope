@@ -4026,6 +4026,28 @@ class TestAnnAssign(TestNameCheckVisitorBase):
         Node.label  # E: undefined_attribute
         type(n1).label  # E: undefined_attribute
 
+    @assert_passes(allow_import_failures=True)
+    def test_generic_constructor_inference_widens_literals_in_unimportable_module(self):
+        from dataclasses import dataclass
+        from typing import Generic, TypeVar, assert_type
+
+        import does_not_exist  # noqa: F401
+
+        T = TypeVar("T")
+
+        class Box(Generic[T]):
+            def __init__(self, value: T) -> None:
+                self.value = value
+
+        assert_type(Box(1), Box[int])
+        assert_type(Box(""), Box[str])
+
+        @dataclass
+        class Data(Generic[T]):
+            value: T
+
+        assert_type(Data(1), Data[int])
+
     @assert_passes()
     def test_protocol_override_keeps_compatible_self_type(self):
         from abc import abstractmethod

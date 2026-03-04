@@ -3414,6 +3414,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 should_use_recovered_type_params = any(
                     is_instance_of_typing_name(type_param.typevar, "ParamSpec")
                     or type_param.is_typevartuple
+                    or _type_param_uses_infer_variance(type_param)
                     for type_param in recovered_type_param_values
                 )
                 if not should_use_recovered_type_params:
@@ -3441,6 +3442,25 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                         node.bases, effective_type_param_values
                     )
                 )
+            if (
+                not effective_type_param_values
+                and self.module is None
+                and isinstance(class_scope_object, type)
+            ):
+                runtime_type_params: list[TypeVarValue] = []
+                for runtime_type_param in self.checker.get_type_parameters(
+                    class_scope_object
+                ):
+                    if isinstance(runtime_type_param, TypeVarValue):
+                        runtime_type_params.append(runtime_type_param)
+                    elif isinstance(runtime_type_param, InputSigValue) and isinstance(
+                        runtime_type_param.input_sig, ParamSpecSig
+                    ):
+                        runtime_type_params.append(
+                            TypeVarValue(runtime_type_param.input_sig.param_spec)
+                        )
+                if runtime_type_params:
+                    effective_type_param_values = runtime_type_params
             registered_type_param_values = self._align_type_params_with_runtime_class(
                 runtime_class_for_type_params, effective_type_param_values
             )
@@ -3453,15 +3473,19 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 not registered_type_param_values
                 and not type_param_values
                 and self.module is None
-                and dataclass_semantics is None
-                and not has_explicit_constructor
             ):
                 recovered_registration_type_params = (
                     self._type_params_from_base_annotations_for_default_rules(
                         node.bases
                     )
                 )
-                if recovered_registration_type_params:
+                should_recover_registration = (
+                    dataclass_semantics is None and not has_explicit_constructor
+                ) or any(
+                    _type_param_uses_infer_variance(type_param)
+                    for type_param in recovered_registration_type_params
+                )
+                if recovered_registration_type_params and should_recover_registration:
                     registered_type_param_values = (
                         self._align_type_params_with_runtime_class(
                             runtime_class_for_type_params,
@@ -3474,8 +3498,13 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 registered_type_param_values
                 and not type_param_values
                 and self.module is None
-                and dataclass_semantics is None
-                and not has_explicit_constructor
+                and (
+                    (dataclass_semantics is None and not has_explicit_constructor)
+                    or any(
+                        _type_param_uses_infer_variance(type_param)
+                        for type_param in registered_type_param_values
+                    )
+                )
             ):
                 registered_type_param_values = (
                     self._order_type_params_by_base_annotation_appearance(
@@ -3551,23 +3580,57 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 value, class_scope_values = self._visit_class_and_get_value(
                     node, class_scope_object
                 )
-            if type_param_values and synthetic_typeddict is None:
-                inferred_type_params = self._infer_class_type_param_variances(
-                    node,
-                    type_param_values,
-                    base_values,
-                    dataclass_semantics=dataclass_semantics,
-                )
-                registered_inferred_type_params = (
-                    self._align_type_params_with_runtime_class(
-                        runtime_class_for_type_params, inferred_type_params
+            if synthetic_typeddict is None:
+                inferred_registration_type_params: Sequence[TypeVarValue] | None = None
+                if type_param_values:
+                    inferred_registration_type_params = (
+                        self._infer_class_type_param_variances(
+                            node,
+                            type_param_values,
+                            base_values,
+                            dataclass_semantics=dataclass_semantics,
+                        )
                     )
-                )
-                self.checker.register_synthetic_type_bases(
-                    generic_class_key,
-                    base_values_for_registration,
-                    declared_type_params=registered_inferred_type_params,
-                )
+                elif any(
+                    _type_param_uses_infer_variance(type_param)
+                    for type_param in registered_type_param_values
+                ):
+                    inferred_type_params = self._infer_class_type_param_variances(
+                        node,
+                        registered_type_param_values,
+                        base_values,
+                        dataclass_semantics=dataclass_semantics,
+                    )
+                    inferred_by_identity = {
+                        type_param.typevar: type_param.variance
+                        for type_param in inferred_type_params
+                    }
+                    inferred_registration_type_params = [
+                        (
+                            replace(
+                                type_param,
+                                variance=inferred_by_identity.get(
+                                    type_param.typevar, type_param.variance
+                                ),
+                            )
+                            if _type_param_uses_infer_variance(type_param)
+                            else type_param
+                        )
+                        for type_param in registered_type_param_values
+                    ]
+
+                if inferred_registration_type_params is not None:
+                    registered_inferred_type_params = (
+                        self._align_type_params_with_runtime_class(
+                            runtime_class_for_type_params,
+                            inferred_registration_type_params,
+                        )
+                    )
+                    self.checker.register_synthetic_type_bases(
+                        generic_class_key,
+                        base_values_for_registration,
+                        declared_type_params=registered_inferred_type_params,
+                    )
             if self._is_checking() and synthetic_typeddict is None:
                 declared_type_params = (
                     type_param_values
@@ -5769,6 +5832,8 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         type_param_polarities = {tp.typevar: set() for tp in type_params}
         for base_node in node.bases:
             base = self._value_for_variance_annotation(base_node)
+            if _is_variance_declaration_base(base):
+                continue
             if is_protocol and _is_protocol_base(base):
                 continue
             self._collect_type_param_polarities_from_value(
@@ -14259,6 +14324,8 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     def _specialize_generic_alias_call_return(
         self, callee: Value, return_value: Value, node: ast.AST | None
     ) -> Value:
+        allow_annotated_specialization = False
+        origin: type | str
         if isinstance(callee, KnownValue):
             origin = get_origin(callee.val)
             if not isinstance(origin, type):
@@ -14273,10 +14340,20 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         elif (
             isinstance(callee, PartialValue)
             and callee.operation is PartialValueOperation.SUBSCRIPT
-            and isinstance(callee.root, KnownValue)
-            and isinstance(callee.root.val, type)
         ):
-            origin = callee.root.val
+            if isinstance(callee.root, KnownValue) and isinstance(
+                callee.root.val, type
+            ):
+                origin = callee.root.val
+            elif (
+                isinstance(callee.root, SyntheticClassObjectValue)
+                and isinstance(callee.root.class_type, TypedValue)
+                and isinstance(callee.root.class_type.typ, (type, str))
+            ):
+                origin = callee.root.class_type.typ
+                allow_annotated_specialization = True
+            else:
+                return return_value
             if not callee.members:
                 return return_value
             type_args = [
@@ -14285,15 +14362,27 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             ]
         else:
             return return_value
-        if isinstance(return_value, KnownValue):
-            if not isinstance(return_value.val, origin):
-                return return_value
-        elif isinstance(return_value, TypedValue):
-            if return_value.typ is not origin:
-                return return_value
-        else:
+
+        def _specialize(value: Value) -> Value | None:
+            if allow_annotated_specialization and isinstance(value, AnnotatedValue):
+                specialized_inner = _specialize(value.value)
+                if specialized_inner is None:
+                    return None
+                return annotate_value(specialized_inner, value.metadata)
+            if isinstance(value, KnownValue):
+                if isinstance(origin, type) and not isinstance(value.val, origin):
+                    return None
+                return GenericValue(origin, type_args)
+            if isinstance(value, TypedValue):
+                if value.typ is not origin:
+                    return None
+                return GenericValue(origin, type_args)
+            return None
+
+        specialized = _specialize(return_value)
+        if specialized is None:
             return return_value
-        return GenericValue(origin, type_args)
+        return specialized
 
     def _is_namedtuple_factory(self, value: Value) -> bool:
         return isinstance(value, KnownValue) and (
@@ -15380,6 +15469,12 @@ def _variance_is_compatible_with_usage(
     if variance is Variance.COVARIANT:
         return -1 not in used_polarities
     return 1 not in used_polarities
+
+
+def _type_param_uses_infer_variance(type_param: TypeVarValue) -> bool:
+    if not is_instance_of_typing_name(type_param.typevar, "TypeVar"):
+        return False
+    return bool(safe_getattr(type_param.typevar, "__infer_variance__", False))
 
 
 def _is_variance_declaration_arg(arg: Value) -> bool:
