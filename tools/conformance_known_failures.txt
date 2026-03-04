@@ -3,7 +3,6 @@
 # the conformance CI workflow should fail and this file should be updated.
 aliases_type_statement
 annotations_forward_refs
-annotations_generators
 constructors_call_metaclass
 constructors_call_new
 directives_deprecated

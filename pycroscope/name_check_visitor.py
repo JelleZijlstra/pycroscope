@@ -7235,8 +7235,13 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             and (
                 info.return_annotation is None
                 or self._return_annotation_has_invalid_error(node.returns)
-                or not self._return_annotation_allows_implicit_none(
-                    info.return_annotation
+                or not (
+                    self._generator_return_annotation_allows_implicit_none(info)
+                    if result.is_generator
+                    and info.async_kind is AsyncFunctionKind.non_async
+                    else self._return_annotation_allows_implicit_none(
+                        info.return_annotation
+                    )
                 )
             )
         ):
@@ -7287,9 +7292,17 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             if result.is_generator:
                 if isinstance(node, ast.FunctionDef):
                     if info.async_kind is AsyncFunctionKind.non_async:
+                        synthetic_generator_type = GenericValue(
+                            collections.abc.Generator,
+                            [
+                                AnyValue(AnySource.inference),
+                                AnyValue(AnySource.inference),
+                                AnyValue(AnySource.inference),
+                            ],
+                        )
                         can_assign = has_relation(
-                            TypedValue(collections.abc.Iterable),
                             info.return_annotation,
+                            synthetic_generator_type,
                             Relation.ASSIGNABLE,
                             self,
                         )
@@ -7301,9 +7314,13 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                                 detail=can_assign.display(),
                             )
                 else:
+                    synthetic_async_generator_type = GenericValue(
+                        collections.abc.AsyncGenerator,
+                        [AnyValue(AnySource.inference), AnyValue(AnySource.inference)],
+                    )
                     can_assign = has_relation(
-                        TypedValue(collections.abc.AsyncIterable),
                         info.return_annotation,
+                        synthetic_async_generator_type,
                         Relation.ASSIGNABLE,
                         self,
                     )
@@ -8379,6 +8396,15 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         can_assign = has_relation(value, KnownNone, Relation.ASSIGNABLE, self)
         return not isinstance(can_assign, CanAssignError)
 
+    def _generator_return_annotation_allows_implicit_none(
+        self, info: FunctionInfo
+    ) -> bool:
+        return_annotation = info.get_generator_return_type(self)
+        can_assign = has_relation(
+            return_annotation, KnownNone, Relation.ASSIGNABLE, self
+        )
+        return not isinstance(can_assign, CanAssignError)
+
     def _return_annotation_has_invalid_error(self, annotation: ast.expr) -> bool:
         return any(
             (subnode, ErrorCode.invalid_annotation) in self.seen_errors
@@ -8671,7 +8697,11 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         if (
             isinstance(return_set, AnyValue)
             or return_set is NO_RETURN_VALUE
-            or (self.is_generator and info.async_kind is not AsyncFunctionKind.normal)
+            or (
+                self.is_generator
+                and info.async_kind
+                in (AsyncFunctionKind.async_proxy, AsyncFunctionKind.pure)
+            )
         ):
             has_return = True
         elif return_set is UNINITIALIZED_VALUE:
