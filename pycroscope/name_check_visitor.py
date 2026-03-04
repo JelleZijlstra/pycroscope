@@ -309,6 +309,37 @@ def _strip_predicate_intersection(value: Value) -> Value:
     return IntersectionValue(tuple(vals))
 
 
+def _drop_uninitialized_value(value: Value) -> Value:
+    if value is UNINITIALIZED_VALUE:
+        return value
+    if isinstance(value, AnnotatedValue):
+        inner = _drop_uninitialized_value(value.value)
+        if inner is UNINITIALIZED_VALUE:
+            return UNINITIALIZED_VALUE
+        return annotate_value(inner, value.metadata)
+    if isinstance(value, MultiValuedValue):
+        vals = [
+            subval
+            for subval in (_drop_uninitialized_value(subval) for subval in value.vals)
+            if subval is not UNINITIALIZED_VALUE
+        ]
+        if not vals:
+            return UNINITIALIZED_VALUE
+        return unite_values(*vals)
+    if isinstance(value, IntersectionValue):
+        vals = [
+            subval
+            for subval in (_drop_uninitialized_value(subval) for subval in value.vals)
+            if subval is not UNINITIALIZED_VALUE
+        ]
+        if not vals:
+            return UNINITIALIZED_VALUE
+        if len(vals) == 1:
+            return vals[0]
+        return IntersectionValue(tuple(vals))
+    return value
+
+
 T = TypeVar("T")
 U = TypeVar("U")
 T_co = TypeVar("T_co", covariant=True)
@@ -12756,6 +12787,17 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 varname=root_composite.varname,
                 node=root_composite.node,
             )
+        if root_composite.value is NO_RETURN_VALUE:
+            return NO_RETURN_VALUE
+        fallback_root = replace_fallback(root_composite.value)
+        if isinstance(fallback_root, IntersectionValue) and not isinstance(
+            root_composite.value, IntersectionValue
+        ):
+            root_composite = Composite(
+                value=fallback_root,
+                varname=root_composite.varname,
+                node=root_composite.node,
+            )
         if self._is_instance_member_accessed_through_class(root_composite, attr, node):
             if node is not None:
                 self._show_error_if_checking(
@@ -12768,6 +12810,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         if is_union(root_composite.value):
             results = []
             for subval in flatten_values(root_composite.value):
+                subval_basic = replace_fallback(subval)
                 composite = Composite(
                     subval, root_composite.varname, root_composite.node
                 )
@@ -12782,9 +12825,40 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     subresult is UNINITIALIZED_VALUE
                     and use_fallback
                     and node is not None
+                    and not isinstance(subval_basic, IntersectionValue)
                 ):
                     subresult = self._get_attribute_fallback(subval, attr, node)
+                subresult = _drop_uninitialized_value(subresult)
+                if (
+                    subresult is UNINITIALIZED_VALUE
+                    and use_fallback
+                    and node is not None
+                    and not isinstance(subval_basic, IntersectionValue)
+                ):
+                    subresult = self._get_attribute_fallback(subval, attr, node)
+                if subresult is UNINITIALIZED_VALUE and not use_fallback:
+                    continue
                 results.append(subresult)
+            if not results:
+                if use_fallback and node is not None:
+                    self._show_error_if_checking(
+                        node,
+                        f"{root_composite.value} has no attribute {attr!r}",
+                        ErrorCode.undefined_attribute,
+                    )
+                    return AnyValue(AnySource.error)
+                return UNINITIALIZED_VALUE
+            if use_fallback and node is not None:
+                present = [val for val in results if val is not UNINITIALIZED_VALUE]
+                if not present:
+                    self._show_error_if_checking(
+                        node,
+                        f"{root_composite.value} has no attribute {attr!r}",
+                        ErrorCode.undefined_attribute,
+                    )
+                    return AnyValue(AnySource.error)
+                if len(present) != len(results):
+                    results = present
             return unite_values(*results)
         elif isinstance(root_composite.value, IntersectionValue):
             # If the value is an intersection, we need to get the attribute from each
@@ -12797,6 +12871,15 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 subresult = self.get_attribute(
                     composite, attr, node, ignore_none=ignore_none, use_fallback=False
                 )
+                if (
+                    subresult is UNINITIALIZED_VALUE
+                    and use_fallback
+                    and node is not None
+                ):
+                    subresult = self._get_attribute_fallback(
+                        subval, attr, node, allow_error=False
+                    )
+                subresult = _drop_uninitialized_value(subresult)
                 if (
                     subresult is UNINITIALIZED_VALUE
                     and use_fallback

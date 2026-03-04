@@ -2296,33 +2296,21 @@ def _simple_intersection(
     if right == TypedValue(object):
         return left
 
-    # Intersections with unannotated Any collapse to the other side for
-    # nominal type narrowing (e.g., isinstance/issubclass). Keep explicit
-    # intersections with predicates so we retain "unknown value with a
-    # predicate" information from checks like len(x) > 0.
-    if (
-        isinstance(left, AnyValue)
-        and left.source is AnySource.unannotated
-        and isinstance(right, PredicateValue)
-    ):
+    # Keep Any & Predicate intersections explicit so runtime operation checks can
+    # strip predicate-only refinements and recover the base type.
+    if isinstance(left, AnyValue) and isinstance(right, PredicateValue):
         return Irreducible
-    if (
-        isinstance(right, AnyValue)
-        and right.source is AnySource.unannotated
-        and isinstance(left, PredicateValue)
-    ):
+    if isinstance(right, AnyValue) and isinstance(left, PredicateValue):
         return Irreducible
 
-    # For other cases, collapse internal Any sources away.
-    if isinstance(left, AnyValue) and left.source in _COLLAPSIBLE_ANY_SOURCES:
-        return right
-    if isinstance(right, AnyValue) and right.source in _COLLAPSIBLE_ANY_SOURCES:
-        return left
-
-    # Intersections with Any don't simplify
+    # Intersections with internal Any sources collapse to the other side.
     if isinstance(left, AnyValue):
+        if left.source in _COLLAPSIBLE_ANY_SOURCES:
+            return right
         return Irreducible
     if isinstance(right, AnyValue):
+        if right.source in _COLLAPSIBLE_ANY_SOURCES:
+            return left
         return Irreducible
 
     # If one is a subtype of the other, the narrower type prevails

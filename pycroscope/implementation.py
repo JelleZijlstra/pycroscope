@@ -2423,9 +2423,10 @@ def _runtime_type_from_value(value: Value) -> object | None:
                 return None
             args.append(runtime_arg)
         try:
+            runtime_type = cast(Any, value.typ)
             if len(args) == 1:
-                return value.typ[args[0]]
-            return value.typ[tuple(args)]
+                return runtime_type[args[0]]
+            return runtime_type[tuple(args)]
         except Exception:
             return None
     return None
