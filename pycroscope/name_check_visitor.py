@@ -3417,6 +3417,19 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     for type_param in recovered_type_param_values
                 ):
                     effective_type_param_values = recovered_type_param_values
+            if (
+                not type_param_values
+                and self.module is None
+                and effective_type_param_values
+            ):
+                # Runtime-derived base values can be only partially specialized in
+                # static-fallback mode (for example losing ``Unpack[Ts]``). Merge
+                # against base annotation order so we keep the full declared set.
+                effective_type_param_values = (
+                    self._order_type_params_by_base_annotation_appearance(
+                        node.bases, effective_type_param_values
+                    )
+                )
             registered_type_param_values = self._align_type_params_with_runtime_class(
                 runtime_class_for_type_params, effective_type_param_values
             )
