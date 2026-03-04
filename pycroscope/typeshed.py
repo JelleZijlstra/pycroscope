@@ -41,7 +41,7 @@ from .extensions import deprecated as deprecated_decorator
 from .extensions import evaluated, overload, real_overload
 from .input_sig import extract_type_params
 from .node_visitor import Failure
-from .options import Options, PathSequenceOption
+from .options import OptionalPathOption, Options, PathSequenceOption
 from .safe import hasattr_static, is_typing_name, safe_isinstance
 from .shared_options import ImportPaths
 from .signature import (
@@ -96,12 +96,13 @@ def _get_default_typeshed_search_context() -> Any:
 
 @lru_cache(maxsize=10)
 def _get_resolver_for_stub_paths(
-    extra_paths: tuple[str, ...],
+    extra_paths: tuple[str, ...], typeshed_path: str | None
 ) -> typeshed_client.Resolver:
     default_ctx = _get_default_typeshed_search_context()
     search_path = [*default_ctx.search_path, *(Path(path) for path in extra_paths)]
+    typeshed = default_ctx.typeshed if typeshed_path is None else Path(typeshed_path)
     ctx = typeshed_client.get_search_context(
-        typeshed=default_ctx.typeshed,
+        typeshed=typeshed,
         search_path=search_path,
         version=default_ctx.version,
         platform=default_ctx.platform,
@@ -160,6 +161,13 @@ class StubPath(PathSequenceOption):
     name = "stub_path"
 
 
+class TypeshedPath(OptionalPathOption):
+    """Path to a typeshed checkout to use instead of typeshed_client's bundled copy."""
+
+    name = "typeshed_path"
+    is_global = True
+
+
 # These are specified as just "List = _Alias()" in typing.pyi. Redirect
 # them to the proper runtime equivalent.
 _TYPING_ALIASES = {
@@ -210,7 +218,9 @@ class TypeshedFinder:
                 *options.get_value_for(ImportPaths),
             )
         )
-        resolver = _get_resolver_for_stub_paths(extra_paths)
+        typeshed = options.get_value_for(TypeshedPath)
+        typeshed_path = None if typeshed is None else str(typeshed)
+        resolver = _get_resolver_for_stub_paths(extra_paths, typeshed_path)
         return TypeshedFinder(can_assign_ctx, verbose, resolver)
 
     def log(self, message: str, obj: object) -> None:
