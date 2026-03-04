@@ -783,6 +783,18 @@ class TestGenericClasses(TestNameCheckVisitorBase):
                 ...
         """)
 
+    @skip_before((3, 12))
+    def test_pep695_type_parameter_dependent_bounds_and_constraints(self):
+        self.assert_passes("""
+            from typing import Sequence
+
+            class BadBound[S, T: Sequence[S]]:  # E: invalid_annotation
+                ...
+
+            class BadConstraint[S, T: (Sequence[S], bytes)]:  # E: invalid_annotation
+                ...
+        """)
+
     @assert_passes()
     def test_legacy_generic_alias_constructor_call_preserves_type_args(self):
         from typing import Generic, TypeVar

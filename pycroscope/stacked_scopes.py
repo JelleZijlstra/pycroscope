@@ -890,6 +890,98 @@ class Scope:
             return self
 
 
+class ModuleScope(Scope):
+    """Module scope with per-usage definition tracking across collect/check passes."""
+
+    _preexisting_names: set[Varname]
+    _usage_is_defined: dict[tuple[Node, Varname], bool]
+    _names_bound_in_check: set[Varname]
+
+    def __init__(
+        self,
+        variables: dict[Varname, Value],
+        parent_scope: Scope,
+        *,
+        scope_object: object | None = None,
+        simplification_limit: int | None = None,
+    ) -> None:
+        super().__init__(
+            ScopeType.module_scope,
+            variables,
+            parent_scope,
+            scope_object=scope_object,
+            simplification_limit=simplification_limit,
+        )
+        self._preexisting_names = set(variables)
+        self._usage_is_defined = {}
+        self._names_bound_in_check = set()
+
+    def start_check_phase(self) -> None:
+        self._names_bound_in_check.clear()
+
+    def mark_name_bound_in_check(self, varname: Varname) -> None:
+        self._names_bound_in_check.add(varname)
+
+    def set(
+        self, varname: Varname, value: Value, node: Node, state: VisitorState
+    ) -> VarnameOrigin:
+        origin = super().set(varname, value, node, state)
+        if state is VisitorState.check_names:
+            self._names_bound_in_check.add(varname)
+        return origin
+
+    def get_local(
+        self,
+        varname: Varname,
+        node: Node,
+        state: VisitorState,
+        *,
+        from_parent_scope: bool = False,
+        fallback_value: Value | None = None,
+        can_assign_ctx: CanAssignContext,
+    ) -> tuple[Value, VarnameOrigin]:
+        if not isinstance(node, AST):
+            return super().get_local(
+                varname,
+                node,
+                state,
+                from_parent_scope=from_parent_scope,
+                fallback_value=fallback_value,
+                can_assign_ctx=can_assign_ctx,
+            )
+
+        key = (node, varname)
+        if state is VisitorState.collect_names:
+            is_defined = varname in self.variables
+            self._usage_is_defined[key] = is_defined
+            if not is_defined:
+                return UNINITIALIZED_VALUE, EMPTY_ORIGIN
+            return super().get_local(
+                varname,
+                node,
+                state,
+                from_parent_scope=from_parent_scope,
+                fallback_value=fallback_value,
+                can_assign_ctx=can_assign_ctx,
+            )
+
+        is_defined = self._usage_is_defined.get(key)
+        if (
+            is_defined is False
+            and varname not in self._preexisting_names
+            and varname not in self._names_bound_in_check
+        ):
+            return UNINITIALIZED_VALUE, EMPTY_ORIGIN
+        return super().get_local(
+            varname,
+            node,
+            state,
+            from_parent_scope=from_parent_scope,
+            fallback_value=fallback_value,
+            can_assign_ctx=can_assign_ctx,
+        )
+
+
 class FunctionScope(Scope):
     """Keeps track of the local variables of a single function.
 
@@ -1429,8 +1521,7 @@ class StackedScopes:
         module_scope_vars: dict[Varname, Value] = dict(module_vars)
         self.scopes = [
             self._builtin_scope,
-            Scope(
-                ScopeType.module_scope,
+            ModuleScope(
                 module_scope_vars,
                 self._builtin_scope,
                 scope_object=module,

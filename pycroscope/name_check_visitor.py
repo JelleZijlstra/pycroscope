@@ -188,6 +188,7 @@ from .stacked_scopes import (
     ConstraintType,
     EquivalentConstraint,
     FunctionScope,
+    ModuleScope,
     OrConstraint,
     PredicateProvider,
     Scope,
@@ -1877,6 +1878,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             with override(self, "state", VisitorState.collect_names):
                 self.visit(self.tree)
             self._pending_overload_blocks.clear()
+            module_scope = self.scopes.module_scope()
+            if isinstance(module_scope, ModuleScope):
+                module_scope.start_check_phase()
             with override(self, "state", VisitorState.check_names):
                 self.visit(self.tree)
                 self._flush_pending_overload_blocks()
@@ -2048,6 +2052,13 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
 
         scope_type = current_scope.scope_type
         if scope_type == ScopeType.module_scope:
+            if (
+                self._is_checking()
+                and self.module is None
+                and value is not None
+                and isinstance(current_scope, ModuleScope)
+            ):
+                current_scope.mark_name_bound_in_check(varname)
             if (
                 self.module is not None
                 and self.module.__name__ is not None
@@ -12291,6 +12302,19 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 )
             return type_from_value(self.visit(node), self, node)
 
+        def _pep695_type_param_expr_contains_type_param(self, node: ast.AST) -> bool:
+            for subnode in ast.walk(node):
+                if not isinstance(subnode, ast.Name) or not isinstance(
+                    subnode.ctx, ast.Load
+                ):
+                    continue
+                resolved, _ = self.resolve_name(
+                    subnode, error_node=subnode, suppress_errors=True
+                )
+                if _type_param_identity(resolved) is not None:
+                    return True
+            return False
+
         def visit_TypeAlias(self, node: ast.TypeAlias) -> Value:
             assert isinstance(node.name, ast.Name)
             name = node.name.id
@@ -12395,6 +12419,11 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                         message = self._typevar_invalid_bound_message(
                             constraint, is_constraint=True
                         )
+                        if (
+                            message is None
+                            and self._pep695_type_param_expr_contains_type_param(elt)
+                        ):
+                            message = "TypeVar constraint cannot be parameterized by type variables"
                         if message is not None:
                             self._show_error_if_checking(
                                 elt, message, error_code=ErrorCode.invalid_annotation
@@ -12402,6 +12431,13 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 else:
                     bound = self._type_from_pep695_type_param_expr(node.bound)
                     message = self._typevar_invalid_bound_message(bound)
+                    if (
+                        message is None
+                        and self._pep695_type_param_expr_contains_type_param(node.bound)
+                    ):
+                        message = (
+                            "TypeVar bound cannot be parameterized by type variables"
+                        )
                     if message is not None:
                         self._show_error_if_checking(
                             node.bound, message, error_code=ErrorCode.invalid_annotation
@@ -13825,7 +13861,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             if is_typing_name(value.val, "TypedDict"):
                 return True
             value = type_from_value(value, self, suppress_errors=True)
-        if any(isinstance(subval, TypeVarValue) for subval in value.walk_values()):
+        if any(
+            _type_param_identity(subval) is not None for subval in value.walk_values()
+        ):
             return True
         return False
 
