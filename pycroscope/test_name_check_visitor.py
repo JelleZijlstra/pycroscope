@@ -4077,6 +4077,53 @@ def test_static_hasattr():
     assert not _static_hasattr(hgat, "random_attribute")
 
 
+class TestFallbackValueDispatch(TestNameCheckVisitorBase):
+    @assert_passes()
+    def test_enum_ignore_in_conditional_class_body(self):
+        from enum import Enum
+
+        def make_enum(flag: bool) -> type[Enum]:
+            class E(Enum):
+                _value_: int
+                _ignore_ = "bad keep" if flag else ["bad", "other"]
+                bad = 1
+                keep = 1
+
+            return E
+
+        make_enum(True)
+
+    @assert_passes(allow_import_failures=True)
+    def test_conditional_slots_value_is_respected(self):
+        boom = 1 / 0
+
+        from random import random
+
+        class Slotted:
+            __slots__ = ("x",) if random() else ["x"]
+            x: int
+
+            def mutate(self) -> None:
+                self.y = 1  # E: incompatible_assignment
+
+    @assert_passes(allow_import_failures=True)
+    def test_conditional_typevar_identity_in_generic_bases(self):
+        boom = 1 / 0
+
+        from random import random
+        from typing import Generic, TypeVar
+
+        T = TypeVar("T")
+
+        if random():
+            maybe_t = T
+        else:
+            maybe_t = T
+
+        class Bad(Generic[maybe_t, maybe_t]):  # E: invalid_annotation
+            pass
+
+
 class TestIncompatibleOverride(TestNameCheckVisitorBase):
     @assert_passes()
     def test_simple(self):

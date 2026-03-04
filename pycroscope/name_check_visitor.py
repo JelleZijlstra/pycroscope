@@ -14161,11 +14161,52 @@ def _enum_ignore_names(value: Value | None) -> set[str]:
     if value is None:
         return set()
     value = replace_fallback(value)
+    if isinstance(value, MultiValuedValue):
+        member_names = [_enum_ignore_names(subval) for subval in value.vals]
+        if not member_names:
+            return set()
+        shared_names = member_names[0].copy()
+        for names in member_names[1:]:
+            shared_names &= names
+        return shared_names
+    if isinstance(value, IntersectionValue):
+        intersection_names: set[str] = set()
+        for subval in value.vals:
+            intersection_names |= _enum_ignore_names(subval)
+        return intersection_names
     if isinstance(value, KnownValue):
         if isinstance(value.val, str):
             return set(value.val.split())
         if isinstance(value.val, (list, tuple, set)):
             return {elt for elt in value.val if isinstance(elt, str)}
+        return set()
+    if isinstance(value, SequenceValue):
+        members = value.get_member_sequence()
+        if members is None:
+            return set()
+        sequence_names: set[str] = set()
+        for member in members:
+            member = replace_fallback(member)
+            if isinstance(member, KnownValue) and isinstance(member.val, str):
+                sequence_names.add(member.val)
+            else:
+                return set()
+        return sequence_names
+    if isinstance(
+        value,
+        (
+            AnyValue,
+            SyntheticClassObjectValue,
+            SyntheticModuleValue,
+            UnboundMethodValue,
+            TypedValue,
+            SubclassValue,
+            TypeFormValue,
+            PredicateValue,
+        ),
+    ):
+        return set()
+    assert_never(value)
     return set()
 
 
@@ -14405,6 +14446,27 @@ def _known_string_sequence_values(value: Value | None) -> tuple[str, ...] | None
     if value is None:
         return None
     value = replace_fallback(value)
+    if isinstance(value, MultiValuedValue):
+        members = [_known_string_sequence_values(subval) for subval in value.vals]
+        if not members or any(member is None for member in members):
+            return None
+        first = members[0]
+        assert first is not None
+        if all(member == first for member in members[1:]):
+            return first
+        return None
+    if isinstance(value, IntersectionValue):
+        intersection_members: list[tuple[str, ...]] = []
+        for subval in value.vals:
+            member = _known_string_sequence_values(subval)
+            if member is not None:
+                intersection_members.append(member)
+        if not intersection_members:
+            return None
+        first_member = intersection_members[0]
+        if all(member == first_member for member in intersection_members[1:]):
+            return first_member
+        return None
     if isinstance(value, KnownValue):
         raw = value.val
         if isinstance(raw, str):
@@ -14424,6 +14486,21 @@ def _known_string_sequence_values(value: Value | None) -> tuple[str, ...] | None
             else:
                 return None
         return tuple(output)
+    if isinstance(
+        value,
+        (
+            AnyValue,
+            SyntheticClassObjectValue,
+            SyntheticModuleValue,
+            UnboundMethodValue,
+            TypedValue,
+            SubclassValue,
+            TypeFormValue,
+            PredicateValue,
+        ),
+    ):
+        return None
+    assert_never(value)
     return None
 
 
@@ -14548,8 +14625,27 @@ def _dataclass_field_bound_str_arg(
 
 def _is_absent_dataclass_default_value(value: Value) -> bool:
     value = replace_fallback(value)
+    if isinstance(value, MultiValuedValue):
+        return all(_is_absent_dataclass_default_value(subval) for subval in value.vals)
+    if isinstance(value, IntersectionValue):
+        return any(_is_absent_dataclass_default_value(subval) for subval in value.vals)
     if isinstance(value, KnownValue):
         return value.val is Ellipsis or value.val is dataclasses.MISSING
+    if isinstance(
+        value,
+        (
+            AnyValue,
+            SyntheticClassObjectValue,
+            SyntheticModuleValue,
+            UnboundMethodValue,
+            TypedValue,
+            SubclassValue,
+            TypeFormValue,
+            PredicateValue,
+        ),
+    ):
+        return False
+    assert_never(value)
     return False
 
 
@@ -14974,16 +15070,70 @@ def _type_param_identity(value: Value) -> object | None:
         return value.typevar
     if isinstance(value, InputSigValue) and isinstance(value.input_sig, ParamSpecSig):
         return value.input_sig.param_spec
+    if isinstance(value, InputSigValue):
+        return None
+    if value in (VOID, UNINITIALIZED_VALUE) or isinstance(value, ReferencingValue):
+        return None
+    value = replace_fallback(value)
+    if isinstance(value, MultiValuedValue):
+        identities = [
+            identity
+            for subval in value.vals
+            if (identity := _type_param_identity(subval)) is not None
+        ]
+        if not identities:
+            return None
+        first = identities[0]
+        if all(identity is first for identity in identities[1:]):
+            return first
+        return None
+    if isinstance(value, IntersectionValue):
+        identity: object | None = None
+        for subval in value.vals:
+            sub_identity = _type_param_identity(subval)
+            if sub_identity is None:
+                continue
+            if identity is None:
+                identity = sub_identity
+            elif sub_identity is not identity:
+                return None
+        return identity
     if isinstance(value, KnownValue) and (
         is_instance_of_typing_name(value.val, "TypeVar")
         or is_instance_of_typing_name(value.val, "TypeVarTuple")
         or is_instance_of_typing_name(value.val, "ParamSpec")
     ):
         return value.val
+    if isinstance(value, KnownValue):
+        return None
+    if isinstance(
+        value,
+        (
+            AnyValue,
+            SyntheticClassObjectValue,
+            SyntheticModuleValue,
+            UnboundMethodValue,
+            TypedValue,
+            SubclassValue,
+            TypeFormValue,
+            PredicateValue,
+        ),
+    ):
+        return None
+    assert_never(value)
     return None
 
 
 def _is_runtime_literal_index(value: Value) -> bool:
+    if isinstance(value, InputSigValue):
+        return False
+    if value in (VOID, UNINITIALIZED_VALUE) or isinstance(value, ReferencingValue):
+        return False
+    value = replace_fallback(value)
+    if isinstance(value, MultiValuedValue):
+        return all(_is_runtime_literal_index(subval) for subval in value.vals)
+    if isinstance(value, IntersectionValue):
+        return any(_is_runtime_literal_index(subval) for subval in value.vals)
     if isinstance(value, KnownValue):
         return True
     if isinstance(value, SequenceValue) and value.typ is tuple:
@@ -14991,6 +15141,21 @@ def _is_runtime_literal_index(value: Value) -> bool:
         return members is not None and all(
             isinstance(member, KnownValue) for member in members
         )
+    if isinstance(
+        value,
+        (
+            AnyValue,
+            SyntheticClassObjectValue,
+            SyntheticModuleValue,
+            UnboundMethodValue,
+            TypedValue,
+            SubclassValue,
+            TypeFormValue,
+            PredicateValue,
+        ),
+    ):
+        return False
+    assert_never(value)
     return False
 
 
