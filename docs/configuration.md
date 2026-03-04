@@ -51,8 +51,7 @@ extend_config = "../path/to/other/pyproject.toml"
 Options set in the included config file have lower priority.
 
 To use a local typeshed checkout instead of typeshed-client's bundled copy, set
-`typeshed_path`. The path may either contain `VERSIONS` directly or contain a
-`stdlib/` subdirectory with `VERSIONS`:
+`typeshed_path`:
 
 ```toml
 [tool.pycroscope]
