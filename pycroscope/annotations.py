@@ -1530,6 +1530,8 @@ def _type_from_value(value: Value, ctx: Context) -> Value:
     elif isinstance(value, PartialValue):
         if value.operation is PartialValueOperation.SUBSCRIPT:
             return _type_from_subscripted_value(value.root, value.members, ctx)
+        if value.operation is PartialValueOperation.BITOR:
+            return _type_from_bitor_value(value.root, value.members, ctx)
         return value.get_fallback_value()
     elif isinstance(value, AnyValue):
         return value
@@ -1538,6 +1540,19 @@ def _type_from_value(value: Value, ctx: Context) -> Value:
     else:
         ctx.show_error(f"Unrecognized annotation {value}")
         return AnyValue(AnySource.error)
+
+
+def _type_from_bitor_value(
+    root: Value, members: Sequence[Value], ctx: Context
+) -> Value:
+    if not members:
+        ctx.show_error("Invalid type expression using |")
+        return AnyValue(AnySource.error)
+    values = [
+        _type_from_value(root, ctx),
+        *[_type_from_value(member, ctx) for member in members],
+    ]
+    return unite_values(*values)
 
 
 def _require_exact_argument_count(

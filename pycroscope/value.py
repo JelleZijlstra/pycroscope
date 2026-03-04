@@ -494,6 +494,7 @@ class PartialValueOperation(enum.Enum):
 
     SUBSCRIPT = 1
     UNPACK = 2
+    BITOR = 3
 
 
 @dataclass(frozen=True)
@@ -513,6 +514,9 @@ class PartialValue(Value):
                 return f"{self.runtime_value} (partial from {self.root}[{members}])"
             case PartialValueOperation.UNPACK:
                 return f"{self.runtime_value} (partial from *{self.root})"
+            case PartialValueOperation.BITOR:
+                members = " | ".join(str(member) for member in self.members)
+                return f"{self.runtime_value} (partial from {self.root} | {members})"
             case _:
                 assert_never(self.operation)
 

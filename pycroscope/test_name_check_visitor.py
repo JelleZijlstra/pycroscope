@@ -2147,6 +2147,32 @@ class TestSubclassValue(TestNameCheckVisitorBase):
         def capybara(cls: Type[C]) -> None:
             assert_type(cls("x"), bytes)
 
+    @assert_passes()
+    def test_type_form_union_with_metaclass_type(self):
+        from typing import Self, TypeVar, assert_type
+
+        T = TypeVar("T")
+
+        class Meta2(type):
+            def __call__(self, *args, **kwargs) -> "int | Meta2":
+                return 1
+
+        class Class2(metaclass=Meta2):
+            def __new__(cls, x: int) -> Self:
+                return super().__new__(cls)
+
+        class Meta3(type):
+            def __call__(self: type[T], *args, **kwargs) -> T:
+                return super().__call__(*args, **kwargs)
+
+        class Class3(metaclass=Meta3):
+            def __new__(cls, x: int) -> Self:
+                return super().__new__(cls)
+
+        def capybara() -> None:
+            assert_type(Class2(), int | Meta2)
+            assert_type(Class3(1), Class3)
+
     @assert_passes(allow_import_failures=True)
     def test_constructor_metaclass_passthrough_call_uses_constructor_signature(self):
         from typing import TypeVar

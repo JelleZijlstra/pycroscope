@@ -100,6 +100,21 @@ def test_partial_unpack_value() -> None:
     assert str(partial) == "Any[inference] (partial from *tuple)"
 
 
+def test_partial_bitor_value() -> None:
+    node = ast.parse("int | str", mode="eval").body
+    assert isinstance(node, ast.BinOp)
+    partial = value.PartialValue(
+        operation=value.PartialValueOperation.BITOR,
+        root=TypedValue(int),
+        node=node,
+        members=(TypedValue(str),),
+        runtime_value=KnownValue(int | str),
+    )
+
+    assert partial.get_fallback_value() == KnownValue(int | str)
+    assert str(partial) == "Literal[int | str] (partial from int | str)"
+
+
 def test_extract_type_form_from_partial_value() -> None:
     from typing_extensions import TypeForm
 

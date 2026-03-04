@@ -3,6 +3,7 @@
 ## Unreleased
 
 - Improve variance and generic-call checking in static fallback mode for unimportable modules: legacy `TypeVar(..., infer_variance=True)` now infers class variance from member usage, legacy `Generic[T]` classes preserve their type parameters more reliably, and generic `@dataclass` constructor calls retain explicit type arguments.
+- Improve type-inference handling of `|` type expressions in value position: pycroscope now preserves and resolves type-form unions (including metaclass types) without relying solely on runtime `__or__`/`__ror__`, fixing `assert_type(...)` checks like `constructors_call_metaclass.py`.
 - Fix constructor-call checking with generic metaclass passthrough methods: when a metaclass `__call__` is just `*args/**kwargs -> T`, pycroscope now falls back to class `__new__`/`__init__` signatures instead of incorrectly accepting missing constructor arguments.
 - Fix `TypeVarTuple` type-alias specialization for explicit empty and unpacked forms: aliases like `IntTuple[()]` and `TA9[*tuple[int, ...], str]` now preserve variadic bindings instead of defaulting to `Any` or nesting tuple arguments incorrectly.
 - Improve generic base handling in static-fallback analysis: pycroscope now preserves `Generic[...]` type-parameter order when imports fail, validates `Generic[...]`/`Protocol[...]` base arguments and coverage, rejects generic metaclass specialization, and preserves constrained `TypeVar` correlations in binary operations like `AnyStr` concatenation.
