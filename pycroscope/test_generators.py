@@ -47,7 +47,7 @@ class TestGenerator(TestNameCheckVisitorBase):
 class TestGeneratorReturn(TestNameCheckVisitorBase):
     @assert_passes()
     def test_sync(self):
-        from typing import Generator, Iterable
+        from typing import Generator, Iterable, Protocol
 
         def gen() -> int:  # E: generator_return
             yield 1
@@ -59,9 +59,22 @@ class TestGeneratorReturn(TestNameCheckVisitorBase):
         def gen2() -> Iterable[int]:
             yield 1
 
+        def gen_missing_return(
+            cond: bool,
+        ) -> Generator[int, None, bytes]:  # E: missing_return
+            if cond:
+                return b"capybara"
+            yield 1
+
         def caller2() -> Generator[int, None, None]:
             x = yield from [1, 2]
             print(x)
+
+        class IntIterator(Protocol):
+            def __next__(self) -> int: ...
+
+        def gen_protocol_return() -> IntIterator:
+            yield 1
 
     @skip_if_not_installed("asynq")
     @assert_passes()
@@ -75,7 +88,7 @@ class TestGeneratorReturn(TestNameCheckVisitorBase):
 
     @assert_passes()
     def test_async(self):
-        from typing import AsyncGenerator, AsyncIterable
+        from typing import AsyncGenerator, AsyncIterable, Awaitable, Protocol
 
         async def gen() -> int:  # E: generator_return
             yield 1
@@ -84,4 +97,10 @@ class TestGeneratorReturn(TestNameCheckVisitorBase):
             yield 1
 
         async def gen3() -> AsyncGenerator[int, None]:
+            yield 1
+
+        class AsyncIntIterator(Protocol):
+            def __anext__(self) -> Awaitable[int]: ...
+
+        async def gen_protocol_return() -> AsyncIntIterator:
             yield 1
