@@ -3411,11 +3411,22 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                         node.bases
                     )
                 )
-                if any(
+                should_use_recovered_type_params = any(
                     is_instance_of_typing_name(type_param.typevar, "ParamSpec")
                     or type_param.is_typevartuple
                     for type_param in recovered_type_param_values
-                ):
+                )
+                if not should_use_recovered_type_params:
+                    # Constructor-only fallback classes still rely on legacy
+                    # type-erasure behavior for conformance. Recovering type
+                    # parameters here is still important for classes that expose
+                    # non-constructor generic methods.
+                    should_use_recovered_type_params = any(
+                        isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef))
+                        and statement.name not in {"__init__", "__new__"}
+                        for statement in node.body
+                    )
+                if should_use_recovered_type_params:
                     effective_type_param_values = recovered_type_param_values
             if (
                 not type_param_values
@@ -3487,6 +3498,12 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                         self._type_params_from_base_values_for_methods(
                             analyzed_base_values
                         ),
+                    )
+                )
+            if not method_type_params and self.module is None:
+                method_type_params = (
+                    self._type_params_from_base_annotations_for_default_rules(
+                        node.bases
                     )
                 )
             if (
@@ -6119,8 +6136,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     ) -> Sequence[TypeVarValue]:
         """Return type parameters from a shorthand type-parameter base.
 
-        ``Protocol[...]`` controls parameter ordering per spec. In static-fallback
-        mode, we also use ``Generic[...]`` as a declaration-order source.
+        ``Protocol[...]`` controls parameter ordering per spec.
         """
         seen: set[object] = set()
         type_params: list[TypeVarValue] = []
@@ -6134,22 +6150,10 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                         maybe_type_param = _type_param_value_from_value(arg)
                         if maybe_type_param is not None:
                             maybe_type_params.append(maybe_type_param)
-                elif (
-                    self.module is None
-                    and isinstance(subval, GenericValue)
-                    and is_typing_name(subval.typ, "Generic")
-                ):
-                    for arg in subval.args:
-                        maybe_type_param = _type_param_value_from_value(arg)
-                        if maybe_type_param is not None:
-                            maybe_type_params.append(maybe_type_param)
                 else:
                     runtime_annotation = self._runtime_annotation_from_value(subval)
                     origin = typing.get_origin(runtime_annotation)
-                    if origin is not None and (
-                        is_typing_name(origin, "Protocol")
-                        or (self.module is None and is_typing_name(origin, "Generic"))
-                    ):
+                    if origin is not None and is_typing_name(origin, "Protocol"):
                         for runtime_arg in typing.get_args(runtime_annotation):
                             if not (
                                 is_instance_of_typing_name(runtime_arg, "TypeVar")
