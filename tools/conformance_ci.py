@@ -188,6 +188,8 @@ def run_pycroscope(tests_dir: Path) -> tuple[dict[str, dict[int, list[str]]], se
         "unused_variable",
         "--disable",
         "unused_assignment",
+        "--disable",
+        "must_use",
         "--enable",
         "invalid_literal",
         "--enable",

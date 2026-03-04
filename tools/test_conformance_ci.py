@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import subprocess
 import sys
 import textwrap
 from pathlib import Path
@@ -17,6 +18,7 @@ if sys.version_info >= (3, 11):
         get_expected_errors,
         parse_pycroscope_concise_errors,
         parse_pycroscope_internal_error_cases,
+        run_pycroscope,
     )
 
 
@@ -94,6 +96,29 @@ def test_parse_pycroscope_internal_error_cases_traceback_tail(tmp_path: Path) ->
         "Internal error: NotAGradualType('...') [internal_error]",
     ]
     assert parse_pycroscope_internal_error_cases(output_lines) == {"dataclasses_order"}
+
+
+def test_run_pycroscope_disables_must_use(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tests_dir = tmp_path / "tests"
+    tests_dir.mkdir()
+    seen_command: list[str] = []
+
+    def fake_run(
+        command: list[str], **kwargs: object
+    ) -> subprocess.CompletedProcess[str]:
+        nonlocal seen_command
+        seen_command = command
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setattr("tools.conformance_ci.subprocess.run", fake_run)
+    errors, internal_error_cases = run_pycroscope(tests_dir)
+
+    assert errors == {}
+    assert internal_error_cases == set()
+    must_use_index = seen_command.index("must_use")
+    assert seen_command[must_use_index - 1] == "--disable"
 
 
 def test_check_conformance_fails_on_internal_error_in_known_failure(
