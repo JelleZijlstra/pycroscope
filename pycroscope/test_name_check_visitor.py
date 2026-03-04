@@ -571,6 +571,61 @@ class TestImportFailureHandlingCodeSamples(TestNameCheckVisitorBase):
         assert_type(b["x"], bytes)
 
     @assert_passes(allow_import_failures=True)
+    def test_generic_parameter_order_after_import_failure(self):
+        from collections.abc import Iterable, Mapping
+        from typing import Generic, TypeVar, assert_type
+
+        boom = 1 / 0
+
+        T = TypeVar("T")
+        K = TypeVar("K")
+        V = TypeVar("V")
+
+        class LoggedVar(Generic[T]):
+            def __init__(self, value: T) -> None:
+                self.value = value
+
+            def get(self) -> T:
+                return self.value
+
+        def read_vars(vars: Iterable[LoggedVar[int]]) -> None:
+            for var in vars:
+                assert_type(var.get(), int)
+
+        class ReorderedMap(Mapping[K, V], Generic[V, K]): ...
+
+        def test_reordered_map(m: ReorderedMap[int, str]) -> None:
+            assert_type(m["key"], int)
+            m[0]  # E: incompatible_argument
+
+    @assert_passes(allow_import_failures=True)
+    def test_type_parameter_base_validation_after_import_failure(self):
+        from collections.abc import Iterable
+        from typing import Generic, Protocol, TypeVar
+
+        boom = 1 / 0
+
+        T = TypeVar("T")
+        T_co = TypeVar("T_co", covariant=True)
+        S_co = TypeVar("S_co", covariant=True)
+
+        class Bad1(Generic[int]): ...  # E: invalid_annotation
+
+        class Bad2(Protocol[int]): ...  # E: invalid_annotation
+
+        class Bad3(Iterable[T_co], Generic[S_co]): ...  # E: invalid_annotation
+
+        class Bad4(Iterable[T_co], Protocol[S_co]): ...  # E: invalid_annotation
+
+        class Good(Iterable[T_co], Protocol): ...
+
+        class GenericMeta(type, Generic[T]): ...
+
+        class GenericMetaInstance(
+            metaclass=GenericMeta[T]  # E: invalid_annotation
+        ): ...
+
+    @assert_passes(allow_import_failures=True)
     def test_typeddict_class_syntax_after_import_failure(self):
         boom = 1 / 0
 

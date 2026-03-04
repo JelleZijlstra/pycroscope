@@ -524,6 +524,32 @@ class TestSolve(TestNameCheckVisitorBase):
             pick_first(b"a", "b")  # E: incompatible_call
 
     @assert_passes()
+    def test_constrained_typevar_binop_preserves_typevar(self):
+        from typing import TypeVar
+
+        AnyStr = TypeVar("AnyStr", str, bytes)
+
+        def concat(x: AnyStr, y: AnyStr) -> AnyStr:
+            return x + y
+
+        def capybara(s: str, b: bytes) -> None:
+            assert_type(concat(s, s), str)
+            assert_type(concat(b, b), bytes)
+            concat(s, b)  # E: incompatible_call
+            concat(b, s)  # E: incompatible_call
+
+    @assert_passes()
+    def test_constraint_cannot_contain_typevars(self):
+        from typing import Generic, TypeVar
+
+        T = TypeVar("T")
+
+        class C(Generic[T]):
+            BadConstraint = TypeVar(
+                "BadConstraint", str, list[T]  # E: invalid_annotation
+            )
+
+    @assert_passes()
     def test_tv_sequence(self):
         from typing import Sequence, TypeVar, Union
 

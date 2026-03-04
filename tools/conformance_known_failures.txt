@@ -7,7 +7,6 @@ constructors_call_metaclass
 constructors_call_new
 directives_deprecated
 directives_type_checking
-generics_basic
 generics_defaults
 generics_defaults_referential
 generics_defaults_specialization
