@@ -2183,8 +2183,11 @@ def subtract_values(left: Value, right: Value, ctx: CanAssignContext) -> Gradual
     if decomposed is None:
         decomposed = (left,)
     for subval in decomposed:
-        # Remove only members that are fully contained in `right`.
-        if is_subtype(right, subval, ctx):
+        if isinstance(subval, AnyValue):
+            vals.append(subval)
+            continue
+        # Remove members that are assignable to `right`.
+        if is_assignable(right, subval, ctx):
             continue
         vals.append(subval)
     return gradualize(unite_values(*vals))

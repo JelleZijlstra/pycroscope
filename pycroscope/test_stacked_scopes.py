@@ -952,6 +952,11 @@ class TestConstraints(TestNameCheckVisitorBase):
 
         def capybara(x):
             assert_is_value(x, AnyValue(AnySource.unannotated))
+            if isinstance(x, int):
+                assert_type(x, int)
+            else:
+                assert_is_value(x, AnyValue(AnySource.unannotated))
+
             y: object = x
             if isinstance(y, A):
                 assert_type(y, A)
@@ -966,11 +971,6 @@ class TestConstraints(TestNameCheckVisitorBase):
                 if isinstance(z, A):
                     # Less precise constraints are ignored.
                     assert_type(z, B)
-
-            if isinstance(x, int):
-                assert_type(x, int)
-            else:
-                assert_is_value(x, AnyValue(AnySource.unannotated))
 
             x = B()
             assert_type(x, B)
