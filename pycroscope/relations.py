@@ -2183,7 +2183,8 @@ def subtract_values(left: Value, right: Value, ctx: CanAssignContext) -> Gradual
     if decomposed is None:
         decomposed = (left,)
     for subval in decomposed:
-        if is_subtype(subval, right, ctx):
+        # Remove only members that are fully contained in `right`.
+        if is_subtype(right, subval, ctx):
             continue
         vals.append(subval)
     return gradualize(unite_values(*vals))
@@ -2285,6 +2286,29 @@ def _simple_intersection(
     if left == TypedValue(object):
         return right
     if right == TypedValue(object):
+        return left
+
+    # Intersections with unannotated Any collapse to the other side for
+    # nominal type narrowing (e.g., isinstance/issubclass). Keep explicit
+    # intersections with predicates so we retain "unknown value with a
+    # predicate" information from checks like len(x) > 0.
+    if (
+        isinstance(left, AnyValue)
+        and left.source is AnySource.unannotated
+        and isinstance(right, PredicateValue)
+    ):
+        return Irreducible
+    if (
+        isinstance(right, AnyValue)
+        and right.source is AnySource.unannotated
+        and isinstance(left, PredicateValue)
+    ):
+        return Irreducible
+
+    # For other cases, unannotated Any collapses away.
+    if isinstance(left, AnyValue) and left.source is AnySource.unannotated:
+        return right
+    if isinstance(right, AnyValue) and right.source is AnySource.unannotated:
         return left
 
     # Intersections with Any don't simplify

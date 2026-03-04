@@ -20,7 +20,6 @@ from .error_code import ErrorCode
 from .extensions import assert_type, reveal_locals, reveal_type
 from .format_strings import parse_format_string
 from .maybe_asynq import qcore
-from .predicates import IsAssignablePredicate
 from .regex_check import check_regex_in_value
 from .relations import (
     Relation,
@@ -195,8 +194,7 @@ def _isinstance_or_issubclass_impl(
         )
     else:
         narrowed_type = unite_values(*[TypedValue(typ) for typ in narrowed_types])
-    predicate = IsAssignablePredicate(narrowed_type, ctx.visitor, positive_only=False)
-    constraint = Constraint(varname, ConstraintType.predicate, True, predicate)
+    constraint = Constraint(varname, ConstraintType.intersect_with, True, narrowed_type)
     return annotate_with_constraint(TypedValue(bool), constraint)
 
 

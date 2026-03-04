@@ -37,7 +37,6 @@ from .input_sig import (
 from .maybe_asynq import asynq
 from .node_visitor import Replacement
 from .options import IntegerOption
-from .predicates import IsAssignablePredicate
 from .relations import Relation, can_assign_and_used_any, has_relation
 from .safe import is_instance_of_typing_name, safe_getattr, safe_str
 from .stacked_scopes import (
@@ -883,11 +882,8 @@ class Signature:
             for guard in ti:
                 varname = self._get_typeguard_varname(composites)
                 if varname is not None and ctx.visitor is not None:
-                    predicate = IsAssignablePredicate(
-                        guard.guarded_type, ctx.visitor, positive_only=False
-                    )
                     constraint = Constraint(
-                        varname, ConstraintType.predicate, True, predicate
+                        varname, ConstraintType.intersect_with, True, guard.guarded_type
                     )
                     constraints.append(constraint)
 

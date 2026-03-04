@@ -214,10 +214,16 @@ class TestTypeIs(TestNameCheckVisitorBase):
                 assert_type(a, float)
 
         def anymain(a: Any) -> None:
+            any_explicit = AnyValue(AnySource.explicit)
             if is_objfloat(a):
-                assert_type(a, float)
+                assert_is_value(a, any_explicit & (TypedValue(float) | TypedValue(int)))
             if is_anyfloat(a):
-                assert_type(a, float)
+                assert_is_value(
+                    a,
+                    (any_explicit & TypedValue(float))
+                    | (any_explicit & TypedValue(int))
+                    | (any_explicit & (TypedValue(float) | TypedValue(int))),
+                )
 
     @assert_passes()
     def testTypeIsNegatedAndElse(self):
@@ -355,11 +361,7 @@ class TestTypeIs(TestNameCheckVisitorBase):
             return False
 
         def isclassmethod(obj: Any) -> bool:
-            if (
-                ismethod(obj)
-                and obj.__self__ is not None  # E: undefined_attribute
-                and isclass(obj.__self__)  # E: undefined_attribute
-            ):
+            if ismethod(obj) and obj.__self__ is not None and isclass(obj.__self__):
                 return True
 
             return False
@@ -409,7 +411,9 @@ class TestTypeIs(TestNameCheckVisitorBase):
 
     @assert_passes()
     def testAssignToTypeIsedVariable3(self):
-        from typing_extensions import Never, TypeIs, assert_type
+        from typing_extensions import TypeIs, assert_type
+
+        from pycroscope.extensions import Intersection
 
         class A:
             pass
@@ -423,7 +427,7 @@ class TestTypeIs(TestNameCheckVisitorBase):
         def capybara() -> None:
             a = A()
             if guard(a):
-                assert_type(a, Never)  # TODO A & B
+                assert_type(a, Intersection[A, B])
                 a = B()
                 assert_type(a, B)
                 a = A()
@@ -432,9 +436,9 @@ class TestTypeIs(TestNameCheckVisitorBase):
 
     @assert_passes()
     def testTypeIsNestedRestrictionAny(self):
-        from typing import Any, Union
+        from typing import Any
 
-        from typing_extensions import TypeIs, assert_type
+        from typing_extensions import TypeIs
 
         class A: ...
 
@@ -446,7 +450,11 @@ class TestTypeIs(TestNameCheckVisitorBase):
         def test(x: Any) -> None:
             if not (f(x) or x):
                 return
-            assert_type(x, Union[A, Any])
+            assert_is_value(
+                x,
+                AnyValue(AnySource.explicit)
+                | (AnyValue(AnySource.explicit) & TypedValue(A)),
+            )
 
     @assert_passes()
     def testTypeIsNestedRestrictionUnionOther(self):
@@ -497,7 +505,7 @@ class TestTypeIs(TestNameCheckVisitorBase):
     def testTypeIsNestedRestrictionUnionIsInstance(self):
         from typing import Any, List
 
-        from typing_extensions import TypeIs, assert_type
+        from typing_extensions import TypeIs
 
         class A: ...
 
@@ -507,11 +515,20 @@ class TestTypeIs(TestNameCheckVisitorBase):
         def test(x: List[Any]) -> None:
             if not (f(x) or isinstance(x, A)):
                 return
-            assert_type(x, List[Any])
+            assert_is_value(
+                x,
+                (
+                    GenericValue(list, [AnyValue(AnySource.explicit)])
+                    & GenericValue(list, [TypedValue(str)])
+                )
+                | (GenericValue(list, [AnyValue(AnySource.explicit)]) & TypedValue(A)),
+            )
 
     @assert_passes()
     def testTypeIsMultipleCondition(self):
-        from typing_extensions import Never, TypeIs, assert_type
+        from typing_extensions import TypeIs, assert_type
+
+        from pycroscope.extensions import Intersection
 
         class Foo: ...
 
@@ -526,12 +543,12 @@ class TestTypeIs(TestNameCheckVisitorBase):
         def foobar(x: object):
             if not isinstance(x, Foo) or not isinstance(x, Bar):
                 return
-            assert_type(x, Never)
+            assert_type(x, Intersection[Foo, Bar])
 
         def foobar_typeguard(x: object):
             if not is_foo(x) or not is_bar(x):
                 return
-            assert_type(x, Never)
+            assert_type(x, Intersection[Foo, Bar])
 
     @assert_passes()
     def testTypeIsAsFunctionArgAsBoolSubtype(self):
