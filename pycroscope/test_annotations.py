@@ -1944,6 +1944,7 @@ class TestRequired(TestNameCheckVisitorBase):
             D.final_with_default = "baz"  # E: incompatible_assignment
             D.final_classvar = 10  # E: incompatible_assignment
 
+    @skip_before((3, 13))
     @assert_passes()
     def test_dataclass_final_assert_type_not_runtime_polluted(self):
         from dataclasses import dataclass
