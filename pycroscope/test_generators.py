@@ -59,9 +59,8 @@ class TestGeneratorReturn(TestNameCheckVisitorBase):
         def gen2() -> Iterable[int]:
             yield 1
 
-        def gen_missing_return(
-            cond: bool,
-        ) -> Generator[int, None, bytes]:  # E: missing_return
+        # E: missing_return
+        def gen_missing_return(cond: bool) -> Generator[int, None, bytes]:
             if cond:
                 return b"capybara"
             yield 1
