@@ -113,6 +113,11 @@ _RELATION_CACHE_MAX_SIZE = 200_000
 _RELATION_CACHE_EMPTY = object()
 
 
+_COLLAPSIBLE_ANY_SOURCES = frozenset(
+    {AnySource.unannotated, AnySource.from_another, AnySource.inference}
+)
+
+
 def _get_relation_cache(ctx: CanAssignContext) -> MutableMapping[object, object] | None:
     if ctx.has_active_relation_assumptions():
         return None
@@ -2308,10 +2313,10 @@ def _simple_intersection(
     ):
         return Irreducible
 
-    # For other cases, unannotated Any collapses away.
-    if isinstance(left, AnyValue) and left.source is AnySource.unannotated:
+    # For other cases, collapse internal Any sources away.
+    if isinstance(left, AnyValue) and left.source in _COLLAPSIBLE_ANY_SOURCES:
         return right
-    if isinstance(right, AnyValue) and right.source is AnySource.unannotated:
+    if isinstance(right, AnyValue) and right.source in _COLLAPSIBLE_ANY_SOURCES:
         return left
 
     # Intersections with Any don't simplify
