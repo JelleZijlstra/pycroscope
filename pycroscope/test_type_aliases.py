@@ -98,6 +98,82 @@ class TestRecursion(TestNameCheckVisitorBase):
         def includes(typ: AstType) -> bool:
             return isinstance(1, typ)
 
+    @skip_before((3, 11))
+    def test_typevartuple_alias_empty_specialization(self):
+        self.assert_passes("""
+            from typing import Generic, TypeVarTuple
+
+            from typing_extensions import assert_type
+
+            Ts = TypeVarTuple("Ts")
+
+            class Array(Generic[*Ts]):
+                ...
+
+            IntTuple = tuple[int, *Ts]
+            NamedArray = tuple[str, Array[*Ts]]
+
+            def capybara(a: IntTuple[()], b: NamedArray[()]) -> None:
+                assert_type(a, tuple[int])
+                assert_type(b, tuple[str, Array[()]])
+        """)
+
+    @skip_before((3, 11))
+    def test_typevartuple_alias_unpack_specialization(self):
+        self.assert_passes("""
+            from typing import TypeVar, TypeVarTuple
+
+            from typing_extensions import assert_type
+
+            Ts = TypeVarTuple("Ts")
+            T1 = TypeVar("T1")
+            T2 = TypeVar("T2")
+
+            TA7 = tuple[*Ts, T1, T2]
+
+            def func7(a: TA7[*Ts, T1, T2]) -> tuple[tuple[*Ts], T1, T2]:
+                raise NotImplementedError
+
+            def has_expected_types(
+                a: TA7[str, bool], b: TA7[str, bool, float], c: TA7[str, bool, float, int]
+            ) -> None:
+                assert_type(func7(a), tuple[tuple[()], str, bool])
+                assert_type(func7(b), tuple[tuple[str], bool, float])
+                assert_type(func7(c), tuple[tuple[str, bool], float, int])
+
+            TA9 = tuple[*Ts, T1]
+            TA10 = TA9[*tuple[int, ...]]
+
+            def uses_unpacked_aliases(
+                a: TA10, b: TA9[*tuple[int, ...], str], c: TA9[*tuple[int, ...], str]
+            ) -> None:
+                assert_type(a, tuple[*tuple[int, ...], int])
+                assert_type(b, tuple[*tuple[int, ...], str])
+                assert_type(c, tuple[*tuple[int, ...], str])
+        """)
+
+    @skip_before((3, 11))
+    def test_typevartuple_implicit_alias_validation(self):
+        self.assert_passes(
+            """
+            from typing import TypeVar, TypeVarTuple
+
+            Ts = TypeVarTuple("Ts")
+            Ts2 = TypeVarTuple("Ts2")
+            T1 = TypeVar("T1")
+            T2 = TypeVar("T2")
+
+            # Multiple unbounded unpacks in tuple aliases are invalid.
+            TA5 = tuple[T1, *Ts, T2, *Ts]  # E: invalid_annotation
+            TA6 = tuple[T1, *Ts, T2, *tuple[int, ...]]  # E: invalid_annotation
+
+            # A non-variadic parameter cannot be specialized with *Ts2.
+            TA11 = tuple[T1, *Ts]
+            TA12 = TA11[*Ts2]  # E: invalid_annotation
+        """,
+            allow_import_failures=True,
+        )
+
 
 class TestTypeAliasType(TestNameCheckVisitorBase):
     @assert_passes()

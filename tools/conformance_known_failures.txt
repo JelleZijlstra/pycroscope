@@ -19,12 +19,12 @@ generics_self_usage
 generics_syntax_infer_variance
 generics_syntax_scoping
 generics_typevartuple_basic
-generics_typevartuple_callable
 generics_typevartuple_specialization
 overloads_definitions_stub
 
-# Weird TypeVarTuple inference rule in the spec
+# TypeVarTuple/union inference quirks
 generics_typevartuple_args
+generics_typevartuple_callable
 
 # Too precise value for a global
 protocols_generic

@@ -622,9 +622,16 @@ def _type_alias_substitution_key(
 
 
 def _match_type_alias_type_arguments(
-    type_params: Sequence[TypeVarLike | "TypeVarValue"], type_arguments: Sequence[Value]
+    type_params: Sequence[TypeVarLike | "TypeVarValue"],
+    type_arguments: Sequence[Value],
+    *,
+    type_arguments_are_packed: bool = False,
 ) -> Sequence[tuple[TypeVarLike, Value]] | None:
     substitution_keys = [_type_alias_substitution_key(param) for param in type_params]
+    if type_arguments_are_packed:
+        if len(substitution_keys) != len(type_arguments):
+            return None
+        return list(zip(substitution_keys, type_arguments))
     variadic_indexes = [
         i
         for i, type_param in enumerate(type_params)
@@ -669,6 +676,8 @@ class TypeAliasValue(Value):
     alias: TypeAlias = field(compare=False, hash=False)
     type_arguments: Sequence[Value] = ()
     runtime_allows_value_call: bool = False
+    is_specialized: bool = False
+    type_arguments_are_packed: bool = False
 
     def get_value(self) -> Value:
         val = self.alias.get_value()
@@ -677,9 +686,11 @@ class TypeAliasValue(Value):
             type_param.typevar if isinstance(type_param, TypeVarValue) else type_param
             for type_param in type_params
         ]
-        if self.type_arguments:
+        if self.type_arguments or self.is_specialized:
             substitutions = _match_type_alias_type_arguments(
-                type_params, self.type_arguments
+                type_params,
+                self.type_arguments,
+                type_arguments_are_packed=self.type_arguments_are_packed,
             )
             if substitutions is None:
                 # TODO this should be an error
@@ -718,6 +729,8 @@ class TypeAliasValue(Value):
             self.alias,
             substituted_type_arguments,
             runtime_allows_value_call=self.runtime_allows_value_call,
+            is_specialized=self.is_specialized,
+            type_arguments_are_packed=self.type_arguments_are_packed,
         )
 
     def is_type(self, typ: type) -> bool:
@@ -1298,7 +1311,10 @@ class GenericValue(TypedValue):
                     and substituted.typ is tuple
                     and all(not is_many for is_many, _ in substituted.members)
                 ):
-                    new_args.extend(member for _, member in substituted.members)
+                    if substituted.members:
+                        new_args.extend(member for _, member in substituted.members)
+                    else:
+                        new_args.append(substituted)
                     continue
             if (
                 isinstance(arg, TypeVarValue)
@@ -1312,7 +1328,10 @@ class GenericValue(TypedValue):
                     and substituted.typ is tuple
                     and all(not is_many for is_many, _ in substituted.members)
                 ):
-                    new_args.extend(member for _, member in substituted.members)
+                    if substituted.members:
+                        new_args.extend(member for _, member in substituted.members)
+                    else:
+                        new_args.append(substituted)
                     continue
             new_args.append(substituted)
         return GenericValue(self.typ, new_args)
@@ -1401,11 +1420,7 @@ class SequenceValue(GenericValue):
                 and substituted is not member
             ):
                 substituted = replace_known_sequence_value(substituted)
-                if (
-                    isinstance(substituted, SequenceValue)
-                    and substituted.typ is tuple
-                    and all(not inner_many for inner_many, _ in substituted.members)
-                ):
+                if isinstance(substituted, SequenceValue) and substituted.typ is tuple:
                     new_members.extend(substituted.members)
                     continue
             new_members.append((is_many, substituted))
