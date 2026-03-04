@@ -1001,9 +1001,9 @@ class TestDataclassTransform(TestNameCheckVisitorBase):
 
     @assert_passes()
     def test_dataclass_transform_converter_field_specifier(self):
-        from typing import Callable, TypeVar, assert_type
+        from typing import Callable, TypeVar
 
-        from typing_extensions import dataclass_transform
+        from typing_extensions import assert_type, dataclass_transform
 
         T = TypeVar("T")
         S = TypeVar("S")
@@ -1055,9 +1055,9 @@ class TestDataclassTransform(TestNameCheckVisitorBase):
     def test_dataclass_transform_converter_field_specifier_after_import_failure(self):
         boom = 1 / 0
 
-        from typing import Callable, TypeVar, assert_type
+        from typing import Callable, TypeVar
 
-        from typing_extensions import dataclass_transform
+        from typing_extensions import assert_type, dataclass_transform
 
         T = TypeVar("T")
         S = TypeVar("S")
