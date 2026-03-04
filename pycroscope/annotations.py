@@ -69,7 +69,7 @@ from .extensions import (
 from .find_unused import used
 from .functions import FunctionDefNode
 from .node_visitor import ErrorContext
-from .safe import is_instance_of_typing_name, is_typing_name, is_union
+from .safe import is_instance_of_typing_name, is_typing_name, is_union, safe_getattr
 from .signature import (
     ANY_SIGNATURE,
     ELLIPSIS_PARAM,
@@ -793,6 +793,92 @@ def _is_typevartuple_type_param(type_param: TypeVarLike | TypeVarValue) -> bool:
     )
 
 
+def _make_runtime_type_alias_value(
+    alias_value: Value,
+    type_params: Sequence[TypeVarLike | TypeVarValue],
+    module: str = "typing",
+) -> TypeAliasValue:
+    normalized_type_params = tuple(dict.fromkeys(type_params))
+    alias = TypeAlias(
+        evaluator=lambda alias_value=alias_value: alias_value,
+        evaluate_type_params=lambda normalized_type_params=normalized_type_params: (
+            normalized_type_params
+        ),
+    )
+    return TypeAliasValue(
+        "<runtime_generic_alias>", module, alias, runtime_allows_value_call=True
+    )
+
+
+def _infer_alias_type_params_from_value(
+    alias_value: Value,
+) -> tuple[TypeVarLike | TypeVarValue, ...]:
+    inferred_type_params: list[TypeVarLike | TypeVarValue] = []
+    seen_type_params: set[object] = set()
+    for subval in alias_value.walk_values():
+        if isinstance(subval, TypeVarValue):
+            identity: object = (subval.typevar, subval.is_typevartuple)
+            if identity in seen_type_params:
+                continue
+            seen_type_params.add(identity)
+            inferred_type_params.append(subval)
+        elif isinstance(subval, InputSigValue) and isinstance(
+            subval.input_sig, ParamSpecSig
+        ):
+            identity = subval.input_sig.param_spec
+            if identity in seen_type_params:
+                continue
+            seen_type_params.add(identity)
+            inferred_type_params.append(subval.input_sig.param_spec)
+    return tuple(inferred_type_params)
+
+
+def _runtime_type_alias_from_runtime_value(
+    runtime_value: object, ctx: Context
+) -> TypeAliasValue | None:
+    runtime_type_params = getattr(runtime_value, "__parameters__", ())
+    if not isinstance(runtime_type_params, tuple) or not runtime_type_params:
+        return None
+
+    origin = get_origin(runtime_value)
+    args: tuple[object, ...]
+    if origin is not None:
+        args = get_args(runtime_value)
+    else:
+        maybe_origin = getattr(runtime_value, "__origin__", None)
+        maybe_args = getattr(runtime_value, "__args__", None)
+        if maybe_origin is None or not isinstance(maybe_args, tuple):
+            return None
+        origin = maybe_origin
+        args = maybe_args
+
+    alias_value = _value_of_origin_args(origin, args, runtime_value, ctx)
+    inferred_type_params = _infer_alias_type_params_from_value(alias_value)
+    if inferred_type_params:
+        type_params = inferred_type_params
+    else:
+        type_params = cast(tuple[TypeVarLike, ...], runtime_type_params)
+    return _make_runtime_type_alias_value(
+        alias_value,
+        type_params,
+        module=safe_getattr(runtime_value, "__module__", "typing") or "typing",
+    )
+
+
+def _runtime_type_alias_from_partial_value(
+    partial_value: PartialValue, ctx: Context
+) -> TypeAliasValue | None:
+    if partial_value.operation is not PartialValueOperation.SUBSCRIPT:
+        return None
+    alias_value = _type_from_subscripted_value(
+        partial_value.root, partial_value.members, ctx
+    )
+    inferred_type_params = _infer_alias_type_params_from_value(alias_value)
+    if not inferred_type_params:
+        return None
+    return _make_runtime_type_alias_value(alias_value, inferred_type_params)
+
+
 def _match_type_alias_arg_values(
     type_params: Sequence[TypeVarValue], args_vals: Sequence[Value]
 ) -> Sequence[tuple[TypeVarValue, Value]] | None:
@@ -941,6 +1027,19 @@ def _type_from_value_type_alias_arg(
                 )
         return arg
     if _is_typevartuple_type_param(cast(TypeVarLike | TypeVarValue, type_param)):
+        if arg == KnownValue(()):
+            return SequenceValue(tuple, [])
+        if isinstance(arg, KnownValue) and isinstance(arg.val, tuple):
+            return SequenceValue(
+                tuple, [(False, _type_from_runtime(member, ctx)) for member in arg.val]
+            )
+        if isinstance(arg, SequenceValue) and arg.typ is tuple:
+            members = arg.get_member_sequence()
+            if members is not None:
+                return SequenceValue(
+                    tuple,
+                    [(False, _type_from_value(member, ctx)) for member in members],
+                )
         expr = _annotation_expr_from_value(arg, ctx)
         unpacked, qualifiers = expr.unqualify({Qualifier.Unpack})
         if Qualifier.Unpack in qualifiers:
@@ -1555,6 +1654,9 @@ def _type_from_subscripted_value(
             )
             return GenericValue(root.typ, typed_members)
     if isinstance(root, PartialValue):
+        runtime_alias = _runtime_type_alias_from_partial_value(root, ctx)
+        if runtime_alias is not None:
+            return _type_from_subscripted_value(runtime_alias, members, ctx)
         root_type = _type_from_value(root, ctx)
         return _type_from_subscripted_value(root_type, members, ctx)
     elif isinstance(root, MultiValuedValue):
@@ -1615,13 +1717,45 @@ def _type_from_subscripted_value(
         return GenericValue(synthetic_typ, typed_members)
     if isinstance(root, TypeAliasValue):
         type_params = tuple(root.alias.get_type_params())
-        if len(members) == len(type_params):
+        if any(_is_unpack_annotation_member(member) for member in members):
+            normalized_unpack_members = _normalize_generic_unpack_members(members, ctx)
+        else:
+            normalized_unpack_members = None
+        saw_unpack = normalized_unpack_members is not None
+        has_unbounded_unpack = (
+            saw_unpack
+            and normalized_unpack_members is not None
+            and any(is_many for is_many, _ in normalized_unpack_members)
+        )
+        packed_variadic_members = _pack_typevartuple_args_from_unpack_members(
+            type_params, members, ctx
+        )
+        if packed_variadic_members is not None:
+            args_vals = packed_variadic_members
+        elif (
+            saw_unpack
+            and normalized_unpack_members is not None
+            and not has_unbounded_unpack
+        ):
+            unpacked_members = [member for _, member in normalized_unpack_members]
+            if len(unpacked_members) == len(type_params):
+                args_vals = [
+                    _type_from_value_type_alias_arg(member, type_param, ctx)
+                    for member, type_param in zip(unpacked_members, type_params)
+                ]
+            else:
+                args_vals = [
+                    _type_from_value(member, ctx) for member in unpacked_members
+                ]
+        elif len(members) == len(type_params):
             args_vals = [
                 _type_from_value_type_alias_arg(member, type_param, ctx)
                 for member, type_param in zip(members, type_params)
             ]
         else:
             args_vals = [_type_from_value(member, ctx) for member in members]
+        if has_unbounded_unpack and packed_variadic_members is None:
+            ctx.show_error("Unpacked TypeVarTuple cannot specialize this type alias")
         args_vals = _validate_type_alias_arg_values(type_params, args_vals, ctx)
         alias_value = TypeAliasValue(
             root.name,
@@ -1642,6 +1776,9 @@ def _type_from_subscripted_value(
         if root != AnyValue(AnySource.error):
             ctx.show_error(f"Cannot resolve subscripted annotation: {root}")
         return AnyValue(AnySource.error)
+    runtime_alias = _runtime_type_alias_from_runtime_value(root.val, ctx)
+    if runtime_alias is not None:
+        return _type_from_subscripted_value(runtime_alias, members, ctx)
     root = root.val
     if is_instance_of_typing_name(root, "TypeAliasType"):
         alias_object = cast(Any, root)

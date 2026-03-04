@@ -10923,6 +10923,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
 
     def visit_Expr(self, node: ast.Expr) -> Value:
         value = self.visit(node.value)
+        self._validate_runtime_type_expression(node.value)
         if _is_asynq_future(value):
             new_node = ast.Expr(value=ast.Yield(value=node.value))
             replacement = self.replace_node(node, new_node)
@@ -11043,6 +11044,95 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     and self._is_current_method_receiver_node(target.value)
                 ):
                     self._check_declared_enum_value_type(enum_value_type, value, node)
+
+    def _make_implicit_runtime_type_alias_assignment_value(
+        self, node: ast.Assign, assigned_value: Value
+    ) -> TypeAliasValue | None:
+        if len(node.targets) != 1 or not isinstance(node.targets[0], ast.Name):
+            return None
+
+        runtime_type_params: tuple[TypeVarLike | TypeVarValue, ...] | None = None
+        if isinstance(assigned_value, KnownValue):
+            maybe_runtime_type_params = safe_getattr(
+                assigned_value.val, "__parameters__", ()
+            )
+            if (
+                isinstance(maybe_runtime_type_params, tuple)
+                and maybe_runtime_type_params
+            ):
+                runtime_type_params = cast(
+                    tuple[TypeVarLike | TypeVarValue, ...], maybe_runtime_type_params
+                )
+
+        if runtime_type_params is None and not (
+            isinstance(assigned_value, PartialValue)
+            and assigned_value.operation is PartialValueOperation.SUBSCRIPT
+        ):
+            return None
+
+        alias_expr = annotation_expr_from_value(
+            assigned_value,
+            visitor=self,
+            node=node.value,
+            suppress_errors=self._is_collecting(),
+        )
+        alias_value, _ = alias_expr.maybe_unqualify(set(Qualifier))
+        if alias_value is None:
+            return None
+
+        if runtime_type_params is None:
+            inferred_type_params: list[TypeVarLike | TypeVarValue] = []
+            seen_type_params: set[object] = set()
+            for subval in alias_value.walk_values():
+                if isinstance(subval, TypeVarValue):
+                    identity: object = (subval.typevar, subval.is_typevartuple)
+                    if identity in seen_type_params:
+                        continue
+                    seen_type_params.add(identity)
+                    inferred_type_params.append(subval)
+                elif isinstance(subval, InputSigValue) and isinstance(
+                    subval.input_sig, ParamSpecSig
+                ):
+                    identity = subval.input_sig.param_spec
+                    if identity in seen_type_params:
+                        continue
+                    seen_type_params.add(identity)
+                    inferred_type_params.append(subval.input_sig.param_spec)
+            if inferred_type_params:
+                runtime_type_params = tuple(inferred_type_params)
+            else:
+                return None
+
+        alias_name = node.targets[0].id
+        return TypeAliasValue(
+            alias_name,
+            self.module.__name__ if self.module is not None else "",
+            TypeAlias(
+                lambda alias_value=alias_value: alias_value,
+                lambda runtime_type_params=runtime_type_params: runtime_type_params,
+            ),
+            runtime_allows_value_call=True,
+        )
+
+    def _validate_runtime_type_expression(self, node: ast.AST) -> None:
+        if not isinstance(node, ast.Subscript):
+            return
+        has_unpack = False
+        for subnode in ast.walk(node.slice):
+            if isinstance(subnode, ast.Starred):
+                has_unpack = True
+                break
+            if isinstance(subnode, ast.Name) and subnode.id == "Unpack":
+                has_unpack = True
+                break
+            if isinstance(subnode, ast.Attribute) and subnode.attr == "Unpack":
+                has_unpack = True
+                break
+        if not has_unpack:
+            return
+        annotation_expr_from_ast(
+            node, visitor=self, suppress_errors=self._is_collecting()
+        )
 
     def is_in_typeddict_definition(self) -> bool:
         return (
@@ -11607,12 +11697,20 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     ) -> tuple[TypeVarLike, ...]:
         type_params: list[TypeVarLike] = []
         seen_identities: set[object] = set()
+        extracted_type_params = tuple(dict.fromkeys(extract_type_params(value)))
+        extracted_by_name: dict[str, list[TypeVarLike]] = {}
+        for type_param in extracted_type_params:
+            name = getattr(type_param, "__name__", None)
+            if isinstance(name, str):
+                extracted_by_name.setdefault(name, []).append(type_param)
 
-        def maybe_record_type_param(resolved: Value) -> None:
+        def record_from_resolved(resolved: Value) -> bool:
             for subval in flatten_values(resolved, unwrap_annotated=True):
                 identity = _type_param_identity(subval)
-                if identity is None or identity in seen_identities:
+                if identity is None:
                     continue
+                if identity in seen_identities:
+                    return True
                 seen_identities.add(identity)
                 if isinstance(subval, TypeVarValue):
                     type_params.append(subval.typevar)
@@ -11626,14 +11724,22 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     or is_instance_of_typing_name(subval.val, "ParamSpec")
                 ):
                     type_params.append(cast(TypeVarLike, subval.val))
-                break
+                return True
+            return False
 
         def walk(node: ast.AST, *, allow_string_parse: bool = True) -> None:
             if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load):
                 resolved, _ = self.resolve_name(
                     node, error_node=node, suppress_errors=True
                 )
-                maybe_record_type_param(resolved)
+                if record_from_resolved(resolved):
+                    return
+                for type_param in extracted_by_name.get(node.id, ()):
+                    if type_param in seen_identities:
+                        continue
+                    seen_identities.add(type_param)
+                    type_params.append(type_param)
+                    return
                 return
             if (
                 allow_string_parse
@@ -11653,7 +11759,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 walk(child, allow_string_parse=allow_string_parse)
 
         walk(value_node)
-        for type_param in extract_type_params(value):
+        for type_param in extracted_type_params:
             if type_param in seen_identities:
                 continue
             seen_identities.add(type_param)
@@ -12180,7 +12286,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                         stripped_value, root_composite.varname, root_composite.node
                     )
                 )
-                if self.in_annotation and (
+                should_use_static_annotation_subscript = self.in_annotation and (
                     isinstance(stripped_root.value, TypeAliasValue)
                     or (
                         self.module is None
@@ -12204,7 +12310,8 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     )
                     or _contains_unpack_annotation_value(index)
                     or _should_use_static_annotation_subscript(stripped_root.value)
-                ):
+                )
+                if should_use_static_annotation_subscript:
                     return_value = PartialValue(
                         PartialValueOperation.SUBSCRIPT,
                         stripped_root.value,
