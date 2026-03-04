@@ -2397,6 +2397,20 @@ class TestTypeAlias(TestNameCheckVisitorBase):
             pass
 
     @assert_passes()
+    def test_explicit_type_alias_paramspec_list_form_specialization(self):
+        from typing import Callable, Concatenate, ParamSpec, TypeAlias, TypeVar
+
+        from typing_extensions import assert_type
+
+        P = ParamSpec("P")
+        R = TypeVar("R")
+
+        Alias: TypeAlias = Callable[Concatenate[int, P], R]
+
+        def capybara(x: Alias[[str, str], None]) -> None:
+            assert_type(x, Callable[[int, str, str], None])
+
+    @assert_passes()
     def test_unspecialized_two_param_alias_defaults_type_params_to_any(self):
         from typing import Any, TypeVar
 

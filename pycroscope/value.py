@@ -632,20 +632,6 @@ def _match_type_alias_type_arguments(
             return None
         return list(zip(substitution_keys, type_arguments))
     variadic_index = variadic_indexes[0]
-    if len(type_arguments) == len(substitution_keys):
-        variadic_arg = type_arguments[variadic_index]
-        if isinstance(variadic_arg, KnownValue):
-            variadic_arg = replace_known_sequence_value(variadic_arg)
-        if isinstance(variadic_arg, TypeVarValue) and variadic_arg.is_typevartuple:
-            return [
-                (key, variadic_arg if i == variadic_index else type_arguments[i])
-                for i, key in enumerate(substitution_keys)
-            ]
-        if isinstance(variadic_arg, SequenceValue) and variadic_arg.typ is tuple:
-            return [
-                (key, variadic_arg if i == variadic_index else type_arguments[i])
-                for i, key in enumerate(substitution_keys)
-            ]
     minimum_args = len(substitution_keys) - 1
     if len(type_arguments) < minimum_args:
         return None

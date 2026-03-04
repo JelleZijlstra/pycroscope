@@ -11597,12 +11597,20 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     ) -> tuple[TypeVarLike, ...]:
         type_params: list[TypeVarLike] = []
         seen_identities: set[object] = set()
+        extracted_type_params = tuple(dict.fromkeys(extract_type_params(value)))
+        extracted_by_name: dict[str, list[TypeVarLike]] = {}
+        for type_param in extracted_type_params:
+            name = getattr(type_param, "__name__", None)
+            if isinstance(name, str):
+                extracted_by_name.setdefault(name, []).append(type_param)
 
-        def maybe_record_type_param(resolved: Value) -> None:
+        def record_from_resolved(resolved: Value) -> bool:
             for subval in flatten_values(resolved, unwrap_annotated=True):
                 identity = _type_param_identity(subval)
-                if identity is None or identity in seen_identities:
+                if identity is None:
                     continue
+                if identity in seen_identities:
+                    return True
                 seen_identities.add(identity)
                 if isinstance(subval, TypeVarValue):
                     type_params.append(subval.typevar)
@@ -11616,14 +11624,22 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     or is_instance_of_typing_name(subval.val, "ParamSpec")
                 ):
                     type_params.append(cast(TypeVarLike, subval.val))
-                break
+                return True
+            return False
 
         def walk(node: ast.AST, *, allow_string_parse: bool = True) -> None:
             if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load):
                 resolved, _ = self.resolve_name(
                     node, error_node=node, suppress_errors=True
                 )
-                maybe_record_type_param(resolved)
+                if record_from_resolved(resolved):
+                    return
+                for type_param in extracted_by_name.get(node.id, ()):
+                    if type_param in seen_identities:
+                        continue
+                    seen_identities.add(type_param)
+                    type_params.append(type_param)
+                    return
                 return
             if (
                 allow_string_parse
@@ -11643,7 +11659,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 walk(child, allow_string_parse=allow_string_parse)
 
         walk(value_node)
-        for type_param in extract_type_params(value):
+        for type_param in extracted_type_params:
             if type_param in seen_identities:
                 continue
             seen_identities.add(type_param)
@@ -12103,34 +12119,30 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                         stripped_value, root_composite.varname, root_composite.node
                     )
                 )
-                should_use_static_annotation_subscript = isinstance(
-                    stripped_root.value, TypeAliasValue
-                ) or (
-                    self.in_annotation
-                    and (
-                        (
-                            self.module is None
-                            and _should_use_static_annotation_subscript_on_import_failure(
-                                stripped_root.value
-                            )
+                should_use_static_annotation_subscript = self.in_annotation and (
+                    isinstance(stripped_root.value, TypeAliasValue)
+                    or (
+                        self.module is None
+                        and _should_use_static_annotation_subscript_on_import_failure(
+                            stripped_root.value
                         )
-                        or (
-                            isinstance(stripped_root.value, KnownValue)
-                            and (
-                                is_typing_name(stripped_root.value.val, "TypeAliasType")
-                                or is_instance_of_typing_name(
-                                    stripped_root.value.val, "TypeAliasType"
-                                )
-                            )
-                        )
-                        or (
-                            isinstance(stripped_root.value, KnownValue)
-                            and is_typing_name(stripped_root.value.val, "Literal")
-                            and not _is_runtime_literal_index(index)
-                        )
-                        or _contains_unpack_annotation_value(index)
-                        or _should_use_static_annotation_subscript(stripped_root.value)
                     )
+                    or (
+                        isinstance(stripped_root.value, KnownValue)
+                        and (
+                            is_typing_name(stripped_root.value.val, "TypeAliasType")
+                            or is_instance_of_typing_name(
+                                stripped_root.value.val, "TypeAliasType"
+                            )
+                        )
+                    )
+                    or (
+                        isinstance(stripped_root.value, KnownValue)
+                        and is_typing_name(stripped_root.value.val, "Literal")
+                        and not _is_runtime_literal_index(index)
+                    )
+                    or _contains_unpack_annotation_value(index)
+                    or _should_use_static_annotation_subscript(stripped_root.value)
                 )
                 if should_use_static_annotation_subscript:
                     return_value = PartialValue(
