@@ -297,6 +297,8 @@ if sys.version_info >= (3, 11):
 else:
     TryNode = ast.Try
 
+TYPE_CHECKING_MODULES: frozenset[str] = frozenset({"typing", "typing_extensions"})
+
 
 def _strip_predicate_intersection(value: Value) -> Value:
     """Remove predicate-only refinements when invoking runtime dunder methods."""
@@ -1573,6 +1575,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     module: types.ModuleType | None
     node_context: StackedContexts
     options: Options
+    prefer_static_module_assignments: bool
     reexport_tracker: ImplicitReexportTracker
     return_values: list[Value | None]
     scopes: StackedScopes
@@ -1640,6 +1643,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         self.annotate = annotate
         # true if we're in the body of a comprehension's loop
         self.in_comprehension_body = False
+        self.prefer_static_module_assignments = False
         self.options = checker.options
 
         if module is not None:
@@ -2072,6 +2076,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     varname, lookup_node, self.state, can_assign_ctx=self
                 )
                 if self._is_checking() and value is not None:
+                    if self.prefer_static_module_assignments:
+                        current_scope.variables[varname] = value
+                        return value, EMPTY_ORIGIN
                     if self.module is None:
                         # If module import failed, collected module-scope values are
                         # provisional. Prefer check-pass static inference, but keep
@@ -2080,6 +2087,11 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                         if declared_type is not None:
                             current_scope.variables[varname] = declared_type
                             return declared_type, EMPTY_ORIGIN
+                        current_scope.variables[varname] = value
+                        return value, EMPTY_ORIGIN
+                    if isinstance(value, AnnotatedValue) and value.has_metadata_of_type(
+                        DefiniteValueExtension
+                    ):
                         current_scope.variables[varname] = value
                         return value, EMPTY_ORIGIN
                     # Runtime module loading can populate values that differ from
@@ -9200,6 +9212,13 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     alias.name.split(".")[0], alias, value, private=not force_public
                 )
 
+    def _maybe_annotate_type_checking_value(
+        self, value: Value, *, module_name: str | None, attribute_name: str
+    ) -> Value:
+        if attribute_name == "TYPE_CHECKING" and module_name in TYPE_CHECKING_MODULES:
+            return annotate_value(value, [DefiniteValueExtension(True)])
+        return value
+
     def _get_module(self, name: str, node: ast.AST) -> Value:
         if name not in sys.modules:
             self._try_to_import(name)
@@ -9303,6 +9322,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                             ErrorCode.import_failed,
                         )
                         val = AnyValue(AnySource.error)
+                    val = self._maybe_annotate_type_checking_value(
+                        val, module_name=node.module, attribute_name=alias.name
+                    )
                     self._set_alias_in_scope(alias, val, node=node)
                 return
 
@@ -9343,6 +9365,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     )
                 continue
             val = self._get_import_from_value(source_module, alias.name, node)
+            val = self._maybe_annotate_type_checking_value(
+                val, module_name=node.module, attribute_name=alias.name
+            )
             self._set_alias_in_scope(
                 alias,
                 val,
@@ -11189,37 +11214,77 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         # reset yield checks to avoid incorrect errors when we yield in both the condition and one
         # of the blocks
         self.yield_checker.reset_yield_checks()
-        with self._subscope_and_maybe_supress(definite_value is False) as body_scope:
-            self.add_constraint(node, constraint)
-            self._generic_visit_list(node.body)
-        self.yield_checker.reset_yield_checks()
-
-        with self._subscope_and_maybe_supress(definite_value is True) as else_scope:
-            self.add_constraint(node, constraint.invert())
-            self._generic_visit_list(node.orelse)
-        self.scopes.combine_subscopes([body_scope, else_scope])
+        if definite_value is True:
+            with (
+                self.scopes.subscope() as body_scope,
+                override(self, "prefer_static_module_assignments", True),
+            ):
+                self.add_constraint(node, constraint)
+                self._generic_visit_list(node.body)
+            self.scopes.combine_subscopes([body_scope])
+            self._annotate_skipped_subtree(node.orelse)
+        elif definite_value is False:
+            with (
+                self.scopes.subscope() as else_scope,
+                override(self, "prefer_static_module_assignments", True),
+            ):
+                self.add_constraint(node, constraint.invert())
+                self._generic_visit_list(node.orelse)
+            self.scopes.combine_subscopes([else_scope])
+            self._annotate_skipped_subtree(node.body)
+        else:
+            with self.scopes.subscope() as body_scope:
+                self.add_constraint(node, constraint)
+                self._generic_visit_list(node.body)
+            self.yield_checker.reset_yield_checks()
+            with self.scopes.subscope() as else_scope:
+                self.add_constraint(node, constraint.invert())
+                self._generic_visit_list(node.orelse)
+            self.scopes.combine_subscopes([body_scope, else_scope])
         self.yield_checker.reset_yield_checks()
 
     def visit_IfExp(self, node: ast.IfExp) -> Value:
         val, constraint = self.constraint_from_condition(node.test)
         definite_value = _extract_definite_value(val)
-        with self._subscope_and_maybe_supress(definite_value is False) as if_scope:
+        if definite_value is True:
+            with (
+                self.scopes.subscope() as if_scope,
+                override(self, "prefer_static_module_assignments", True),
+            ):
+                self.add_constraint(node, constraint)
+                then_val = self.visit(node.body)
+            self.scopes.combine_subscopes([if_scope])
+            self._annotate_skipped_subtree([node.orelse])
+            return then_val
+        if definite_value is False:
+            with (
+                self.scopes.subscope() as else_scope,
+                override(self, "prefer_static_module_assignments", True),
+            ):
+                self.add_constraint(node, constraint.invert())
+                else_val = self.visit(node.orelse)
+            self.scopes.combine_subscopes([else_scope])
+            self._annotate_skipped_subtree([node.body])
+            return else_val
+        with self.scopes.subscope() as if_scope:
             self.add_constraint(node, constraint)
             then_val = self.visit(node.body)
-        with self._subscope_and_maybe_supress(definite_value is True) as else_scope:
+        with self.scopes.subscope() as else_scope:
             self.add_constraint(node, constraint.invert())
             else_val = self.visit(node.orelse)
         self.scopes.combine_subscopes([if_scope, else_scope])
         return unite_values(then_val, else_val)
 
-    @contextlib.contextmanager
-    def _subscope_and_maybe_supress(self, should_suppress: bool) -> Generator[SubScope]:
-        with self.scopes.subscope() as scope:
-            if should_suppress:
-                with self.catch_errors():
-                    yield scope
-            else:
-                yield scope
+    def _annotate_skipped_subtree(self, nodes: Iterable[ast.AST]) -> None:
+        if not self.annotate:
+            return
+        for node in nodes:
+            for subnode in ast.walk(node):
+                if not (hasattr(subnode, "lineno") and hasattr(subnode, "col_offset")):
+                    continue
+                if hasattr(subnode, "inferred_value"):
+                    continue
+                subnode.inferred_value = AnyValue(AnySource.inference)
 
     def constraint_from_condition(
         self, node: ast.AST, check_boolability: bool = True
@@ -11230,6 +11295,8 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             return condition, constraint
         if check_boolability:
             disabled = set()
+            if _extract_definite_value(condition) is not None:
+                disabled = {ErrorCode.type_always_true, ErrorCode.value_always_true}
         else:
             disabled = {ErrorCode.type_always_true, ErrorCode.value_always_true}
         self._check_boolability(condition, node, disabled=disabled)
@@ -13297,6 +13364,14 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     value = annotate_value(value, [SYS_PLATFORM_EXTENSION])
                 elif node.attr == "version_info":
                     value = annotate_value(value, [SYS_VERSION_INFO_EXTENSION])
+            elif isinstance(root_composite.value, KnownValue) and isinstance(
+                root_composite.value.val, types.ModuleType
+            ):
+                value = self._maybe_annotate_type_checking_value(
+                    value,
+                    module_name=root_composite.value.val.__name__,
+                    attribute_name=node.attr,
+                )
             return Composite(value, composite, node)
         else:
             self.show_error(node, "Unknown context", ErrorCode.unexpected_node)
