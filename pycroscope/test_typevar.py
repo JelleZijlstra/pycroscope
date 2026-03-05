@@ -430,6 +430,47 @@ class TestTypeVar(TestNameCheckVisitorBase):
 
         class GoodAfterVariadic(Generic[Unpack[Ts], P]): ...
 
+    @assert_passes(allow_import_failures=True)
+    def test_generic_default_specialization_after_import_failure(self):
+        from typing import Generic, TypeAlias
+
+        from typing_extensions import TypeVar, assert_type
+
+        T1 = TypeVar("T1")
+        T2 = TypeVar("T2")
+        DefaultIntT = TypeVar("DefaultIntT", default=int)
+        DefaultStrT = TypeVar("DefaultStrT", default=str)
+
+        class SomethingWithNoDefaults(Generic[T1, T2]): ...
+
+        MyAlias: TypeAlias = SomethingWithNoDefaults[int, DefaultStrT]
+
+        def func1(p1: MyAlias, p2: MyAlias[bool]) -> None:
+            assert_type(p1, SomethingWithNoDefaults[int, str])
+            assert_type(p2, SomethingWithNoDefaults[int, bool])
+
+        MyAlias[bool, int]  # E: invalid_annotation
+
+        class SubclassMe(Generic[T1, DefaultStrT]):
+            x: DefaultStrT
+
+        class Bar(SubclassMe[int, DefaultStrT]): ...
+
+        assert_type(Bar(), Bar[str])
+        assert_type(Bar[bool](), Bar[bool])
+
+        class Foo(SubclassMe[float]): ...
+
+        assert_type(Foo().x, str)
+        Foo[str]  # E: invalid_annotation
+
+        class Baz(Generic[DefaultIntT, DefaultStrT]): ...
+
+        class Spam(Baz): ...
+
+        value: Baz[int, str] = Spam()
+        assert_type(value, Baz[int, str])
+
 
 class TestSolve(TestNameCheckVisitorBase):
     @assert_passes()

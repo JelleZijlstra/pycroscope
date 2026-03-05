@@ -19,7 +19,7 @@ from typing import Any, Generic, TypeVar
 from unittest import mock
 
 import typing_extensions
-from typing_extensions import is_typeddict
+from typing_extensions import NoDefault, is_typeddict
 
 import pycroscope
 
@@ -112,6 +112,7 @@ if sys.version_info >= (3, 11):
 MethodWrapperType = type(object().__str__)
 
 _SELF_PARAM = inspect.Parameter("__self", inspect.Parameter.POSITIONAL_ONLY)
+_NO_DEFAULT = object()
 
 
 def _is_plain_object_constructor(obj: type) -> bool:
@@ -1291,7 +1292,6 @@ class ArgSpecCache:
         represented as tuple values during substitution.
         """
 
-        default = AnyValue(AnySource.generic_argument)
         if not type_params:
             return []
 
@@ -1307,7 +1307,11 @@ class ArgSpecCache:
         ]
         if len(variadic_indexes) != 1 or not generic_args:
             return [
-                generic_args[i] if i < len(generic_args) else default
+                (
+                    generic_args[i]
+                    if i < len(generic_args)
+                    else self._default_type_argument_for_param(type_params[i])
+                )
                 for i in range(len(type_params))
             ]
 
@@ -1331,7 +1335,11 @@ class ArgSpecCache:
         specialized: list[Value] = []
         for i in range(len(type_params)):
             if i < variadic_index:
-                value = generic_args[i] if i < len(generic_args) else default
+                value = (
+                    generic_args[i]
+                    if i < len(generic_args)
+                    else self._default_type_argument_for_param(type_params[i])
+                )
             elif i == variadic_index:
                 value = SequenceValue(
                     tuple,
@@ -1346,10 +1354,31 @@ class ArgSpecCache:
                 value = (
                     generic_args[source_index]
                     if source_index < len(generic_args)
-                    else default
+                    else self._default_type_argument_for_param(type_params[i])
                 )
             specialized.append(value)
         return specialized
+
+    def _default_type_argument_for_param(self, type_param: Value) -> Value:
+        if isinstance(type_param, TypeVarValue):
+            if type_param.default is not None:
+                return type_param.default
+            runtime_default = safe_getattr(
+                type_param.typevar, "__default__", _NO_DEFAULT
+            )
+            if runtime_default is not _NO_DEFAULT and runtime_default is not NoDefault:
+                return type_from_runtime(runtime_default, ctx=self.default_context)
+        elif isinstance(type_param, InputSigValue) and isinstance(
+            type_param.input_sig, ParamSpecSig
+        ):
+            if type_param.input_sig.default is not None:
+                return type_param.input_sig.default
+            runtime_default = safe_getattr(
+                type_param.input_sig.param_spec, "__default__", _NO_DEFAULT
+            )
+            if runtime_default is not _NO_DEFAULT and runtime_default is not NoDefault:
+                return type_from_runtime(runtime_default, ctx=self.default_context)
+        return AnyValue(AnySource.generic_argument)
 
     def _get_generic_bases_cached(self, typ: type | str) -> GenericBases:
         try:

@@ -6153,6 +6153,52 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         runtime_default = safe_getattr(type_param.typevar, "__default__", NoDefault)
         return runtime_default is not NoDefault
 
+    def _type_parameter_value_has_default(self, type_param: Value) -> bool:
+        if isinstance(type_param, TypeVarValue):
+            return self._type_param_has_default(type_param)
+        if isinstance(type_param, InputSigValue) and isinstance(
+            type_param.input_sig, ParamSpecSig
+        ):
+            if type_param.input_sig.default is not None:
+                return True
+            runtime_default = safe_getattr(
+                type_param.input_sig.param_spec, "__default__", NoDefault
+            )
+            return runtime_default is not NoDefault
+        return False
+
+    def _walk_values_for_type_param_collection(self, value: Value) -> Iterable[Value]:
+        if (
+            isinstance(value, PartialValue)
+            and value.operation is PartialValueOperation.SUBSCRIPT
+        ):
+            root_is_specialized_class = False
+            if isinstance(value.runtime_value, GenericValue):
+                runtime_typ = value.runtime_value.typ
+                if isinstance(value.root, SyntheticClassObjectValue):
+                    root_type = value.root.class_type
+                    root_is_specialized_class = (
+                        isinstance(root_type, TypedValue)
+                        and root_type.typ == runtime_typ
+                    )
+                elif isinstance(value.root, TypedValue):
+                    root_is_specialized_class = value.root.typ == runtime_typ
+                elif isinstance(value.root, KnownValue) and isinstance(
+                    value.root.val, type
+                ):
+                    root_is_specialized_class = value.root.val == runtime_typ
+
+            if not root_is_specialized_class:
+                yield from self._walk_values_for_type_param_collection(value.root)
+
+            # For class specializations like Base[int, T], the root contributes
+            # unsubstituted type params from Base that should not be inherited.
+            for member in value.members:
+                yield from self._walk_values_for_type_param_collection(member)
+            yield from self._walk_values_for_type_param_collection(value.runtime_value)
+            return
+        yield from value.walk_values()
+
     def _check_class_type_param_default_rules(
         self, node: ast.ClassDef, type_params: Sequence[TypeVarValue]
     ) -> None:
@@ -6251,7 +6297,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             seen.add(type_param.typevar)
         for base in base_values:
             for subval in flatten_values(base):
-                for walked in subval.walk_values():
+                for walked in self._walk_values_for_type_param_collection(subval):
                     if isinstance(walked, TypeVarValue):
                         type_param = walked
                     elif isinstance(walked, InputSigValue) and isinstance(
@@ -12816,6 +12862,23 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                         stripped_value, root_composite.varname, root_composite.node
                     )
                 )
+                if not self.in_annotation and isinstance(
+                    stripped_root.value, TypeAliasValue
+                ):
+                    # Explicit TypeAlias values should report invalid specialization
+                    # arity even when used in runtime-value positions.
+                    type_from_value(
+                        PartialValue(
+                            PartialValueOperation.SUBSCRIPT,
+                            stripped_root.value,
+                            node,
+                            self._maybe_unpack_tuple(index, node),
+                            TypedValue(types.GenericAlias),
+                        ),
+                        self,
+                        node,
+                        suppress_errors=False,
+                    )
                 should_use_static_annotation_subscript = self.in_annotation and (
                     isinstance(stripped_root.value, TypeAliasValue)
                     or (
@@ -13034,6 +13097,34 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         if self.checker.get_synthetic_class(synthetic_typ) is None:
             return None
         type_parameters = self.checker.get_type_parameters(synthetic_typ)
+        generic_bases = self.checker.get_generic_bases(synthetic_typ, ())
+        if (
+            not type_parameters
+            and normalized_members
+            and synthetic_typ in generic_bases
+        ):
+            synthetic_class = self.checker.get_synthetic_class(synthetic_typ)
+            has_explicit_class_getitem = (
+                synthetic_class is not None
+                and "__class_getitem__" in synthetic_class.class_attributes
+            )
+            has_fully_specialized_generic_base = any(
+                base_typ != synthetic_typ
+                and isinstance(base_typ, str)
+                and tv_map
+                and all(
+                    not isinstance(tv_value, (TypeVarValue, InputSigValue))
+                    for tv_value in tv_map.values()
+                )
+                for base_typ, tv_map in generic_bases.items()
+            )
+            if has_fully_specialized_generic_base and not has_explicit_class_getitem:
+                self._show_error_if_checking(
+                    node,
+                    f"{stringify_object(synthetic_typ)} cannot be further subscripted",
+                    error_code=ErrorCode.invalid_annotation,
+                )
+                return AnyValue(AnySource.error)
         variadic_type_param_indexes = [
             i
             for i, type_param in enumerate(type_parameters)
@@ -13042,31 +13133,49 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         if len(variadic_type_param_indexes) > 1:
             return None
         expected_len: int | None
+        minimum_required_len = sum(
+            1
+            for i, type_param in enumerate(type_parameters)
+            if i not in variadic_type_param_indexes
+            and not self._type_parameter_value_has_default(type_param)
+        )
         if variadic_type_param_indexes:
             # A TypeVarTuple can absorb any number of type arguments.
             expected_len = len(type_parameters) - 1
-            is_valid_type_arg_count = len(normalized_members) >= expected_len
+            is_valid_type_arg_count = len(normalized_members) >= minimum_required_len
         else:
             expected_len = len(type_parameters)
-            is_valid_type_arg_count = expected_len == len(normalized_members)
+            is_valid_type_arg_count = (
+                minimum_required_len <= len(normalized_members) <= expected_len
+            )
 
         if type_parameters and not is_valid_type_arg_count:
             if variadic_type_param_indexes:
                 expected_type_arg_message = (
-                    f"Expected at least {expected_len} type arguments for "
+                    f"Expected at least {minimum_required_len} type arguments for "
                     f"{stringify_object(synthetic_typ)}"
                 )
             else:
-                expected_type_arg_message = (
-                    f"Expected {expected_len} type arguments for "
-                    f"{stringify_object(synthetic_typ)}"
-                )
+                if len(normalized_members) < minimum_required_len:
+                    expected_type_arg_message = (
+                        f"Expected at least {minimum_required_len} type arguments for "
+                        f"{stringify_object(synthetic_typ)}"
+                    )
+                elif minimum_required_len == expected_len:
+                    expected_type_arg_message = (
+                        f"Expected {expected_len} type arguments for "
+                        f"{stringify_object(synthetic_typ)}"
+                    )
+                else:
+                    expected_type_arg_message = (
+                        f"Expected at most {expected_len} type arguments for "
+                        f"{stringify_object(synthetic_typ)}"
+                    )
             self._show_error_if_checking(
                 node, expected_type_arg_message, error_code=ErrorCode.invalid_annotation
             )
             return AnyValue(AnySource.error)
-        generic_bases = self.checker.get_generic_bases(synthetic_typ, ())
-        if not generic_bases.get(synthetic_typ):
+        if synthetic_typ not in generic_bases:
             return None
         return PartialValue(
             PartialValueOperation.SUBSCRIPT,

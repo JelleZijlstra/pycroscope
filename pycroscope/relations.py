@@ -275,6 +275,20 @@ def has_relation(
     return result
 
 
+def _specialized_synthetic_class_type(
+    synthetic_class: SyntheticClassObjectValue, ctx: CanAssignContext
+) -> TypedValue | GenericValue | TypedDictValue:
+    if not isinstance(synthetic_class.class_type, TypedValue):
+        return synthetic_class.class_type
+    class_typ = synthetic_class.class_type.typ
+    if not isinstance(class_typ, (type, str)):
+        return synthetic_class.class_type
+    declared = ctx.get_generic_bases(class_typ).get(class_typ)
+    if declared:
+        return GenericValue(class_typ, declared.values())
+    return synthetic_class.class_type
+
+
 def _has_relation(
     left: GradualType,
     right: GradualType,
@@ -296,12 +310,26 @@ def _has_relation(
     if isinstance(left, SyntheticClassObjectValue):
         if isinstance(right, SyntheticClassObjectValue) and left == right:
             return {}
+        if isinstance(right, SubclassValue) and isinstance(left.class_type, TypedValue):
+            return _has_relation(
+                SubclassValue(_specialized_synthetic_class_type(left, ctx)),
+                right,
+                relation,
+                ctx,
+            )
         return CanAssignError(f"{right} is not {relation.description} {left}")
     if isinstance(right, SyntheticClassObjectValue):
         if isinstance(right.class_type, TypedDictValue):
             if isinstance(left, SubclassValue):
                 return CanAssignError(f"{right} is not {relation.description} {left}")
             return _has_relation(left, TypedValue(type), relation, ctx)
+        if isinstance(left, SubclassValue) and isinstance(right.class_type, TypedValue):
+            return _has_relation(
+                left,
+                SubclassValue(_specialized_synthetic_class_type(right, ctx)),
+                relation,
+                ctx,
+            )
         if isinstance(left, CallableValue):
             signature = ctx.signature_from_value(right)
             if signature is None:
@@ -649,7 +677,7 @@ def _has_relation(
         elif isinstance(right, KnownValue):
             if not safe_isinstance(right.val, type):
                 return CanAssignError(f"{right} is not a type")
-            elif isinstance(left.typ, TypeVarValue):
+            if isinstance(left.typ, TypeVarValue):
                 return {
                     left.typ.typevar: [
                         LowerBound(left.typ.typevar, TypedValue(right.val))

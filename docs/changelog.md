@@ -4,6 +4,7 @@
 
 - Treat `typing.TYPE_CHECKING` and `typing_extensions.TYPE_CHECKING` as statically true in control flow, so `if TYPE_CHECKING:` blocks are analyzed while runtime-only branches are skipped.
 - Improve deprecated-diagnostic coverage in static fallback mode for unimportable modules: pycroscope now reports deprecations for `__call__`, protocol methods, property getters/setters, and inplace-operation fallbacks (for example `x += y`) more consistently.
+- Improve generic default specialization behavior for both type aliases and classes: unsubscripted aliases/classes now use declared type-parameter defaults (rather than `Any`), overspecialization is reported consistently, and static fallback mode now preserves these semantics after import-time runtime failures.
 - Fix deprecated-overload inference when overload definitions are wrapped (for example by `typing_extensions.deprecated`): pycroscope now follows `__wrapped__` for overload signatures while preserving deprecation diagnostics on the selected overload.
 - Add a global `typeshed_path` option to override the typeshed root pycroscope uses for typeshed-client resolution, accepting either a directory with `VERSIONS` or one with `stdlib/VERSIONS`, and now reporting a clear error if neither exists.
 - Add a new `pycroscope.extensions.Overlapping[T]` type primitive: assignments to `Overlapping[T]` now accept values whose types overlap with `T` (that is, `T & U` is not `Never`).

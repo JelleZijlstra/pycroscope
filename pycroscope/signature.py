@@ -140,6 +140,24 @@ def _is_staticmethod_callable(func: FunctionType) -> bool:
     return isinstance(member, staticmethod)
 
 
+def _should_widen_constructor_typevar(typevar: TypeVarLike) -> bool:
+    if not is_instance_of_typing_name(typevar, "TypeVar"):
+        return False
+    if safe_getattr(typevar, "__constraints__", ()):
+        return False
+    return safe_getattr(typevar, "__bound__", None) is None
+
+
+def _widen_constructor_typevar_solution(value: Value) -> Value:
+    if isinstance(value, KnownValue):
+        return TypedValue(type(value.val))
+    if isinstance(value, MultiValuedValue):
+        return unite_values(
+            *[_widen_constructor_typevar_solution(subval) for subval in value.vals]
+        )
+    return value
+
+
 class MaximumPositionalArgs(IntegerOption):
     """If calls have more than this many positional arguments, attempt to
     turn them into keyword arguments."""
@@ -1461,6 +1479,22 @@ class Signature:
                 ctx.can_assign_ctx,
                 all_typevars=self.all_typevars,
             )
+            should_widen_constructor_typevars = (
+                self.callable is None
+                and isinstance(return_value, GenericValue)
+                and isinstance(return_value.typ, str)
+                and ctx.visitor is not None
+                and safe_getattr(ctx.visitor, "module", None) is None
+            )
+            if should_widen_constructor_typevars:
+                typevar_values = {
+                    typevar: (
+                        _widen_constructor_typevar_solution(value)
+                        if _should_widen_constructor_typevar(typevar)
+                        else value
+                    )
+                    for typevar, value in typevar_values.items()
+                }
             if errors:
                 self.show_call_error(
                     "Cannot resolve type variables",
