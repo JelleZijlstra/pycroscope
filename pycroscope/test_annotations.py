@@ -1066,6 +1066,21 @@ class TestCallable(TestNameCheckVisitorBase):
         def capybara() -> None:
             f(func)  # E: incompatible_argument
 
+    @assert_passes()
+    def test_overlapping_annotation(self):
+        from pycroscope.extensions import Overlapping
+
+        def f(x: Overlapping[int]) -> None:
+            pass
+
+        def bare(x: Overlapping) -> None:  # E: invalid_annotation
+            pass
+
+        def capybara(i: int, s: str) -> None:
+            f(i)
+            f(s)  # E: incompatible_argument
+            bare(i)
+
     @skip_if_not_installed("asynq")
     @assert_passes()
     def test_asynq_callable(self):

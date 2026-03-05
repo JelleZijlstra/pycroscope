@@ -62,6 +62,7 @@ from .extensions import (
     HasAttrGuard,
     Intersection,
     NoReturnGuard,
+    Overlapping,
     ParameterTypeGuard,
     TypeGuard,
     deprecated,
@@ -98,6 +99,7 @@ from .value import (
     MultiValuedValue,
     NewTypeValue,
     NoReturnGuardExtension,
+    OverlappingValue,
     ParameterTypeGuardExtension,
     ParamSpecArgsValue,
     ParamSpecKwargsValue,
@@ -636,6 +638,9 @@ def _type_from_runtime(val: Any, ctx: Context) -> Value:
     elif val is Intersection:
         ctx.show_error("Intersection[] is missing arguments")
         return AnyValue(AnySource.error)
+    elif val is Overlapping:
+        ctx.show_error("Overlapping[] is missing arguments")
+        return AnyValue(AnySource.error)
     elif is_typing_name(val, "Any"):
         return AnyValue(AnySource.explicit)
     elif is_typing_name(val, "TypeForm"):
@@ -702,6 +707,8 @@ def _type_from_runtime(val: Any, ctx: Context) -> Value:
         return IntersectionValue(
             tuple(_type_from_runtime(subval, ctx) for subval in val.args)
         )
+    elif isinstance(val, Overlapping):
+        return OverlappingValue(_type_from_runtime(val.arg, ctx))
     elif isinstance(val, ExternalType):
         try:
             typ = object_from_string(val.type_path)
@@ -1958,6 +1965,10 @@ def _type_from_subscripted_value(
         return IntersectionValue(
             tuple(_type_from_value(subval, ctx) for subval in members)
         )
+    elif root is Overlapping:
+        if not _require_exact_argument_count(members, 1, "Overlapping", ctx):
+            return AnyValue(AnySource.error)
+        return OverlappingValue(_type_from_value(members[0], ctx))
     elif isinstance(root, type):
         type_params = _get_generic_type_parameters_for_annotation(root, ctx)
         packed_variadic_members = _pack_typevartuple_args_from_unpack_members(

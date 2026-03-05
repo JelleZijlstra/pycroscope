@@ -311,3 +311,23 @@ class TestIntersections(TestNameCheckVisitorBase):
             assert_type(ab, Never)
             assert_type(int_str, Never)
             assert_type(a_int, Never)  # E: inference_failure
+
+
+class TestOverlapping(TestNameCheckVisitorBase):
+    @assert_passes()
+    def test_assignment_uses_type_overlap(self):
+        from typing import Any
+
+        from pycroscope.extensions import Overlapping
+
+        def takes_int_overlap(x: Overlapping[int]) -> None:
+            pass
+
+        maybe_int: int | str = 1
+        maybe_text: str | bytes = "x"
+        maybe_any: Any = "x"
+
+        takes_int_overlap(1)
+        takes_int_overlap(maybe_int)
+        takes_int_overlap(maybe_text)  # E: incompatible_argument
+        takes_int_overlap(maybe_any)
