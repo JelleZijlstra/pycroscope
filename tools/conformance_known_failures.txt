@@ -10,7 +10,6 @@ generics_defaults_referential
 generics_defaults_specialization
 generics_scoping
 generics_self_advanced
-generics_self_basic
 generics_self_usage
 generics_syntax_scoping
 generics_typevartuple_basic

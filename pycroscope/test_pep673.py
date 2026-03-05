@@ -48,6 +48,31 @@ class TestPEP673(TestNameCheckVisitorBase):
             assert_type(Y.from_config(), Y)
 
     @assert_passes()
+    def test_invalid_self_return(self):
+        from typing_extensions import Self
+
+        class Shape:
+            def method2(self) -> Self:
+                return Shape()  # E: incompatible_return_value
+
+            @classmethod
+            def cls_method2(cls) -> Self:
+                return Shape()  # E: incompatible_return_value
+
+    @assert_passes()
+    def test_self_return_via_typevar_function(self):
+        from dataclasses import dataclass, replace
+
+        from typing_extensions import Self
+
+        @dataclass
+        class Box:
+            value: int
+
+            def with_value(self, value: int) -> Self:
+                return replace(self, value=value)
+
+    @assert_passes()
     def test_parameter_type(self):
         from typing import Callable
 

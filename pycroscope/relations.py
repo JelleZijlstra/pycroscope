@@ -322,8 +322,18 @@ def _has_relation(
     if isinstance(left, TypeVarValue):
         if left == right:
             return {}
+        if (
+            left.typevar is SelfT
+            and left.bound is None
+            and not isinstance(right, (AnyValue, TypeVarValue))
+        ):
+            return CanAssignError(f"{right} is not {relation.description} {left}")
         if isinstance(right, TypeVarValue):
-            bounds = [*left.get_inherent_bounds(), *right.get_inherent_bounds()]
+            bounds = [
+                LowerBound(left.typevar, right),
+                *left.get_inherent_bounds(),
+                *right.get_inherent_bounds(),
+            ]
         else:
             bounds = [LowerBound(left.typevar, right), *left.get_inherent_bounds()]
         return left.make_bounds_map(bounds, right, ctx)
