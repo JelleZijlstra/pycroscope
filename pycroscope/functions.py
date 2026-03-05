@@ -11,7 +11,7 @@ import collections.abc
 import enum
 import sys
 import types
-from collections.abc import Container, Iterable, Sequence
+from collections.abc import Container, Generator, Iterable, Sequence
 from dataclasses import dataclass, replace
 from itertools import zip_longest
 from typing import TypeAlias, TypeVar

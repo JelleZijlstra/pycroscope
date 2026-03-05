@@ -2768,7 +2768,8 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                                     base_class, base_class_value
                                 )
                                 if isinstance(base_class, str)
-                                else TypedValue(base_class)
+                                else self.checker.get_synthetic_class(base_class)
+                                or TypedValue(base_class)
                             )
                         elif isinstance(base_class_value, KnownValue) and isinstance(
                             base_class_value.val, type
@@ -2799,7 +2800,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     base_class, TypedValue(base_class)
                 )
             else:
-                base_class_value = TypedValue(base_class)
+                base_class_value = self.checker.get_synthetic_class(
+                    base_class
+                ) or TypedValue(base_class)
             ctx = _AttrContext(
                 Composite(base_class_value),
                 varname,
@@ -7348,7 +7351,18 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 computed_function,
                 direct_dataclass_transform_info=direct_dataclass_transform_info,
             )
-            if potential_function is None:
+            use_runtime_function_value = potential_function is not None
+            if (
+                use_runtime_function_value
+                and self._deprecation_message_from_decorators(
+                    info_for_computed_value.decorators
+                )
+                is not None
+            ):
+                # typing_extensions.deprecated wraps callables with a runtime object that
+                # loses the original callable signature; preserve the static signature.
+                use_runtime_function_value = False
+            if not use_runtime_function_value:
                 if static_overload_signature is not None:
                     val = CallableValue(static_overload_signature, types.FunctionType)
                 else:
