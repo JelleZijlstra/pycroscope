@@ -39,7 +39,6 @@ from .input_sig import InputSigValue, ParamSpecSig, extract_type_params, wrap_ty
 from .maybe_asynq import asynq, qcore
 from .options import Options, PyObjectSequenceOption
 from .safe import (
-    all_of_type,
     get_fully_qualified_name,
     hasattr_static,
     is_async_fn,
@@ -120,6 +119,18 @@ def _is_plain_object_constructor(obj: type) -> bool:
         safe_getattr(obj, "__init__", None) is object.__init__
         and safe_getattr(obj, "__new__", None) is object.__new__
     )
+
+
+def _unwrap_overload_callable(func: Callable[..., Any]) -> Callable[..., Any]:
+    """Follow __wrapped__ links for overload signature inference."""
+    unwrapped = func
+    seen: set[int] = {id(unwrapped)}
+    while True:
+        wrapped = safe_getattr(unwrapped, "__wrapped__", None)
+        if not isinstance(wrapped, FunctionType) or id(wrapped) in seen:
+            return unwrapped
+        seen.add(id(wrapped))
+        unwrapped = wrapped
 
 
 @used  # exposed as an API
@@ -1151,14 +1162,20 @@ class ArgSpecCache:
                 normalized_overloads.append(overload.__func__)
             else:
                 normalized_overloads.append(overload)
-        sigs = [
-            self._cached_get_argspec(
-                overload, impl, is_asynq, in_overload_resolution=True
+        sigs = []
+        for overload in normalized_overloads:
+            overload_for_sig = _unwrap_overload_callable(overload)
+            sig = self._cached_get_argspec(
+                overload_for_sig, impl, is_asynq, in_overload_resolution=True
             )
-            for overload in normalized_overloads
-        ]
-        if not all_of_type(sigs, Signature):
-            return None
+            if not isinstance(sig, Signature):
+                return None
+            deprecated = safe_getattr(overload, "__deprecated__", None)
+            if safe_isinstance(deprecated, str):
+                sig = replace(sig, callable=overload, deprecated=deprecated)
+            elif overload_for_sig is not overload:
+                sig = replace(sig, callable=overload)
+            sigs.append(sig)
         return OverloadedSignature(sigs)
 
     def _make_any_sig(self, obj: object) -> Signature:
