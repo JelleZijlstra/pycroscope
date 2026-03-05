@@ -271,6 +271,25 @@ class PathSequenceOption(ConfigOption[Sequence[Path]]):
         )
 
 
+class OptionalPathOption(ConfigOption[Path | None]):
+    default_value = None
+
+    @classmethod
+    def parse(cls: "type[OptionalPathOption]", data: object, source_path: Path) -> Path:
+        if isinstance(data, str):
+            return (source_path.parent / data).resolve()
+        raise InvalidConfigOption.from_parser(cls, "string", data)
+
+    @classmethod
+    def create_command_line_option(cls, parser: argparse.ArgumentParser) -> None:
+        parser.add_argument(
+            f"--{cls.name.replace('_', '-')}",
+            type=pathlib.Path,
+            help=cls.__doc__,
+            default=argparse.SUPPRESS,
+        )
+
+
 class PyObjectSequenceOption(ConcatenatedOption[T]):
     """Represents a sequence of objects parsed as Python objects."""
 
