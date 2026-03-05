@@ -35,3 +35,34 @@ class TestSysVersion(TestNameCheckVisitorBase):
 
             def pacarana(m: ast.TypeVar) -> None:
                 assert_type(m, ast.TypeVar)
+
+
+class TestTypeCheckingDirective(TestNameCheckVisitorBase):
+    @assert_passes()
+    def test_import_from(self):
+        from typing import TYPE_CHECKING
+
+        from typing_extensions import assert_type
+
+        if not TYPE_CHECKING:
+            a: int = ""
+
+        if TYPE_CHECKING:
+            b: list[int] = [1, 2, 3]
+        else:
+            b: list[str] = ["a", "b", "c"]
+
+        assert_type(b, list[int])
+
+    @assert_passes()
+    def test_module_attribute(self):
+        import typing
+
+        from typing_extensions import assert_type
+
+        if typing.TYPE_CHECKING:
+            c: int = 1
+        else:
+            c: str = ""
+
+        assert_type(c, int)
