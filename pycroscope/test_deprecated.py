@@ -114,3 +114,59 @@ class TestRuntime(TestNameCheckVisitorBase):
         def capybara():
             print(DeprecatedClass)  # E: deprecated
             return DeprecatedClass()  # E: deprecated
+
+    @assert_passes(allow_import_failures=True)
+    def test_unimportable_module_deprecations(self):
+        from typing import Protocol, Self, override
+
+        from typing_extensions import deprecated
+
+        class Spam:
+            @deprecated("There is enough spam in the world")
+            def __add__(self, other: object) -> Self:
+                return self
+
+            @property
+            @deprecated("All spam will be equally greasy")
+            def greasy(self) -> float:
+                return 0.0
+
+            @property
+            def shape(self) -> str:
+                return "cube"
+
+            @shape.setter
+            @deprecated("Shapes are becoming immutable")
+            def shape(self, value: str) -> None:
+                pass
+
+        class Invocable:
+            @deprecated("Deprecated")
+            def __call__(self) -> None:
+                pass
+
+        @deprecated("Deprecated")
+        def lorem() -> None:
+            pass
+
+        class SupportsFoo1(Protocol):
+            @deprecated("Deprecated")
+            def foo(self) -> None: ...
+
+        class FooConcrete1(SupportsFoo1):
+            @override
+            def foo(self) -> None:
+                pass
+
+        spam = Spam()
+        _ = spam + 1  # E: deprecated
+        spam += 1  # E: deprecated
+        spam.greasy  # E: deprecated
+        spam.shape += "cube"  # E: deprecated
+
+        invocable = Invocable()
+        invocable()  # E: deprecated
+        lorem()  # E: deprecated
+
+        def foo_it(f: SupportsFoo1) -> None:
+            f.foo()  # E: deprecated

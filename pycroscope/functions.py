@@ -22,8 +22,9 @@ from pycroscope.input_sig import InputSigValue, ParamSpecSig
 
 from .analysis_lib import is_positional_only_arg_name
 from .error_code import ErrorCode
+from .extensions import deprecated as deprecated_decorator
 from .maybe_asynq import asynq
-from .node_visitor import ErrorContext
+from .node_visitor import Error, ErrorContext
 from .options import Options, PyObjectSequenceOption
 from .relations import Relation, has_relation
 from .safe import is_instance_of_typing_name, is_typing_name
@@ -41,6 +42,7 @@ from .value import (
     CallableValue,
     CanAssignContext,
     CanAssignError,
+    DeprecatedExtension,
     GenericValue,
     KnownValue,
     ParamSpecArgsValue,
@@ -53,6 +55,7 @@ from .value import (
     TypedValue,
     TypeVarValue,
     Value,
+    annotate_value,
     get_tv_map,
     is_async_iterable,
     is_iterable,
@@ -220,6 +223,9 @@ class Context(ErrorContext, CanAssignContext, Protocol):
         *,
         allow_call: bool = False,
     ) -> Value:
+        raise NotImplementedError
+
+    def catch_errors(self) -> Generator[list[Error]]:
         raise NotImplementedError
 
 
@@ -798,6 +804,15 @@ def compute_value_of_function(
     )
     val = CallableValue(sig, types.FunctionType)
     for unapplied, decorator, node in reversed(info.decorators):
+        deprecated_message = _deprecated_message_from_decorator(unapplied, node, ctx)
+        if deprecated_message is not None:
+            if isinstance(val, CallableValue) and isinstance(val.signature, Signature):
+                val = CallableValue(
+                    replace(val.signature, deprecated=deprecated_message), val.typ
+                )
+            else:
+                val = annotate_value(val, [DeprecatedExtension(deprecated_message)])
+            continue
         # Special case asynq.asynq until we can create the type automatically
         if (
             asynq is not None
@@ -812,3 +827,23 @@ def compute_value_of_function(
         ) and SafeDecoratorsForNestedFunctions.contains(unapplied.val, ctx.options)
         val = ctx.check_call(node, decorator, [Composite(val)], allow_call=allow_call)
     return val
+
+
+def _deprecated_message_from_decorator(
+    unapplied: Value, node: ast.expr, ctx: Context
+) -> str | None:
+    if not (
+        isinstance(unapplied, KnownValue)
+        and (
+            is_typing_name(unapplied.val, "deprecated")
+            or unapplied.val is deprecated_decorator
+        )
+    ):
+        return None
+    if not isinstance(node, ast.Call) or not node.args:
+        return None
+    with ctx.catch_errors():
+        message_value = ctx.visit_expression(node.args[0])
+    if isinstance(message_value, KnownValue) and isinstance(message_value.val, str):
+        return message_value.val
+    return None
