@@ -32,6 +32,7 @@ from .value import (
     KVPair,
     MultiValuedValue,
     OverlapMode,
+    OverlappingValue,
     SequenceValue,
     SubclassValue,
     TypedValue,
@@ -841,6 +842,27 @@ def test_unannotated_any_intersection_simplifies() -> None:
     )
     assert intersect_values(TypedValue(int), explicit, CTX) == value.IntersectionValue(
         (TypedValue(int), explicit)
+    )
+
+
+def test_overlapping_value_intersection_simplifies() -> None:
+    overlapping_int = OverlappingValue(TypedValue(int))
+
+    assert intersect_values(overlapping_int, TypedValue(int), CTX) == TypedValue(int)
+    assert intersect_values(TypedValue(int), overlapping_int, CTX) == TypedValue(int)
+    assert intersect_values(overlapping_int, TypedValue(object), CTX) == overlapping_int
+    assert intersect_values(TypedValue(object), overlapping_int, CTX) == overlapping_int
+
+    assert intersect_values(overlapping_int, TypedValue(str), CTX) == NO_RETURN_VALUE
+    assert intersect_values(TypedValue(str), overlapping_int, CTX) == NO_RETURN_VALUE
+
+    overlapping_int_or_str = OverlappingValue(TypedValue(int) | TypedValue(str))
+    int_or_bytes = TypedValue(int) | TypedValue(bytes)
+    assert intersect_values(overlapping_int_or_str, int_or_bytes, CTX) == (
+        value.IntersectionValue((overlapping_int_or_str, int_or_bytes))
+    )
+    assert intersect_values(int_or_bytes, overlapping_int_or_str, CTX) == (
+        value.IntersectionValue((int_or_bytes, overlapping_int_or_str))
     )
 
 

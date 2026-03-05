@@ -2059,6 +2059,29 @@ class IntersectionValue(Value):
 
 
 @dataclass(frozen=True, order=False)
+class OverlappingValue(Value):
+    """Represents ``Overlapping[T]``."""
+
+    type: Value
+
+    def substitute_typevars(self, typevars: TypeVarMap) -> Value:
+        return OverlappingValue(self.type.substitute_typevars(typevars))
+
+    def walk_values(self) -> Iterable[Value]:
+        yield self
+        yield from self.type.walk_values()
+
+    def get_fallback_value(self) -> Value:
+        return TypedValue(object)
+
+    def get_type_value(self) -> Value:
+        return self.get_fallback_value().get_type_value()
+
+    def __str__(self) -> str:
+        return f"Overlapping[{self.type}]"
+
+
+@dataclass(frozen=True, order=False)
 class MultiValuedValue(Value):
     """Equivalent of ``typing.Union``. Represents the union of multiple values."""
 
@@ -2864,6 +2887,7 @@ BasicType: typing_extensions.TypeAlias = (
 # to those Values that are actually part of the type system.
 GradualType: typing_extensions.TypeAlias = (
     BasicType
+    | OverlappingValue
     | TypeAliasValue
     | NewTypeValue
     | TypeVarValue

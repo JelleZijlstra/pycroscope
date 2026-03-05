@@ -54,6 +54,7 @@ from pycroscope.value import (
     LowerBound,
     MultiValuedValue,
     NewTypeValue,
+    OverlappingValue,
     ParamSpecArgsValue,
     ParamSpecKwargsValue,
     PartialValue,
@@ -409,6 +410,17 @@ def _has_relation(
     if isinstance(left, TypeFormValue):
         return _can_assign_type_form(left.inner_type, right, ctx)
     if isinstance(right, TypeFormValue):
+        right_inner = gradualize(right.get_fallback_value())
+        return _has_relation(left, right_inner, relation, ctx, original_right=right)
+
+    # OverlappingValue
+    if isinstance(left, OverlappingValue):
+        if relation is Relation.ASSIGNABLE:
+            overlap = intersect_values(left.type, original_right, ctx)
+            if overlap is not NO_RETURN_VALUE:
+                return {}
+        return CanAssignError(f"{right} is not {relation.description} {left}")
+    if isinstance(right, OverlappingValue):
         right_inner = gradualize(right.get_fallback_value())
         return _has_relation(left, right_inner, relation, ctx, original_right=right)
 
@@ -1023,6 +1035,7 @@ def _extract_type_form(value: Value, ctx: CanAssignContext) -> Value | CanAssign
             ParamSpecKwargsValue,
             PredicateValue,
             IntersectionValue,
+            OverlappingValue,
             SyntheticModuleValue,
             UnboundMethodValue,
         ),
@@ -2247,6 +2260,28 @@ def _intersect_values_inner(
 ) -> TypeOrIrreducible:
     left = gradualize(left)
     right = gradualize(right)
+
+    if isinstance(left, OverlappingValue):
+        if isinstance(right, OverlappingValue):
+            return Irreducible
+        if right == TypedValue(object):
+            return left
+        overlap = _intersect_values_inner(left.type, right, ctx)
+        if overlap is NO_RETURN_VALUE:
+            return NO_RETURN_VALUE
+        if is_subtype(left.type, right, ctx):
+            return right
+        return Irreducible
+    if isinstance(right, OverlappingValue):
+        if left == TypedValue(object):
+            return right
+        overlap = _intersect_values_inner(right.type, left, ctx)
+        if overlap is NO_RETURN_VALUE:
+            return NO_RETURN_VALUE
+        if is_subtype(right.type, left, ctx):
+            return left
+        return Irreducible
+
     wrapper_types = (
         AnnotatedValue,
         NewTypeValue,

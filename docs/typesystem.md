@@ -8,6 +8,7 @@ In addition to the standard Python type system, pycroscope supports a number of 
 
 - Callable literals: you can declare a parameter as `Literal[some_function]` and it will accept any callable assignable to `some_function`. Pycroscope also supports Literals of various other types in addition to those supported by [PEP 586](https://www.python.org/dev/peps/pep-0586/).
 - `pycroscope.extensions.AsynqCallable` is a variant of `Callable` that applies to `asynq` functions.
+- `pycroscope.extensions.Overlapping[T]` accepts values whose types overlap with `T` (that is, where `T & U` is not `Never`).
 - `pycroscope.extensions.ParameterTypeGuard` is a generalization of PEP 649's `TypeGuard` that allows guards on any parameter to a function. To use it, return `Annotated[bool, ParameterTypeGuard["arg", SomeType]]`.
 - `pycroscope.extensions.HasAttrGuard` is a similar mechanism that allows indicating that an object has a particular attribute. To use it, return `Annotated[bool, HasAttrGuard["arg", "attribute", SomeType]]`.
 - `pycroscope.extensions.ExternalType` is a way to refer to a type that cannot
