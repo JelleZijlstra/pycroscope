@@ -7151,6 +7151,39 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                             error_code=ErrorCode.invalid_annotation,
                         )
                     return_annotation = AnyValue(AnySource.error)
+            if (
+                enclosing_class is not None
+                and params
+                and params[0].is_self
+                and isinstance(params[0].node, ast.arg)
+                and params[0].node.annotation is None
+            ):
+                self_instance_value = TypeVarValue(SelfT, bound=enclosing_class)
+                substitutions: TypeVarMap = {SelfT: self_instance_value}
+                uses_self_annotation = (
+                    return_annotation is not None
+                    and return_annotation.substitute_typevars(substitutions)
+                    != return_annotation
+                ) or any(
+                    param_info.param.annotation.substitute_typevars(substitutions)
+                    != param_info.param.annotation
+                    for param_info in params[1:]
+                )
+                if not uses_self_annotation:
+                    if (
+                        FunctionDecorator.classmethod in decorator_kinds
+                        or getattr(node, "name", None) in IMPLICIT_CLASSMETHODS
+                    ):
+                        fallback_self = SubclassValue(enclosing_class)
+                    else:
+                        fallback_self = enclosing_class
+                    params = [
+                        replace(
+                            params[0],
+                            param=replace(params[0].param, annotation=fallback_self),
+                        ),
+                        *params[1:],
+                    ]
             yield FunctionInfo(
                 async_kind=async_kind,
                 decorator_kinds=frozenset(decorator_kinds),

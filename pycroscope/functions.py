@@ -46,6 +46,7 @@ from .value import (
     ParamSpecArgsValue,
     ParamSpecKwargsValue,
     Qualifier,
+    SelfT,
     SubclassValue,
     TypeAliasValue,
     TypedDictValue,
@@ -502,11 +503,12 @@ def compute_parameters(
                         )
         elif is_self:
             assert enclosing_class is not None
+            self_tv_value = TypeVarValue(SelfT, bound=enclosing_class)
             if is_classmethod or getattr(node, "name", None) in IMPLICIT_CLASSMETHODS:
-                value = SubclassValue(enclosing_class)
+                value = SubclassValue(self_tv_value)
             else:
                 # normal method
-                value = enclosing_class
+                value = self_tv_value
         else:
             # This is meant to exclude methods in nested classes. It's a bit too
             # conservative for cases such as a function nested in a method nested in a
