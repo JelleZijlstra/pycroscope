@@ -58,6 +58,27 @@ class TestRuntime(TestNameCheckVisitorBase):
             deprecated_overload("x")
 
     @assert_passes()
+    def test_typing_extensions_deprecated_overload(self):
+        from typing import overload
+
+        from typing_extensions import deprecated
+
+        @overload
+        @deprecated("int support is deprecated")
+        def deprecated_overload(x: int) -> int: ...
+
+        @overload
+        def deprecated_overload(x: str) -> str: ...
+
+        def deprecated_overload(x: int | str):
+            return x
+
+        def capybara():
+            deprecated_overload(1)  # E: deprecated
+            deprecated_overload("x")
+            deprecated_overload(1.0)  # E: incompatible_argument
+
+    @assert_passes()
     def test_function(self):
         from pycroscope.extensions import deprecated
 

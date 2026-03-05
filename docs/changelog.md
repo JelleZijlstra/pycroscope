@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Fix deprecated-overload inference when overload definitions are wrapped (for example by `typing_extensions.deprecated`): pycroscope now follows `__wrapped__` for overload signatures while preserving deprecation diagnostics on the selected overload.
 - Add a global `typeshed_path` option to override the typeshed root pycroscope uses for typeshed-client resolution, accepting either a directory with `VERSIONS` or one with `stdlib/VERSIONS`, and now reporting a clear error if neither exists.
 - Add a new `pycroscope.extensions.Overlapping[T]` type primitive: assignments to `Overlapping[T]` now accept values whose types overlap with `T` (that is, `T & U` is not `Never`).
 - Fix `Self` return checking for methods and classmethods: pycroscope now rejects returning concrete base-class instances from `-> Self` methods (for example `return Shape()`), which previously slipped through as valid.
