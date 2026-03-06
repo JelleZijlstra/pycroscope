@@ -4195,13 +4195,12 @@ class TestAnnAssign(TestNameCheckVisitorBase):
             Node.label  # E: undefined_attribute
             type(n1).label  # E: undefined_attribute
 
-    @assert_passes(run_in_both_module_modes=True)
-    def test_generic_constructor_inference_preserves_literals_in_both_module_modes(
-        self,
-    ):
+    @assert_passes(allow_import_failures=True)
+    def test_generic_constructor_inference_widens_literals_in_unimportable_module(self):
         from dataclasses import dataclass
-        from typing import Generic, Literal, TypeVar
+        from typing import Generic, TypeVar
 
+        import does_not_exist  # noqa: F401
         from typing_extensions import assert_type
 
         T = TypeVar("T")
@@ -4210,14 +4209,16 @@ class TestAnnAssign(TestNameCheckVisitorBase):
             def __init__(self, value: T) -> None:
                 self.value = value
 
-        assert_type(Box(1), Box[Literal[1]])
-        assert_type(Box(""), Box[Literal[""]])
+        assert_type(Box(1), Box[int])
+        assert_type(Box(1.0), Box[float])
+        assert_type(Box(""), Box[str])
+        assert_type(Box[float](1), Box[float | int])
 
         @dataclass
         class Data(Generic[T]):
             value: T
 
-        assert_type(Data(1), Data[Literal[1]])
+        assert_type(Data(1), Data[int])
 
     @assert_passes()
     def test_protocol_override_keeps_compatible_self_type(self):
