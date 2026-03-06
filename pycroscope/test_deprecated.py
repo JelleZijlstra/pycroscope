@@ -117,9 +117,9 @@ class TestRuntime(TestNameCheckVisitorBase):
 
     @assert_passes(run_in_both_module_modes=True)
     def test_unimportable_module_deprecations(self):
-        from typing import Protocol, Self, override
+        from typing import Protocol
 
-        from typing_extensions import deprecated
+        from typing_extensions import Self, deprecated, override
 
         class Spam:
             @deprecated("There is enough spam in the world")

@@ -338,7 +338,9 @@ class TestTypedDict(TestNameCheckVisitorBase):
 
     @assert_passes(run_in_both_module_modes=True)
     def test_class_syntax_method_validation(self):
-        from typing import Generic, TypedDict, TypeVar
+        from typing import Generic, TypeVar
+
+        from typing_extensions import TypedDict
 
         class Movie(TypedDict):
             director: "Person"

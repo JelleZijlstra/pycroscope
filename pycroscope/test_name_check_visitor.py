@@ -2299,7 +2299,9 @@ class TestSubclassValue(TestNameCheckVisitorBase):
 
     @assert_passes(run_in_both_module_modes=True)
     def test_constructor_callable_ignores_init_when_new_returns_proxy(self):
-        from typing import Callable, ParamSpec, TypeVar, assert_type
+        from typing import Callable, ParamSpec, TypeVar
+
+        from typing_extensions import assert_type
 
         P = ParamSpec("P")
         R = TypeVar("R")
@@ -2357,7 +2359,9 @@ class TestSubclassValue(TestNameCheckVisitorBase):
 
     @assert_passes(run_in_both_module_modes=True)
     def test_constructor_callable_ignores_init_when_new_returns_any(self):
-        from typing import Any, Callable, ParamSpec, TypeVar, assert_type
+        from typing import Any, Callable, ParamSpec, TypeVar
+
+        from typing_extensions import assert_type
 
         P = ParamSpec("P")
         R = TypeVar("R")
@@ -4160,7 +4164,9 @@ class TestAnnAssign(TestNameCheckVisitorBase):
 
     @assert_passes(run_in_both_module_modes=True)
     def test_generic_alias_constructor_in_unimportable_module(self):
-        from typing import Generic, TypeVar, assert_type
+        from typing import Generic, TypeVar
+
+        from typing_extensions import assert_type
 
         T = TypeVar("T")
 
@@ -4194,7 +4200,9 @@ class TestAnnAssign(TestNameCheckVisitorBase):
         self,
     ):
         from dataclasses import dataclass
-        from typing import Generic, Literal, TypeVar, assert_type
+        from typing import Generic, Literal, TypeVar
+
+        from typing_extensions import assert_type
 
         T = TypeVar("T")
 
