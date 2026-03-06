@@ -512,10 +512,9 @@ class TestAnnotations(TestNameCheckVisitorBase):
             val = type_from_runtime(annotation, ctx=Context())
             assert isinstance(val, AnyValue), annotation
 
+    @skip_before((3, 11))
     def test_type_from_value_preserves_empty_typevartuple_specialization(self):
-        from typing import Generic
-
-        from typing_extensions import TypeVarTuple
+        from typing import Generic, TypeVarTuple
 
         from .annotations import type_from_value
 
