@@ -1592,6 +1592,8 @@ def _get_attribute_from_mro(
             return KnownValue(getattr(typ, ctx.attr)), typ, True
         except Exception:
             pass
+        if on_class and isinstance(Enum.__dict__.get(ctx.attr), enum.property):
+            return UNINITIALIZED_VALUE, object, False
     elif safe_isinstance(typ, types.ModuleType):
         try:
             annotations = typ.__annotations__
@@ -1613,16 +1615,6 @@ def _get_attribute_from_mro(
                 if ctx.skip_mro and base_cls is not typ:
                     continue
 
-                try:
-                    base_dict = base_cls.__dict__
-                except Exception:
-                    continue
-
-                if on_class and isinstance(base_dict.get(ctx.attr), enum.property):
-                    # Enum.name and Enum.value are instance-only descriptors and
-                    # should not be exposed on enum classes.
-                    continue
-
                 typeshed_type = ctx.get_attribute_from_typeshed(
                     base_cls, on_class=on_class or ctx.skip_unwrap
                 )
@@ -1634,6 +1626,11 @@ def _get_attribute_from_mro(
                     # because we may have our own implementation.
                     if not isinstance(typeshed_type, CallableValue):
                         return typeshed_type, base_cls, False
+
+                try:
+                    base_dict = base_cls.__dict__
+                except Exception:
+                    continue
 
                 try:
                     # Make sure to use only __annotations__ that are actually on this
@@ -1664,6 +1661,9 @@ def _get_attribute_from_mro(
                     except Exception:
                         val = AnyValue(AnySource.inference)
                     return val, base_cls, True
+
+                if typeshed_type is not UNINITIALIZED_VALUE:
+                    return typeshed_type, base_cls, False
 
     attrs_type = get_attrs_attribute(typ, ctx)
     if attrs_type is not None:
