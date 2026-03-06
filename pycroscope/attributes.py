@@ -93,6 +93,14 @@ from .value import (
 SlotWrapperType = type(type.__init__)
 MethodDescriptorType = type(list.append)
 NoneType = type(None)
+_ENUM_INSTANCE_DESCRIPTOR_TYPES = tuple(
+    descriptor_type
+    for descriptor_type in (
+        getattr(enum, "property", None),
+        types.DynamicClassAttribute,
+    )
+    if descriptor_type is not None
+)
 
 
 @dataclass
@@ -1118,7 +1126,7 @@ def _is_instance_only_enum_attr(value: Value, attr_name: str) -> bool:
         return False
     if not safe_issubclass(class_type.typ, Enum):
         return False
-    return isinstance(Enum.__dict__.get(attr_name), enum.property)
+    return isinstance(Enum.__dict__.get(attr_name), _ENUM_INSTANCE_DESCRIPTOR_TYPES)
 
 
 def _should_deliteralize_synthetic_enum_attr(
@@ -1592,7 +1600,9 @@ def _get_attribute_from_mro(
             return KnownValue(getattr(typ, ctx.attr)), typ, True
         except Exception:
             pass
-        if on_class and isinstance(Enum.__dict__.get(ctx.attr), enum.property):
+        if on_class and isinstance(
+            Enum.__dict__.get(ctx.attr), _ENUM_INSTANCE_DESCRIPTOR_TYPES
+        ):
             return UNINITIALIZED_VALUE, object, False
     elif safe_isinstance(typ, types.ModuleType):
         try:
