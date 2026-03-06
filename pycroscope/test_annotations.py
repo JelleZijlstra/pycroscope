@@ -513,7 +513,9 @@ class TestAnnotations(TestNameCheckVisitorBase):
             assert isinstance(val, AnyValue), annotation
 
     def test_type_from_value_preserves_empty_typevartuple_specialization(self):
-        from typing import Generic, TypeVarTuple
+        from typing import Generic
+
+        from typing_extensions import TypeVarTuple
 
         from .annotations import type_from_value
 
