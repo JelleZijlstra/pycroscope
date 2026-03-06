@@ -2518,21 +2518,21 @@ def _value_of_origin_args(
         runtime_origin = origin
         origin = _maybe_get_extra(origin)
         type_params = _get_generic_type_parameters_for_annotation(runtime_origin, ctx)
-        is_specialized_runtime_alias = val is not runtime_origin
-        if args or is_specialized_runtime_alias:
+        is_empty_typevartuple_specialization = (
+            val is not runtime_origin
+            and not args
+            and len(type_params) == 1
+            and _is_typevartuple_type_param(
+                cast(TypeVarLike | TypeVarValue, type_params[0])
+            )
+        )
+        if args or is_empty_typevartuple_specialization:
             packed_variadic_members = _pack_typevartuple_runtime_args(
                 type_params, args, ctx
             )
             if packed_variadic_members is not None:
                 args_vals = packed_variadic_members
-            elif (
-                is_specialized_runtime_alias
-                and not args
-                and len(type_params) == 1
-                and _is_typevartuple_type_param(
-                    cast(TypeVarLike | TypeVarValue, type_params[0])
-                )
-            ):
+            elif is_empty_typevartuple_specialization:
                 args_vals = [SequenceValue(tuple, [])]
             elif len(type_params) == len(args):
                 args_vals = [
