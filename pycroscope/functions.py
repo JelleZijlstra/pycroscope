@@ -11,7 +11,8 @@ import collections.abc
 import enum
 import sys
 import types
-from collections.abc import Container, Generator, Iterable, Sequence
+from collections.abc import Container, Iterable, Sequence
+from contextlib import AbstractContextManager
 from dataclasses import dataclass, replace
 from itertools import zip_longest
 from typing import TypeAlias, TypeVar
@@ -225,7 +226,7 @@ class Context(ErrorContext, CanAssignContext, Protocol):
     ) -> Value:
         raise NotImplementedError
 
-    def catch_errors(self) -> Generator[list[Error]]:
+    def catch_errors(self) -> AbstractContextManager[list[Error]]:
         raise NotImplementedError
 
 
