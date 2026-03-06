@@ -1378,30 +1378,34 @@ def _substitute_typevars(
         generic_bases = ctx.get_generic_bases(typ, generic_args)
     else:
         generic_bases = {}
-    provider_key = provider
-    if provider_key not in generic_bases and not isinstance(provider_key, str):
-        origin = get_origin(provider_key)
-        if origin is not None and origin in generic_bases:
+    provider_key: type | str | None
+    if isinstance(provider, (type, str)) and provider in generic_bases:
+        provider_key = provider
+    else:
+        provider_key = None
+    if provider_key is None and not isinstance(provider, str):
+        origin = get_origin(provider)
+        if isinstance(origin, (type, str)) and origin in generic_bases:
             provider_key = origin
         else:
-            maybe_origin = safe_getattr(provider_key, "__origin__", None)
-            if maybe_origin in generic_bases:
+            maybe_origin = safe_getattr(provider, "__origin__", None)
+            if isinstance(maybe_origin, (type, str)) and maybe_origin in generic_bases:
                 provider_key = maybe_origin
-    if provider_key not in generic_bases and isinstance(provider_key, str):
+    if provider_key is None and isinstance(provider, str):
         for base_key in generic_bases:
             if isinstance(base_key, type):
                 runtime_name = f"{base_key.__module__}.{base_key.__qualname__}"
-                if provider_key == runtime_name:
+                if provider == runtime_name:
                     provider_key = base_key
                     break
                 if (
-                    provider_key.startswith("typing.")
+                    provider.startswith("typing.")
                     and base_key.__module__ == "collections.abc"
-                    and provider_key.removeprefix("typing.") == base_key.__qualname__
+                    and provider.removeprefix("typing.") == base_key.__qualname__
                 ):
                     provider_key = base_key
                     break
-    if provider_key in generic_bases:
+    if provider_key is not None:
         provider_typevars = generic_bases[provider_key]
         substituted_typevars = {
             typevar: (

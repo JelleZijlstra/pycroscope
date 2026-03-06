@@ -13250,6 +13250,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     method_name,
                     node,
                     ignore_none=self.options.get_value_for(IgnoreNoneAttributes),
+                    record_reads=False,
                 )
                 if method_object is not UNINITIALIZED_VALUE:
                     synthetic_typevars = self._get_synthetic_instance_typevars(
@@ -13280,6 +13281,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             method_name,
             node,
             ignore_none=self.options.get_value_for(IgnoreNoneAttributes),
+            record_reads=False,
         )
         if method_object is UNINITIALIZED_VALUE:
             self.show_error(
@@ -13922,6 +13924,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         ignore_none: bool = False,
         use_fallback: bool = False,
         prefer_typeshed: bool = False,
+        record_reads: bool = True,
     ) -> Value:
         """Get an attribute of this value.
 
@@ -13997,6 +14000,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     node,
                     ignore_none=ignore_none,
                     use_fallback=use_fallback,
+                    record_reads=record_reads,
                 )
                 if (
                     subresult is UNINITIALIZED_VALUE
@@ -14046,7 +14050,12 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     subval, root_composite.varname, root_composite.node
                 )
                 subresult = self.get_attribute(
-                    composite, attr, node, ignore_none=ignore_none, use_fallback=False
+                    composite,
+                    attr,
+                    node,
+                    ignore_none=ignore_none,
+                    use_fallback=False,
+                    record_reads=record_reads,
                 )
                 if (
                     subresult is UNINITIALIZED_VALUE
@@ -14083,6 +14092,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             node=node,
             ignore_none=ignore_none,
             prefer_typeshed=prefer_typeshed,
+            record_reads=record_reads,
         )
         result = attributes.get_attribute(ctx)
         if (
