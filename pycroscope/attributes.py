@@ -35,6 +35,7 @@ from .safe import (
     is_bound_classmethod,
     is_instance_of_typing_name,
     is_typing_name,
+    safe_getattr,
     safe_isinstance,
     safe_issubclass,
 )
@@ -333,9 +334,11 @@ def _get_attribute_from_subclass(
         # type[T] represents an arbitrary subclass of T, so class identity
         # attributes should be widened from base-class literals.
         return TypedValue(str)
-    result, _, should_unwrap = _get_attribute_from_mro(typ, ctx, on_class=True)
+    result, provider, should_unwrap = _get_attribute_from_mro(typ, ctx, on_class=True)
     if should_unwrap:
         result = _unwrap_value_from_subclass(result, ctx)
+    if isinstance(self_value, GenericValue):
+        result = _substitute_typevars(typ, self_value.args, result, provider, ctx)
     result = set_self(result, self_value)
     ctx.record_usage(typ, result)
     return result
@@ -1375,8 +1378,31 @@ def _substitute_typevars(
         generic_bases = ctx.get_generic_bases(typ, generic_args)
     else:
         generic_bases = {}
-    if provider in generic_bases:
-        provider_typevars = generic_bases[provider]
+    provider_key = provider
+    if provider_key not in generic_bases and not isinstance(provider_key, str):
+        origin = get_origin(provider_key)
+        if origin is not None and origin in generic_bases:
+            provider_key = origin
+        else:
+            maybe_origin = safe_getattr(provider_key, "__origin__", None)
+            if maybe_origin in generic_bases:
+                provider_key = maybe_origin
+    if provider_key not in generic_bases and isinstance(provider_key, str):
+        for base_key in generic_bases:
+            if isinstance(base_key, type):
+                runtime_name = f"{base_key.__module__}.{base_key.__qualname__}"
+                if provider_key == runtime_name:
+                    provider_key = base_key
+                    break
+                if (
+                    provider_key.startswith("typing.")
+                    and base_key.__module__ == "collections.abc"
+                    and provider_key.removeprefix("typing.") == base_key.__qualname__
+                ):
+                    provider_key = base_key
+                    break
+    if provider_key in generic_bases:
+        provider_typevars = generic_bases[provider_key]
         substituted_typevars = {
             typevar: (
                 coerce_paramspec_specialization_to_input_sig(value)

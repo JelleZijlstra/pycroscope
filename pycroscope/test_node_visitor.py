@@ -140,7 +140,9 @@ def assert_passes(**kwargs):
     """Decorator for test cases that assert that a code block contains no errors.
 
     The body of the decorated function is executed by the NodeVisitor. If the visitor finds any
-    error, the test fails unless explicitly allowed by decorator keyword arguments.
+    error, the test fails unless explicitly allowed by decorator keyword arguments. Some
+    subclasses support extra harness options, such as running the same sample in multiple module
+    loading modes.
 
     """
 

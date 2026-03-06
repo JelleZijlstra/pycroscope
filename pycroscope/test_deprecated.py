@@ -115,7 +115,7 @@ class TestRuntime(TestNameCheckVisitorBase):
             print(DeprecatedClass)  # E: deprecated
             return DeprecatedClass()  # E: deprecated
 
-    @assert_passes(allow_import_failures=True)
+    @assert_passes(run_in_both_module_modes=True)
     def test_unimportable_module_deprecations(self):
         from typing import Protocol, Self, override
 

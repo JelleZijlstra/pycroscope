@@ -239,7 +239,7 @@ class TestSyntheticType(TestNameCheckVisitorBase):
             as_protocol: ProtocolWithP[P] = ta
             print(as_callable, as_protocol)
 
-    @assert_passes(allow_import_failures=True)
+    @assert_passes(run_in_both_module_modes=True)
     def test_callable_annotation_protocol_interop(self):
         from typing import Any, Callable, ParamSpec, Protocol, TypeVar
 
