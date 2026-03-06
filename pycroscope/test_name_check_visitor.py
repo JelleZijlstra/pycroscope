@@ -195,6 +195,21 @@ class TestImportFailureHandling(TestNameCheckVisitorBase):
         def f() -> int:
             return later_name
 
+    @assert_passes(allow_import_failures=True)
+    def test_typing_import_falls_back_to_typing_extensions(self):
+        from typing import Generic, Self, TypeVar
+
+        import does_not_exist  # noqa: F401
+        from typing_extensions import assert_type
+
+        T = TypeVar("T")
+
+        class Box(Generic[T]):
+            def clone(self) -> Self:
+                return self
+
+        assert_type(Box[int]().clone(), Box[int])
+
     @assert_passes(allow_runtime_module_load_failure=True)
     def test_import_failure_is_ignorable(self):
         a = 1  # static analysis: ignore[import_failed]
@@ -2314,6 +2329,39 @@ class TestSubclassValue(TestNameCheckVisitorBase):
         r(1)  # E: incompatible_call
 
     @assert_passes(allow_import_failures=True)
+    def test_constructor_callable_widens_overloaded_literal_returns(self):
+        from typing import Callable, Generic, ParamSpec, TypeVar, overload
+
+        from typing_extensions import assert_type
+
+        P = ParamSpec("P")
+        R = TypeVar("R")
+        T = TypeVar("T")
+
+        def accepts_callable(cb: Callable[P, R]) -> Callable[P, R]:
+            return cb
+
+        class Crash:
+            def __init__(self, value: int) -> None:
+                pass
+
+        accepts_callable(Crash)()  # E: incompatible_call
+
+        class Box(Generic[T]):
+            @overload
+            def __init__(self: "Box[int]", value: int) -> None: ...
+
+            @overload
+            def __init__(self: "Box[str]", value: str) -> None: ...
+
+            def __init__(self, value: int | str) -> None:
+                pass
+
+        ctor = accepts_callable(Box)
+        assert_type(ctor(0), Box[int])
+        assert_type(ctor(""), Box[str])
+
+    @assert_passes(allow_import_failures=True)
     def test_constructor_callable_ignores_init_when_new_returns_any(self):
         from typing import Any, Callable, ParamSpec, TypeVar, assert_type
 
@@ -2392,6 +2440,36 @@ class TestSubclassValue(TestNameCheckVisitorBase):
         C()
         C[int]()
         C[str]()  # E: incompatible_call
+
+    @assert_passes()
+    def test_constructor_subscript_preserves_explicit_new_return(self):
+        from typing import Generic, TypeVar
+
+        from typing_extensions import assert_type
+
+        T = TypeVar("T")
+
+        class Box(Generic[T]):
+            def __new__(cls, *args, **kwargs) -> "Box[list[T]]":
+                return super().__new__(cls)
+
+        assert_type(Box[int](), Box[list[int]])
+        assert_type(Box[str](), Box[list[str]])
+
+    @assert_passes(allow_import_failures=True)
+    def test_unimportable_constructor_subscript_preserves_explicit_new_return(self):
+        from typing import Generic, Self, TypeVar
+
+        import does_not_exist  # noqa: F401
+        from typing_extensions import assert_type
+
+        T = TypeVar("T")
+
+        class Box(Generic[T]):
+            def __new__(cls, value: T) -> Self:
+                return super().__new__(cls)
+
+        assert_type(Box[float](1), Box[float])
 
     @assert_passes()
     def test_init_self_annotation_disallows_class_scoped_typevars(self):
@@ -4137,7 +4215,9 @@ class TestAnnAssign(TestNameCheckVisitorBase):
                 self.value = value
 
         assert_type(Box(1), Box[int])
+        assert_type(Box(1.0), Box[float])
         assert_type(Box(""), Box[str])
+        assert_type(Box[float](1), Box[float | int])
 
         @dataclass
         class Data(Generic[T]):

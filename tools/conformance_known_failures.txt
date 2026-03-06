@@ -5,7 +5,6 @@ aliases_type_statement
 annotations_forward_refs
 generics_defaults
 generics_defaults_referential
-generics_defaults_specialization
 generics_scoping
 generics_self_advanced
 generics_self_usage

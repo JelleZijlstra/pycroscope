@@ -625,6 +625,40 @@ def _type_alias_substitution_key(
     return type_param
 
 
+_NO_DEFAULT = object()
+
+
+def _type_param_has_default(type_param: TypeVarLike | "TypeVarValue") -> bool:
+    if isinstance(type_param, TypeVarValue):
+        if type_param.default is not None:
+            return True
+        runtime_type_param = type_param.typevar
+    else:
+        runtime_type_param = type_param
+    runtime_default = safe_getattr(runtime_type_param, "__default__", _NO_DEFAULT)
+    return (
+        runtime_default is not _NO_DEFAULT
+        and runtime_default is not typing_extensions.NoDefault
+    )
+
+
+def _default_value_for_type_param(type_param: TypeVarLike | "TypeVarValue") -> Value:
+    if isinstance(type_param, TypeVarValue) and type_param.default is not None:
+        return type_param.default
+    if isinstance(type_param, TypeVarValue):
+        runtime_type_param = type_param.typevar
+    else:
+        runtime_type_param = type_param
+    runtime_default = safe_getattr(runtime_type_param, "__default__", _NO_DEFAULT)
+    if runtime_default is _NO_DEFAULT or runtime_default is typing_extensions.NoDefault:
+        return AnyValue(AnySource.generic_argument)
+    if isinstance(runtime_default, type):
+        return TypedValue(runtime_default)
+    if runtime_default is None:
+        return KnownValue(None)
+    return AnyValue(AnySource.generic_argument)
+
+
 def _match_type_alias_type_arguments(
     type_params: Sequence[TypeVarLike | "TypeVarValue"],
     type_arguments: Sequence[Value],
@@ -644,9 +678,19 @@ def _match_type_alias_type_arguments(
     if len(variadic_indexes) > 1:
         return None
     if not variadic_indexes:
-        if len(substitution_keys) != len(type_arguments):
+        if len(type_arguments) > len(substitution_keys):
             return None
-        return list(zip(substitution_keys, type_arguments))
+        minimum_required = sum(
+            1 for type_param in type_params if not _type_param_has_default(type_param)
+        )
+        if len(type_arguments) < minimum_required:
+            return None
+        matched = list(zip(substitution_keys, type_arguments))
+        for i in range(len(type_arguments), len(substitution_keys)):
+            matched.append(
+                (substitution_keys[i], _default_value_for_type_param(type_params[i]))
+            )
+        return matched
     variadic_index = variadic_indexes[0]
     minimum_args = len(substitution_keys) - 1
     if len(type_arguments) < minimum_args:
@@ -702,11 +746,13 @@ class TypeAliasValue(Value):
             typevars = dict(substitutions)
             val = val.substitute_typevars(typevars)
         elif substitution_keys:
-            # Unsubscripted aliases default type parameters to Any.
+            # Unsubscripted aliases default each unspecialized parameter.
             val = val.substitute_typevars(
                 {
-                    type_param: AnyValue(AnySource.generic_argument)
-                    for type_param in substitution_keys
+                    type_param: _default_value_for_type_param(type_param_value)
+                    for type_param, type_param_value in zip(
+                        substitution_keys, type_params
+                    )
                 }
             )
         return val
@@ -1120,6 +1166,33 @@ class TypedValue(Value):
     def get_generic_args_for_type(
         self, typ: type | super | str, ctx: CanAssignContext
     ) -> list[Value] | None:
+        def _is_same_synthetic_class_key(
+            left: type | super | str, right: type | str
+        ) -> bool:
+            if left == right:
+                return True
+            if isinstance(left, super):
+                return False
+            checker_ctx = safe_getattr(ctx, "checker", ctx)
+            get_synthetic_class = safe_getattr(checker_ctx, "get_synthetic_class", None)
+            if not callable(get_synthetic_class):
+                return False
+            if isinstance(left, type) and isinstance(right, str):
+                synthetic = get_synthetic_class(left)
+                return (
+                    synthetic is not None
+                    and isinstance(synthetic.class_type, TypedValue)
+                    and synthetic.class_type.typ == right
+                )
+            if isinstance(left, str) and isinstance(right, type):
+                synthetic = get_synthetic_class(right)
+                return (
+                    synthetic is not None
+                    and isinstance(synthetic.class_type, TypedValue)
+                    and synthetic.class_type.typ == left
+                )
+            return False
+
         if isinstance(self, GenericValue):
             args = self.args
         else:
@@ -1130,6 +1203,15 @@ class TypedValue(Value):
             generic_bases = ctx.get_generic_bases(self.typ, args)
         if typ in generic_bases:
             raw_args = list(generic_bases[typ].values())
+            if (
+                not raw_args
+                and isinstance(self, GenericValue)
+                and _is_same_synthetic_class_key(typ, self.typ)
+                and self.args
+            ):
+                # Synthetic generic metadata can occasionally lose self-mapping
+                # while we still have explicit specialization arguments.
+                return list(self.args)
             if isinstance(typ, super):
                 params_key: type | str = typ.__self_class__
             else:
@@ -1156,6 +1238,12 @@ class TypedValue(Value):
                     expanded_args.append(raw_arg)
                 return expanded_args
             return raw_args
+        if isinstance(self, GenericValue) and _is_same_synthetic_class_key(
+            typ, self.typ
+        ):
+            # Preserve explicitly provided arguments when base expansion has
+            # no self-entry for this synthetic specialization.
+            return list(self.args)
         return None
 
     def get_generic_arg_for_type(

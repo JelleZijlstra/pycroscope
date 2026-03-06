@@ -6153,6 +6153,52 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         runtime_default = safe_getattr(type_param.typevar, "__default__", NoDefault)
         return runtime_default is not NoDefault
 
+    def _type_parameter_value_has_default(self, type_param: Value) -> bool:
+        if isinstance(type_param, TypeVarValue):
+            return self._type_param_has_default(type_param)
+        if isinstance(type_param, InputSigValue) and isinstance(
+            type_param.input_sig, ParamSpecSig
+        ):
+            if type_param.input_sig.default is not None:
+                return True
+            runtime_default = safe_getattr(
+                type_param.input_sig.param_spec, "__default__", NoDefault
+            )
+            return runtime_default is not NoDefault
+        return False
+
+    def _walk_values_for_type_param_collection(self, value: Value) -> Iterable[Value]:
+        if (
+            isinstance(value, PartialValue)
+            and value.operation is PartialValueOperation.SUBSCRIPT
+        ):
+            root_is_specialized_class = False
+            if isinstance(value.runtime_value, GenericValue):
+                runtime_typ = value.runtime_value.typ
+                if isinstance(value.root, SyntheticClassObjectValue):
+                    root_type = value.root.class_type
+                    root_is_specialized_class = (
+                        isinstance(root_type, TypedValue)
+                        and root_type.typ == runtime_typ
+                    )
+                elif isinstance(value.root, TypedValue):
+                    root_is_specialized_class = value.root.typ == runtime_typ
+                elif isinstance(value.root, KnownValue) and isinstance(
+                    value.root.val, type
+                ):
+                    root_is_specialized_class = value.root.val == runtime_typ
+
+            if not root_is_specialized_class:
+                yield from self._walk_values_for_type_param_collection(value.root)
+
+            # For class specializations like Base[int, T], the root contributes
+            # unsubstituted type params from Base that should not be inherited.
+            for member in value.members:
+                yield from self._walk_values_for_type_param_collection(member)
+            yield from self._walk_values_for_type_param_collection(value.runtime_value)
+            return
+        yield from value.walk_values()
+
     def _check_class_type_param_default_rules(
         self, node: ast.ClassDef, type_params: Sequence[TypeVarValue]
     ) -> None:
@@ -6251,7 +6297,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             seen.add(type_param.typevar)
         for base in base_values:
             for subval in flatten_values(base):
-                for walked in subval.walk_values():
+                for walked in self._walk_values_for_type_param_collection(subval):
                     if isinstance(walked, TypeVarValue):
                         type_param = walked
                     elif isinstance(walked, InputSigValue) and isinstance(
@@ -9289,6 +9335,30 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             return annotate_value(value, [DefiniteValueExtension(True)])
         return value
 
+    def _resolve_name_from_typeshed_module(
+        self, module_name: str, attribute_name: str
+    ) -> Value | None:
+        finder = self.checker.ts_finder
+        if not self._typeshed_module_exists(module_name):
+            return None
+        value = finder.resolve_name_if_present(module_name, attribute_name)
+        if value is None:
+            return None
+        return self._maybe_annotate_type_checking_value(
+            value, module_name=module_name, attribute_name=attribute_name
+        )
+
+    def _typeshed_module_exists(self, module_name: str) -> bool:
+        path = typeshed_client.ModulePath(tuple(module_name.split(".")))
+        return self.checker.ts_finder.resolver.get_module(path).exists
+
+    def _get_import_from_typing_extensions_fallback(
+        self, module_name: str | None, alias_name: str
+    ) -> Value | None:
+        if module_name != "typing":
+            return None
+        return self._resolve_name_from_typeshed_module("typing_extensions", alias_name)
+
     def _get_module(self, name: str, node: ast.AST) -> Value:
         if name not in sys.modules:
             self._try_to_import(name)
@@ -9379,24 +9449,26 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             # it shouldn't be used for runtime imports
             and node.module != "pycroscope.extensions"
         ):
-            path = typeshed_client.ModulePath(tuple(node.module.split(".")))
-            finder = self.checker.ts_finder
-            mod = finder.resolver.get_module(path)
-            if mod.exists:
+            unresolved_aliases: list[ast.alias] = []
+            if self._typeshed_module_exists(node.module):
                 for alias in node.names:
-                    val = finder.resolve_name(node.module, alias.name)
-                    if val is UNINITIALIZED_VALUE:
-                        self._show_error_if_checking(
-                            node,
-                            f"Cannot import name {alias.name!r} from {node.module!r}",
-                            ErrorCode.import_failed,
-                        )
-                        val = AnyValue(AnySource.error)
-                    val = self._maybe_annotate_type_checking_value(
-                        val, module_name=node.module, attribute_name=alias.name
+                    val = self._resolve_name_from_typeshed_module(
+                        node.module, alias.name
                     )
+                    if val is None:
+                        val = self._get_import_from_typing_extensions_fallback(
+                            node.module, alias.name
+                        )
+                    if val is None:
+                        unresolved_aliases.append(alias)
+                        continue
                     self._set_alias_in_scope(alias, val, node=node)
-                return
+                if not unresolved_aliases:
+                    return
+            else:
+                unresolved_aliases = list(node.names)
+        else:
+            unresolved_aliases = list(node.names)
 
         is_init = self.filename.endswith("/__init__.py")
         source_module = self._get_import_from_module(node)
@@ -9411,7 +9483,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         ):
             self._set_name_in_scope(node.module, node, source_module, private=False)
 
-        for alias in node.names:
+        for alias in unresolved_aliases:
             if alias.name == "*":
                 if isinstance(source_module, KnownValue) and isinstance(
                     source_module.val, types.ModuleType
@@ -9465,6 +9537,11 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             val = self.get_attribute_from_value(refreshed_source_module, alias_name)
             if val is not UNINITIALIZED_VALUE:
                 return val
+        fallback = self._get_import_from_typing_extensions_fallback(
+            node.module, alias_name
+        )
+        if fallback is not None:
+            return fallback
 
         self._show_error_if_checking(
             node,
@@ -12816,6 +12893,23 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                         stripped_value, root_composite.varname, root_composite.node
                     )
                 )
+                if not self.in_annotation and isinstance(
+                    stripped_root.value, TypeAliasValue
+                ):
+                    # Explicit TypeAlias values should report invalid specialization
+                    # arity even when used in runtime-value positions.
+                    type_from_value(
+                        PartialValue(
+                            PartialValueOperation.SUBSCRIPT,
+                            stripped_root.value,
+                            node,
+                            self._maybe_unpack_tuple(index, node),
+                            TypedValue(types.GenericAlias),
+                        ),
+                        self,
+                        node,
+                        suppress_errors=False,
+                    )
                 should_use_static_annotation_subscript = self.in_annotation and (
                     isinstance(stripped_root.value, TypeAliasValue)
                     or (
@@ -13034,6 +13128,34 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         if self.checker.get_synthetic_class(synthetic_typ) is None:
             return None
         type_parameters = self.checker.get_type_parameters(synthetic_typ)
+        generic_bases = self.checker.get_generic_bases(synthetic_typ, ())
+        if (
+            not type_parameters
+            and normalized_members
+            and synthetic_typ in generic_bases
+        ):
+            synthetic_class = self.checker.get_synthetic_class(synthetic_typ)
+            has_explicit_class_getitem = (
+                synthetic_class is not None
+                and "__class_getitem__" in synthetic_class.class_attributes
+            )
+            has_fully_specialized_generic_base = any(
+                base_typ != synthetic_typ
+                and isinstance(base_typ, str)
+                and tv_map
+                and all(
+                    not isinstance(tv_value, (TypeVarValue, InputSigValue))
+                    for tv_value in tv_map.values()
+                )
+                for base_typ, tv_map in generic_bases.items()
+            )
+            if has_fully_specialized_generic_base and not has_explicit_class_getitem:
+                self._show_error_if_checking(
+                    node,
+                    f"{stringify_object(synthetic_typ)} cannot be further subscripted",
+                    error_code=ErrorCode.invalid_annotation,
+                )
+                return AnyValue(AnySource.error)
         variadic_type_param_indexes = [
             i
             for i, type_param in enumerate(type_parameters)
@@ -13042,31 +13164,49 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         if len(variadic_type_param_indexes) > 1:
             return None
         expected_len: int | None
+        minimum_required_len = sum(
+            1
+            for i, type_param in enumerate(type_parameters)
+            if i not in variadic_type_param_indexes
+            and not self._type_parameter_value_has_default(type_param)
+        )
         if variadic_type_param_indexes:
             # A TypeVarTuple can absorb any number of type arguments.
             expected_len = len(type_parameters) - 1
-            is_valid_type_arg_count = len(normalized_members) >= expected_len
+            is_valid_type_arg_count = len(normalized_members) >= minimum_required_len
         else:
             expected_len = len(type_parameters)
-            is_valid_type_arg_count = expected_len == len(normalized_members)
+            is_valid_type_arg_count = (
+                minimum_required_len <= len(normalized_members) <= expected_len
+            )
 
         if type_parameters and not is_valid_type_arg_count:
             if variadic_type_param_indexes:
                 expected_type_arg_message = (
-                    f"Expected at least {expected_len} type arguments for "
+                    f"Expected at least {minimum_required_len} type arguments for "
                     f"{stringify_object(synthetic_typ)}"
                 )
             else:
-                expected_type_arg_message = (
-                    f"Expected {expected_len} type arguments for "
-                    f"{stringify_object(synthetic_typ)}"
-                )
+                if len(normalized_members) < minimum_required_len:
+                    expected_type_arg_message = (
+                        f"Expected at least {minimum_required_len} type arguments for "
+                        f"{stringify_object(synthetic_typ)}"
+                    )
+                elif minimum_required_len == expected_len:
+                    expected_type_arg_message = (
+                        f"Expected {expected_len} type arguments for "
+                        f"{stringify_object(synthetic_typ)}"
+                    )
+                else:
+                    expected_type_arg_message = (
+                        f"Expected at most {expected_len} type arguments for "
+                        f"{stringify_object(synthetic_typ)}"
+                    )
             self._show_error_if_checking(
                 node, expected_type_arg_message, error_code=ErrorCode.invalid_annotation
             )
             return AnyValue(AnySource.error)
-        generic_bases = self.checker.get_generic_bases(synthetic_typ, ())
-        if not generic_bases.get(synthetic_typ):
+        if synthetic_typ not in generic_bases:
             return None
         return PartialValue(
             PartialValueOperation.SUBSCRIPT,
@@ -14735,7 +14875,10 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                             f"Call to {callee_wrapped.val} is not supported",
                             error_code=ErrorCode.incompatible_call,
                         )
-                    return_value = KnownValue(result)
+                    elif not self._should_preserve_static_constructor_return(
+                        callee_wrapped, return_value, result
+                    ):
+                        return_value = KnownValue(result)
 
         return_value = self._specialize_generic_alias_call_return(
             callee_wrapped, return_value, node
@@ -14786,11 +14929,71 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             and not ClassesSafeToInstantiate.contains(callee_obj, self.options)
         )
 
+    def _should_preserve_static_constructor_return(
+        self, callee: Value, static_return_value: Value, runtime_result: object
+    ) -> bool:
+        runtime_class: type | None = None
+        callee_args: Sequence[Value]
+        if isinstance(callee, KnownValue):
+            origin = get_origin(callee.val)
+            runtime_args = get_args(callee.val)
+            if not (isinstance(origin, type) and runtime_args):
+                return False
+            runtime_class = origin
+            callee_args = [
+                TypedValue(arg) if isinstance(arg, type) else KnownValue(arg)
+                for arg in runtime_args
+            ]
+        elif not (
+            isinstance(callee, PartialValue)
+            and callee.operation is PartialValueOperation.SUBSCRIPT
+        ):
+            return False
+        else:
+            if isinstance(callee.root, KnownValue) and isinstance(
+                callee.root.val, type
+            ):
+                runtime_class = callee.root.val
+            elif isinstance(callee.root, SyntheticClassObjectValue):
+                runtime_value = callee.root.class_attributes.get("%runtime_class")
+                if isinstance(runtime_value, KnownValue) and isinstance(
+                    runtime_value.val, type
+                ):
+                    runtime_class = runtime_value.val
+            callee_args = [
+                (
+                    TypedValue(member.val)
+                    if isinstance(member, KnownValue) and type(member.val) is type
+                    else member
+                )
+                for member in callee.members
+            ]
+        if runtime_class is None:
+            return False
+        if "__new__" not in runtime_class.__dict__:
+            return False
+        annotations = safe_getattr(
+            runtime_class.__dict__["__new__"], "__annotations__", {}
+        )
+        if "return" not in annotations:
+            return False
+
+        static_root = replace_fallback(static_return_value)
+        if isinstance(static_root, GenericValue) and isinstance(static_root.typ, type):
+            if len(static_root.args) == len(callee_args) and all(
+                static_arg == callee_arg
+                for static_arg, callee_arg in zip(static_root.args, callee_args)
+            ):
+                return False
+            return isinstance(runtime_result, static_root.typ)
+        return False
+
     def _specialize_generic_alias_call_return(
         self, callee: Value, return_value: Value, node: ast.AST | None
     ) -> Value:
         allow_annotated_specialization = False
         origin: type | str
+        preserve_exact_type_args: bool
         if isinstance(callee, KnownValue):
             origin = get_origin(callee.val)
             if not isinstance(origin, type):
@@ -14798,10 +15001,19 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             runtime_args = get_args(callee.val)
             if not runtime_args:
                 return return_value
-            type_args = [
-                type_from_value(KnownValue(arg), self, node, suppress_errors=True)
-                for arg in runtime_args
-            ]
+            preserve_exact_type_args = (
+                self.checker._runtime_has_explicit_new_return_annotation(origin)
+            )
+            if preserve_exact_type_args:
+                type_args = [
+                    TypedValue(arg) if isinstance(arg, type) else KnownValue(arg)
+                    for arg in runtime_args
+                ]
+            else:
+                type_args = [
+                    type_from_value(KnownValue(arg), self, node, suppress_errors=True)
+                    for arg in runtime_args
+                ]
         elif (
             isinstance(callee, PartialValue)
             and callee.operation is PartialValueOperation.SUBSCRIPT
@@ -14810,6 +15022,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 callee.root.val, type
             ):
                 origin = callee.root.val
+                preserve_exact_type_args = (
+                    self.checker._runtime_has_explicit_new_return_annotation(origin)
+                )
             elif (
                 isinstance(callee.root, SyntheticClassObjectValue)
                 and isinstance(callee.root.class_type, TypedValue)
@@ -14817,14 +15032,40 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             ):
                 origin = callee.root.class_type.typ
                 allow_annotated_specialization = True
+                runtime_class = callee.root.class_attributes.get("%runtime_class")
+                preserve_exact_type_args = (
+                    isinstance(runtime_class, KnownValue)
+                    and isinstance(runtime_class.val, type)
+                    and self.checker._runtime_has_explicit_new_return_annotation(
+                        runtime_class.val
+                    )
+                )
+            elif isinstance(callee.root, TypedValue) and isinstance(
+                callee.root.typ, type
+            ):
+                origin = callee.root.typ
+                preserve_exact_type_args = (
+                    self.checker._runtime_has_explicit_new_return_annotation(origin)
+                )
             else:
                 return return_value
             if not callee.members:
                 return return_value
-            type_args = [
-                type_from_value(member, self, node, suppress_errors=True)
-                for member in callee.members
-            ]
+            if preserve_exact_type_args:
+                type_args = [
+                    (
+                        TypedValue(member.val)
+                        if isinstance(member, KnownValue)
+                        and isinstance(member.val, type)
+                        else member
+                    )
+                    for member in callee.members
+                ]
+            else:
+                type_args = [
+                    type_from_value(member, self, node, suppress_errors=True)
+                    for member in callee.members
+                ]
         else:
             return return_value
 
@@ -14834,6 +15075,10 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 if specialized_inner is None:
                     return None
                 return annotate_value(specialized_inner, value.metadata)
+            if isinstance(value, GenericValue):
+                if value.typ is not origin:
+                    return None
+                return value
             if isinstance(value, KnownValue):
                 if isinstance(origin, type) and not isinstance(value.val, origin):
                     return None

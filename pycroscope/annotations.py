@@ -897,9 +897,20 @@ def _match_type_alias_arg_values(
     if len(variadic_indexes) > 1:
         return None
     if not variadic_indexes:
-        if len(type_params) != len(args_vals):
+        if len(args_vals) > len(type_params):
             return None
-        return list(zip(type_params, args_vals))
+        minimum_required = sum(
+            1 for type_param in type_params if type_param.default is None
+        )
+        if len(args_vals) < minimum_required:
+            return None
+        matched = list(zip(type_params, args_vals))
+        for i in range(len(args_vals), len(type_params)):
+            default = type_params[i].default
+            if default is None:
+                return None
+            matched.append((type_params[i], default))
+        return matched
     variadic_index = variadic_indexes[0]
     minimum_args = len(type_params) - 1
     if len(args_vals) < minimum_args:
