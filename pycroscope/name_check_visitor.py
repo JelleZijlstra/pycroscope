@@ -9335,6 +9335,30 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             return annotate_value(value, [DefiniteValueExtension(True)])
         return value
 
+    def _resolve_name_from_typeshed_module(
+        self, module_name: str, attribute_name: str
+    ) -> Value | None:
+        finder = self.checker.ts_finder
+        if not self._typeshed_module_exists(module_name):
+            return None
+        value = finder.resolve_name_if_present(module_name, attribute_name)
+        if value is None:
+            return None
+        return self._maybe_annotate_type_checking_value(
+            value, module_name=module_name, attribute_name=attribute_name
+        )
+
+    def _typeshed_module_exists(self, module_name: str) -> bool:
+        path = typeshed_client.ModulePath(tuple(module_name.split(".")))
+        return self.checker.ts_finder.resolver.get_module(path).exists
+
+    def _get_import_from_typing_extensions_fallback(
+        self, module_name: str | None, alias_name: str
+    ) -> Value | None:
+        if module_name != "typing":
+            return None
+        return self._resolve_name_from_typeshed_module("typing_extensions", alias_name)
+
     def _get_module(self, name: str, node: ast.AST) -> Value:
         if name not in sys.modules:
             self._try_to_import(name)
@@ -9425,24 +9449,26 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             # it shouldn't be used for runtime imports
             and node.module != "pycroscope.extensions"
         ):
-            path = typeshed_client.ModulePath(tuple(node.module.split(".")))
-            finder = self.checker.ts_finder
-            mod = finder.resolver.get_module(path)
-            if mod.exists:
+            unresolved_aliases: list[ast.alias] = []
+            if self._typeshed_module_exists(node.module):
                 for alias in node.names:
-                    val = finder.resolve_name(node.module, alias.name)
-                    if val is UNINITIALIZED_VALUE:
-                        self._show_error_if_checking(
-                            node,
-                            f"Cannot import name {alias.name!r} from {node.module!r}",
-                            ErrorCode.import_failed,
-                        )
-                        val = AnyValue(AnySource.error)
-                    val = self._maybe_annotate_type_checking_value(
-                        val, module_name=node.module, attribute_name=alias.name
+                    val = self._resolve_name_from_typeshed_module(
+                        node.module, alias.name
                     )
+                    if val is None:
+                        val = self._get_import_from_typing_extensions_fallback(
+                            node.module, alias.name
+                        )
+                    if val is None:
+                        unresolved_aliases.append(alias)
+                        continue
                     self._set_alias_in_scope(alias, val, node=node)
-                return
+                if not unresolved_aliases:
+                    return
+            else:
+                unresolved_aliases = list(node.names)
+        else:
+            unresolved_aliases = list(node.names)
 
         is_init = self.filename.endswith("/__init__.py")
         source_module = self._get_import_from_module(node)
@@ -9457,7 +9483,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         ):
             self._set_name_in_scope(node.module, node, source_module, private=False)
 
-        for alias in node.names:
+        for alias in unresolved_aliases:
             if alias.name == "*":
                 if isinstance(source_module, KnownValue) and isinstance(
                     source_module.val, types.ModuleType
@@ -9511,6 +9537,11 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             val = self.get_attribute_from_value(refreshed_source_module, alias_name)
             if val is not UNINITIALIZED_VALUE:
                 return val
+        fallback = self._get_import_from_typing_extensions_fallback(
+            node.module, alias_name
+        )
+        if fallback is not None:
+            return fallback
 
         self._show_error_if_checking(
             node,

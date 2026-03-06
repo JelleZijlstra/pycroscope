@@ -195,6 +195,21 @@ class TestImportFailureHandling(TestNameCheckVisitorBase):
         def f() -> int:
             return later_name
 
+    @assert_passes(allow_import_failures=True)
+    def test_typing_import_falls_back_to_typing_extensions(self):
+        from typing import Generic, Self, TypeVar
+
+        import does_not_exist  # noqa: F401
+        from typing_extensions import assert_type
+
+        T = TypeVar("T")
+
+        class Box(Generic[T]):
+            def clone(self) -> Self:
+                return self
+
+        assert_type(Box[int]().clone(), Box[int])
+
     @assert_passes(allow_runtime_module_load_failure=True)
     def test_import_failure_is_ignorable(self):
         a = 1  # static analysis: ignore[import_failed]

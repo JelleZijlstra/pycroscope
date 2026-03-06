@@ -606,6 +606,12 @@ class TypeshedFinder:
         # TODO change to UNINITIALIZED_VALUE
         return AnyValue(AnySource.inference)
 
+    def resolve_name_if_present(self, module: str, name: str) -> Value | None:
+        info = self._get_info_for_name(f"{module}.{name}")
+        if info is None:
+            return None
+        return self._value_from_info(info, module)
+
     def _get_attribute_from_info(
         self,
         info: typeshed_client.resolver.ResolvedName,
