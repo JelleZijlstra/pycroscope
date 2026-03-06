@@ -14844,7 +14844,10 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                             f"Call to {callee_wrapped.val} is not supported",
                             error_code=ErrorCode.incompatible_call,
                         )
-                    return_value = KnownValue(result)
+                    elif not self._should_preserve_static_constructor_return(
+                        callee_wrapped, return_value, result
+                    ):
+                        return_value = KnownValue(result)
 
         return_value = self._specialize_generic_alias_call_return(
             callee_wrapped, return_value, node
@@ -14895,11 +14898,71 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             and not ClassesSafeToInstantiate.contains(callee_obj, self.options)
         )
 
+    def _should_preserve_static_constructor_return(
+        self, callee: Value, static_return_value: Value, runtime_result: object
+    ) -> bool:
+        runtime_class: type | None = None
+        callee_args: Sequence[Value]
+        if isinstance(callee, KnownValue):
+            origin = get_origin(callee.val)
+            runtime_args = get_args(callee.val)
+            if not (isinstance(origin, type) and runtime_args):
+                return False
+            runtime_class = origin
+            callee_args = [
+                TypedValue(arg) if isinstance(arg, type) else KnownValue(arg)
+                for arg in runtime_args
+            ]
+        elif not (
+            isinstance(callee, PartialValue)
+            and callee.operation is PartialValueOperation.SUBSCRIPT
+        ):
+            return False
+        else:
+            if isinstance(callee.root, KnownValue) and isinstance(
+                callee.root.val, type
+            ):
+                runtime_class = callee.root.val
+            elif isinstance(callee.root, SyntheticClassObjectValue):
+                runtime_value = callee.root.class_attributes.get("%runtime_class")
+                if isinstance(runtime_value, KnownValue) and isinstance(
+                    runtime_value.val, type
+                ):
+                    runtime_class = runtime_value.val
+            callee_args = [
+                (
+                    TypedValue(member.val)
+                    if isinstance(member, KnownValue) and type(member.val) is type
+                    else member
+                )
+                for member in callee.members
+            ]
+        if runtime_class is None:
+            return False
+        if "__new__" not in runtime_class.__dict__:
+            return False
+        annotations = safe_getattr(
+            runtime_class.__dict__["__new__"], "__annotations__", {}
+        )
+        if "return" not in annotations:
+            return False
+
+        static_root = replace_fallback(static_return_value)
+        if isinstance(static_root, GenericValue) and isinstance(static_root.typ, type):
+            if len(static_root.args) == len(callee_args) and all(
+                static_arg == callee_arg
+                for static_arg, callee_arg in zip(static_root.args, callee_args)
+            ):
+                return False
+            return isinstance(runtime_result, static_root.typ)
+        return False
+
     def _specialize_generic_alias_call_return(
         self, callee: Value, return_value: Value, node: ast.AST | None
     ) -> Value:
         allow_annotated_specialization = False
         origin: type | str
+        preserve_exact_type_args: bool
         if isinstance(callee, KnownValue):
             origin = get_origin(callee.val)
             if not isinstance(origin, type):
@@ -14907,10 +14970,19 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             runtime_args = get_args(callee.val)
             if not runtime_args:
                 return return_value
-            type_args = [
-                type_from_value(KnownValue(arg), self, node, suppress_errors=True)
-                for arg in runtime_args
-            ]
+            preserve_exact_type_args = (
+                self.checker._runtime_has_explicit_new_return_annotation(origin)
+            )
+            if preserve_exact_type_args:
+                type_args = [
+                    TypedValue(arg) if isinstance(arg, type) else KnownValue(arg)
+                    for arg in runtime_args
+                ]
+            else:
+                type_args = [
+                    type_from_value(KnownValue(arg), self, node, suppress_errors=True)
+                    for arg in runtime_args
+                ]
         elif (
             isinstance(callee, PartialValue)
             and callee.operation is PartialValueOperation.SUBSCRIPT
@@ -14919,6 +14991,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 callee.root.val, type
             ):
                 origin = callee.root.val
+                preserve_exact_type_args = (
+                    self.checker._runtime_has_explicit_new_return_annotation(origin)
+                )
             elif (
                 isinstance(callee.root, SyntheticClassObjectValue)
                 and isinstance(callee.root.class_type, TypedValue)
@@ -14926,14 +15001,40 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             ):
                 origin = callee.root.class_type.typ
                 allow_annotated_specialization = True
+                runtime_class = callee.root.class_attributes.get("%runtime_class")
+                preserve_exact_type_args = (
+                    isinstance(runtime_class, KnownValue)
+                    and isinstance(runtime_class.val, type)
+                    and self.checker._runtime_has_explicit_new_return_annotation(
+                        runtime_class.val
+                    )
+                )
+            elif isinstance(callee.root, TypedValue) and isinstance(
+                callee.root.typ, type
+            ):
+                origin = callee.root.typ
+                preserve_exact_type_args = (
+                    self.checker._runtime_has_explicit_new_return_annotation(origin)
+                )
             else:
                 return return_value
             if not callee.members:
                 return return_value
-            type_args = [
-                type_from_value(member, self, node, suppress_errors=True)
-                for member in callee.members
-            ]
+            if preserve_exact_type_args:
+                type_args = [
+                    (
+                        TypedValue(member.val)
+                        if isinstance(member, KnownValue)
+                        and isinstance(member.val, type)
+                        else member
+                    )
+                    for member in callee.members
+                ]
+            else:
+                type_args = [
+                    type_from_value(member, self, node, suppress_errors=True)
+                    for member in callee.members
+                ]
         else:
             return return_value
 
@@ -14943,6 +15044,10 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 if specialized_inner is None:
                     return None
                 return annotate_value(specialized_inner, value.metadata)
+            if isinstance(value, GenericValue):
+                if value.typ is not origin:
+                    return None
+                return value
             if isinstance(value, KnownValue):
                 if isinstance(origin, type) and not isinstance(value.val, origin):
                     return None

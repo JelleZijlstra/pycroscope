@@ -65,6 +65,7 @@ from .value import (
     AnySource,
     AnyValue,
     AsyncTaskIncompleteValue,
+    Bound,
     BoundsMap,
     CallableValue,
     CanAssign,
@@ -141,14 +142,40 @@ def _is_staticmethod_callable(func: FunctionType) -> bool:
 
 
 def _should_widen_constructor_typevar(typevar: TypeVarLike) -> bool:
-    if not is_instance_of_typing_name(typevar, "TypeVar"):
-        return False
-    if safe_getattr(typevar, "__constraints__", ()):
-        return False
-    return safe_getattr(typevar, "__bound__", None) is None
+    return is_instance_of_typing_name(typevar, "TypeVar")
 
 
-def _widen_constructor_typevar_solution(value: Value) -> Value:
+def _should_widen_constructor_typevar_solutions(
+    callable_obj: object | None, return_value: Value
+) -> bool:
+    if isinstance(callable_obj, MethodType):
+        callable_obj = callable_obj.__func__
+    return (
+        isinstance(return_value, GenericValue)
+        and isinstance(callable_obj, FunctionType)
+        and callable_obj.__name__ in {"__init__", "__new__"}
+    )
+
+
+def _get_constructor_literal_runtime_type(bounds: Sequence[Bound]) -> type | None:
+    literal_types = {
+        type(bound.value.val)
+        for bound in bounds
+        if isinstance(bound, LowerBound) and isinstance(bound.value, KnownValue)
+    }
+    if len(literal_types) != 1:
+        return None
+    runtime_type = next(iter(literal_types))
+    if runtime_type in {bool, int, float, complex, str, bytes}:
+        return runtime_type
+    return None
+
+
+def _widen_constructor_typevar_solution(
+    value: Value, *, literal_runtime_type: type | None = None
+) -> Value:
+    if literal_runtime_type is not None:
+        return TypedValue(literal_runtime_type)
     if isinstance(value, KnownValue):
         return TypedValue(type(value.val))
     if isinstance(value, MultiValuedValue):
@@ -1474,22 +1501,29 @@ class Signature:
                     return self.get_default_return()
                 else:
                     bounds_maps.append(bounds_map)
+            resolved_bounds_map = unify_bounds_maps(bounds_maps)
             typevar_values, errors = resolve_bounds_map(
-                unify_bounds_maps(bounds_maps),
-                ctx.can_assign_ctx,
-                all_typevars=self.all_typevars,
+                resolved_bounds_map, ctx.can_assign_ctx, all_typevars=self.all_typevars
             )
-            should_widen_constructor_typevars = (
-                self.callable is None
-                and isinstance(return_value, GenericValue)
-                and isinstance(return_value.typ, str)
-                and ctx.visitor is not None
-                and safe_getattr(ctx.visitor, "module", None) is None
+            should_widen_constructor_typevars = ctx.visitor is not None and (
+                _should_widen_constructor_typevar_solutions(self.callable, return_value)
+                or (
+                    self.callable is None
+                    and isinstance(return_value, GenericValue)
+                    and isinstance(return_value.typ, str)
+                    and isinstance(ctx.node, ast.Call)
+                    and safe_getattr(ctx.visitor, "module", None) is None
+                )
             )
             if should_widen_constructor_typevars:
                 typevar_values = {
                     typevar: (
-                        _widen_constructor_typevar_solution(value)
+                        _widen_constructor_typevar_solution(
+                            value,
+                            literal_runtime_type=_get_constructor_literal_runtime_type(
+                                resolved_bounds_map.get(typevar, ())
+                            ),
+                        )
                         if _should_widen_constructor_typevar(typevar)
                         else value
                     )

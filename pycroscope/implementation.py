@@ -2025,11 +2025,111 @@ def _assert_type_prefers_ast_annotation(node: ast.AST) -> bool:
     )
 
 
+def _exact_assert_type_for_synthetic_subscript(ctx: CallContext) -> Value | None:
+    if ctx.visitor is None:
+        return None
+    val_node = ctx.ast_for_arg("val")
+    if not isinstance(val_node, ast.Call):
+        return None
+    typ_node = ctx.ast_for_arg("typ")
+    if not isinstance(typ_node, ast.Subscript):
+        return None
+    root_value = replace_fallback(ctx.visitor.visit(typ_node.value))
+    class_type: type | str | None
+    type_param_count: int | None = None
+    preserve_exact_type_args: bool
+    if isinstance(root_value, SyntheticClassObjectValue):
+        if not isinstance(root_value.class_type, TypedValue):
+            return None
+        class_type = root_value.class_type.typ
+        preserve_exact_type_args = (
+            ctx.visitor.checker._synthetic_has_explicit_new_return_annotation(
+                root_value,
+                get_return_override=ctx.visitor.get_local_return_value,
+                get_call_attribute=lambda value: ctx.visitor.get_attribute_from_value(
+                    value, "__call__"
+                ),
+            )
+        )
+        for base in root_value.base_classes:
+            base_root = replace_fallback(base)
+            if not isinstance(base_root, KnownValue):
+                continue
+            origin = typing.get_origin(base_root.val)
+            if not is_typing_name(origin, "Generic"):
+                continue
+            type_param_count = len(typing.get_args(base_root.val))
+            break
+    elif (
+        isinstance(root_value, KnownValue)
+        and isinstance(root_value.val, type)
+        and ctx.visitor.checker._runtime_has_explicit_new_return_annotation(
+            root_value.val
+        )
+    ):
+        class_type = root_value.val
+        preserve_exact_type_args = True
+        type_params = ctx.visitor.checker.arg_spec_cache.get_type_parameters(
+            root_value.val
+        )
+        if not type_params:
+            generic_bases = ctx.visitor.checker.arg_spec_cache.get_generic_bases(
+                root_value.val, substitute_typevars=False
+            )
+            type_params = [
+                val
+                for val in generic_bases.get(root_value.val, {}).values()
+                if isinstance(val, TypeVarValue)
+            ]
+        type_param_count = len(type_params)
+    else:
+        return None
+    if isinstance(val_node.func, ast.Subscript) and not preserve_exact_type_args:
+        return None
+    members = ctx.visitor._maybe_unpack_tuple(
+        ctx.visitor.visit(typ_node.slice), typ_node
+    )
+    if type_param_count is None or type_param_count != len(members):
+        return None
+
+    exact_members: list[Value] = []
+    for member in members:
+        member_root = replace_fallback(member)
+        if isinstance(member_root, KnownValue) and type(member_root.val) is type:
+            exact_members.append(TypedValue(member_root.val))
+        elif isinstance(member_root, KnownValue) and isinstance(
+            member_root.val, (list, tuple)
+        ):
+            exact_members.append(
+                SequenceValue(
+                    type(member_root.val),
+                    [
+                        (
+                            False,
+                            type_from_value(
+                                KnownValue(item), visitor=ctx.visitor, node=ctx.node
+                            ),
+                        )
+                        for item in member_root.val
+                    ],
+                )
+            )
+        else:
+            exact_members.append(
+                type_from_value(member, visitor=ctx.visitor, node=ctx.node)
+            )
+    assert class_type is not None
+    return GenericValue(class_type, exact_members)
+
+
 def _assert_type_impl(ctx: CallContext) -> Value:
     val = ctx.vars["val"]
     typ = ctx.vars["typ"]
     typ_node = ctx.ast_for_arg("typ")
-    if typ_node is not None and _assert_type_prefers_ast_annotation(typ_node):
+    expected_type = _exact_assert_type_for_synthetic_subscript(ctx)
+    if expected_type is not None:
+        pass
+    elif typ_node is not None and _assert_type_prefers_ast_annotation(typ_node):
         expected_type = annotation_expr_from_ast(
             typ_node, visitor=ctx.visitor
         ).to_value()
