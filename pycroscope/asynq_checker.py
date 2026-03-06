@@ -255,18 +255,50 @@ def get_pure_async_equivalent(value: Value) -> str:
 
 def _stringify_async_fn(value: Value) -> str:
     value = replace_fallback(value)
+    if isinstance(value, MultiValuedValue):
+        return _stringify_async_values(value.vals, fallback=str(value))
+    if isinstance(value, IntersectionValue):
+        return _stringify_async_values(value.vals, fallback=str(value))
+    return _stringify_async_simple_value(value)
+
+
+def _stringify_async_values(values: tuple[Value, ...], *, fallback: str) -> str:
+    strings = list(
+        dict.fromkeys(
+            _stringify_async_fn(subval)
+            for subval in values
+            if is_impure_async_fn(subval)
+        )
+    )
+    if len(strings) == 1:
+        return strings[0]
+    return fallback
+
+
+def _stringify_async_simple_value(value: SimpleType) -> str:
     if isinstance(value, KnownValue):
         return _stringify_obj(value.val)
-    elif isinstance(value, UnboundMethodValue):
+    if isinstance(value, UnboundMethodValue):
         typ = _stringify_async_fn(value.composite.value)
         ret = f"{typ}.{value.attr_name}"
         if value.secondary_attr_name is not None:
             ret += f".{value.secondary_attr_name}"
         return ret
-    elif isinstance(value, TypedValue):
+    if isinstance(value, TypedValue):
         return _stringify_obj(value.typ)
-    else:
+    if isinstance(
+        value,
+        (
+            AnyValue,
+            SyntheticClassObjectValue,
+            SyntheticModuleValue,
+            SubclassValue,
+            TypeFormValue,
+            PredicateValue,
+        ),
+    ):
         return str(value)
+    assert_never(value)
 
 
 def _stringify_obj(obj: Any) -> str:

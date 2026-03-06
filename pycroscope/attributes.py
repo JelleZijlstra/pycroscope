@@ -5,6 +5,7 @@ Code for retrieving the value of attributes.
 """
 
 import ast
+import enum
 import inspect
 import sys
 import types
@@ -68,6 +69,7 @@ from .value import (
     PredicateValue,
     Qualifier,
     SelfTVV,
+    SimpleType,
     SubclassValue,
     SyntheticClassObjectValue,
     SyntheticEnumMember,
@@ -539,6 +541,8 @@ def _get_attribute_from_synthetic_class_inner(
             self_value, ctx.attr, direct, ctx, on_class=True
         )
         return direct
+    if _is_instance_only_enum_attr(self_value.class_type, ctx.attr):
+        return UNINITIALIZED_VALUE
     dataclass_attr = _get_synthetic_dataclass_attribute(self_value, ctx, on_class=True)
     if dataclass_attr is not UNINITIALIZED_VALUE:
         return dataclass_attr
@@ -1108,6 +1112,15 @@ def _maybe_mangle_private_name(attr_name: str, class_name: str) -> str | None:
     return f"_{class_name}{attr_name}"
 
 
+def _is_instance_only_enum_attr(value: Value, attr_name: str) -> bool:
+    class_type = replace_fallback(value)
+    if not isinstance(class_type, TypedValue) or not isinstance(class_type.typ, type):
+        return False
+    if not safe_issubclass(class_type.typ, Enum):
+        return False
+    return isinstance(Enum.__dict__.get(attr_name), enum.property)
+
+
 def _should_deliteralize_synthetic_enum_attr(
     self_value: SyntheticClassObjectValue, attr_name: str
 ) -> bool:
@@ -1124,11 +1137,35 @@ def _should_deliteralize_synthetic_enum_attr(
 
 def _deliteralize_value(value: Value) -> Value:
     value = replace_fallback(value)
+    if isinstance(value, MultiValuedValue):
+        return unite_values(*[_deliteralize_value(subval) for subval in value.vals])
+    if isinstance(value, IntersectionValue):
+        return IntersectionValue(
+            tuple(_deliteralize_value(subval) for subval in value.vals)
+        )
+    return _deliteralize_simple_value(value)
+
+
+def _deliteralize_simple_value(value: SimpleType) -> Value:
     if isinstance(value, KnownValue):
         if isinstance(value.val, SyntheticEnumMember):
             return value
         return TypedValue(type(value.val))
-    return value
+    if isinstance(
+        value,
+        (
+            AnyValue,
+            SyntheticClassObjectValue,
+            SyntheticModuleValue,
+            UnboundMethodValue,
+            TypedValue,
+            SubclassValue,
+            TypeFormValue,
+            PredicateValue,
+        ),
+    ):
+        return value
+    assert_never(value)
 
 
 def _get_attribute_from_synthetic_base(
@@ -1576,6 +1613,16 @@ def _get_attribute_from_mro(
                 if ctx.skip_mro and base_cls is not typ:
                     continue
 
+                try:
+                    base_dict = base_cls.__dict__
+                except Exception:
+                    continue
+
+                if on_class and isinstance(base_dict.get(ctx.attr), enum.property):
+                    # Enum.name and Enum.value are instance-only descriptors and
+                    # should not be exposed on enum classes.
+                    continue
+
                 typeshed_type = ctx.get_attribute_from_typeshed(
                     base_cls, on_class=on_class or ctx.skip_unwrap
                 )
@@ -1587,11 +1634,6 @@ def _get_attribute_from_mro(
                     # because we may have our own implementation.
                     if not isinstance(typeshed_type, CallableValue):
                         return typeshed_type, base_cls, False
-
-                try:
-                    base_dict = base_cls.__dict__
-                except Exception:
-                    continue
 
                 try:
                     # Make sure to use only __annotations__ that are actually on this
@@ -1622,9 +1664,6 @@ def _get_attribute_from_mro(
                     except Exception:
                         val = AnyValue(AnySource.inference)
                     return val, base_cls, True
-
-                if typeshed_type is not UNINITIALIZED_VALUE:
-                    return typeshed_type, base_cls, False
 
     attrs_type = get_attrs_attribute(typ, ctx)
     if attrs_type is not None:

@@ -577,6 +577,14 @@ class TestMissingAsync(TestNameCheckVisitorBase):
             result((yield eat.asynq()))  # E: missing_asynq
 
     @assert_passes()
+    def test_union_async_function(self):
+        from pycroscope.asynq_tests import async_fn, cached_fn
+
+        def capybara(flag):
+            fn = async_fn if flag else cached_fn
+            yield fn(1)  # E: missing_asynq
+
+    @assert_passes()
     def test_successful(self):
         from asynq import asynq, result
 
