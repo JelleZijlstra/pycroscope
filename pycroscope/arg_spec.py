@@ -932,13 +932,21 @@ class ArgSpecCache:
                     obj.inner, impl, is_asynq, in_overload_resolution
                 )
 
-            inspect_sig = self._safe_get_signature(obj)
+            signature_obj = obj
+            # typing_extensions.deprecated wraps functions with a *args/**kwargs
+            # shim but preserves the original function in __wrapped__.
+            if safe_hasattr(obj, "__deprecated__"):
+                wrapped = safe_getattr(obj, "__wrapped__", None)
+                if inspect.isfunction(wrapped):
+                    signature_obj = wrapped
+
+            inspect_sig = self._safe_get_signature(signature_obj)
             if inspect_sig is None:
                 return self._make_any_sig(obj)
 
             return self.from_signature(
                 inspect_sig,
-                function_object=obj,
+                function_object=signature_obj,
                 callable_object=obj,
                 is_async=inspect.iscoroutinefunction(obj),
                 impl=impl,

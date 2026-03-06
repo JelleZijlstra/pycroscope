@@ -475,6 +475,8 @@ if asynq is not None:
 
 SYNTHETIC_PROPERTY_GETTER_PREFIX = "%property_getter:"
 SYNTHETIC_PROPERTY_SETTER_PREFIX = "%property_setter:"
+SYNTHETIC_PROPERTY_GETTER_DEPRECATED_PREFIX = "%property_getter_deprecated:"
+SYNTHETIC_PROPERTY_SETTER_DEPRECATED_PREFIX = "%property_setter_deprecated:"
 
 
 class CustomContextManager(Protocol[T_co, U_co]):
@@ -2236,7 +2238,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             synthetic_class.class_attributes.pop("%instance_only_annotations", None)
 
     def _record_synthetic_property_metadata(
-        self, node: FunctionDefNode, info: FunctionInfo
+        self, node: FunctionDefNode, info: FunctionInfo, function_value: Value
     ) -> None:
         if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             return
@@ -2251,9 +2253,15 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
 
         mangled_name = _mangle_class_attribute_name(class_name, node.name)
         getter_key = f"{SYNTHETIC_PROPERTY_GETTER_PREFIX}{mangled_name}"
+        decorator_deprecation = self._deprecation_message_from_decorators(
+            info.decorators
+        )
         if any(
             isinstance(unapplied, KnownValue) and unapplied.val is property
             for unapplied, _, _ in info.decorators
+        ) or any(
+            isinstance(decorator, ast.Name) and decorator.id == "property"
+            for decorator in node.decorator_list
         ):
             getter_value = (
                 info.return_annotation
@@ -2261,6 +2269,15 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 else AnyValue(AnySource.unannotated)
             )
             synthetic_class.class_attributes[getter_key] = getter_value
+            if (
+                getter_deprecation := self._deprecation_message_from_value(
+                    function_value
+                )
+                or decorator_deprecation
+            ) is not None:
+                synthetic_class.class_attributes[
+                    f"{SYNTHETIC_PROPERTY_GETTER_DEPRECATED_PREFIX}{mangled_name}"
+                ] = KnownValue(getter_deprecation)
 
         setter_target_name: str | None = None
         for decorator in node.decorator_list:
@@ -2290,6 +2307,45 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         synthetic_class.class_attributes[
             f"{SYNTHETIC_PROPERTY_SETTER_PREFIX}{mangled_target}"
         ] = setter_value
+        if (
+            setter_deprecation := self._deprecation_message_from_value(function_value)
+            or decorator_deprecation
+        ) is not None:
+            synthetic_class.class_attributes[
+                f"{SYNTHETIC_PROPERTY_SETTER_DEPRECATED_PREFIX}{mangled_target}"
+            ] = KnownValue(setter_deprecation)
+
+    def _deprecation_message_from_value(self, value: Value) -> str | None:
+        value = replace_fallback(value)
+        if isinstance(value, AnnotatedValue):
+            for metadata in value.get_metadata_of_type(DeprecatedExtension):
+                return metadata.deprecation_message
+            return self._deprecation_message_from_value(value.value)
+        if isinstance(value, CallableValue):
+            if isinstance(value.signature, Signature):
+                return value.signature.deprecated
+            return None
+        if isinstance(value, KnownValue):
+            deprecated = safe_getattr(value.val, "__deprecated__", None)
+            if safe_isinstance(deprecated, str):
+                return deprecated
+        return None
+
+    def _deprecation_message_from_decorators(
+        self, decorators: DecoratorValues
+    ) -> str | None:
+        for unapplied, _, node in decorators:
+            if not (
+                isinstance(unapplied, KnownValue)
+                and is_typing_name(unapplied.val, "deprecated")
+                and isinstance(node, ast.Call)
+                and node.args
+                and isinstance(node.args[0], ast.Constant)
+                and isinstance(node.args[0].value, str)
+            ):
+                continue
+            return node.args[0].value
+        return None
 
     def _is_classvar_member(self, class_key: type | str, attr_name: str) -> bool:
         return attr_name in self._classvar_names_for_class_key(class_key, set())
@@ -2712,7 +2768,8 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                                     base_class, base_class_value
                                 )
                                 if isinstance(base_class, str)
-                                else TypedValue(base_class)
+                                else self.checker.get_synthetic_class(base_class)
+                                or TypedValue(base_class)
                             )
                         elif isinstance(base_class_value, KnownValue) and isinstance(
                             base_class_value.val, type
@@ -2743,7 +2800,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     base_class, TypedValue(base_class)
                 )
             else:
-                base_class_value = TypedValue(base_class)
+                base_class_value = self.checker.get_synthetic_class(
+                    base_class
+                ) or TypedValue(base_class)
             ctx = _AttrContext(
                 Composite(base_class_value),
                 varname,
@@ -7292,7 +7351,18 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 computed_function,
                 direct_dataclass_transform_info=direct_dataclass_transform_info,
             )
-            if potential_function is None:
+            use_runtime_function_value = potential_function is not None
+            if (
+                use_runtime_function_value
+                and self._deprecation_message_from_decorators(
+                    info_for_computed_value.decorators
+                )
+                is not None
+            ):
+                # typing_extensions.deprecated wraps callables with a runtime object that
+                # loses the original callable signature; preserve the static signature.
+                use_runtime_function_value = False
+            if not use_runtime_function_value:
                 if static_overload_signature is not None:
                     val = CallableValue(static_overload_signature, types.FunctionType)
                 else:
@@ -7324,7 +7394,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                         [DataclassTransformExtension(merged_dataclass_transform_info)],
                     )
                 self._set_name_in_scope(node.name, node, val)
-                self._record_synthetic_property_metadata(node, info)
+                self._record_synthetic_property_metadata(node, info, val)
 
             if (
                 node.name in METHODS_ALLOWING_NOTIMPLEMENTED
@@ -10439,7 +10509,15 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     allow_call=allow_call,
                 )
             if not inplace_errors:
-                return inplace_result
+                if isinstance(inplace_result, AnyValue) and not isinstance(
+                    left, AnyValue
+                ):
+                    # ``__iadd__`` and friends can come from synthetic fallback
+                    # classes and return imprecise Any. Fall back to normal
+                    # binary handling to recover better type/deprecation info.
+                    pass
+                else:
+                    return inplace_result
 
         possibilities = []
         for subval in flatten_values(left):
@@ -10450,6 +10528,14 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 source_node,
                 allow_call,
             )
+            if (
+                is_inplace
+                and isinstance(result, AnyValue)
+                and not isinstance(subval, AnyValue)
+            ):
+                # ``x += y`` falls back to ``x.__add__(y)`` when ``__iadd__`` is
+                # unavailable. Keep the original type when the fallback return is Any.
+                result = subval
             possibilities.append(result)
         return unite_values(*possibilities)
 
@@ -13159,6 +13245,8 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         method_object = self._get_dunder(node, stripped_callee.value, method_name)
         if method_object is UNINITIALIZED_VALUE:
             return AnyValue(AnySource.error), False
+        with override(self, "caught_errors", None):
+            self.check_deprecation(node, method_object)
         return_value = self.check_call(
             node, method_object, [stripped_callee, *args], allow_call=allow_call
         )
@@ -13347,7 +13435,11 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 root_composite.value, node.attr
             ):
                 self._show_namedtuple_attribute_mutation_error(node)
-            self.check_deprecation(node, value)
+            self._check_deprecated_property_getter(node, root_composite.value)
+            if not self.check_deprecation(node, value):
+                self._check_deprecated_method_attribute(
+                    node, root_composite.value, node.attr
+                )
             if self._should_use_varname_value(value):
                 varname_value = self.checker.maybe_get_variable_name_value(node.attr)
                 if varname_value is not None:
@@ -13454,6 +13546,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     ) -> None:
         if self.being_assigned is None:
             return
+        self._check_deprecated_property_setter(node, root_composite.value)
         if (
             self.current_class_key is not None
             and self._is_current_method_receiver_node(node.value)
@@ -13505,6 +13598,162 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 error_code=ErrorCode.incompatible_assignment,
                 detail=can_assign.display(),
             )
+
+    def _check_deprecated_property_getter(
+        self, node: ast.Attribute, root_value: Value
+    ) -> None:
+        if self._is_class_object_attribute_root(root_value) is True:
+            return
+        message = self._property_deprecation_message(
+            root_value, node.attr, is_setter=False
+        )
+        if message is None:
+            return
+        self._show_error_if_checking(
+            node,
+            f"Property getter {node.attr!r} is deprecated: {message}",
+            error_code=ErrorCode.deprecated,
+        )
+
+    def _check_deprecated_property_setter(
+        self, node: ast.Attribute, root_value: Value
+    ) -> None:
+        if self._is_class_object_attribute_root(root_value) is True:
+            return
+        message = self._property_deprecation_message(
+            root_value, node.attr, is_setter=True
+        )
+        if message is None:
+            return
+        self._show_error_if_checking(
+            node,
+            f"Property setter {node.attr!r} is deprecated: {message}",
+            error_code=ErrorCode.deprecated,
+        )
+
+    def _check_deprecated_method_attribute(
+        self, node: ast.Attribute, root_value: Value, attr_name: str
+    ) -> None:
+        message = self._method_deprecation_message(root_value, attr_name)
+        if message is None:
+            return
+        self._show_error_if_checking(
+            node,
+            f"Method {attr_name!r} is deprecated: {message}",
+            error_code=ErrorCode.deprecated,
+        )
+
+    def _method_deprecation_message(
+        self, root_value: Value, attr_name: str
+    ) -> str | None:
+        seen_keys: set[type | str] = set()
+        for subvalue in flatten_values(
+            replace_fallback(root_value), unwrap_annotated=True
+        ):
+            class_key = self._class_key_from_attribute_root_value(subvalue)
+            if class_key is None or class_key in seen_keys:
+                continue
+            seen_keys.add(class_key)
+            if (
+                message := self._method_deprecation_message_for_class_key(
+                    class_key, attr_name
+                )
+            ) is not None:
+                return message
+        return None
+
+    def _method_deprecation_message_for_class_key(
+        self, class_key: type | str, attr_name: str
+    ) -> str | None:
+        if isinstance(class_key, type):
+            class_name = class_key.__name__
+            class_dict = safe_getattr(class_key, "__dict__", None)
+            if isinstance(class_dict, Mapping):
+                for candidate in self._property_attr_candidates(attr_name, class_name):
+                    member = class_dict.get(candidate)
+                    if isinstance(member, property):
+                        continue
+                    if isinstance(member, (staticmethod, classmethod)):
+                        member = member.__func__
+                    deprecated = safe_getattr(member, "__deprecated__", None)
+                    if safe_isinstance(deprecated, str):
+                        return deprecated
+            return None
+
+        synthetic_class = self.checker.get_synthetic_class(class_key)
+        if synthetic_class is None:
+            return None
+        class_name = class_key.rsplit(".", maxsplit=1)[-1]
+        for candidate in self._property_attr_candidates(attr_name, class_name):
+            member = synthetic_class.class_attributes.get(candidate)
+            if member is None:
+                continue
+            message = self._deprecation_message_from_value(member)
+            if message is not None:
+                return message
+        return None
+
+    def _property_deprecation_message(
+        self, root_value: Value, attr_name: str, *, is_setter: bool
+    ) -> str | None:
+        seen_keys: set[type | str] = set()
+        for subvalue in flatten_values(
+            replace_fallback(root_value), unwrap_annotated=True
+        ):
+            class_key = self._class_key_from_attribute_root_value(subvalue)
+            if class_key is None or class_key in seen_keys:
+                continue
+            seen_keys.add(class_key)
+            if (
+                message := self._property_deprecation_message_for_class_key(
+                    class_key, attr_name, is_setter=is_setter
+                )
+            ) is not None:
+                return message
+        return None
+
+    def _property_deprecation_message_for_class_key(
+        self, class_key: type | str, attr_name: str, *, is_setter: bool
+    ) -> str | None:
+        if isinstance(class_key, type):
+            class_name = class_key.__name__
+            class_dict = safe_getattr(class_key, "__dict__", None)
+            if isinstance(class_dict, Mapping):
+                for candidate in self._property_attr_candidates(attr_name, class_name):
+                    descriptor = class_dict.get(candidate)
+                    if not isinstance(descriptor, property):
+                        continue
+                    accessor = descriptor.fset if is_setter else descriptor.fget
+                    deprecated = safe_getattr(accessor, "__deprecated__", None)
+                    if safe_isinstance(deprecated, str):
+                        return deprecated
+            return None
+
+        synthetic_class = self.checker.get_synthetic_class(class_key)
+        if synthetic_class is None:
+            return None
+        class_name = class_key.rsplit(".", maxsplit=1)[-1]
+        prefix = (
+            SYNTHETIC_PROPERTY_SETTER_DEPRECATED_PREFIX
+            if is_setter
+            else SYNTHETIC_PROPERTY_GETTER_DEPRECATED_PREFIX
+        )
+        for candidate in self._property_attr_candidates(attr_name, class_name):
+            deprecation_value = synthetic_class.class_attributes.get(
+                f"{prefix}{candidate}"
+            )
+            if isinstance(deprecation_value, KnownValue) and isinstance(
+                deprecation_value.val, str
+            ):
+                return deprecation_value.val
+        return None
+
+    def _property_attr_candidates(
+        self, attr_name: str, class_name: str
+    ) -> tuple[str, ...]:
+        if attr_name.startswith("__") and not attr_name.endswith("__"):
+            return (attr_name, f"_{class_name}{attr_name}")
+        return (attr_name,)
 
     def _is_protocol_base_member_assignment(
         self, class_key: type | str, member_name: str
@@ -13833,6 +14082,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
 
     def visit_Call(self, node: ast.Call, *, callee: Value | None = None) -> Value:
         callee_wrapped = callee if callee is not None else self.visit(node.func)
+        self._check_call_target_deprecation(node.func, callee_wrapped)
         args = [self.composite_from_node(arg) for arg in node.args]
         if node.keywords:
             keywords = [
@@ -13899,6 +14149,40 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         ):
             return annotate_value(return_value, [AssertErrorExtension()])
         return return_value
+
+    def _check_call_target_deprecation(
+        self, callee_node: ast.AST, callee_value: Value
+    ) -> None:
+        self._check_call_target_deprecation_inner(callee_node, callee_value)
+
+    def _check_call_target_deprecation_inner(
+        self, callee_node: ast.AST, callee_value: Value
+    ) -> bool:
+        if self.check_deprecation(callee_node, callee_value):
+            return True
+        concrete_value = replace_fallback(callee_value)
+        if isinstance(concrete_value, MultiValuedValue):
+            emitted = False
+            for subval in concrete_value.vals:
+                if self._check_call_target_deprecation_inner(callee_node, subval):
+                    emitted = True
+            return emitted
+        if self._is_class_object_attribute_root(concrete_value) is True:
+            return False
+        method_message = self._method_deprecation_message(concrete_value, "__call__")
+        if method_message is not None:
+            self._show_error_if_checking(
+                callee_node,
+                f"Method __call__ is deprecated: {method_message}",
+                error_code=ErrorCode.deprecated,
+            )
+            return True
+        call_attribute = self.checker.get_attribute_from_value(
+            concrete_value, "__call__"
+        )
+        if call_attribute is UNINITIALIZED_VALUE:
+            return False
+        return self.check_deprecation(callee_node, call_attribute)
 
     def _check_unsafe_super_protocol_call(self, node: ast.Call) -> None:
         if not self._is_checking() or self.module is not None:

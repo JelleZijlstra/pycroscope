@@ -1827,6 +1827,7 @@ class Signature:
             has_return_annotation=self.has_return_annotation,
             allow_call=self.allow_call,
             evaluator=self.evaluator,
+            deprecated=self.deprecated,
         )
 
     def walk_values(self) -> Iterable[Value]:
@@ -2003,6 +2004,7 @@ class Signature:
             is_asynq=self.is_asynq,
             has_return_annotation=self.has_return_value(),
             allow_call=self.allow_call,
+            deprecated=self.deprecated,
         )
 
     def has_return_value(self) -> bool:

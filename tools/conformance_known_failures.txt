@@ -3,7 +3,6 @@
 # the conformance CI workflow should fail and this file should be updated.
 aliases_type_statement
 annotations_forward_refs
-directives_deprecated
 generics_defaults
 generics_defaults_referential
 generics_defaults_specialization
