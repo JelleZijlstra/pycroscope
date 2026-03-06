@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Restore simple `assert_type()` equivalence checking: pycroscope now compares the inferred type against the type form of the second argument directly, without special-case exact-type reconstruction for recent constructor and annotation patterns.
+- Preserve empty `TypeVarTuple` specializations when converting runtime generic aliases back into types, so checks like `assert_type(x, tuple[str, Array[()]])` continue to understand `Array[()]` instead of collapsing it to bare `Array`.
 - Treat `typing.TYPE_CHECKING` and `typing_extensions.TYPE_CHECKING` as statically true in control flow, so `if TYPE_CHECKING:` blocks are analyzed while runtime-only branches are skipped.
 - Improve deprecated-diagnostic coverage in static fallback mode for unimportable modules: pycroscope now reports deprecations for `__call__`, protocol methods, property getters/setters, and inplace-operation fallbacks (for example `x += y`) more consistently.
 - Improve generic default specialization behavior for both type aliases and classes: unsubscripted aliases/classes now use declared type-parameter defaults (rather than `Any`), overspecialization is reported consistently, and static fallback mode now preserves these semantics after import-time runtime failures.

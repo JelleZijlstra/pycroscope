@@ -297,6 +297,12 @@ def check_conformance(typing_repo: Path, known_failures: set[str]) -> int:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    if sys.version_info < (3, 12):
+        print(
+            "tools/conformance_ci.py requires Python 3.12+ because the typing "
+            "conformance suite includes `type` statement syntax."
+        )
+        return 1
     parser = argparse.ArgumentParser(
         description=(
             "Run pycroscope on typing conformance tests and validate outcomes against "

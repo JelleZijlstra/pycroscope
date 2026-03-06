@@ -512,6 +512,20 @@ class TestAnnotations(TestNameCheckVisitorBase):
             val = type_from_runtime(annotation, ctx=Context())
             assert isinstance(val, AnyValue), annotation
 
+    def test_type_from_value_preserves_empty_typevartuple_specialization(self):
+        from typing import Generic, TypeVarTuple
+
+        from .annotations import type_from_value
+
+        Ts = TypeVarTuple("Ts")
+        namespace = {"Generic": Generic, "Ts": Ts}
+        exec("class Array(Generic[*Ts]):\n    pass", namespace)
+        Array = namespace["Array"]
+
+        assert type_from_value(KnownValue(Array[()])) == GenericValue(
+            Array, [SequenceValue(tuple, [])]
+        )
+
     @assert_passes()
     def test_runtime_initvar_requires_single_argument(self):
         from dataclasses import InitVar, dataclass
