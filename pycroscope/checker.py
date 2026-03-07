@@ -518,18 +518,8 @@ class Checker:
         *,
         declared_type_params: Sequence[TypeVarValue] = (),
     ) -> None:
-        normalized_type_params = []
-        for type_param in declared_type_params:
-            is_typevartuple = (
-                type_param.is_typevartuple
-                or is_instance_of_typing_name(type_param.typevar, "TypeVarTuple")
-                or is_typing_name(type(type_param.typevar), "TypeVarTuple")
-            )
-            if is_typevartuple and not type_param.is_typevartuple:
-                type_param = dataclass_replace(type_param, is_typevartuple=True)
-            normalized_type_params.append(type_param)
         merged_generic_bases: _SyntheticGenericBases = {
-            typ: {tv.typevar: tv for tv in normalized_type_params}
+            typ: {tv.typevar: tv for tv in declared_type_params}
         }
         for base in base_values:
             for subval in flatten_values(replace_fallback(base)):

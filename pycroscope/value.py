@@ -606,12 +606,7 @@ class TypeAlias:
 
 def _is_typevartuple_type_param(type_param: TypeVarLike | "TypeVarValue") -> bool:
     if isinstance(type_param, TypeVarValue):
-        if type_param.is_typevartuple:
-            return True
-        typevar = type_param.typevar
-        return is_instance_of_typing_name(typevar, "TypeVarTuple") or is_typing_name(
-            type(typevar), "TypeVarTuple"
-        )
+        return type_param.is_typevartuple()
     return is_instance_of_typing_name(type_param, "TypeVarTuple") or is_typing_name(
         type(type_param), "TypeVarTuple"
     )
@@ -2356,10 +2351,15 @@ class TypeVarValue(Value):
 
     typevar: TypeVarLike
     bound: Value | None = None
-    default: Value | None = None  # unsupported
+    default: Value | None = None
     constraints: Sequence[Value] = ()
     variance: Variance = Variance.INVARIANT
-    is_typevartuple: bool = False  # unsupported
+
+    def is_typevartuple(self) -> bool:
+        return is_instance_of_typing_name(self.typevar, "TypeVarTuple")
+
+    def is_paramspec(self) -> bool:
+        return is_instance_of_typing_name(self.typevar, "ParamSpec")
 
     def substitute_typevars(self, typevars: TypeVarMap) -> Value:
         return typevars.get(self.typevar, self)

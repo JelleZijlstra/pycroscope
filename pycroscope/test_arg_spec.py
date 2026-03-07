@@ -34,7 +34,7 @@ NT = NewType("NT", int)
 
 def test_wrap_typevartuple_param() -> None:
     ts = TypeVarTuple("Ts")
-    assert wrap_type_param(ts) == TypeVarValue(ts, is_typevartuple=True)
+    assert wrap_type_param(ts) == TypeVarValue(ts)
 
 
 def test_get_type_parameters_ignores_non_iterable_runtime_type_params() -> None:

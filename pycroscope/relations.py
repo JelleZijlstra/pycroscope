@@ -26,7 +26,6 @@ from pycroscope.extensions import PredicateCheck
 from pycroscope.find_unused import used
 from pycroscope.safe import (
     is_instance_of_typing_name,
-    is_typing_name,
     safe_equals,
     safe_isinstance,
     safe_issubclass,
@@ -838,8 +837,8 @@ def _has_relation(
                         comparison_left = GenericValue(left.typ, packed_left_args)
                         generic_args = packed_generic_args
                     elif (
-                        _declares_typevartuple(declared_type_params)
-                        and not _args_contain_typevartuple(left.args)
+                        _contains_typevartuple(declared_type_params)
+                        and not _contains_typevartuple(left.args)
                         and not _contains_error_any_in_sequence(
                             [*left.args, *generic_args]
                         )
@@ -1045,7 +1044,7 @@ def _extract_type_form(value: Value, ctx: CanAssignContext) -> Value | CanAssign
             return CanAssignError(f"{value} is not a TypeForm")
         extracted = gradualize(type_form)
         if isinstance(extracted, TypeVarValue) and (
-            extracted.typevar is SelfT or _is_typevartuple_typevar_value(extracted)
+            extracted.typevar is SelfT or extracted.is_typevartuple()
         ):
             return CanAssignError(f"{value} is not a TypeForm")
         if isinstance(extracted, (ParamSpecArgsValue, ParamSpecKwargsValue)):
@@ -1538,9 +1537,7 @@ def _capture_typevartuple_bounds_from_side(
     typevartuple_entries = [
         (i, member)
         for i, (is_many, member) in enumerate(template.members)
-        if is_many
-        and isinstance(member, TypeVarValue)
-        and _is_typevartuple_typevar_value(member)
+        if is_many and isinstance(member, TypeVarValue) and member.is_typevartuple()
     ]
     if len(typevartuple_entries) != 1:
         return None
@@ -1615,27 +1612,8 @@ def _try_capture_single_typevartuple_sequence(
     )
 
 
-def _is_typevartuple_typevar_value(value: TypeVarValue) -> bool:
-    return (
-        value.is_typevartuple
-        or is_instance_of_typing_name(value.typevar, "TypeVarTuple")
-        or is_typing_name(type(value.typevar), "TypeVarTuple")
-    )
-
-
-def _declares_typevartuple(type_params: Sequence[Value]) -> bool:
-    return any(
-        isinstance(type_param, TypeVarValue)
-        and _is_typevartuple_typevar_value(type_param)
-        for type_param in type_params
-    )
-
-
-def _args_contain_typevartuple(args: Sequence[Value]) -> bool:
-    return any(
-        isinstance(arg, TypeVarValue) and _is_typevartuple_typevar_value(arg)
-        for arg in args
-    )
+def _contains_typevartuple(args: Iterable[Value]) -> bool:
+    return any(isinstance(arg, TypeVarValue) and arg.is_typevartuple() for arg in args)
 
 
 def _contains_error_any_in_sequence(values: Sequence[Value]) -> bool:
@@ -1661,8 +1639,7 @@ def _pack_typevartuple_generic_args(
     variadic_indexes = [
         i
         for i, type_param in enumerate(declared_type_params)
-        if isinstance(type_param, TypeVarValue)
-        and _is_typevartuple_typevar_value(type_param)
+        if isinstance(type_param, TypeVarValue) and type_param.is_typevartuple()
     ]
     if len(variadic_indexes) != 1:
         return None
