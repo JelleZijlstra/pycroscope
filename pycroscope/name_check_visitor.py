@@ -9356,13 +9356,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         path = typeshed_client.ModulePath(tuple(module_name.split(".")))
         return self.checker.ts_finder.resolver.get_module(path).exists
 
-    def _get_import_from_typing_extensions_fallback(
-        self, module_name: str | None, alias_name: str
-    ) -> Value | None:
-        if module_name != "typing":
-            return None
-        return self._resolve_name_from_typeshed_module("typing_extensions", alias_name)
-
     def _get_module(self, name: str, node: ast.AST) -> Value:
         if name not in sys.modules:
             self._try_to_import(name)
@@ -9460,13 +9453,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                         node.module, alias.name
                     )
                     if val is None:
-                        val = self._get_import_from_typing_extensions_fallback(
-                            node.module, alias.name
-                        )
-                    if val is None:
                         unresolved_aliases.append(alias)
-                        continue
-                    self._set_alias_in_scope(alias, val, node=node)
+                    else:
+                        self._set_alias_in_scope(alias, val, node=node)
                 if not unresolved_aliases:
                     return
             else:
@@ -9541,11 +9530,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             val = self.get_attribute_from_value(refreshed_source_module, alias_name)
             if val is not UNINITIALIZED_VALUE:
                 return val
-        fallback = self._get_import_from_typing_extensions_fallback(
-            node.module, alias_name
-        )
-        if fallback is not None:
-            return fallback
 
         self._show_error_if_checking(
             node,
