@@ -46,7 +46,7 @@ from typing import (
 )
 
 import typing_extensions
-from typing_extensions import NoDefault, ParamSpec, TypedDict
+from typing_extensions import NoDefault, ParamSpec, TypedDict, TypeIs
 
 from pycroscope.annotated_types import get_annotated_types_extension
 from pycroscope.input_sig import FullSignature, InputSigValue, ParamSpecSig
@@ -241,7 +241,7 @@ class Context:
         self,
         key: object,
         evaluator: typing.Callable[[], Value],
-        evaluate_type_params: typing.Callable[[], Sequence[TypeVarLike]],
+        evaluate_type_params: typing.Callable[[], Sequence[TypeVarValue]],
     ) -> TypeAlias:
         return TypeAlias(evaluator, evaluate_type_params)
 
@@ -659,13 +659,10 @@ def _type_from_runtime(val: Any, ctx: Context) -> Value:
     elif hasattr(val, "__supertype__"):
         supertype = _type_from_runtime(val.__supertype__, ctx)
         return NewTypeValue(val.__name__, supertype, val)
-    elif is_typing_name(type(val), "TypeVar") or is_typing_name(
-        type(val), "TypeVarTuple"
-    ):
-        tv = cast(TypeVarLike, val)
-        return make_type_var_value(tv, ctx)
     elif is_instance_of_typing_name(val, "ParamSpec"):
         return InputSigValue(ParamSpecSig(val))
+    elif is_typevarlike(val):
+        return make_type_var_value(val, ctx)
     elif is_instance_of_typing_name(val, "_ForwardRef") or is_instance_of_typing_name(
         val, "ForwardRef"
     ):
@@ -683,7 +680,7 @@ def _type_from_runtime(val: Any, ctx: Context) -> Value:
         alias = ctx.get_type_alias(
             val,
             lambda: type_from_runtime(val.__value__, ctx=ctx),
-            lambda: val.__type_params__,
+            lambda: tuple(make_type_var_value(tv, ctx) for tv in val.__type_params__),
         )
         return TypeAliasValue(val.__name__, val.__module__, alias)
     elif val is Ellipsis:
@@ -725,7 +722,16 @@ def _type_from_runtime(val: Any, ctx: Context) -> Value:
         return AnyValue(AnySource.error)
 
 
-def make_type_var_value(tv: TypeVarLike, ctx: Context) -> TypeVarValue:
+def make_type_var_value(
+    tv: TypeVarLike,
+    ctx: Context | None = None,
+    *,
+    visitor: "NameCheckVisitor | None" = None,
+    node: ast.AST | None = None,
+) -> TypeVarValue:
+    if ctx is None:
+        assert visitor is not None, "visitor must be provided if ctx is not"
+        ctx = _DefaultContext(visitor, node)
     if (
         isinstance(tv, (TypeVar, typing_extensions.TypeVar))
         and getattr(tv, "__bound__", None) is not None
@@ -772,21 +778,33 @@ def _is_assignable_for_alias_arg(expected: Value, actual: Value, ctx: Context) -
 
 def _get_generic_type_parameters_for_annotation(
     typ: type, ctx: Context
-) -> Sequence[object]:
+) -> Sequence[Value]:
     runtime_type_params = getattr(typ, "__parameters__", ())
     if isinstance(runtime_type_params, tuple) and runtime_type_params:
-        return runtime_type_params
+        return tuple(make_type_var_value(tp, ctx) for tp in runtime_type_params)
     can_assign_ctx = _get_can_assign_context(ctx)
     if can_assign_ctx is None:
         return ()
     return can_assign_ctx.get_type_parameters(typ)
 
 
-def _is_paramspec_type_param(type_param: object) -> bool:
+def is_typevarlike(obj: object) -> TypeIs[TypeVarLike]:
+    return (
+        is_instance_of_typing_name(obj, "TypeVar")
+        or is_instance_of_typing_name(obj, "TypeVarTuple")
+        or is_instance_of_typing_name(obj, "ParamSpec")
+    )
+
+
+def _is_paramspec_type_param_value(type_param: Value) -> bool:
     if isinstance(type_param, InputSigValue):
         return isinstance(type_param.input_sig, ParamSpecSig)
     if isinstance(type_param, TypeVarValue):
-        return is_instance_of_typing_name(type_param.typevar, "ParamSpec")
+        return type_param.is_paramspec()
+    return False
+
+
+def _is_paramspec_type_param(type_param: object) -> bool:
     return is_instance_of_typing_name(type_param, "ParamSpec")
 
 
@@ -799,9 +817,7 @@ def _is_typevartuple_type_param(type_param: TypeVarLike | TypeVarValue) -> bool:
 
 
 def _make_runtime_type_alias_value(
-    alias_value: Value,
-    type_params: Sequence[TypeVarLike | TypeVarValue],
-    module: str = "typing",
+    alias_value: Value, type_params: Sequence[TypeVarValue], module: str = "typing"
 ) -> TypeAliasValue:
     normalized_type_params = tuple(dict.fromkeys(type_params))
     alias = TypeAlias(
@@ -815,10 +831,8 @@ def _make_runtime_type_alias_value(
     )
 
 
-def _infer_alias_type_params_from_value(
-    alias_value: Value,
-) -> tuple[TypeVarLike | TypeVarValue, ...]:
-    inferred_type_params: list[TypeVarLike | TypeVarValue] = []
+def _infer_alias_type_params_from_value(alias_value: Value) -> tuple[TypeVarValue, ...]:
+    inferred_type_params: list[TypeVarValue] = []
     seen_type_params: set[object] = set()
     for subval in alias_value.walk_values():
         if isinstance(subval, TypeVarValue):
@@ -834,7 +848,7 @@ def _infer_alias_type_params_from_value(
             if identity in seen_type_params:
                 continue
             seen_type_params.add(identity)
-            inferred_type_params.append(subval.input_sig.param_spec)
+            inferred_type_params.append(TypeVarValue(subval.input_sig.param_spec))
     return tuple(inferred_type_params)
 
 
@@ -862,7 +876,9 @@ def _runtime_type_alias_from_runtime_value(
     if inferred_type_params:
         type_params = inferred_type_params
     else:
-        type_params = cast(tuple[TypeVarLike, ...], runtime_type_params)
+        type_params = tuple(
+            make_type_var_value(param, ctx=ctx) for param in runtime_type_params
+        )
     return _make_runtime_type_alias_value(
         alias_value,
         type_params,
@@ -888,9 +904,7 @@ def _match_type_alias_arg_values(
     type_params: Sequence[TypeVarValue], args_vals: Sequence[Value]
 ) -> Sequence[tuple[TypeVarValue, Value]] | None:
     variadic_indexes = [
-        i
-        for i, type_param in enumerate(type_params)
-        if _is_typevartuple_type_param(type_param)
+        i for i, type_param in enumerate(type_params) if type_param.is_typevartuple()
     ]
     if len(variadic_indexes) > 1:
         return None
@@ -961,7 +975,7 @@ def has_invalid_paramspec_usage(
         if len(alias_type_params) == len(value.type_arguments):
             for type_param, type_arg in zip(alias_type_params, value.type_arguments):
                 if _is_paramspec_annotation(type_arg):
-                    if not _is_paramspec_type_param(type_param):
+                    if not _is_paramspec_type_param_value(type_param):
                         return True
                 elif has_invalid_paramspec_usage(type_arg, can_assign_ctx):
                     return True
@@ -1003,7 +1017,11 @@ def has_invalid_paramspec_usage(
 def _type_from_runtime_type_alias_arg(
     arg: object, type_param: object, ctx: Context
 ) -> Value:
-    if _is_paramspec_type_param(type_param):
+    if (
+        isinstance(type_param, TypeVarValue)
+        and type_param.is_paramspec()
+        or _is_paramspec_type_param(type_param)
+    ):
         if is_typing_name(get_origin(arg), "Concatenate"):
             concatenate_members = [
                 _type_from_runtime(member, ctx) for member in get_args(arg)
@@ -1021,9 +1039,10 @@ def _type_from_runtime_type_alias_arg(
 
 
 def _type_from_value_type_alias_arg(
-    arg: Value, type_param: object, ctx: Context
+    arg: Value, type_param: Value, ctx: Context
 ) -> Value:
-    if _is_paramspec_type_param(type_param):
+    assert isinstance(type_param, Value)
+    if _is_paramspec_type_param_value(type_param):
         if (
             isinstance(arg, PartialValue)
             and arg.operation is PartialValueOperation.SUBSCRIPT
@@ -1042,7 +1061,7 @@ def _type_from_value_type_alias_arg(
                     [(False, _type_from_value(member, ctx)) for member in members],
                 )
         return arg
-    if _is_typevartuple_type_param(cast(TypeVarLike | TypeVarValue, type_param)):
+    if isinstance(type_param, TypeVarValue) and type_param.is_typevartuple():
         if arg == KnownValue(()):
             return SequenceValue(tuple, [])
         if isinstance(arg, KnownValue) and isinstance(arg.val, tuple):
@@ -1099,9 +1118,9 @@ def _normalize_paramspec_generic_arg(
 
 
 def _normalize_paramspec_generic_args(
-    type_params: Sequence[object], args: Sequence[Value], ctx: Context
+    type_params: Sequence[Value], args: Sequence[Value], ctx: Context
 ) -> list[Value]:
-    if len(type_params) == 1 and _is_paramspec_type_param(type_params[0]):
+    if len(type_params) == 1 and _is_paramspec_type_param_value(type_params[0]):
         if len(args) == 1:
             return [
                 _normalize_paramspec_generic_arg(args[0], allow_flat_form=True, ctx=ctx)
@@ -1111,7 +1130,7 @@ def _normalize_paramspec_generic_args(
         return [
             (
                 _normalize_paramspec_generic_arg(arg, allow_flat_form=False, ctx=ctx)
-                if _is_paramspec_type_param(type_param)
+                if _is_paramspec_type_param_value(type_param)
                 else arg
             )
             for type_param, arg in zip(type_params, args)
@@ -1163,7 +1182,7 @@ def _normalize_generic_unpack_members(
 
 
 def _pack_typevartuple_args_from_unpack_members(
-    type_params: Sequence[object], members: Sequence[Value], ctx: Context
+    type_params: Sequence[Value], members: Sequence[Value], ctx: Context
 ) -> list[Value] | None:
     if not any(_is_unpack_annotation_member(member) for member in members):
         return None
@@ -1183,7 +1202,7 @@ def _pack_typevartuple_args_from_unpack_members(
     variadic_indexes = [
         i
         for i, type_param in enumerate(type_params)
-        if _is_typevartuple_type_param(cast(TypeVarLike | TypeVarValue, type_param))
+        if isinstance(type_param, TypeVarValue) and type_param.is_typevartuple()
     ]
     if len(variadic_indexes) != 1:
         return None
@@ -1220,7 +1239,7 @@ def _pack_typevartuple_args_from_unpack_members(
 
 
 def _pack_typevartuple_runtime_args(
-    type_params: Sequence[object], args: Sequence[object], ctx: Context
+    type_params: Sequence[Value], args: Sequence[object], ctx: Context
 ) -> list[Value] | None:
     if not any(_is_unpack_runtime_arg(arg) for arg in args):
         return None
@@ -1253,7 +1272,7 @@ def _pack_typevartuple_runtime_args(
     variadic_indexes = [
         i
         for i, type_param in enumerate(type_params)
-        if _is_typevartuple_type_param(cast(TypeVarLike | TypeVarValue, type_param))
+        if isinstance(type_param, TypeVarValue) and type_param.is_typevartuple()
     ]
     if len(variadic_indexes) != 1:
         return None
@@ -1290,9 +1309,7 @@ def _pack_typevartuple_runtime_args(
 
 
 def _validate_type_alias_arg_values(
-    type_params: Sequence[TypeVarLike | TypeVarValue],
-    args_vals: Sequence[Value],
-    ctx: Context,
+    type_params: Sequence[TypeVarValue], args_vals: Sequence[Value], ctx: Context
 ) -> list[Value]:
     normalized_args = list(args_vals)
     validated_type_params = tuple(
@@ -1307,7 +1324,7 @@ def _validate_type_alias_arg_values(
         )
         return normalized_args
     for i, (type_param, arg) in enumerate(matched_args):
-        if _is_paramspec_type_param(type_param):
+        if _is_paramspec_type_param_value(type_param):
             normalized = _normalize_paramspec_generic_arg(
                 arg, allow_flat_form=len(validated_type_params) == 1, ctx=ctx
             )
@@ -1340,9 +1357,7 @@ def _paramspec_value_from_concatenate_members(
     tail = concatenate_members[-1]
     if isinstance(tail, InputSigValue):
         tail_annotation = tail
-    elif isinstance(tail, TypeVarValue) and is_instance_of_typing_name(
-        tail.typevar, "ParamSpec"
-    ):
+    elif isinstance(tail, TypeVarValue) and tail.is_paramspec():
         tail_annotation = InputSigValue(
             ParamSpecSig(
                 cast(typing_extensions.ParamSpec | typing.ParamSpec, tail.typevar)
@@ -1366,14 +1381,6 @@ def _paramspec_value_from_concatenate_members(
     ]
     return InputSigValue(
         FullSignature(Signature.make(params, AnyValue(AnySource.generic_argument)))
-    )
-
-
-def _validate_type_alias_args(
-    alias_object: object, args_vals: Sequence[Value], ctx: Context
-) -> None:
-    _validate_type_alias_arg_values(
-        cast(Any, alias_object).__type_params__, args_vals, ctx
     )
 
 
@@ -1662,9 +1669,8 @@ def _type_from_subscripted_value(
         elif (
             not members
             and len(root.args) == 1
-            and _is_typevartuple_type_param(
-                cast(TypeVarLike | TypeVarValue, root.args[0])
-            )
+            and isinstance(root.args[0], TypeVarValue)
+            and root.args[0].is_typevartuple()
         ):
             typed_members = [SequenceValue(tuple, [])]
         elif len(root.args) == len(members):
@@ -1679,7 +1685,7 @@ def _type_from_subscripted_value(
             if is_typing_name(root.typ, "Generic") or is_typing_name(
                 root.typ, "Protocol"
             ):
-                generic_type_params: list[TypeVarLike | TypeVarValue] = []
+                generic_type_params: list[TypeVarValue] = []
                 for root_arg in root.args:
                     if isinstance(root_arg, TypeVarValue):
                         generic_type_params.append(root_arg)
@@ -1689,7 +1695,9 @@ def _type_from_subscripted_value(
                         or is_instance_of_typing_name(root_arg.val, "TypeVarTuple")
                         or is_instance_of_typing_name(root_arg.val, "ParamSpec")
                     ):
-                        generic_type_params.append(cast(TypeVarLike, root_arg.val))
+                        generic_type_params.append(
+                            make_type_var_value(root_arg.val, ctx)
+                        )
                         continue
                     break
                 else:
@@ -1703,7 +1711,7 @@ def _type_from_subscripted_value(
                         "<generic_alias>", "typing", alias, tuple(typed_members)
                     )
             return GenericValue(root.typ, typed_members)
-        if len(root.args) == 1 and _is_paramspec_type_param(root.args[0]):
+        if len(root.args) == 1 and _is_paramspec_type_param_value(root.args[0]):
             typed_members = [_type_from_value(member, ctx) for member in members]
             typed_members = _normalize_paramspec_generic_args(
                 root.args, typed_members, ctx
@@ -1738,9 +1746,8 @@ def _type_from_subscripted_value(
         elif (
             not members
             and len(synthetic_type_params) == 1
-            and _is_typevartuple_type_param(
-                cast(TypeVarLike | TypeVarValue, synthetic_type_params[0])
-            )
+            and isinstance(synthetic_type_params[0], TypeVarValue)
+            and synthetic_type_params[0].is_typevartuple()
         ):
             typed_members = [SequenceValue(tuple, [])]
         elif len(synthetic_type_params) == len(members):
@@ -1771,9 +1778,8 @@ def _type_from_subscripted_value(
         elif (
             not members
             and len(synthetic_type_params_for_str) == 1
-            and _is_typevartuple_type_param(
-                cast(TypeVarLike | TypeVarValue, synthetic_type_params_for_str[0])
-            )
+            and isinstance(synthetic_type_params_for_str[0], TypeVarValue)
+            and synthetic_type_params_for_str[0].is_typevartuple()
         ):
             typed_members = [SequenceValue(tuple, [])]
         elif len(synthetic_type_params_for_str) == len(members):
@@ -1858,7 +1864,8 @@ def _type_from_subscripted_value(
     root = root.val
     if is_instance_of_typing_name(root, "TypeAliasType"):
         alias_object = cast(Any, root)
-        type_params = tuple(alias_object.__type_params__)
+        runtime_type_params = tuple(alias_object.__type_params__)
+        type_params = tuple(make_type_var_value(tp, ctx) for tp in runtime_type_params)
         if len(members) == len(type_params):
             args_vals = [
                 _type_from_value_type_alias_arg(member, type_param, ctx)
@@ -1870,7 +1877,9 @@ def _type_from_subscripted_value(
         alias = ctx.get_type_alias(
             root,
             lambda: type_from_runtime(alias_object.__value__, ctx=ctx),
-            lambda: alias_object.__type_params__,
+            lambda: tuple(
+                make_type_var_value(tv, ctx) for tv in alias_object.__type_params__
+            ),
         )
         return TypeAliasValue(
             alias_object.__name__,
@@ -1991,9 +2000,8 @@ def _type_from_subscripted_value(
         elif (
             not members
             and len(type_params) == 1
-            and _is_typevartuple_type_param(
-                cast(TypeVarLike | TypeVarValue, type_params[0])
-            )
+            and isinstance(type_params[0], TypeVarValue)
+            and type_params[0].is_typevartuple()
         ):
             typed_members = [SequenceValue(tuple, [])]
         elif len(type_params) == len(members):
@@ -2017,37 +2025,26 @@ def _type_from_subscripted_value(
             if is_typing_name(origin, "Generic") or is_typing_name(origin, "Protocol"):
                 runtime_type_params = tuple(get_args(root))
                 if len(runtime_type_params) == len(members) and all(
-                    is_instance_of_typing_name(type_param, "TypeVar")
-                    or is_instance_of_typing_name(type_param, "TypeVarTuple")
-                    or is_instance_of_typing_name(type_param, "ParamSpec")
-                    for type_param in runtime_type_params
+                    is_typevarlike(type_param) for type_param in runtime_type_params
                 ):
-                    typed_runtime_type_params = cast(
-                        tuple[TypeVarLike, ...], runtime_type_params
+                    typed_runtime_type_params = tuple(
+                        make_type_var_value(type_param, ctx)
+                        for type_param in runtime_type_params
                     )
 
                     def _evaluate_runtime_generic_alias(
                         origin: type = origin,
                         runtime_type_params: tuple[
-                            TypeVarLike, ...
+                            TypeVarValue, ...
                         ] = typed_runtime_type_params,
                     ) -> Value:
-                        return GenericValue(
-                            origin,
-                            [
-                                TypeVarValue(
-                                    type_param,
-                                    variance=get_typevar_variance(type_param),
-                                )
-                                for type_param in runtime_type_params
-                            ],
-                        )
+                        return GenericValue(origin, runtime_type_params)
 
                     def _evaluate_runtime_generic_alias_type_params(
                         runtime_type_params: tuple[
-                            TypeVarLike, ...
+                            TypeVarValue, ...
                         ] = typed_runtime_type_params,
-                    ) -> tuple[TypeVarLike, ...]:
+                    ) -> tuple[TypeVarValue, ...]:
                         return runtime_type_params
 
                     alias = TypeAlias(
@@ -2150,7 +2147,7 @@ class _DefaultContext(Context):
         self,
         key: object,
         evaluator: typing.Callable[[], Value],
-        evaluate_type_params: typing.Callable[[], Sequence[TypeVarLike]],
+        evaluate_type_params: typing.Callable[[], Sequence[TypeVarValue]],
     ) -> TypeAlias:
         if self.visitor is not None:
             cache = self.visitor.get_type_alias_cache()
@@ -2523,9 +2520,8 @@ def _value_of_origin_args(
             val is not runtime_origin
             and not args
             and len(type_params) == 1
-            and _is_typevartuple_type_param(
-                cast(TypeVarLike | TypeVarValue, type_params[0])
-            )
+            and isinstance(type_params[0], TypeVarValue)
+            and type_params[0].is_typevartuple()
         )
         if args or is_empty_typevartuple_specialization:
             packed_variadic_members = _pack_typevartuple_runtime_args(
@@ -2576,7 +2572,10 @@ def _value_of_origin_args(
         return TypeFormValue(_type_from_runtime(args[0], ctx))
     elif is_instance_of_typing_name(origin, "TypeAliasType"):
         alias_object = cast(Any, origin)
-        type_params = tuple(alias_object.__type_params__)
+        type_params = tuple(
+            make_type_var_value(type_param, ctx)
+            for type_param in alias_object.__type_params__
+        )
         if len(args) == len(type_params):
             args_vals = [
                 _type_from_runtime_type_alias_arg(arg, type_param, ctx)
@@ -2588,7 +2587,10 @@ def _value_of_origin_args(
         alias = ctx.get_type_alias(
             val,
             lambda: type_from_runtime(alias_object.__value__, ctx=ctx),
-            lambda: alias_object.__type_params__,
+            lambda: tuple(
+                make_type_var_value(type_param, ctx)
+                for type_param in alias_object.__type_params__
+            ),
         )
         return TypeAliasValue(
             alias_object.__name__, alias_object.__module__, alias, tuple(args_vals)
