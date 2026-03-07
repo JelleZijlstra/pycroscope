@@ -5,6 +5,7 @@ Code for retrieving the value of attributes.
 """
 
 import ast
+import enum
 import inspect
 import sys
 import types
@@ -34,6 +35,7 @@ from .safe import (
     is_bound_classmethod,
     is_instance_of_typing_name,
     is_typing_name,
+    safe_getattr,
     safe_isinstance,
     safe_issubclass,
 )
@@ -68,6 +70,7 @@ from .value import (
     PredicateValue,
     Qualifier,
     SelfTVV,
+    SimpleType,
     SubclassValue,
     SyntheticClassObjectValue,
     SyntheticEnumMember,
@@ -91,6 +94,14 @@ from .value import (
 SlotWrapperType = type(type.__init__)
 MethodDescriptorType = type(list.append)
 NoneType = type(None)
+_ENUM_INSTANCE_DESCRIPTOR_TYPES = tuple(
+    descriptor_type
+    for descriptor_type in (
+        getattr(enum, "property", None),
+        types.DynamicClassAttribute,
+    )
+    if descriptor_type is not None
+)
 
 
 @dataclass
@@ -323,9 +334,11 @@ def _get_attribute_from_subclass(
         # type[T] represents an arbitrary subclass of T, so class identity
         # attributes should be widened from base-class literals.
         return TypedValue(str)
-    result, _, should_unwrap = _get_attribute_from_mro(typ, ctx, on_class=True)
+    result, provider, should_unwrap = _get_attribute_from_mro(typ, ctx, on_class=True)
     if should_unwrap:
         result = _unwrap_value_from_subclass(result, ctx)
+    if isinstance(self_value, GenericValue):
+        result = _substitute_typevars(typ, self_value.args, result, provider, ctx)
     result = set_self(result, self_value)
     ctx.record_usage(typ, result)
     return result
@@ -539,6 +552,8 @@ def _get_attribute_from_synthetic_class_inner(
             self_value, ctx.attr, direct, ctx, on_class=True
         )
         return direct
+    if _is_instance_only_enum_attr(self_value.class_type, ctx.attr):
+        return UNINITIALIZED_VALUE
     dataclass_attr = _get_synthetic_dataclass_attribute(self_value, ctx, on_class=True)
     if dataclass_attr is not UNINITIALIZED_VALUE:
         return dataclass_attr
@@ -1108,6 +1123,15 @@ def _maybe_mangle_private_name(attr_name: str, class_name: str) -> str | None:
     return f"_{class_name}{attr_name}"
 
 
+def _is_instance_only_enum_attr(value: Value, attr_name: str) -> bool:
+    class_type = replace_fallback(value)
+    if not isinstance(class_type, TypedValue) or not isinstance(class_type.typ, type):
+        return False
+    if not safe_issubclass(class_type.typ, Enum):
+        return False
+    return isinstance(Enum.__dict__.get(attr_name), _ENUM_INSTANCE_DESCRIPTOR_TYPES)
+
+
 def _should_deliteralize_synthetic_enum_attr(
     self_value: SyntheticClassObjectValue, attr_name: str
 ) -> bool:
@@ -1124,11 +1148,35 @@ def _should_deliteralize_synthetic_enum_attr(
 
 def _deliteralize_value(value: Value) -> Value:
     value = replace_fallback(value)
+    if isinstance(value, MultiValuedValue):
+        return unite_values(*[_deliteralize_value(subval) for subval in value.vals])
+    if isinstance(value, IntersectionValue):
+        return IntersectionValue(
+            tuple(_deliteralize_value(subval) for subval in value.vals)
+        )
+    return _deliteralize_simple_value(value)
+
+
+def _deliteralize_simple_value(value: SimpleType) -> Value:
     if isinstance(value, KnownValue):
         if isinstance(value.val, SyntheticEnumMember):
             return value
         return TypedValue(type(value.val))
-    return value
+    if isinstance(
+        value,
+        (
+            AnyValue,
+            SyntheticClassObjectValue,
+            SyntheticModuleValue,
+            UnboundMethodValue,
+            TypedValue,
+            SubclassValue,
+            TypeFormValue,
+            PredicateValue,
+        ),
+    ):
+        return value
+    assert_never(value)
 
 
 def _get_attribute_from_synthetic_base(
@@ -1330,8 +1378,35 @@ def _substitute_typevars(
         generic_bases = ctx.get_generic_bases(typ, generic_args)
     else:
         generic_bases = {}
-    if provider in generic_bases:
-        provider_typevars = generic_bases[provider]
+    provider_key: type | str | None
+    if isinstance(provider, (type, str)) and provider in generic_bases:
+        provider_key = provider
+    else:
+        provider_key = None
+    if provider_key is None and not isinstance(provider, str):
+        origin = get_origin(provider)
+        if isinstance(origin, (type, str)) and origin in generic_bases:
+            provider_key = origin
+        else:
+            maybe_origin = safe_getattr(provider, "__origin__", None)
+            if isinstance(maybe_origin, (type, str)) and maybe_origin in generic_bases:
+                provider_key = maybe_origin
+    if provider_key is None and isinstance(provider, str):
+        for base_key in generic_bases:
+            if isinstance(base_key, type):
+                runtime_name = f"{base_key.__module__}.{base_key.__qualname__}"
+                if provider == runtime_name:
+                    provider_key = base_key
+                    break
+                if (
+                    provider.startswith("typing.")
+                    and base_key.__module__ == "collections.abc"
+                    and provider.removeprefix("typing.") == base_key.__qualname__
+                ):
+                    provider_key = base_key
+                    break
+    if provider_key is not None:
+        provider_typevars = generic_bases[provider_key]
         substituted_typevars = {
             typevar: (
                 coerce_paramspec_specialization_to_input_sig(value)
@@ -1555,6 +1630,10 @@ def _get_attribute_from_mro(
             return KnownValue(getattr(typ, ctx.attr)), typ, True
         except Exception:
             pass
+        if on_class and isinstance(
+            Enum.__dict__.get(ctx.attr), _ENUM_INSTANCE_DESCRIPTOR_TYPES
+        ):
+            return UNINITIALIZED_VALUE, object, False
     elif safe_isinstance(typ, types.ModuleType):
         try:
             annotations = typ.__annotations__

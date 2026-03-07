@@ -499,6 +499,8 @@ class TypeObject:
         return safe_isinstance(obj, self.typ)
 
     def is_exactly(self, types: Container[type]) -> bool:
+        if not isinstance(self.typ, type):
+            return False
         return self.typ in types
 
     def can_be_unbound_method(self) -> bool:

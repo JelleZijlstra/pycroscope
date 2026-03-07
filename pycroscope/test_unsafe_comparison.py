@@ -4,7 +4,7 @@ from .test_node_visitor import assert_passes, skip_if_not_installed
 
 
 class TestUnsafeOverlap(TestNameCheckVisitorBase):
-    @assert_passes(allow_import_failures=True)
+    @assert_passes(run_in_both_module_modes=True)
     def test_no_unsafe_comparison_for_enum_identity_in_fallback_module(self):
         from enum import Enum
 
@@ -18,8 +18,6 @@ class TestUnsafeOverlap(TestNameCheckVisitorBase):
 
             def speak(self) -> None:
                 print("meow" if self is Pet(1) else "woof")
-
-        boom = 1 / 0
 
     @assert_passes()
     def test_simple(self):

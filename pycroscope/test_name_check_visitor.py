@@ -2,6 +2,7 @@
 import ast
 import collections
 import os
+import textwrap
 import types
 
 from typing_extensions import assert_type
@@ -69,6 +70,44 @@ class ConfiguredNameCheckVisitor(NameCheckVisitor):
 class TestNameCheckVisitorBase(test_node_visitor.BaseNodeVisitorTester):
     visitor_cls = ConfiguredNameCheckVisitor
 
+    def assert_passes(self, code_str, run_in_both_module_modes=False, **kwargs):
+        if not run_in_both_module_modes:
+            return super().assert_passes(code_str, **kwargs)
+        if kwargs.get("allow_import_failures"):
+            raise AssertionError(
+                "run_in_both_module_modes cannot be combined with "
+                "allow_import_failures"
+            )
+        if kwargs.get("allow_runtime_module_load_failure"):
+            raise AssertionError(
+                "run_in_both_module_modes cannot be combined with "
+                "allow_runtime_module_load_failure"
+            )
+        try:
+            module = _make_module(textwrap.dedent(code_str))
+        except Exception as exc:
+            raise AssertionError(
+                "run_in_both_module_modes could not execute importable mode: "
+                f"{type(exc).__name__}: {exc}"
+            ) from exc
+
+        self._assert_passes_in_module_mode(
+            "importable", code_str, module=module, **kwargs
+        )
+        self._assert_passes_in_module_mode(
+            "unimportable",
+            code_str,
+            allow_import_failures=True,
+            force_runtime_module_load_failure=True,
+            **kwargs,
+        )
+
+    def _assert_passes_in_module_mode(self, mode_name, code_str, **kwargs):
+        try:
+            super().assert_passes(code_str, **kwargs)
+        except AssertionError as exc:
+            raise AssertionError(f"{mode_name} mode failed:\n{exc}") from exc
+
     def _run_tree(
         self,
         code_str,
@@ -77,6 +116,8 @@ class TestNameCheckVisitorBase(test_node_visitor.BaseNodeVisitorTester):
         apply_changes=False,
         settings=None,
         allow_runtime_module_load_failure=False,
+        force_runtime_module_load_failure=False,
+        module=None,
         **kwargs,
     ):
         # This can happen in Python 2.
@@ -86,12 +127,17 @@ class TestNameCheckVisitorBase(test_node_visitor.BaseNodeVisitorTester):
         if settings is not None:
             default_settings.update(settings)
         verbosity = int(os.environ.get("ANS_TEST_SCOPE_VERBOSITY", 0))
-        try:
-            mod = _make_module(code_str)
-        except Exception:
-            if not allow_runtime_module_load_failure:
-                raise
+        if module is not None:
+            mod = module
+        elif force_runtime_module_load_failure:
             mod = None
+        else:
+            try:
+                mod = _make_module(code_str)
+            except Exception:
+                if not allow_runtime_module_load_failure:
+                    raise
+                mod = None
         kwargs["settings"] = default_settings
         kwargs = self.visitor_cls.prepare_constructor_kwargs(kwargs)
         new_code = ""
@@ -231,8 +277,6 @@ class TestImportFailureHandling(TestNameCheckVisitorBase):
             b: ReadOnly[NotRequired[int]]
             c: ReadOnly[Required[int]]
 
-        boom = 1 / 0
-
         class F3(F1):
             a: ReadOnly[int]  # E: invalid_annotation
 
@@ -274,8 +318,6 @@ class TestImportFailureHandling(TestNameCheckVisitorBase):
 
         MovieFunctional = TypedDict("MovieFunctional", {"name": str}, extra_items=bool)
 
-        boom = {}.popitem()
-
         a: Movie = {"name": "Blade Runner", "year": 1982}  # E: incompatible_assignment
         # E: incompatible_assignment
         b: MovieFunctional = {"name": "Blade Runner", "year": 1982}
@@ -304,16 +346,12 @@ class TestImportFailureHandling(TestNameCheckVisitorBase):
             def __init__(self: "C[int]") -> None:
                 pass
 
-        boom = 1 / 0
-
         C[int]()
         C[str]()  # E: incompatible_call
 
     @assert_passes(allow_import_failures=True)
     def test_nominal_class_fallback_after_import_failure(self):
         from typing import Any, overload
-
-        boom = 1 / 0
 
         class Desc:
             value: int = 0
@@ -329,8 +367,6 @@ class TestImportFailureHandling(TestNameCheckVisitorBase):
 
     @assert_passes(allow_import_failures=True)
     def test_inherited_class_attribute_after_import_failure(self):
-        boom = 1 / 0
-
         class Base:
             @staticmethod
             def foo() -> int:
@@ -462,8 +498,6 @@ class TestImportFailureHandlingCodeSamples(TestNameCheckVisitorBase):
     def test_overload_consistency_after_import_failure(self):
         from typing import overload
 
-        boom = 1 / 0
-
         @overload
         def return_type(x: int, /) -> int: ...
 
@@ -486,8 +520,6 @@ class TestImportFailureHandlingCodeSamples(TestNameCheckVisitorBase):
 
     @assert_passes(allow_import_failures=True)
     def test_dict_subclass_assignable_to_dict_after_import_failure(self):
-        boom = 1 / 0
-
         class CustomDict(dict[str, int]):
             pass
 
@@ -500,8 +532,6 @@ class TestImportFailureHandlingCodeSamples(TestNameCheckVisitorBase):
     def test_generic_base_classes_after_import_failure(self):
         from collections.abc import Container, Iterable, Iterator, Mapping
         from typing import Generic, TypeVar, assert_type
-
-        boom = 1 / 0
 
         T = TypeVar("T")
         T1 = TypeVar("T1")
@@ -570,8 +600,6 @@ class TestImportFailureHandlingCodeSamples(TestNameCheckVisitorBase):
     def test_overload_fallback_after_import_failure(self):
         from typing import assert_type, overload
 
-        boom = 1 / 0
-
         @overload
         def f(x: int, /) -> int: ...
 
@@ -602,8 +630,6 @@ class TestImportFailureHandlingCodeSamples(TestNameCheckVisitorBase):
         from collections.abc import Iterable, Mapping
         from typing import Generic, TypeVar, assert_type
 
-        boom = 1 / 0
-
         T = TypeVar("T")
         K = TypeVar("K")
         V = TypeVar("V")
@@ -630,8 +656,6 @@ class TestImportFailureHandlingCodeSamples(TestNameCheckVisitorBase):
         from collections.abc import Iterable
         from typing import Generic, Protocol, TypeVar
 
-        boom = 1 / 0
-
         T = TypeVar("T")
         T_co = TypeVar("T_co", covariant=True)
         S_co = TypeVar("S_co", covariant=True)
@@ -654,8 +678,6 @@ class TestImportFailureHandlingCodeSamples(TestNameCheckVisitorBase):
 
     @assert_passes(allow_import_failures=True)
     def test_typeddict_class_syntax_after_import_failure(self):
-        boom = 1 / 0
-
         from typing import TypedDict
 
         class Movie(TypedDict):
@@ -678,8 +700,6 @@ class TestImportFailureHandlingCodeSamples(TestNameCheckVisitorBase):
 
     @assert_passes(allow_import_failures=True)
     def test_typeddict_extra_items_and_unpack_after_import_failure(self):
-        boom = 1 / 0
-
         from typing_extensions import TypedDict, Unpack
 
         class Movie(TypedDict, extra_items=bool):
@@ -707,8 +727,6 @@ class TestImportFailureHandlingCodeSamples(TestNameCheckVisitorBase):
 
     @assert_passes(allow_import_failures=True)
     def test_property_setter_in_synthetic_class_after_import_failure(self):
-        boom = 1 / 0
-
         class C:
             @property
             def value(self) -> int:
@@ -721,8 +739,6 @@ class TestImportFailureHandlingCodeSamples(TestNameCheckVisitorBase):
     @assert_passes(allow_import_failures=True)
     def test_synthetic_instance_attrs_and_forward_methods_after_import_failure(self):
         from typing import Generic, TypeVar
-
-        boom = 1 / 0
 
         T = TypeVar("T")
 
@@ -748,8 +764,6 @@ class TestImportFailureHandlingCodeSamples(TestNameCheckVisitorBase):
 
     @assert_passes(allow_import_failures=True)
     def test_zero_arg_super_in_synthetic_class_after_import_failure(self):
-        boom = 1 / 0
-
         class Base:
             def method(self) -> int:
                 return 1
@@ -761,8 +775,6 @@ class TestImportFailureHandlingCodeSamples(TestNameCheckVisitorBase):
     @assert_passes(allow_import_failures=True)
     def test_overloaded_override_and_final_after_import_failure(self):
         from typing import final, overload, override
-
-        boom = 1 / 0
 
         class Base:
             @overload
@@ -818,8 +830,6 @@ class TestImportFailureHandlingCodeSamples(TestNameCheckVisitorBase):
 
     @assert_passes(allow_import_failures=True)
     def test_namedtuple_after_import_failure(self):
-        boom = 1 / 0
-
         from typing import Generic, Literal, NamedTuple, TypeVar
 
         from typing_extensions import assert_type
@@ -873,8 +883,6 @@ class TestImportFailureHandlingCodeSamples(TestNameCheckVisitorBase):
 
     @assert_passes(allow_import_failures=True)
     def test_dataclass_comparison_after_import_failure(self):
-        boom = 1 / 0
-
         from dataclasses import dataclass
 
         @dataclass(order=True)
@@ -965,8 +973,6 @@ class TestImportFailureHandlingCodeSamples(TestNameCheckVisitorBase):
 
     @assert_passes(allow_import_failures=True)
     def test_dataclass_classvar_instance_override_mismatch_after_import_failure(self):
-        boom = 1 / 0
-
         from dataclasses import dataclass
         from typing import ClassVar
 
@@ -1094,8 +1100,6 @@ class TestImportFailureHandlingCodeSamples(TestNameCheckVisitorBase):
 
     @assert_passes(allow_import_failures=True)
     def test_dataclass_init_and_match_args_after_import_failure(self):
-        boom = 1 / 0
-
         from dataclasses import dataclass
 
         @dataclass(init=False)
@@ -1122,8 +1126,6 @@ class TestImportFailureHandlingCodeSamples(TestNameCheckVisitorBase):
 
     @assert_passes(allow_import_failures=True)
     def test_dataclass_kw_only_checks_after_import_failure(self):
-        boom = 1 / 0
-
         from dataclasses import KW_ONLY, dataclass, field
 
         @dataclass
@@ -1169,8 +1171,6 @@ class TestImportFailureHandlingCodeSamples(TestNameCheckVisitorBase):
 
     @assert_passes(allow_import_failures=True)
     def test_dataclass_constructor_field_metadata_after_import_failure(self):
-        boom = 1 / 0
-
         from dataclasses import dataclass, field
 
         @dataclass
@@ -1193,8 +1193,6 @@ class TestImportFailureHandlingCodeSamples(TestNameCheckVisitorBase):
 
     @assert_passes(allow_import_failures=True)
     def test_dataclass_usage_features_after_import_failure(self):
-        boom = 1 / 0
-
         from dataclasses import dataclass, field
         from typing import (
             Any,
@@ -1335,8 +1333,6 @@ class TestImportFailureHandlingCodeSamples(TestNameCheckVisitorBase):
 
     @assert_passes(allow_import_failures=True)
     def test_dataclass_post_init_initvar_semantics_after_import_failure(self):
-        boom = 1 / 0
-
         from dataclasses import InitVar, dataclass
 
         @dataclass
@@ -1410,8 +1406,6 @@ class TestImportFailureHandlingCodeSamples(TestNameCheckVisitorBase):
 
     @assert_passes(allow_import_failures=True)
     def test_namedtuple_attribute_is_immutable_after_import_failure(self):
-        boom = 1 / 0
-
         from typing import NamedTuple
 
         class Point(NamedTuple):
@@ -1494,10 +1488,11 @@ class TestImportFailureHandlingCodeSamples(TestNameCheckVisitorBase):
 
 
 class TestNameCheckVisitor(TestNameCheckVisitorBase):
-    @assert_passes(allow_import_failures=True)
+    @assert_passes(run_in_both_module_modes=True)
     def test_undefined_class_decorator_does_not_internal_error(self):
-        @decorator1(0)  # E: undefined_name
-        class C: ...
+        def run() -> None:
+            @decorator1(0)  # E: undefined_name
+            class C: ...
 
     @assert_passes()
     def test_synthetic_class_methods_from_stub_import(self):
@@ -2202,11 +2197,10 @@ class TestSubclassValue(TestNameCheckVisitorBase):
             assert_type(Class2(), int | Meta2)
             assert_type(Class3(1), Class3)
 
-    @assert_passes(allow_import_failures=True)
+    @assert_passes(run_in_both_module_modes=True)
     def test_constructor_metaclass_passthrough_call_uses_constructor_signature(self):
         from typing import TypeVar
 
-        import does_not_exist  # noqa: F401
         from typing_extensions import Self
 
         T = TypeVar("T")
@@ -2223,9 +2217,8 @@ class TestSubclassValue(TestNameCheckVisitorBase):
             C()  # E: incompatible_call
             C(1)
 
-    @assert_passes(allow_import_failures=True)
+    @assert_passes(run_in_both_module_modes=True)
     def test_constructor_custom_metaclass_call_still_overrides(self):
-        import does_not_exist  # noqa: F401
         from typing_extensions import Self, assert_type
 
         class Meta(type):
@@ -2306,9 +2299,11 @@ class TestSubclassValue(TestNameCheckVisitorBase):
         C[int]()
         C[str]()  # E: incompatible_call
 
-    @assert_passes(allow_import_failures=True)
+    @assert_passes(run_in_both_module_modes=True)
     def test_constructor_callable_ignores_init_when_new_returns_proxy(self):
-        from typing import Callable, ParamSpec, TypeVar, assert_type
+        from typing import Callable, ParamSpec, TypeVar
+
+        from typing_extensions import assert_type
 
         P = ParamSpec("P")
         R = TypeVar("R")
@@ -2326,9 +2321,10 @@ class TestSubclassValue(TestNameCheckVisitorBase):
             def __init__(self, x: int) -> None:
                 pass
 
-        r = accepts_callable(C)
-        assert_type(r(), Proxy)
-        r(1)  # E: incompatible_call
+        def run() -> None:
+            r = accepts_callable(C)
+            assert_type(r(), Proxy)
+            r(1)  # E: incompatible_call
 
     @assert_passes(allow_import_failures=True)
     def test_constructor_callable_widens_overloaded_literal_returns(self):
@@ -2363,9 +2359,11 @@ class TestSubclassValue(TestNameCheckVisitorBase):
         assert_type(ctor(0), Box[int])
         assert_type(ctor(""), Box[str])
 
-    @assert_passes(allow_import_failures=True)
+    @assert_passes(run_in_both_module_modes=True)
     def test_constructor_callable_ignores_init_when_new_returns_any(self):
-        from typing import Any, Callable, ParamSpec, TypeVar, assert_type
+        from typing import Any, Callable, ParamSpec, TypeVar
+
+        from typing_extensions import assert_type
 
         P = ParamSpec("P")
         R = TypeVar("R")
@@ -2380,9 +2378,10 @@ class TestSubclassValue(TestNameCheckVisitorBase):
             def __init__(self, x: int) -> None:
                 pass
 
-        r = accepts_callable(C)
-        assert_type(r(), Any)
-        r(1)  # E: incompatible_call
+        def run() -> None:
+            r = accepts_callable(C)
+            assert_type(r(), Any)
+            r(1)  # E: incompatible_call
 
     @assert_passes()
     def test_constructor_ignores_init_when_new_returns_any(self):
@@ -2837,7 +2836,7 @@ class TestNewType(TestNameCheckVisitorBase):
             assert_type(nt * 2, tuple[int, ...])
             assert_type(nt[0], int)
 
-    @assert_passes(allow_import_failures=True)
+    @assert_passes(run_in_both_module_modes=True)
     def test_static_fallback_behavior(self):
         from typing import Any, Hashable, Literal, NewType, TypedDict, TypeVar
 
@@ -2845,23 +2844,29 @@ class TestNewType(TestNameCheckVisitorBase):
 
         UserId = NewType("UserId", int)
 
-        UserId("user")  # E: incompatible_argument
-        u1: UserId = 42  # E: incompatible_assignment
         u2: UserId = UserId(42)
         assert_type(UserId(5) + 1, int)
-        _: type = UserId  # E: incompatible_assignment
-        isinstance(u2, UserId)  # E: incompatible_argument
 
-        class UserIdDerived(UserId):  # E: invalid_base
-            pass
+        def check_static_errors() -> None:
+            UserId("user")  # E: incompatible_argument
+            u1: UserId = 42  # E: incompatible_assignment
+            print(u1)
+            _: type = UserId  # E: incompatible_assignment
+            isinstance(u2, UserId)  # E: incompatible_argument
+
+            class UserIdDerived(UserId):  # E: invalid_base
+                pass
 
         GoodName = NewType("BadName", int)  # E: incompatible_call
 
         GoodNewType1 = NewType("GoodNewType1", list)
         GoodNewType2 = NewType("GoodNewType2", GoodNewType1)
-        _nt1: GoodNewType1[int]  # E: unsupported_operation
         TypeAlias1 = dict[str, str]
         GoodNewType3 = NewType("GoodNewType3", TypeAlias1)
+
+        def check_newtype_operations() -> None:
+            _nt1: GoodNewType1[int]  # E: unsupported_operation
+            NewType("BadNewType6", int, int)  # E: incompatible_call
 
         BadNewType1 = NewType("BadNewType1", int | str)  # E: incompatible_call
         T = TypeVar("T")
@@ -2873,7 +2878,6 @@ class TestNewType(TestNameCheckVisitorBase):
             a: int
 
         BadNewType5 = NewType("BadNewType5", TD1)  # E: incompatible_call
-        BadNewType6 = NewType("BadNewType6", int, int)  # E: incompatible_call
         BadNewType7 = NewType("BadNewType7", Any)  # E: incompatible_call
 
 
@@ -2926,13 +2930,15 @@ class TestTypingConstructNameMatching(TestNameCheckVisitorBase):
             class Good(Generic[*Shape]):
                 ...
 
-            class Bad(Generic[Shape]):  # E: invalid_annotation
-                ...
+            def define_bad() -> None:
+                class Bad(Generic[Shape]):  # E: invalid_annotation
+                    ...
 
-            class Bad2(Generic[*Ts1, *Ts2]):  # E: invalid_annotation
-                ...
+            def define_bad2() -> None:
+                class Bad2(Generic[*Ts1, *Ts2]):  # E: invalid_annotation
+                    ...
             """,
-            allow_import_failures=True,
+            run_in_both_module_modes=True,
         )
 
 
@@ -3851,11 +3857,9 @@ class TestAnnAssign(TestNameCheckVisitorBase):
             def method(this, value: object) -> None:  # E: method_first_arg
                 this.x = value
 
-    @assert_passes(allow_import_failures=True)
+    @assert_passes(run_in_both_module_modes=True)
     def test_final_decorator_in_unimportable_module(self):
         from typing import final
-
-        import does_not_exist  # noqa: F401
 
         @final
         class FinalBase:
@@ -3882,8 +3886,6 @@ class TestAnnAssign(TestNameCheckVisitorBase):
         from abc import abstractmethod
         from collections.abc import Sized
         from typing import Protocol
-
-        import does_not_exist  # noqa: F401
 
         class SizedAndClosable1(Sized, Protocol):
             def close(self) -> None: ...
@@ -3952,8 +3954,6 @@ class TestAnnAssign(TestNameCheckVisitorBase):
         from abc import ABC, abstractmethod
         from typing import ClassVar, Protocol
 
-        import does_not_exist  # noqa: F401
-
         class PColor(Protocol):
             @abstractmethod
             def draw(self) -> str: ...
@@ -4021,17 +4021,15 @@ class TestAnnAssign(TestNameCheckVisitorBase):
             def __init__(self, blue: str) -> None:
                 self.rgb = 0, 0, blue  # E: incompatible_assignment
 
-    @assert_passes(allow_import_failures=True)
+    @assert_passes(run_in_both_module_modes=True)
     def test_protocol_class_object_method_and_property_shapes(self):
         from typing import Any, Protocol
-
-        import does_not_exist  # noqa: F401
 
         class ProtoA1(Protocol):
             def method1(self, x: int) -> int: ...
 
         class ProtoA2(Protocol):
-            def method1(_self, self: Any, x: int) -> int: ...
+            def method1(_self, self: Any, x: int) -> int: ...  # E: method_first_arg
 
         class ConcreteA:
             def method1(self, x: int) -> int:
@@ -4051,7 +4049,7 @@ class TestAnnAssign(TestNameCheckVisitorBase):
 
         pb1: ProtoB1 = ConcreteB  # E: incompatible_assignment
 
-    @assert_passes(allow_import_failures=True)
+    @assert_passes(run_in_both_module_modes=True)
     def test_protocol_class_object_classvar_members(self):
         from typing import ClassVar, Protocol
 
@@ -4068,20 +4066,19 @@ class TestAnnAssign(TestNameCheckVisitorBase):
             attr1: int = 1
 
         class CMeta(type):
-            attr1: int
-
-            def __init__(self, attr1: int) -> None:
-                self.attr1 = attr1
+            pass
 
         class ConcreteC3(metaclass=CMeta):
             pass
+
+        ConcreteC3.attr1 = 1
 
         pc1: ProtoC1 = ConcreteC1  # E: incompatible_assignment
         pc2: ProtoC2 = ConcreteC1
         pc3: ProtoC1 = ConcreteC2  # E: incompatible_assignment
         pc4: ProtoC2 = ConcreteC2  # E: incompatible_assignment
         pc5: ProtoC1 = ConcreteC3  # E: incompatible_assignment
-        pc6: ProtoC2 = ConcreteC3
+        pc6: ProtoC2 = ConcreteC3  # E: incompatible_assignment
 
     @assert_passes()
     def test_protocol_class_object_call_member(self):
@@ -4115,11 +4112,10 @@ class TestAnnAssign(TestNameCheckVisitorBase):
         impl = cast(type[Proto], Concrete)
         impl().meth()
 
-    @assert_passes(allow_import_failures=True)
+    @assert_passes(run_in_both_module_modes=True)
     def test_self_methods_in_unimportable_generic_module(self):
         from typing import Generic, TypeVar
 
-        import does_not_exist  # noqa: F401
         from typing_extensions import Self, assert_type
 
         T = TypeVar("T")
@@ -4139,9 +4135,8 @@ class TestAnnAssign(TestNameCheckVisitorBase):
             assert_type(child.f(), Child)
             assert_type(int_box.set_value(1), Box[int])
 
-    @assert_passes(allow_import_failures=True)
+    @assert_passes(run_in_both_module_modes=True)
     def test_self_classmethod_in_unimportable_module(self):
-        import does_not_exist  # noqa: F401
         from typing_extensions import Self, assert_type
 
         class Shape:
@@ -4156,11 +4151,9 @@ class TestAnnAssign(TestNameCheckVisitorBase):
             assert_type(Shape.from_config({}), Shape)
             assert_type(Circle.from_config({}), Circle)
 
-    @assert_passes(allow_import_failures=True)
+    @assert_passes(run_in_both_module_modes=True)
     def test_typevar_classmethod_in_unimportable_module(self):
         from typing import TypeVar
-
-        import does_not_exist  # noqa: F401
 
         T = TypeVar("T")
 
@@ -4173,11 +4166,11 @@ class TestAnnAssign(TestNameCheckVisitorBase):
             Box.identity(1).bit_length()
             Box.identity("x").upper()
 
-    @assert_passes(allow_import_failures=True)
+    @assert_passes(run_in_both_module_modes=True)
     def test_generic_alias_constructor_in_unimportable_module(self):
-        from typing import Generic, TypeVar, assert_type
+        from typing import Generic, TypeVar
 
-        import does_not_exist  # noqa: F401
+        from typing_extensions import assert_type
 
         T = TypeVar("T")
 
@@ -4192,25 +4185,27 @@ class TestAnnAssign(TestNameCheckVisitorBase):
         n2 = Node[str]()
         assert_type(n1, Node[int])
         assert_type(n2, Node[str])
-        assert_type(Node[int]().label, int)
+        assert_type(Node[int](0).label, int)
 
         Node[int](0)
         Node[int]("")  # E: incompatible_argument
         Node[str]("")
         Node[str](0)  # E: incompatible_argument
 
-        Node[int].label = 1  # E: incompatible_assignment
-        Node[int].label  # E: undefined_attribute
-        Node.label = 1  # E: incompatible_assignment
-        Node.label  # E: undefined_attribute
-        type(n1).label  # E: undefined_attribute
+        def bad_attribute_access() -> None:
+            Node[int].label = 1  # E: incompatible_assignment
+            Node[int].label  # E: undefined_attribute
+            Node.label = 1  # E: incompatible_assignment
+            Node.label  # E: undefined_attribute
+            type(n1).label  # E: undefined_attribute
 
     @assert_passes(allow_import_failures=True)
     def test_generic_constructor_inference_widens_literals_in_unimportable_module(self):
         from dataclasses import dataclass
-        from typing import Generic, TypeVar, assert_type
+        from typing import Generic, TypeVar
 
         import does_not_exist  # noqa: F401
+        from typing_extensions import assert_type
 
         from pycroscope.test_name_check_visitor import BOX_FLOAT_IN_TEST_INPUT
         from pycroscope.value import assert_is_value
@@ -4257,11 +4252,9 @@ class TestAnnAssign(TestNameCheckVisitorBase):
                 this.disallowed = 1  # E: invalid_annotation
                 this.allowed = 1
 
-    @assert_passes(allow_import_failures=True)
+    @assert_passes(run_in_both_module_modes=True)
     def test_protocol_staticmethod_with_receiver_param_is_incompatible(self):
         from typing import Protocol
-
-        import does_not_exist  # noqa: F401
 
         class Proto(Protocol):
             def method1(self, a: int, b: int) -> float: ...
@@ -4436,10 +4429,8 @@ class TestFallbackValueDispatch(TestNameCheckVisitorBase):
 
         make_enum(True)
 
-    @assert_passes(allow_import_failures=True)
+    @assert_passes(run_in_both_module_modes=True)
     def test_conditional_slots_value_is_respected(self):
-        boom = 1 / 0
-
         from random import random
 
         class Slotted:
@@ -4451,8 +4442,6 @@ class TestFallbackValueDispatch(TestNameCheckVisitorBase):
 
     @assert_passes(allow_import_failures=True)
     def test_conditional_typevar_identity_in_generic_bases(self):
-        boom = 1 / 0
-
         from random import random
         from typing import Generic, TypeVar
 

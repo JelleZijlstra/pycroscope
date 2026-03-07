@@ -338,6 +338,21 @@ class TestAttributes(TestNameCheckVisitorBase):
             assert_type(annotated_global, str | None)
 
     @assert_passes()
+    def test_enum_class_name_is_undefined(self):
+        import enum
+
+        class Rodent(enum.Enum):
+            capybara = 1
+
+        class Cavy(enum.Enum):
+            paca = 1
+
+        def capybara(flag: bool) -> None:
+            Rodent.name  # E: undefined_attribute
+            enum_type = Rodent if flag else Cavy
+            enum_type.name  # E: undefined_attribute
+
+    @assert_passes()
     def test_unwrap_mvv(self):
         def render_task(name: str):
             if not (name or "").strip():
