@@ -225,10 +225,9 @@ def test_annotation():
 
 
 class TestImportFailureHandling(TestNameCheckVisitorBase):
-    @assert_passes(allow_import_failures=True)
+    @assert_passes(run_in_both_module_modes=True)
     def test_import_failure_points_to_failing_line_and_continues(self):
         a = 1
-        b = 1 / 0
 
         def f():
             return missing_name  # E: undefined_name
@@ -243,6 +242,20 @@ class TestImportFailureHandling(TestNameCheckVisitorBase):
         def f() -> int:
             return later_name
 
+    @assert_passes(run_in_both_module_modes=True)
+    def test_typing_import_falls_back_to_typing_extensions(self):
+        from typing import Generic, Self, TypeVar
+
+        from typing_extensions import assert_type
+
+        T = TypeVar("T")
+
+        class Box(Generic[T]):
+            def clone(self) -> Self:
+                return self
+
+        assert_type(Box[int]().clone(), Box[int])
+
     @assert_passes(allow_runtime_module_load_failure=True)
     def test_import_failure_is_ignorable(self):
         a = 1  # static analysis: ignore[import_failed]
@@ -251,7 +264,7 @@ class TestImportFailureHandling(TestNameCheckVisitorBase):
         def f():
             return missing_name  # E: undefined_name
 
-    @assert_passes(allow_import_failures=True)
+    @assert_passes(run_in_both_module_modes=True)
     def test_typeddict_fallback_after_import_failure(self):
         from typing import TypedDict
 
@@ -262,18 +275,6 @@ class TestImportFailureHandling(TestNameCheckVisitorBase):
             b: ReadOnly[NotRequired[int]]
             c: ReadOnly[Required[int]]
 
-        class F3(F1):
-            a: ReadOnly[int]  # E: invalid_annotation
-
-        class F4(F1):
-            a: NotRequired[int]  # E: invalid_annotation
-
-        class F5(F1):
-            b: ReadOnly[Required[int]]
-
-        class F6(F1):
-            c: ReadOnly[NotRequired[int]]  # E: invalid_annotation
-
         class TD_A1(TypedDict):
             x: int
             y: ReadOnly[int]
@@ -281,8 +282,6 @@ class TestImportFailureHandling(TestNameCheckVisitorBase):
         class TD_A2(TypedDict):
             x: float
             y: ReadOnly[float]
-
-        class TD_A(TD_A1, TD_A2): ...  # E: invalid_annotation
 
         class TD_B1(TypedDict):
             x: ReadOnly[NotRequired[int]]
@@ -292,9 +291,24 @@ class TestImportFailureHandling(TestNameCheckVisitorBase):
             x: ReadOnly[Required[int]]
             y: ReadOnly[NotRequired[int]]
 
-        class TD_B(TD_B1, TD_B2): ...  # E: invalid_annotation
+        def capybara() -> None:
+            class F3(F1):
+                a: ReadOnly[int]  # E: invalid_annotation
 
-    @assert_passes(allow_import_failures=True)
+            class F4(F1):
+                a: NotRequired[int]  # E: invalid_annotation
+
+            class F5(F1):
+                b: ReadOnly[Required[int]]
+
+            class F6(F1):
+                c: ReadOnly[NotRequired[int]]  # E: invalid_annotation
+
+            class TD_A(TD_A1, TD_A2): ...  # E: invalid_annotation
+
+            class TD_B(TD_B1, TD_B2): ...  # E: invalid_annotation
+
+    @assert_passes(run_in_both_module_modes=True)
     def test_typeddict_extra_items_and_unpack_after_import_failure(self):
         from typing_extensions import TypedDict, Unpack
 
@@ -321,7 +335,7 @@ class TestImportFailureHandling(TestNameCheckVisitorBase):
         unpack_no_extra(name="No Country for Old Men", year=2007)
         unpack_extra(name="No Country for Old Men", year=2007)
 
-    @assert_passes(allow_import_failures=True)
+    @assert_passes(run_in_both_module_modes=True)
     def test_constructor_explicit_self_annotation_after_import_failure(self):
         from typing import Generic, TypeVar
 
@@ -334,7 +348,7 @@ class TestImportFailureHandling(TestNameCheckVisitorBase):
         C[int]()
         C[str]()  # E: incompatible_call
 
-    @assert_passes(allow_import_failures=True)
+    @assert_passes(run_in_both_module_modes=True)
     def test_nominal_class_fallback_after_import_failure(self):
         from typing import Any, overload
 
@@ -350,7 +364,7 @@ class TestImportFailureHandling(TestNameCheckVisitorBase):
             def __get__(self, obj: object | None, owner: Any) -> "int | Desc":
                 return 1
 
-    @assert_passes(allow_import_failures=True)
+    @assert_passes(run_in_both_module_modes=True)
     def test_inherited_class_attribute_after_import_failure(self):
         class Base:
             @staticmethod
@@ -377,7 +391,7 @@ class TestImportFailureHandling(TestNameCheckVisitorBase):
         y.nonexistent_attribute
         z.nonexistent_attribute
 
-    @assert_passes(allow_import_failures=True)
+    @assert_passes(run_in_both_module_modes=True)
     def test_typevar_annotations_after_import_failure(self):
         from typing import TypeVar
 
@@ -392,10 +406,11 @@ class TestImportFailureHandling(TestNameCheckVisitorBase):
         def func3(user_class: type[U]) -> U:
             return user_class()
 
-        assert_type(func3(TeamUser), TeamUser)
-        type.unknown  # E: undefined_attribute
+        def capybara() -> None:
+            assert_type(func3(TeamUser), TeamUser)
+            type.unknown  # E: undefined_attribute
 
-    @assert_passes(allow_import_failures=True)
+    @assert_passes(run_in_both_module_modes=True)
     def test_type_union_annotation_after_import_failure(self):
         class User: ...
 
@@ -408,20 +423,22 @@ class TestImportFailureHandling(TestNameCheckVisitorBase):
         def func4(user_class: type[BasicUser | ProUser]) -> User:
             return user_class()
 
-        func4(TeamUser)  # E: incompatible_argument
-        type.unknown  # E: undefined_attribute
+        def capybara() -> None:
+            func4(TeamUser)  # E: incompatible_argument
+            type.unknown  # E: undefined_attribute
 
-    @assert_passes(allow_import_failures=True)
+    @assert_passes(run_in_both_module_modes=True)
     def test_type_arity_and_typing_alias_attrs_after_import_failure(self):
         from typing import Any, Type, TypeAlias
 
-        _bad_type1: type[int, str]  # E: invalid_annotation
-
         TA1: TypeAlias = Type
         TA2: TypeAlias = Type[Any]
-        TA1.unknown  # E: undefined_attribute
-        TA2.unknown  # E: undefined_attribute
-        type.unknown  # E: undefined_attribute
+
+        def capybara() -> None:
+            _bad_type1: type[int, str]  # E: invalid_annotation
+            TA1.unknown  # E: undefined_attribute
+            TA2.unknown  # E: undefined_attribute
+            type.unknown  # E: undefined_attribute
 
     @assert_passes(allow_import_failures=True)
     def test_explicit_type_alias_callability_after_import_failure(self):
@@ -435,7 +452,7 @@ class TestImportFailureHandling(TestNameCheckVisitorBase):
         _x2: ListAlias[int]  # E: invalid_annotation
         _x3 = ListOrSetAlias()  # E: not_callable
 
-    @assert_passes(allow_import_failures=True)
+    @assert_passes(run_in_both_module_modes=True)
     def test_type_object_name_attribute_after_import_failure(self):
         from typing import Type
 
@@ -445,7 +462,8 @@ class TestImportFailureHandling(TestNameCheckVisitorBase):
             assert_type(a.__name__, str)
             assert_type(b.__name__, str)
 
-        type.unknown  # E: undefined_attribute
+        def capybara() -> None:
+            type.unknown  # E: undefined_attribute
 
 
 class TestPartialValueInference(TestNameCheckVisitorBase):
@@ -479,7 +497,7 @@ class TestPartialValueInference(TestNameCheckVisitorBase):
 
 
 class TestImportFailureHandlingCodeSamples(TestNameCheckVisitorBase):
-    @assert_passes(allow_import_failures=True)
+    @assert_passes(run_in_both_module_modes=True)
     def test_overload_consistency_after_import_failure(self):
         from typing import overload
 
@@ -503,7 +521,7 @@ class TestImportFailureHandlingCodeSamples(TestNameCheckVisitorBase):
         def parameter_type(x: int, /) -> int | str:
             return 1
 
-    @assert_passes(allow_import_failures=True)
+    @assert_passes(run_in_both_module_modes=True)
     def test_dict_subclass_assignable_to_dict_after_import_failure(self):
         class CustomDict(dict[str, int]):
             pass
@@ -610,7 +628,7 @@ class TestImportFailureHandlingCodeSamples(TestNameCheckVisitorBase):
         assert_type(b[0], int)
         assert_type(b["x"], bytes)
 
-    @assert_passes(allow_import_failures=True)
+    @assert_passes(run_in_both_module_modes=True)
     def test_generic_parameter_order_after_import_failure(self):
         from collections.abc import Iterable, Mapping
         from typing import Generic, TypeVar, assert_type
@@ -661,7 +679,7 @@ class TestImportFailureHandlingCodeSamples(TestNameCheckVisitorBase):
             metaclass=GenericMeta[T]  # E: invalid_annotation
         ): ...
 
-    @assert_passes(allow_import_failures=True)
+    @assert_passes(run_in_both_module_modes=True)
     def test_typeddict_class_syntax_after_import_failure(self):
         from typing import TypedDict
 
@@ -671,19 +689,20 @@ class TestImportFailureHandlingCodeSamples(TestNameCheckVisitorBase):
         class Person(TypedDict):
             name: str
 
-        class BadTypedDict1(TypedDict):
-            name: str
+        def capybara() -> None:
+            class BadTypedDict1(TypedDict):
+                name: str
 
-            def method(self):  # E: invalid_annotation
-                pass
+                def method(self):  # E: invalid_annotation
+                    pass
 
-        class BadTypedDict2(TypedDict, metaclass=type):  # E: invalid_annotation
-            name: str
+            class BadTypedDict2(TypedDict, metaclass=type):  # E: invalid_annotation
+                name: str
 
-        class BadTypedDict3(TypedDict, other=True):  # E: invalid_annotation
-            name: str
+            class BadTypedDict3(TypedDict, other=True):  # E: invalid_annotation
+                name: str
 
-    @assert_passes(allow_import_failures=True)
+    @assert_passes(run_in_both_module_modes=True)
     def test_typeddict_extra_items_and_unpack_after_import_failure(self):
         from typing_extensions import TypedDict, Unpack
 
@@ -710,7 +729,7 @@ class TestImportFailureHandlingCodeSamples(TestNameCheckVisitorBase):
         unpack_no_extra(name="No Country for Old Men", year=2007)
         unpack_extra(name="No Country for Old Men", year=2007)
 
-    @assert_passes(allow_import_failures=True)
+    @assert_passes(run_in_both_module_modes=True)
     def test_property_setter_in_synthetic_class_after_import_failure(self):
         class C:
             @property
@@ -721,7 +740,7 @@ class TestImportFailureHandlingCodeSamples(TestNameCheckVisitorBase):
             def value(self, new_value: int) -> None:
                 pass
 
-    @assert_passes(allow_import_failures=True)
+    @assert_passes(run_in_both_module_modes=True)
     def test_synthetic_instance_attrs_and_forward_methods_after_import_failure(self):
         from typing import Generic, TypeVar
 
@@ -747,7 +766,7 @@ class TestImportFailureHandlingCodeSamples(TestNameCheckVisitorBase):
             v.set(1)
             return v.get()
 
-    @assert_passes(allow_import_failures=True)
+    @assert_passes(run_in_both_module_modes=True)
     def test_zero_arg_super_in_synthetic_class_after_import_failure(self):
         class Base:
             def method(self) -> int:
@@ -757,7 +776,7 @@ class TestImportFailureHandlingCodeSamples(TestNameCheckVisitorBase):
             def other(self) -> int:
                 return super().method()
 
-    @assert_passes(allow_import_failures=True)
+    @assert_passes(run_in_both_module_modes=True)
     def test_overloaded_override_and_final_after_import_failure(self):
         from typing import final, overload, override
 
@@ -833,16 +852,6 @@ class TestImportFailureHandlingCodeSamples(TestNameCheckVisitorBase):
         a, b, c = p
         assert_type(a, int)
         assert_type(c, str)
-        p[3]  # E: incompatible_call
-        p[-4]  # E: incompatible_call
-        Point(1)  # E: incompatible_call
-
-        class Point3(NamedTuple):
-            _y: int  # E: invalid_annotation
-
-        class Location(NamedTuple):
-            altitude: float = 0.0
-            latitude: float  # E: invalid_annotation
 
         class Property(NamedTuple, Generic[T]):
             name: str
@@ -860,13 +869,24 @@ class TestImportFailureHandlingCodeSamples(TestNameCheckVisitorBase):
         pn = PointWithName(1, 2, "")
         assert_type(pn.name, str)
 
+        p[3]  # E: incompatible_call
+        p[-4]  # E: incompatible_call
+        Point(1)  # E: incompatible_call
+
+        class Point3(NamedTuple):
+            _y: int  # E: invalid_annotation
+
+        class Location(NamedTuple):
+            altitude: float = 0.0
+            latitude: float  # E: invalid_annotation
+
         class BadPointWithName(Point):
             x: int = 0  # E: incompatible_override
 
         class Unit(NamedTuple, object):  # E: invalid_base
             name: str
 
-    @assert_passes(allow_import_failures=True)
+    @assert_passes(run_in_both_module_modes=True)
     def test_dataclass_comparison_after_import_failure(self):
         from dataclasses import dataclass
 
@@ -883,11 +903,12 @@ class TestImportFailureHandlingCodeSamples(TestNameCheckVisitorBase):
         dc1_1 = DC1("", 0)
         dc2_1 = DC2("hi", 2)
 
-        if dc1_1 < dc2_1:  # E: unsupported_operation
-            pass
+        def capybara() -> None:
+            if dc1_1 < dc2_1:  # E: unsupported_operation
+                pass
 
-        if dc1_1 != dc2_1:
-            pass
+            if dc1_1 != dc2_1:
+                pass
 
     @assert_passes()
     def test_frozen_dataclass_disallows_instance_attribute_assignment(self):
@@ -933,7 +954,7 @@ class TestImportFailureHandlingCodeSamples(TestNameCheckVisitorBase):
         def mutate(value: Intersection[FrozenA, FrozenB]) -> None:
             value.value = 2  # E: incompatible_assignment
 
-    @assert_passes(allow_import_failures=True)
+    @assert_passes(run_in_both_module_modes=True)
     def test_frozen_dataclass_checks_after_import_failure(self):
         from dataclasses import dataclass
 
@@ -941,22 +962,23 @@ class TestImportFailureHandlingCodeSamples(TestNameCheckVisitorBase):
         class Frozen:
             value: int
 
-        frozen = Frozen(1)
-        frozen.value = 2  # E: incompatible_assignment
-
-        @dataclass
-        class NonFrozenChild(Frozen):  # E: invalid_base
-            pass
-
         @dataclass
         class Mutable:
             value: int
 
-        @dataclass(frozen=True)
-        class FrozenChild(Mutable):  # E: invalid_base
-            pass
+        def capybara() -> None:
+            frozen = Frozen(1)
+            frozen.value = 2  # E: incompatible_assignment
 
-    @assert_passes(allow_import_failures=True)
+            @dataclass
+            class NonFrozenChild(Frozen):  # E: invalid_base
+                pass
+
+            @dataclass(frozen=True)
+            class FrozenChild(Mutable):  # E: invalid_base
+                pass
+
+    @assert_passes(run_in_both_module_modes=True)
     def test_dataclass_classvar_instance_override_mismatch_after_import_failure(self):
         from dataclasses import dataclass
         from typing import ClassVar
@@ -1083,7 +1105,7 @@ class TestImportFailureHandlingCodeSamples(TestNameCheckVisitorBase):
         def mutate(value: Intersection[SlottedA, SlottedB]) -> None:
             value.y = 3  # E: incompatible_assignment
 
-    @assert_passes(allow_import_failures=True)
+    @assert_passes(run_in_both_module_modes=True)
     def test_dataclass_init_and_match_args_after_import_failure(self):
         from dataclasses import dataclass
 
@@ -1091,9 +1113,6 @@ class TestImportFailureHandlingCodeSamples(TestNameCheckVisitorBase):
         class InitDisabled:
             x: int
             y: int
-
-        InitDisabled()
-        InitDisabled(1, 2)  # E: incompatible_call
 
         def match_init_disabled(value: InitDisabled) -> None:
             match value:
@@ -1109,7 +1128,11 @@ class TestImportFailureHandlingCodeSamples(TestNameCheckVisitorBase):
                 case NoMatchArgs(1):  # E: bad_match
                     pass
 
-    @assert_passes(allow_import_failures=True)
+        def capybara() -> None:
+            InitDisabled()
+            InitDisabled(1, 2)  # E: incompatible_call
+
+    @assert_passes(run_in_both_module_modes=True)
     def test_dataclass_kw_only_checks_after_import_failure(self):
         from dataclasses import KW_ONLY, dataclass, field
 
@@ -1119,42 +1142,43 @@ class TestImportFailureHandlingCodeSamples(TestNameCheckVisitorBase):
             _: KW_ONLY
             b: int = 0
 
-        DC1("hi")
-        DC1(a="hi")
-        DC1(a="hi", b=1)
-        DC1("hi", b=1)
-        DC1("hi", 1)  # E: incompatible_call
-
         @dataclass
         class DC2:
             b: int = field(kw_only=True, default=3)
             a: str
-
-        DC2("hi")
-        DC2(a="hi")
-        DC2(a="hi", b=1)
-        DC2("hi", b=1)
-        DC2("hi", 1)  # E: incompatible_call
 
         @dataclass(kw_only=True)
         class DC3:
             a: str = field(kw_only=False)
             b: int = 0
 
-        DC3("hi")
-        DC3(a="hi")
-        DC3(a="hi", b=1)
-        DC3("hi", b=1)
-        DC3("hi", 1)  # E: incompatible_call
-
         @dataclass
         class DC4(DC3):
             c: float
 
-        DC4("", 0.2, b=3)
-        DC4(a="", b=3, c=0.2)
+        def capybara() -> None:
+            DC1("hi")
+            DC1(a="hi")
+            DC1(a="hi", b=1)
+            DC1("hi", b=1)
+            DC1("hi", 1)  # E: incompatible_call
 
-    @assert_passes(allow_import_failures=True)
+            DC2("hi")
+            DC2(a="hi")
+            DC2(a="hi", b=1)
+            DC2("hi", b=1)
+            DC2("hi", 1)  # E: incompatible_call
+
+            DC3("hi")
+            DC3(a="hi")
+            DC3(a="hi", b=1)
+            DC3("hi", b=1)
+            DC3("hi", 1)  # E: incompatible_call
+
+            DC4("", 0.2, b=3)
+            DC4(a="", b=3, c=0.2)
+
+    @assert_passes(run_in_both_module_modes=True)
     def test_dataclass_constructor_field_metadata_after_import_failure(self):
         from dataclasses import dataclass, field
 
@@ -1165,18 +1189,19 @@ class TestImportFailureHandlingCodeSamples(TestNameCheckVisitorBase):
             unit_price: float
             quantity_on_hand: int = 0
 
-        InventoryItem("soap", 2.3)
-        InventoryItem("name")  # E: incompatible_call
-
         @dataclass
         class WithInitFalse:
             a: int = field(init=False)
             b: int
 
-        WithInitFalse(1)
-        WithInitFalse(a=1, b=2)  # E: incompatible_call
+        def capybara() -> None:
+            InventoryItem("soap", 2.3)
+            InventoryItem("name")  # E: incompatible_call
 
-    @assert_passes(allow_import_failures=True)
+            WithInitFalse(1)
+            WithInitFalse(a=1, b=2)  # E: incompatible_call
+
+    @assert_passes(run_in_both_module_modes=True)
     def test_dataclass_usage_features_after_import_failure(self):
         from dataclasses import dataclass, field
         from typing import (
@@ -1240,24 +1265,9 @@ class TestImportFailureHandlingCodeSamples(TestNameCheckVisitorBase):
 
         StrBox("")
 
-    @assert_passes(allow_import_failures=True)
+    @assert_passes(run_in_both_module_modes=True)
     def test_dataclass_default_order_validation(self):
         from dataclasses import InitVar, dataclass, field
-
-        @dataclass  # E: invalid_annotation
-        class DC1:
-            a: int = 0
-            b: int
-
-        @dataclass  # E: invalid_annotation
-        class DC2:
-            a: int = field(default=1)
-            b: int
-
-        @dataclass  # E: invalid_annotation
-        class DC3:
-            a: InitVar[int] = 0
-            b: int
 
         @dataclass
         class DC4:
@@ -1273,7 +1283,23 @@ class TestImportFailureHandlingCodeSamples(TestNameCheckVisitorBase):
                 local: int = 0
                 _ = local
 
-        DC4(1, 2)
+        def capybara() -> None:
+            @dataclass  # E: invalid_annotation
+            class DC1:
+                a: int = 0
+                b: int
+
+            @dataclass  # E: invalid_annotation
+            class DC2:
+                a: int = field(default=1)
+                b: int
+
+            @dataclass  # E: invalid_annotation
+            class DC3:
+                a: InitVar[int] = 0
+                b: int
+
+            DC4(1, 2)
 
     @assert_passes()
     def test_dataclass_post_init_initvar_semantics(self):
@@ -1316,7 +1342,7 @@ class TestImportFailureHandlingCodeSamples(TestNameCheckVisitorBase):
 
             def __post_init__(self, _name: str, _age: int): ...
 
-    @assert_passes(allow_import_failures=True)
+    @assert_passes(run_in_both_module_modes=True)
     def test_dataclass_post_init_initvar_semantics_after_import_failure(self):
         from dataclasses import InitVar, dataclass
 
@@ -1389,7 +1415,7 @@ class TestImportFailureHandlingCodeSamples(TestNameCheckVisitorBase):
             p.x = 2  # E: incompatible_assignment
             del p.x  # E: incompatible_assignment
 
-    @assert_passes(allow_import_failures=True)
+    @assert_passes(run_in_both_module_modes=True)
     def test_namedtuple_attribute_is_immutable_after_import_failure(self):
         from typing import NamedTuple
 
@@ -1397,8 +1423,10 @@ class TestImportFailureHandlingCodeSamples(TestNameCheckVisitorBase):
             x: int
 
         p = Point(1)
-        p.x = 2  # E: incompatible_assignment
-        del p.x  # E: incompatible_assignment
+
+        def capybara() -> None:
+            p.x = 2  # E: incompatible_assignment
+            del p.x  # E: incompatible_assignment
 
     @assert_passes()
     def test_incompatible_annotated_attribute_assignment(self):
