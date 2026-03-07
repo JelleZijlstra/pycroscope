@@ -2,13 +2,18 @@
 # If a listed case starts passing, or an unlisted case starts failing,
 # the conformance CI workflow should fail and this file should be updated.
 
-generics_scoping
+# Bad unimportable module handling
 generics_self_advanced
+
+# Fails to reject invalid use of Self
 generics_self_usage
-generics_syntax_scoping
-generics_typevartuple_basic
+
+# Incorrect specialization of tuple[()]?
 generics_typevartuple_specialization
-overloads_definitions_stub
+
+# Doesn't detect when you use a TypeVar in the wrong place
+generics_scoping
+generics_syntax_scoping
 
 # Various issues, defaults not correctly implemented
 generics_defaults
@@ -18,9 +23,8 @@ generics_defaults_referential
 # Does not correctly pick up forward refs in unimportable module
 annotations_forward_refs
 
-# TypeVarTuple/union inference quirks
-generics_typevartuple_args
-generics_typevartuple_callable
+# We don't really do stubs
+overloads_definitions_stub
 
 # Too precise value for a global
 protocols_generic
@@ -54,4 +58,7 @@ constructors_call_init
 constructors_call_new
 
 # Precise Literal inference with TypeVarTuple
+generics_typevartuple_basic
 generics_typevartuple_concat
+generics_typevartuple_args
+generics_typevartuple_callable
