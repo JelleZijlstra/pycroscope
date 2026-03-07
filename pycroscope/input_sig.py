@@ -244,9 +244,7 @@ def coerce_paramspec_specialization_to_input_sig(value: Value) -> Value:
 
     if isinstance(value, InputSigValue):
         return value
-    if isinstance(value, TypeVarValue) and is_instance_of_typing_name(
-        value.typevar, "ParamSpec"
-    ):
+    if isinstance(value, TypeVarValue) and value.is_paramspec():
         return value
     if isinstance(value, AnyValue):
         return InputSigValue(ELLIPSIS)

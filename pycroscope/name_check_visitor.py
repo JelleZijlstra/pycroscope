@@ -84,7 +84,9 @@ from .annotations import (
     has_invalid_paramspec_usage,
     is_context_manager_type,
     is_instance_of_typing_name,
+    is_typevarlike,
     is_typing_name,
+    make_type_var_value,
     type_from_value,
     value_from_ast,
 )
@@ -7185,17 +7187,16 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         else:
             ctx = contextlib.nullcontext()
         with ctx:
-            declared_type_params = cast(
-                Sequence[ast.AST], getattr(node, "type_params", ())
-            )
             if (
                 sys.version_info >= (3, 12)
                 and not isinstance(node, ast.Lambda)
-                and declared_type_params
+                and node.type_params
             ):
+                declared_type_params = node.type_params
                 type_params = self.visit_type_param_values(declared_type_params)
             else:
                 type_params = []
+                declared_type_params = []
             if type_params and not isinstance(node, ast.Lambda):
                 annotation_nodes: list[ast.AST] = [*declared_type_params]
                 annotation_nodes.extend(
@@ -11600,7 +11601,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         if len(node.targets) != 1 or not isinstance(node.targets[0], ast.Name):
             return None
 
-        runtime_type_params: tuple[TypeVarLike | TypeVarValue, ...] | None = None
+        runtime_type_params: tuple[TypeVarValue, ...] | None = None
         if isinstance(assigned_value, KnownValue):
             maybe_runtime_type_params = safe_getattr(
                 assigned_value.val, "__parameters__", ()
@@ -11609,8 +11610,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 isinstance(maybe_runtime_type_params, tuple)
                 and maybe_runtime_type_params
             ):
-                runtime_type_params = cast(
-                    tuple[TypeVarLike | TypeVarValue, ...], maybe_runtime_type_params
+                runtime_type_params = tuple(
+                    make_type_var_value(param, visitor=self, node=node)
+                    for param in maybe_runtime_type_params
                 )
 
         if runtime_type_params is None and not (
@@ -11630,7 +11632,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             return None
 
         if runtime_type_params is None:
-            inferred_type_params: list[TypeVarLike | TypeVarValue] = []
+            inferred_type_params: list[TypeVarValue] = []
             seen_type_params: set[object] = set()
             for subval in alias_value.walk_values():
                 if isinstance(subval, TypeVarValue):
@@ -11646,7 +11648,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     if identity in seen_type_params:
                         continue
                     seen_type_params.add(identity)
-                    inferred_type_params.append(subval.input_sig.param_spec)
+                    inferred_type_params.append(
+                        make_type_var_value(identity, visitor=self, node=node)
+                    )
             if inferred_type_params:
                 runtime_type_params = tuple(inferred_type_params)
             else:
@@ -11774,7 +11778,13 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     error_code=ErrorCode.invalid_annotation,
                 )
             if isinstance(node.target, ast.Name) and alias_type is not None:
-                type_params = self._infer_type_alias_type_params(node.value, alias_type)
+                type_param_likes = self._infer_type_alias_type_params(
+                    node.value, alias_type
+                )
+                type_params = tuple(
+                    make_type_var_value(type_param_like, visitor=self, node=node.value)
+                    for type_param_like in type_param_likes
+                )
                 explicit_type_alias_assignment_value = TypeAliasValue(
                     node.target.id,
                     self.module.__name__ if self.module is not None else "",
@@ -11782,7 +11792,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                         lambda value_node=node.value: annotation_expr_from_ast(
                             value_node, visitor=self, suppress_errors=True
                         ).to_value(allow_qualifiers=True, allow_empty=True),
-                        lambda type_params=tuple(type_params): type_params,
+                        lambda type_params=type_params: type_params,
                     ),
                     runtime_allows_value_call=True,
                 )
@@ -12267,12 +12277,8 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     subval.input_sig, ParamSpecSig
                 ):
                     type_params.append(subval.input_sig.param_spec)
-                elif isinstance(subval, KnownValue) and (
-                    is_instance_of_typing_name(subval.val, "TypeVar")
-                    or is_instance_of_typing_name(subval.val, "TypeVarTuple")
-                    or is_instance_of_typing_name(subval.val, "ParamSpec")
-                ):
-                    type_params.append(cast(TypeVarLike, subval.val))
+                elif isinstance(subval, KnownValue) and is_typevarlike(subval.val):
+                    type_params.append(subval.val)
                 return True
             return False
 
@@ -12341,7 +12347,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
 
     def _extract_runtime_type_alias_type_params(
         self, node: ast.Call
-    ) -> Sequence[TypeVarLike | TypeVarValue]:
+    ) -> Sequence[TypeVarValue]:
         type_params_keyword = next(
             (keyword for keyword in node.keywords if keyword.arg == "type_params"), None
         )
@@ -12354,7 +12360,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 error_code=ErrorCode.invalid_annotation,
             )
             return []
-        params: list[TypeVarLike | TypeVarValue] = []
+        params: list[TypeVarValue] = []
         for elt in type_params_keyword.value.elts:
             value = self.visit(elt)
             if isinstance(value, TypeVarValue):
@@ -12363,11 +12369,12 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             if isinstance(value, InputSigValue) and isinstance(
                 value.input_sig, ParamSpecSig
             ):
-                params.append(value.input_sig.param_spec)
+                params.append(TypeVarValue(value.input_sig.param_spec))
                 continue
             identity = _type_param_identity(value)
             if identity is not None:
-                params.append(cast(TypeVarLike, identity))
+                assert is_typevarlike(identity)
+                params.append(make_type_var_value(identity, visitor=self, node=elt))
                 continue
             self._show_error_if_checking(
                 elt,
@@ -12431,7 +12438,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         if isinstance(alias_type, SubclassValue):
             return None
         type_params = tuple(
-            type_param
+            make_type_var_value(type_param, visitor=self, node=node.value)
             for type_param in self._infer_type_alias_type_params(node.value, alias_type)
             if _is_valid_inferred_type_alias_type_param(type_param)
         )

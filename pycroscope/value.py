@@ -575,11 +575,11 @@ VOID = VoidValue()
 class TypeAlias:
     evaluator: Callable[[], Value]
     """Callable that evaluates the value."""
-    evaluate_type_params: Callable[[], Sequence[TypeVarLike | "TypeVarValue"]]
+    evaluate_type_params: Callable[[], Sequence["TypeVarValue"]]
     """Callable that evaluates the type parameters."""
     evaluated_value: Value | None = None
     """Value that the type alias evaluates to."""
-    type_params: Sequence[TypeVarLike | "TypeVarValue"] | None = None
+    type_params: Sequence["TypeVarValue"] | None = None
     """Type parameters of the type alias."""
     is_evaluating: bool = False
     """Whether this type alias is currently being evaluated."""
@@ -595,7 +595,7 @@ class TypeAlias:
                 self.is_evaluating = False
         return self.evaluated_value
 
-    def get_type_params(self) -> Sequence[TypeVarLike | "TypeVarValue"]:
+    def get_type_params(self) -> Sequence["TypeVarValue"]:
         if self.type_params is None:
             self.type_params = self.evaluate_type_params()
         return self.type_params
@@ -604,99 +604,57 @@ class TypeAlias:
         return self.get_value()
 
 
-def _is_typevartuple_type_param(type_param: TypeVarLike | "TypeVarValue") -> bool:
-    if isinstance(type_param, TypeVarValue):
-        return type_param.is_typevartuple()
-    return is_instance_of_typing_name(type_param, "TypeVarTuple") or is_typing_name(
-        type(type_param), "TypeVarTuple"
-    )
-
-
-def _type_alias_substitution_key(
-    type_param: TypeVarLike | "TypeVarValue",
-) -> TypeVarLike:
-    if isinstance(type_param, TypeVarValue):
-        return type_param.typevar
-    return type_param
-
-
 _NO_DEFAULT = object()
 
 
-def _type_param_has_default(type_param: TypeVarLike | "TypeVarValue") -> bool:
-    if isinstance(type_param, TypeVarValue):
-        if type_param.default is not None:
-            return True
-        runtime_type_param = type_param.typevar
-    else:
-        runtime_type_param = type_param
-    runtime_default = safe_getattr(runtime_type_param, "__default__", _NO_DEFAULT)
-    return (
-        runtime_default is not _NO_DEFAULT
-        and runtime_default is not typing_extensions.NoDefault
-    )
-
-
-def _default_value_for_type_param(type_param: TypeVarLike | "TypeVarValue") -> Value:
-    if isinstance(type_param, TypeVarValue) and type_param.default is not None:
+def _default_value_for_type_param(type_param: "TypeVarValue") -> Value:
+    if type_param.default is not None:
         return type_param.default
-    if isinstance(type_param, TypeVarValue):
-        runtime_type_param = type_param.typevar
-    else:
-        runtime_type_param = type_param
-    runtime_default = safe_getattr(runtime_type_param, "__default__", _NO_DEFAULT)
-    if runtime_default is _NO_DEFAULT or runtime_default is typing_extensions.NoDefault:
-        return AnyValue(AnySource.generic_argument)
-    if isinstance(runtime_default, type):
-        return TypedValue(runtime_default)
-    if runtime_default is None:
-        return KnownValue(None)
     return AnyValue(AnySource.generic_argument)
 
 
 def _match_type_alias_type_arguments(
-    type_params: Sequence[TypeVarLike | "TypeVarValue"],
+    type_params: Sequence["TypeVarValue"],
     type_arguments: Sequence[Value],
     *,
     type_arguments_are_packed: bool = False,
 ) -> Sequence[tuple[TypeVarLike, Value]] | None:
-    substitution_keys = [_type_alias_substitution_key(param) for param in type_params]
     if type_arguments_are_packed:
-        if len(substitution_keys) != len(type_arguments):
+        if len(type_params) != len(type_arguments):
             return None
-        return list(zip(substitution_keys, type_arguments))
+        return [(param.typevar, arg) for param, arg in zip(type_params, type_arguments)]
     variadic_indexes = [
-        i
-        for i, type_param in enumerate(type_params)
-        if _is_typevartuple_type_param(type_param)
+        i for i, type_param in enumerate(type_params) if type_param.is_typevartuple()
     ]
     if len(variadic_indexes) > 1:
         return None
     if not variadic_indexes:
-        if len(type_arguments) > len(substitution_keys):
+        if len(type_arguments) > len(type_params):
             return None
         minimum_required = sum(
-            1 for type_param in type_params if not _type_param_has_default(type_param)
+            1 for type_param in type_params if type_param.default is None
         )
         if len(type_arguments) < minimum_required:
             return None
-        matched = list(zip(substitution_keys, type_arguments))
-        for i in range(len(type_arguments), len(substitution_keys)):
+        matched = [
+            (param.typevar, arg) for param, arg in zip(type_params, type_arguments)
+        ]
+        for i in range(len(type_arguments), len(type_params)):
             matched.append(
-                (substitution_keys[i], _default_value_for_type_param(type_params[i]))
+                (type_params[i].typevar, _default_value_for_type_param(type_params[i]))
             )
         return matched
     variadic_index = variadic_indexes[0]
-    minimum_args = len(substitution_keys) - 1
+    minimum_args = len(type_params) - 1
     if len(type_arguments) < minimum_args:
         return None
-    suffix_count = len(substitution_keys) - variadic_index - 1
+    suffix_count = len(type_params) - variadic_index - 1
     variadic_end = len(type_arguments) - suffix_count
     variadic_members = [
         (False, arg) for arg in type_arguments[variadic_index:variadic_end]
     ]
     matched: list[tuple[TypeVarLike, Value]] = []
-    for i, key in enumerate(substitution_keys):
+    for i, key in enumerate(type_params):
         if i < variadic_index:
             argument = type_arguments[i]
         elif i == variadic_index:
@@ -704,7 +662,7 @@ def _match_type_alias_type_arguments(
         else:
             suffix_index = i - variadic_index - 1
             argument = type_arguments[variadic_end + suffix_index]
-        matched.append((key, argument))
+        matched.append((key.typevar, argument))
     return matched
 
 
@@ -725,10 +683,6 @@ class TypeAliasValue(Value):
     def get_value(self) -> Value:
         val = self.alias.get_value()
         type_params = self.alias.get_type_params()
-        substitution_keys = [
-            type_param.typevar if isinstance(type_param, TypeVarValue) else type_param
-            for type_param in type_params
-        ]
         if self.type_arguments or self.is_specialized:
             substitutions = _match_type_alias_type_arguments(
                 type_params,
@@ -740,14 +694,12 @@ class TypeAliasValue(Value):
                 return AnyValue(AnySource.inference)
             typevars = dict(substitutions)
             val = val.substitute_typevars(typevars)
-        elif substitution_keys:
+        elif type_params:
             # Unsubscripted aliases default each unspecialized parameter.
             val = val.substitute_typevars(
                 {
-                    type_param: _default_value_for_type_param(type_param_value)
-                    for type_param, type_param_value in zip(
-                        substitution_keys, type_params
-                    )
+                    type_param.typevar: _default_value_for_type_param(type_param)
+                    for type_param in type_params
                 }
             )
         return val
@@ -1214,9 +1166,10 @@ class TypedValue(Value):
             if declared_params and len(declared_params) == len(raw_args):
                 expanded_args: list[Value] = []
                 for declared_param, raw_arg in zip(declared_params, raw_args):
-                    if isinstance(
-                        declared_param, TypeVarValue
-                    ) and _is_typevartuple_type_param(declared_param):
+                    if (
+                        isinstance(declared_param, TypeVarValue)
+                        and declared_param.is_typevartuple()
+                    ):
                         normalized_arg = replace_known_sequence_value(raw_arg)
                         if (
                             isinstance(normalized_arg, SequenceValue)
@@ -1386,7 +1339,7 @@ class GenericValue(TypedValue):
                 and any(
                     is_many
                     and isinstance(member, TypeVarValue)
-                    and _is_typevartuple_type_param(member)
+                    and member.is_typevartuple()
                     for is_many, member in arg.members
                 )
             ):
@@ -1404,7 +1357,7 @@ class GenericValue(TypedValue):
                     continue
             if (
                 isinstance(arg, TypeVarValue)
-                and _is_typevartuple_type_param(arg)
+                and arg.is_typevartuple()
                 and substituted is not arg
             ):
                 if isinstance(substituted, KnownValue):
@@ -1501,7 +1454,7 @@ class SequenceValue(GenericValue):
             if (
                 is_many
                 and isinstance(member, TypeVarValue)
-                and _is_typevartuple_type_param(member)
+                and member.is_typevartuple()
                 and self.typ is tuple
                 and substituted is not member
             ):
