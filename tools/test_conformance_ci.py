@@ -16,6 +16,7 @@ if sys.version_info >= (3, 11):
         check_conformance,
         diff_expected_errors,
         get_expected_errors,
+        main,
         parse_pycroscope_concise_errors,
         parse_pycroscope_internal_error_cases,
         run_pycroscope,
@@ -173,3 +174,14 @@ def test_check_conformance_passes_when_outcomes_match_known_failures(
 
     result = check_conformance(typing_repo, {"dataclasses_order"})
     assert result == 0
+
+
+def test_main_requires_python_312(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr("tools.conformance_ci.sys.version_info", (3, 11, 9))
+
+    result = main([])
+
+    assert result == 1
+    assert "requires Python 3.12+" in capsys.readouterr().out
