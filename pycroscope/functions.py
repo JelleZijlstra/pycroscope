@@ -664,7 +664,7 @@ def translate_vararg_type(
             return inner_typ
         elif isinstance(inner_typ, ParamSpecArgsValue):
             return inner_typ
-        elif isinstance(inner_typ, TypeVarValue) and inner_typ.is_typevartuple:
+        elif isinstance(inner_typ, TypeVarValue) and inner_typ.is_typevartuple():
             if error_ctx is not None and node is not None:
                 error_ctx.show_error(
                     node,

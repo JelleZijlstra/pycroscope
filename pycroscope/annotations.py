@@ -751,8 +751,6 @@ def make_type_var_value(tv: TypeVarLike, ctx: Context) -> TypeVarValue:
         constraints=constraints,
         default=default,
         variance=get_typevar_variance(tv),
-        is_typevartuple=is_instance_of_typing_name(tv, "TypeVarTuple")
-        or is_typing_name(type(tv), "TypeVarTuple"),
     )
 
 
@@ -794,7 +792,7 @@ def _is_paramspec_type_param(type_param: object) -> bool:
 
 def _is_typevartuple_type_param(type_param: TypeVarLike | TypeVarValue) -> bool:
     if isinstance(type_param, TypeVarValue):
-        return type_param.is_typevartuple
+        return type_param.is_typevartuple()
     return is_instance_of_typing_name(type_param, "TypeVarTuple") or is_typing_name(
         type(type_param), "TypeVarTuple"
     )
@@ -824,7 +822,7 @@ def _infer_alias_type_params_from_value(
     seen_type_params: set[object] = set()
     for subval in alias_value.walk_values():
         if isinstance(subval, TypeVarValue):
-            identity: object = (subval.typevar, subval.is_typevartuple)
+            identity: object = (subval.typevar, subval.is_typevartuple())
             if identity in seen_type_params:
                 continue
             seen_type_params.add(identity)
@@ -1069,7 +1067,7 @@ def _type_from_value_type_alias_arg(
                 len(unpacked_members) == 1
                 and unpacked_members[0][0]
                 and isinstance(unpacked_members[0][1], TypeVarValue)
-                and unpacked_members[0][1].is_typevartuple
+                and unpacked_members[0][1].is_typevartuple()
             ):
                 return unpacked_members[0][1]
             return SequenceValue(tuple, list(unpacked_members))
@@ -1178,7 +1176,7 @@ def _pack_typevartuple_args_from_unpack_members(
         len(normalized_members) == 1
         and normalized_members[0][0]
         and isinstance(normalized_members[0][1], TypeVarValue)
-        and normalized_members[0][1].is_typevartuple
+        and normalized_members[0][1].is_typevartuple()
     ):
         return None
 
@@ -1248,7 +1246,7 @@ def _pack_typevartuple_runtime_args(
         len(normalized_members) == 1
         and normalized_members[0][0]
         and isinstance(normalized_members[0][1], TypeVarValue)
-        and normalized_members[0][1].is_typevartuple
+        and normalized_members[0][1].is_typevartuple()
     ):
         return None
 
@@ -1414,7 +1412,10 @@ def _callable_args_from_runtime(
                     if is_many:
                         # Callable argument lists support unpacked TypeVarTuple
                         # placeholders, but not generic unbounded tuples.
-                        if isinstance(member, TypeVarValue) and member.is_typevartuple:
+                        if (
+                            isinstance(member, TypeVarValue)
+                            and member.is_typevartuple()
+                        ):
                             types.append(member)
                         else:
                             ctx.show_error(f"Invalid usage of Unpack with {unpacked}")
@@ -2626,7 +2627,7 @@ def _make_sequence_value(
                 elements = [(True, AnyValue(AnySource.error))]
             pairs += elements
         else:
-            if isinstance(val, TypeVarValue) and val.is_typevartuple:
+            if isinstance(val, TypeVarValue) and val.is_typevartuple():
                 ctx.show_error("TypeVarTuple must be unpacked")
                 val = AnyValue(AnySource.error)
             pairs.append((False, val))
@@ -2640,7 +2641,7 @@ def _unpack_value(value: Value) -> Sequence[tuple[bool, Value]] | None:
         return value.members
     elif isinstance(value, GenericValue) and value.typ is tuple:
         return [(True, value.args[0])]
-    elif isinstance(value, TypeVarValue) and value.is_typevartuple:
+    elif isinstance(value, TypeVarValue) and value.is_typevartuple():
         return [(True, value)]
     elif isinstance(value, TypedValue) and value.typ is tuple:
         return [(True, AnyValue(AnySource.generic_argument))]
@@ -2695,7 +2696,7 @@ def _make_callable_from_value(
                     continue
                 for unpacked_is_many, member in unpacked_members:
                     if unpacked_is_many and isinstance(member, TypeVarValue):
-                        if member.is_typevartuple:
+                        if member.is_typevartuple():
                             normalized_args.append((False, member))
                             continue
                     normalized_args.append((unpacked_is_many, member))
