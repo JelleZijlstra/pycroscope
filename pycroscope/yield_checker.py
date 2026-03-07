@@ -18,6 +18,8 @@ from contextlib import AbstractContextManager
 from dataclasses import dataclass, field
 from typing import Any
 
+from typing_extensions import assert_never
+
 import pycroscope
 
 from .analysis_lib import decompile, get_indentation, get_line_range_for_node, override
@@ -28,7 +30,23 @@ from .maybe_asynq import asynq
 from .node_visitor import Replacement
 from .safe import is_async_fn
 from .stacked_scopes import VisitorState
-from .value import UNINITIALIZED_VALUE, KnownValue, UnboundMethodValue, Value
+from .value import (
+    UNINITIALIZED_VALUE,
+    AnyValue,
+    IntersectionValue,
+    KnownValue,
+    MultiValuedValue,
+    PredicateValue,
+    SimpleType,
+    SubclassValue,
+    SyntheticClassObjectValue,
+    SyntheticModuleValue,
+    TypedValue,
+    TypeFormValue,
+    UnboundMethodValue,
+    Value,
+    replace_fallback,
+)
 
 
 @dataclass
@@ -154,6 +172,30 @@ class VarnameGenerator:
         assert False, "unreachable"
 
 
+def _is_async_simple_value(
+    value: SimpleType, is_async_predicate: Callable[[Any], bool]
+) -> bool:
+    if isinstance(value, UnboundMethodValue):
+        obj = value.get_method()
+        return obj is not None and is_async_predicate(obj)
+    if isinstance(value, KnownValue):
+        return is_async_predicate(value.val)
+    if isinstance(
+        value,
+        (
+            AnyValue,
+            SyntheticClassObjectValue,
+            SyntheticModuleValue,
+            TypedValue,
+            SubclassValue,
+            TypeFormValue,
+            PredicateValue,
+        ),
+    ):
+        return False
+    assert_never(value)
+
+
 @dataclass
 class YieldChecker:
     visitor: "pycroscope.name_check_visitor.NameCheckVisitor"
@@ -261,13 +303,12 @@ class YieldChecker:
             node.attr in ("async", "asynq", "future") or node.attr.endswith("_async")
         ):
             return True
-        if isinstance(value, UnboundMethodValue):
-            obj = value.get_method()
-        elif isinstance(value, KnownValue):
-            obj = value.val
-        else:
-            return False
-        return self.is_async_fn(obj)
+        value = replace_fallback(value)
+        if isinstance(value, MultiValuedValue):
+            return any(self._is_async_call(subval, node) for subval in value.vals)
+        if isinstance(value, IntersectionValue):
+            return any(self._is_async_call(subval, node) for subval in value.vals)
+        return _is_async_simple_value(value, self.is_async_fn)
 
     def _maybe_show_unnecessary_yield_error(
         self, node: ast.Yield, current_statement: ast.stmt

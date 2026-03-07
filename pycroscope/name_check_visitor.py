@@ -9148,13 +9148,17 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         self, node: FunctionNode, function_info: FunctionInfo
     ) -> None:
         """Makes sure the first argument to a method is self or cls."""
-        if not isinstance(self.current_class, type):
+        if not isinstance(self.current_class, (type, str)):
             return
         # staticmethods have no restrictions
         if FunctionDecorator.staticmethod in function_info.decorator_kinds:
             return
         # try to confirm that it's actually a method
-        if isinstance(node, ast.Lambda) or not hasattr(self.current_class, node.name):
+        if isinstance(node, ast.Lambda):
+            return
+        if isinstance(self.current_class, type) and not hasattr(
+            self.current_class, node.name
+        ):
             return
         if node.name in IMPLICIT_CLASSMETHODS:
             return
@@ -9163,14 +9167,14 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             if FunctionDecorator.classmethod in function_info.decorator_kinds
             else "self"
         )
-
-        if len(node.args.args) < 1 or len(node.args.defaults) == len(node.args.args):
+        positional_args = [*node.args.posonlyargs, *node.args.args]
+        if len(positional_args) < 1 or len(node.args.defaults) == len(positional_args):
             self.show_error(
                 node,
                 "Method must have at least one non-keyword argument",
                 ErrorCode.method_first_arg,
             )
-        elif node.args.args[0].arg != first_must_be:
+        elif positional_args[0].arg != first_must_be:
             self.show_error(
                 node,
                 f"First argument to method should be {first_must_be}",
@@ -13232,7 +13236,10 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     ignore_none=self.options.get_value_for(IgnoreNoneAttributes),
                 )
             synthetic_lookup_val = callee_val.value
-        fallback_lookup_val = callee_val.get_type_value()
+        if isinstance(callee_val, TypedValue):
+            fallback_lookup_val = SubclassValue.make(callee_val)
+        else:
+            fallback_lookup_val = callee_val.get_type_value()
         if isinstance(synthetic_lookup_val, TypedValue) and isinstance(
             synthetic_lookup_val.typ, str
         ):
@@ -13243,6 +13250,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     method_name,
                     node,
                     ignore_none=self.options.get_value_for(IgnoreNoneAttributes),
+                    record_reads=False,
                 )
                 if method_object is not UNINITIALIZED_VALUE:
                     synthetic_typevars = self._get_synthetic_instance_typevars(
@@ -13273,6 +13281,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             method_name,
             node,
             ignore_none=self.options.get_value_for(IgnoreNoneAttributes),
+            record_reads=False,
         )
         if method_object is UNINITIALIZED_VALUE:
             self.show_error(
@@ -13915,6 +13924,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         ignore_none: bool = False,
         use_fallback: bool = False,
         prefer_typeshed: bool = False,
+        record_reads: bool = True,
     ) -> Value:
         """Get an attribute of this value.
 
@@ -13990,6 +14000,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     node,
                     ignore_none=ignore_none,
                     use_fallback=use_fallback,
+                    record_reads=record_reads,
                 )
                 if (
                     subresult is UNINITIALIZED_VALUE
@@ -14039,7 +14050,12 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     subval, root_composite.varname, root_composite.node
                 )
                 subresult = self.get_attribute(
-                    composite, attr, node, ignore_none=ignore_none, use_fallback=False
+                    composite,
+                    attr,
+                    node,
+                    ignore_none=ignore_none,
+                    use_fallback=False,
+                    record_reads=record_reads,
                 )
                 if (
                     subresult is UNINITIALIZED_VALUE
@@ -14076,6 +14092,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             node=node,
             ignore_none=ignore_none,
             prefer_typeshed=prefer_typeshed,
+            record_reads=record_reads,
         )
         result = attributes.get_attribute(ctx)
         if (

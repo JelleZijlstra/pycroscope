@@ -76,6 +76,7 @@ from .value import (
     GenericValue,
     HasAttrExtension,
     HasAttrGuardExtension,
+    IntersectionValue,
     KnownValue,
     KVPair,
     LowerBound,
@@ -87,15 +88,22 @@ from .value import (
     ParamSpecKwargsValue,
     PartialValue,
     PartialValueOperation,
+    PredicateValue,
     SelfT,
     SequenceValue,
+    SimpleType,
+    SubclassValue,
+    SyntheticClassObjectValue,
+    SyntheticModuleValue,
     TypedDictValue,
     TypedValue,
+    TypeFormValue,
     TypeGuardExtension,
     TypeIsExtension,
     TypeVarLike,
     TypeVarMap,
     TypeVarValue,
+    UnboundMethodValue,
     UpperBound,
     Value,
     annotate_value,
@@ -2869,6 +2877,18 @@ def _typevartuple_param_index(params: Sequence[SigParameter]) -> int | None:
 
 def _widen_typevartuple_inferred_value(value: Value) -> Value:
     value = replace_known_sequence_value(value)
+    if isinstance(value, MultiValuedValue):
+        return unite_values(
+            *[_widen_typevartuple_inferred_value(subval) for subval in value.vals]
+        )
+    if isinstance(value, IntersectionValue):
+        return IntersectionValue(
+            tuple(_widen_typevartuple_inferred_value(member) for member in value.vals)
+        )
+    return _widen_typevartuple_inferred_simple_value(value)
+
+
+def _widen_typevartuple_inferred_simple_value(value: SimpleType) -> Value:
     if isinstance(value, SequenceValue):
         if value.typ is tuple:
             return SequenceValue(
@@ -2885,7 +2905,21 @@ def _widen_typevartuple_inferred_value(value: Value) -> Value:
         if isinstance(value.val, complex):
             return TypedValue(complex) | TypedValue(float) | TypedValue(int)
         return TypedValue(type(value.val))
-    return value
+    if isinstance(
+        value,
+        (
+            AnyValue,
+            TypedValue,
+            SubclassValue,
+            SyntheticClassObjectValue,
+            SyntheticModuleValue,
+            UnboundMethodValue,
+            TypeFormValue,
+            PredicateValue,
+        ),
+    ):
+        return value
+    assert_never(value)
 
 
 def _try_typevartuple_callable_relation(

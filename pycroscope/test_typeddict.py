@@ -336,9 +336,11 @@ class TestTypedDict(TestNameCheckVisitorBase):
             assert_type(x["a"], int)
             print(Bad1, Bad2, Bad3)
 
-    @assert_passes(allow_import_failures=True)
+    @assert_passes(run_in_both_module_modes=True)
     def test_class_syntax_method_validation(self):
-        from typing import Generic, TypedDict, TypeVar
+        from typing import Generic, TypeVar
+
+        from typing_extensions import TypedDict
 
         class Movie(TypedDict):
             director: "Person"
@@ -644,7 +646,7 @@ class TestReadOnly(TestNameCheckVisitorBase):
             want_td2(td4)  # E: incompatible_argument
             want_td2(anydict)  # E: incompatible_argument
 
-    @assert_passes(allow_import_failures=True)
+    @assert_passes(run_in_both_module_modes=True)
     def test_inheritance_validation_at_module_scope(self):
         from typing_extensions import NotRequired, ReadOnly, Required, TypedDict
 

@@ -180,8 +180,6 @@ class TestDataclassTransform(TestNameCheckVisitorBase):
 
     @assert_passes(allow_import_failures=True)
     def test_dataclass_transform_synthetic_classes_after_import_failure(self):
-        boom = 1 / 0
-
         from typing import Callable, TypeVar
 
         from typing_extensions import dataclass_transform
@@ -252,8 +250,6 @@ class TestDataclassTransform(TestNameCheckVisitorBase):
 
     @assert_passes(allow_import_failures=True)
     def test_dataclass_transform_slots_semantics_after_import_failure(self):
-        boom = 1 / 0
-
         from typing import Callable, TypeVar
 
         from typing_extensions import dataclass_transform
@@ -606,8 +602,6 @@ class TestDataclassTransform(TestNameCheckVisitorBase):
     def test_dataclass_transform_decorator_field_specifier_options_after_import_failure(
         self,
     ):
-        boom = 1 / 0
-
         from typing import Any, Callable, TypeVar
 
         from typing_extensions import dataclass_transform
@@ -652,8 +646,6 @@ class TestDataclassTransform(TestNameCheckVisitorBase):
     def test_dataclass_transform_base_field_specifier_options_after_import_failure(
         self,
     ):
-        boom = 1 / 0
-
         from typing import Any
 
         from typing_extensions import dataclass_transform
@@ -693,8 +685,6 @@ class TestDataclassTransform(TestNameCheckVisitorBase):
     def test_dataclass_transform_metaclass_field_specifier_options_after_import_failure(
         self,
     ):
-        boom = 1 / 0
-
         from typing import Any
 
         from typing_extensions import dataclass_transform
@@ -735,8 +725,6 @@ class TestDataclassTransform(TestNameCheckVisitorBase):
 
     @assert_passes(allow_import_failures=True)
     def test_dataclass_transform_ignores_inherited_init_after_import_failure(self):
-        boom = 1 / 0
-
         from typing import Any
 
         from typing_extensions import dataclass_transform
@@ -855,8 +843,6 @@ class TestDataclassTransform(TestNameCheckVisitorBase):
 
     @assert_passes(allow_import_failures=True)
     def test_dataclass_transform_hash_semantics_after_import_failure(self):
-        boom = 1 / 0
-
         from typing import Hashable
 
         from typing_extensions import dataclass_transform
@@ -896,8 +882,6 @@ class TestDataclassTransform(TestNameCheckVisitorBase):
     def test_dataclass_transform_init_and_match_args_keywords_after_import_failure(
         self,
     ):
-        boom = 1 / 0
-
         from typing_extensions import dataclass_transform
 
         @dataclass_transform()
@@ -932,8 +916,6 @@ class TestDataclassTransform(TestNameCheckVisitorBase):
 
     @assert_passes(allow_import_failures=True)
     def test_dataclass_transform_factory_field_specifier_after_import_failure(self):
-        boom = 1 / 0
-
         from typing import Any, Callable, TypeVar
 
         from typing_extensions import dataclass_transform
@@ -973,8 +955,6 @@ class TestDataclassTransform(TestNameCheckVisitorBase):
 
     @assert_passes(allow_import_failures=True)
     def test_dataclass_transform_non_default_kwargs_do_not_set_default(self):
-        boom = 1 / 0
-
         from typing import Any, Callable, TypeVar
 
         from typing_extensions import dataclass_transform
@@ -1053,8 +1033,6 @@ class TestDataclassTransform(TestNameCheckVisitorBase):
 
     @assert_passes(allow_import_failures=True)
     def test_dataclass_transform_converter_field_specifier_after_import_failure(self):
-        boom = 1 / 0
-
         from typing import Callable, TypeVar
 
         from typing_extensions import assert_type, dataclass_transform
@@ -1107,8 +1085,6 @@ class TestDataclassTransform(TestNameCheckVisitorBase):
 
     @assert_passes(allow_import_failures=True)
     def test_dataclass_transform_descriptor_fields_after_import_failure(self):
-        boom = 1 / 0
-
         from typing import Any, Generic, TypeVar, assert_type, overload
 
         from typing_extensions import dataclass_transform

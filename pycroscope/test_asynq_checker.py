@@ -434,6 +434,12 @@ def test_stringify_async_fn():
             )
         )
     )
+    assert "pycroscope.asynq_tests.async_fn" == _stringify_async_fn(
+        KnownValue(async_fn) | KnownValue(async_fn.asynq)
+    )
+    assert "pycroscope.asynq_tests.async_fn" == _stringify_async_fn(
+        IntersectionValue((KnownValue(async_fn), TypedValue(object)))
+    )
 
 
 def test_is_impure_async_fn():

@@ -597,6 +597,28 @@ class TestCalls(TestNameCheckVisitorBase):
                 "not an int",  # E: incompatible_argument
             )
 
+    @skip_before((3, 11))
+    def test_var_positional_typevartuple_widens_union_literals(self):
+        self.assert_passes("""
+            from typing import TypeVar, TypeVarTuple
+
+            from typing_extensions import assert_type
+
+            Ts = TypeVarTuple("Ts")
+            T = TypeVar("T")
+
+            def func(*args: *tuple[int, *Ts, T]) -> tuple[T, *Ts]:
+                raise NotImplementedError
+
+            def capybara(flag: bool) -> None:
+                trailing = 1 if flag else 2.0
+                middle = 3j if flag else 4.0
+                assert_type(
+                    func(0, "", middle, trailing),
+                    tuple[float | int, str, complex | float | int],
+                )
+            """)
+
     @assert_passes()
     def test_too_few_args(self):
         def fn(x, y):

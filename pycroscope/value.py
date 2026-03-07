@@ -1201,21 +1201,20 @@ class TypedValue(Value):
             generic_bases = ctx.get_generic_bases(self.typ.__self_class__, args)
         else:
             generic_bases = ctx.get_generic_bases(self.typ, args)
-        if typ in generic_bases:
-            raw_args = list(generic_bases[typ].values())
+        if isinstance(typ, super):
+            return None
+        params_key: type | str = typ
+        if params_key in generic_bases:
+            raw_args = list(generic_bases[params_key].values())
             if (
                 not raw_args
                 and isinstance(self, GenericValue)
-                and _is_same_synthetic_class_key(typ, self.typ)
+                and _is_same_synthetic_class_key(params_key, self.typ)
                 and self.args
             ):
                 # Synthetic generic metadata can occasionally lose self-mapping
                 # while we still have explicit specialization arguments.
                 return list(self.args)
-            if isinstance(typ, super):
-                params_key: type | str = typ.__self_class__
-            else:
-                params_key = typ
             declared_params = ctx.get_type_parameters(params_key)
             if declared_params and len(declared_params) == len(raw_args):
                 expanded_args: list[Value] = []
