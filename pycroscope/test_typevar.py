@@ -225,11 +225,14 @@ class TestTypeVar(TestNameCheckVisitorBase):
         class BadB(alias_b[T_contra, T_co]):  # E: invalid_annotation
             ...
 
-    @assert_passes(allow_import_failures=True)
+    @assert_passes(run_in_both_module_modes=True)
     def test_variance_in_class_bases_after_import_failure(self):
         from typing import Generic, TypeVar
 
-        X1 = TypeVar("X1", covariant=True, contravariant=True)  # E: incompatible_call
+        try:
+            TypeVar("X1", covariant=True, contravariant=True)  # E: incompatible_call
+        except (TypeError, ValueError):
+            pass
 
         T = TypeVar("T")
         T_co = TypeVar("T_co", covariant=True)
@@ -254,11 +257,10 @@ class TestTypeVar(TestNameCheckVisitorBase):
         class BadInv(Inv[T_co]):  # E: invalid_annotation
             ...
 
-    @assert_passes(allow_import_failures=True)
+    @assert_passes(run_in_both_module_modes=True)
     def test_nested_alias_variance_after_import_failure(self):
         from typing import Generic, TypeVar
 
-        X1 = TypeVar("X1", covariant=True, contravariant=True)  # E: incompatible_call
         T_co = TypeVar("T_co", covariant=True)
         T_contra = TypeVar("T_contra", contravariant=True)
 

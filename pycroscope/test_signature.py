@@ -1713,9 +1713,13 @@ class TestUnpack(TestNameCheckVisitorBase):
             def func3(*args: * tuple[int, *Ts, T]) -> tuple[T, *Ts]:
                 raise NotImplementedError
 
-            assert_type(func3(1, "", 3j, 3.4), tuple[float | int, str, complex | float | int])
+            def caller() -> None:
+                assert_type(
+                    func3(1, "", 3j, 3.4),
+                    tuple[float | int, str, complex | float | int],
+                )
             """,
-            allow_import_failures=True,
+            run_in_both_module_modes=True,
         )
 
     @skip_before((3, 11))
@@ -1764,22 +1768,21 @@ class TestUnpack(TestNameCheckVisitorBase):
             Height = NewType("Height", int)
             Width = NewType("Width", int)
 
-            assert_type(Array((Height(1), Width(2))), Array[Height, Width])
-
-            class Bad(Generic[Shape]):  # E: invalid_annotation
-                ...
-
             def multiply(x: Array[*Shape], y: Array[*Shape]) -> Array[*Shape]:
                 raise NotImplementedError
 
-            v_bad: Array[Height, Width] = Array((Height(1),))  # E: incompatible_assignment
-
             def check(x: Array[Height], z: Array[Height, Width]) -> None:
+                assert_type(Array((Height(1), Width(2))), Array[Height, Width])
+
+                class Bad(Generic[Shape]):  # E: invalid_annotation
+                    ...
+
+                v_bad: Array[Height, Width] = Array((Height(1),))  # E: incompatible_assignment
+                print(v_bad)
                 assert_type(multiply(x, x), Array[Height])
                 multiply(x, z)  # E: incompatible_call
             """,
-            allow_import_failures=True,
-            allow_runtime_module_load_failure=True,
+            run_in_both_module_modes=True,
         )
 
     @skip_before((3, 11))
@@ -1895,8 +1898,7 @@ class TestUnpack(TestNameCheckVisitorBase):
                 expect_variadic_array(y)  # OK
                 expect_precise_array(y)  # OK
             """,
-            allow_import_failures=True,
-            allow_runtime_module_load_failure=True,
+            run_in_both_module_modes=True,
         )
 
 
