@@ -8,7 +8,7 @@ from typing_extensions import Self, assert_never
 
 import pycroscope
 from pycroscope.relations import Relation
-from pycroscope.safe import is_instance_of_typing_name, is_typing_name
+from pycroscope.safe import is_instance_of_typing_name
 from pycroscope.stacked_scopes import Composite
 from pycroscope.value import (
     AnySource,
@@ -225,13 +225,9 @@ def wrap_type_param(type_param: TypeVarLike) -> Value:
     if is_instance_of_typing_name(type_param, "ParamSpec"):
         # static analysis: ignore[incompatible_argument]
         return InputSigValue(ParamSpecSig(type_param))
-    elif is_instance_of_typing_name(type_param, "TypeVarTuple") or is_typing_name(
-        type(type_param), "TypeVarTuple"
-    ):
-        return TypeVarValue(
-            type_param, variance=get_typevar_variance(type_param), is_typevartuple=True
-        )
-    elif is_instance_of_typing_name(type_param, "TypeVar"):
+    elif is_instance_of_typing_name(
+        type_param, "TypeVarTuple"
+    ) or is_instance_of_typing_name(type_param, "TypeVar"):
         return TypeVarValue(type_param, variance=get_typevar_variance(type_param))
     else:
         raise TypeError(f"Unsupported type parameter: {type_param!r}")

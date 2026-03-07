@@ -43,7 +43,6 @@ from .safe import (
     hasattr_static,
     is_async_fn,
     is_bound_classmethod,
-    is_instance_of_typing_name,
     is_namedtuple_class,
     is_newtype,
     is_typing_name,
@@ -1298,12 +1297,7 @@ class ArgSpecCache:
         variadic_indexes = [
             i
             for i, type_param in enumerate(type_params)
-            if isinstance(type_param, TypeVarValue)
-            and (
-                type_param.is_typevartuple
-                or is_instance_of_typing_name(type_param.typevar, "TypeVarTuple")
-                or is_typing_name(type(type_param.typevar), "TypeVarTuple")
-            )
+            if isinstance(type_param, TypeVarValue) and type_param.is_typevartuple()
         ]
         if len(variadic_indexes) != 1 or not generic_args:
             return [

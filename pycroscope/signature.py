@@ -2868,7 +2868,7 @@ def _typevartuple_param_index(params: Sequence[SigParameter]) -> int | None:
         i
         for i, param in enumerate(params)
         if isinstance(param.annotation, TypeVarValue)
-        and param.annotation.is_typevartuple
+        and param.annotation.is_typevartuple()
     ]
     if len(indices) == 1:
         return indices[0]
@@ -2983,7 +2983,7 @@ def _try_typevartuple_callable_relation(
         right_annotation = right_param.get_annotation()
         if (
             isinstance(left_annotation, TypeVarValue)
-            and not left_annotation.is_typevartuple
+            and not left_annotation.is_typevartuple()
         ):
             tv_map = {
                 left_annotation.typevar: [
@@ -3008,7 +3008,7 @@ def _try_typevartuple_callable_relation(
         right_annotation = right_param.get_annotation()
         if (
             isinstance(left_annotation, TypeVarValue)
-            and not left_annotation.is_typevartuple
+            and not left_annotation.is_typevartuple()
         ):
             tv_map = {
                 left_annotation.typevar: [
@@ -3068,7 +3068,7 @@ def _try_match_typevartuple_var_positional(
         tv_entries = [
             member
             for is_many, member in repeated_members
-            if is_many and isinstance(member, TypeVarValue) and member.is_typevartuple
+            if is_many and isinstance(member, TypeVarValue) and member.is_typevartuple()
         ]
         if len(tv_entries) != 1:
             return None
@@ -3116,7 +3116,7 @@ def _match_typevartuple_var_positional_members(
     tv_entries = [
         (i, member)
         for i, (is_many, member) in enumerate(expected_members)
-        if is_many and isinstance(member, TypeVarValue) and member.is_typevartuple
+        if is_many and isinstance(member, TypeVarValue) and member.is_typevartuple()
     ]
     if len(tv_entries) != 1:
         return None
@@ -3171,7 +3171,7 @@ def _match_typevartuple_var_positional_members(
 
 def _contains_typevartuple(value: Value) -> bool:
     return any(
-        isinstance(subval, TypeVarValue) and subval.is_typevartuple
+        isinstance(subval, TypeVarValue) and subval.is_typevartuple()
         for subval in value.walk_values()
     )
 
@@ -3200,7 +3200,7 @@ def _extract_var_positional_members(
         inner = replace_known_sequence_value(annotation.members[0])
         if isinstance(inner, SequenceValue) and inner.typ is tuple:
             return inner.members
-        if isinstance(inner, TypeVarValue) and inner.is_typevartuple:
+        if isinstance(inner, TypeVarValue) and inner.is_typevartuple():
             return ((True, inner),)
         if (
             isinstance(inner, GenericValue)
@@ -3215,7 +3215,7 @@ def _extract_var_positional_members(
         inner = replace_known_sequence_value(annotation.root)
         if isinstance(inner, SequenceValue) and inner.typ is tuple:
             return inner.members
-        if isinstance(inner, TypeVarValue) and inner.is_typevartuple:
+        if isinstance(inner, TypeVarValue) and inner.is_typevartuple():
             return ((True, inner),)
         if (
             isinstance(inner, GenericValue)
@@ -3233,7 +3233,8 @@ def _signature_has_standalone_typevartuple_param(sig: ConcreteSignature) -> bool
             for overload in sig.signatures
         )
     return any(
-        isinstance(param.annotation, TypeVarValue) and param.annotation.is_typevartuple
+        isinstance(param.annotation, TypeVarValue)
+        and param.annotation.is_typevartuple()
         for param in sig.parameters.values()
     )
 
