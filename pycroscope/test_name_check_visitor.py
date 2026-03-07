@@ -244,9 +244,9 @@ class TestImportFailureHandling(TestNameCheckVisitorBase):
 
     @assert_passes(run_in_both_module_modes=True)
     def test_typing_import_falls_back_to_typing_extensions(self):
-        from typing import Generic, Self, TypeVar
+        from typing import Generic, TypeVar
 
-        from typing_extensions import assert_type
+        from typing_extensions import Self, assert_type
 
         T = TypeVar("T")
 
@@ -631,7 +631,9 @@ class TestImportFailureHandlingCodeSamples(TestNameCheckVisitorBase):
     @assert_passes(run_in_both_module_modes=True)
     def test_generic_parameter_order_after_import_failure(self):
         from collections.abc import Iterable, Mapping
-        from typing import Generic, TypeVar, assert_type
+        from typing import Generic, TypeVar
+
+        from typing_extensions import assert_type
 
         T = TypeVar("T")
         K = TypeVar("K")
@@ -778,7 +780,9 @@ class TestImportFailureHandlingCodeSamples(TestNameCheckVisitorBase):
 
     @assert_passes(run_in_both_module_modes=True)
     def test_overloaded_override_and_final_after_import_failure(self):
-        from typing import final, overload, override
+        from typing import final, overload
+
+        from typing_extensions import override
 
         class Base:
             @overload
@@ -1204,15 +1208,9 @@ class TestImportFailureHandlingCodeSamples(TestNameCheckVisitorBase):
     @assert_passes(run_in_both_module_modes=True)
     def test_dataclass_usage_features_after_import_failure(self):
         from dataclasses import dataclass, field
-        from typing import (
-            Any,
-            Callable,
-            ClassVar,
-            Generic,
-            Protocol,
-            TypeVar,
-            assert_type,
-        )
+        from typing import Any, Callable, ClassVar, Generic, Protocol, TypeVar
+
+        from typing_extensions import assert_type
 
         T = TypeVar("T")
 
