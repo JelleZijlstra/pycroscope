@@ -222,7 +222,7 @@ class TestScoping(TestNameCheckVisitorBase):
     @assert_passes()
     def test_args_kwargs_annotated(self):
         def capybara(*args: int, **kwargs: int):
-            assert_is_value(args, GenericValue(tuple, [TypedValue(int)]))
+            assert_type(args, tuple[int, ...])
             assert_type(kwargs, dict[str, int])
 
     @assert_passes()
@@ -289,12 +289,7 @@ class TestTry(TestNameCheckVisitorBase):
                 x = 4
                 assert_is_value(x, KnownValue(4))
             except (RuntimeError, ValueError) as e:
-                assert_is_value(
-                    e,
-                    MultiValuedValue(
-                        [TypedValue(RuntimeError), TypedValue(ValueError)]
-                    ),
-                )
+                assert_type(e, RuntimeError | ValueError)
             assert_is_value(
                 x,
                 MultiValuedValue(

@@ -36,6 +36,8 @@ class TestTypeVar(TestNameCheckVisitorBase):
     def test_simple(self):
         from typing import Generic, List, TypeVar
 
+        from typing_extensions import Literal
+
         T = TypeVar("T")
 
         def id(obj: T) -> T:
@@ -54,7 +56,7 @@ class TestTypeVar(TestNameCheckVisitorBase):
                 raise NotImplementedError
 
         def capybara(x: str, xs: List[int], gen: GenCls[int]) -> None:
-            assert_is_value(id(3), KnownValue(3))
+            assert_type(id(3), Literal[3])
             assert_type(id(x), str)
             assert_type(get_one(xs), int)
             assert_type(get_one([int(3)]), int)
@@ -108,6 +110,8 @@ class TestTypeVar(TestNameCheckVisitorBase):
     def test_multi_typevar(self):
         from typing import Optional, TypeVar
 
+        from typing_extensions import Literal
+
         T = TypeVar("T")
 
         # inspired by tempfile.mktemp
@@ -116,9 +120,9 @@ class TestTypeVar(TestNameCheckVisitorBase):
 
         def capybara() -> None:
             assert_is_value(mktemp(), AnyValue(AnySource.generic_argument))
-            assert_is_value(mktemp(prefix="p"), KnownValue("p"))
-            assert_is_value(mktemp(suffix="s"), KnownValue("s"))
-            assert_is_value(mktemp("p", "s"), KnownValue("p") | KnownValue("s"))
+            assert_type(mktemp(prefix="p"), Literal["p"])
+            assert_type(mktemp(suffix="s"), Literal["s"])
+            assert_type(mktemp("p", "s"), Literal["p", "s"])
 
     @assert_passes()
     def test_generic_constructor(self):

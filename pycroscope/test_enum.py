@@ -1,14 +1,7 @@
 # static analysis: ignore
 from .test_name_check_visitor import TestNameCheckVisitorBase
 from .test_node_visitor import assert_passes
-from .value import (
-    AnySource,
-    AnyValue,
-    KnownValue,
-    SubclassValue,
-    TypedValue,
-    assert_is_value,
-)
+from .value import AnySource, AnyValue, KnownValue, assert_is_value
 
 
 class TestEnum(TestNameCheckVisitorBase):
@@ -18,10 +11,10 @@ class TestEnum(TestNameCheckVisitorBase):
 
         def capybara():
             X = Enum("X", ["a", "b", "c"])
-            assert_is_value(X, SubclassValue(TypedValue(Enum)))
+            assert_type(X, type[Enum])
 
             IE = IntEnum("X", ["a", "b", "c"])
-            assert_is_value(IE, SubclassValue(TypedValue(Enum)))
+            assert_type(IE, type[Enum])
 
     @assert_passes()
     def test_call(self):
@@ -89,7 +82,7 @@ class TestNarrowing(TestNameCheckVisitorBase):
     def test_exhaustive(self):
         from enum import Enum
 
-        from typing_extensions import assert_never
+        from typing_extensions import Literal, assert_never
 
         class X(Enum):
             a = 1
@@ -97,31 +90,31 @@ class TestNarrowing(TestNameCheckVisitorBase):
 
         def capybara_eq(x: X):
             if x == X.a:
-                assert_is_value(x, KnownValue(X.a))
+                assert_type(x, Literal[X.a])
             else:
-                assert_is_value(x, KnownValue(X.b))
+                assert_type(x, Literal[X.b])
 
         def capybara_is(x: X):
             if x is X.a:
-                assert_is_value(x, KnownValue(X.a))
+                assert_type(x, Literal[X.a])
             else:
-                assert_is_value(x, KnownValue(X.b))
+                assert_type(x, Literal[X.b])
 
         def capybara_in_list(x: X):
             if x in [X.a]:
-                assert_is_value(x, KnownValue(X.a))
+                assert_type(x, Literal[X.a])
             else:
-                assert_is_value(x, KnownValue(X.b))
+                assert_type(x, Literal[X.b])
 
         def capybara_in_tuple(x: X):
             if x in (X.a,):
-                assert_is_value(x, KnownValue(X.a))
+                assert_type(x, Literal[X.a])
             else:
-                assert_is_value(x, KnownValue(X.b))
+                assert_type(x, Literal[X.b])
 
         def test_multi_in(x: X):
             if x in (X.a, X.b):
-                assert_is_value(x, KnownValue(X.a) | KnownValue(X.b))
+                assert_type(x, Literal[X.a, X.b])
             else:
                 assert_never(x)
 
