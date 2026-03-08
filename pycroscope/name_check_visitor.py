@@ -8868,6 +8868,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             assert isinstance(scope, FunctionScope)
 
             for info in infos:
+                scope.set_declared_type(
+                    info.param.name, info.param.annotation, False, info.node
+                )
                 if info.is_self:
                     # we need this for the implementation of super()
                     self.scopes.set(
@@ -9619,16 +9622,17 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     def visit_comprehension(
         self, node: ast.comprehension, iterable_type: Value | None = None
     ) -> None:
+        target_iterable_type = iterable_type
         if iterable_type is None:
             is_async = bool(node.is_async)
-            iterable_type = self._member_value_of_iterator(node.iter, is_async)
-            if not isinstance(iterable_type, Value):
-                iterable_type = unite_and_simplify(
-                    *iterable_type,
+            target_iterable_type = self._member_value_of_iterator(node.iter, is_async)
+            if not isinstance(target_iterable_type, Value):
+                target_iterable_type = unite_and_simplify(
+                    *target_iterable_type,
                     limit=self.options.get_value_for(UnionSimplificationLimit),
                 )
         with override(self, "in_comprehension_body", True):
-            with override(self, "being_assigned", iterable_type):
+            with override(self, "being_assigned", target_iterable_type):
                 self.visit(node.target)
             for cond in node.ifs:
                 _, constraint = self.constraint_from_condition(cond)
