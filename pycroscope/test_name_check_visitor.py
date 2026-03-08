@@ -4198,9 +4198,7 @@ class TestAnnAssign(TestNameCheckVisitorBase):
 
     @assert_passes(run_in_both_module_modes=True)
     def test_self_advanced_in_unimportable_module(self):
-        from typing import assert_type
-
-        from typing_extensions import Self
+        from typing_extensions import Self, assert_type
 
         class ParentA:
             @property
@@ -4239,9 +4237,7 @@ class TestAnnAssign(TestNameCheckVisitorBase):
 
     @assert_passes(run_in_both_module_modes=True)
     def test_self_property_in_method_body_in_unimportable_module(self):
-        from typing import assert_type
-
-        from typing_extensions import Self
+        from typing_extensions import Self, assert_type
 
         class Base:
             @property
