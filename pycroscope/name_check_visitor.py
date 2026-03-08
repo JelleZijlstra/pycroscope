@@ -498,6 +498,33 @@ SYNTHETIC_PROPERTY_GETTER_DEPRECATED_PREFIX = "%property_getter_deprecated:"
 SYNTHETIC_PROPERTY_SETTER_DEPRECATED_PREFIX = "%property_setter_deprecated:"
 
 
+class _AsyncGeneratorDetector(ast.NodeVisitor):
+    """Detect whether an async function body contains a yield."""
+
+    is_generator = False
+
+    def visit_Yield(self, node: ast.Yield) -> None:
+        self.is_generator = True
+
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+        return
+
+    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+        return
+
+    def visit_Lambda(self, node: ast.Lambda) -> None:
+        return
+
+
+def _is_async_generator(node: ast.AsyncFunctionDef) -> bool:
+    detector = _AsyncGeneratorDetector()
+    for stmt in node.body:
+        detector.visit(stmt)
+        if detector.is_generator:
+            return True
+    return False
+
+
 class CustomContextManager(Protocol[T_co, U_co]):
     def __enter__(self) -> T_co:
         raise NotImplementedError
@@ -7661,6 +7688,11 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 node=node,
                 params=params,
                 return_annotation=return_annotation,
+                is_async_generator=(
+                    _is_async_generator(node)
+                    if isinstance(node, ast.AsyncFunctionDef)
+                    else False
+                ),
                 potential_function=potential_function,
                 type_params=type_params,
             )
