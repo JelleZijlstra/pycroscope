@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Improve `NamedTuple` compatibility for tuple-style indexing, unpacking, and item mutation checks.
 - Enforce function-parameter annotations on later reassignments, so pycroscope now reports incompatible writes like reassigning `x: int` to `str` or widening `Literal[...]` parameters with `+=`.
 - Fix variadic type-alias specialization in static fallback mode: pycroscope now solves `TypeVarTuple` arguments through aliases like `tuple[*Ts, T1, T2]` and preserves explicit empty-pack specializations such as `Array[()]` even when a module cannot be imported.
 - Improve `Self` handling in fallback mode for unimportable modules: pycroscope now resolves `@property` getters, inherited `Self`-annotated attributes, and `cls`/`self` receivers more accurately in advanced generic cases.

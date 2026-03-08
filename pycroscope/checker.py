@@ -105,6 +105,7 @@ from .value import (
     get_tv_map,
     has_any_base_value,
     is_union,
+    ordered_namedtuple_fields_from_synthetic,
     replace_fallback,
     unite_values,
 )
@@ -2098,18 +2099,10 @@ class Checker:
             or "__new__" in value.method_attributes
         ):
             return None
-        instance_only_names = value.class_attributes.get("%instance_only_annotations")
-        if not (
-            isinstance(instance_only_names, KnownValue)
-            and isinstance(instance_only_names.val, (set, frozenset, tuple, list))
-        ):
-            return None
         ordered_names = [
             name
-            for name in value.class_attributes
-            if name in instance_only_names.val
-            and not name.startswith("%")
-            and not _is_dunder(name)
+            for name in ordered_namedtuple_fields_from_synthetic(value)
+            if not _is_dunder(name)
         ]
         if not ordered_names:
             return None

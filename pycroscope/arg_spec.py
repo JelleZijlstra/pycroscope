@@ -96,6 +96,7 @@ from .value import (
     TypeVarMap,
     TypeVarValue,
     Value,
+    get_namedtuple_field_annotation,
     is_async_iterable,
     is_iterable,
     make_coro_type,
@@ -1096,7 +1097,6 @@ class ArgSpecCache:
         self, obj: type, type_params: Sequence[Value]
     ) -> Signature:
         fields = tuple(getattr(obj, "_fields", ()))
-        annotations = getattr(obj, "__annotations__", {})
         defaults = tuple(getattr(obj.__new__, "__defaults__", ()) or ())
         first_default_idx = len(fields) - len(defaults)
         defaults_by_field = {
@@ -1108,7 +1108,7 @@ class ArgSpecCache:
         field_annotations: dict[str, Value] = {}
         for field in fields:
             annotation = type_from_runtime(
-                annotations.get(field, typing.Any), ctx=self.default_context
+                get_namedtuple_field_annotation(obj, field), ctx=self.default_context
             )
             field_annotations[field] = annotation
             default: Value | None

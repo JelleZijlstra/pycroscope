@@ -291,6 +291,7 @@ from .value import (
     is_union,
     kv_pairs_from_mapping,
     make_coro_type,
+    namedtuple_members_from_value,
     replace_fallback,
     replace_known_sequence_value,
     set_self,
@@ -8941,6 +8942,12 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             error_code=ErrorCode.incompatible_assignment,
         )
 
+    def _maybe_replace_namedtuple_with_tuple_sequence(self, value: Value) -> Value:
+        members = namedtuple_members_from_value(value, self)
+        if members is None:
+            return value
+        return SequenceValue(tuple, members)
+
     def _is_final_member(
         self, class_key: type | str, member_name: str, member_value: Value | None = None
     ) -> bool:
@@ -13215,6 +13222,8 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     ) -> Value:
         value = root_composite.value
         index = index_composite.value
+        value = self._maybe_replace_namedtuple_with_tuple_sequence(value)
+        root_composite = Composite(value, root_composite.varname, root_composite.node)
 
         if isinstance(node.ctx, ast.Store):
             if self.ann_assign_type is not None:

@@ -3560,6 +3560,63 @@ def is_iterable(value: Value, ctx: CanAssignContext) -> CanAssignError | Value:
     return tv_map.get(T, AnyValue(AnySource.generic_argument))
 
 
+def _class_keys_match(left: type | str, right: type | str) -> bool:
+    if left == right:
+        return True
+    if isinstance(left, type) and isinstance(right, str):
+        return f"{left.__module__}.{left.__qualname__}" == right
+    if isinstance(left, str) and isinstance(right, type):
+        return left == f"{right.__module__}.{right.__qualname__}"
+    return False
+
+
+def ordered_namedtuple_fields_from_synthetic(
+    synthetic: SyntheticClassObjectValue,
+) -> tuple[str, ...]:
+    runtime_class_value = synthetic.class_attributes.get("%runtime_class")
+    if (
+        isinstance(runtime_class_value, KnownValue)
+        and isinstance(runtime_class_value.val, type)
+        and is_namedtuple_class(runtime_class_value.val)
+    ):
+        fields_obj = safe_getattr(runtime_class_value.val, "_fields", None)
+        if isinstance(fields_obj, tuple) and all(
+            isinstance(field, str) for field in fields_obj
+        ):
+            return fields_obj
+
+    instance_only = synthetic.class_attributes.get("%instance_only_annotations")
+    default_fields = synthetic.class_attributes.get("%namedtuple_default_fields")
+    allowed_names: set[str] = set()
+    if isinstance(instance_only, KnownValue) and isinstance(
+        instance_only.val, (set, frozenset, tuple, list)
+    ):
+        allowed_names.update(
+            name for name in instance_only.val if isinstance(name, str)
+        )
+    if isinstance(default_fields, KnownValue) and isinstance(
+        default_fields.val, (set, frozenset, tuple, list)
+    ):
+        allowed_names.update(
+            name for name in default_fields.val if isinstance(name, str)
+        )
+    return tuple(
+        name
+        for name in synthetic.class_attributes
+        if not name.startswith("%")
+        and name not in synthetic.method_attributes
+        and (not allowed_names or name in allowed_names)
+    )
+
+
+def get_namedtuple_field_annotation(namedtuple_type: type, field_name: str) -> object:
+    for base in namedtuple_type.__mro__:
+        annotations = safe_getattr(base, "__annotations__", None)
+        if isinstance(annotations, Mapping) and field_name in annotations:
+            return annotations[field_name]
+    return typing.Any
+
+
 def namedtuple_members_from_value(
     value: Value, ctx: CanAssignContext | None = None
 ) -> tuple[tuple[bool, Value], ...] | None:
@@ -3595,37 +3652,6 @@ def namedtuple_members_from_value(
                 substitutions[type_param.typevar] = arg
         return substitutions
 
-    def _ordered_namedtuple_fields(
-        synthetic: SyntheticClassObjectValue,
-    ) -> tuple[str, ...]:
-        runtime_class_value = synthetic.class_attributes.get("%runtime_class")
-        if (
-            isinstance(runtime_class_value, KnownValue)
-            and isinstance(runtime_class_value.val, type)
-            and is_namedtuple_class(runtime_class_value.val)
-        ):
-            fields_obj = safe_getattr(runtime_class_value.val, "_fields", None)
-            if isinstance(fields_obj, tuple) and all(
-                isinstance(field, str) for field in fields_obj
-            ):
-                return fields_obj
-
-        instance_only = synthetic.class_attributes.get("%instance_only_annotations")
-        if isinstance(instance_only, KnownValue) and isinstance(
-            instance_only.val, (set, frozenset, tuple, list)
-        ):
-            instance_only_names = {
-                name for name in instance_only.val if isinstance(name, str)
-            }
-            return tuple(
-                name
-                for name in synthetic.class_attributes
-                if name in instance_only_names
-                and not name.startswith("%")
-                and name not in synthetic.method_attributes
-            )
-        return ()
-
     def _namedtuple_members_for_class(
         class_key: type | str, generic_args: Sequence[Value], seen: set[type | str]
     ) -> tuple[tuple[bool, Value], ...] | None:
@@ -3638,12 +3664,11 @@ def namedtuple_members_from_value(
             fields_obj = safe_getattr(class_key, "_fields", None)
             if not isinstance(fields_obj, tuple):
                 return None
-            annotations = getattr(class_key, "__annotations__", {})
             from .annotations import type_from_runtime
 
             members: list[tuple[bool, Value]] = []
             for field_name in fields_obj:
-                annotation = annotations.get(field_name, typing.Any)
+                annotation = get_namedtuple_field_annotation(class_key, field_name)
                 field_type = type_from_runtime(
                     annotation, visitor=ctx, suppress_errors=True
                 )
@@ -3656,7 +3681,7 @@ def namedtuple_members_from_value(
 
         namedtuple_marker = synthetic.class_attributes.get("%namedtuple")
         if isinstance(namedtuple_marker, KnownValue) and namedtuple_marker.val is True:
-            field_names = _ordered_namedtuple_fields(synthetic)
+            field_names = ordered_namedtuple_fields_from_synthetic(synthetic)
             if not field_names:
                 return None
             return tuple(
@@ -3672,7 +3697,7 @@ def namedtuple_members_from_value(
             return None
         generic_bases = ctx.get_generic_bases(class_key, generic_args)
         for base_typ, base_tv_map in generic_bases.items():
-            if base_typ == class_key:
+            if _class_keys_match(base_typ, class_key):
                 continue
             base_args = []
             for type_param in ctx.get_type_parameters(base_typ):
