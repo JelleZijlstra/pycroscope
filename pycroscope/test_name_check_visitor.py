@@ -4293,6 +4293,22 @@ class TestAnnAssign(TestNameCheckVisitorBase):
             return (x, y)
 
     @assert_passes()
+    def test_parameter_reassignment_uses_parameter_type(self):
+        def capybara(x: int) -> None:
+            assert_type(x, int)
+            x = "x"  # E: incompatible_assignment
+            print(x)
+
+    @assert_passes()
+    def test_parameter_augmented_reassignment_uses_parameter_type(self):
+        from typing import Literal
+
+        def capybara(x: Literal[3, 4, 5]) -> None:
+            assert_type(x, Literal[3, 4, 5])
+            x += 3  # E: incompatible_assignment
+            print(x)
+
+    @assert_passes()
     def test_class_scope(self):
         class Capybara:
             x: int = 0

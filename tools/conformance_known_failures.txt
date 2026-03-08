@@ -36,9 +36,6 @@ protocols_class_objects
 # Never/Any assignability
 specialtypes_never
 
-# Allows reassignment of function parameters to a new type
-literals_semantics
-
 # Fails to reject various weird annotations
 aliases_type_statement
 aliases_implicit

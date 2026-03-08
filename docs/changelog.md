@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Enforce function-parameter annotations on later reassignments, so pycroscope now reports incompatible writes like reassigning `x: int` to `str` or widening `Literal[...]` parameters with `+=`.
 - Restore simple `assert_type()` equivalence checking: pycroscope now compares the inferred type against the type form of the second argument directly, without special-case exact-type reconstruction for recent constructor and annotation patterns.
 - Preserve empty `TypeVarTuple` specializations when converting runtime generic aliases back into types, so checks like `assert_type(x, tuple[str, Array[()]])` continue to understand `Array[()]` instead of collapsing it to bare `Array`.
 - Stop exposing enum instance-only descriptors like `.name` as class attributes on enum types; pycroscope now reports these as undefined on enum classes, matching Python runtime behavior.

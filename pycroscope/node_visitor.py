@@ -378,9 +378,9 @@ class BaseNodeVisitor(ast.NodeVisitor):
         """Runs the check for all files in scope or changed files if we are test-local."""
         if "settings" not in kwargs:
             kwargs["settings"] = cls._get_default_settings()
-        kwargs = cls.prepare_constructor_kwargs(kwargs)
-        files = cls.get_files_to_check(include_tests, **kwargs)
-        all_failures = cls._run_on_files(files, **kwargs)
+        prepared_kwargs = cls.prepare_constructor_kwargs(kwargs)
+        files = cls.get_files_to_check(include_tests, **prepared_kwargs)
+        all_failures = cls._run_on_files(files, **prepared_kwargs)
         if assert_passes:
             assert not all_failures, "".join(
                 failure["message"] for failure in all_failures
@@ -483,9 +483,9 @@ class BaseNodeVisitor(ast.NodeVisitor):
 
     @classmethod
     def _write_json_report(cls, output_file: str, failures: list[Failure]) -> None:
-        failures = [_make_serializable(failure) for failure in failures]
+        serializable_failures = [_make_serializable(failure) for failure in failures]
         with open(output_file, "w") as f:
-            json.dump(failures, f)
+            json.dump(serializable_failures, f)
 
     @classmethod
     def _write_markdown_report(cls, output_file: str, failures: list[Failure]) -> None:
