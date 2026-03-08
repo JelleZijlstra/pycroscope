@@ -8,9 +8,6 @@ generics_self_advanced
 # Fails to reject invalid use of Self
 generics_self_usage
 
-# Incorrect specialization of tuple[()]?
-generics_typevartuple_specialization
-
 # Doesn't detect when you use a TypeVar in the wrong place
 generics_scoping
 generics_syntax_scoping

@@ -707,6 +707,11 @@ class TypeAliasValue(Value):
     def get_fallback_value(self) -> Value:
         return self.get_value()
 
+    def walk_values(self) -> Iterable["Value"]:
+        yield self
+        for arg in self.type_arguments:
+            yield from arg.walk_values()
+
     def substitute_typevars(self, typevars: TypeVarMap) -> "TypeAliasValue":
         if not self.type_arguments:
             return self

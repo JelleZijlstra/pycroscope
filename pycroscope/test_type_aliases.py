@@ -153,6 +153,56 @@ class TestRecursion(TestNameCheckVisitorBase):
         """)
 
     @skip_before((3, 11))
+    def test_typevartuple_alias_unpack_specialization_in_static_fallback(self):
+        self.assert_passes(
+            """
+            from typing import Generic, TypeVar, TypeVarTuple
+
+            from typing_extensions import assert_type
+
+            Ts = TypeVarTuple("Ts")
+            T1 = TypeVar("T1")
+            T2 = TypeVar("T2")
+            T3 = TypeVar("T3")
+
+            class Array(Generic[*Ts]):
+                pass
+
+            NamedArray = tuple[str, Array[*Ts]]
+
+            def check_empty_specialization(
+                int_tuple: tuple[int], named_array: NamedArray[()]
+            ) -> None:
+                assert_type(int_tuple, tuple[int])
+                assert_type(named_array, tuple[str, Array[()]])
+
+            TA7 = tuple[*Ts, T1, T2]
+
+            def func7(a: TA7[*Ts, T1, T2]) -> tuple[tuple[*Ts], T1, T2]:
+                raise NotImplementedError
+
+            TA8 = tuple[T1, *Ts, T2, T3]
+
+            def func8(a: TA8[T1, *Ts, T2, T3]) -> tuple[tuple[*Ts], T1, T2, T3]:
+                raise NotImplementedError
+
+            def has_expected_types(
+                a: TA7[str, bool],
+                b: TA7[str, bool, float],
+                c: TA7[str, bool, float, int],
+                d: TA8[str, bool, float],
+                e: TA8[str, bool, float, int],
+            ) -> None:
+                assert_type(func7(a), tuple[tuple[()], str, bool])
+                assert_type(func7(b), tuple[tuple[str], bool, float])
+                assert_type(func7(c), tuple[tuple[str, bool], float, int])
+                assert_type(func8(d), tuple[tuple[()], str, bool, float])
+                assert_type(func8(e), tuple[tuple[bool], str, float, int])
+            """,
+            run_in_both_module_modes=True,
+        )
+
+    @skip_before((3, 11))
     def test_typevartuple_implicit_alias_validation(self):
         self.assert_passes(
             """
