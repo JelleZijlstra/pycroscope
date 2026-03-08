@@ -15,7 +15,6 @@ from .value import (
     MultiValuedValue,
     NewTypeValue,
     SequenceValue,
-    SubclassValue,
     TypedDictEntry,
     TypedDictValue,
     TypedValue,
@@ -605,13 +604,13 @@ class TestAnnotations(TestNameCheckVisitorBase):
             from typing import List
 
             def f(x: int, y: List[str]):
-                assert_is_value(x, TypedValue(int))
-                assert_is_value(y, GenericValue(list, [TypedValue(str)]))
+                assert_type(x, int)
+                assert_type(y, list[str])
             """)
 
     @assert_passes()
     def test_final(self):
-        from typing_extensions import Final
+        from typing_extensions import Final, Literal
 
         x: Final = 3
 
@@ -620,8 +619,8 @@ class TestAnnotations(TestNameCheckVisitorBase):
 
         def capybara():
             y: Final = 4
-            assert_is_value(x, KnownValue(3))
-            assert_is_value(y, KnownValue(4))
+            assert_type(x, Literal[3])
+            assert_type(y, Literal[4])
 
             z: Final[int] = 4
             assert_type(z, int)
@@ -633,14 +632,14 @@ class TestAnnotations(TestNameCheckVisitorBase):
         from typing import Type
 
         def capybara(x: Type[str], y: "Type[int]"):
-            assert_is_value(x, SubclassValue(TypedValue(str)))
-            assert_is_value(y, SubclassValue(TypedValue(int)))
+            assert_type(x, type[str])
+            assert_type(y, type[int])
 
     @assert_passes()
     def test_lowercase_type(self):
         def capybara(x: type[str], y: "type[int]"):
-            assert_is_value(x, SubclassValue(TypedValue(str)))
-            assert_is_value(y, SubclassValue(TypedValue(int)))
+            assert_type(x, type[str])
+            assert_type(y, type[int])
 
     @assert_passes()
     def test_type_none(self):
@@ -662,14 +661,12 @@ class TestAnnotations(TestNameCheckVisitorBase):
                 self.q: Queue[I] = Queue()
 
         def f(x: Queue[I]) -> None:
-            assert_is_value(x, GenericValue(Queue, [TypedValue(I)]))
+            assert_type(x, Queue[I])
 
         def capybara(x: list[int], y: tuple[int, str], z: tuple[int, ...]) -> None:
             assert_type(x, list[int])
-            assert_is_value(
-                y, make_simple_sequence(tuple, [TypedValue(int), TypedValue(str)])
-            )
-            assert_is_value(z, GenericValue(tuple, [TypedValue(int)]))
+            assert_type(y, tuple[int, str])
+            assert_type(z, tuple[int, ...])
 
     def test_pep604(self):
         self.assert_passes("""
@@ -861,6 +858,8 @@ class TestCallable(TestNameCheckVisitorBase):
     def test(self):
         from typing import Callable, Sequence, TypeVar
 
+        from typing_extensions import Literal
+
         T = TypeVar("T")
 
         def capybara(
@@ -873,13 +872,15 @@ class TestCallable(TestNameCheckVisitorBase):
             assert_type(x(), int)
             assert_type(x(arg=3), int)
             assert_type(y(1), str)
-            assert_is_value(id_func(1), KnownValue(1))
+            assert_type(id_func(1), Literal[1])
             assert_type(takes_seq([int("1")]), int)
             assert_type(two_args(1, "x"), bytes)
 
     @assert_passes()
     def test_stringified(self):
         from typing import Callable, Sequence, TypeVar
+
+        from typing_extensions import Literal
 
         T = TypeVar("T")
 
@@ -893,7 +894,7 @@ class TestCallable(TestNameCheckVisitorBase):
             assert_type(x(), int)
             assert_type(x(arg=3), int)
             assert_type(y(1), str)
-            assert_is_value(id_func(1), KnownValue(1))
+            assert_type(id_func(1), Literal[1])
             assert_type(takes_seq([int("1")]), int)
             assert_type(two_args(1, "x"), bytes)
 
