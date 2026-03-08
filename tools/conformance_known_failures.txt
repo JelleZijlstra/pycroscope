@@ -2,9 +2,6 @@
 # If a listed case starts passing, or an unlisted case starts failing,
 # the conformance CI workflow should fail and this file should be updated.
 
-# Bad unimportable module handling
-generics_self_advanced
-
 # Fails to reject invalid use of Self
 generics_self_usage
 
@@ -46,6 +43,7 @@ typeddicts_type_consistency
 
 # pycroscope uses Literal[] over float
 namedtuples_define_class
+namedtuples_usage
 
 # float special-case promotions still leak into constructor assert_type() checks
 constructors_call_init

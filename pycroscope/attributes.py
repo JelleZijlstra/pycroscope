@@ -102,6 +102,7 @@ _ENUM_INSTANCE_DESCRIPTOR_TYPES = tuple(
     )
     if descriptor_type is not None
 )
+_SYNTHETIC_PROPERTY_GETTER_PREFIX = "%property_getter:"
 
 
 @dataclass
@@ -116,6 +117,9 @@ class AttrContext:
     @property
     def root_value(self) -> Value:
         return self.root_composite.value
+
+    def get_self_value(self) -> Value:
+        return self.root_value
 
     def record_usage(self, obj: Any, val: Value) -> None:
         pass
@@ -207,11 +211,11 @@ def get_attribute(ctx: AttrContext) -> Value:
     elif isinstance(root_value, SubclassValue):
         if isinstance(root_value.typ, TypedValue):
             if isinstance(root_value.typ.typ, str):
-                # TODO handle synthetic types
-                return AnyValue(AnySource.inference)
-            attribute_value = _get_attribute_from_subclass(
-                root_value.typ.typ, root_value.typ, ctx
-            )
+                attribute_value = AnyValue(AnySource.inference)
+            else:
+                attribute_value = _get_attribute_from_subclass(
+                    root_value.typ.typ, root_value.typ, ctx
+                )
         elif isinstance(root_value.typ, AnyValue):
             attribute_value = AnyValue(AnySource.from_another)
         else:
@@ -339,7 +343,7 @@ def _get_attribute_from_subclass(
         result = _unwrap_value_from_subclass(result, ctx)
     if isinstance(self_value, GenericValue):
         result = _substitute_typevars(typ, self_value.args, result, provider, ctx)
-    result = set_self(result, self_value)
+    result = set_self(result, ctx.get_self_value())
     ctx.record_usage(typ, result)
     return result
 
@@ -447,7 +451,9 @@ def _get_attribute_from_synthetic_type(
         return TypedValue(dict)
     synthetic_class = ctx.get_synthetic_class(fq_name)
     if synthetic_class is not None:
-        result = _get_direct_attribute_from_synthetic_class(synthetic_class, ctx.attr)
+        result = _get_direct_attribute_from_synthetic_instance(
+            synthetic_class, ctx.attr
+        )
         if result is not UNINITIALIZED_VALUE:
             result = _maybe_resolve_synthetic_dataclass_descriptor_attribute(
                 synthetic_class, ctx.attr, result, ctx, on_class=False
@@ -457,6 +463,7 @@ def _get_attribute_from_synthetic_type(
                 synthetic_class, ctx, on_class=False
             )
         if result is not UNINITIALIZED_VALUE:
+            result = _maybe_resolve_synthetic_property_attribute(result, ctx)
             if _is_synthetic_method_attribute(synthetic_class, ctx.attr) and (
                 not ctx.should_include_synthetic_methods()
             ):
@@ -464,7 +471,7 @@ def _get_attribute_from_synthetic_type(
         if result is not UNINITIALIZED_VALUE:
             result = ctx.bind_synthetic_instance_attribute(ctx.attr, result)
             result = _substitute_typevars(fq_name, generic_args, result, fq_name, ctx)
-            return set_self(result, ctx.root_value)
+            return set_self(result, ctx.get_self_value())
     result, provider = ctx.get_attribute_from_typeshed_recursively(
         fq_name, on_class=False
     )
@@ -473,7 +480,8 @@ def _get_attribute_from_synthetic_type(
             fq_name, generic_args, ctx
         )
     result = _substitute_typevars(fq_name, generic_args, result, provider, ctx)
-    result = set_self(result, ctx.root_value)
+    result = _maybe_resolve_synthetic_property_attribute(result, ctx)
+    result = set_self(result, ctx.get_self_value())
     return result
 
 
@@ -487,7 +495,7 @@ def _get_attribute_from_synthetic_type_bases(
         if isinstance(base_typ, str):
             synthetic_class = ctx.get_synthetic_class(base_typ)
             if synthetic_class is not None:
-                result = _get_direct_attribute_from_synthetic_class(
+                result = _get_direct_attribute_from_synthetic_instance(
                     synthetic_class, ctx.attr
                 )
                 if result is not UNINITIALIZED_VALUE:
@@ -574,11 +582,7 @@ def _get_attribute_from_synthetic_class_inner(
 def _get_direct_attribute_from_synthetic_class(
     self_value: SyntheticClassObjectValue, attr_name: str
 ) -> Value:
-    selected_name = attr_name
-    if selected_name not in self_value.class_attributes:
-        mangled = _maybe_mangle_private_name(selected_name, self_value.name)
-        if mangled is not None and mangled in self_value.class_attributes:
-            selected_name = mangled
+    selected_name = _select_synthetic_attribute_name(self_value, attr_name)
     if _is_synthetic_initvar_attribute(self_value, selected_name):
         return UNINITIALIZED_VALUE
     if selected_name not in self_value.class_attributes:
@@ -592,6 +596,27 @@ def _get_direct_attribute_from_synthetic_class(
     if _should_deliteralize_synthetic_enum_attr(self_value, selected_name):
         return _deliteralize_value(result)
     return result
+
+
+def _get_direct_attribute_from_synthetic_instance(
+    self_value: SyntheticClassObjectValue, attr_name: str
+) -> Value:
+    selected_name = _select_synthetic_attribute_name(self_value, attr_name)
+    getter_key = f"{_SYNTHETIC_PROPERTY_GETTER_PREFIX}{selected_name}"
+    if getter_key in self_value.class_attributes:
+        return self_value.class_attributes[getter_key]
+    return _get_direct_attribute_from_synthetic_class(self_value, attr_name)
+
+
+def _select_synthetic_attribute_name(
+    self_value: SyntheticClassObjectValue, attr_name: str
+) -> str:
+    selected_name = attr_name
+    if selected_name not in self_value.class_attributes:
+        mangled = _maybe_mangle_private_name(selected_name, self_value.name)
+        if mangled is not None and mangled in self_value.class_attributes:
+            selected_name = mangled
+    return selected_name
 
 
 def _is_synthetic_method_attribute(
@@ -986,7 +1011,7 @@ def _maybe_resolve_synthetic_dataclass_descriptor_attribute(
     ):
         return value
     descriptor_get_type = _synthetic_descriptor_get_type(
-        value, on_class=on_class, instance_value=ctx.root_value, ctx=ctx
+        value, on_class=on_class, instance_value=ctx.get_self_value(), ctx=ctx
     )
     if descriptor_get_type is not None:
         return descriptor_get_type
@@ -996,6 +1021,19 @@ def _maybe_resolve_synthetic_dataclass_descriptor_attribute(
             return annotate_value(TypedValue(type(inner_value.val)), value.metadata)
     if not on_class and isinstance(value, KnownValue):
         return TypedValue(type(value.val))
+    return value
+
+
+def _maybe_resolve_synthetic_property_attribute(
+    value: Value, ctx: AttrContext
+) -> Value:
+    if value is UNINITIALIZED_VALUE:
+        return value
+    candidate = replace_fallback(value)
+    if isinstance(candidate, AnnotatedValue):
+        candidate = replace_fallback(candidate.value)
+    if isinstance(candidate, KnownValue) and isinstance(candidate.val, property):
+        return ctx.get_property_type_from_argspec(candidate.val)
     return value
 
 
@@ -1190,18 +1228,22 @@ def _get_attribute_from_synthetic_base(
         isinstance(base, PartialValue)
         and base.operation is PartialValueOperation.SUBSCRIPT
     ):
-        root = replace_fallback(base.root)
-        members = tuple(base.members)
-        if isinstance(root, SyntheticClassObjectValue):
-            class_type = root.class_type
-            if isinstance(class_type, TypedValue) and isinstance(
-                class_type.typ, (type, str)
-            ):
-                base = GenericValue(class_type.typ, members)
-        elif isinstance(root, KnownValue) and isinstance(root.val, type):
-            base = GenericValue(root.val, members)
-        elif isinstance(root, TypedValue) and isinstance(root.typ, (type, str)):
-            base = GenericValue(root.typ, members)
+        runtime_value = replace_fallback(base.runtime_value)
+        if isinstance(runtime_value, GenericValue):
+            base = runtime_value
+        else:
+            root = replace_fallback(base.root)
+            members = tuple(base.members)
+            if isinstance(root, SyntheticClassObjectValue):
+                class_type = root.class_type
+                if isinstance(class_type, TypedValue) and isinstance(
+                    class_type.typ, (type, str)
+                ):
+                    base = GenericValue(class_type.typ, members)
+            elif isinstance(root, KnownValue) and isinstance(root.val, type):
+                base = GenericValue(root.val, members)
+            elif isinstance(root, TypedValue) and isinstance(root.typ, (type, str)):
+                base = GenericValue(root.typ, members)
 
     base = replace_fallback(base)
 
@@ -1314,7 +1356,7 @@ def _get_attribute_from_typed(
                 synthetic_class, "__hash__"
             )
             if synthetic_hash is not UNINITIALIZED_VALUE:
-                return set_self(synthetic_hash, ctx.root_value)
+                return set_self(synthetic_hash, ctx.get_self_value())
         # Preserve explicit __hash__ = None from runtime classes. The generic
         # class-attribute unwrapping path widens None to Any, which hides
         # unhashable types in assignability checks.
@@ -1330,7 +1372,7 @@ def _get_attribute_from_typed(
             if "__hash__" not in base_dict:
                 continue
             if base_dict["__hash__"] is None:
-                return set_self(KnownValue(None), ctx.root_value)
+                return set_self(KnownValue(None), ctx.get_self_value())
             break
 
     result, provider, should_unwrap = _get_attribute_from_mro(typ, ctx, on_class=False)
@@ -1338,7 +1380,7 @@ def _get_attribute_from_typed(
     if should_unwrap:
         result = _unwrap_value_from_typed(result, typ, ctx)
     ctx.record_usage(typ, result)
-    result = set_self(result, ctx.root_value)
+    result = set_self(result, ctx.get_self_value())
     if ctx.attr in {"value", "_value_"} and safe_issubclass(typ, Enum):
         enum_value_type = _enum_member_value_type(typ)
         if enum_value_type is not None:
@@ -1549,7 +1591,7 @@ def _get_attribute_from_known(obj: object, ctx: AttrContext) -> Value:
         )
         and isinstance(ctx.root_value, AnnotatedValue)
     ):
-        result = set_self(result, ctx.root_value)
+        result = set_self(result, ctx.get_self_value())
     elif safe_isinstance(obj, type):
         result = set_self(result, TypedValue(obj))
     if isinstance(obj, (types.ModuleType, type)):

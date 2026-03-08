@@ -1,6 +1,7 @@
 import typing
 from collections.abc import Container, Iterable, Sequence
 from dataclasses import dataclass
+from functools import lru_cache
 from typing import Literal
 
 import typing_extensions
@@ -26,7 +27,6 @@ from pycroscope.value import (
     TypeVarValue,
     UpperBound,
     Value,
-    get_typevar_variance,
     replace_known_sequence_value,
 )
 
@@ -220,6 +220,13 @@ def extract_type_params(value: Value) -> Iterable[TypeVarLike]:
                 yield input_sig.param_spec
 
 
+@lru_cache(maxsize=1)
+def _wrap_type_param_context() -> object:
+    from pycroscope.checker import Checker
+
+    return Checker().arg_spec_cache.default_context
+
+
 def wrap_type_param(type_param: TypeVarLike) -> Value:
     """Wrap a type parameter in the corresponding Value representation."""
     if is_instance_of_typing_name(type_param, "ParamSpec"):
@@ -228,7 +235,9 @@ def wrap_type_param(type_param: TypeVarLike) -> Value:
     elif is_instance_of_typing_name(
         type_param, "TypeVarTuple"
     ) or is_instance_of_typing_name(type_param, "TypeVar"):
-        return TypeVarValue(type_param, variance=get_typevar_variance(type_param))
+        from pycroscope.annotations import make_type_var_value
+
+        return make_type_var_value(type_param, ctx=_wrap_type_param_context())
     else:
         raise TypeError(f"Unsupported type parameter: {type_param!r}")
 

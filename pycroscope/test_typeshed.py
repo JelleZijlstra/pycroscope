@@ -41,6 +41,7 @@ from .value import (
     KVPair,
     NewTypeValue,
     SequenceValue,
+    SubclassValue,
     SyntheticClassObjectValue,
     TypedDictEntry,
     TypedDictValue,
@@ -887,6 +888,28 @@ class TestCheckerGenericBases:
             SyntheticClassObjectValue("Base", TypedValue(base)),
         )
         assert synthetic.generic_bases == {child: {}, base: {}}
+
+    def test_register_synthetic_type_bases_handles_subclass_generic_base(self):
+        checker = Checker()
+        base = "test.Base"
+        child = "test.Child"
+        checker.register_synthetic_type_bases(
+            base, [], declared_type_params=[TypeVarValue(T)]
+        )
+        checker.register_synthetic_type_bases(
+            child, [SubclassValue(GenericValue(base, [TypedValue(int)]))]
+        )
+        assert checker.get_generic_bases(child) == {
+            child: {},
+            base: {T: TypedValue(int)},
+        }
+
+    def test_make_type_object_includes_subclass_synthetic_base(self):
+        checker = Checker()
+        base = "test.Base"
+        child = "test.Child"
+        checker.register_synthetic_type_bases(child, [SubclassValue(TypedValue(base))])
+        assert base in checker.make_type_object(child).base_classes
 
 
 class TestAttribute:

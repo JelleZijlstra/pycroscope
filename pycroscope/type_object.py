@@ -952,6 +952,22 @@ def _is_readonly_instance_member(
             return True
 
     synthetic = _get_synthetic_class_for_key(class_key, ctx)
+    if synthetic is not None:
+        namedtuple_marker = synthetic.class_attributes.get("%namedtuple")
+        fields = synthetic.class_attributes.get("%instance_only_annotations")
+        if isinstance(namedtuple_marker, KnownValue) and namedtuple_marker.val is True:
+            if (
+                isinstance(fields, KnownValue)
+                and isinstance(fields.val, (set, frozenset, tuple, list))
+                and member in fields.val
+            ):
+                return True
+            if (
+                member in synthetic.class_attributes
+                and not member.startswith("%")
+                and member not in synthetic.method_attributes
+            ):
+                return True
     if synthetic is not None and synthetic.dataclass_frozen is True:
         return True
     return False
