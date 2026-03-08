@@ -32,6 +32,7 @@ from collections.abc import Callable, Container, Generator, Iterable, Mapping, S
 from contextlib import AbstractContextManager
 from dataclasses import dataclass, replace
 from dataclasses import field as dataclass_field
+from functools import lru_cache
 from itertools import chain
 from pathlib import Path
 from types import GenericAlias
@@ -75,6 +76,7 @@ from .analysis_lib import (
 from .annotated_types import Ge, Gt, Le, Lt
 from .annotations import (
     AnnotationExpr,
+    Context,
     Qualifier,
     SyntheticEvaluator,
     annotation_expr_from_annotations,
@@ -370,6 +372,15 @@ ExceptionValue = TypedValue(BaseException) | SubclassValue(TypedValue(BaseExcept
 ExceptionOrNone = ExceptionValue | KnownNone
 
 
+def _runtime_type_generic_alias(typ: type) -> str:
+    return f"{typ.__module__}.{typ.__qualname__}"
+
+
+@lru_cache(maxsize=1)
+def _runtime_type_param_default_context() -> Context:
+    return Checker().arg_spec_cache.default_context
+
+
 class _SupportsDescriptorGet(Protocol):
     def __get__(
         self, instance: object, owner: type[object] | None = None, /
@@ -580,6 +591,7 @@ class _AttrContext(CheckerAttrContext):
     node: ast.AST | None
     ignore_none: bool = False
     record_reads: bool = True
+    self_value: Value | None = None
 
     # Needs to be implemented explicitly to work around Cython limitations
     def __init__(
@@ -594,6 +606,7 @@ class _AttrContext(CheckerAttrContext):
         skip_unwrap: bool = False,
         prefer_typeshed: bool = False,
         record_reads: bool = True,
+        self_value: Value | None = None,
     ) -> None:
         super().__init__(
             root_composite,
@@ -608,6 +621,7 @@ class _AttrContext(CheckerAttrContext):
         self.visitor = visitor
         self.ignore_none = ignore_none
         self.record_reads = record_reads
+        self.self_value = self_value
 
     def record_usage(self, obj: object, val: Value) -> None:
         self.visitor._maybe_record_usage(obj, self.attr, val)
@@ -617,7 +631,19 @@ class _AttrContext(CheckerAttrContext):
             self.visitor._record_type_attr_read(obj, self.attr, self.node)
 
     def get_property_type_from_argspec(self, obj: property) -> Value:
-        return self.visitor.resolve_property(obj, self.root_composite, self.node)
+        self_value = self.get_self_value()
+        if self_value == self.root_composite.value:
+            root_composite = self.root_composite
+        else:
+            root_composite = Composite(
+                self_value, self.root_composite.varname, self.root_composite.node
+            )
+        return self.visitor.resolve_property(obj, root_composite, self.node)
+
+    def get_self_value(self) -> Value:
+        if self.self_value is not None:
+            return self.self_value
+        return self.root_composite.value
 
     def should_ignore_none_attributes(self) -> bool:
         return self.ignore_none
@@ -735,6 +761,7 @@ class _AttrContext(CheckerAttrContext):
             skip_unwrap=False,
             prefer_typeshed=False,
             record_reads=self.record_reads,
+            self_value=self.self_value,
         )
 
 
@@ -2120,8 +2147,12 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     if isinstance(existing, KnownValue) and isinstance(
                         value, GenericValue
                     ):
-                        if isinstance(value.typ, type) and isinstance(
-                            existing.val, value.typ
+                        if (
+                            isinstance(value.typ, type)
+                            and isinstance(existing.val, value.typ)
+                        ) or (
+                            isinstance(value.typ, str)
+                            and stringify_object(type(existing.val)) == value.typ
                         ):
                             current_scope.variables[varname] = value
                             return value, EMPTY_ORIGIN
@@ -2354,6 +2385,15 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     def _is_classvar_member(self, class_key: type | str, attr_name: str) -> bool:
         return attr_name in self._classvar_names_for_class_key(class_key, set())
 
+    def _class_keys_match(self, left: type | str, right: type | str) -> bool:
+        if left == right:
+            return True
+        if isinstance(left, type) and isinstance(right, str):
+            return _runtime_type_generic_alias(left) == right
+        if isinstance(left, str) and isinstance(right, type):
+            return left == _runtime_type_generic_alias(right)
+        return False
+
     def _is_direct_classvar_member(self, class_key: type | str, attr_name: str) -> bool:
         synthetic_class: SyntheticClassObjectValue | None = None
         if isinstance(class_key, type):
@@ -2366,6 +2406,26 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             return True
         if isinstance(class_key, type):
             return attr_name in self._runtime_classvar_names_for_class(class_key)
+        return False
+
+    def _is_direct_instance_only_member(
+        self, class_key: type | str, attr_name: str
+    ) -> bool:
+        synthetic_class: SyntheticClassObjectValue | None = None
+        if isinstance(class_key, type):
+            synthetic_class = self.checker.get_synthetic_class(class_key)
+        elif isinstance(class_key, str):
+            synthetic_class = self._synthetic_classes_by_name.get(class_key)
+        if (
+            synthetic_class is not None
+            and attr_name
+            in _instance_only_names_from_mapping(synthetic_class.class_attributes)
+        ):
+            return True
+        if isinstance(class_key, type):
+            return attr_name in self._runtime_instance_only_annotation_names_for_class(
+                class_key
+            )
         return False
 
     def _classvar_names_for_class_key(
@@ -2540,6 +2600,92 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 continue
             names.add(name)
         return names
+
+    def _get_instance_only_annotation_value_for_class_key(
+        self,
+        class_key: type | str,
+        attr_name: str,
+        seen: set[type | str] | None = None,
+        substitutions: TypeVarMap | None = None,
+    ) -> Value:
+        if seen is None:
+            seen = set()
+        if class_key in seen:
+            return UNINITIALIZED_VALUE
+        seen.add(class_key)
+
+        def _apply_substitutions(value: Value) -> Value:
+            if substitutions is None:
+                return value
+            return value.substitute_typevars(substitutions)
+
+        def _merged_substitutions(tv_map: TypeVarMap) -> dict[TypeVarLike, Value]:
+            merged = dict(substitutions or {})
+            for typevar, value in tv_map.items():
+                merged[typevar] = value.substitute_typevars(merged)
+            return merged
+
+        synthetic_class: SyntheticClassObjectValue | None = None
+        if isinstance(class_key, type):
+            synthetic_class = self.checker.get_synthetic_class(class_key)
+        elif isinstance(class_key, str):
+            synthetic_class = self._synthetic_classes_by_name.get(class_key)
+        if synthetic_class is not None:
+            candidate_names = self._property_attr_candidates(
+                attr_name, synthetic_class.name
+            )
+            instance_only_names = _instance_only_names_from_mapping(
+                synthetic_class.class_attributes
+            )
+            for candidate in candidate_names:
+                if candidate not in instance_only_names:
+                    continue
+                value = synthetic_class.class_attributes.get(
+                    candidate, UNINITIALIZED_VALUE
+                )
+                if value is not UNINITIALIZED_VALUE:
+                    return _apply_substitutions(value)
+
+        if isinstance(class_key, type):
+            annotations = safe_getattr(class_key, "__annotations__", None)
+            if isinstance(annotations, Mapping) and attr_name in annotations:
+                class_dict = safe_getattr(class_key, "__dict__", None)
+                if not isinstance(class_dict, Mapping) or attr_name not in class_dict:
+                    attr_expr = annotation_expr_from_annotations(
+                        annotations, attr_name, ctx=cast(Context, self)
+                    )
+                    if attr_expr is not None:
+                        attr_type, qualifiers = attr_expr.maybe_unqualify(
+                            {Qualifier.ClassVar, Qualifier.Final, Qualifier.InitVar}
+                        )
+                        if (
+                            attr_type is not None
+                            and Qualifier.ClassVar not in qualifiers
+                            and Qualifier.InitVar not in qualifiers
+                        ):
+                            return _apply_substitutions(attr_type)
+
+        for base_class, tv_map in self.checker.get_generic_bases(class_key).items():
+            if self._class_keys_match(base_class, class_key):
+                continue
+            value = self._get_instance_only_annotation_value_for_class_key(
+                base_class, attr_name, seen, _merged_substitutions(tv_map)
+            )
+            if value is not UNINITIALIZED_VALUE:
+                return value
+
+        if synthetic_class is not None:
+            for base in synthetic_class.base_classes:
+                base_key = self._base_class_key_from_value(base)
+                if base_key is None or self._class_keys_match(base_key, class_key):
+                    continue
+                value = self._get_instance_only_annotation_value_for_class_key(
+                    base_key, attr_name, seen, substitutions
+                )
+                if value is not UNINITIALIZED_VALUE:
+                    return value
+
+        return UNINITIALIZED_VALUE
 
     def _contains_classvar_type_parameter(self, value: Value) -> bool:
         for subval in value.walk_values():
@@ -2782,7 +2928,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                             root_value = TypedValue(base_class)
                         else:
                             continue
-                        if base_class == current_class:
+                        if self._class_keys_match(base_class, current_class):
                             continue
                         ctx = _AttrContext(
                             Composite(root_value),
@@ -2797,7 +2943,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                         if base_value is not UNINITIALIZED_VALUE:
                             yield base_class, base_value
         for base_class in self.checker.get_generic_bases(current_class):
-            if base_class == current_class:
+            if self._class_keys_match(base_class, current_class):
                 continue
             if isinstance(base_class, str):
                 base_class_value: Value = self._synthetic_classes_by_name.get(
@@ -2829,6 +2975,8 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             # Dataclasses synthesize the expected __post_init__ contract from InitVar
             # fields, so generic override rules are too strict here.
             return
+        if varname in {"__init__", "__new__", "__hash__", "__init_subclass__"}:
+            return
         if varname in self.options.get_value_for(IgnoredForIncompatibleOverride):
             return
         if varname.startswith("__") and not varname.endswith("__"):
@@ -2856,7 +3004,10 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         for base_class, base_value in base_attributes:
             if is_annotated_assignment:
                 base_is_classvar = self._is_direct_classvar_member(base_class, varname)
-                if child_is_classvar and not base_is_classvar:
+                base_is_instance_only = self._is_direct_instance_only_member(
+                    base_class, varname
+                )
+                if child_is_classvar and not base_is_classvar and base_is_instance_only:
                     self._show_error_if_checking(
                         node,
                         f"Class variable {varname} cannot override instance variable from"
@@ -2950,6 +3101,13 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 if callable_result is None:
                     return {}
                 return callable_result
+        if isinstance(child_value, KnownValue) and isinstance(
+            child_value.val, property
+        ):
+            assert self.current_class is not None
+            child_value = self.resolve_property(
+                child_value.val, Composite(TypedValue(self.current_class)), node
+            )
         if isinstance(base_value, CallableValue):
             callable_result = self._can_assign_to_base_callable(base_value, child_value)
             if callable_result is not None:
@@ -3286,6 +3444,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 node, base_values, keyword_values
             )
             fallback_runtime_class: type | None = None
+            fallback_is_namedtuple = False
             synthetic_enum_runtime_class: type | None = None
             if (
                 class_obj is None
@@ -3300,6 +3459,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     fallback_runtime_class = (
                         self._make_namedtuple_related_fallback_class(node, base_values)
                     )
+                    fallback_is_namedtuple = fallback_runtime_class is not None
                 if fallback_runtime_class is None:
                     fallback_runtime_class = self._make_enum_related_fallback_class(
                         node, base_values
@@ -3314,6 +3474,17 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             class_scope_object: type | str | None = class_obj
             dataclass_metadata_class: SyntheticClassObjectValue | None = None
             dataclass_check_class: SyntheticClassObjectValue | None = None
+            is_namedtuple_synthetic = any(
+                _is_namedtuple_like_base_value(base_value) for base_value in base_values
+            )
+            namedtuple_default_fields = frozenset(
+                statement.target.id
+                for statement in node.body
+                if isinstance(statement, ast.AnnAssign)
+                and isinstance(statement.target, ast.Name)
+                and statement.simple
+                and statement.value is not None
+            )
             synthetic_base_values = tuple(
                 self._base_values_for_generic_analysis(node, base_values)
             ) or (KnownValue(object),)
@@ -3345,6 +3516,12 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                         else None
                     ),
                 )
+                if is_namedtuple_synthetic:
+                    synthetic_class.class_attributes["%namedtuple"] = KnownValue(True)
+                    if namedtuple_default_fields:
+                        synthetic_class.class_attributes[
+                            "%namedtuple_default_fields"
+                        ] = KnownValue(namedtuple_default_fields)
                 if dataclass_transform_info is not None:
                     synthetic_class.class_attributes["%dataclass_transform"] = (
                         KnownValue(True)
@@ -3521,6 +3698,41 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     )
                 if should_use_recovered_type_params:
                     effective_type_param_values = recovered_type_param_values
+            annotation_type_param_values = (
+                self._type_params_from_base_annotations_for_default_rules(node.bases)
+            )
+
+            def _merge_with_annotation_type_params(
+                type_params: Sequence[TypeVarValue],
+            ) -> Sequence[TypeVarValue]:
+                if not annotation_type_param_values:
+                    return type_params
+                by_identity = {
+                    type_param.typevar: type_param for type_param in type_params
+                }
+                merged = []
+                for annotation_type_param in annotation_type_param_values:
+                    existing = by_identity.get(annotation_type_param.typevar)
+                    if existing is None:
+                        merged.append(annotation_type_param)
+                    else:
+                        merged.append(
+                            replace(
+                                annotation_type_param,
+                                typevar=existing.typevar,
+                                variance=existing.variance,
+                            )
+                        )
+                seen = {type_param.typevar for type_param in merged}
+                for type_param in type_params:
+                    if type_param.typevar in seen:
+                        continue
+                    merged.append(type_param)
+                return merged
+
+            effective_type_param_values = _merge_with_annotation_type_params(
+                effective_type_param_values
+            )
             if (
                 not type_param_values
                 and self.module is None
@@ -3554,7 +3766,8 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 if runtime_type_params:
                     effective_type_param_values = runtime_type_params
             registered_type_param_values = self._align_type_params_with_runtime_class(
-                runtime_class_for_type_params, effective_type_param_values
+                runtime_class_for_type_params,
+                _merge_with_annotation_type_params(effective_type_param_values),
             )
             has_explicit_constructor = any(
                 isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef))
@@ -3606,14 +3819,16 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             method_type_params = (
                 type_param_values
                 if type_param_values
-                else self._type_params_from_base_values_for_methods(base_values)
+                else _merge_with_annotation_type_params(
+                    self._type_params_from_base_values_for_methods(base_values)
+                )
             )
             if (
                 not type_param_values
                 and self.module is None
                 and analyzed_base_values is not base_values
             ):
-                method_type_params = (
+                method_type_params = _merge_with_annotation_type_params(
                     self._order_type_params_by_base_annotation_appearance(
                         node.bases,
                         self._type_params_from_base_values_for_methods(
@@ -3622,11 +3837,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     )
                 )
             if not method_type_params and self.module is None:
-                method_type_params = (
-                    self._type_params_from_base_annotations_for_default_rules(
-                        node.bases
-                    )
-                )
+                method_type_params = annotation_type_param_values
             if (
                 not method_type_params
                 and effective_type_param_values
@@ -3728,12 +3939,30 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     if type_param_values
                     else effective_type_param_values
                 )
-                if not declared_type_params:
-                    declared_type_params = (
-                        self._type_params_from_base_annotations_for_default_rules(
-                            node.bases
-                        )
+                annotation_declared_type_params = (
+                    self._type_params_from_base_annotations_for_default_rules(
+                        node.bases
                     )
+                )
+                if annotation_declared_type_params:
+                    by_identity = {
+                        type_param.typevar: type_param
+                        for type_param in declared_type_params
+                    }
+                    declared_type_params = [
+                        (
+                            replace(
+                                type_param,
+                                typevar=by_identity[type_param.typevar].typevar,
+                                variance=by_identity[type_param.typevar].variance,
+                            )
+                            if type_param.typevar in by_identity
+                            else type_param
+                        )
+                        for type_param in annotation_declared_type_params
+                    ]
+                elif not declared_type_params:
+                    declared_type_params = annotation_declared_type_params
                 self._check_class_type_param_default_rules(node, declared_type_params)
                 self._check_class_base_type_param_variances(
                     node, declared_type_params, base_values, class_scope_object
@@ -3780,6 +4009,23 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     # references captured during class analysis (including bases
                     # of later synthetic classes) see the enriched attributes.
                     synthetic_class.class_attributes.update(class_attributes)
+                    if is_namedtuple_synthetic:
+                        synthetic_class.class_attributes["%namedtuple"] = KnownValue(
+                            True
+                        )
+                        if namedtuple_default_fields:
+                            synthetic_class.class_attributes[
+                                "%namedtuple_default_fields"
+                            ] = KnownValue(namedtuple_default_fields)
+                        else:
+                            synthetic_class.class_attributes.pop(
+                                "%namedtuple_default_fields", None
+                            )
+                    else:
+                        synthetic_class.class_attributes.pop("%namedtuple", None)
+                        synthetic_class.class_attributes.pop(
+                            "%namedtuple_default_fields", None
+                        )
                     if self_returning_classmethods:
                         synthetic_class.class_attributes["%self_classmethods"] = (
                             KnownValue(frozenset(self_returning_classmethods))
@@ -3887,6 +4133,16 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 )
                 self._check_dataclass_post_init_signature(node, dataclass_check_class)
         value_to_store: Value | None = value
+        if (
+            self._is_checking()
+            and fallback_is_namedtuple
+            and isinstance(class_obj, type)
+        ):
+            synthetic_namedtuple = self.checker.get_synthetic_class(class_obj)
+            if synthetic_namedtuple is not None and self.checker.get_type_parameters(
+                class_obj
+            ):
+                value_to_store = synthetic_namedtuple
         if (
             class_obj is None
             and self._is_collecting()
@@ -4113,6 +4369,10 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         for base_node, base_value in zip(node.bases, base_values):
             if _is_namedtuple_marker_base(base_value):
                 has_namedtuple_marker_base = True
+                continue
+            if has_namedtuple_marker_base and self._is_namedtuple_generic_base(
+                base_value
+            ):
                 continue
             base = replace_fallback(base_value)
             if isinstance(base, KnownValue):
@@ -6147,15 +6407,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             aligned.append(replace(type_param, typevar=runtime_type_param))
         return aligned
 
-    def _type_param_has_default(self, type_param: TypeVarValue) -> bool:
-        if type_param.default is not None:
-            return True
-        runtime_default = safe_getattr(type_param.typevar, "__default__", NoDefault)
-        return runtime_default is not NoDefault
-
     def _type_parameter_value_has_default(self, type_param: Value) -> bool:
         if isinstance(type_param, TypeVarValue):
-            return self._type_param_has_default(type_param)
+            return type_param.default is not None
         if isinstance(type_param, InputSigValue) and isinstance(
             type_param.input_sig, ParamSpecSig
         ):
@@ -6204,10 +6458,23 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     ) -> None:
         seen_default = False
         previous_was_typevartuple = False
+        visible_type_params: set[object] = set()
         for type_param in type_params:
-            has_default = self._type_param_has_default(type_param)
+            has_default = type_param.default is not None
             is_typevartuple = type_param.is_typevartuple()
             is_typevar = is_instance_of_typing_name(type_param.typevar, "TypeVar")
+            if type_param.default is not None:
+                for subval in type_param.default.walk_values():
+                    identity = _type_param_identity(subval)
+                    if identity is None or identity in visible_type_params:
+                        continue
+                    self._show_error_if_checking(
+                        node,
+                        "Type parameter defaults can reference only earlier type"
+                        " parameters from the same class",
+                        error_code=ErrorCode.invalid_annotation,
+                    )
+                    return
             if seen_default and not has_default:
                 self._show_error_if_checking(
                     node,
@@ -6224,6 +6491,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 return
             seen_default = seen_default or has_default
             previous_was_typevartuple = is_typevartuple
+            visible_type_params.add(type_param.typevar)
 
     def _type_param_from_expr_for_default_rules(
         self, node: ast.expr
@@ -6306,6 +6574,8 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                         type_param = TypeVarValue(walked.input_sig.param_spec)
                     else:
                         continue
+                    if type_param.typevar is SelfT:
+                        continue
                     if type_param.typevar in seen:
                         continue
                     seen.add(type_param.typevar)
@@ -6366,10 +6636,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                             ):
                                 continue
                             maybe_type_params.append(
-                                TypeVarValue(
-                                    runtime_arg,
-                                    variance=get_typevar_variance(runtime_arg),
-                                )
+                                make_type_var_value(runtime_arg, visitor=self)
                             )
                 for maybe_type_param in maybe_type_params:
                     if maybe_type_param.typevar in seen:
@@ -6409,11 +6676,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     if runtime_arg in seen:
                         continue
                     seen.add(runtime_arg)
-                    type_params.append(
-                        TypeVarValue(
-                            runtime_arg, variance=get_typevar_variance(runtime_arg)
-                        )
-                    )
+                    type_params.append(make_type_var_value(runtime_arg, visitor=self))
         return type_params
 
     def _base_values_for_generic_analysis(
@@ -6891,6 +7154,95 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             for child in ast.iter_child_nodes(annotation)
         )
 
+    def _class_body_contains_self_annotation(self, node: ast.ClassDef) -> bool:
+        for stmt in node.body:
+            if isinstance(stmt, ast.AnnAssign):
+                if self._return_annotation_node_contains_self(stmt.annotation):
+                    return True
+            elif isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                if self._return_annotation_node_contains_self(stmt.returns):
+                    return True
+                if any(
+                    self._return_annotation_node_contains_self(arg.annotation)
+                    for arg in stmt.args.posonlyargs
+                ):
+                    return True
+                if any(
+                    self._return_annotation_node_contains_self(arg.annotation)
+                    for arg in stmt.args.args
+                ):
+                    return True
+                if any(
+                    self._return_annotation_node_contains_self(arg.annotation)
+                    for arg in stmt.args.kwonlyargs
+                ):
+                    return True
+                if self._return_annotation_node_contains_self(
+                    getattr(stmt.args.vararg, "annotation", None)
+                ):
+                    return True
+                if self._return_annotation_node_contains_self(
+                    getattr(stmt.args.kwarg, "annotation", None)
+                ):
+                    return True
+        return False
+
+    def _current_class_node_from_context(self) -> ast.ClassDef | None:
+        for context in reversed(self.node_context.contexts):
+            if isinstance(context, ast.ClassDef):
+                return context
+        return None
+
+    def _runtime_annotation_contains_self(self, annotation: object) -> bool:
+        if annotation is None:
+            return False
+        if is_typing_name(annotation, "Self"):
+            return True
+        if isinstance(annotation, str):
+            try:
+                parsed = ast.parse(annotation, mode="eval")
+            except SyntaxError:
+                return False
+            return self._return_annotation_node_contains_self(parsed.body)
+        origin = get_origin(annotation)
+        if origin is None:
+            return False
+        return any(
+            self._runtime_annotation_contains_self(arg) for arg in get_args(annotation)
+        )
+
+    def _runtime_callable_contains_self_annotations(self, value: object) -> bool:
+        annotations = safe_getattr(value, "__annotations__", None)
+        if not isinstance(annotations, dict):
+            return False
+        return any(
+            self._runtime_annotation_contains_self(annotation)
+            for annotation in annotations.values()
+        )
+
+    def _runtime_class_or_bases_use_self_annotations(self, typ: type) -> bool:
+        for base in typ.__mro__:
+            annotations = safe_getattr(base, "__annotations__", None)
+            if isinstance(annotations, dict) and any(
+                self._runtime_annotation_contains_self(annotation)
+                for annotation in annotations.values()
+            ):
+                return True
+            for value in safe_getattr(base, "__dict__", {}).values():
+                if isinstance(value, property):
+                    if any(
+                        func is not None
+                        and self._runtime_callable_contains_self_annotations(func)
+                        for func in (value.fget, value.fset, value.fdel)
+                    ):
+                        return True
+                elif isinstance(value, (classmethod, staticmethod)):
+                    if self._runtime_callable_contains_self_annotations(value.__func__):
+                        return True
+                elif self._runtime_callable_contains_self_annotations(value):
+                    return True
+        return False
+
     def _get_synthetic_self_returning_classmethods(
         self, node: ast.ClassDef
     ) -> set[str]:
@@ -7257,8 +7609,13 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                             error_code=ErrorCode.invalid_annotation,
                         )
                     return_annotation = AnyValue(AnySource.error)
+            runtime_current_class = (
+                self.current_class if isinstance(self.current_class, type) else None
+            )
             if (
-                enclosing_class is not None
+                self.module is not None
+                and enclosing_class is not None
+                and runtime_current_class is not None
                 and params
                 and params[0].is_self
                 and isinstance(params[0].node, ast.arg)
@@ -7267,13 +7624,19 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 self_instance_value = TypeVarValue(SelfT, bound=enclosing_class)
                 substitutions: TypeVarMap = {SelfT: self_instance_value}
                 uses_self_annotation = (
-                    return_annotation is not None
-                    and return_annotation.substitute_typevars(substitutions)
-                    != return_annotation
-                ) or any(
-                    param_info.param.annotation.substitute_typevars(substitutions)
-                    != param_info.param.annotation
-                    for param_info in params[1:]
+                    (
+                        return_annotation is not None
+                        and return_annotation.substitute_typevars(substitutions)
+                        != return_annotation
+                    )
+                    or any(
+                        param_info.param.annotation.substitute_typevars(substitutions)
+                        != param_info.param.annotation
+                        for param_info in params[1:]
+                    )
+                    or self._runtime_class_or_bases_use_self_annotations(
+                        runtime_current_class
+                    )
                 )
                 if not uses_self_annotation:
                     if (
@@ -8502,16 +8865,17 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             return None
         if isinstance(value, KnownValue):
             if isinstance(value.val, type):
-                return None
-            typ = type(value.val)
+                class_key = value.val
+            else:
+                class_key = type(value.val)
         elif isinstance(value, GenericValue):
-            if not isinstance(value.typ, type):
+            if not isinstance(value.typ, (type, str)):
                 return None
-            typ = value.typ
+            class_key = value.typ
         elif isinstance(value, TypedValue):
-            if not isinstance(value.typ, type):
+            if not isinstance(value.typ, (type, str)):
                 return None
-            typ = value.typ
+            class_key = value.typ
         elif isinstance(
             value,
             (
@@ -8527,9 +8891,29 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             return None
         else:
             assert_never(value)
-        if not is_namedtuple_class(typ):
+        synthetic = self.checker.get_synthetic_class(class_key)
+        if synthetic is not None:
+            namedtuple_marker = synthetic.class_attributes.get("%namedtuple")
+            fields = synthetic.class_attributes.get("%instance_only_annotations")
+            if (
+                isinstance(namedtuple_marker, KnownValue)
+                and namedtuple_marker.val is True
+            ):
+                if (
+                    isinstance(fields, KnownValue)
+                    and isinstance(fields.val, (set, frozenset, tuple, list))
+                    and all(isinstance(field, str) for field in fields.val)
+                ):
+                    return set(fields.val)
+                return {
+                    name
+                    for name in synthetic.class_attributes
+                    if not name.startswith("%")
+                    and name not in synthetic.method_attributes
+                }
+        if not isinstance(class_key, type) or not is_namedtuple_class(class_key):
             return None
-        fields = safe_getattr(typ, "_fields", None)
+        fields = safe_getattr(class_key, "_fields", None)
         if not isinstance(fields, tuple):
             return None
         if not all(isinstance(field, str) for field in fields):
@@ -13116,10 +13500,18 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             return None
         type_parameters = self.checker.get_type_parameters(synthetic_typ)
         generic_bases = self.checker.get_generic_bases(synthetic_typ, ())
+        synthetic_base_key = next(
+            (
+                base_typ
+                for base_typ in generic_bases
+                if self._class_keys_match(base_typ, synthetic_typ)
+            ),
+            None,
+        )
         if (
             not type_parameters
             and normalized_members
-            and synthetic_typ in generic_bases
+            and synthetic_base_key is not None
         ):
             synthetic_class = self.checker.get_synthetic_class(synthetic_typ)
             has_explicit_class_getitem = (
@@ -13127,7 +13519,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 and "__class_getitem__" in synthetic_class.class_attributes
             )
             has_fully_specialized_generic_base = any(
-                base_typ != synthetic_typ
+                not self._class_keys_match(base_typ, synthetic_typ)
                 and isinstance(base_typ, str)
                 and tv_map
                 and all(
@@ -13193,14 +13585,17 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 node, expected_type_arg_message, error_code=ErrorCode.invalid_annotation
             )
             return AnyValue(AnySource.error)
-        if synthetic_typ not in generic_bases:
+        if synthetic_base_key is None:
             return None
+        specialized_members = self.arg_spec_cache._specialize_generic_type_params(
+            type_parameters, normalized_members
+        )
         return PartialValue(
             PartialValueOperation.SUBSCRIPT,
             root_for_partial,
             node,
             members,
-            GenericValue(synthetic_typ, list(normalized_members)),
+            GenericValue(synthetic_typ, specialized_members),
         )
 
     def _get_dunder(self, node: ast.AST, callee_val: Value, method_name: str) -> Value:
@@ -13234,6 +13629,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     node,
                     ignore_none=self.options.get_value_for(IgnoreNoneAttributes),
                     record_reads=False,
+                    self_value=callee_val,
                 )
                 if method_object is not UNINITIALIZED_VALUE:
                     synthetic_typevars = self._get_synthetic_instance_typevars(
@@ -13265,6 +13661,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             node,
             ignore_none=self.options.get_value_for(IgnoreNoneAttributes),
             record_reads=False,
+            self_value=callee_val,
         )
         if method_object is UNINITIALIZED_VALUE:
             self.show_error(
@@ -13908,13 +14305,16 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         use_fallback: bool = False,
         prefer_typeshed: bool = False,
         record_reads: bool = True,
+        self_value: Value | None = None,
     ) -> Value:
         """Get an attribute of this value.
 
         Returns :data:`pycroscope.value.UNINITIALIZED_VALUE` if the attribute cannot be found.
 
         """
+        resolved_self_value = self_value
         if isinstance(root_composite.value, TypeVarValue):
+            resolved_self_value = root_composite.value
             root_composite = Composite(
                 value=root_composite.value.get_fallback_value(),
                 varname=root_composite.varname,
@@ -13931,6 +14331,18 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 varname=root_composite.varname,
                 node=root_composite.node,
             )
+        if (
+            isinstance(node, ast.Attribute)
+            and self.current_class_key is not None
+            and self._is_current_method_receiver_node(node.value)
+            and self._is_class_object_attribute_root(root_composite.value) is True
+            and self._is_instance_only_member(self.current_class_key, attr)
+        ):
+            static_member = self._get_instance_only_annotation_value_for_class_key(
+                self.current_class_key, attr
+            )
+            if static_member is not UNINITIALIZED_VALUE:
+                return static_member
         if self._is_instance_member_accessed_through_class(root_composite, attr, node):
             if node is not None:
                 self._show_error_if_checking(
@@ -14076,6 +14488,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             ignore_none=ignore_none,
             prefer_typeshed=prefer_typeshed,
             record_reads=record_reads,
+            self_value=resolved_self_value,
         )
         result = attributes.get_attribute(ctx)
         if (
@@ -14503,8 +14916,38 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     return constraint.val == default.val
                 return False
 
+            def _constraint_accepts_default(constraint: Value, default: Value) -> bool:
+                if _default_matches_constraint(constraint, default):
+                    return True
+                if isinstance(default, TypeVarValue):
+                    if default.bound is not None:
+                        return not isinstance(
+                            has_relation(
+                                constraint, default.bound, Relation.ASSIGNABLE, self
+                            ),
+                            CanAssignError,
+                        )
+                    if default.constraints:
+                        return all(
+                            _constraint_accepts_default(constraint, subconstraint)
+                            for subconstraint in default.constraints
+                        )
+                return False
+
+            if (
+                isinstance(typevar.default, TypeVarValue)
+                and typevar.default.constraints
+            ):
+                if all(
+                    any(
+                        _default_matches_constraint(constraint, default_constraint)
+                        for constraint in typevar.constraints
+                    )
+                    for default_constraint in typevar.default.constraints
+                ):
+                    return
             for constraint in typevar.constraints:
-                if _default_matches_constraint(constraint, typevar.default):
+                if _constraint_accepts_default(constraint, typevar.default):
                     return
             self._show_error_if_checking(
                 node,
@@ -14875,7 +15318,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                             f"Call to {callee_wrapped.val} is not supported",
                             error_code=ErrorCode.incompatible_call,
                         )
-                    elif not self._should_preserve_static_constructor_return(
+                    elif not self._should_preserve_static_call_return(
                         callee_wrapped, return_value, result
                     ):
                         return_value = KnownValue(result)
@@ -14988,6 +15431,19 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             return isinstance(runtime_result, static_root.typ)
         return False
 
+    def _should_preserve_static_call_return(
+        self, callee: Value, static_return_value: Value, runtime_result: object
+    ) -> bool:
+        if self._should_preserve_static_constructor_return(
+            callee, static_return_value, runtime_result
+        ):
+            return True
+        if safe_isinstance(runtime_result, tuple) and is_namedtuple_class(
+            type(runtime_result)
+        ):
+            return not isinstance(static_return_value, AnyValue)
+        return False
+
     def _specialize_generic_alias_call_return(
         self, callee: Value, return_value: Value, node: ast.AST | None
     ) -> Value:
@@ -15051,7 +15507,13 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 return return_value
             if not callee.members:
                 return return_value
-            if preserve_exact_type_args:
+            partial_runtime_value = replace_fallback(callee.runtime_value)
+            if (
+                isinstance(partial_runtime_value, GenericValue)
+                and partial_runtime_value.typ is origin
+            ):
+                type_args = list(partial_runtime_value.args)
+            elif preserve_exact_type_args:
                 type_args = [
                     (
                         TypedValue(member.val)
@@ -15556,6 +16018,13 @@ def _is_namedtuple_marker_base(base_value: Value) -> bool:
     return isinstance(base_value, KnownValue) and is_typing_name(
         base_value.val, "NamedTuple"
     )
+
+
+def _is_namedtuple_like_base_value(base_value: Value) -> bool:
+    for subval in flatten_values(replace_fallback(base_value)):
+        if _is_namedtuple_marker_base(subval):
+            return True
+    return False
 
 
 def _populate_fallback_runtime_class(
@@ -16289,7 +16758,9 @@ def _type_param_value_from_value(value: Value) -> TypeVarValue | None:
             or is_instance_of_typing_name(value.val, "TypeVarTuple")
             or is_instance_of_typing_name(value.val, "ParamSpec")
         ):
-            return TypeVarValue(value.val, variance=get_typevar_variance(value.val))
+            return make_type_var_value(
+                value.val, ctx=_runtime_type_param_default_context()
+            )
         return None
     if isinstance(
         value,
@@ -16411,7 +16882,9 @@ def _runtime_type_alias_declared_type_params(
         if isinstance(param, TypeVarValue):
             declared.append(param)
         else:
-            declared.append(TypeVarValue(param))
+            declared.append(
+                make_type_var_value(param, ctx=_runtime_type_param_default_context())
+            )
     return declared
 
 

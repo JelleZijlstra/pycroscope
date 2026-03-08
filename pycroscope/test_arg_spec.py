@@ -23,9 +23,11 @@ from .value import (
     KnownValue,
     MultiValuedValue,
     NewTypeValue,
+    SequenceValue,
     TypedValue,
     TypeVarValue,
     assert_is_value,
+    match_typevar_arguments,
 )
 
 T = TypeVar("T")
@@ -44,6 +46,39 @@ def test_get_type_parameters_ignores_non_iterable_runtime_type_params() -> None:
         __type_params__ = property(lambda self: ())
 
     assert checker.arg_spec_cache.get_type_parameters(Weird) == []
+
+
+def test_match_typevar_arguments_preserves_suffix_after_default_before_typevartuple() -> (
+    None
+):
+    from typing_extensions import TypeVar, TypeVarTuple
+
+    default_t = TypeVar("DefaultT", default=int)
+    ts = TypeVarTuple("Ts")
+    u = TypeVar("U")
+
+    assert match_typevar_arguments(
+        [wrap_type_param(default_t), wrap_type_param(ts), wrap_type_param(u)],
+        [TypedValue(str)],
+    ) == [
+        (default_t, TypedValue(int)),
+        (ts, SequenceValue(tuple, [])),
+        (u, TypedValue(str)),
+    ]
+
+
+def test_specialize_generic_type_params_preserves_suffix_with_default_prefix() -> None:
+    from typing_extensions import TypeVar, TypeVarTuple
+
+    checker = Checker()
+    default_t = TypeVar("DefaultT", default=int)
+    ts = TypeVarTuple("Ts")
+    u = TypeVar("U")
+
+    assert checker.arg_spec_cache._specialize_generic_type_params(
+        [wrap_type_param(default_t), wrap_type_param(ts), wrap_type_param(u)],
+        [TypedValue(str)],
+    ) == [TypedValue(int), SequenceValue(tuple, []), TypedValue(str)]
 
 
 class ClassWithCall(object):

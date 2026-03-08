@@ -125,6 +125,7 @@ from .value import (
     Variance,
     annotate_value,
     get_typevar_variance,
+    match_typevar_arguments,
     replace_known_sequence_value,
     unite_values,
 )
@@ -903,44 +904,11 @@ def _runtime_type_alias_from_partial_value(
 def _match_type_alias_arg_values(
     type_params: Sequence[TypeVarValue], args_vals: Sequence[Value]
 ) -> Sequence[tuple[TypeVarValue, Value]] | None:
-    variadic_indexes = [
-        i for i, type_param in enumerate(type_params) if type_param.is_typevartuple()
-    ]
-    if len(variadic_indexes) > 1:
+    matched = match_typevar_arguments(type_params, args_vals)
+    if matched is None:
         return None
-    if not variadic_indexes:
-        if len(args_vals) > len(type_params):
-            return None
-        minimum_required = sum(
-            1 for type_param in type_params if type_param.default is None
-        )
-        if len(args_vals) < minimum_required:
-            return None
-        matched = list(zip(type_params, args_vals))
-        for i in range(len(args_vals), len(type_params)):
-            default = type_params[i].default
-            if default is None:
-                return None
-            matched.append((type_params[i], default))
-        return matched
-    variadic_index = variadic_indexes[0]
-    minimum_args = len(type_params) - 1
-    if len(args_vals) < minimum_args:
-        return None
-    suffix_count = len(type_params) - variadic_index - 1
-    variadic_end = len(args_vals) - suffix_count
-    variadic_members = [(False, arg) for arg in args_vals[variadic_index:variadic_end]]
-    matched: list[tuple[TypeVarValue, Value]] = []
-    for i, type_param in enumerate(type_params):
-        if i < variadic_index:
-            argument = args_vals[i]
-        elif i == variadic_index:
-            argument = SequenceValue(tuple, variadic_members)
-        else:
-            suffix_index = i - variadic_index - 1
-            argument = args_vals[variadic_end + suffix_index]
-        matched.append((type_param, argument))
-    return matched
+    values = [value for _, value in matched]
+    return list(zip(type_params, values))
 
 
 def _is_paramspec_annotation(value: Value) -> bool:

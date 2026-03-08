@@ -613,7 +613,35 @@ def _default_value_for_type_param(type_param: "TypeVarValue") -> Value:
     return AnyValue(AnySource.generic_argument)
 
 
-def _match_type_alias_type_arguments(
+def _split_variadic_type_arguments(
+    type_params: Sequence["TypeVarValue"],
+    type_arguments: Sequence[Value],
+    variadic_index: int,
+) -> tuple[int, int] | None:
+    suffix_params = type_params[variadic_index + 1 :]
+    prefix_explicit_count = min(variadic_index, len(type_arguments))
+    while prefix_explicit_count >= 0:
+        if any(
+            type_param.default is None
+            for type_param in type_params[prefix_explicit_count:variadic_index]
+        ):
+            prefix_explicit_count -= 1
+            continue
+        suffix_explicit_count = min(
+            len(suffix_params), len(type_arguments) - prefix_explicit_count
+        )
+        omitted_suffix_count = len(suffix_params) - suffix_explicit_count
+        if any(
+            type_param.default is None
+            for type_param in suffix_params[:omitted_suffix_count]
+        ):
+            prefix_explicit_count -= 1
+            continue
+        return prefix_explicit_count, suffix_explicit_count
+    return None
+
+
+def match_typevar_arguments(
     type_params: Sequence["TypeVarValue"],
     type_arguments: Sequence[Value],
     *,
@@ -623,11 +651,25 @@ def _match_type_alias_type_arguments(
         if len(type_params) != len(type_arguments):
             return None
         return [(param.typevar, arg) for param, arg in zip(type_params, type_arguments)]
+
     variadic_indexes = [
         i for i, type_param in enumerate(type_params) if type_param.is_typevartuple()
     ]
     if len(variadic_indexes) > 1:
         return None
+
+    substitutions: dict[TypeVarLike, Value] = {}
+    matched: list[tuple[TypeVarLike, Value]] = []
+
+    def _record(type_param: TypeVarValue, argument: Value) -> None:
+        matched.append((type_param.typevar, argument))
+        substitutions[type_param.typevar] = argument
+
+    def _default_argument(type_param: TypeVarValue) -> Value:
+        return _default_value_for_type_param(type_param).substitute_typevars(
+            substitutions
+        )
+
     if not variadic_indexes:
         if len(type_arguments) > len(type_params):
             return None
@@ -636,34 +678,67 @@ def _match_type_alias_type_arguments(
         )
         if len(type_arguments) < minimum_required:
             return None
-        matched = [
-            (param.typevar, arg) for param, arg in zip(type_params, type_arguments)
-        ]
-        for i in range(len(type_arguments), len(type_params)):
-            matched.append(
-                (type_params[i].typevar, _default_value_for_type_param(type_params[i]))
+        for i, type_param in enumerate(type_params):
+            argument = (
+                type_arguments[i]
+                if i < len(type_arguments)
+                else _default_argument(type_param)
             )
+            _record(type_param, argument)
         return matched
+
     variadic_index = variadic_indexes[0]
-    minimum_args = len(type_params) - 1
-    if len(type_arguments) < minimum_args:
+    minimum_required = sum(
+        1
+        for i, type_param in enumerate(type_params)
+        if i != variadic_index and type_param.default is None
+    )
+    if len(type_arguments) < minimum_required:
         return None
+    split = _split_variadic_type_arguments(type_params, type_arguments, variadic_index)
+    if split is None:
+        return None
+    prefix_explicit_count, suffix_explicit_count = split
     suffix_count = len(type_params) - variadic_index - 1
-    variadic_end = len(type_arguments) - suffix_count
-    variadic_members = [
-        (False, arg) for arg in type_arguments[variadic_index:variadic_end]
-    ]
-    matched: list[tuple[TypeVarLike, Value]] = []
-    for i, key in enumerate(type_params):
+    omitted_suffix_count = suffix_count - suffix_explicit_count
+    variadic_start = prefix_explicit_count
+    variadic_end = len(type_arguments) - suffix_explicit_count
+
+    for i, type_param in enumerate(type_params):
         if i < variadic_index:
-            argument = type_arguments[i]
+            argument = (
+                type_arguments[i]
+                if i < prefix_explicit_count
+                else _default_argument(type_param)
+            )
         elif i == variadic_index:
-            argument = SequenceValue(tuple, variadic_members)
+            argument = SequenceValue(
+                tuple,
+                [
+                    (False, member)
+                    for member in type_arguments[variadic_start:variadic_end]
+                ],
+            )
         else:
             suffix_index = i - variadic_index - 1
-            argument = type_arguments[variadic_end + suffix_index]
-        matched.append((key.typevar, argument))
+            argument = (
+                _default_argument(type_param)
+                if suffix_index < omitted_suffix_count
+                else type_arguments[variadic_end + suffix_index - omitted_suffix_count]
+            )
+        _record(type_param, argument)
     return matched
+
+
+def _match_type_alias_type_arguments(
+    type_params: Sequence["TypeVarValue"],
+    type_arguments: Sequence[Value],
+    *,
+    type_arguments_are_packed: bool = False,
+) -> Sequence[tuple[TypeVarLike, Value]] | None:
+    return match_typevar_arguments(
+        type_params, type_arguments, type_arguments_are_packed=type_arguments_are_packed
+    )
 
 
 @dataclass(frozen=True)
@@ -684,24 +759,24 @@ class TypeAliasValue(Value):
         val = self.alias.get_value()
         type_params = self.alias.get_type_params()
         if self.type_arguments or self.is_specialized:
-            substitutions = _match_type_alias_type_arguments(
+            matched_type_arguments = _match_type_alias_type_arguments(
                 type_params,
                 self.type_arguments,
                 type_arguments_are_packed=self.type_arguments_are_packed,
             )
-            if substitutions is None:
+            if matched_type_arguments is None:
                 # TODO this should be an error
                 return AnyValue(AnySource.inference)
-            typevars = dict(substitutions)
+            typevars = dict(matched_type_arguments)
             val = val.substitute_typevars(typevars)
         elif type_params:
             # Unsubscripted aliases default each unspecialized parameter.
-            val = val.substitute_typevars(
-                {
-                    type_param.typevar: _default_value_for_type_param(type_param)
-                    for type_param in type_params
-                }
-            )
+            substitutions: dict[TypeVarLike, Value] = {}
+            for type_param in type_params:
+                substitutions[type_param.typevar] = _default_value_for_type_param(
+                    type_param
+                ).substitute_typevars(substitutions)
+            val = val.substitute_typevars(substitutions)
         return val
 
     def get_fallback_value(self) -> Value:
@@ -2371,6 +2446,14 @@ ParamSpecLike = typing_extensions.ParamSpec | typing.ParamSpec
 
 
 def set_self(value: Value, self_value: Value) -> Value:
+    if isinstance(self_value, TypeVarValue) and self_value.typevar is SelfT:
+        self_value = SelfTVV
+    elif (
+        isinstance(self_value, SubclassValue)
+        and isinstance(self_value.typ, TypeVarValue)
+        and self_value.typ.typevar is SelfT
+    ):
+        self_value = SelfTVV
     if isinstance(value, KnownValueWithTypeVars):
         merged_typevars = dict(value.typevars)
         merged_typevars[SelfT] = self_value
@@ -3480,40 +3563,137 @@ def is_iterable(value: Value, ctx: CanAssignContext) -> CanAssignError | Value:
 def namedtuple_members_from_value(
     value: Value, ctx: CanAssignContext | None = None
 ) -> tuple[tuple[bool, Value], ...] | None:
+    def _get_synthetic_class(class_key: type | str) -> SyntheticClassObjectValue | None:
+        if ctx is None:
+            return None
+        checker_ctx = safe_getattr(ctx, "checker", ctx)
+        get_synthetic_class = safe_getattr(checker_ctx, "get_synthetic_class", None)
+        if not callable(get_synthetic_class):
+            return None
+        synthetic = get_synthetic_class(class_key)
+        if isinstance(synthetic, SyntheticClassObjectValue):
+            return synthetic
+        return None
+
+    def _get_typevar_substitutions(
+        class_key: type | str, generic_args: Sequence[Value]
+    ) -> TypeVarMap:
+        if not generic_args:
+            return {}
+        if ctx is None:
+            if not isinstance(class_key, type):
+                return {}
+            return {
+                typevar: arg
+                for typevar, arg in zip(
+                    getattr(class_key, "__parameters__", ()), generic_args
+                )
+            }
+        substitutions: dict[TypeVarLike, Value] = {}
+        for type_param, arg in zip(ctx.get_type_parameters(class_key), generic_args):
+            if isinstance(type_param, TypeVarValue):
+                substitutions[type_param.typevar] = arg
+        return substitutions
+
+    def _ordered_namedtuple_fields(
+        synthetic: SyntheticClassObjectValue,
+    ) -> tuple[str, ...]:
+        runtime_class_value = synthetic.class_attributes.get("%runtime_class")
+        if (
+            isinstance(runtime_class_value, KnownValue)
+            and isinstance(runtime_class_value.val, type)
+            and is_namedtuple_class(runtime_class_value.val)
+        ):
+            fields_obj = safe_getattr(runtime_class_value.val, "_fields", None)
+            if isinstance(fields_obj, tuple) and all(
+                isinstance(field, str) for field in fields_obj
+            ):
+                return fields_obj
+
+        instance_only = synthetic.class_attributes.get("%instance_only_annotations")
+        if isinstance(instance_only, KnownValue) and isinstance(
+            instance_only.val, (set, frozenset, tuple, list)
+        ):
+            instance_only_names = {
+                name for name in instance_only.val if isinstance(name, str)
+            }
+            return tuple(
+                name
+                for name in synthetic.class_attributes
+                if name in instance_only_names
+                and not name.startswith("%")
+                and name not in synthetic.method_attributes
+            )
+        return ()
+
+    def _namedtuple_members_for_class(
+        class_key: type | str, generic_args: Sequence[Value], seen: set[type | str]
+    ) -> tuple[tuple[bool, Value], ...] | None:
+        if class_key in seen:
+            return None
+        seen.add(class_key)
+
+        tv_map = _get_typevar_substitutions(class_key, generic_args)
+        if isinstance(class_key, type) and is_namedtuple_class(class_key):
+            fields_obj = safe_getattr(class_key, "_fields", None)
+            if not isinstance(fields_obj, tuple):
+                return None
+            annotations = getattr(class_key, "__annotations__", {})
+            from .annotations import type_from_runtime
+
+            members: list[tuple[bool, Value]] = []
+            for field_name in fields_obj:
+                annotation = annotations.get(field_name, typing.Any)
+                field_type = type_from_runtime(
+                    annotation, visitor=ctx, suppress_errors=True
+                )
+                members.append((False, field_type.substitute_typevars(tv_map)))
+            return tuple(members)
+
+        synthetic = _get_synthetic_class(class_key)
+        if synthetic is None:
+            return None
+
+        namedtuple_marker = synthetic.class_attributes.get("%namedtuple")
+        if isinstance(namedtuple_marker, KnownValue) and namedtuple_marker.val is True:
+            field_names = _ordered_namedtuple_fields(synthetic)
+            if not field_names:
+                return None
+            return tuple(
+                (
+                    False,
+                    synthetic.class_attributes[field_name].substitute_typevars(tv_map),
+                )
+                for field_name in field_names
+                if field_name in synthetic.class_attributes
+            )
+
+        if ctx is None:
+            return None
+        generic_bases = ctx.get_generic_bases(class_key, generic_args)
+        for base_typ, base_tv_map in generic_bases.items():
+            if base_typ == class_key:
+                continue
+            base_args = []
+            for type_param in ctx.get_type_parameters(base_typ):
+                if isinstance(type_param, TypeVarValue):
+                    base_args.append(base_tv_map.get(type_param.typevar, type_param))
+            base_members = _namedtuple_members_for_class(base_typ, base_args, seen)
+            if base_members is not None:
+                return base_members
+        return None
+
     value = replace_fallback(value)
     if isinstance(value, AnnotatedValue):
         value = value.value
 
-    if isinstance(value, GenericValue) and isinstance(value.typ, type):
-        namedtuple_type = value.typ
-        type_parameters = tuple(getattr(namedtuple_type, "__parameters__", ()))
-        tv_map: TypeVarMap = {
-            typevar: arg for typevar, arg in zip(type_parameters, value.args)
-        }
-    elif isinstance(value, TypedValue) and isinstance(value.typ, type):
-        namedtuple_type = value.typ
-        tv_map = {}
-    else:
-        return None
-
-    if not is_namedtuple_class(namedtuple_type):
-        return None
-
-    fields_obj = safe_getattr(namedtuple_type, "_fields", None)
-    if not isinstance(fields_obj, tuple):
-        return None
-    fields = tuple(fields_obj)
-
-    annotations = getattr(namedtuple_type, "__annotations__", {})
-    from .annotations import type_from_runtime
-
-    members: list[tuple[bool, Value]] = []
-    for field_name in fields:
-        annotation = annotations.get(field_name, typing.Any)
-        field_type = type_from_runtime(annotation, visitor=ctx, suppress_errors=True)
-        members.append((False, field_type.substitute_typevars(tv_map)))
-
-    return tuple(members)
+    if isinstance(value, KnownValue) and isinstance(value.val, tuple):
+        return _namedtuple_members_for_class(type(value.val), (), set())
+    if isinstance(value, GenericValue) and isinstance(value.typ, (type, str)):
+        return _namedtuple_members_for_class(value.typ, value.args, set())
+    if isinstance(value, TypedValue) and isinstance(value.typ, (type, str)):
+        return _namedtuple_members_for_class(value.typ, (), set())
+    return None
 
 
 def is_async_iterable(value: Value, ctx: CanAssignContext) -> CanAssignError | Value:
@@ -3632,6 +3812,9 @@ def replace_known_sequence_value(value: Value) -> BasicType:
 
 
 def typify_literal(value: KnownValue) -> KnownValue | TypedValue:
+    if isinstance(value.val, tuple):
+        if (namedtuple_members := namedtuple_members_from_value(value)) is not None:
+            return SequenceValue(tuple, namedtuple_members)
     if isinstance(value.val, (list, tuple, set)):
         return SequenceValue(
             type(value.val), [(False, KnownValue(elt)) for elt in value.val]

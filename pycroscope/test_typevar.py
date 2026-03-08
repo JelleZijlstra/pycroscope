@@ -1,4 +1,5 @@
 # static analysis: ignore
+from .checker import Checker
 from .test_name_check_visitor import TestNameCheckVisitorBase
 from .test_node_visitor import assert_passes, skip_before
 from .tests import make_simple_sequence
@@ -11,6 +12,23 @@ from .value import (
     TypedValue,
     assert_is_value,
 )
+
+
+def test_runtime_constructor_instance_value_substitutes_earlier_defaults() -> None:
+    from typing import Generic
+
+    from typing_extensions import TypeVar
+
+    checker = Checker()
+    T = TypeVar("T", default=int)
+    U = TypeVar("U", default=list[T])
+
+    class Box(Generic[T, U]):
+        pass
+
+    assert checker._runtime_constructor_instance_value(Box) == GenericValue(
+        Box, [TypedValue(int), GenericValue(list, [TypedValue(int)])]
+    )
 
 
 class TestTypeVar(TestNameCheckVisitorBase):
@@ -411,6 +429,19 @@ class TestTypeVar(TestNameCheckVisitorBase):
 
         TypeVar("BadBound", bound=str, default=int)  # E: invalid_annotation
         TypeVar("BadConstraint", float, str, default=int)  # E: invalid_annotation
+        Base = TypeVar("Base", int, str)
+        TypeVar("GoodConstraint", int, str, bool, default=Base)
+        # E: invalid_annotation
+        TypeVar("BadConstraintTypeVar", bool, complex, default=Base)
+
+    @assert_passes()
+    def test_typevar_default_is_not_used_as_fallback(self):
+        from typing_extensions import TypeVar, assert_type
+
+        T = TypeVar("T", default=int)
+
+        def f(x: type[T]) -> None:
+            assert_type(x(), int)  # E: inference_failure
 
     @assert_passes(allow_import_failures=True)
     def test_class_type_param_default_ordering_rules(self):

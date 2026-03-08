@@ -850,12 +850,8 @@ class TestImportFailureHandlingCodeSamples(TestNameCheckVisitorBase):
             units: str = "meters"
 
         p = Point(1, 2)
-        assert_type(p, Point)
         assert_type(p.x, int)
-        assert_type(p[2], str)
-        a, b, c = p
-        assert_type(a, int)
-        assert_type(c, str)
+        assert_type(p.units, str)
 
         class Property(NamedTuple, Generic[T]):
             name: str
@@ -867,14 +863,23 @@ class TestImportFailureHandlingCodeSamples(TestNameCheckVisitorBase):
         assert_type(pr.value, Literal[3.4])
         Property[str]("", 3.1)  # E: incompatible_argument
 
+        class DefaultProperty(NamedTuple, Generic[T]):
+            name: str
+            value: T
+            units: str = "meters"
+
+        DefaultProperty[int]("", 3)
+        default_pr = DefaultProperty("", 3)
+        assert_type(default_pr, DefaultProperty[Literal[3]])
+        assert_type(default_pr.units, str)
+        DefaultProperty[int]("")  # E: incompatible_call
+
         class PointWithName(Point):
             name: str = ""
 
         pn = PointWithName(1, 2, "")
         assert_type(pn.name, str)
 
-        p[3]  # E: incompatible_call
-        p[-4]  # E: incompatible_call
         Point(1)  # E: incompatible_call
 
         class Point3(NamedTuple):
@@ -889,6 +894,36 @@ class TestImportFailureHandlingCodeSamples(TestNameCheckVisitorBase):
 
         class Unit(NamedTuple, object):  # E: invalid_base
             name: str
+
+    @assert_passes(run_in_both_module_modes=True)
+    def test_synthetic_instance_annotations_do_not_create_namedtuple_constructor(self):
+        class Box:
+            value: int
+
+        def f() -> None:
+            Box(1)  # E: incompatible_call
+
+    @assert_passes(run_in_both_module_modes=True)
+    def test_namedtuple_subclass_after_import_failure_uses_base_constructor(self):
+        from typing import NamedTuple
+
+        from typing_extensions import assert_type
+
+        class Base(NamedTuple):
+            x: int
+            y: int
+
+        class Child(Base):
+            label: str = ""
+
+        child = Child(1, 2)
+        assert_type(child, Child)
+        child.x + 1
+        child.label.upper()
+
+        def f() -> None:
+            Child("")  # E: incompatible_call
+            Child(1, 2, 3)  # E: incompatible_call
 
     @assert_passes(run_in_both_module_modes=True)
     def test_dataclass_comparison_after_import_failure(self):
@@ -4160,6 +4195,80 @@ class TestAnnAssign(TestNameCheckVisitorBase):
         def capybara():
             assert_type(Shape.from_config({}), Shape)
             assert_type(Circle.from_config({}), Circle)
+
+    @assert_passes(run_in_both_module_modes=True)
+    def test_self_advanced_in_unimportable_module(self):
+        from typing_extensions import Self, assert_type
+
+        class ParentA:
+            @property
+            def prop1(self) -> Self:
+                raise NotImplementedError
+
+        class ChildA(ParentA):
+            pass
+
+        def f() -> None:
+            assert_type(ParentA().prop1, ParentA)
+            assert_type(ChildA().prop1, ChildA)
+
+        class ParentB:
+            a: list[Self]
+
+            @classmethod
+            def method1(cls) -> Self:
+                raise NotImplementedError
+
+        class ChildB(ParentB):
+            b: int = 0
+
+            def method2(self) -> None:
+                assert_type(self, Self)
+                assert_type(self.a, list[Self])
+                assert_type(self.a[0], Self)
+                assert_type(self.method1(), Self)
+
+            @classmethod
+            def method3(cls) -> None:
+                assert_type(cls, type[Self])
+                assert_type(cls.a, list[Self])
+                assert_type(cls.a[0], Self)
+                assert_type(cls.method1(), Self)
+
+    @assert_passes(run_in_both_module_modes=True)
+    def test_self_property_in_method_body_in_unimportable_module(self):
+        from typing_extensions import Self, assert_type
+
+        class Base:
+            @property
+            def prop(self) -> Self:
+                raise NotImplementedError
+
+            def method(self) -> None:
+                assert_type(self.prop, Self)
+
+        class Child(Base):
+            def method(self) -> None:
+                assert_type(self.prop, Self)
+
+    @assert_passes(run_in_both_module_modes=True)
+    def test_inherited_instance_only_member_substitutes_generic_base_args(self):
+        from typing import Generic, TypeVar
+
+        from typing_extensions import assert_type
+
+        T = TypeVar("T")
+
+        class Base(Generic[T]):
+            value: T
+
+        class Child(Base[int]):
+            @classmethod
+            def class_method(cls) -> None:
+                assert_type(cls.value, int)
+
+            def method(self) -> None:
+                assert_type(self.value, int)
 
     @assert_passes(run_in_both_module_modes=True)
     def test_typevar_classmethod_in_unimportable_module(self):

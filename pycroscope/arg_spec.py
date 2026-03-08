@@ -29,13 +29,19 @@ from .annotations import (
     Context,
     RuntimeEvaluator,
     annotation_expr_from_runtime,
+    make_type_var_value,
     type_from_runtime,
 )
 from .extensions import CustomCheck, TypeGuard, get_type_evaluations
 from .extensions import get_overloads as pycroscope_get_overloads
 from .find_unused import used
 from .functions import translate_vararg_type
-from .input_sig import InputSigValue, ParamSpecSig, extract_type_params, wrap_type_param
+from .input_sig import (
+    InputSigValue,
+    ParamSpecSig,
+    coerce_paramspec_specialization_to_input_sig,
+    extract_type_params,
+)
 from .maybe_asynq import asynq, qcore
 from .options import Options, PyObjectSequenceOption
 from .safe import (
@@ -87,6 +93,7 @@ from .value import (
     TypedDictValue,
     TypedValue,
     TypeVarLike,
+    TypeVarMap,
     TypeVarValue,
     Value,
     is_async_iterable,
@@ -1218,6 +1225,8 @@ class ArgSpecCache:
         if isinstance(typ, str):
             return []
         runtime_type_params = safe_getattr(typ, "__type_params__", ())
+        if not runtime_type_params:
+            runtime_type_params = safe_getattr(typ, "__parameters__", ())
         try:
             runtime_type_params_iter = iter(runtime_type_params)
         except TypeError:
@@ -1225,7 +1234,9 @@ class ArgSpecCache:
         wrapped: list[Value] = []
         for type_param in runtime_type_params_iter:
             try:
-                wrapped.append(wrap_type_param(type_param))
+                wrapped.append(
+                    make_type_var_value(type_param, ctx=self.default_context)
+                )
             except TypeError:
                 continue
         return wrapped
@@ -1294,20 +1305,36 @@ class ArgSpecCache:
         if not type_params:
             return []
 
+        def _coerce_specialized_arg(type_param: Value, value: Value) -> Value:
+            if isinstance(type_param, InputSigValue) and isinstance(
+                type_param.input_sig, ParamSpecSig
+            ):
+                return coerce_paramspec_specialization_to_input_sig(value)
+            if isinstance(type_param, TypeVarValue) and type_param.is_paramspec():
+                return coerce_paramspec_specialization_to_input_sig(value)
+            return value
+
         variadic_indexes = [
             i
             for i, type_param in enumerate(type_params)
             if isinstance(type_param, TypeVarValue) and type_param.is_typevartuple()
         ]
         if len(variadic_indexes) != 1 or not generic_args:
-            return [
-                (
+            specialized = []
+            substitutions: dict[TypeVarLike, Value] = {}
+            for i, type_param in enumerate(type_params):
+                value = (
                     generic_args[i]
                     if i < len(generic_args)
-                    else self._default_type_argument_for_param(type_params[i])
+                    else self._default_type_argument_for_param(
+                        type_param, substitutions
+                    )
                 )
-                for i in range(len(type_params))
-            ]
+                value = _coerce_specialized_arg(type_param, value)
+                specialized.append(value)
+                if isinstance(type_param, TypeVarValue):
+                    substitutions[type_param.typevar] = value
+            return specialized
 
         variadic_index = variadic_indexes[0]
         if len(generic_args) == len(type_params):
@@ -1321,52 +1348,114 @@ class ArgSpecCache:
                 )
             ):
                 return list(generic_args)
+        split = self._split_variadic_generic_args(
+            type_params, generic_args, variadic_index
+        )
+        if split is None:
+            return list(generic_args)
+        prefix_explicit_count, suffix_explicit_count = split
         suffix_count = len(type_params) - variadic_index - 1
-        variadic_end = len(generic_args) - suffix_count
-        if variadic_end < variadic_index:
-            variadic_end = variadic_index
+        omitted_suffix_count = suffix_count - suffix_explicit_count
+        variadic_start = prefix_explicit_count
+        variadic_end = len(generic_args) - suffix_explicit_count
 
         specialized: list[Value] = []
+        variadic_substitutions: dict[TypeVarLike, Value] = {}
         for i in range(len(type_params)):
             if i < variadic_index:
                 value = (
                     generic_args[i]
-                    if i < len(generic_args)
-                    else self._default_type_argument_for_param(type_params[i])
+                    if i < prefix_explicit_count
+                    else self._default_type_argument_for_param(
+                        type_params[i], variadic_substitutions
+                    )
                 )
             elif i == variadic_index:
                 value = SequenceValue(
                     tuple,
                     [
                         (False, member)
-                        for member in generic_args[variadic_index:variadic_end]
+                        for member in generic_args[variadic_start:variadic_end]
                     ],
                 )
             else:
                 suffix_index = i - variadic_index - 1
-                source_index = variadic_end + suffix_index
                 value = (
-                    generic_args[source_index]
-                    if source_index < len(generic_args)
-                    else self._default_type_argument_for_param(type_params[i])
+                    self._default_type_argument_for_param(
+                        type_params[i], variadic_substitutions
+                    )
+                    if suffix_index < omitted_suffix_count
+                    else generic_args[
+                        variadic_end + suffix_index - omitted_suffix_count
+                    ]
                 )
+            value = _coerce_specialized_arg(type_params[i], value)
             specialized.append(value)
+            if isinstance(type_params[i], TypeVarValue):
+                variadic_substitutions[type_params[i].typevar] = value
         return specialized
 
-    def _default_type_argument_for_param(self, type_param: Value) -> Value:
+    def _split_variadic_generic_args(
+        self,
+        type_params: Sequence[Value],
+        generic_args: Sequence[Value],
+        variadic_index: int,
+    ) -> tuple[int, int] | None:
+        suffix_params = type_params[variadic_index + 1 :]
+        prefix_explicit_count = min(variadic_index, len(generic_args))
+        while prefix_explicit_count >= 0:
+            if any(
+                not self._specialization_param_has_default(type_param)
+                for type_param in type_params[prefix_explicit_count:variadic_index]
+            ):
+                prefix_explicit_count -= 1
+                continue
+            suffix_explicit_count = min(
+                len(suffix_params), len(generic_args) - prefix_explicit_count
+            )
+            omitted_suffix_count = len(suffix_params) - suffix_explicit_count
+            if any(
+                not self._specialization_param_has_default(type_param)
+                for type_param in suffix_params[:omitted_suffix_count]
+            ):
+                prefix_explicit_count -= 1
+                continue
+            return prefix_explicit_count, suffix_explicit_count
+        return None
+
+    def _specialization_param_has_default(self, type_param: Value) -> bool:
+        if isinstance(type_param, TypeVarValue):
+            return type_param.default is not None
+        if isinstance(type_param, InputSigValue) and isinstance(
+            type_param.input_sig, ParamSpecSig
+        ):
+            if type_param.input_sig.default is not None:
+                return True
+            runtime_default = safe_getattr(
+                type_param.input_sig.param_spec, "__default__", _NO_DEFAULT
+            )
+            return (
+                runtime_default is not _NO_DEFAULT and runtime_default is not NoDefault
+            )
+        return False
+
+    def _default_type_argument_for_param(
+        self, type_param: Value, substitutions: TypeVarMap | None = None
+    ) -> Value:
         if isinstance(type_param, TypeVarValue):
             if type_param.default is not None:
-                return type_param.default
-            runtime_default = safe_getattr(
-                type_param.typevar, "__default__", _NO_DEFAULT
-            )
-            if runtime_default is not _NO_DEFAULT and runtime_default is not NoDefault:
-                return type_from_runtime(runtime_default, ctx=self.default_context)
+                default = type_param.default
+                if substitutions is not None:
+                    default = default.substitute_typevars(substitutions)
+                return default
         elif isinstance(type_param, InputSigValue) and isinstance(
             type_param.input_sig, ParamSpecSig
         ):
             if type_param.input_sig.default is not None:
-                return type_param.input_sig.default
+                default = type_param.input_sig.default
+                if substitutions is not None:
+                    default = default.substitute_typevars(substitutions)
+                return default
             runtime_default = safe_getattr(
                 type_param.input_sig.param_spec, "__default__", _NO_DEFAULT
             )
@@ -1425,7 +1514,9 @@ class ArgSpecCache:
         )
         my_typevars = uniq_chain(extract_type_params(base) for base in bases)
         generic_bases = {}
-        generic_bases[typ] = {tv: wrap_type_param(tv) for tv in my_typevars}
+        generic_bases[typ] = {
+            tv: make_type_var_value(tv, ctx=self.default_context) for tv in my_typevars
+        }
         for base in bases:
             if isinstance(base, TypedValue):
                 if isinstance(base.typ, str):
