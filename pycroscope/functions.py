@@ -141,6 +141,7 @@ class FunctionInfo:
     node: FunctionNode
     params: Sequence[ParamInfo]
     return_annotation: Value | None
+    is_async_generator: bool
     potential_function: object | None
     type_params: Sequence[TypeVarValue]
 
@@ -709,37 +710,6 @@ def translate_vararg_type(
     return inner_typ
 
 
-@dataclass
-class IsGeneratorVisitor(ast.NodeVisitor):
-    """Determine whether an async function is a generator.
-
-    This is important because the return type of async generators
-    should not be wrapped in Coroutine.
-
-    We avoid recursing into nested functions, which is why we can't
-    just use ast.walk.
-
-    We do not need to check for yield from because it is illegal
-    in async generators. We also skip checking nested comprehensions,
-    because we error anyway if there is a yield within a comprehension.
-
-    """
-
-    is_generator: bool = False
-
-    def visit_Yield(self, node: ast.Yield) -> None:
-        self.is_generator = True
-
-    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
-        pass
-
-    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
-        pass
-
-    def visit_Lambda(self, node: ast.Lambda) -> None:
-        pass
-
-
 def _signature_params_from_function_params(
     params: Sequence[ParamInfo],
 ) -> list[SigParameter]:
@@ -789,12 +759,7 @@ def compute_value_of_function(
     if result is None:
         result = AnyValue(AnySource.unannotated)
     if isinstance(info.node, ast.AsyncFunctionDef):
-        visitor = IsGeneratorVisitor()
-        for line in info.node.body:
-            visitor.visit(line)
-            if visitor.is_generator:
-                break
-        if not visitor.is_generator:
+        if not info.is_async_generator:
             result = make_coro_type(result)
     sig = Signature.make(
         mark_ellipsis_style_any_tail_parameters(

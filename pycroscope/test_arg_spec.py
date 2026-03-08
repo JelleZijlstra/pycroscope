@@ -81,6 +81,71 @@ def test_specialize_generic_type_params_preserves_suffix_with_default_prefix() -
     ) == [TypedValue(int), SequenceValue(tuple, []), TypedValue(str)]
 
 
+def test_collapse_constructor_overloads_to_single_generic() -> None:
+    checker = Checker()
+    int_sig = Signature.make(
+        [
+            SigParameter(
+                "value",
+                kind=ParameterKind.POSITIONAL_OR_KEYWORD,
+                annotation=TypedValue(int),
+            )
+        ],
+        GenericValue("test.Box", [TypedValue(int)]),
+    )
+    str_sig = Signature.make(
+        [
+            SigParameter(
+                "value",
+                kind=ParameterKind.POSITIONAL_OR_KEYWORD,
+                annotation=TypedValue(str),
+            )
+        ],
+        GenericValue("test.Box", [TypedValue(str)]),
+    )
+
+    collapsed = checker._collapse_constructor_overloads_to_single_generic(
+        [int_sig, str_sig], class_type="test.Box"
+    )
+
+    assert collapsed is not None
+    [param] = collapsed.parameters.values()
+    assert param.name == "value"
+    assert isinstance(param.annotation, TypeVarValue)
+    assert param.annotation.typevar.__constraints__ == (int, str)
+    assert collapsed.return_value == GenericValue("test.Box", [param.annotation])
+
+
+def test_collapse_constructor_overloads_requires_matching_keyword_names() -> None:
+    checker = Checker()
+    int_sig = Signature.make(
+        [
+            SigParameter(
+                "left",
+                kind=ParameterKind.POSITIONAL_OR_KEYWORD,
+                annotation=TypedValue(int),
+            )
+        ],
+        GenericValue("test.Box", [TypedValue(int)]),
+    )
+    str_sig = Signature.make(
+        [
+            SigParameter(
+                "right",
+                kind=ParameterKind.POSITIONAL_OR_KEYWORD,
+                annotation=TypedValue(str),
+            )
+        ],
+        GenericValue("test.Box", [TypedValue(str)]),
+    )
+
+    collapsed = checker._collapse_constructor_overloads_to_single_generic(
+        [int_sig, str_sig], class_type="test.Box"
+    )
+
+    assert collapsed is None
+
+
 class ClassWithCall(object):
     def __init__(self, name):
         pass

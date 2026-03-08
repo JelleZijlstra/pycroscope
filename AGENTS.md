@@ -51,6 +51,8 @@
   checker, or add specific handling for individual types.
 - Do not use the names of symbols or parameters (such as `self`) for logic. Instead use type inference or figure out
   whether a parameter (for example) logically represents `self` without relying on the name.
+  Exception: opinionated lint-style checks may still enforce spelling conventions for parameter names, such as
+  `method_first_arg` requiring `self`/`cls`.
 - The behavior in import failure mode (where we cannot load the runtime module) should match that in normal mode
   as much as possible.
 - Types and other internal objects should only be represented in one canonical way in pycroscope's internal logic.
