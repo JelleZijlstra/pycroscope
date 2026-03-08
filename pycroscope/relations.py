@@ -371,9 +371,7 @@ def _has_relation(
     # TypeAliasValue
     if isinstance(left, TypeAliasValue):
         if isinstance(right, TypeAliasValue):
-            if left.alias is right.alias or ctx.can_aliases_assume_compatibility(
-                left, right
-            ):
+            if ctx.can_aliases_assume_compatibility(left, right):
                 return {}
             with ctx.aliases_assume_compatibility(left, right):
                 left_inner = gradualize(left.get_value())
