@@ -26,11 +26,7 @@ from .value import (
 class TestAnnotations(TestNameCheckVisitorBase):
     @assert_passes()
     def test_union(self):
-        import re
         from typing import Dict, List, Match, Optional, Pattern, Set, Union
-
-        _Pattern = type(re.compile("a"))
-        _Match = type(re.match("a", "a"))
 
         def capybara() -> Union[int, str]:
             return 0
@@ -45,29 +41,14 @@ class TestAnnotations(TestNameCheckVisitorBase):
             return []
 
         def check() -> None:
-            assert_is_value(
-                capybara(), MultiValuedValue([TypedValue(int), TypedValue(str)])
-            )
+            assert_type(capybara(), int | str)
             assert_type(kerodon(), int | None)
-            assert_is_value(
-                complex(),
-                MultiValuedValue(
-                    [
-                        GenericValue(list, [TypedValue(str)]),
-                        GenericValue(set, [TypedValue(int)]),
-                        GenericValue(
-                            dict,
-                            [TypedValue(bytes), GenericValue(list, [TypedValue(str)])],
-                        ),
-                        TypedValue(int),
-                    ]
-                ),
-            )
+            assert_type(complex(), list[str] | set[int] | dict[bytes, list[str]] | int)
             assert_type(union_in_subscript(), list[str | int])
 
         def rgx(m: Match[str], p: Pattern[bytes]) -> None:
-            assert_is_value(p, GenericValue(_Pattern, [TypedValue(bytes)]))
-            assert_is_value(m, GenericValue(_Match, [TypedValue(str)]))
+            assert_type(p, Pattern[bytes])
+            assert_type(m, Match[str])
 
     @assert_passes()
     def test_union_as_an_annotation(self):
@@ -89,7 +70,7 @@ class TestAnnotations(TestNameCheckVisitorBase):
         ) -> None:
             assert_type(x, list[int])
             assert_type(y, list)
-            assert_is_value(z, GenericValue(list, [AnyValue(AnySource.explicit)]))
+            assert_type(z, list[Any])
 
     @assert_passes()
     def test_supports_int(self):
@@ -590,13 +571,10 @@ class TestAnnotations(TestNameCheckVisitorBase):
 
     @assert_passes()
     def test_pattern(self):
-        import re
         from typing import Pattern
 
-        _Pattern = type(re.compile(""))
-
         def capybara(x: Pattern[str]):
-            assert_is_value(x, GenericValue(_Pattern, [TypedValue(str)]))
+            assert_type(x, Pattern[str])
 
     def test_future_annotations(self):
         self.assert_passes("""
@@ -708,11 +686,7 @@ class TestAnnotations(TestNameCheckVisitorBase):
         # A bit weird but we hit this kind of case with generic
         # aliases in typeshed.
         def capybara(x: "Union[List[T], Set[T]][int]"):
-            assert_is_value(
-                x,
-                GenericValue(list, [TypedValue(int)])
-                | GenericValue(set, [TypedValue(int)]),
-            )
+            assert_type(x, list[int] | set[int])
 
     @assert_passes()
     def test_initvar(self):
@@ -927,6 +901,8 @@ class TestCallable(TestNameCheckVisitorBase):
         from collections.abc import Callable, Sequence
         from typing import TypeVar
 
+        from typing_extensions import Literal
+
         T = TypeVar("T")
 
         def capybara(
@@ -939,7 +915,7 @@ class TestCallable(TestNameCheckVisitorBase):
             assert_type(x(), int)
             assert_type(x(arg=3), int)
             assert_type(y(1), str)
-            assert_is_value(id_func(1), KnownValue(1))
+            assert_type(id_func(1), Literal[1])
             assert_type(takes_seq([int("1")]), int)
             assert_type(two_args(1, "x"), bytes)
 
@@ -1190,6 +1166,8 @@ class TestTypeVar(TestNameCheckVisitorBase):
     def test_bound(self):
         from typing import TypeVar
 
+        from typing_extensions import Literal
+
         IntT = TypeVar("IntT", bound=int)
 
         def f(x: IntT) -> IntT:
@@ -1198,14 +1176,16 @@ class TestTypeVar(TestNameCheckVisitorBase):
             return x
 
         def capybara():
-            assert_is_value(f(1), KnownValue(1))
-            assert_is_value(f(True), KnownValue(True))
+            assert_type(f(1), Literal[1])
+            assert_type(f(True), Literal[True])
             x = f("")  # E: incompatible_argument
             assert_is_value(x, AnyValue(AnySource.error))
 
     @assert_passes()
     def test_bound_string_forward_ref(self):
         from typing import TypeVar
+
+        from typing_extensions import Literal
 
         T = TypeVar("T", bound="ForwardRef | str")
 
@@ -1216,7 +1196,7 @@ class TestTypeVar(TestNameCheckVisitorBase):
             return x
 
         def capybara() -> None:
-            assert_is_value(f("x"), KnownValue("x"))
+            assert_type(f("x"), Literal["x"])
 
     @assert_passes()
     def test_bound_cannot_contain_typevars(self):

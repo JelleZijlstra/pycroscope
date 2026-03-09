@@ -120,7 +120,7 @@ class TestNarrowing(TestNameCheckVisitorBase):
 
         def whatever(x):
             if x == X.a:
-                assert_is_value(x, KnownValue(X.a))
+                assert_type(x, Literal[X.a])
                 return
             assert_is_value(x, AnyValue(AnySource.unannotated))
 

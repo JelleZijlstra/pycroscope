@@ -2,7 +2,7 @@
 from .extensions import is_keyword, is_of_type, is_positional, is_provided, show_error
 from .test_name_check_visitor import TestNameCheckVisitorBase
 from .test_node_visitor import assert_passes
-from .value import AnySource, AnyValue, KnownValue, assert_is_value
+from .value import AnySource, AnyValue, assert_is_value
 
 
 class TestTypeEvaluation(TestNameCheckVisitorBase):
@@ -222,10 +222,11 @@ class TestTypeEvaluation(TestNameCheckVisitorBase):
         def where_am_i():
             raise NotImplementedError
 
-        expected = "On a Mac" if sys.platform == "darwin" else "Somewhere else"
-
         def capybara():
-            assert_is_value(where_am_i(), KnownValue(expected))
+            if sys.platform == "darwin":
+                assert_type(where_am_i(), Literal["On a Mac"])
+            else:
+                assert_type(where_am_i(), Literal["Somewhere else"])
 
     @assert_passes()
     def test_version(self):
@@ -244,10 +245,11 @@ class TestTypeEvaluation(TestNameCheckVisitorBase):
         def is_self_available():
             return sys.version_info >= (3, 11)
 
-        expected = is_self_available()
-
         def capybara():
-            assert_is_value(is_self_available(), KnownValue(expected))
+            if sys.version_info >= (3, 11):
+                assert_type(is_self_available(), Literal[True])
+            else:
+                assert_type(is_self_available(), Literal[False])
 
     @assert_passes()
     def test_nested_ifs(self):
@@ -265,7 +267,7 @@ class TestTypeEvaluation(TestNameCheckVisitorBase):
             return Literal[3]
 
         def capybara():
-            assert_is_value(is_int(1), KnownValue(1))
+            assert_type(is_int(1), Literal[1])
 
     @assert_passes()
     def test_not_equals(self):
@@ -319,6 +321,8 @@ class TestTypeEvaluation(TestNameCheckVisitorBase):
     def test_generic(self):
         from typing import TypeVar
 
+        from typing_extensions import Literal
+
         from pycroscope.extensions import evaluated
 
         T1 = TypeVar("T1")
@@ -335,11 +339,11 @@ class TestTypeEvaluation(TestNameCheckVisitorBase):
             return x
 
         def capybara(unannotated):
-            assert_is_value(identity(1), KnownValue(1))
+            assert_type(identity(1), Literal[1])
             assert_is_value(identity(unannotated), AnyValue(AnySource.unannotated))
-            assert_is_value(identity2(1), KnownValue(1))
+            assert_type(identity2(1), Literal[1])
             assert_is_value(identity2(unannotated), AnyValue(AnySource.unannotated))
-            assert_is_value(no_evaluated(1), KnownValue(1))
+            assert_type(no_evaluated(1), Literal[1])
             assert_is_value(no_evaluated(unannotated), AnyValue(AnySource.unannotated))
 
 

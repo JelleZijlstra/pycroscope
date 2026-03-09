@@ -59,9 +59,9 @@ class TestNestedFunction(TestNameCheckVisitorBase):
             def nested() -> Literal[3]:
                 return 3
 
-            assert_is_value(nested(), KnownValue(3))
+            assert_type(nested(), Literal[3])
             val = yield nested.asynq()
-            assert_is_value(val, KnownValue(3))
+            assert_type(val, Literal[3])
 
     @assert_passes()
     def test_async_def(self):
@@ -87,12 +87,14 @@ class TestNestedFunction(TestNameCheckVisitorBase):
 
     @assert_passes()
     def test_attribute_set(self):
+        from typing_extensions import Literal
+
         def capybara():
             def inner():
                 pass
 
             inner.punare = 3
-            assert_is_value(inner.punare, KnownValue(3))
+            assert_type(inner.punare, Literal[3])
 
     @assert_passes()
     def test_nested_in_method(self):
@@ -178,26 +180,28 @@ class TestFunctionDefinitions(TestNameCheckVisitorBase):
     def test_lambda(self):
         from typing import Callable
 
+        from typing_extensions import Literal
+
         def capybara():
             fun = lambda: 1
             x: Callable[[], int] = fun
             y: Callable[[], str] = fun  # E: incompatible_assignment
             print(x, y)
             fun(1)  # E: incompatible_call
-            assert_is_value(fun(), KnownValue(1))
+            assert_type(fun(), Literal[1])
 
             fun2 = lambda a: a
             fun2()  # E: incompatible_call
-            assert_is_value(fun2(1), KnownValue(1))
+            assert_type(fun2(1), Literal[1])
 
             fun3 = lambda c=3: c
             assert_is_value(
                 fun3(), KnownValue(3) | AnyValue(AnySource.generic_argument)
             )
-            assert_is_value(fun3(2), KnownValue(2) | KnownValue(3))
+            assert_type(fun3(2), Literal[2, 3])
 
             fun4 = lambda a, b, c: a if c else b
-            assert_is_value(fun4(1, 2, 3), KnownValue(1) | KnownValue(2))
+            assert_type(fun4(1, 2, 3), Literal[1, 2])
 
 
 class TestDecorators(TestNameCheckVisitorBase):

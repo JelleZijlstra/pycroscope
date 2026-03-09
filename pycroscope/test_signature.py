@@ -1131,11 +1131,13 @@ class TestCalls(TestNameCheckVisitorBase):
 class TestAllowCall(TestNameCheckVisitorBase):
     @assert_passes()
     def test_encode_decode(self):
+        from typing_extensions import Literal
+
         def capybara():
             s = "x"
             b = b"x"
-            assert_is_value(s.encode("ascii"), KnownValue(b"x"))
-            assert_is_value(b.decode("ascii"), KnownValue("x"))
+            assert_type(s.encode("ascii"), Literal[b"x"])
+            assert_type(b.decode("ascii"), Literal["x"])
 
             s.encode("not an encoding")  # E: incompatible_call
 
@@ -1149,7 +1151,7 @@ class TestAllowCall(TestNameCheckVisitorBase):
             encoding: Annotated[Literal["ascii"], LiteralOnly()] = "ascii"
 
             s = "x"
-            assert_is_value(s.encode(encoding), KnownValue(b"x"))
+            assert_type(s.encode(encoding), Literal[b"x"])
 
 
 class TestOverload(TestNameCheckVisitorBase):
@@ -1233,7 +1235,7 @@ class TestOverload(TestNameCheckVisitorBase):
             return "a"
 
         def capybara(v: bool):
-            assert_is_value(overloaded(v), KnownValue("a") | KnownValue("b"))
+            assert_type(overloaded(v), Literal["a", "b"])
 
     @assert_passes()
     def test_overloaded_stub_implementation_missing_return(self):
@@ -1345,8 +1347,8 @@ class TestOverload(TestNameCheckVisitorBase):
             union_list: Union[List[int], List[str]],
             explicit: Any,
         ):
-            assert_is_value(overloaded(["x"]), KnownValue(2))
-            assert_is_value(overloaded([1]), KnownValue(3))
+            assert_type(overloaded(["x"]), Literal[2])
+            assert_type(overloaded([1]), Literal[3])
             val = overloaded([])  # pyright and mypy: Literal[2]
             assert_is_value(val, AnyValue(AnySource.multiple_overload_matches))
             val2 = overloaded([unannotated])  # pyright: Literal[2], mypy: Any
@@ -1357,7 +1359,7 @@ class TestOverload(TestNameCheckVisitorBase):
             val4 = overloaded(list_union)  # E: incompatible_argument
             assert_is_value(val4, AnyValue(AnySource.error))
             val5 = overloaded(union_list)  # pyright and mypy: Literal[2, 3]
-            assert_is_value(val5, KnownValue(3) | KnownValue(2))
+            assert_type(val5, Literal[2, 3])
             val6 = overloaded(explicit)  # pyright: Literal[2], mypy: Any
             assert_is_value(val6, AnyValue(AnySource.multiple_overload_matches))
 
@@ -1426,7 +1428,7 @@ class TestOverload(TestNameCheckVisitorBase):
             # If multiple overloads match but have the same return type,
             # don't fall back to Any. This comes up in practice with str.__new__
             # in typeshed.
-            assert_is_value(overloaded1(x, y), KnownValue(2))
+            assert_type(overloaded1(x, y), Literal[2])
 
     @assert_passes()
     def test_nested_class(self):
@@ -1461,7 +1463,7 @@ class TestOverload(TestNameCheckVisitorBase):
             assert_type(f.__round__(), int)
             assert_type(f.__round__(None), int)
             f.__round__(ndigits=None)  # E: incompatible_call
-            assert_is_value(f.__round__(1), TypedValue(float) | TypedValue(int))
+            assert_type(f.__round__(1), float | int)
 
     @assert_passes()
     def test_runtime(self):
