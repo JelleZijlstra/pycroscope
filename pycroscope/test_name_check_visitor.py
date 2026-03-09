@@ -453,6 +453,17 @@ class TestImportFailureHandling(TestNameCheckVisitorBase):
         _x3 = ListOrSetAlias()  # E: not_callable
 
     @assert_passes(run_in_both_module_modes=True)
+    def test_explicit_type_alias_uses_runtime_attribute_semantics(self):
+        from typing import TypeAlias
+
+        Alias: TypeAlias = int
+
+        def capybara() -> None:
+            print(Alias.bit_count)
+            print(Alias.__name__)
+            Alias.__value__  # E: undefined_attribute
+
+    @assert_passes(run_in_both_module_modes=True)
     def test_type_object_name_attribute_after_import_failure(self):
         from typing import Type
 

@@ -181,7 +181,10 @@ class AttrContext:
 
 
 def get_attribute(ctx: AttrContext) -> Value:
-    if isinstance(ctx.root_value, TypeAliasValue) and _is_type_alias_symbol(ctx):
+    if (
+        isinstance(ctx.root_value, TypeAliasValue)
+        and ctx.root_value.uses_type_alias_object_semantics
+    ):
         return _get_attribute_from_type_alias(ctx.root_value, ctx)
 
     root_value = replace_fallback(ctx.root_value)
@@ -258,33 +261,6 @@ def get_attribute(ctx: AttrContext) -> Value:
             if guard.attribute_name == KnownValue(ctx.attr):
                 return guard.attribute_type
     return attribute_value
-
-
-def _is_type_alias_symbol(ctx: AttrContext) -> bool:
-    varname = ctx.root_composite.varname
-    if varname is None or not isinstance(ctx.root_value, TypeAliasValue):
-        return False
-    if varname.varname != ctx.root_value.name:
-        return False
-    if all(origin is None for origin in varname.origin):
-        # In import-failure fallback mode origins may not carry the source node.
-        return True
-    type_alias_node = getattr(ast, "TypeAlias", None)
-    import_nodes: tuple[type[ast.AST], ...] = (ast.Import, ast.ImportFrom, ast.alias)
-    for origin in varname.origin:
-        if type_alias_node is not None and isinstance(origin, type_alias_node):
-            return True
-        if isinstance(origin, ast.AnnAssign):
-            annotation = origin.annotation
-            if isinstance(annotation, ast.Name) and annotation.id == "TypeAlias":
-                return True
-            if isinstance(annotation, ast.Attribute) and annotation.attr == "TypeAlias":
-                return True
-            if isinstance(annotation, ast.Constant) and annotation.value == "TypeAlias":
-                return True
-        if isinstance(origin, import_nodes):
-            return True
-    return False
 
 
 def _get_attribute_from_type_alias(value: TypeAliasValue, ctx: AttrContext) -> Value:

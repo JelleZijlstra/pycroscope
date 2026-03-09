@@ -12945,6 +12945,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             name,
             self.module.__name__ if self.module is not None else "",
             TypeAlias(evaluator, lambda: tuple(type_params)),
+            uses_type_alias_object_semantics=True,
         )
 
     if sys.version_info >= (3, 12):
@@ -13068,6 +13069,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                             lambda: type_from_value(value, self, node),
                             lambda: tuple(type_param_values),
                         ),
+                        uses_type_alias_object_semantics=True,
                     )
             set_value, _ = self._set_name_in_scope(name, node, alias_val)
             return set_value
@@ -14394,19 +14396,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         # TypeAliasValue may fall back to a union or intersection. Unwrap those
         # fallback values for regular attribute lookup so attributes.get_attribute()
         # never receives a MultiValuedValue/IntersectionValue directly.
-        is_type_alias_symbol = False
-        if isinstance(root_composite.value, TypeAliasValue):
-            is_type_alias_symbol = attributes._is_type_alias_symbol(
-                _AttrContext(
-                    root_composite,
-                    attr,
-                    self,
-                    node=node,
-                    ignore_none=ignore_none,
-                    prefer_typeshed=prefer_typeshed,
-                    record_reads=False,
-                )
-            )
+        is_type_alias_symbol = _is_type_alias_symbol_composite(root_composite)
+        if not isinstance(root_composite.value, TypeAliasValue):
+            is_type_alias_symbol = False
         if not is_type_alias_symbol:
             resolved_value = root_composite.value
             while True:
@@ -14415,7 +14407,8 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     break
                 resolved_value = fallback
             if resolved_value is not root_composite.value and (
-                is_union(resolved_value)
+                isinstance(root_composite.value, TypeAliasValue)
+                or is_union(resolved_value)
                 or isinstance(resolved_value, IntersectionValue)
             ):
                 root_composite = Composite(
@@ -14534,7 +14527,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             result is UNINITIALIZED_VALUE
             and node is not None
             and isinstance(root_composite.value, TypeAliasValue)
-            and attributes._is_type_alias_symbol(ctx)
+            and is_type_alias_symbol
         ):
             self._show_error_if_checking(
                 node,
@@ -16893,6 +16886,15 @@ def _is_typealiastype_value(value: Value) -> bool:
         ):
             return True
     return False
+
+
+def _is_type_alias_symbol_composite(root_composite: Composite) -> bool:
+    if not isinstance(root_composite.value, TypeAliasValue):
+        return False
+    if not root_composite.value.uses_type_alias_object_semantics:
+        return False
+    varname = root_composite.varname
+    return varname is not None and varname.varname == root_composite.value.name
 
 
 def _get_runtime_type_alias_value_node(node: ast.Call) -> ast.AST | None:

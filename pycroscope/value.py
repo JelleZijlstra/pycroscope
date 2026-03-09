@@ -752,6 +752,8 @@ class TypeAliasValue(Value):
     alias: TypeAlias = field(compare=False, hash=False)
     type_arguments: Sequence[Value] = ()
     runtime_allows_value_call: bool = False
+    uses_type_alias_object_semantics: bool = False
+    """Whether symbol access should behave like a runtime TypeAliasType object."""
     is_specialized: bool = False
     type_arguments_are_packed: bool = False
 
@@ -806,6 +808,7 @@ class TypeAliasValue(Value):
             self.alias,
             substituted_type_arguments,
             runtime_allows_value_call=self.runtime_allows_value_call,
+            uses_type_alias_object_semantics=self.uses_type_alias_object_semantics,
             is_specialized=self.is_specialized,
             type_arguments_are_packed=self.type_arguments_are_packed,
         )
