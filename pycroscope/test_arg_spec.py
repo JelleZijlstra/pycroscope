@@ -21,7 +21,6 @@ from .value import (
     AnyValue,
     GenericValue,
     KnownValue,
-    MultiValuedValue,
     NewTypeValue,
     SequenceValue,
     TypedValue,
@@ -423,7 +422,7 @@ class TestClassInstantiation(TestNameCheckVisitorBase):
                 cls = A
             else:
                 cls = B
-            assert_is_value(cls(), MultiValuedValue([TypedValue(A), TypedValue(B)]))
+            assert_type(cls(), A | B)
 
     @assert_passes()
     def test_constructor_impl(self):

@@ -1,7 +1,7 @@
 # static analysis: ignore
 from .test_name_check_visitor import TestNameCheckVisitorBase
 from .test_node_visitor import assert_passes
-from .value import AnySource, AnyValue, KnownValue, assert_is_value
+from .value import AnySource, AnyValue, assert_is_value
 
 
 class TestEnum(TestNameCheckVisitorBase):
@@ -120,7 +120,7 @@ class TestNarrowing(TestNameCheckVisitorBase):
 
         def whatever(x):
             if x == X.a:
-                assert_is_value(x, KnownValue(X.a))
+                assert_type(x, Literal[X.a])
                 return
             assert_is_value(x, AnyValue(AnySource.unannotated))
 

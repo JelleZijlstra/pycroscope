@@ -176,11 +176,13 @@ class TestStackedScopes:
 class TestScoping(TestNameCheckVisitorBase):
     @assert_passes()
     def test_multiple_assignment(self):
+        from typing_extensions import Literal
+
         def capybara():
             x = 3
-            assert_is_value(x, KnownValue(3))
+            assert_type(x, Literal[3])
             x = 4
-            assert_is_value(x, KnownValue(4))
+            assert_type(x, Literal[4])
 
     @assert_passes()
     def test_undefined_name(self):
@@ -249,32 +251,34 @@ class TestScoping(TestNameCheckVisitorBase):
 class TestIf(TestNameCheckVisitorBase):
     @assert_passes()
     def test_basic(self):
+        from typing_extensions import Literal
+
         def capybara(cond):
             if cond:
                 x = 3
-                assert_is_value(x, KnownValue(3))
+                assert_type(x, Literal[3])
             else:
                 x = 4
-                assert_is_value(x, KnownValue(4))
-            assert_is_value(x, MultiValuedValue([KnownValue(3), KnownValue(4)]))
+                assert_type(x, Literal[4])
+            assert_type(x, Literal[3, 4])
 
     @assert_passes()
     def test_nesting(self):
+        from typing_extensions import Literal
+
         def capybara(cond1, cond2):
             if cond1:
                 x = 3
-                assert_is_value(x, KnownValue(3))
+                assert_type(x, Literal[3])
             else:
                 if cond2:
                     x = 4
-                    assert_is_value(x, KnownValue(4))
+                    assert_type(x, Literal[4])
                 else:
                     x = 5
-                    assert_is_value(x, KnownValue(5))
-                assert_is_value(x, MultiValuedValue([KnownValue(4), KnownValue(5)]))
-            assert_is_value(
-                x, MultiValuedValue([KnownValue(3), KnownValue(4), KnownValue(5)])
-            )
+                    assert_type(x, Literal[5])
+                assert_type(x, Literal[4, 5])
+            assert_type(x, Literal[3, 4, 5])
 
 
 class TestTry(TestNameCheckVisitorBase):
@@ -299,81 +303,87 @@ class TestTry(TestNameCheckVisitorBase):
 
     @assert_passes()
     def test_set_before_try(self):
+        from typing_extensions import Literal
+
         def capybara():
             x = 1
             try:
                 x = 2
-                assert_is_value(x, KnownValue(2))
+                assert_type(x, Literal[2])
             except NameError:
-                assert_is_value(x, MultiValuedValue([KnownValue(1), KnownValue(2)]))
+                assert_type(x, Literal[1, 2])
                 x = 3
-                assert_is_value(x, KnownValue(3))
+                assert_type(x, Literal[3])
             except RuntimeError:
-                assert_is_value(x, MultiValuedValue([KnownValue(1), KnownValue(2)]))
+                assert_type(x, Literal[1, 2])
                 x = 4
-                assert_is_value(x, KnownValue(4))
-            assert_is_value(
-                x, MultiValuedValue([KnownValue(2), KnownValue(3), KnownValue(4)])
-            )
+                assert_type(x, Literal[4])
+            assert_type(x, Literal[2, 3, 4])
 
     @assert_passes()
     def test_multiple_except(self):
+        from typing_extensions import Literal
+
         def capybara():
             try:
                 x = 3
-                assert_is_value(x, KnownValue(3))
+                assert_type(x, Literal[3])
             except NameError:
                 x = 4
-                assert_is_value(x, KnownValue(4))
+                assert_type(x, Literal[4])
             except IOError:
                 x = 5
-                assert_is_value(x, KnownValue(5))
-            assert_is_value(
-                x, MultiValuedValue([KnownValue(3), KnownValue(4), KnownValue(5)])
-            )
+                assert_type(x, Literal[5])
+            assert_type(x, Literal[3, 4, 5])
 
     @assert_passes()
     def test_else(self):
+        from typing_extensions import Literal
+
         def capybara():
             x = 1
             try:
                 x = 2
                 x = 3
-                assert_is_value(x, KnownValue(3))
+                assert_type(x, Literal[3])
             except NameError:
-                assert_is_value(x, KnownValue(1) | KnownValue(2) | KnownValue(3))
+                assert_type(x, Literal[1, 2, 3])
                 x = 4
-                assert_is_value(x, KnownValue(4))
+                assert_type(x, Literal[4])
             else:
-                assert_is_value(x, KnownValue(3))
+                assert_type(x, Literal[3])
                 x = 5
-                assert_is_value(x, KnownValue(5))
-            assert_is_value(x, KnownValue(5) | KnownValue(4))
+                assert_type(x, Literal[5])
+            assert_type(x, Literal[4, 5])
 
     @assert_passes()
     def test_multiple_assignment(self):
+        from typing_extensions import Literal
+
         def capybara():
             x = 1
             try:
                 x = 2
                 x = 3
-                assert_is_value(x, KnownValue(3))
+                assert_type(x, Literal[3])
             except NameError:
-                assert_is_value(x, KnownValue(1) | KnownValue(2) | KnownValue(3))
+                assert_type(x, Literal[1, 2, 3])
             else:
-                assert_is_value(x, KnownValue(3))
-            assert_is_value(x, KnownValue(1) | KnownValue(2) | KnownValue(3))
+                assert_type(x, Literal[3])
+            assert_type(x, Literal[1, 2, 3])
 
     @assert_passes()
     def test_finally(self):
+        from typing_extensions import Literal
+
         def capybara():
             try:
                 x = 3
-                assert_is_value(x, KnownValue(3))
+                assert_type(x, Literal[3])
             finally:
                 x = 4
-                assert_is_value(x, KnownValue(4))
-            assert_is_value(x, KnownValue(4))
+                assert_type(x, Literal[4])
+            assert_type(x, Literal[4])
 
     @assert_passes()
     def test_finally_regression():
@@ -391,26 +401,30 @@ class TestTry(TestNameCheckVisitorBase):
     def test_finally_plus_if(self):
         # here an approach that simply ignores the assignments in the try block while examining the
         # finally block would fail
+        from typing_extensions import Literal
+
         def capybara():
             x = 0
-            assert_is_value(x, KnownValue(0))
+            assert_type(x, Literal[0])
             try:
                 x = 1
-                assert_is_value(x, KnownValue(1))
+                assert_type(x, Literal[1])
             finally:
-                assert_is_value(x, MultiValuedValue([KnownValue(0), KnownValue(1)]))
+                assert_type(x, Literal[0, 1])
 
     @assert_passes()
     def test_finally_plus_return(self):
+        from typing_extensions import Literal
+
         def capybara():
             x = 0
-            assert_is_value(x, KnownValue(0))
+            assert_type(x, Literal[0])
             try:
                 x = 1
-                assert_is_value(x, KnownValue(1))
+                assert_type(x, Literal[1])
                 return
             finally:
-                assert_is_value(x, MultiValuedValue([KnownValue(0), KnownValue(1)]))
+                assert_type(x, Literal[0, 1])
 
     @assert_passes()
     def test_bad_except_handler(self):
@@ -454,24 +468,28 @@ class TestLoops(TestNameCheckVisitorBase):
 
     @assert_passes()
     def test_for_else(self):
+        from typing_extensions import Literal
+
         def capybara():
             for _ in range(2):
                 x = 3
-                assert_is_value(x, KnownValue(3))
+                assert_type(x, Literal[3])
             else:
                 x = 4
-                assert_is_value(x, KnownValue(4))
-            assert_is_value(x, MultiValuedValue([KnownValue(3), KnownValue(4)]))
+                assert_type(x, Literal[4])
+            assert_type(x, Literal[3, 4])
 
     @assert_passes()
     def test_for_always_entered(self):
+        from typing_extensions import Literal
+
         def capybara():
             x = 3
-            assert_is_value(x, KnownValue(3))
+            assert_type(x, Literal[3])
             for _ in [0, 1]:
                 x = 4
-                assert_is_value(x, KnownValue(4))
-            assert_is_value(x, KnownValue(4))
+                assert_type(x, Literal[4])
+            assert_type(x, Literal[4])
 
         def huge_range():
             for i in range(1000000000):
@@ -482,10 +500,12 @@ class TestLoops(TestNameCheckVisitorBase):
 
     @assert_passes()
     def test_range_always_entered(self):
+        from typing_extensions import Literal
+
         def capybara():
             for i in range(2):
-                assert_is_value(i, KnownValue(0) | KnownValue(1))
-            assert_is_value(i, KnownValue(0) | KnownValue(1))
+                assert_type(i, Literal[0, 1])
+            assert_type(i, Literal[0, 1])
 
     @assert_passes(settings={ErrorCode.possibly_undefined_name: False})
     def test_use_after_for(self):
@@ -522,23 +542,27 @@ class TestLoops(TestNameCheckVisitorBase):
 
     @assert_passes()
     def test_while_always_entered(self):
+        from typing_extensions import Literal
+
         def capybara():
             while True:
                 x = 3
-                assert_is_value(x, KnownValue(3))
+                assert_type(x, Literal[3])
                 break
-            assert_is_value(x, KnownValue(3))
+            assert_type(x, Literal[3])
 
     @assert_passes()
     def test_while_else(self):
+        from typing_extensions import Literal
+
         def capybara():
             while bool():
                 x = 3
-                assert_is_value(x, KnownValue(3))
+                assert_type(x, Literal[3])
             else:
                 x = 4
-                assert_is_value(x, KnownValue(4))
-            assert_is_value(x, MultiValuedValue([KnownValue(3), KnownValue(4)]))
+                assert_type(x, Literal[4])
+            assert_type(x, Literal[3, 4])
 
     @assert_passes()
     def test_recursive_func_in_loop(self):
@@ -812,6 +836,8 @@ class TestLeavesScope(TestNameCheckVisitorBase):
 
     @assert_passes()
     def test_after_assert_false(self):
+        from typing_extensions import Literal
+
         def capybara(cond):
             assert False
             if cond:
@@ -822,7 +848,7 @@ class TestLeavesScope(TestNameCheckVisitorBase):
                 x = None
             y = None
             assert_type(y, None)
-            assert_is_value(x, MultiValuedValue([KnownValue(True), KnownValue(None)]))
+            assert_type(x, Literal[True] | None)
 
     @assert_passes()
     def test_elif_assert_false(self):
@@ -844,7 +870,7 @@ class TestLeavesScope(TestNameCheckVisitorBase):
             pass
 
         def capybara(x: Union[int, str]) -> None:
-            assert_is_value(x, MultiValuedValue([TypedValue(int), TypedValue(str)]))
+            assert_type(x, int | str)
 
             assert isinstance(x, str), needs_int(x)
             assert_type(x, str)
@@ -869,37 +895,45 @@ class TestLeavesScope(TestNameCheckVisitorBase):
 class TestConstraints(TestNameCheckVisitorBase):
     @assert_passes()
     def test_assert_truthy(self):
+        from typing_extensions import Literal
+
         def capybara(x):
             if x:
                 y = True
             else:
                 y = False
-            assert_is_value(y, MultiValuedValue([KnownValue(True), KnownValue(False)]))
+            assert_type(y, Literal[True, False])
             assert y
-            assert_is_value(y, KnownValue(True))
+            assert_type(y, Literal[True])
 
     @assert_passes()
     def test_bool_narrowing(self):
+        from typing_extensions import Literal
+
         def capybara(x: bool):
             assert_type(x, bool)
             if x is True:
-                assert_is_value(x, KnownValue(True))
+                assert_type(x, Literal[True])
             else:
-                assert_is_value(x, KnownValue(False))
+                assert_type(x, Literal[False])
 
     @assert_passes()
     def test_assert_falsy(self):
+        from typing_extensions import Literal
+
         def capybara(x):
             if x:
                 y = True
             else:
                 y = False
-            assert_is_value(y, MultiValuedValue([KnownValue(True), KnownValue(False)]))
+            assert_type(y, Literal[True, False])
             assert not y
-            assert_is_value(y, KnownValue(False))
+            assert_type(y, Literal[False])
 
     @assert_passes()
     def test_no_constraints_from_branches(self):
+        from typing_extensions import Literal
+
         def capybara(x):
             if x:
                 y = True
@@ -907,32 +941,28 @@ class TestConstraints(TestNameCheckVisitorBase):
                 y = False
 
             if x:
-                assert_is_value(
-                    y, MultiValuedValue([KnownValue(True), KnownValue(False)])
-                )
+                assert_type(y, Literal[True, False])
                 assert y
-                assert_is_value(y, KnownValue(True))
+                assert_type(y, Literal[True])
             # Constraints do not survive past the if block.
-            assert_is_value(y, MultiValuedValue([KnownValue(True), KnownValue(False)]))
+            assert_type(y, Literal[True, False])
 
     @assert_passes()
     def test_if(self):
+        from typing_extensions import Literal
+
         def capybara(x):
             if x:
                 y = True
             else:
                 y = False
 
-            assert_is_value(y, MultiValuedValue([KnownValue(True), KnownValue(False)]))
+            assert_type(y, Literal[True, False])
             if y:
-                assert_is_value(y, KnownValue(True))
+                assert_type(y, Literal[True])
             else:
-                assert_is_value(y, KnownValue(False))
-            (
-                assert_is_value(y, KnownValue(True))
-                if y
-                else assert_is_value(y, KnownValue(False))
-            )
+                assert_type(y, Literal[False])
+            (assert_type(y, Literal[True]) if y else assert_type(y, Literal[False]))
 
     @assert_passes()
     def test_isinstance(self):
@@ -1130,6 +1160,7 @@ class TestConstraints(TestNameCheckVisitorBase):
     @assert_passes()
     def test_qcore_asserts(self):
         from qcore.asserts import assert_is_instance
+        from typing_extensions import Literal
 
         def capybara(cond):
             if cond:
@@ -1139,12 +1170,12 @@ class TestConstraints(TestNameCheckVisitorBase):
                 x = False
                 y = False
 
-            assert_is_value(x, MultiValuedValue([KnownValue(True), KnownValue(False)]))
-            assert_is_value(y, MultiValuedValue([KnownValue(True), KnownValue(False)]))
+            assert_type(x, Literal[True, False])
+            assert_type(y, Literal[True, False])
             assert x is True
             assert True is y
-            assert_is_value(x, KnownValue(True))
-            assert_is_value(y, KnownValue(True))
+            assert_type(x, Literal[True])
+            assert_type(y, Literal[True])
 
         def paca(cond):
             if cond:
@@ -1154,12 +1185,12 @@ class TestConstraints(TestNameCheckVisitorBase):
                 x = False
                 y = False
 
-            assert_is_value(x, MultiValuedValue([KnownValue(True), KnownValue(False)]))
-            assert_is_value(y, MultiValuedValue([KnownValue(True), KnownValue(False)]))
+            assert_type(x, Literal[True, False])
+            assert_type(y, Literal[True, False])
             assert x is not True
             assert True is not y
-            assert_is_value(x, KnownValue(False))
-            assert_is_value(y, KnownValue(False))
+            assert_type(x, Literal[False])
+            assert_type(y, Literal[False])
 
         def mara(cond, cond2):
             assert_is_value(cond, AnyValue(AnySource.unannotated))
@@ -1167,25 +1198,27 @@ class TestConstraints(TestNameCheckVisitorBase):
             assert_type(cond, int)
 
             assert_is_instance(cond2, (int, str))
-            assert_is_value(cond2, MultiValuedValue([TypedValue(int), TypedValue(str)]))
+            assert_type(cond2, int | str)
 
     @assert_passes()
     def test_is_or_is_not(self):
+        from typing_extensions import Literal
+
         def capybara(x):
             if x:
                 y = True
             else:
                 y = False
 
-            assert_is_value(y, MultiValuedValue([KnownValue(True), KnownValue(False)]))
+            assert_type(y, Literal[True, False])
             if y is True:
-                assert_is_value(y, KnownValue(True))
+                assert_type(y, Literal[True])
             else:
-                assert_is_value(y, KnownValue(False))
+                assert_type(y, Literal[False])
             if y is not True:
-                assert_is_value(y, KnownValue(False))
+                assert_type(y, Literal[False])
             else:
-                assert_is_value(y, KnownValue(True))
+                assert_type(y, Literal[True])
 
     @assert_passes()
     def test_and_or(self):
@@ -1701,39 +1734,39 @@ class TestConstraints(TestNameCheckVisitorBase):
 
         def capybara(cond):
             x = 1 if cond else 2
-            assert_is_value(x, MultiValuedValue([KnownValue(1), KnownValue(2)]))
+            assert_type(x, Literal[1, 2])
             if x == 1:
-                assert_is_value(x, KnownValue(1))
+                assert_type(x, Literal[1])
             else:
-                assert_is_value(x, KnownValue(2))
+                assert_type(x, Literal[2])
             if x in (2,):
-                assert_is_value(x, KnownValue(2))
+                assert_type(x, Literal[2])
             else:
-                assert_is_value(x, KnownValue(1))
+                assert_type(x, Literal[1])
             if "x" in cond:
                 assert_is_value(cond, AnyValue(AnySource.unannotated))
 
         def pacarana(x: Union[Literal["x"], int]):
-            assert_is_value(x, KnownValue("x") | TypedValue(int))
+            assert_type(x, Literal["x"] | int)
             if x == 0:
-                assert_is_value(x, KnownValue(0))
+                assert_type(x, Literal[0])
             elif x == "x":
-                assert_is_value(x, KnownValue("x"))
+                assert_type(x, Literal["x"])
             else:
                 assert_type(x, int)
 
         def moco(x: Union[Literal["x"], int]):
-            assert_is_value(x, KnownValue("x") | TypedValue(int))
+            assert_type(x, Literal["x"] | int)
             if x != 0:
-                assert_is_value(x, KnownValue("x") | TypedValue(int))
+                assert_type(x, Literal["x"] | int)
             else:
-                assert_is_value(x, KnownValue(0))
+                assert_type(x, Literal[0])
 
         def hutia(x: str, y: object):
             if x in ["a", "b"]:
-                assert_is_value(x, KnownValue("a") | KnownValue("b"))
+                assert_type(x, Literal["a", "b"])
             if y in container:
-                assert_is_value(y, KnownValue(1) | KnownValue(2) | KnownValue(3))
+                assert_type(y, Literal[1, 2, 3])
 
     @assert_passes()
     def test_preserve_annotated(self):

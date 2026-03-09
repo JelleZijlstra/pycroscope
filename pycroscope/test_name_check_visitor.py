@@ -1596,10 +1596,10 @@ class TestNameCheckVisitor(TestNameCheckVisitorBase):
                 Y,
                 SyntheticClassObjectValue("Y", TypedValue("_pycroscope_tests.self.Y")),
             )
-            assert_is_value(X.from_config(), TypedValue("_pycroscope_tests.self.X"))
-            assert_is_value(Y.from_config(), TypedValue("_pycroscope_tests.self.Y"))
-            assert_is_value(X().ret(), TypedValue("_pycroscope_tests.self.X"))
-            assert_is_value(Y().ret(), TypedValue("_pycroscope_tests.self.Y"))
+            assert_type(X.from_config(), X)
+            assert_type(Y.from_config(), Y)
+            assert_type(X().ret(), X)
+            assert_type(Y().ret(), Y)
 
     @assert_passes()
     def test_function_local_class_uses_synthetic_class_object(self):
@@ -2033,14 +2033,14 @@ class TestNameCheckVisitor(TestNameCheckVisitorBase):
     def test_cls_type_inference(self):
         class OldStyle:
             def __init_subclass__(cls):
-                assert_is_value(cls, SubclassValue(TypedValue(OldStyle)))
+                assert_type(cls, type[OldStyle])
 
             def __new__(cls):
-                assert_is_value(cls, SubclassValue(TypedValue(OldStyle)))
+                assert_type(cls, type[OldStyle])
 
             @classmethod
             def capybara(cls):
-                assert_is_value(cls, SubclassValue(TypedValue(OldStyle)))
+                assert_type(cls, type[OldStyle])
 
     @assert_passes()
     def test_display_type_inference(self):
@@ -2074,9 +2074,11 @@ class TestNameCheckVisitor(TestNameCheckVisitorBase):
 
     @assert_passes()
     def test_if_exp(self):
+        from typing_extensions import Literal
+
         def capybara(x):
             y = 3 if x else 4
-            assert_is_value(y, MultiValuedValue([KnownValue(3), KnownValue(4)]))
+            assert_type(y, Literal[3, 4])
 
     @assert_passes()
     def test_namedtuple(self):
@@ -2092,7 +2094,9 @@ class TestNameCheckVisitor(TestNameCheckVisitorBase):
     def test_local_namedtuple(self):
         import collections
 
-        from pycroscope.value import KnownValue, SyntheticClassObjectValue, TypedValue
+        from typing_extensions import Literal
+
+        from pycroscope.value import SyntheticClassObjectValue, TypedValue
 
         def capybara():
             typ = collections.namedtuple("typ", "foo bar")
@@ -2103,8 +2107,8 @@ class TestNameCheckVisitor(TestNameCheckVisitorBase):
                 ),
             )
             t = typ(1, 2)
-            assert_is_value(t.foo, KnownValue(1))
-            assert_is_value(t.bar, KnownValue(2))
+            assert_type(t.foo, Literal[1])
+            assert_type(t.bar, Literal[2])
             print(t.baz)  # E: undefined_attribute
             typ(1, 2, 3)  # E: incompatible_call
             typ(1)  # E: incompatible_call
@@ -3285,13 +3289,15 @@ class TestIterationTarget(TestNameCheckVisitorBase):
 
     @assert_passes()
     def test_maybe_empty(self):
+        from typing_extensions import Literal
+
         def capybara(cond):
             lst = []
             if cond:
                 lst.append("x")
             assert_is_value(lst, KnownValue(["x"]) | KnownValue([]))
             for c in lst:
-                assert_is_value(c, KnownValue("x"))
+                assert_type(c, Literal["x"])
 
     @assert_passes()
     def test_old_style(self):
@@ -3671,10 +3677,12 @@ class TestUnpacking(TestNameCheckVisitorBase):
     def test_correct_unpack(self):
         from typing import Any, List, Tuple, Union
 
+        from typing_extensions import Literal
+
         def run(lst: List[int], union: Union[Any, List[int], Tuple[str, float]]):
             a, b = 1, 2
-            assert_is_value(a, KnownValue(1))
-            assert_is_value(b, KnownValue(2))
+            assert_type(a, Literal[1])
+            assert_type(b, Literal[2])
 
             c, d = lst
             assert_type(c, int)
@@ -3682,7 +3690,7 @@ class TestUnpacking(TestNameCheckVisitorBase):
 
             e, f = (lst, 42)
             assert_type(e, list[int])
-            assert_is_value(f, KnownValue(42))
+            assert_type(f, Literal[42])
 
             g, h = union
             assert_is_value(
@@ -3706,20 +3714,20 @@ class TestUnpacking(TestNameCheckVisitorBase):
                     list, [KnownValue(1), KnownValue(2), KnownValue(3), KnownValue(4)]
                 ),
             )
-            assert_is_value(j, KnownValue(5))
-            assert_is_value(k, KnownValue(6))
+            assert_type(j, Literal[5])
+            assert_type(k, Literal[6])
             l, m, *n, o, p = long_tuple
-            assert_is_value(l, KnownValue(1))
-            assert_is_value(m, KnownValue(2))
+            assert_type(l, Literal[1])
+            assert_type(m, Literal[2])
             assert_is_value(
                 n, make_simple_sequence(list, [KnownValue(3), KnownValue(4)])
             )
-            assert_is_value(o, KnownValue(5))
-            assert_is_value(p, KnownValue(6))
+            assert_type(o, Literal[5])
+            assert_type(p, Literal[6])
 
             q, r, *s = (1, 2)
-            assert_is_value(q, KnownValue(1))
-            assert_is_value(r, KnownValue(2))
+            assert_type(q, Literal[1])
+            assert_type(r, Literal[2])
             assert_is_value(s, SequenceValue(list, []))
 
             for sprime in []:
@@ -3731,17 +3739,15 @@ class TestUnpacking(TestNameCheckVisitorBase):
 
             known_list = [1, 2]
             v, w = known_list
-            assert_is_value(v, KnownValue(1))
-            assert_is_value(w, KnownValue(2))
+            assert_type(v, Literal[1])
+            assert_type(w, Literal[2])
 
             if lst:
                 known_list.append(3)
 
             # We allow this unsafe code to avoid false positives
             x, y = known_list
-            assert_is_value(
-                x, MultiValuedValue([KnownValue(1), KnownValue(2), KnownValue(3)])
-            )
+            assert_type(x, Literal[1, 2, 3])
 
     @assert_passes()
     def test_unpack_int(self):
@@ -3886,11 +3892,11 @@ class TestRequireAnnotations(TestNameCheckVisitorBase):
 class TestAnnAssign(TestNameCheckVisitorBase):
     @assert_passes()
     def test_simple(self):
-        from typing_extensions import Final
+        from typing_extensions import Final, Literal
 
         def capybara() -> None:
             x: Final = 3
-            assert_is_value(x, KnownValue(3))
+            assert_type(x, Literal[3])
             y: int = 3
             assert_type(y, int)
             z: bytes
@@ -4803,9 +4809,11 @@ class TestWalrus(TestNameCheckVisitorBase):
 
     @assert_passes()
     def test_if_exp(self):
+        from typing_extensions import Literal
+
         def capybara(cond):
             (x := 2) if cond else (x := 1)
-            assert_is_value(x, KnownValue(2) | KnownValue(1))
+            assert_type(x, Literal[1, 2])
 
     @assert_passes()
     def test_comprehension_scope(self):
@@ -4835,6 +4843,8 @@ class TestContextManagerWithSuppression(TestNameCheckVisitorBase):
         from collections.abc import Generator
         from types import TracebackType
         from typing import ContextManager, Optional, Type
+
+        from typing_extensions import Literal
 
         class SuppressException:
             def __enter__(self) -> None:
@@ -4883,39 +4893,39 @@ class TestContextManagerWithSuppression(TestNameCheckVisitorBase):
             a = 2
             with SuppressException():
                 a = 3
-            assert_is_value(a, KnownValue(2) | KnownValue(3))
+            assert_type(a, Literal[2, 3])
 
         def use_suppress_exception_multi_assignment():
             a = 2
             with SuppressException():
                 a = 3
                 a = 4
-            assert_is_value(a, KnownValue(2) | KnownValue(3) | KnownValue(4))
+            assert_type(a, Literal[2, 3, 4])
 
         def use_empty_context():
             a = 2  # E: unused_assignment
             with EmptyContext():
                 a = 3  # E: unused_assignment
                 a = 4
-            assert_is_value(a, KnownValue(4))
+            assert_type(a, Literal[4])
 
         def use_context_manager():
             a = 2  # E: unused_assignment
             with empty_context_manager():
                 a = 3
-            assert_is_value(a, KnownValue(3))
+            assert_type(a, Literal[3])
 
         def use_builtin_function():
             a = 2  # E: unused_assignment
             with open("test_file.txt"):
                 a = 3
-            assert_is_value(a, KnownValue(3))
+            assert_type(a, Literal[3])
 
         def use_contextlib_manager():
             a = 2  # E: unused_assignment
             with empty_contextlib_manager():
                 a = 3
-            assert_is_value(a, KnownValue(3))
+            assert_type(a, Literal[3])
 
         def use_optional_bool_return(x: int | str) -> None:
             if isinstance(x, int):
@@ -4927,7 +4937,7 @@ class TestContextManagerWithSuppression(TestNameCheckVisitorBase):
             b = 2
             with SuppressException(), EmptyContext() as b:
                 assert_type(b, None)
-            assert_is_value(b, KnownValue(2) | KnownValue(None))
+            assert_type(b, Literal[2] | None)
 
             c = 2  # E: unused_assignment
             with EmptyContext() as c, SuppressException():
@@ -4966,6 +4976,8 @@ class TestContextManagerWithSuppression(TestNameCheckVisitorBase):
         from types import TracebackType
         from typing import AsyncContextManager, Optional, Type
 
+        from typing_extensions import Literal
+
         class AsyncSuppressException(object):
             async def __aenter__(self) -> None:
                 pass
@@ -4997,25 +5009,25 @@ class TestContextManagerWithSuppression(TestNameCheckVisitorBase):
             a = 2
             async with AsyncSuppressException():
                 a = 3
-            assert_is_value(a, KnownValue(2) | KnownValue(3))
+            assert_type(a, Literal[2, 3])
 
         async def use_async_empty_context():
             a = 2  # E: unused_assignment
             async with AsyncEmptyContext():
                 a = 3
-            assert_is_value(a, KnownValue(3))
+            assert_type(a, Literal[3])
 
         async def use_async_context_manager():
             a = 2  # E: unused_assignment
             async with async_empty_context_manager():
                 a = 3
-            assert_is_value(a, KnownValue(3))
+            assert_type(a, Literal[3])
 
         async def use_async_nested_contexts():
             b = 2
             async with AsyncSuppressException(), AsyncEmptyContext() as b:
                 assert_type(b, None)
-            assert_is_value(b, KnownValue(2) | KnownValue(None))
+            assert_type(b, Literal[2] | None)
 
             c = 2  # E: unused_assignment
             async with AsyncEmptyContext() as c, AsyncSuppressException():
@@ -5026,6 +5038,8 @@ class TestContextManagerWithSuppression(TestNameCheckVisitorBase):
         import contextlib
         from typing import AsyncIterator
 
+        from typing_extensions import Literal
+
         @contextlib.asynccontextmanager
         async def async_empty_contextlib_manager() -> AsyncIterator[None]:
             yield
@@ -5034,7 +5048,7 @@ class TestContextManagerWithSuppression(TestNameCheckVisitorBase):
             a = 2  # E: unused_assignment
             async with async_empty_contextlib_manager():
                 a = 3
-            assert_is_value(a, KnownValue(3))
+            assert_type(a, Literal[3])
 
 
 class TestMustUse(TestNameCheckVisitorBase):
