@@ -1811,6 +1811,7 @@ def _type_from_subscripted_value(
             root.alias,
             tuple(args_vals),
             runtime_allows_value_call=root.runtime_allows_value_call,
+            uses_type_alias_object_semantics=root.uses_type_alias_object_semantics,
             is_specialized=True,
             type_arguments_are_packed=type_arguments_are_packed,
         )

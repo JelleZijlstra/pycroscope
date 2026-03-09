@@ -433,11 +433,15 @@ class TestImportFailureHandling(TestNameCheckVisitorBase):
 
         TA1: TypeAlias = Type
         TA2: TypeAlias = Type[Any]
+        TA3: TypeAlias = type
+        TA4: TypeAlias = type[Any]
 
         def capybara() -> None:
             _bad_type1: type[int, str]  # E: invalid_annotation
             TA1.unknown  # E: undefined_attribute
             TA2.unknown  # E: undefined_attribute
+            TA3.unknown  # E: undefined_attribute
+            TA4.unknown  # E: undefined_attribute
             type.unknown  # E: undefined_attribute
 
     @assert_passes(allow_import_failures=True)
@@ -451,6 +455,17 @@ class TestImportFailureHandling(TestNameCheckVisitorBase):
         _x: list[str] = ListAlias()
         _x2: ListAlias[int]  # E: invalid_annotation
         _x3 = ListOrSetAlias()  # E: not_callable
+
+    @assert_passes(run_in_both_module_modes=True)
+    def test_explicit_type_alias_uses_runtime_attribute_semantics(self):
+        from typing import TypeAlias
+
+        Alias: TypeAlias = int
+
+        def capybara() -> None:
+            print(Alias.bit_count)
+            print(Alias.__name__)
+            Alias.__value__  # E: undefined_attribute
 
     @assert_passes(run_in_both_module_modes=True)
     def test_type_object_name_attribute_after_import_failure(self):
