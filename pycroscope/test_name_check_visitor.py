@@ -304,9 +304,9 @@ class TestImportFailureHandling(TestNameCheckVisitorBase):
             class F6(F1):
                 c: ReadOnly[NotRequired[int]]  # E: invalid_annotation
 
-            class TD_A(TD_A1, TD_A2): ...  # E: invalid_annotation
+            class TD_A(TD_A1, TD_A2): ...  # E: invalid_base
 
-            class TD_B(TD_B1, TD_B2): ...  # E: invalid_annotation
+            class TD_B(TD_B1, TD_B2): ...  # E: invalid_base
 
     @assert_passes(run_in_both_module_modes=True)
     def test_typeddict_extra_items_and_unpack_after_import_failure(self):
@@ -574,7 +574,7 @@ class TestImportFailureHandlingCodeSamples(TestNameCheckVisitorBase):
 
         _my_dict_invalid: MyDict[int, int]  # E: invalid_annotation
 
-        class BadClass1(Generic[T, T]):  # E: invalid_annotation
+        class BadClass1(Generic[T, T]):  # E: invalid_base
             pass
 
         class Parent1(Generic[T1, T2]): ...
@@ -595,9 +595,7 @@ class TestImportFailureHandlingCodeSamples(TestNameCheckVisitorBase):
 
         class Parent(Grandparent[T1, T2]): ...
 
-        class BadChild(
-            Parent[T1, T2], Grandparent[T2, T1]  # E: invalid_annotation
-        ): ...
+        class BadChild(Parent[T1, T2], Grandparent[T2, T1]): ...  # E: invalid_base
 
     @assert_passes(allow_import_failures=True)
     def test_overload_fallback_after_import_failure(self):
@@ -665,13 +663,13 @@ class TestImportFailureHandlingCodeSamples(TestNameCheckVisitorBase):
         T_co = TypeVar("T_co", covariant=True)
         S_co = TypeVar("S_co", covariant=True)
 
-        class Bad1(Generic[int]): ...  # E: invalid_annotation
+        class Bad1(Generic[int]): ...  # E: invalid_base
 
-        class Bad2(Protocol[int]): ...  # E: invalid_annotation
+        class Bad2(Protocol[int]): ...  # E: invalid_base
 
-        class Bad3(Iterable[T_co], Generic[S_co]): ...  # E: invalid_annotation
+        class Bad3(Iterable[T_co], Generic[S_co]): ...  # E: invalid_base
 
-        class Bad4(Iterable[T_co], Protocol[S_co]): ...  # E: invalid_annotation
+        class Bad4(Iterable[T_co], Protocol[S_co]): ...  # E: invalid_base
 
         class Good(Iterable[T_co], Protocol): ...
 
@@ -1722,7 +1720,7 @@ class TestNameCheckVisitor(TestNameCheckVisitorBase):
                 x: float
                 y: ReadOnly[float]
 
-            class TD_A(TD_A1, TD_A2): ...  # E: invalid_annotation
+            class TD_A(TD_A1, TD_A2): ...  # E: invalid_base
 
             class TD_B1(TypedDict):
                 x: ReadOnly[NotRequired[int]]
@@ -1732,7 +1730,7 @@ class TestNameCheckVisitor(TestNameCheckVisitorBase):
                 x: ReadOnly[Required[int]]
                 y: ReadOnly[NotRequired[int]]
 
-            class TD_B(TD_B1, TD_B2): ...  # E: invalid_annotation
+            class TD_B(TD_B1, TD_B2): ...  # E: invalid_base
 
     @assert_passes()
     def test_function_scope_typeddict_values(self):
@@ -3021,11 +3019,11 @@ class TestTypingConstructNameMatching(TestNameCheckVisitorBase):
                 ...
 
             def define_bad() -> None:
-                class Bad(Generic[Shape]):  # E: invalid_annotation
+                class Bad(Generic[Shape]):  # E: invalid_base
                     ...
 
             def define_bad2() -> None:
-                class Bad2(Generic[*Ts1, *Ts2]):  # E: invalid_annotation
+                class Bad2(Generic[*Ts1, *Ts2]):  # E: invalid_base
                     ...
             """,
             run_in_both_module_modes=True,
@@ -3957,7 +3955,7 @@ class TestAnnAssign(TestNameCheckVisitorBase):
         class FinalBase:
             pass
 
-        class FinalChild(FinalBase):  # E: invalid_annotation
+        class FinalChild(FinalBase):  # E: invalid_base
             pass
 
         class Parent:
@@ -4634,7 +4632,7 @@ class TestFallbackValueDispatch(TestNameCheckVisitorBase):
         else:
             maybe_t = T
 
-        class Bad(Generic[maybe_t, maybe_t]):  # E: invalid_annotation
+        class Bad(Generic[maybe_t, maybe_t]):  # E: invalid_base
             pass
 
 

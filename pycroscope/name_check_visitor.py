@@ -6392,7 +6392,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 self._show_error_if_checking(
                     base_node,
                     f"{type_param_name} has incompatible variance in base class",
-                    error_code=ErrorCode.invalid_annotation,
+                    error_code=ErrorCode.invalid_base,
                 )
                 break
 
@@ -6754,7 +6754,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     self._show_error_if_checking(
                         base_node.slice,
                         "Type parameter list cannot contain duplicate type variables",
-                        error_code=ErrorCode.invalid_annotation,
+                        error_code=ErrorCode.invalid_base,
                     )
                     return
                 seen.add(type_param)
@@ -6779,7 +6779,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 self._show_error_if_checking(
                     base_node.slice,
                     "All arguments to Generic or Protocol must be type variables",
-                    error_code=ErrorCode.invalid_annotation,
+                    error_code=ErrorCode.invalid_base,
                 )
                 return
 
@@ -6819,7 +6819,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         self._show_error_if_checking(
             explicit_base,
             "All type parameters for the class must appear within Generic or Protocol",
-            error_code=ErrorCode.invalid_annotation,
+            error_code=ErrorCode.invalid_base,
         )
 
     def _check_inconsistent_generic_base_specialization(
@@ -6864,7 +6864,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                             self._show_error_if_checking(
                                 base_node,
                                 "Inconsistent type variable order in base classes",
-                                error_code=ErrorCode.invalid_annotation,
+                                error_code=ErrorCode.invalid_base,
                             )
                             return
 
@@ -6898,13 +6898,13 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 self._show_error_if_checking(
                     base.slice,
                     "TypeVarTuple must be unpacked",
-                    error_code=ErrorCode.invalid_annotation,
+                    error_code=ErrorCode.invalid_base,
                 )
             if unpacked_count > 1 or starred_count > 1:
                 self._show_error_if_checking(
                     base.slice,
                     "Only one TypeVarTuple can be used in a type parameter list",
-                    error_code=ErrorCode.invalid_annotation,
+                    error_code=ErrorCode.invalid_base,
                 )
 
     def _check_pep695_type_parameter_base_compatibility(
@@ -6920,7 +6920,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 base_node,
                 "Class definition cannot specialize Generic or Protocol bases"
                 " when using type parameter syntax",
-                error_code=ErrorCode.invalid_annotation,
+                error_code=ErrorCode.invalid_base,
             )
             return
 
@@ -7419,7 +7419,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             self._show_error_if_checking(
                 node,
                 f"TypedDict base classes define key {key!r} with incompatible mutability",
-                error_code=ErrorCode.invalid_annotation,
+                error_code=ErrorCode.invalid_base,
             )
             return None
 
@@ -7428,7 +7428,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 self._show_error_if_checking(
                     node,
                     f"TypedDict base classes define key {key!r} with incompatible requiredness",
-                    error_code=ErrorCode.invalid_annotation,
+                    error_code=ErrorCode.invalid_base,
                 )
                 return None
             if isinstance(
@@ -7442,7 +7442,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     self._show_error_if_checking(
                         node,
                         f"TypedDict base classes define key {key!r} with incompatible types",
-                        error_code=ErrorCode.invalid_annotation,
+                        error_code=ErrorCode.invalid_base,
                     )
                     return None
                 return right
@@ -7452,7 +7452,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             self._show_error_if_checking(
                 node,
                 f"TypedDict base classes define key {key!r} with incompatible requiredness",
-                error_code=ErrorCode.invalid_annotation,
+                error_code=ErrorCode.invalid_base,
             )
             return None
         if isinstance(
@@ -7463,7 +7463,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             self._show_error_if_checking(
                 node,
                 f"TypedDict base classes define key {key!r} with incompatible types",
-                error_code=ErrorCode.invalid_annotation,
+                error_code=ErrorCode.invalid_base,
             )
             return None
         return left
@@ -8568,9 +8568,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         for base in base_values:
             if self._is_final_base_value(base):
                 self._show_error_if_checking(
-                    node,
-                    "Cannot inherit from final class",
-                    ErrorCode.invalid_annotation,
+                    node, "Cannot inherit from final class", ErrorCode.invalid_base
                 )
                 return
 

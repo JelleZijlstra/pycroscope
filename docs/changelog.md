@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Reclassify invalid inheritance diagnostics: pycroscope now reports `invalid_base` instead of `invalid_annotation` for class-base errors such as bad `Generic[...]`/`Protocol[...]` bases, inheriting from `@final` classes, and incompatible multiple `TypedDict` bases.
 - Improve `NamedTuple` compatibility for tuple-style indexing, unpacking, and item mutation checks.
 - Enforce function-parameter annotations on later reassignments, so pycroscope now reports incompatible writes like reassigning `x: int` to `str` or widening `Literal[...]` parameters with `+=`.
 - Fix variadic type-alias specialization in static fallback mode: pycroscope now solves `TypeVarTuple` arguments through aliases like `tuple[*Ts, T1, T2]` and preserves explicit empty-pack specializations such as `Array[()]` even when a module cannot be imported.

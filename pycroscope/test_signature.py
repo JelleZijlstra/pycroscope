@@ -1776,7 +1776,7 @@ class TestUnpack(TestNameCheckVisitorBase):
             def check(x: Array[Height], z: Array[Height, Width]) -> None:
                 assert_type(Array((Height(1), Width(2))), Array[Height, Width])
 
-                class Bad(Generic[Shape]):  # E: invalid_annotation
+                class Bad(Generic[Shape]):  # E: invalid_base
                     ...
 
                 v_bad: Array[Height, Width] = Array((Height(1),))  # E: incompatible_assignment
