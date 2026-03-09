@@ -744,8 +744,9 @@ def make_type_param(
     if ctx is None:
         assert visitor is not None, "visitor must be provided if ctx is not"
         ctx = _DefaultContext(visitor, node)
-    if getattr(tv, "__default__", NoDefault) is not NoDefault:
-        default = _type_from_runtime(tv.__default__, ctx)
+    runtime_default = getattr(tv, "__default__", NoDefault)
+    if runtime_default is not NoDefault:
+        default = _type_from_runtime(runtime_default, ctx)
     else:
         default = None
     if isinstance(tv, (TypeVar, typing_extensions.TypeVar)):
