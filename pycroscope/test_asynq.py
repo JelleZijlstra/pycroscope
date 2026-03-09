@@ -38,6 +38,8 @@ used(asynq_tests)
 class TestBadAsyncYield(TestNameCheckVisitorBase):
     @assert_passes()
     def test_const_future(self):
+        from typing import Any
+
         from asynq import ConstFuture, FutureBase, asynq
         from typing_extensions import Literal
 
@@ -54,7 +56,7 @@ class TestBadAsyncYield(TestNameCheckVisitorBase):
             else:
                 task = capybara.asynq(True)
             val3 = yield task
-            assert_is_value(val3, TypedValue(int) | AnyValue(AnySource.inference))
+            assert_type(val3, Any | Literal[4])
 
 
 class TestUnwrapYield(TestNameCheckVisitorBase):
