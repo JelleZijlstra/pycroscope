@@ -509,6 +509,23 @@ class TestAnnotations(TestNameCheckVisitorBase):
             Array, [SequenceValue(tuple, [])]
         )
 
+    @skip_before((3, 12))
+    def test_type_from_runtime_preserves_runtime_paramspec_specialization(self):
+        from .annotations import Context, type_from_runtime
+
+        namespace: dict[str, object] = {}
+        exec("class Callback[**P]:\n    pass", namespace)
+        Callback = namespace["Callback"]
+
+        assert type_from_runtime(Callback[[int, str]], ctx=Context()) == GenericValue(
+            Callback,
+            [
+                SequenceValue(
+                    tuple, [(False, TypedValue(int)), (False, TypedValue(str))]
+                )
+            ],
+        )
+
     @assert_passes()
     def test_runtime_initvar_requires_single_argument(self):
         from dataclasses import InitVar, dataclass

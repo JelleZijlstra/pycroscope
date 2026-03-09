@@ -56,10 +56,13 @@ from .value import (
     ConstraintExtension,
     KnownValue,
     MultiValuedValue,
+    ParamSpecParam,
     ReferencingValue,
     SubclassValue,
     TypedValue,
     TypeVarMap,
+    TypeVarParam,
+    TypeVarTupleParam,
     Value,
     annotate_value,
     flatten_values,
@@ -349,6 +352,7 @@ class Constraint(AbstractConstraint):
         The value may not be a MultiValuedValue.
 
         """
+        assert not isinstance(value, (TypeVarParam, ParamSpecParam, TypeVarTupleParam))
         if value is UNINITIALIZED_VALUE:
             # If a constraint applies to a value, it must have been initialized,
             # or at least we must have already tried to read it and gotten a
@@ -867,6 +871,7 @@ class Scope:
     def resolve_reference(
         self, value: Value, state: VisitorState, can_assign_ctx: CanAssignContext
     ) -> Value:
+        assert not isinstance(value, (TypeVarParam, ParamSpecParam, TypeVarTupleParam))
         if isinstance(value, ReferencingValue):
             referenced, _, _ = value.scope.get(
                 value.name, None, state, can_assign_ctx=can_assign_ctx
@@ -1412,6 +1417,7 @@ class FunctionScope(Scope):
         )
 
     def _resolve_value(self, val: Value, ctx: _LookupContext) -> Value:
+        assert not isinstance(val, (TypeVarParam, ParamSpecParam, TypeVarTupleParam))
         if isinstance(val, _ConstrainedValue):
             # Cache repeated resolutions of the same ConstrainedValue, because otherwise
             # lots of nested constraints can lead to exponential performance (see the
@@ -1734,8 +1740,15 @@ def _constrain_value(
 ) -> Value:
     # Flatten MultiValuedValue so that we can apply constraints.
     if not values and fallback_value is not None:
+        assert not isinstance(
+            fallback_value, (TypeVarParam, ParamSpecParam, TypeVarTupleParam)
+        )
         values = list(flatten_values(fallback_value))
     else:
+        for val_or_mvv in values:
+            assert not isinstance(
+                val_or_mvv, (TypeVarParam, ParamSpecParam, TypeVarTupleParam)
+            )
         values = [val for val_or_mvv in values for val in flatten_values(val_or_mvv)]
     for constraint in constraints:
         values = list(constraint.apply_to_values(values, ctx))

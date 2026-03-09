@@ -19,7 +19,7 @@ from typing import TypeAlias, TypeVar
 
 from typing_extensions import Protocol
 
-from pycroscope.input_sig import InputSigValue, ParamSpecSig
+from pycroscope.input_sig import InputSigValue
 
 from .analysis_lib import is_positional_only_arg_name
 from .error_code import ErrorCode
@@ -48,12 +48,16 @@ from .value import (
     KnownValue,
     ParamSpecArgsValue,
     ParamSpecKwargsValue,
+    ParamSpecParam,
     Qualifier,
     SelfT,
     SubclassValue,
     TypeAliasValue,
     TypedDictValue,
     TypedValue,
+    TypeParam,
+    TypeVarParam,
+    TypeVarTupleValue,
     TypeVarValue,
     Value,
     annotate_value,
@@ -74,10 +78,15 @@ SendT = TypeVar("SendT")
 ReturnT = TypeVar("ReturnT")
 GeneratorValue = GenericValue(
     collections.abc.Generator,
-    [TypeVarValue(YieldT), TypeVarValue(SendT), TypeVarValue(ReturnT)],
+    [
+        TypeVarValue(TypeVarParam(YieldT)),
+        TypeVarValue(TypeVarParam(SendT)),
+        TypeVarValue(TypeVarParam(ReturnT)),
+    ],
 )
 AsyncGeneratorValue = GenericValue(
-    collections.abc.AsyncGenerator, [TypeVarValue(YieldT), TypeVarValue(SendT)]
+    collections.abc.AsyncGenerator,
+    [TypeVarValue(TypeVarParam(YieldT)), TypeVarValue(TypeVarParam(SendT))],
 )
 
 
@@ -143,7 +152,7 @@ class FunctionInfo:
     return_annotation: Value | None
     is_async_generator: bool
     potential_function: object | None
-    type_params: Sequence[TypeVarValue]
+    type_params: Sequence[TypeParam]
 
     def get_generator_yield_type(self, ctx: CanAssignContext) -> Value:
         if self.return_annotation is None:
@@ -271,7 +280,7 @@ def _paramspec_identities_from_value(value: Value) -> set[object]:
     identities: set[object] = set()
     for subval in value.walk_values():
         if isinstance(subval, InputSigValue) and isinstance(
-            subval.input_sig, ParamSpecSig
+            subval.input_sig, ParamSpecParam
         ):
             identities.add(subval.input_sig.param_spec)
         elif isinstance(subval, (ParamSpecArgsValue, ParamSpecKwargsValue)):
@@ -333,7 +342,7 @@ def compute_parameters(
     is_nested_in_class: bool = False,
     is_staticmethod: bool = False,
     is_classmethod: bool = False,
-    declared_type_params: Sequence[TypeVarValue] = (),
+    declared_type_params: Sequence[TypeParam] = (),
 ) -> Sequence[ParamInfo]:
     """Visits and checks the arguments to a function."""
     from .annotations import has_invalid_paramspec_usage
@@ -425,7 +434,7 @@ def compute_parameters(
                 inner_value is not None
                 and not (
                     isinstance(inner_value, InputSigValue)
-                    and isinstance(inner_value.input_sig, ParamSpecSig)
+                    and isinstance(inner_value.input_sig, ParamSpecParam)
                 )
                 and not isinstance(
                     inner_value, (ParamSpecArgsValue, ParamSpecKwargsValue)
@@ -444,7 +453,7 @@ def compute_parameters(
                 and inner_value.param_spec in paramspecs_in_scope
             )
             if isinstance(inner_value, InputSigValue):
-                if isinstance(inner_value.input_sig, ParamSpecSig):
+                if isinstance(inner_value.input_sig, ParamSpecParam):
                     ctx.show_error(
                         arg,
                         "ParamSpec cannot be used in this annotation context",
@@ -511,7 +520,7 @@ def compute_parameters(
                         )
         elif is_self:
             assert enclosing_class is not None
-            self_tv_value = TypeVarValue(SelfT, bound=enclosing_class)
+            self_tv_value = TypeVarValue(TypeVarParam(SelfT, bound=enclosing_class))
             if is_classmethod or getattr(node, "name", None) in IMPLICIT_CLASSMETHODS:
                 value = SubclassValue(self_tv_value)
             else:
@@ -530,7 +539,7 @@ def compute_parameters(
                     error_code=ErrorCode.missing_parameter_annotation,
                 )
             if isinstance(node, ast.Lambda):
-                value = TypeVarValue(TypeVar(f"T{tv_index}"))
+                value = TypeVarValue(TypeVarParam(TypeVar(f"T{tv_index}")))
                 tv_index += 1
             else:
                 value = AnyValue(AnySource.unannotated)
@@ -665,7 +674,7 @@ def translate_vararg_type(
             return inner_typ
         elif isinstance(inner_typ, ParamSpecArgsValue):
             return inner_typ
-        elif isinstance(inner_typ, TypeVarValue) and inner_typ.is_typevartuple():
+        elif isinstance(inner_typ, TypeVarTupleValue):
             if error_ctx is not None and node is not None:
                 error_ctx.show_error(
                     node,
@@ -730,7 +739,7 @@ def _signature_params_from_function_params(
                     SigParameter(
                         param.name,
                         ParameterKind.PARAM_SPEC,
-                        annotation=InputSigValue(ParamSpecSig(annotation.param_spec)),
+                        annotation=InputSigValue(ParamSpecParam(annotation.param_spec)),
                     )
                 )
                 pending_param = None

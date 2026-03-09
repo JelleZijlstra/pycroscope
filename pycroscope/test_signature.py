@@ -197,7 +197,8 @@ class TestCanAssign:
     def test_anysig_paramspec(self) -> None:
         from typing_extensions import ParamSpec
 
-        from .input_sig import InputSigValue, ParamSpecSig
+        from .input_sig import InputSigValue
+        from .value import ParamSpecParam
 
         left = Signature.make(
             [
@@ -232,7 +233,7 @@ class TestCanAssign:
                     P("x", annotation=TypedValue(int), kind=K.POSITIONAL_ONLY),
                     P(
                         "__Q",
-                        annotation=InputSigValue(ParamSpecSig(q)),
+                        annotation=InputSigValue(ParamSpecParam(q)),
                         kind=K.PARAM_SPEC,
                     ),
                 ],

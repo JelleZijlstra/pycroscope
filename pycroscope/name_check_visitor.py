@@ -50,20 +50,9 @@ from typing import (
 from unittest.mock import ANY
 
 import typeshed_client
-from typing_extensions import (
-    NoDefault,
-    Protocol,
-    TypeVarTuple,
-    assert_never,
-    is_typeddict,
-)
+from typing_extensions import Protocol, TypeVarTuple, assert_never, is_typeddict
 
-from pycroscope.input_sig import (
-    ActualArguments,
-    InputSigValue,
-    ParamSpecSig,
-    extract_type_params,
-)
+from pycroscope.input_sig import ActualArguments, InputSigValue
 
 from . import attributes, format_strings, importer, node_visitor, type_evaluation
 from .analysis_lib import (
@@ -88,7 +77,7 @@ from .annotations import (
     is_instance_of_typing_name,
     is_typevarlike,
     is_typing_name,
-    make_type_var_value,
+    make_type_param,
     type_from_value,
     value_from_ast,
 )
@@ -155,7 +144,6 @@ from .relations import (
     is_subtype,
 )
 from .safe import (
-    all_of_type,
     is_dataclass_type,
     is_hashable,
     is_namedtuple_class,
@@ -254,6 +242,7 @@ from .value import (
     MultiValuedValue,
     NoReturnConstraintExtension,
     OverlapMode,
+    ParamSpecParam,
     PartialValue,
     PartialValueOperation,
     PredicateValue,
@@ -274,8 +263,12 @@ from .value import (
     TypeFormValue,
     TypeGuardExtension,
     TypeIsExtension,
+    TypeParam,
     TypeVarLike,
     TypeVarMap,
+    TypeVarParam,
+    TypeVarTupleParam,
+    TypeVarTupleValue,
     TypeVarValue,
     UnboundMethodValue,
     Value,
@@ -289,6 +282,7 @@ from .value import (
     is_async_iterable,
     is_iterable,
     is_union,
+    iter_type_params_in_value,
     kv_pairs_from_mapping,
     make_coro_type,
     namedtuple_members_from_value,
@@ -296,6 +290,7 @@ from .value import (
     replace_known_sequence_value,
     set_self,
     stringify_object,
+    type_param_to_value,
     unannotate_value,
     unite_and_simplify,
     unite_values,
@@ -367,7 +362,9 @@ T = TypeVar("T")
 U = TypeVar("U")
 T_co = TypeVar("T_co", covariant=True)
 U_co = TypeVar("U_co", covariant=True)
-AwaitableValue = GenericValue(collections.abc.Awaitable, [TypeVarValue(T)])
+AwaitableValue = GenericValue(
+    collections.abc.Awaitable, [TypeVarValue(TypeVarParam(T))]
+)
 KnownNone = KnownValue(None)
 ExceptionValue = TypedValue(BaseException) | SubclassValue(TypedValue(BaseException))
 ExceptionOrNone = ExceptionValue | KnownNone
@@ -584,8 +581,8 @@ def _contains_unpack_annotation_value(value: Value) -> bool:
 
 
 def _is_typevartuple_annotation_value(value: Value) -> bool:
-    if isinstance(value, TypeVarValue):
-        return value.is_typevartuple()
+    if isinstance(value, TypeVarTupleValue):
+        return True
     if not isinstance(value, KnownValue):
         return False
     return is_instance_of_typing_name(value.val, "TypeVarTuple") or is_typing_name(
@@ -1615,7 +1612,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     current_class: type | str | None
     current_dataclass_info: DataclassInfo | None
     current_class_key: type | str | None
-    current_class_type_params: Sequence[TypeVarValue] | None
+    current_class_type_params: Sequence[TypeParam] | None
     _active_pep695_type_params: list[set[object]]
     current_enum_members: _EnumMemberTracker | None
     current_function: object | None
@@ -1832,7 +1829,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     ) -> GenericBases:
         return self.checker.get_generic_bases(typ, generic_args)
 
-    def get_type_parameters(self, typ: type | str) -> Sequence[Value]:
+    def get_type_parameters(self, typ: type | str) -> Sequence[TypeParam]:
         return self.checker.get_type_parameters(typ)
 
     def get_signature(
@@ -2722,7 +2719,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     continue
                 return True
             if isinstance(subval, InputSigValue) and isinstance(
-                subval.input_sig, ParamSpecSig
+                subval.input_sig, ParamSpecParam
             ):
                 return True
         return False
@@ -3281,6 +3278,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     error_node, f"Undefined name: {node.id}", ErrorCode.undefined_name
                 )
             return AnyValue(AnySource.error), origin
+        assert not isinstance(value, (TypeVarParam, ParamSpecParam, TypeVarTupleParam))
         if isinstance(value, InputSigValue):
             # ParamSpecs are stored as InputSigValues and cannot be converted to a
             # gradual fallback.
@@ -3696,7 +3694,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     base_values
                 )
                 if protocol_type_params and all(
-                    not (type_param.is_paramspec() or type_param.is_typevartuple())
+                    isinstance(type_param, TypeVarParam)
                     for type_param in protocol_type_params
                 ):
                     effective_type_param_values = protocol_type_params
@@ -3709,8 +3707,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     )
                 )
                 should_use_recovered_type_params = any(
-                    type_param.is_paramspec()
-                    or type_param.is_typevartuple()
+                    not isinstance(type_param, TypeVarParam)
                     or _type_param_uses_infer_variance(type_param)
                     for type_param in recovered_type_param_values
                 )
@@ -3731,12 +3728,14 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             )
 
             def _merge_with_annotation_type_params(
-                type_params: Sequence[TypeVarValue],
-            ) -> Sequence[TypeVarValue]:
+                type_params: Sequence[TypeParam],
+            ) -> Sequence[TypeParam]:
+                normalized_type_params = list(type_params)
                 if not annotation_type_param_values:
-                    return type_params
+                    return normalized_type_params
                 by_identity = {
-                    type_param.typevar: type_param for type_param in type_params
+                    type_param.typevar: type_param
+                    for type_param in normalized_type_params
                 }
                 merged = []
                 for annotation_type_param in annotation_type_param_values:
@@ -3744,15 +3743,22 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     if existing is None:
                         merged.append(annotation_type_param)
                     else:
-                        merged.append(
-                            replace(
-                                annotation_type_param,
-                                typevar=existing.typevar,
-                                variance=existing.variance,
+                        if isinstance(
+                            annotation_type_param, TypeVarParam
+                        ) and isinstance(existing, TypeVarParam):
+                            merged.append(
+                                replace(
+                                    annotation_type_param,
+                                    typevar=existing.typevar,
+                                    variance=existing.variance,
+                                )
                             )
-                        )
+                        elif type(annotation_type_param) is type(existing):
+                            merged.append(existing)
+                        else:
+                            merged.append(annotation_type_param)
                 seen = {type_param.typevar for type_param in merged}
-                for type_param in type_params:
+                for type_param in normalized_type_params:
                     if type_param.typevar in seen:
                         continue
                     merged.append(type_param)
@@ -3779,18 +3785,11 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 and self.module is None
                 and isinstance(class_scope_object, type)
             ):
-                runtime_type_params: list[TypeVarValue] = []
+                runtime_type_params: list[TypeParam] = []
                 for runtime_type_param in self.checker.get_type_parameters(
                     class_scope_object
                 ):
-                    if isinstance(runtime_type_param, TypeVarValue):
-                        runtime_type_params.append(runtime_type_param)
-                    elif isinstance(runtime_type_param, InputSigValue) and isinstance(
-                        runtime_type_param.input_sig, ParamSpecSig
-                    ):
-                        runtime_type_params.append(
-                            TypeVarValue(runtime_type_param.input_sig.param_spec)
-                        )
+                    runtime_type_params.append(runtime_type_param)
                 if runtime_type_params:
                     effective_type_param_values = runtime_type_params
             registered_type_param_values = self._align_type_params_with_runtime_class(
@@ -3870,7 +3869,8 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 not method_type_params
                 and effective_type_param_values
                 and any(
-                    type_param.is_paramspec() or type_param.is_typevartuple()
+                    isinstance(type_param, ParamSpecParam)
+                    or isinstance(type_param, TypeVarTupleParam)
                     for type_param in effective_type_param_values
                 )
             ):
@@ -3911,7 +3911,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     node, class_scope_object
                 )
             if synthetic_typeddict is None:
-                inferred_registration_type_params: Sequence[TypeVarValue] | None = None
+                inferred_registration_type_params: Sequence[TypeParam] | None = None
                 if type_param_values:
                     inferred_registration_type_params = (
                         self._infer_class_type_param_variances(
@@ -3985,7 +3985,17 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                                 variance=by_identity[type_param.typevar].variance,
                             )
                             if type_param.typevar in by_identity
-                            else type_param
+                            and isinstance(type_param, TypeVarParam)
+                            and isinstance(
+                                by_identity[type_param.typevar], TypeVarParam
+                            )
+                            else (
+                                by_identity[type_param.typevar]
+                                if type_param.typevar in by_identity
+                                and type(by_identity[type_param.typevar])
+                                is type(type_param)
+                                else type_param
+                            )
                         )
                         for type_param in annotation_declared_type_params
                     ]
@@ -6099,14 +6109,12 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             type_parameters = self.get_type_parameters(value.typ)
             if len(type_parameters) == len(value.args):
                 for arg, type_param in zip(value.args, type_parameters):
-                    if isinstance(type_param, TypeVarValue):
-                        param_variance = type_param.variance
-                    else:
-                        param_variance = Variance.INVARIANT
                     self._collect_type_param_polarities_from_value(
                         arg,
                         type_param_polarities,
-                        polarity=_compose_variance_polarity(polarity, param_variance),
+                        polarity=_compose_variance_polarity(
+                            polarity, type_param.variance
+                        ),
                     )
             else:
                 synthetic_type_params = self._synthetic_type_params_for_variance(
@@ -6146,16 +6154,11 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 for alias_type_param, type_argument in zip(
                     alias_type_params, value.type_arguments
                 ):
-                    type_param = (
-                        alias_type_param.typevar
-                        if isinstance(alias_type_param, TypeVarValue)
-                        else alias_type_param
-                    )
                     self._collect_type_param_polarities_from_value(
                         type_argument,
                         type_param_polarities,
                         polarity=_compose_variance_polarity(
-                            polarity, get_typevar_variance(type_param)
+                            polarity, alias_type_param.variance
                         ),
                     )
                 return
@@ -6200,12 +6203,12 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     def _infer_class_type_param_variances(
         self,
         node: ast.ClassDef,
-        type_params: Sequence[TypeVarValue],
+        type_params: Sequence[TypeParam],
         base_values: Sequence[Value],
         *,
         is_protocol: bool = False,
         dataclass_semantics: DataclassInfo | None = None,
-    ) -> Sequence[TypeVarValue]:
+    ) -> Sequence[TypeParam]:
         if not type_params:
             return type_params
         type_param_polarities = {tp.typevar: set() for tp in type_params}
@@ -6295,7 +6298,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     def _check_protocol_type_param_variances(
         self,
         node: ast.ClassDef,
-        type_params: Sequence[TypeVarValue],
+        type_params: Sequence[TypeParam],
         base_values: Sequence[Value],
         class_scope_object: type | str | None,
     ) -> None:
@@ -6309,14 +6312,14 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             type_params = tuple(
                 type_param
                 for type_param in self.get_type_parameters(class_scope_object)
-                if isinstance(type_param, TypeVarValue)
+                if isinstance(type_param, TypeVarParam)
             )
         if not type_params:
             return
         checked_type_params = [
             type_param
             for type_param in type_params
-            if is_instance_of_typing_name(type_param.typevar, "TypeVar")
+            if isinstance(type_param, TypeVarParam)
         ]
         if not checked_type_params:
             return
@@ -6347,7 +6350,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     def _check_class_base_type_param_variances(
         self,
         node: ast.ClassDef,
-        type_params: Sequence[TypeVarValue],
+        type_params: Sequence[TypeParam],
         base_values: Sequence[Value],
         class_scope_object: type | str | None,
     ) -> None:
@@ -6359,7 +6362,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         typevars_to_check = {
             type_param.typevar
             for type_param in type_params
-            if is_instance_of_typing_name(type_param.typevar, "TypeVar")
+            if isinstance(type_param, TypeVarParam)
         }
         for analyzed_base in analyzed_bases:
             for subval in flatten_values(analyzed_base):
@@ -6423,8 +6426,8 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         return any(_is_protocol_base(base_value) for base_value in base_values)
 
     def _align_type_params_with_runtime_class(
-        self, class_obj: type | None, type_params: Sequence[TypeVarValue]
-    ) -> Sequence[TypeVarValue]:
+        self, class_obj: type | None, type_params: Sequence[TypeParam]
+    ) -> Sequence[TypeParam]:
         if class_obj is None:
             return type_params
         runtime_type_params = safe_getattr(class_obj, "__type_params__", ())
@@ -6432,24 +6435,20 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             return type_params
         aligned = []
         for type_param, runtime_type_param in zip(type_params, runtime_type_params):
-            aligned.append(replace(type_param, typevar=runtime_type_param))
+            if isinstance(type_param, TypeVarParam):
+                aligned.append(replace(type_param, typevar=runtime_type_param))
+            elif isinstance(type_param, ParamSpecParam):
+                aligned.append(replace(type_param, param_spec=runtime_type_param))
+            else:
+                aligned.append(replace(type_param, typevar_tuple=runtime_type_param))
         return aligned
 
-    def _type_parameter_value_has_default(self, type_param: Value) -> bool:
-        if isinstance(type_param, TypeVarValue):
-            return type_param.default is not None
-        if isinstance(type_param, InputSigValue) and isinstance(
-            type_param.input_sig, ParamSpecSig
-        ):
-            if type_param.input_sig.default is not None:
-                return True
-            runtime_default = safe_getattr(
-                type_param.input_sig.param_spec, "__default__", NoDefault
-            )
-            return runtime_default is not NoDefault
-        return False
+    def _type_parameter_value_has_default(self, type_param: TypeParam) -> bool:
+        return type_param.default is not None
 
-    def _walk_values_for_type_param_collection(self, value: Value) -> Iterable[Value]:
+    def _walk_values_for_type_param_collection(
+        self, value: Value
+    ) -> Iterable[TypeParam]:
         if (
             isinstance(value, PartialValue)
             and value.operation is PartialValueOperation.SUBSCRIPT
@@ -6479,18 +6478,18 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 yield from self._walk_values_for_type_param_collection(member)
             yield from self._walk_values_for_type_param_collection(value.runtime_value)
             return
-        yield from value.walk_values()
+        yield from iter_type_params_in_value(value)
 
     def _check_class_type_param_default_rules(
-        self, node: ast.ClassDef, type_params: Sequence[TypeVarValue]
+        self, node: ast.ClassDef, type_params: Sequence[TypeParam]
     ) -> None:
         seen_default = False
         previous_was_typevartuple = False
         visible_type_params: set[object] = set()
         for type_param in type_params:
             has_default = type_param.default is not None
-            is_typevartuple = type_param.is_typevartuple()
-            is_typevar = is_instance_of_typing_name(type_param.typevar, "TypeVar")
+            is_typevartuple = isinstance(type_param, TypeVarTupleParam)
+            is_typevar = isinstance(type_param, TypeVarParam)
             if type_param.default is not None:
                 for subval in type_param.default.walk_values():
                     identity = _type_param_identity(subval)
@@ -6523,7 +6522,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
 
     def _type_param_from_expr_for_default_rules(
         self, node: ast.expr
-    ) -> TypeVarValue | None:
+    ) -> TypeParam | None:
         if isinstance(node, ast.Starred):
             return self._type_param_from_expr_for_default_rules(node.value)
         if isinstance(node, ast.Subscript):
@@ -6545,9 +6544,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
 
     def _type_params_from_base_annotations_for_default_rules(
         self, base_nodes: Sequence[ast.expr]
-    ) -> Sequence[TypeVarValue]:
+    ) -> Sequence[TypeParam]:
         seen: set[object] = set()
-        type_params: list[TypeVarValue] = []
+        type_params: list[TypeParam] = []
 
         def _collect_from_base_slice(base_slice: ast.expr) -> None:
             maybe_members: Sequence[ast.expr] = (
@@ -6584,7 +6583,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
 
     def _type_params_from_base_values(
         self, base_values: Sequence[Value]
-    ) -> Sequence[TypeVarValue]:
+    ) -> Sequence[TypeParam]:
         seen: set[object] = set()
         type_params = list(
             self._type_params_from_protocol_shorthand_base_values(base_values)
@@ -6593,15 +6592,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             seen.add(type_param.typevar)
         for base in base_values:
             for subval in flatten_values(base):
-                for walked in self._walk_values_for_type_param_collection(subval):
-                    if isinstance(walked, TypeVarValue):
-                        type_param = walked
-                    elif isinstance(walked, InputSigValue) and isinstance(
-                        walked.input_sig, ParamSpecSig
-                    ):
-                        type_param = TypeVarValue(walked.input_sig.param_spec)
-                    else:
-                        continue
+                for type_param in self._walk_values_for_type_param_collection(subval):
                     if type_param.typevar is SelfT:
                         continue
                     if type_param.typevar in seen:
@@ -6611,8 +6602,8 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         return type_params
 
     def _order_type_params_by_base_annotation_appearance(
-        self, base_nodes: Sequence[ast.expr], type_params: Sequence[TypeVarValue]
-    ) -> Sequence[TypeVarValue]:
+        self, base_nodes: Sequence[ast.expr], type_params: Sequence[TypeParam]
+    ) -> Sequence[TypeParam]:
         annotation_order = self._type_params_from_base_annotations_for_default_rules(
             base_nodes
         )
@@ -6633,16 +6624,16 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
 
     def _type_params_from_protocol_shorthand_base_values(
         self, base_values: Sequence[Value]
-    ) -> Sequence[TypeVarValue]:
+    ) -> Sequence[TypeParam]:
         """Return type parameters from a shorthand type-parameter base.
 
         ``Protocol[...]`` controls parameter ordering per spec.
         """
         seen: set[object] = set()
-        type_params: list[TypeVarValue] = []
+        type_params: list[TypeParam] = []
         for base in base_values:
             for subval in flatten_values(base):
-                maybe_type_params: list[TypeVarValue] = []
+                maybe_type_params: list[TypeParam] = []
                 if isinstance(subval, GenericValue) and is_typing_name(
                     subval.typ, "Protocol"
                 ):
@@ -6664,7 +6655,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                             ):
                                 continue
                             maybe_type_params.append(
-                                make_type_var_value(runtime_arg, visitor=self)
+                                make_type_param(runtime_arg, visitor=self)
                             )
                 for maybe_type_param in maybe_type_params:
                     if maybe_type_param.typevar in seen:
@@ -6677,15 +6668,18 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
 
     def _type_params_from_base_values_for_methods(
         self, base_values: Sequence[Value]
-    ) -> Sequence[TypeVarValue]:
+    ) -> Sequence[TypeParam]:
         type_params_from_bases = list(self._type_params_from_base_values(base_values))
         if type_params_from_bases and all(
-            not (type_param.is_paramspec() or type_param.is_typevartuple())
+            not (
+                isinstance(type_param, ParamSpecParam)
+                or isinstance(type_param, TypeVarTupleParam)
+            )
             for type_param in type_params_from_bases
         ):
             return type_params_from_bases
         seen: set[object] = set()
-        type_params: list[TypeVarValue] = []
+        type_params: list[TypeParam] = []
         for type_param in type_params_from_bases:
             if type_param.typevar in seen:
                 continue
@@ -6704,7 +6698,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     if runtime_arg in seen:
                         continue
                     seen.add(runtime_arg)
-                    type_params.append(make_type_var_value(runtime_arg, visitor=self))
+                    type_params.append(make_type_param(runtime_arg, visitor=self))
         return type_params
 
     def _base_values_for_generic_analysis(
@@ -7624,7 +7618,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             else:
                 return_annotation = self.value_of_annotation(node.returns)
                 if isinstance(return_annotation, InputSigValue):
-                    if isinstance(return_annotation.input_sig, ParamSpecSig):
+                    if isinstance(return_annotation.input_sig, ParamSpecParam):
                         self.show_error(
                             node.returns,
                             "ParamSpec cannot be used in this annotation context",
@@ -7649,7 +7643,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 and isinstance(params[0].node, ast.arg)
                 and params[0].node.annotation is None
             ):
-                self_instance_value = TypeVarValue(SelfT, bound=enclosing_class)
+                self_instance_value = TypeVarValue(
+                    TypeVarParam(SelfT, bound=enclosing_class)
+                )
                 substitutions: TypeVarMap = {SelfT: self_instance_value}
                 uses_self_annotation = (
                     (
@@ -8001,14 +7997,12 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             else []
         )
         if not type_params:
-            generic_bases = self.checker.get_generic_bases(self.current_class, ())
-            declared = generic_bases.get(self.current_class)
-            if declared:
-                type_params = [
-                    val for val in declared.values() if isinstance(val, TypeVarValue)
-                ]
+            type_params = list(self.checker.get_type_parameters(self.current_class))
         if type_params:
-            return GenericValue(self.current_class, type_params)
+            return GenericValue(
+                self.current_class,
+                [type_param_to_value(type_param) for type_param in type_params],
+            )
         return class_value
 
     def _get_pending_overload_signature(
@@ -11609,7 +11603,10 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             protocol = AsyncCustomContextManager
         else:
             protocol = CustomContextManager
-        val = GenericValue(protocol, [TypeVarValue(T_co), TypeVarValue(U_co)])
+        val = GenericValue(
+            protocol,
+            [TypeVarValue(TypeVarParam(T_co)), TypeVarValue(TypeVarParam(U_co))],
+        )
         can_assign = get_tv_map(val, context, self)
         if isinstance(can_assign, CanAssignError):
             self._show_error_if_checking(
@@ -12026,7 +12023,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         if len(node.targets) != 1 or not isinstance(node.targets[0], ast.Name):
             return None
 
-        runtime_type_params: tuple[TypeVarValue, ...] | None = None
+        runtime_type_params: tuple[TypeParam, ...] | None = None
         if isinstance(assigned_value, KnownValue):
             maybe_runtime_type_params = safe_getattr(
                 assigned_value.val, "__parameters__", ()
@@ -12036,7 +12033,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 and maybe_runtime_type_params
             ):
                 runtime_type_params = tuple(
-                    make_type_var_value(param, visitor=self, node=node)
+                    make_type_param(param, visitor=self, node=node)
                     for param in maybe_runtime_type_params
                 )
 
@@ -12057,25 +12054,14 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             return None
 
         if runtime_type_params is None:
-            inferred_type_params: list[TypeVarValue] = []
+            inferred_type_params: list[TypeParam] = []
             seen_type_params: set[object] = set()
-            for subval in alias_value.walk_values():
-                if isinstance(subval, TypeVarValue):
-                    identity: object = subval.typevar
-                    if identity in seen_type_params:
-                        continue
-                    seen_type_params.add(identity)
-                    inferred_type_params.append(subval)
-                elif isinstance(subval, InputSigValue) and isinstance(
-                    subval.input_sig, ParamSpecSig
-                ):
-                    identity = subval.input_sig.param_spec
-                    if identity in seen_type_params:
-                        continue
-                    seen_type_params.add(identity)
-                    inferred_type_params.append(
-                        make_type_var_value(identity, visitor=self, node=node)
-                    )
+            for extracted in iter_type_params_in_value(alias_value):
+                identity = extracted.typevar
+                if identity in seen_type_params:
+                    continue
+                seen_type_params.add(identity)
+                inferred_type_params.append(extracted)
             if inferred_type_params:
                 runtime_type_params = tuple(inferred_type_params)
             else:
@@ -12187,7 +12173,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     error_code=ErrorCode.invalid_annotation,
                 )
             if isinstance(alias_type, InputSigValue):
-                if isinstance(alias_type.input_sig, ParamSpecSig):
+                if isinstance(alias_type.input_sig, ParamSpecParam):
                     message = "ParamSpec cannot be used in this annotation context"
                 else:
                     message = f"Unrecognized annotation {alias_type}"
@@ -12203,13 +12189,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     error_code=ErrorCode.invalid_annotation,
                 )
             if isinstance(node.target, ast.Name) and alias_type is not None:
-                type_param_likes = self._infer_type_alias_type_params(
-                    node.value, alias_type
-                )
-                type_params = tuple(
-                    make_type_var_value(type_param_like, visitor=self, node=node.value)
-                    for type_param_like in type_param_likes
-                )
+                type_params = self._infer_type_alias_type_params(node.value, alias_type)
                 explicit_type_alias_assignment_value = TypeAliasValue(
                     node.target.id,
                     self.module.__name__ if self.module is not None else "",
@@ -12243,7 +12223,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             self.enum_value_type_by_class[self.current_class_key] = expected_type
 
         if isinstance(expected_type, InputSigValue):
-            if isinstance(expected_type.input_sig, ParamSpecSig):
+            if isinstance(expected_type.input_sig, ParamSpecParam):
                 self._show_error_if_checking(
                     node.annotation,
                     "ParamSpec cannot be used in this annotation context",
@@ -12572,19 +12552,14 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
 
     def visit_type_param_values(
         self, type_params: Sequence[ast.AST]
-    ) -> Sequence[TypeVarValue]:
+    ) -> Sequence[TypeParam]:
         type_param_values = []
         for param in type_params:
             value = self.visit(param)
-            if isinstance(value, TypeVarValue):
-                type_param_values.append(value)
-            elif isinstance(value, InputSigValue) and isinstance(
-                value.input_sig, ParamSpecSig
-            ):
-                type_param_values.append(TypeVarValue(value.input_sig.param_spec))
-            else:
+            extracted = _type_param_value_from_value(value)
+            if extracted is None:
                 assert False, f"unexpected type parameter value: {value!r}"
-        assert all_of_type(type_param_values, TypeVarValue)
+            type_param_values.append(extracted)
         return type_param_values
 
     def _current_scope_key(self) -> int:
@@ -12592,7 +12567,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
 
     @contextlib.contextmanager
     def _active_pep695_type_param_scope(
-        self, type_params: Sequence[TypeVarValue]
+        self, type_params: Sequence[TypeParam]
     ) -> Generator[None]:
         if not type_params:
             yield
@@ -12646,7 +12621,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     def _legacy_typevars_in_nodes(
         self,
         nodes: Iterable[ast.AST],
-        declared_type_params: Sequence[TypeVarValue],
+        declared_type_params: Sequence[TypeParam],
         *,
         include_active_type_params: bool = True,
     ) -> set[str]:
@@ -12673,7 +12648,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         return legacy
 
     def _legacy_typevars_in_alias_expr(
-        self, value_node: ast.AST, declared_type_params: Sequence[TypeVarValue]
+        self, value_node: ast.AST, declared_type_params: Sequence[TypeParam]
     ) -> set[str]:
         return self._legacy_typevars_in_nodes(
             [value_node], declared_type_params, include_active_type_params=False
@@ -12681,32 +12656,41 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
 
     def _infer_type_alias_type_params(
         self, value_node: ast.AST, value: Value
-    ) -> tuple[TypeVarLike, ...]:
-        type_params: list[TypeVarLike] = []
+    ) -> tuple[TypeParam, ...]:
+        type_params: list[TypeParam] = []
         seen_identities: set[object] = set()
-        extracted_type_params = tuple(dict.fromkeys(extract_type_params(value)))
-        extracted_by_name: dict[str, list[TypeVarLike]] = {}
+        extracted_type_params = tuple(dict.fromkeys(iter_type_params_in_value(value)))
+        extracted_by_name: dict[str, list[TypeParam]] = {}
         for type_param in extracted_type_params:
-            name = getattr(type_param, "__name__", None)
+            name = getattr(type_param.typevar, "__name__", None)
             if isinstance(name, str):
                 extracted_by_name.setdefault(name, []).append(type_param)
 
-        def record_from_resolved(resolved: Value) -> bool:
+        def record_type_param(type_param: TypeParam) -> None:
+            identity = type_param.typevar
+            if identity in seen_identities:
+                return
+            seen_identities.add(identity)
+            type_params.append(type_param)
+
+        def record_from_resolved(resolved: Value, node: ast.AST) -> bool:
+            found_type_param = False
+            for extracted in iter_type_params_in_value(resolved):
+                record_type_param(extracted)
+                found_type_param = True
+            if found_type_param:
+                return True
             for subval in flatten_values(resolved, unwrap_annotated=True):
                 identity = _type_param_identity(subval)
                 if identity is None:
                     continue
                 if identity in seen_identities:
                     return True
-                seen_identities.add(identity)
-                if isinstance(subval, TypeVarValue):
-                    type_params.append(subval.typevar)
-                elif isinstance(subval, InputSigValue) and isinstance(
-                    subval.input_sig, ParamSpecSig
-                ):
-                    type_params.append(subval.input_sig.param_spec)
-                elif isinstance(subval, KnownValue) and is_typevarlike(subval.val):
-                    type_params.append(subval.val)
+                if isinstance(subval, KnownValue) and is_typevarlike(subval.val):
+                    seen_identities.add(identity)
+                    type_params.append(
+                        make_type_param(subval.val, visitor=self, node=node)
+                    )
                 return True
             return False
 
@@ -12715,13 +12699,10 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 resolved, _ = self.resolve_name(
                     node, error_node=node, suppress_errors=True
                 )
-                if record_from_resolved(resolved):
+                if record_from_resolved(resolved, node):
                     return
                 for type_param in extracted_by_name.get(node.id, ()):
-                    if type_param in seen_identities:
-                        continue
-                    seen_identities.add(type_param)
-                    type_params.append(type_param)
+                    record_type_param(type_param)
                     return
                 return
             if (
@@ -12743,10 +12724,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
 
         walk(value_node)
         for type_param in extracted_type_params:
-            if type_param in seen_identities:
-                continue
-            seen_identities.add(type_param)
-            type_params.append(type_param)
+            record_type_param(type_param)
         return tuple(type_params)
 
     def _resolve_call_target_value(self, node: ast.expr) -> Value:
@@ -12775,7 +12753,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
 
     def _extract_runtime_type_alias_type_params(
         self, node: ast.Call
-    ) -> Sequence[TypeVarValue]:
+    ) -> Sequence[TypeParam]:
         type_params_keyword = next(
             (keyword for keyword in node.keywords if keyword.arg == "type_params"), None
         )
@@ -12788,21 +12766,17 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 error_code=ErrorCode.invalid_annotation,
             )
             return []
-        params: list[TypeVarValue] = []
+        params: list[TypeParam] = []
         for elt in type_params_keyword.value.elts:
             value = self.visit(elt)
-            if isinstance(value, TypeVarValue):
-                params.append(value)
-                continue
-            if isinstance(value, InputSigValue) and isinstance(
-                value.input_sig, ParamSpecSig
-            ):
-                params.append(TypeVarValue(value.input_sig.param_spec))
+            extracted = _type_param_value_from_value(value)
+            if extracted is not None:
+                params.append(extracted)
                 continue
             identity = _type_param_identity(value)
             if identity is not None:
                 assert is_typevarlike(identity)
-                params.append(make_type_var_value(identity, visitor=self, node=elt))
+                params.append(make_type_param(identity, visitor=self, node=elt))
                 continue
             self._show_error_if_checking(
                 elt,
@@ -12866,7 +12840,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         if isinstance(alias_type, SubclassValue):
             return None
         type_params = tuple(
-            make_type_var_value(type_param, visitor=self, node=node.value)
+            type_param
             for type_param in self._infer_type_alias_type_params(node.value, alias_type)
             if _is_valid_inferred_type_alias_type_param(type_param)
         )
@@ -12903,9 +12877,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         if self._is_collecting():
             self._record_type_alias_structure(name, node, value_node)
         type_params = self._extract_runtime_type_alias_type_params(node.value)
-        declared_type_params = list(
-            _runtime_type_alias_declared_type_params(type_params)
-        )
+        declared_type_params = list(type_params)
         if self.current_class_type_params is not None:
             declared_type_params.extend(self.current_class_type_params)
         declared_type_params = list(dict.fromkeys(declared_type_params))
@@ -13123,10 +13095,12 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     default = self._type_from_pep695_type_param_expr(node.default_value)
             tv = TypeVar(node.name)
             typevar = TypeVarValue(
-                tv,
-                bound=bound,
-                constraints=tuple(constraints) if constraints is not None else (),
-                default=default if default is not None else None,
+                TypeVarParam(
+                    tv,
+                    bound=bound,
+                    constraints=tuple(constraints) if constraints is not None else (),
+                    default=default if default is not None else None,
+                )
             )
             self._check_typevar_default_constraints(typevar, node)
             self._set_name_in_scope(node.name, node, typevar)
@@ -13134,13 +13108,13 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
 
         def visit_ParamSpec(self, node: ast.ParamSpec) -> Value:
             ps = typing.ParamSpec(node.name)
-            typevar = InputSigValue(ParamSpecSig(ps))
+            typevar = InputSigValue(ParamSpecParam(ps))
             self._set_name_in_scope(node.name, node, typevar)
             return typevar
 
         def visit_TypeVarTuple(self, node: ast.TypeVarTuple) -> Value:
             tv = TypeVarTuple(node.name)
-            typevar = TypeVarValue(tv)
+            typevar = TypeVarTupleValue(TypeVarTupleParam(tv))
             self._set_name_in_scope(node.name, node, typevar)
             return typevar
 
@@ -13485,8 +13459,8 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         if class_type is None:
             return False
         type_parameters = self.get_type_parameters(class_type)
-        return len(type_parameters) == 1 and _is_typevartuple_annotation_value(
-            type_parameters[0]
+        return len(type_parameters) == 1 and isinstance(
+            type_parameters[0], TypeVarTupleParam
         )
 
     def _maybe_subscript_synthetic_class(
@@ -13582,7 +13556,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         variadic_type_param_indexes = [
             i
             for i, type_param in enumerate(type_parameters)
-            if _is_typevartuple_annotation_value(type_param)
+            if isinstance(type_param, TypeVarTupleParam)
         ]
         if len(variadic_type_param_indexes) > 1:
             return None
@@ -13724,14 +13698,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         declared_type_params = self.checker.get_type_parameters(value.typ)
         if not declared_type_params:
             return {}
-        typevars: list[TypeVarLike] = []
-        for type_param in declared_type_params:
-            if isinstance(type_param, TypeVarValue):
-                typevars.append(type_param.typevar)
-            elif isinstance(type_param, InputSigValue) and isinstance(
-                type_param.input_sig, ParamSpecSig
-            ):
-                typevars.append(type_param.input_sig.param_spec)
+        typevars = [type_param.typevar for type_param in declared_type_params]
         return dict(zip(typevars, generic_args))
 
     def _check_dunder_call_or_catch(
@@ -15067,11 +15034,13 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         else:
             variance = Variance.INVARIANT
         return TypeVarValue(
-            typevar,
-            bound=bound,
-            constraints=tuple(constraints),
-            default=default,
-            variance=variance,
+            TypeVarParam(
+                typevar,
+                bound=bound,
+                constraints=tuple(constraints),
+                default=default,
+                variance=variance,
+            )
         )
 
     def _call_assignment_target_name(self, node: ast.AST | None) -> str | None:
@@ -16685,7 +16654,7 @@ def _variance_is_compatible_with_usage(
     return 1 not in used_polarities
 
 
-def _type_param_uses_infer_variance(type_param: TypeVarValue) -> bool:
+def _type_param_uses_infer_variance(type_param: TypeParam) -> bool:
     if not is_instance_of_typing_name(type_param.typevar, "TypeVar"):
         return False
     return bool(safe_getattr(type_param.typevar, "__infer_variance__", False))
@@ -16754,15 +16723,15 @@ def _is_variance_declaration_base(base_value: Value) -> bool:
     return True
 
 
-def _type_param_value_from_value(value: Value) -> TypeVarValue | None:
-    if isinstance(value, InputSigValue) and isinstance(value.input_sig, ParamSpecSig):
-        return TypeVarValue(value.input_sig.param_spec)
-    if isinstance(value, InputSigValue):
-        return None
+def _type_param_value_from_value(value: Value) -> TypeParam | None:
+    if isinstance(value, TypeVarValue):
+        return value.typevar_param
+    if isinstance(value, TypeVarTupleValue):
+        return value.typevar_tuple_param
+    if isinstance(value, InputSigValue) and isinstance(value.input_sig, ParamSpecParam):
+        return value.input_sig
     if value in (VOID, UNINITIALIZED_VALUE) or isinstance(value, ReferencingValue):
         return None
-    if isinstance(value, TypeVarValue):
-        return value
     value = replace_fallback(value)
     if isinstance(value, MultiValuedValue):
         type_params = [
@@ -16777,7 +16746,7 @@ def _type_param_value_from_value(value: Value) -> TypeVarValue | None:
             return first
         return None
     if isinstance(value, IntersectionValue):
-        result: TypeVarValue | None = None
+        result: TypeParam | None = None
         for subval in value.vals:
             type_param = _type_param_value_from_value(subval)
             if type_param is None:
@@ -16793,9 +16762,7 @@ def _type_param_value_from_value(value: Value) -> TypeVarValue | None:
             or is_instance_of_typing_name(value.val, "TypeVarTuple")
             or is_instance_of_typing_name(value.val, "ParamSpec")
         ):
-            return make_type_var_value(
-                value.val, ctx=_runtime_type_param_default_context()
-            )
+            return make_type_param(value.val, ctx=_runtime_type_param_default_context())
         return None
     if isinstance(
         value,
@@ -16935,20 +16902,6 @@ def _runtime_type_alias_self_reference(value_node: ast.AST, name: str) -> bool:
     )
 
 
-def _runtime_type_alias_declared_type_params(
-    params: Sequence[TypeVarLike | TypeVarValue],
-) -> Sequence[TypeVarValue]:
-    declared: list[TypeVarValue] = []
-    for param in params:
-        if isinstance(param, TypeVarValue):
-            declared.append(param)
-        else:
-            declared.append(
-                make_type_var_value(param, ctx=_runtime_type_param_default_context())
-            )
-    return declared
-
-
 def build_stacked_scopes(
     module: types.ModuleType | None,
     simplification_limit: int | None = None,
@@ -17074,7 +17027,7 @@ def _is_explicit_any_alias_expr(node: ast.AST) -> bool:
 
 
 def _is_valid_inferred_type_alias_type_param(type_param: object) -> bool:
-    if isinstance(type_param, TypeVarValue):
+    if isinstance(type_param, (TypeVarParam, ParamSpecParam, TypeVarTupleParam)):
         return True
     return (
         is_instance_of_typing_name(type_param, "TypeVar")
@@ -17172,7 +17125,9 @@ def _same_constrained_typevar_constraints(
 def _type_param_identity(value: Value) -> object | None:
     if isinstance(value, TypeVarValue):
         return value.typevar
-    if isinstance(value, InputSigValue) and isinstance(value.input_sig, ParamSpecSig):
+    if isinstance(value, TypeVarTupleValue):
+        return value.typevar
+    if isinstance(value, InputSigValue) and isinstance(value.input_sig, ParamSpecParam):
         return value.input_sig.param_spec
     if isinstance(value, InputSigValue):
         return None

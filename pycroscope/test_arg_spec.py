@@ -7,7 +7,6 @@ import pytest
 from typing_extensions import TypeVarTuple
 
 from .checker import Checker
-from .input_sig import wrap_type_param
 from .maybe_asynq import asynq
 from .signature import BoundMethodSignature, ParameterKind, Signature, SigParameter
 from .stacked_scopes import Composite
@@ -24,6 +23,9 @@ from .value import (
     NewTypeValue,
     SequenceValue,
     TypedValue,
+    TypeVarParam,
+    TypeVarTupleParam,
+    TypeVarTupleValue,
     TypeVarValue,
     assert_is_value,
     match_typevar_arguments,
@@ -33,9 +35,9 @@ T = TypeVar("T")
 NT = NewType("NT", int)
 
 
-def test_wrap_typevartuple_param() -> None:
+def test_typevartuple_value_accepts_runtime_param() -> None:
     ts = TypeVarTuple("Ts")
-    assert wrap_type_param(ts) == TypeVarValue(ts)
+    assert TypeVarTupleValue(TypeVarTupleParam(ts)) == TypeVarTupleValue(ts)
 
 
 def test_get_type_parameters_ignores_non_iterable_runtime_type_params() -> None:
@@ -57,7 +59,7 @@ def test_match_typevar_arguments_preserves_suffix_after_default_before_typevartu
     u = TypeVar("U")
 
     assert match_typevar_arguments(
-        [wrap_type_param(default_t), wrap_type_param(ts), wrap_type_param(u)],
+        [TypeVarParam(default_t), TypeVarTupleParam(ts), TypeVarParam(u)],
         [TypedValue(str)],
     ) == [
         (default_t, TypedValue(int)),
@@ -75,7 +77,7 @@ def test_specialize_generic_type_params_preserves_suffix_with_default_prefix() -
     u = TypeVar("U")
 
     assert checker.arg_spec_cache._specialize_generic_type_params(
-        [wrap_type_param(default_t), wrap_type_param(ts), wrap_type_param(u)],
+        [TypeVarParam(default_t), TypeVarTupleParam(ts), TypeVarParam(u)],
         [TypedValue(str)],
     ) == [TypedValue(int), SequenceValue(tuple, []), TypedValue(str)]
 

@@ -24,12 +24,7 @@ from pycroscope.analysis_lib import Sentinel
 from pycroscope.annotated_types import MaxLen, MinLen
 from pycroscope.extensions import PredicateCheck
 from pycroscope.find_unused import used
-from pycroscope.safe import (
-    is_instance_of_typing_name,
-    safe_equals,
-    safe_isinstance,
-    safe_issubclass,
-)
+from pycroscope.safe import safe_equals, safe_isinstance, safe_issubclass
 from pycroscope.typevar import resolve_bounds_map
 from pycroscope.value import (
     NO_RETURN_VALUE,
@@ -56,6 +51,7 @@ from pycroscope.value import (
     OverlappingValue,
     ParamSpecArgsValue,
     ParamSpecKwargsValue,
+    ParamSpecParam,
     PartialValue,
     PredicateValue,
     SelfT,
@@ -70,7 +66,11 @@ from pycroscope.value import (
     TypedDictValue,
     TypedValue,
     TypeFormValue,
+    TypeParam,
     TypeVarMap,
+    TypeVarParam,
+    TypeVarTupleParam,
+    TypeVarTupleValue,
     TypeVarValue,
     UnboundMethodValue,
     UpperBound,
@@ -367,6 +367,27 @@ def _has_relation(
     if isinstance(right, TypeVarValue) and not isinstance(left, MultiValuedValue):
         bounds = [UpperBound(right.typevar, left), *right.get_inherent_bounds()]
         return right.make_bounds_map(bounds, left, ctx)
+    if isinstance(left, TypeVarTupleValue) and not isinstance(right, MultiValuedValue):
+        if isinstance(right, TypeVarTupleValue) and left.typevar is right.typevar:
+            return {}
+        right_as_tuple = replace_known_sequence_value(right)
+        if not (
+            isinstance(right_as_tuple, SequenceValue) and right_as_tuple.typ is tuple
+        ):
+            right_as_tuple = SequenceValue(tuple, [(False, right)])
+        bounds = [LowerBound(left.typevar, right_as_tuple), *left.get_inherent_bounds()]
+        return {left.typevar: bounds}
+    if isinstance(right, TypeVarTupleValue) and not isinstance(left, MultiValuedValue):
+        left_as_tuple = replace_known_sequence_value(left)
+        if not (
+            isinstance(left_as_tuple, SequenceValue) and left_as_tuple.typ is tuple
+        ):
+            left_as_tuple = SequenceValue(tuple, [(False, left)])
+        bounds = [
+            UpperBound(right.typevar, left_as_tuple),
+            *right.get_inherent_bounds(),
+        ]
+        return {right.typevar: bounds}
 
     # TypeAliasValue
     if isinstance(left, TypeAliasValue):
@@ -699,7 +720,7 @@ def _has_relation(
             else:
                 assert_never(left.typ)
         else:
-            assert_never(right)
+            return CanAssignError(f"{right} is not {relation.description} {left}")
     if isinstance(right, SubclassValue):
         if isinstance(left, KnownValue):
             return CanAssignError(f"{right} is not {relation.description} {left}")
@@ -712,14 +733,14 @@ def _has_relation(
             elif isinstance(right.typ, TypeVarValue):
                 return {right.typ.typevar: [UpperBound(right.typ.typevar, left)]}
             else:
-                assert_never(right.typ)
+                return CanAssignError(f"{right} is not {relation.description} {left}")
         else:
-            assert_never(left)
+            return CanAssignError(f"{right} is not {relation.description} {left}")
 
     # Special case for thrift enums
     if isinstance(left, TypedValue):
         left_tobj = left.get_type_object(ctx)
-        if left_tobj.is_thrift_enum:
+        if left_tobj.is_thrift_enum and isinstance(right, (TypedValue, KnownValue)):
             return _has_relation_thrift_enum(left, right, relation, ctx)
 
     # KnownValue
@@ -737,7 +758,7 @@ def _has_relation(
             return CanAssignError(f"{right} is not {relation.description} {left}")
         if isinstance(right, TypedValue):
             return CanAssignError(f"{right} is not {relation.description} {left}")
-        assert_never(right)
+        return CanAssignError(f"{right} is not {relation.description} {left}")
 
     if isinstance(left, CallableValue):
         signature = ctx.signature_from_value(right)
@@ -835,8 +856,13 @@ def _has_relation(
                         comparison_left = GenericValue(left.typ, packed_left_args)
                         generic_args = packed_generic_args
                     elif (
-                        _contains_typevartuple(declared_type_params)
-                        and not _contains_typevartuple(left.args)
+                        any(
+                            isinstance(type_param, TypeVarTupleParam)
+                            for type_param in declared_type_params
+                        )
+                        and not any(
+                            isinstance(arg, TypeVarTupleValue) for arg in left.args
+                        )
                         and not _contains_error_any_in_sequence(
                             [*left.args, *generic_args]
                         )
@@ -896,22 +922,14 @@ def _has_relation(
                     return {}
             return can_assign
         else:
-            assert_never(right)
+            return CanAssignError(f"{right} is not {relation.description} {left}")
 
-    assert_never(left)
-
-
-def _normalize_generic_arg_for_relation(arg: Value) -> Value:
-    if isinstance(arg, TypeVarValue) and is_instance_of_typing_name(
-        arg.typevar, "ParamSpec"
-    ):
-        return pycroscope.input_sig.wrap_type_param(arg.typevar)
-    return arg
+    return CanAssignError(f"{right} is not {relation.description} {left}")
 
 
 def _coerce_paramspec_generic_arg_for_relation(arg: Value, *, other: Value) -> Value:
     if isinstance(other, pycroscope.input_sig.InputSigValue) and not isinstance(
-        other.input_sig, pycroscope.input_sig.ParamSpecSig
+        other.input_sig, ParamSpecParam
     ):
         return pycroscope.input_sig.coerce_paramspec_specialization_to_input_sig(arg)
     return arg
@@ -923,8 +941,8 @@ def _has_relation_for_generic_arg_pair(
     relation: Literal[Relation.SUBTYPE, Relation.ASSIGNABLE],
     ctx: CanAssignContext,
 ) -> CanAssign:
-    left = _normalize_generic_arg_for_relation(left)
-    right = _normalize_generic_arg_for_relation(right)
+    assert not isinstance(left, (TypeVarParam, ParamSpecParam, TypeVarTupleParam))
+    assert not isinstance(right, (TypeVarParam, ParamSpecParam, TypeVarTupleParam))
     left = _coerce_paramspec_generic_arg_for_relation(left, other=right)
     right = _coerce_paramspec_generic_arg_for_relation(right, other=left)
     if isinstance(left, pycroscope.input_sig.InputSigValue) and isinstance(
@@ -970,14 +988,7 @@ def _get_generic_variances(
 ) -> tuple[Variance, ...]:
     type_params = ctx.get_type_parameters(typ)
     if len(type_params) == num_args:
-        variances = [
-            (
-                type_param.variance
-                if isinstance(type_param, TypeVarValue)
-                else Variance.INVARIANT
-            )
-            for type_param in type_params
-        ]
+        variances = [type_param.variance for type_param in type_params]
         return tuple(variances)
 
     bases = ctx.get_generic_bases(typ)
@@ -1041,8 +1052,8 @@ def _extract_type_form(value: Value, ctx: CanAssignContext) -> Value | CanAssign
         if type_form == AnyValue(AnySource.error):
             return CanAssignError(f"{value} is not a TypeForm")
         extracted = gradualize(type_form)
-        if isinstance(extracted, TypeVarValue) and (
-            extracted.typevar is SelfT or extracted.is_typevartuple()
+        if isinstance(extracted, (TypeVarValue, TypeVarTupleValue)) and (
+            extracted.typevar is SelfT or isinstance(extracted, TypeVarTupleValue)
         ):
             return CanAssignError(f"{value} is not a TypeForm")
         if isinstance(extracted, (ParamSpecArgsValue, ParamSpecKwargsValue)):
@@ -1072,6 +1083,7 @@ def _extract_type_form(value: Value, ctx: CanAssignContext) -> Value | CanAssign
             IntersectionValue,
             OverlappingValue,
             SyntheticModuleValue,
+            TypeVarTupleValue,
             UnboundMethodValue,
         ),
     ):
@@ -1115,7 +1127,7 @@ def _has_relation_thrift_enum(
             return {}
         return left.get_type_object(ctx).can_assign(left, right, ctx)
     else:
-        assert_never(right)
+        return CanAssignError(f"{right} is not {relation.description} {left}")
 
 
 def _maybe_specify_error_for_generic(
@@ -1535,7 +1547,7 @@ def _capture_typevartuple_bounds_from_side(
     typevartuple_entries = [
         (i, member)
         for i, (is_many, member) in enumerate(template.members)
-        if is_many and isinstance(member, TypeVarValue) and member.is_typevartuple()
+        if is_many and isinstance(member, TypeVarTupleValue)
     ]
     if len(typevartuple_entries) != 1:
         return None
@@ -1610,10 +1622,6 @@ def _try_capture_single_typevartuple_sequence(
     )
 
 
-def _contains_typevartuple(args: Iterable[Value]) -> bool:
-    return any(isinstance(arg, TypeVarValue) and arg.is_typevartuple() for arg in args)
-
-
 def _contains_error_any_in_sequence(values: Sequence[Value]) -> bool:
     return any(
         isinstance(subval, AnyValue) and subval.source is AnySource.error
@@ -1632,12 +1640,12 @@ def _unpack_fixed_tuple_generic_arg(value: Value) -> list[Value] | None:
 
 
 def _pack_typevartuple_generic_args(
-    declared_type_params: Sequence[Value], generic_args: Sequence[Value]
+    declared_type_params: Sequence[TypeParam], generic_args: Sequence[Value]
 ) -> list[Value] | None:
     variadic_indexes = [
         i
         for i, type_param in enumerate(declared_type_params)
-        if isinstance(type_param, TypeVarValue) and type_param.is_typevartuple()
+        if isinstance(type_param, TypeVarTupleParam)
     ]
     if len(variadic_indexes) != 1:
         return None
@@ -1645,6 +1653,8 @@ def _pack_typevartuple_generic_args(
     variadic_index = variadic_indexes[0]
     if len(generic_args) == len(declared_type_params):
         variadic_arg = generic_args[variadic_index]
+        if isinstance(variadic_arg, TypeVarTupleValue):
+            return list(generic_args)
         if (
             isinstance(variadic_arg, SequenceValue)
             and variadic_arg.typ is tuple
@@ -2302,6 +2312,7 @@ def _intersect_values_inner(
         ParamSpecArgsValue,
         ParamSpecKwargsValue,
         TypeVarValue,
+        TypeVarTupleValue,
     )
 
     if (result := _simple_intersection(left, right, ctx)) is not None:
@@ -2328,6 +2339,7 @@ def _intersect_wrapper(
         | ParamSpecArgsValue
         | ParamSpecKwargsValue
         | TypeVarValue
+        | TypeVarTupleValue
     ),
     right: GradualType,
     ctx: CanAssignContext,
