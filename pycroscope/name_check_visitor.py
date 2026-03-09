@@ -12220,6 +12220,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                         lambda type_params=type_params: type_params,
                     ),
                     runtime_allows_value_call=True,
+                    uses_type_alias_object_semantics=_uses_type_alias_object_semantics(
+                        alias_type
+                    ),
                 )
             # `TypeAlias` marks this assignment as an alias declaration, not a
             # variable declaration of the marker type itself.
@@ -16895,6 +16898,23 @@ def _is_type_alias_symbol_composite(root_composite: Composite) -> bool:
         return False
     varname = root_composite.varname
     return varname is not None and varname.varname == root_composite.value.name
+
+
+def _uses_type_alias_object_semantics(alias_value: Value) -> bool:
+    for subval in flatten_values(alias_value, unwrap_annotated=True):
+        if isinstance(subval, (SubclassValue, TypeAliasValue)):
+            return True
+        if isinstance(subval, TypedValue) and subval.typ is type:
+            return True
+        if isinstance(subval, GenericValue) and subval.typ is type:
+            return True
+        if isinstance(subval, KnownValue):
+            if subval.val is type or is_typing_name(subval.val, "Type"):
+                return True
+            origin = safe_getattr(subval.val, "__origin__", None)
+            if origin is type:
+                return True
+    return False
 
 
 def _get_runtime_type_alias_value_node(node: ast.Call) -> ast.AST | None:

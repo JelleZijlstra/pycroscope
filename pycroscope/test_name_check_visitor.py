@@ -433,11 +433,15 @@ class TestImportFailureHandling(TestNameCheckVisitorBase):
 
         TA1: TypeAlias = Type
         TA2: TypeAlias = Type[Any]
+        TA3: TypeAlias = type
+        TA4: TypeAlias = type[Any]
 
         def capybara() -> None:
             _bad_type1: type[int, str]  # E: invalid_annotation
             TA1.unknown  # E: undefined_attribute
             TA2.unknown  # E: undefined_attribute
+            TA3.unknown  # E: undefined_attribute
+            TA4.unknown  # E: undefined_attribute
             type.unknown  # E: undefined_attribute
 
     @assert_passes(allow_import_failures=True)
