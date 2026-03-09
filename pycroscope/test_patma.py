@@ -11,12 +11,14 @@ class TestPatma(TestNameCheckVisitorBase):
         def capybara(x: Literal[True, False, None]):
             match x:
                 case True:
-                    assert_is_value(x, KnownValue(True))
+                    assert_type(x, Literal[True])
                 case _:
-                    assert_is_value(x, KnownValue(False) | KnownValue(None))
+                    assert_type(x, Literal[False] | None)
 
     @assert_passes()
     def test_value(self):
+        from typing import Literal
+
         from pycroscope.tests import assert_never
 
         def capybara(x: int):
@@ -27,9 +29,9 @@ class TestPatma(TestNameCheckVisitorBase):
                     assert_is_value(x, NO_RETURN_VALUE)
                     assert_never(x)
                 case 3:
-                    assert_is_value(x, KnownValue(3))
+                    assert_type(x, Literal[3])
                 case _ if x == 4:
-                    assert_is_value(x, KnownValue(4))
+                    assert_type(x, Literal[4])
                 case _:
                     assert_type(x, int)
 
@@ -85,19 +87,23 @@ class TestPatma(TestNameCheckVisitorBase):
 
     @assert_passes()
     def test_or(self):
+        from typing import Literal
+
         def capybara(obj: object):
             match obj:
                 case 1 | 2:
-                    assert_is_value(obj, KnownValue(1) | KnownValue(2))
+                    assert_type(obj, Literal[1, 2])
                 case (3 as x) | (4 as x):
-                    assert_is_value(x, KnownValue(3) | KnownValue(4))
+                    assert_type(x, Literal[3, 4])
 
     @assert_passes()
     def test_mapping(self):
+        from typing import Literal
+
         def capybara(obj: object):
             match {1: 2, 3: 4, 5: 6}:
                 case {1: x}:
-                    assert_is_value(x, KnownValue(2))
+                    assert_type(x, Literal[2])
                 case {3: 4, **x}:
                     assert_is_value(
                         x,
@@ -112,6 +118,8 @@ class TestPatma(TestNameCheckVisitorBase):
 
     @assert_passes()
     def test_class_pattern(self):
+        from typing import Literal
+
         class NotMatchable:
             x: str
 
@@ -125,7 +133,7 @@ class TestPatma(TestNameCheckVisitorBase):
                 case int(1, 2):  # E: bad_match
                     pass
                 case int(2):
-                    assert_is_value(obj, KnownValue(2))
+                    assert_type(obj, Literal[2])
                 case int("x"):  # E: impossible_pattern
                     pass
                 case int():
@@ -137,9 +145,9 @@ class TestPatma(TestNameCheckVisitorBase):
                 case NotMatchable():
                     pass
                 case MatchArgs("x", 1 as y):
-                    assert_is_value(y, KnownValue(1))
+                    assert_type(y, Literal[1])
                 case MatchArgs(x) if x == "x":
-                    assert_is_value(x, KnownValue("x"))
+                    assert_type(x, Literal["x"])
                 case MatchArgs(x):
                     assert_type(x, str)
                 case MatchArgs("x", x="x"):  # E: bad_match
@@ -149,6 +157,8 @@ class TestPatma(TestNameCheckVisitorBase):
 
     @assert_passes()
     def test_bool_narrowing(self):
+        from typing import Literal
+
         class X:
             true = True
 
@@ -156,24 +166,27 @@ class TestPatma(TestNameCheckVisitorBase):
             match b:
                 # Make sure we hit the MatchValue case, not MatchSingleton
                 case X.true:
-                    assert_is_value(b, KnownValue(True))
+                    assert_type(b, Literal[True])
                 case _ as b2:
-                    assert_is_value(b, KnownValue(False))
-                    assert_is_value(b2, KnownValue(False))
+                    assert_type(b, Literal[False])
+                    assert_type(b2, Literal[False])
 
     @assert_passes()
     def test_bool_narrowing_singleton(self):
+        from typing import Literal
+
         def capybara(b: bool):
             match b:
                 case True:
-                    assert_is_value(b, KnownValue(True))
+                    assert_type(b, Literal[True])
                 case _ as b2:
-                    assert_is_value(b, KnownValue(False))
-                    assert_is_value(b2, KnownValue(False))
+                    assert_type(b, Literal[False])
+                    assert_type(b2, Literal[False])
 
     @assert_passes()
     def test_enum_narrowing(self):
         from enum import Enum
+        from typing import Literal
 
         class Planet(Enum):
             mercury = 1
@@ -183,12 +196,12 @@ class TestPatma(TestNameCheckVisitorBase):
         def capybara(p: Planet):
             match p:
                 case Planet.mercury:
-                    assert_is_value(p, KnownValue(Planet.mercury))
+                    assert_type(p, Literal[Planet.mercury])
                 case Planet.venus:
-                    assert_is_value(p, KnownValue(Planet.venus))
+                    assert_type(p, Literal[Planet.venus])
                 case _ as p2:
-                    assert_is_value(p2, KnownValue(Planet.earth))
-                    assert_is_value(p, KnownValue(Planet.earth))
+                    assert_type(p2, Literal[Planet.earth])
+                    assert_type(p, Literal[Planet.earth])
 
     @assert_passes()
     def test_exhaustive(self):

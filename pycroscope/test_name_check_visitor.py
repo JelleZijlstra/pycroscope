@@ -1937,13 +1937,15 @@ class TestNameCheckVisitor(TestNameCheckVisitorBase):
 
     @assert_passes()
     def test_multiple_assignment_global(self):
+        from typing_extensions import Literal
+
         if False:
             goes_in_set = []
         else:
             goes_in_set = "capybara"
         if False:
             # The assignment actually executed at runtime wins
-            assert_is_value(goes_in_set, KnownValue("capybara"))
+            assert_type(goes_in_set, Literal["capybara"])
             print({goes_in_set})
 
     @assert_passes()
@@ -1953,7 +1955,6 @@ class TestNameCheckVisitor(TestNameCheckVisitorBase):
                 goes_in_set = []
             else:
                 goes_in_set = "capybara"
-            assert_is_value(goes_in_set, KnownValue([]) | KnownValue("capybara"))
             print({goes_in_set})  # E: unhashable_key
 
     @assert_passes()
@@ -2192,11 +2193,13 @@ class TestNameCheckVisitor(TestNameCheckVisitorBase):
 
     @assert_passes()
     def test_global_value(self):
+        from typing_extensions import Literal
+
         x = 3
 
         def capybara():
             global x
-            assert_is_value(x, KnownValue(3))
+            assert_type(x, Literal[3])
 
 
 class TestSubclassValue(TestNameCheckVisitorBase):
@@ -2866,6 +2869,8 @@ class TestVariableNameValue(TestNameCheckVisitorBase):
     def test(self):
         from typing import Any, NewType
 
+        from typing_extensions import Literal
+
         Uid = NewType("Uid", int)
 
         def name_ends_with_uid(uid):
@@ -2879,7 +2884,7 @@ class TestVariableNameValue(TestNameCheckVisitorBase):
             uid = some_func()
             assert_is_value(uid, VariableNameValue(["uid"]))
             another_uid = "hello"
-            assert_is_value(another_uid, KnownValue("hello"))
+            assert_type(another_uid, Literal["hello"])
 
             d = {"uid": self}
             assert_is_value(d["uid"], VariableNameValue(["uid"]))
@@ -3461,6 +3466,8 @@ class TestSubscripting(TestNameCheckVisitorBase):
 class TestNonlocal(TestNameCheckVisitorBase):
     @assert_passes()
     def test_nonlocal(self):
+        from typing_extensions import Literal
+
         def capybara():
             x = 3
 
@@ -3470,7 +3477,7 @@ class TestNonlocal(TestNameCheckVisitorBase):
                     x, MultiValuedValue([KnownValue(4), KnownValue(3), KnownValue(5)])
                 )
                 x = 4
-                assert_is_value(x, KnownValue(4))
+                assert_type(x, Literal[4])
 
             def second_inner():
                 nonlocal x
@@ -3801,12 +3808,14 @@ class TestTypeIgnore(TestNameCheckVisitorBase):
 class TestNestedLoop(TestNameCheckVisitorBase):
     @assert_passes()
     def test(self):
+        from typing_extensions import Literal
+
         def capybara(x: int):
             v = 1
             while x < 2:
                 while True:
                     if x == 0:
-                        assert_is_value(v, KnownValue(1) | KnownValue(2))
+                        assert_type(v, Literal[1, 2])
                         break
                 v = 2
 

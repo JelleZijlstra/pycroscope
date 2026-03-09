@@ -198,10 +198,12 @@ class TestScoping(TestNameCheckVisitorBase):
 
     @assert_passes()
     def test_function_argument(self):
+        from typing_extensions import Literal
+
         def capybara(x):
             assert_is_value(x, AnyValue(AnySource.unannotated))
             x = 3
-            assert_is_value(x, KnownValue(3))
+            assert_type(x, Literal[3])
 
     @assert_passes()
     def test_default_arg(self):
@@ -284,14 +286,16 @@ class TestIf(TestNameCheckVisitorBase):
 class TestTry(TestNameCheckVisitorBase):
     @assert_passes(settings={ErrorCode.possibly_undefined_name: False})
     def test_except(self):
+        from typing_extensions import Literal
+
         def capybara():
             try:
                 x = 3
-                assert_is_value(x, KnownValue(3))
+                assert_type(x, Literal[3])
             except NameError as e:
                 assert_type(e, NameError)
                 x = 4
-                assert_is_value(x, KnownValue(4))
+                assert_type(x, Literal[4])
             except (RuntimeError, ValueError) as e:
                 assert_type(e, RuntimeError | ValueError)
             assert_is_value(
@@ -440,6 +444,8 @@ class TestTry(TestNameCheckVisitorBase):
 class TestLoops(TestNameCheckVisitorBase):
     @assert_passes(settings={ErrorCode.possibly_undefined_name: False})
     def test_conditional_in_loop(self):
+        from typing_extensions import Literal
+
         def capybara():
             for i in range(2):
                 if i == 1:
@@ -449,19 +455,19 @@ class TestLoops(TestNameCheckVisitorBase):
                     )
                 else:
                     x = 3
-                    assert_is_value(x, KnownValue(3))
+                    assert_type(x, Literal[3])
             assert_is_value(
                 x, MultiValuedValue([AnyValue(AnySource.error), KnownValue(3)])
             )
 
     @assert_passes()
     def test_second_assignment_in_loop(self):
+        from typing_extensions import Literal
+
         def capybara():
             hide_until = None
             for _ in range(3):
-                assert_is_value(
-                    hide_until, MultiValuedValue([KnownValue(None), KnownValue((1, 2))])
-                )
+                assert_type(hide_until, tuple[Literal[1], Literal[2]] | None)
                 if hide_until:
                     print(hide_until[1])
                 hide_until = (1, 2)
@@ -532,10 +538,12 @@ class TestLoops(TestNameCheckVisitorBase):
 
     @assert_passes(settings={ErrorCode.possibly_undefined_name: False})
     def test_while(self):
+        from typing_extensions import Literal
+
         def capybara():
             while bool():
                 x = 3
-                assert_is_value(x, KnownValue(3))
+                assert_type(x, Literal[3])
             assert_is_value(
                 x, MultiValuedValue([AnyValue(AnySource.error), KnownValue(3)])
             )
@@ -1033,6 +1041,8 @@ class TestConstraints(TestNameCheckVisitorBase):
 
     @assert_passes()
     def test_complex_boolean(self):
+        from typing_extensions import Literal
+
         def paca(cond1, cond2):
             if cond1:
                 x = True
@@ -1046,7 +1056,7 @@ class TestConstraints(TestNameCheckVisitorBase):
                     x, MultiValuedValue([KnownValue(None), KnownValue(True)])
                 )
             else:
-                assert_is_value(x, KnownValue(False))
+                assert_type(x, Literal[False])
 
     @assert_passes()
     def test_two_booleans_is(self):
@@ -1222,19 +1232,20 @@ class TestConstraints(TestNameCheckVisitorBase):
 
     @assert_passes()
     def test_and_or(self):
+        from typing import Literal
+
         true_or_false = MultiValuedValue([KnownValue(True), KnownValue(False)])
 
         def capybara(x, y):
             if x is True and y is True:
-                assert_is_value(x, KnownValue(True))
-                assert_is_value(y, KnownValue(True))
+                assert_type(x, Literal[True])
+                assert_type(y, Literal[True])
             else:
                 # no constraints from the inverse of an AND constraint
-                assert_is_value(x, KnownValue(True) | AnyValue(AnySource.unannotated))
                 assert_is_value(y, AnyValue(AnySource.unannotated))
 
         def kerodon(x):
-            if x is True and assert_is_value(x, KnownValue(True)):
+            if x is True and assert_type(x, Literal[True]):
                 pass
             # After the if it's either True (if the if branch was taken)
             # or Any (if it wasn't). This is not especially
@@ -1252,11 +1263,11 @@ class TestConstraints(TestNameCheckVisitorBase):
                 z = False
 
             if y is True or z is True:
-                assert_is_value(y, true_or_false)
-                assert_is_value(z, true_or_false)
+                assert_type(y, bool)
+                assert_type(z, bool)
             else:
-                assert_is_value(y, KnownValue(False))
-                assert_is_value(z, KnownValue(False))
+                assert_type(y, Literal[False])
+                assert_type(z, Literal[False])
 
         def pacarana(x):
             # OR constraints within the conditional
@@ -1264,7 +1275,7 @@ class TestConstraints(TestNameCheckVisitorBase):
                 z = True
             else:
                 z = False
-            if z is True or assert_is_value(z, KnownValue(False)):
+            if z is True or assert_type(z, Literal[False]):
                 pass
 
         def hutia(x):
@@ -1274,9 +1285,9 @@ class TestConstraints(TestNameCheckVisitorBase):
                 y = False
 
             if x and y:
-                assert_is_value(y, KnownValue(True))
+                assert_type(y, Literal[True])
             else:
-                assert_is_value(y, true_or_false)
+                assert_type(y, bool)
 
         def mara(x):
             if x:
@@ -1287,11 +1298,11 @@ class TestConstraints(TestNameCheckVisitorBase):
                 z = False
 
             if not (y is True and z is True):
-                assert_is_value(y, true_or_false)
-                assert_is_value(z, true_or_false)
+                assert_type(y, bool)
+                assert_type(z, bool)
             else:
-                assert_is_value(y, KnownValue(True))
-                assert_is_value(z, KnownValue(True))
+                assert_type(y, Literal[True])
+                assert_type(z, Literal[True])
 
         def phoberomys(cond):
             if cond:
@@ -1304,13 +1315,13 @@ class TestConstraints(TestNameCheckVisitorBase):
                 z = False
 
             if not ((x is False or y is False) or z is True):
-                assert_is_value(x, KnownValue(True))
-                assert_is_value(y, KnownValue(True))
-                assert_is_value(z, KnownValue(False))
+                assert_type(x, Literal[True])
+                assert_type(y, Literal[True])
+                assert_type(z, Literal[False])
             else:
-                assert_is_value(x, true_or_false)
-                assert_is_value(y, true_or_false)
-                assert_is_value(z, true_or_false)
+                assert_type(x, bool)
+                assert_type(y, bool)
+                assert_type(z, bool)
 
         def llitun(cond):
             if cond:
@@ -1322,13 +1333,13 @@ class TestConstraints(TestNameCheckVisitorBase):
                 y = False
                 z = False
             if x and y and z:
-                assert_is_value(x, KnownValue(True))
-                assert_is_value(y, KnownValue(True))
-                assert_is_value(z, KnownValue(True))
+                assert_type(x, Literal[True])
+                assert_type(y, Literal[True])
+                assert_type(z, Literal[True])
             else:
-                assert_is_value(x, true_or_false)
-                assert_is_value(y, true_or_false)
-                assert_is_value(z, true_or_false)
+                assert_type(x, bool)
+                assert_type(y, bool)
+                assert_type(z, bool)
 
         def coypu(cond):
             if cond:
@@ -1340,26 +1351,28 @@ class TestConstraints(TestNameCheckVisitorBase):
                 y = False
                 z = False
             if x or y or z:
-                assert_is_value(x, true_or_false)
-                assert_is_value(y, true_or_false)
-                assert_is_value(z, true_or_false)
+                assert_type(x, bool)
+                assert_type(y, bool)
+                assert_type(z, bool)
             else:
-                assert_is_value(x, KnownValue(False))
-                assert_is_value(y, KnownValue(False))
-                assert_is_value(z, KnownValue(False))
+                assert_type(x, Literal[False])
+                assert_type(y, Literal[False])
+                assert_type(z, Literal[False])
 
     @assert_passes()
     def test_set_in_condition(self):
+        from typing import Literal
+
         def capybara(x):
             if x:
                 y = True
             else:
                 y = False
-            assert_is_value(y, MultiValuedValue([KnownValue(True), KnownValue(False)]))
+            assert_type(y, bool)
             if not y:
-                assert_is_value(y, KnownValue(False))
+                assert_type(y, Literal[False])
                 y = True
-            assert_is_value(y, KnownValue(True))
+            assert_type(y, Literal[True])
 
     @assert_passes()
     def test_optional_becomes_non_optional(self):
@@ -1373,13 +1386,15 @@ class TestConstraints(TestNameCheckVisitorBase):
 
     @assert_passes()
     def test_reset_on_assignment(self):
+        from typing import Literal
+
         def capybara(x):
             if x:
                 y = True
             else:
                 y = False
             if y is True:
-                assert_is_value(y, KnownValue(True))
+                assert_type(y, Literal[True])
                 y = bool(x)
                 assert_is_value(y, TypedValue(bool), skip_annotated=True)
 
@@ -1425,7 +1440,7 @@ class TestConstraints(TestNameCheckVisitorBase):
                 x = True
             else:
                 x = False
-            assert_is_value(x, MultiValuedValue([KnownValue(True), KnownValue(False)]))
+            assert_type(x, bool)
 
             # Tests that this completes in a reasonable time.
             if x:
@@ -1468,7 +1483,7 @@ class TestConstraints(TestNameCheckVisitorBase):
                 pass
             if x:
                 pass
-            assert_is_value(x, MultiValuedValue([KnownValue(True), KnownValue(False)]))
+            assert_type(x, bool)
 
     @assert_passes()
     def test_nonlocal_unresolved(self):
@@ -1493,6 +1508,8 @@ class TestConstraints(TestNameCheckVisitorBase):
 
     @assert_passes()
     def test_nonlocal_known(self):
+        from typing_extensions import Literal
+
         def capybara(y):
             if y:
                 x = True
@@ -1500,16 +1517,16 @@ class TestConstraints(TestNameCheckVisitorBase):
                 x = False
 
             def nested():
-                assert_is_value(
-                    x, MultiValuedValue([KnownValue(True), KnownValue(False)])
-                )
+                assert_type(x, bool)
                 if x:
-                    assert_is_value(x, KnownValue(True))
+                    assert_type(x, Literal[True])
                 else:
-                    assert_is_value(x, KnownValue(False))
+                    assert_type(x, Literal[False])
 
     @assert_passes()
     def test_nonlocal_known_with_write(self):
+        from typing_extensions import Literal
+
         def capybara(y):
             if y:
                 x = True
@@ -1518,15 +1535,13 @@ class TestConstraints(TestNameCheckVisitorBase):
 
             def nested():
                 nonlocal x
-                assert_is_value(
-                    x, MultiValuedValue([KnownValue(True), KnownValue(False)])
-                )
+                assert_type(x, bool)
                 if x:
-                    assert_is_value(x, KnownValue(True))
+                    assert_type(x, Literal[True])
                 else:
-                    assert_is_value(x, KnownValue(False))
+                    assert_type(x, Literal[False])
                     x = True
-                    assert_is_value(x, KnownValue(True))
+                    assert_type(x, Literal[True])
 
     @assert_passes()
     def test_nonlocal_in_loop(self):
@@ -1614,15 +1629,17 @@ class TestConstraints(TestNameCheckVisitorBase):
 
     @assert_passes()
     def test_while(self):
+        from typing_extensions import Literal
+
         def capybara(x):
             if x:
                 y = True
             else:
                 y = False
-            assert_is_value(y, MultiValuedValue([KnownValue(True), KnownValue(False)]))
+            assert_type(y, bool)
             while y:
-                assert_is_value(y, KnownValue(True))
-            assert_is_value(y, MultiValuedValue([KnownValue(True), KnownValue(False)]))
+                assert_type(y, Literal[True])
+            assert_type(y, bool)
 
     @assert_passes()
     def test_while_hasattr(self):
@@ -1782,7 +1799,7 @@ class TestConstraints(TestNameCheckVisitorBase):
             assert_is_value(x, AnnotatedUnion)
 
             if x:
-                assert_is_value(x, AnnotatedValue(TypedValue(str), [KnownValue(1)]))
+                assert_type(x, Annotated[str, 1])
             else:
                 # None or the empty string
                 assert_is_value(x, AnnotatedUnion)
@@ -1790,16 +1807,16 @@ class TestConstraints(TestNameCheckVisitorBase):
         def pacarana(x: Annotated[Optional[str], 1]) -> None:
             assert_is_value(x, AnnotatedUnion)
             if x is not None:
-                assert_is_value(x, AnnotatedValue(TypedValue(str), [KnownValue(1)]))
+                assert_type(x, Annotated[str, 1])
             else:
-                assert_is_value(x, AnnotatedValue(KnownValue(None), [KnownValue(1)]))
+                assert_type(x, Annotated[None, 1])
 
         def agouti(x: Annotated[Optional[str], 1]) -> None:
             assert_is_value(x, AnnotatedUnion)
             if isinstance(x, str):
                 assert_is_value(x, TypedValue(str))
             else:
-                assert_is_value(x, AnnotatedValue(KnownValue(None), [KnownValue(1)]))
+                assert_type(x, Annotated[None, 1])
 
     @assert_passes()
     def test_possibly_undefined(self):
@@ -1816,6 +1833,8 @@ class TestConstraints(TestNameCheckVisitorBase):
 class TestComposite(TestNameCheckVisitorBase):
     @assert_passes()
     def test_assignment(self):
+        from typing_extensions import Literal
+
         class Capybara(object):
             def __init__(self, x):
                 self.x = x
@@ -1826,7 +1845,7 @@ class TestComposite(TestNameCheckVisitorBase):
                     MultiValuedValue([AnyValue(AnySource.unannotated), KnownValue(1)]),
                 )
                 self.x = 1
-                assert_is_value(self.x, KnownValue(1))
+                assert_type(self.x, Literal[1])
 
                 self = Capybara(2)
                 assert_is_value(
@@ -1878,10 +1897,12 @@ class TestComposite(TestNameCheckVisitorBase):
     def test_subscript(self):
         from typing import Any, Dict
 
+        from typing_extensions import Literal
+
         def capybara(x: Dict[str, Any], y) -> None:
             assert_is_value(x["a"], AnyValue(AnySource.explicit))
             x["a"] = 1
-            assert_is_value(x["a"], KnownValue(1))
+            assert_type(x["a"], Literal[1])
             if isinstance(x["c"], int):
                 assert_is_value(x["c"], AnyValue(AnySource.explicit) & TypedValue(int))
             if x["b"] is None:

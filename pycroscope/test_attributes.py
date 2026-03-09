@@ -63,34 +63,36 @@ class TestAttributes(TestNameCheckVisitorBase):
     def test_attribute_in_base_class(self):
         from typing import Optional
 
-        union = MultiValuedValue([KnownValue(None), TypedValue(int)])
+        from typing_extensions import Literal
 
         class Capybara:
             capybara_id: Optional[int] = None
 
             @classmethod
             def clsmthd(cls):
-                assert_is_value(cls.capybara_id, union)
+                assert_type(cls.capybara_id, int | None)
 
         class DefiniteCapybara(Capybara):
             capybara_id = 3
 
             @classmethod
             def clsmthd(cls):
-                assert_is_value(cls.capybara_id, KnownValue(3))
+                assert_type(cls.capybara_id, Literal[3])
 
         def capybara():
-            assert_is_value(Capybara().capybara_id, union)
-            assert_is_value(Capybara.capybara_id, union)
-            assert_is_value(DefiniteCapybara().capybara_id, KnownValue(3))
-            assert_is_value(DefiniteCapybara.capybara_id, KnownValue(3))
+            assert_type(Capybara().capybara_id, int | None)
+            assert_type(Capybara.capybara_id, int | None)
+            assert_type(DefiniteCapybara().capybara_id, Literal[3])
+            assert_type(DefiniteCapybara.capybara_id, Literal[3])
 
     @assert_passes()
     def test_known_value_hook(self):
+        from typing_extensions import Literal
+
         from pycroscope.test_config import SPECIAL_STRING
 
         def capybara():
-            assert_is_value(SPECIAL_STRING.special, KnownValue("special"))
+            assert_type(SPECIAL_STRING.special, Literal["special"])
 
     @assert_passes()
     def test_generic(self):
@@ -131,8 +133,10 @@ class TestAttributes(TestNameCheckVisitorBase):
 
     @assert_passes()
     def test_name_py3(self):
+        from typing_extensions import Literal
+
         def capybara():
-            assert_is_value(KnownValue.__name__, KnownValue("KnownValue"))
+            assert_type(KnownValue.__name__, Literal["KnownValue"])
 
     @assert_passes()
     def test_attribute_type_inference(self):
@@ -357,7 +361,7 @@ class TestAttributes(TestNameCheckVisitorBase):
         def render_task(name: str):
             if not (name or "").strip():
                 name = "x"
-            assert_is_value(name, TypedValue(str) | KnownValue("x"))
+            assert_type(name, str)
 
     @assert_passes()
     def test_raising_prop(self):

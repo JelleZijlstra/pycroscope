@@ -27,7 +27,7 @@ class TestAsyncDef(TestNameCheckVisitorBase):
 class TestAsyncAwait(TestNameCheckVisitorBase):
     @assert_passes()
     def test_type_inference(self):
-        from pycroscope.value import make_coro_type
+        from typing_extensions import Literal
 
         async def capybara(x):
             assert_is_value(x, AnyValue(AnySource.unannotated))
@@ -35,9 +35,8 @@ class TestAsyncAwait(TestNameCheckVisitorBase):
 
         async def kerodon(x):
             task = capybara(x)
-            assert_is_value(task, make_coro_type(KnownValue("hydrochoerus")))
             val = await task
-            assert_is_value(val, KnownValue("hydrochoerus"))
+            assert_type(val, Literal["hydrochoerus"])
 
     @assert_passes()
     def test_type_error(self):
@@ -199,7 +198,7 @@ class TestArgSpec(TestNameCheckVisitorBase):
     def test_asyncio_coroutine(self):
         import asyncio
 
-        from pycroscope.value import make_coro_type
+        from typing_extensions import Literal
 
         @asyncio.coroutine
         def f():
@@ -208,7 +207,7 @@ class TestArgSpec(TestNameCheckVisitorBase):
 
         @asyncio.coroutine
         def g():
-            assert_is_value(f(), make_coro_type(KnownValue(42)))
+            assert_type((yield from f()), Literal[42])
 
     @assert_passes()
     def test_coroutine_from_typeshed(self):
@@ -240,13 +239,13 @@ class TestArgSpec(TestNameCheckVisitorBase):
 
     @assert_passes()
     def test_async_def(self):
-        from pycroscope.value import make_coro_type
+        from typing_extensions import Literal
 
         async def f():
             return 42
 
         async def g():
-            assert_is_value(f(), make_coro_type(KnownValue(42)))
+            assert_type(await f(), Literal[42])
 
 
 class TestNoReturn(TestNameCheckVisitorBase):

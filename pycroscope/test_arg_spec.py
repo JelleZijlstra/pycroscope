@@ -528,9 +528,7 @@ class TestBuiltinMethods(TestNameCheckVisitorBase):
         def capybara():
             r = range(10)
             assert_is_value(r, KnownValue(range(10)))
-            assert_is_value(
-                r.__iter__(), GenericValue(collections.abc.Iterator, [TypedValue(int)])
-            )
+            assert_type(r.__iter__(), collections.abc.Iterator[int])
 
 
 class TestPytestRaises(TestNameCheckVisitorBase):
