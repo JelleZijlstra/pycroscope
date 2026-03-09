@@ -3,15 +3,7 @@ from .checker import Checker
 from .test_name_check_visitor import TestNameCheckVisitorBase
 from .test_node_visitor import assert_passes, skip_before
 from .tests import make_simple_sequence
-from .value import (
-    AnnotatedValue,
-    AnySource,
-    AnyValue,
-    GenericValue,
-    KnownValue,
-    TypedValue,
-    assert_is_value,
-)
+from .value import AnySource, AnyValue, GenericValue, TypedValue, assert_is_value
 
 
 def test_runtime_constructor_instance_value_substitutes_earlier_defaults() -> None:
@@ -61,8 +53,9 @@ class TestTypeVar(TestNameCheckVisitorBase):
             assert_type(get_one(xs), int)
             assert_type(get_one([int(3)]), int)
             # This one doesn't work yet because we don't know how to go from
-            # KnownValue([3]) to a GenericValue of some sort.
-            # assert_is_value(get_one([3]), KnownValue(3))
+            # KnownValue([3]) to a GenericValue of some sort, so we can't yet
+            # prove a Literal return here.
+            # assert_type(get_one([3]), Literal[3])
 
             assert_type(gen.get_one(), int)
             assert_type(gen.get_another(), int)
@@ -413,6 +406,8 @@ class TestTypeVar(TestNameCheckVisitorBase):
     def test_default(self):
         from typing import Dict, TypeVar, Union
 
+        from typing_extensions import Literal
+
         KT = TypeVar("KT")
         VT = TypeVar("VT")
         T = TypeVar("T")
@@ -425,7 +420,7 @@ class TestTypeVar(TestNameCheckVisitorBase):
 
         def capybara(d: Dict[str, str], key: str) -> None:
             assert_type(dictget(d, key), str | None)
-            assert_is_value(dictget(d, key, 1), TypedValue(str) | KnownValue(1))
+            assert_type(dictget(d, key, 1), str | Literal[1])
 
     @assert_passes()
     def test_typevar_default_must_match_bound_and_constraints(self):
@@ -514,6 +509,8 @@ class TestSolve(TestNameCheckVisitorBase):
     def test_filter_like(self):
         from typing import Callable, TypeVar
 
+        from typing_extensions import Literal
+
         T = TypeVar("T")
 
         def callable(o: object) -> bool:
@@ -523,11 +520,13 @@ class TestSolve(TestNameCheckVisitorBase):
             return data
 
         def capybara():
-            assert_is_value(filterish(callable, 1), KnownValue(1))
+            assert_type(filterish(callable, 1), Literal[1])
 
     @assert_passes()
     def test_one_any(self):
         from typing import TypeVar
+
+        from typing_extensions import Literal
 
         T = TypeVar("T")
 
@@ -535,7 +534,7 @@ class TestSolve(TestNameCheckVisitorBase):
             return x
 
         def capybara(unannotated):
-            assert_is_value(sub(1, unannotated), KnownValue(1))
+            assert_type(sub(1, unannotated), Literal[1])
 
     @assert_passes()
     def test_isinstance(self):
@@ -756,8 +755,8 @@ class TestAnnotated(TestNameCheckVisitorBase):
             return x
 
         def caller(x: Annotated[int, 42]):
-            assert_is_value(x, AnnotatedValue(TypedValue(int), [KnownValue(42)]))
-            assert_is_value(f(x), AnnotatedValue(TypedValue(int), [KnownValue(42)]))
+            assert_type(x, Annotated[int, 42])
+            assert_type(f(x), Annotated[int, 42])
 
 
 class TestDunder(TestNameCheckVisitorBase):

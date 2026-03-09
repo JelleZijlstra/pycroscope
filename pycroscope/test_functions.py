@@ -112,10 +112,14 @@ class TestNestedFunction(TestNameCheckVisitorBase):
 class TestFunctionDefinitions(TestNameCheckVisitorBase):
     @assert_passes()
     def test_keyword_only(self):
+        from typing import Any
+
+        from typing_extensions import Literal
+
         def capybara(a, *, b, c=3):
             assert_is_value(a, AnyValue(AnySource.unannotated))
             assert_is_value(b, AnyValue(AnySource.unannotated))
-            assert_is_value(c, AnyValue(AnySource.unannotated) | KnownValue(3))
+            assert_type(c, Any | Literal[3])
             capybara(1, b=2)
 
             fn = lambda a, *, b: None

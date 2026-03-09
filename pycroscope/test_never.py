@@ -1,7 +1,6 @@
 # static analysis: ignore
 from .test_name_check_visitor import TestNameCheckVisitorBase
 from .test_node_visitor import assert_passes, skip_before
-from .value import NO_RETURN_VALUE, assert_is_value
 
 
 class TestAnnotations(TestNameCheckVisitorBase):
@@ -10,8 +9,8 @@ class TestAnnotations(TestNameCheckVisitorBase):
         from typing_extensions import Never
 
         def capybara(n: Never, o: "Never"):
-            assert_is_value(n, NO_RETURN_VALUE)
-            assert_is_value(o, NO_RETURN_VALUE)
+            assert_type(n, Never)
+            assert_type(o, Never)
 
     @skip_before((3, 11))
     @assert_passes()
@@ -19,16 +18,16 @@ class TestAnnotations(TestNameCheckVisitorBase):
         from typing import Never
 
         def capybara(n: Never, o: "Never"):
-            assert_is_value(n, NO_RETURN_VALUE)
-            assert_is_value(o, NO_RETURN_VALUE)
+            assert_type(n, Never)
+            assert_type(o, Never)
 
     @assert_passes()
     def test_typing_noreturn(self):
         from typing import NoReturn
 
         def capybara(n: NoReturn, o: "NoReturn"):
-            assert_is_value(n, NO_RETURN_VALUE)
-            assert_is_value(o, NO_RETURN_VALUE)
+            assert_type(n, NoReturn)
+            assert_type(o, NoReturn)
 
 
 class TestNoReturn(TestNameCheckVisitorBase):

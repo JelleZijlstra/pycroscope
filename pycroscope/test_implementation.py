@@ -306,8 +306,10 @@ class TestEncodeDecode(TestNameCheckVisitorBase):
 class TestLen(TestNameCheckVisitorBase):
     @assert_passes()
     def test(self):
+        from typing_extensions import Literal
+
         def capybara(x):
-            assert_is_value(len("a"), KnownValue(1))
+            assert_type(len("a"), Literal[1])
             assert_type(len(list(x)), int)
 
             # if we don't know the type, there should be no error
@@ -450,8 +452,10 @@ class TestLen(TestNameCheckVisitorBase):
 class TestBool(TestNameCheckVisitorBase):
     @assert_passes()
     def test_return_value(self):
+        from typing_extensions import Literal
+
         def capybara(x):
-            assert_is_value(bool(), KnownValue(False))
+            assert_type(bool(), Literal[False])
             assert_type(bool(x + 1), bool)
 
     @assert_passes()
@@ -782,7 +786,7 @@ class TestGenericMutators(TestNameCheckVisitorBase):
     def test_dict_get(self):
         from typing import Dict
 
-        from typing_extensions import NotRequired, TypedDict
+        from typing_extensions import Literal, NotRequired, TypedDict
 
         class TD(TypedDict):
             a: int
@@ -797,17 +801,17 @@ class TestGenericMutators(TestNameCheckVisitorBase):
         ):
             assert_type(td.get("a"), int)
             assert_type(td.get("c"), str | None)
-            assert_is_value(td.get("c", 1), TypedValue(str) | KnownValue(1))
+            assert_type(td.get("c", 1), str | Literal[1])
             td.get(1)  # E: invalid_typeddict_key
 
             known = {"a": "b"}
-            assert_is_value(known.get("a"), KnownValue("b") | KnownValue(None))
-            assert_is_value(known.get("b", 1), KnownValue(1))
-            assert_is_value(known.get(s), KnownValue("b") | KnownValue(None))
+            assert_type(known.get("a"), Literal["b"] | None)
+            assert_type(known.get("b", 1), Literal[1])
+            assert_type(known.get(s), Literal["b"] | None)
 
             incomplete = {**td, "b": 1, "d": s}
             assert_type(incomplete.get("a"), int | None)
-            assert_is_value(incomplete.get("b"), KnownValue(1) | KnownValue(None))
+            assert_type(incomplete.get("b"), Literal[1] | None)
             assert_type(incomplete.get("d"), str | None)
             assert_type(incomplete.get("e"), None)
 
@@ -909,7 +913,7 @@ class TestGenericMutators(TestNameCheckVisitorBase):
     def test_dict_pop(self):
         from typing import Dict
 
-        from typing_extensions import NotRequired, TypedDict
+        from typing_extensions import Literal, NotRequired, TypedDict
 
         class TD(TypedDict):
             a: int
@@ -920,8 +924,8 @@ class TestGenericMutators(TestNameCheckVisitorBase):
             td.pop(0)  # E: invalid_typeddict_key
             td.pop("c")  # E: invalid_typeddict_key
             val = td.pop("a", "s")  # E: incompatible_argument
-            assert_is_value(val, TypedValue(int) | KnownValue("s"))
-            assert_is_value(td.pop("b", "x"), TypedValue(str) | KnownValue("x"))
+            assert_type(val, int | Literal["s"])
+            assert_type(td.pop("b", "x"), str)
 
         def dict_incomplete_value():
             incomplete_value = {"a": str(TD), "c": 42}
@@ -941,21 +945,21 @@ class TestGenericMutators(TestNameCheckVisitorBase):
                 incomplete_value,
                 DictIncompleteValue(dict, [KVPair(KnownValue("c"), KnownValue(42))]),
             )
-            assert_is_value(
-                incomplete_value.pop("c", 1), KnownValue(42) | KnownValue(1)
-            )
+            assert_type(incomplete_value.pop("c", 1), Literal[42, 1])
             assert_is_value(incomplete_value, DictIncompleteValue(dict, []))
 
         def strong_typed(strong_dict: Dict[int, str]):
             expected = GenericValue(dict, [TypedValue(int), TypedValue(str)])
             assert_is_value(strong_dict, expected)
-            assert_is_value(strong_dict.pop(3, 42), TypedValue(str) | KnownValue(42))
+            assert_type(strong_dict.pop(3, 42), str | Literal[42])
             assert_is_value(strong_dict, expected)
             assert_type(strong_dict.pop(3), str)
             assert_is_value(strong_dict, expected)
 
     @assert_passes()
     def test_dict_pop_union(self):
+        from typing_extensions import Literal
+
         def capybara(cond):
             d = {"a": 1, "b": 2}
             if cond:
@@ -963,7 +967,7 @@ class TestGenericMutators(TestNameCheckVisitorBase):
             else:
                 d["d"] = 4
 
-            assert_is_value(d.pop("a"), KnownValue(1))
+            assert_type(d.pop("a"), Literal[1])
 
     @assert_passes()
     def test_dict_update(self):
@@ -1230,6 +1234,8 @@ class TestSequenceGetItem(TestNameCheckVisitorBase):
     def test_list(self):
         from typing import List
 
+        from typing_extensions import Literal
+
         def capybara(lst: List[int], i: int, s: slice, unannotated) -> None:
             assert_type(lst[0], int)
             assert_type(lst[-1], int)
@@ -1246,12 +1252,12 @@ class TestSequenceGetItem(TestNameCheckVisitorBase):
             assert_is_value(empty[unannotated], AnyValue(AnySource.from_another))
 
             known = [1, 2]
-            assert_is_value(known[0], KnownValue(1))
-            assert_is_value(known[-1], KnownValue(2))
-            assert_is_value(known[-5], KnownValue(1) | KnownValue(2))
+            assert_type(known[0], Literal[1])
+            assert_type(known[-1], Literal[2])
+            assert_type(known[-5], Literal[1, 2])
             assert_is_value(known[1:], KnownValue([2]))
             assert_is_value(known[::-1], KnownValue([2, 1]))
-            assert_is_value(known[i], KnownValue(1) | KnownValue(2))
+            assert_type(known[i], Literal[1, 2])
             assert_is_value(
                 known[s], make_simple_sequence(list, [KnownValue(1), KnownValue(2)])
             )
@@ -1261,6 +1267,8 @@ class TestSequenceGetItem(TestNameCheckVisitorBase):
     @assert_passes(settings={ErrorCode.missing_generic_parameters: False})
     def test_tuple(self):
         from typing import Tuple
+
+        from typing_extensions import Literal
 
         def capybara(tpl: Tuple[int, ...], i: int, s: slice, unannotated) -> None:
             assert_type(tpl[0], int)
@@ -1279,14 +1287,14 @@ class TestSequenceGetItem(TestNameCheckVisitorBase):
             assert_is_value(empty[unannotated], AnyValue(AnySource.from_another))
 
             known = (1, 2)
-            assert_is_value(known[0], KnownValue(1))
-            assert_is_value(known[-1], KnownValue(2))
+            assert_type(known[0], Literal[1])
+            assert_type(known[-1], Literal[2])
             assert_is_value(
                 known[-5], AnyValue(AnySource.error)  # E: incompatible_call
             )
             assert_is_value(known[1:], KnownValue((2,)))
             assert_is_value(known[::-1], KnownValue((2, 1)))
-            assert_is_value(known[i], KnownValue(1) | KnownValue(2))
+            assert_type(known[i], Literal[1, 2])
             assert_is_value(
                 known[s], make_simple_sequence(tuple, [KnownValue(1), KnownValue(2)])
             )
@@ -1294,20 +1302,24 @@ class TestSequenceGetItem(TestNameCheckVisitorBase):
 
     @assert_passes()
     def test_list_index(self):
+        from typing_extensions import Literal
+
         def capybara(x):
             lst = ["a", "b", int(x)]
-            assert_is_value(lst[0], KnownValue("a"))
+            assert_type(lst[0], Literal["a"])
             assert_type(lst[2], int)
-            assert_is_value(lst[-2], KnownValue("b"))
-            assert_is_value(lst[5], KnownValue("a") | KnownValue("b") | TypedValue(int))
+            assert_type(lst[-2], Literal["b"])
+            assert_type(lst[5], Literal["a", "b"] | int)
 
     @assert_passes()
     def test_tuple_index(self):
+        from typing_extensions import Literal
+
         def capybara(x):
             tpl = ("a", "b", int(x))
-            assert_is_value(tpl[0], KnownValue("a"))
+            assert_type(tpl[0], Literal["a"])
             assert_type(tpl[2], int)
-            assert_is_value(tpl[-2], KnownValue("b"))
+            assert_type(tpl[-2], Literal["b"])
             assert_is_value(tpl[5], AnyValue(AnySource.error))  # E: incompatible_call
 
     @assert_passes()
@@ -1367,6 +1379,8 @@ class TestDictGetItem(TestNameCheckVisitorBase):
 
     @assert_passes()
     def test_incomplete_value(self):
+        from typing_extensions import Literal
+
         def capybara(a: int, unresolved):
             incomplete_value = {a: 1, "b": 2, "c": "s"}
             assert_is_value(
@@ -1381,8 +1395,8 @@ class TestDictGetItem(TestNameCheckVisitorBase):
                 ),
             )
 
-            assert_is_value(incomplete_value["b"], KnownValue(2))
-            assert_is_value(incomplete_value[1], KnownValue(1))
+            assert_type(incomplete_value["b"], Literal[2])
+            assert_type(incomplete_value[1], Literal[1])
             assert_is_value(
                 incomplete_value[unresolved],
                 MultiValuedValue([KnownValue(1), KnownValue(2), KnownValue("s")]),
@@ -1392,16 +1406,13 @@ class TestDictGetItem(TestNameCheckVisitorBase):
 
             # MultiValuedValue
             key = "b" if unresolved else "c"
-            assert_is_value(
-                incomplete_value[key],
-                MultiValuedValue([KnownValue(2), KnownValue("s")]),
-            )
+            assert_type(incomplete_value[key], Literal[2, "s"])
 
     @assert_passes()
     def test_complex_incomplete(self):
         from typing import Sequence
 
-        from typing_extensions import NotRequired, TypedDict
+        from typing_extensions import Literal, NotRequired, TypedDict
 
         class TD(TypedDict):
             a: bytes
@@ -1424,22 +1435,22 @@ class TestDictGetItem(TestNameCheckVisitorBase):
                     ],
                 ),
             )
-            assert_is_value(d3[1], KnownValue(1))
+            assert_type(d3[1], Literal[1])
             assert_type(d3["a"], int)
-            assert_is_value(d3["b"], KnownValue(2))
-            assert_is_value(d3[s], TypedValue(int) | KnownValue(2))
+            assert_type(d3["b"], Literal[2])
+            assert_type(d3[s], int)
 
             d4 = {**d3, **td}
-            assert_is_value(d4[1], KnownValue(1))
+            assert_type(d4[1], Literal[1])
             assert_type(d4["a"], bytes)
-            assert_is_value(d4["b"], KnownValue(2) | TypedValue(bool))
-            assert_is_value(d4[s], TypedValue(bytes) | KnownValue(2) | TypedValue(bool))
+            assert_type(d4["b"], Literal[2] | bool)
+            assert_type(d4[s], bytes | bool | Literal[2])
 
     @assert_passes()
     def test(self):
         from typing import Dict, Generic, TypeVar
 
-        from typing_extensions import TypedDict
+        from typing_extensions import Literal, TypedDict
 
         K = TypeVar("K")
         V = TypeVar("V")
@@ -1461,7 +1472,7 @@ class TestDictGetItem(TestNameCheckVisitorBase):
             untyped: dict,  # E: missing_generic_parameters
         ):
             d = {1: 2}
-            assert_is_value(d[1], KnownValue(2))
+            assert_type(d[1], Literal[2])
             assert_type(td["a"], int)
 
             assert_type(dct["key"], int)

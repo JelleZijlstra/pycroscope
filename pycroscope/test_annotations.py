@@ -325,6 +325,8 @@ class TestAnnotations(TestNameCheckVisitorBase):
     def test_annotations_override_return(self):
         from typing import Any
 
+        from typing_extensions import Literal
+
         def f() -> Any:
             return 0
 
@@ -333,7 +335,7 @@ class TestAnnotations(TestNameCheckVisitorBase):
 
         def capybara():
             assert_is_value(f(), AnyValue(AnySource.explicit))
-            assert_is_value(g(), KnownValue(0))
+            assert_type(g(), Literal[0])
 
     @assert_passes()
     def test_cached_classmethod(self):
@@ -718,7 +720,6 @@ class TestAnnotations(TestNameCheckVisitorBase):
 class TestAnnotated(TestNameCheckVisitorBase):
     @assert_passes()
     def test_typing_extensions(self):
-        import collections.abc
         from typing import Iterable, Optional
 
         from typing_extensions import Annotated
@@ -734,34 +735,16 @@ class TestAnnotated(TestNameCheckVisitorBase):
             in_optional: Optional[Annotated[int, 1]],
             in_iterable: Iterable[Annotated[int, 1]],
         ) -> None:
-            assert_is_value(x, AnnotatedValue(TypedValue(int), [KnownValue("stuff")]))
+            assert_type(x, Annotated[int, "stuff"])
             assert_is_value(y, AnnotatedValue(TypedValue(int), [KnownValue(obj)]))
-            assert_is_value(
-                quoted,
-                AnnotatedValue(TypedValue(int), [KnownValue(int), KnownValue(str)]),
-            )
-            assert_is_value(
-                nested, AnnotatedValue(TypedValue(int), [KnownValue(1), KnownValue(2)])
-            )
-            assert_is_value(
-                nested_quoted,
-                AnnotatedValue(TypedValue(int), [KnownValue(1), KnownValue(2)]),
-            )
-            assert_is_value(
-                in_optional,
-                AnnotatedValue(TypedValue(int), [KnownValue(1)]) | KnownValue(None),
-            )
-            assert_is_value(
-                in_iterable,
-                GenericValue(
-                    collections.abc.Iterable,
-                    [AnnotatedValue(TypedValue(int), [KnownValue(1)])],
-                ),
-            )
+            assert_type(quoted, Annotated[int, int, str])
+            assert_type(nested, Annotated[Annotated[int, 1], 2])
+            assert_type(nested_quoted, Annotated[Annotated[int, 1], 2])
+            assert_type(in_optional, Optional[Annotated[int, 1]])
+            assert_type(in_iterable, Iterable[Annotated[int, 1]])
 
     @assert_passes()
     def test_typing(self):
-        import collections.abc
         from typing import Annotated, Iterable, Optional
 
         obj = object()
@@ -775,30 +758,13 @@ class TestAnnotated(TestNameCheckVisitorBase):
             in_optional: Optional[Annotated[int, 1]],
             in_iterable: Iterable[Annotated[int, 1]],
         ) -> None:
-            assert_is_value(x, AnnotatedValue(TypedValue(int), [KnownValue("stuff")]))
+            assert_type(x, Annotated[int, "stuff"])
             assert_is_value(y, AnnotatedValue(TypedValue(int), [KnownValue(obj)]))
-            assert_is_value(
-                quoted,
-                AnnotatedValue(TypedValue(int), [KnownValue(int), KnownValue(str)]),
-            )
-            assert_is_value(
-                nested, AnnotatedValue(TypedValue(int), [KnownValue(1), KnownValue(2)])
-            )
-            assert_is_value(
-                nested_quoted,
-                AnnotatedValue(TypedValue(int), [KnownValue(1), KnownValue(2)]),
-            )
-            assert_is_value(
-                in_optional,
-                AnnotatedValue(TypedValue(int), [KnownValue(1)]) | KnownValue(None),
-            )
-            assert_is_value(
-                in_iterable,
-                GenericValue(
-                    collections.abc.Iterable,
-                    [AnnotatedValue(TypedValue(int), [KnownValue(1)])],
-                ),
-            )
+            assert_type(quoted, Annotated[int, int, str])
+            assert_type(nested, Annotated[Annotated[int, 1], 2])
+            assert_type(nested_quoted, Annotated[Annotated[int, 1], 2])
+            assert_type(in_optional, Optional[Annotated[int, 1]])
+            assert_type(in_iterable, Iterable[Annotated[int, 1]])
 
     @assert_passes()
     def test_genericalias_nested_class(self):
@@ -1240,7 +1206,7 @@ class TestTypeVar(TestNameCheckVisitorBase):
     def test_callable_compatibility(self):
         from typing import Callable, Iterable, TypeVar, Union
 
-        from typing_extensions import Protocol
+        from typing_extensions import Literal, Protocol
 
         AnyStr = TypeVar("AnyStr", bytes, str)
         IntT = TypeVar("IntT", bound=int)
@@ -1273,7 +1239,7 @@ class TestTypeVar(TestNameCheckVisitorBase):
             return ""
 
         def want_bounded_func(f: Callable[[IntT], IntT], i: int) -> None:
-            assert_is_value(f(True), KnownValue(True))
+            assert_type(f(True), Literal[True])
             assert_type(f(i), int)
 
         def want_str_func(f: Callable[[str], str]):
@@ -1406,7 +1372,7 @@ class TestTypeGuard(TestNameCheckVisitorBase):
     def test_typing_extesions(self):
         from typing import Union
 
-        from typing_extensions import TypeGuard
+        from typing_extensions import TypeGuard, assert_type
 
         def is_int(x: Union[int, str]) -> TypeGuard[int]:
             return x == 42
@@ -1418,17 +1384,19 @@ class TestTypeGuard(TestNameCheckVisitorBase):
             if is_int(x):
                 assert_type(x, int)
             else:
-                assert_is_value(x, MultiValuedValue([TypedValue(int), TypedValue(str)]))
+                assert_type(x, int | str)
 
         def pacarana(x: Union[int, str]):
             if is_quoted_int(x):
                 assert_type(x, int)
             else:
-                assert_is_value(x, MultiValuedValue([TypedValue(int), TypedValue(str)]))
+                assert_type(x, int | str)
 
     @assert_passes()
     def test(self):
         from typing import Union
+
+        from typing_extensions import assert_type
 
         from pycroscope.extensions import TypeGuard
 
@@ -1439,11 +1407,13 @@ class TestTypeGuard(TestNameCheckVisitorBase):
             if is_int(x):
                 assert_type(x, int)
             else:
-                assert_is_value(x, MultiValuedValue([TypedValue(int), TypedValue(str)]))
+                assert_type(x, int | str)
 
     @assert_passes()
     def test_method(self) -> None:
         from typing import Union
+
+        from typing_extensions import assert_type
 
         from pycroscope.extensions import TypeGuard
 
@@ -1457,14 +1427,14 @@ class TestTypeGuard(TestNameCheckVisitorBase):
                 assert_type(x, int)
                 assert_type(cls, Cls)
             else:
-                assert_is_value(x, MultiValuedValue([TypedValue(int), TypedValue(str)]))
+                assert_type(x, int | str)
                 assert_type(cls, Cls)
 
     @assert_passes()
     def test_staticmethod(self) -> None:
         from typing import Union
 
-        from typing_extensions import TypeGuard
+        from typing_extensions import TypeGuard, assert_type
 
         class Cls:
             @staticmethod
@@ -1475,8 +1445,8 @@ class TestTypeGuard(TestNameCheckVisitorBase):
             if Cls().is_int(x):
                 assert_type(x, int)
             else:
-                assert_is_value(x, MultiValuedValue([TypedValue(int), TypedValue(str)]))
-            assert_is_value(x, MultiValuedValue([TypedValue(int), TypedValue(str)]))
+                assert_type(x, int | str)
+            assert_type(x, int | str)
             if Cls.is_int(x):
                 assert_type(x, int)
 
@@ -1713,7 +1683,7 @@ class TestExternalType(TestNameCheckVisitorBase):
         ) -> None:
             assert_type(x, str)
             assert_type(y, os.stat_result)
-            assert_is_value(z, AnnotatedValue(TypedValue(str), [KnownValue(1)]))
+            assert_type(z, Annotated[str, 1])
             assert_type(omega, str | int)
 
         def user():
@@ -2163,6 +2133,8 @@ class TestParamSpec(TestNameCheckVisitorBase):
     def test_compatibility(self):
         from typing import Callable, TypeVar
 
+        from typing_extensions import Literal
+
         T = TypeVar("T")
 
         def want_callable(c: Callable[[int], T]) -> T:
@@ -2172,7 +2144,7 @@ class TestParamSpec(TestNameCheckVisitorBase):
             return s
 
         def capybara(unannotated, other):
-            assert_is_value(want_callable(lambda _: 3), KnownValue(3))
+            assert_type(want_callable(lambda _: 3), Literal[3])
             assert_is_value(
                 want_callable(unannotated), AnyValue(AnySource.generic_argument)
             )
@@ -2702,7 +2674,6 @@ class TestFloatInt(TestNameCheckVisitorBase):
             pass
 
         def capybara(x: MyFloat):
-            assert_is_value(x, TypedValue(MyFloat))
             assert_type(x, MyFloat)
 
         def caller():
@@ -2717,7 +2688,6 @@ class TestFloatInt(TestNameCheckVisitorBase):
             pass
 
         def capybara(x: MyComplex):
-            assert_is_value(x, TypedValue(MyComplex))
             assert_type(x, MyComplex)
 
         def caller():

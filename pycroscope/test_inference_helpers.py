@@ -13,19 +13,19 @@ class TestInferenceHelpers(TestNameCheckVisitorBase):
         def capybara(val: Value) -> None:
             reveal_type(dump_value)  # E: reveal_type
             dump_value(reveal_type)  # E: reveal_type
-            assert_is_value(1, KnownValue(1))
-            assert_is_value(1, KnownValue(2))  # E: inference_failure
-            assert_is_value(1, val)  # E: inference_failure
+            assert_is_value([], KnownValue([]))
+            assert_is_value([], KnownValue(()))  # E: inference_failure
+            assert_is_value([], val)  # E: inference_failure
 
     @assert_passes()
     def test_return_value(self) -> None:
         from pycroscope import assert_is_value, dump_value
 
         def capybara():
-            x = dump_value(1)  # E: reveal_type
-            y = reveal_type(1)  # E: reveal_type
-            assert_is_value(x, KnownValue(1))
-            assert_is_value(y, KnownValue(1))
+            x = dump_value([])  # E: reveal_type
+            y = reveal_type([])  # E: reveal_type
+            assert_is_value(x, KnownValue([]))
+            assert_is_value(y, KnownValue([]))
 
     @assert_passes()
     def test_assert_type(self) -> None:

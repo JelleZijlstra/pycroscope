@@ -414,8 +414,8 @@ def assert_is_value(obj: object, value: Value, *, skip_annotated: bool = False) 
 
     Example usage::
 
-        assert_is_value(1, KnownValue(1))  # passes
-        assert_is_value(1, TypedValue(int))  # shows an error
+        assert_is_value([], KnownValue([]))  # passes
+        assert_is_value([], TypedValue(list))  # shows an error
 
     If skip_annotated is True, unwraps any :class:`AnnotatedValue` in the input.
 

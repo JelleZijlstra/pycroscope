@@ -38,13 +38,16 @@ used(asynq_tests)
 class TestBadAsyncYield(TestNameCheckVisitorBase):
     @assert_passes()
     def test_const_future(self):
+        from typing import Any
+
         from asynq import ConstFuture, FutureBase, asynq
+        from typing_extensions import Literal
 
         @asynq()
         def capybara(condition):
             yield FutureBase()
             val = yield ConstFuture(3)
-            assert_is_value(val, KnownValue(3))
+            assert_type(val, Literal[3])
             val2 = yield None
             assert_type(val2, None)
 
@@ -53,7 +56,7 @@ class TestBadAsyncYield(TestNameCheckVisitorBase):
             else:
                 task = capybara.asynq(True)
             val3 = yield task
-            assert_is_value(val3, KnownValue(4) | AnyValue(AnySource.inference))
+            assert_type(val3, Any | Literal[4])
 
 
 class TestUnwrapYield(TestNameCheckVisitorBase):
@@ -80,16 +83,16 @@ class TestUnwrapYield(TestNameCheckVisitorBase):
         @asynq()
         def caller(ints: Sequence[Literal[0, 1, 2]]):
             val1 = yield async_fn.asynq(1)
-            assert_is_value(val1, KnownValue("async_fn"))
+            assert_type(val1, Literal["async_fn"])
             val2 = yield square.asynq(3)
             assert_type(val2, int)
 
             val3, val4 = yield async_fn.asynq(1), async_fn.asynq(2)
-            assert_is_value(val3, KnownValue("async_fn"))
-            assert_is_value(val4, KnownValue("async_fn"))
+            assert_type(val3, Literal["async_fn"])
+            assert_type(val4, Literal["async_fn"])
 
             val5 = yield Capybara().async_method.asynq()
-            assert_is_value(val5, KnownValue("capybara"))
+            assert_type(val5, Literal["capybara"])
 
             vals1 = yield [square.asynq(1), square.asynq(2), square.asynq(3)]
             assert_is_value(
@@ -181,6 +184,7 @@ class TestReturn(TestNameCheckVisitorBase):
     @assert_passes()
     def test_type_inference(self):
         from asynq import AsyncTask, ConstFuture, FutureBase, async_proxy, asynq
+        from typing_extensions import Literal
 
         def returns_3():
             return 3
@@ -207,11 +211,11 @@ class TestReturn(TestNameCheckVisitorBase):
             return ConstFuture(3)
 
         def capybara(oid):
-            assert_is_value(returns_3(), KnownValue(3))
+            assert_type(returns_3(), Literal[3])
             assert_is_value(
                 pure_async_fn(), AsyncTaskIncompleteValue(AsyncTask, KnownValue(4))
             )
-            assert_is_value(async_fn(), KnownValue(3))
+            assert_type(async_fn(), Literal[3])
             assert_is_value(
                 async_fn.asynq(), AsyncTaskIncompleteValue(AsyncTask, KnownValue(3))
             )

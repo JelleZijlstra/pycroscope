@@ -2,14 +2,7 @@
 from .error_code import ErrorCode
 from .test_name_check_visitor import TestNameCheckVisitorBase
 from .test_node_visitor import assert_passes
-from .value import (
-    AnySource,
-    AnyValue,
-    KnownValue,
-    MultiValuedValue,
-    TypedValue,
-    assert_is_value,
-)
+from .value import AnySource, AnyValue, KnownValue, assert_is_value
 
 
 class TestBinOps(TestNameCheckVisitorBase):
@@ -17,8 +10,10 @@ class TestBinOps(TestNameCheckVisitorBase):
     def test_binop(self):
         from typing import Union
 
+        from typing_extensions import Literal
+
         def tucotuco():
-            assert_is_value(2 + 3, KnownValue(5))
+            assert_type(2 + 3, Literal[5])
 
         def capybara(x: Union[int, float], y: Union[int, float]) -> float:
             return x + y
@@ -79,6 +74,8 @@ class TestBinOps(TestNameCheckVisitorBase):
 class TestBoolOp(TestNameCheckVisitorBase):
     @assert_passes()
     def test(self):
+        from typing_extensions import Literal
+
         def capybara(x):
             if x:
                 cond = str(x)
@@ -87,29 +84,11 @@ class TestBoolOp(TestNameCheckVisitorBase):
                 cond = None
                 cond2 = None
             assert_type(cond, str | None)
-            assert_is_value(
-                cond2, MultiValuedValue([KnownValue(True), KnownValue(None)])
-            )
-            assert_is_value(
-                cond and 1,
-                MultiValuedValue([TypedValue(str), KnownValue(None), KnownValue(1)]),
-                skip_annotated=True,
-            )
-            assert_is_value(
-                cond2 and 1,
-                MultiValuedValue([KnownValue(None), KnownValue(1)]),
-                skip_annotated=True,
-            )
-            assert_is_value(
-                cond or 1,
-                MultiValuedValue([TypedValue(str), KnownValue(1)]),
-                skip_annotated=True,
-            )
-            assert_is_value(
-                cond2 or 1,
-                MultiValuedValue([KnownValue(True), KnownValue(1)]),
-                skip_annotated=True,
-            )
+            assert_type(cond2, Literal[True] | None)
+            assert_type(cond and 1, str | Literal[1] | None)
+            assert_type(cond2 and 1, Literal[1] | None)
+            assert_type(cond or 1, str | Literal[1])
+            assert_type(cond2 or 1, Literal[True, 1])
 
         def hutia(x=None):
             assert_is_value(x, AnyValue(AnySource.unannotated) | KnownValue(None))
@@ -130,15 +109,19 @@ class TestBoolOp(TestNameCheckVisitorBase):
 class TestOperators(TestNameCheckVisitorBase):
     @assert_passes(settings={ErrorCode.value_always_true: False})
     def test_not(self):
+        from typing_extensions import Literal
+
         def capybara(x):
             assert_type(not x, bool)
-            assert_is_value(not True, KnownValue(False))
+            assert_type(not True, Literal[False])
 
     @assert_passes()
     def test_unary_op(self):
+        from typing_extensions import Literal
+
         def capybara(x):
             assert_is_value(~x, AnyValue(AnySource.from_another))
-            assert_is_value(~3, KnownValue(-4))
+            assert_type(~3, Literal[-4])
 
     @assert_passes()
     def test_binop_type_inference(self):
@@ -212,10 +195,12 @@ class TestOperators(TestNameCheckVisitorBase):
 class TestAugAssign(TestNameCheckVisitorBase):
     @assert_passes()
     def test_aug_assign(self):
+        from typing_extensions import Literal
+
         def capybara(condition):
             x = 1
             x += 2
-            assert_is_value(x, KnownValue(3))
+            assert_type(x, Literal[3])
 
 
 class TestCompare(TestNameCheckVisitorBase):
@@ -224,11 +209,11 @@ class TestCompare(TestNameCheckVisitorBase):
         from typing_extensions import Literal
 
         def capybara(i: Literal[1, 2, 3], x: Literal[3, 4]) -> None:
-            assert_is_value(i, KnownValue(1) | KnownValue(2) | KnownValue(3))
-            assert_is_value(x, KnownValue(3) | KnownValue(4))
+            assert_type(i, Literal[1, 2, 3])
+            assert_type(x, Literal[3, 4])
             if 1 < i < 3 != x:
-                assert_is_value(i, KnownValue(2))
-                assert_is_value(x, KnownValue(4))
+                assert_type(i, Literal[2])
+                assert_type(x, Literal[4])
 
     @assert_passes()
     def test_dunders(self):
