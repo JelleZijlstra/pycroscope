@@ -675,7 +675,7 @@ class TestReadOnly(TestNameCheckVisitorBase):
             x: float
             y: ReadOnly[float]
 
-        class TD_A(TD_A1, TD_A2): ...  # E: invalid_annotation
+        class TD_A(TD_A1, TD_A2): ...  # E: invalid_base
 
         class TD_B1(TypedDict):
             x: ReadOnly[NotRequired[int]]
@@ -685,7 +685,7 @@ class TestReadOnly(TestNameCheckVisitorBase):
             x: ReadOnly[Required[int]]
             y: ReadOnly[NotRequired[int]]
 
-        class TD_B(TD_B1, TD_B2): ...  # E: invalid_annotation
+        class TD_B(TD_B1, TD_B2): ...  # E: invalid_base
 
     @assert_passes()
     def test_update_ignores_uninhabitable_optional_key(self):

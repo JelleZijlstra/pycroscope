@@ -235,16 +235,16 @@ class TestTypeVar(TestNameCheckVisitorBase):
         alias_a_2: TypeAlias = alias_a_1[T_co]
         alias_b = ClassB[T_co, T_contra]
 
-        class BadA1(ClassA[T_co]):  # E: invalid_annotation
+        class BadA1(ClassA[T_co]):  # E: invalid_base
             ...
 
-        class BadA2(alias_a_1[T_co]):  # E: invalid_annotation
+        class BadA2(alias_a_1[T_co]):  # E: invalid_base
             ...
 
-        class BadA3(alias_a_2[T_co]):  # E: invalid_annotation
+        class BadA3(alias_a_2[T_co]):  # E: invalid_base
             ...
 
-        class BadB(alias_b[T_contra, T_co]):  # E: invalid_annotation
+        class BadB(alias_b[T_contra, T_co]):  # E: invalid_base
             ...
 
     @assert_passes(run_in_both_module_modes=True)
@@ -270,13 +270,13 @@ class TestTypeVar(TestNameCheckVisitorBase):
 
         class GoodContra(Contra[T_contra]): ...
 
-        class BadCo(Co[T_contra]):  # E: invalid_annotation
+        class BadCo(Co[T_contra]):  # E: invalid_base
             ...
 
-        class BadContra(Contra[T_co]):  # E: invalid_annotation
+        class BadContra(Contra[T_co]):  # E: invalid_base
             ...
 
-        class BadInv(Inv[T_co]):  # E: invalid_annotation
+        class BadInv(Inv[T_co]):  # E: invalid_base
             ...
 
     @assert_passes(run_in_both_module_modes=True)
@@ -297,10 +297,10 @@ class TestTypeVar(TestNameCheckVisitorBase):
 
         class Good2(Contra_TA[Contra_TA[T_co]]): ...
 
-        class Bad1(Contra_TA[Co_TA[Contra_TA[T_contra]]]):  # E: invalid_annotation
+        class Bad1(Contra_TA[Co_TA[Contra_TA[T_contra]]]):  # E: invalid_base
             ...
 
-        class Bad2(Contra_TA[Contra_TA[Contra_TA[T_co]]]):  # E: invalid_annotation
+        class Bad2(Contra_TA[Contra_TA[Contra_TA[T_co]]]):  # E: invalid_base
             ...
 
     @assert_passes()
@@ -810,10 +810,10 @@ class TestGenericClasses(TestNameCheckVisitorBase):
             """
             from typing import Generic, Protocol
 
-            class BadGeneric[T](Generic[T]):  # E: invalid_annotation
+            class BadGeneric[T](Generic[T]):  # E: invalid_base
                 ...
 
-            class BadProtocol[T](Protocol[T]):  # E: invalid_annotation
+            class BadProtocol[T](Protocol[T]):  # E: invalid_base
                 ...
 
             class GoodProtocol[T](Protocol):
