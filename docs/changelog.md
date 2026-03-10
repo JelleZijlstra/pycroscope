@@ -3,6 +3,8 @@
 ## Unreleased
 
 - Restore concise generic-parameter names in invalid type-alias diagnostics, so errors mention forms like `~T: str`, `~P`, and `Ts` instead of full internal parameter object reprs.
+- Fix `Generic[...]` and `Protocol[...]` base validation parity between importable and import-failure analysis, including PEP 695 class declarations like `class C[T](Generic[T])` that should be rejected consistently.
+- Fix `@dataclass_transform` parity between importable and import-failure analysis: pycroscope now reuses synthetic dataclass metadata for runtime-backed classes when checking attributes like `__hash__` and `__match_args__`, so hashability and class-pattern matching behave consistently in both modes.
 - Reject more invalid `Self` usages: pycroscope now reports errors for module-level `Self`, `Self` in type aliases or base-class expressions, and method signatures that use `Self` from staticmethods, metaclasses, or mismatched explicit receiver annotations.
 - Fix constructor result specialization for `float` arguments and overloaded `__init__` methods, so `assert_type()` now agrees with pycroscope's implicit `float | int` semantics in cases like `Box(1.0)` and `Box[float](1)`.
 - Fix `@dataclass_transform` field specifier checking for unimportable modules so converter-based defaults and constructor inputs work consistently for callables like `dict`.

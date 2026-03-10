@@ -1643,6 +1643,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     collector: CallSiteCollector | None
     current_class: type | str | None
     current_dataclass_info: DataclassInfo | None
+    current_dataclass_kw_only_active: bool
     current_class_key: type | str | None
     current_class_type_params: Sequence[TypeParam] | None
     current_class_declared_type_param_identities: set[object] | None
@@ -1722,6 +1723,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         # current class (for inferring the type of cls and self arguments)
         self.current_class = None
         self.current_dataclass_info = None
+        self.current_dataclass_kw_only_active = False
         self.current_class_key = None
         self.current_class_type_params = None
         self.current_class_declared_type_param_identities = None
@@ -4107,6 +4109,15 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 override(self, "current_synthetic_typeddict", synthetic_typeddict),
                 override(self, "current_class_key", class_key),
                 override(self, "current_dataclass_info", dataclass_semantics),
+                override(
+                    self,
+                    "current_dataclass_kw_only_active",
+                    (
+                        dataclass_semantics.kw_only_default
+                        if dataclass_semantics is not None
+                        else False
+                    ),
+                ),
                 override(
                     self,
                     "current_class_declared_type_param_identities",
@@ -6933,8 +6944,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     def _base_values_for_generic_analysis(
         self, node: ast.ClassDef, base_values: Sequence[Value]
     ) -> Sequence[Value]:
-        if self.module is not None:
-            return base_values
         if not any(isinstance(base_node, ast.Subscript) for base_node in node.bases):
             return base_values
         if (
@@ -6950,7 +6959,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             )
         ):
             # Generic[T] / Protocol[T] bases usually preserve enough runtime
-            # information even in static fallback mode.
+            # information in either module mode.
             return base_values
         analyzed_bases = [
             self._value_for_variance_annotation(base_node) for base_node in node.bases
@@ -9467,11 +9476,12 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             # set within the Future returned. Without this, we'll incorrectly infer the return
             # value to be the Future instead of the Future's value.
             return
-        if info.node.decorator_list and not (
-            len(info.decorators) == 1
-            and info.decorators[0][0] in SAFE_DECORATORS_FOR_ARGSPEC_TO_RETVAL
-        ):
-            return  # With decorators we don't know what it will return
+        if info.node.decorator_list:
+            if len(info.decorators) != 1:
+                return  # With decorators we don't know what it will return
+            unapplied_decorator, _, _ = next(iter(info.decorators))
+            if unapplied_decorator not in SAFE_DECORATORS_FOR_ARGSPEC_TO_RETVAL:
+                return  # With decorators we don't know what it will return
         return_value = result.return_value
 
         if result.is_generator and return_value == KnownNone:
@@ -12442,6 +12452,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 self._is_current_class_dataclass()
                 and _is_dataclass_kw_only_marker_value(annotation)
             ):
+                self.current_dataclass_kw_only_active = True
                 if node.value is not None:
                     self._show_error_if_checking(
                         node,
@@ -12619,10 +12630,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         is_current_class_dataclass = self._is_current_class_dataclass()
         has_default = node.value is not None
         init = True
-        kw_only = (
-            self.current_dataclass_info is not None
-            and self.current_dataclass_info.kw_only_default
-        )
+        kw_only = self.current_dataclass_kw_only_active
         alias: str | None = None
         is_dataclass_field_call = False
         dataclass_default_value: Value | None = None

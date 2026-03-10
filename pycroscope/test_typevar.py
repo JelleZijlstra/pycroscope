@@ -871,16 +871,17 @@ class TestGenericClasses(TestNameCheckVisitorBase):
             """
             from typing import Generic, Protocol
 
-            class BadGeneric[T](Generic[T]):  # E: invalid_base
-                ...
-
-            class BadProtocol[T](Protocol[T]):  # E: invalid_base
-                ...
-
             class GoodProtocol[T](Protocol):
                 ...
+
+            def capybara() -> None:
+                class BadGeneric[T](Generic[T]):  # E: invalid_base
+                    ...
+
+                class BadProtocol[T](Protocol[T]):  # E: invalid_base
+                    ...
         """,
-            allow_import_failures=True,
+            run_in_both_module_modes=True,
         )
 
     @skip_before((3, 12))

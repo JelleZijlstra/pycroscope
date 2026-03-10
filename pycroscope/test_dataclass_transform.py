@@ -598,7 +598,7 @@ class TestDataclassTransform(TestNameCheckVisitorBase):
             class MutableChild(FrozenParent, frozen=False):  # E: invalid_base
                 y: int
 
-    @assert_passes(allow_import_failures=True)
+    @assert_passes(run_in_both_module_modes=True)
     def test_dataclass_transform_decorator_field_specifier_options_after_import_failure(
         self,
     ):
@@ -615,7 +615,7 @@ class TestDataclassTransform(TestNameCheckVisitorBase):
             alias: str | None = None,
             kw_only: bool = False,
         ) -> Any:
-            raise NotImplementedError
+            return object()
 
         @dataclass_transform(
             kw_only_default=True, frozen_default=True, field_specifiers=(model_field,)
@@ -634,15 +634,16 @@ class TestDataclassTransform(TestNameCheckVisitorBase):
             y: int = model_field(alias="why")
             z: int = model_field(default=3, kw_only=False)
 
-        DecoratorModel(2, why=1)
-        DecoratorModel(why=1)
-        DecoratorModel(2, y=1)  # E: incompatible_call
-        DecoratorModel(x=1, why=1)  # E: incompatible_call
-        DecoratorModel(1, 2)  # E: incompatible_call
-        model = DecoratorModel(2, why=1)
-        model.y = 3  # E: incompatible_assignment
+        def check_calls() -> None:
+            DecoratorModel(2, why=1)
+            DecoratorModel(why=1)
+            DecoratorModel(2, y=1)  # E: incompatible_call
+            DecoratorModel(x=1, why=1)  # E: incompatible_call
+            DecoratorModel(1, 2)  # E: incompatible_call
+            model = DecoratorModel(2, why=1)
+            model.y = 3  # E: incompatible_assignment
 
-    @assert_passes(allow_import_failures=True)
+    @assert_passes(run_in_both_module_modes=True)
     def test_dataclass_transform_base_field_specifier_options_after_import_failure(
         self,
     ):
@@ -657,7 +658,7 @@ class TestDataclassTransform(TestNameCheckVisitorBase):
             alias: str | None = None,
             kw_only: bool = False,
         ) -> Any:
-            raise NotImplementedError
+            return object()
 
         @dataclass_transform(
             kw_only_default=True, frozen_default=False, field_specifiers=(model_field,)
@@ -673,15 +674,16 @@ class TestDataclassTransform(TestNameCheckVisitorBase):
             b: int = model_field(alias="bee")
             c: int = model_field(default=3, kw_only=False)
 
-        Concrete(2, bee=1)
-        Concrete(bee=1)
-        Concrete(2, b=1)  # E: incompatible_call
-        Concrete(a=1, bee=1)  # E: incompatible_call
-        Concrete(1, 2)  # E: incompatible_call
-        model = Concrete(2, bee=1)
-        model.b = 3  # E: incompatible_assignment
+        def check_calls() -> None:
+            Concrete(2, bee=1)
+            Concrete(bee=1)
+            Concrete(2, b=1)  # E: incompatible_call
+            Concrete(a=1, bee=1)  # E: incompatible_call
+            Concrete(1, 2)  # E: incompatible_call
+            model = Concrete(2, bee=1)
+            model.b = 3  # E: incompatible_assignment
 
-    @assert_passes(allow_import_failures=True)
+    @assert_passes(run_in_both_module_modes=True)
     def test_dataclass_transform_metaclass_field_specifier_options_after_import_failure(
         self,
     ):
@@ -696,7 +698,7 @@ class TestDataclassTransform(TestNameCheckVisitorBase):
             alias: str | None = None,
             kw_only: bool = False,
         ) -> Any:
-            raise NotImplementedError
+            return object()
 
         @dataclass_transform(
             kw_only_default=True, frozen_default=False, field_specifiers=(model_field,)
@@ -715,13 +717,14 @@ class TestDataclassTransform(TestNameCheckVisitorBase):
             b: int = model_field(alias="bee")
             c: int = model_field(default=3, kw_only=False)
 
-        MetaConcrete(2, bee=1)
-        MetaConcrete(bee=1)
-        MetaConcrete(2, b=1)  # E: incompatible_call
-        MetaConcrete(a=1, bee=1)  # E: incompatible_call
-        MetaConcrete(1, 2)  # E: incompatible_call
-        model = MetaConcrete(2, bee=1)
-        model.b = 3  # E: incompatible_assignment
+        def check_calls() -> None:
+            MetaConcrete(2, bee=1)
+            MetaConcrete(bee=1)
+            MetaConcrete(2, b=1)  # E: incompatible_call
+            MetaConcrete(a=1, bee=1)  # E: incompatible_call
+            MetaConcrete(1, 2)  # E: incompatible_call
+            model = MetaConcrete(2, bee=1)
+            model.b = 3  # E: incompatible_assignment
 
     @assert_passes(allow_import_failures=True)
     def test_dataclass_transform_ignores_inherited_init_after_import_failure(self):
@@ -841,7 +844,7 @@ class TestDataclassTransform(TestNameCheckVisitorBase):
         ok_unsafe_hash: Hashable = UnsafeHash(value=1)
         ok_explicit_hash: Hashable = ExplicitHash(value=1)
 
-    @assert_passes(allow_import_failures=True)
+    @assert_passes(run_in_both_module_modes=True)
     def test_dataclass_transform_hash_semantics_after_import_failure(self):
         from typing import Hashable
 
@@ -872,13 +875,15 @@ class TestDataclassTransform(TestNameCheckVisitorBase):
             def __hash__(self) -> int:
                 return 0
 
-        bad_unhashable: Hashable = Unhashable(value=1)  # E: incompatible_assignment
-        ok_frozen: Hashable = Frozen(value=1)
-        ok_no_eq: Hashable = NoEq(value=1)
-        ok_unsafe_hash: Hashable = UnsafeHash(value=1)
-        ok_explicit_hash: Hashable = ExplicitHash(value=1)
+        def check_hashability() -> None:
+            bad_unhashable: Hashable = Unhashable(value=1)  # E: incompatible_assignment
+            ok_frozen: Hashable = Frozen(value=1)
+            ok_no_eq: Hashable = NoEq(value=1)
+            ok_unsafe_hash: Hashable = UnsafeHash(value=1)
+            ok_explicit_hash: Hashable = ExplicitHash(value=1)
+            print(bad_unhashable, ok_frozen, ok_no_eq, ok_unsafe_hash, ok_explicit_hash)
 
-    @assert_passes(allow_import_failures=True)
+    @assert_passes(run_in_both_module_modes=True)
     def test_dataclass_transform_init_and_match_args_keywords_after_import_failure(
         self,
     ):
@@ -894,12 +899,13 @@ class TestDataclassTransform(TestNameCheckVisitorBase):
         class InitDisabled(Base, init=False):
             x: int
 
-        InitDisabled()
-        InitDisabled(1)  # E: incompatible_call
-
         class Matchable(Base, init=False, match_args=True):
             x: int
             y: int
+
+        def check_init_disabled() -> None:
+            InitDisabled()
+            InitDisabled(1)  # E: incompatible_call
 
         def allow_positional_patterns(value: Matchable) -> None:
             match value:
@@ -914,7 +920,7 @@ class TestDataclassTransform(TestNameCheckVisitorBase):
                 case NoMatchArgs(1):  # E: bad_match
                     pass
 
-    @assert_passes(allow_import_failures=True)
+    @assert_passes(run_in_both_module_modes=True)
     def test_dataclass_transform_factory_field_specifier_after_import_failure(self):
         from typing import Any, Callable, TypeVar
 
@@ -941,9 +947,6 @@ class TestDataclassTransform(TestNameCheckVisitorBase):
         class WithFactory:
             x: int = model_field(factory=lambda: 1)
 
-        WithFactory()
-        WithFactory(1)
-
         @create_model()
         class BadFactory:
             x: int = model_field(factory=lambda: "x")  # E: incompatible_assignment
@@ -953,7 +956,11 @@ class TestDataclassTransform(TestNameCheckVisitorBase):
             x: int = model_field(factory=lambda: 1)
             y: int
 
-    @assert_passes(allow_import_failures=True)
+        def check_calls() -> None:
+            WithFactory()
+            WithFactory(1)
+
+    @assert_passes(run_in_both_module_modes=True)
     def test_dataclass_transform_non_default_kwargs_do_not_set_default(self):
         from typing import Any, Callable, TypeVar
 
@@ -976,8 +983,9 @@ class TestDataclassTransform(TestNameCheckVisitorBase):
             x: int = model_field(repr=False)
             y: int
 
-        Model(1, 2)
-        Model(1)  # E: incompatible_call
+        def check_calls() -> None:
+            Model(1, 2)
+            Model(1)  # E: incompatible_call
 
     @assert_passes()
     def test_dataclass_transform_converter_field_specifier(self):
