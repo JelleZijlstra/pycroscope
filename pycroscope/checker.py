@@ -55,6 +55,7 @@ from .signature import (
     ParameterKind,
     Signature,
     SigParameter,
+    _promote_constructor_type_arg,
     make_bound_method,
 )
 from .stacked_scopes import Composite
@@ -1630,6 +1631,26 @@ class Checker:
                     if params
                     else bound_self_value
                 )
+                if (
+                    isinstance(return_value, TypedValue)
+                    and return_value.typ == value.class_type.typ
+                    and isinstance(bound_self_value, GenericValue)
+                    and _class_keys_match(bound_self_value.typ, value.class_type.typ)
+                    and any(
+                        isinstance(arg, TypeVarValue) for arg in bound_self_value.args
+                    )
+                    and any(
+                        isinstance(subval, TypeVarValue)
+                        and any(
+                            isinstance(arg, TypeVarValue)
+                            and arg.typevar is subval.typevar
+                            for arg in bound_self_value.args
+                        )
+                        for param in params
+                        for subval in param.annotation.walk_values()
+                    )
+                ):
+                    return_value = bound_self_value
                 bound_sigs.append(bound.replace_return_value(return_value))
             collapsed = self._collapse_constructor_overloads_to_single_generic(
                 bound_sigs, class_type=value.class_type.typ
@@ -2390,6 +2411,10 @@ class Checker:
                     )
                     if has_direct_new and synthetic_constructor_sig is not None:
                         argspec = synthetic_constructor_sig
+                    elif isinstance(synthetic_constructor_sig, OverloadedSignature):
+                        # Runtime signatures drop @overload relationships between
+                        # constructor parameters and return types.
+                        argspec = synthetic_constructor_sig
                     elif (
                         is_namedtuple_synthetic
                         and synthetic_constructor_sig is not None
@@ -2715,6 +2740,10 @@ class Checker:
             if preserve_exact_return and explicit_member_values
             else member_values
         )
+        if preserve_exact_return:
+            exact_member_values = [
+                _promote_constructor_type_arg(member) for member in exact_member_values
+            ]
         compatibility_member_values = [
             (
                 member
@@ -2830,6 +2859,10 @@ class Checker:
             and exact_typevar_map
             and exact_typevar_map != typevar_map
         ):
+            exact_typevar_map = {
+                typevar: _promote_constructor_type_arg(member)
+                for typevar, member in exact_typevar_map.items()
+            }
             exact_return_argspec = origin_argspec.substitute_typevars(exact_typevar_map)
             specialized_argspec = _replace_signature_returns(
                 specialized_argspec, exact_return_argspec

@@ -169,6 +169,7 @@ from .signature import (
     ParameterKind,
     Signature,
     SigParameter,
+    _promote_constructor_type_arg,
     preprocess_args,
 )
 from .stacked_scopes import (
@@ -15534,6 +15535,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 ]
         else:
             return return_value
+        type_args = [_promote_constructor_type_arg(arg) for arg in type_args]
 
         def _specialize(value: Value) -> Value | None:
             if allow_annotated_specialization and isinstance(value, AnnotatedValue):

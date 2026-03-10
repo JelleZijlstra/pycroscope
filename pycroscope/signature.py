@@ -180,18 +180,32 @@ def _get_constructor_literal_runtime_type(bounds: Sequence[Bound]) -> type | Non
     return None
 
 
+def _promote_constructor_type_arg(value: Value) -> Value:
+    if isinstance(value, MultiValuedValue):
+        return unite_values(
+            *[_promote_constructor_type_arg(subval) for subval in value.vals]
+        )
+    root = replace_fallback(value)
+    if isinstance(root, TypedValue):
+        if root.typ is float:
+            return TypedValue(float) | TypedValue(int)
+        if root.typ is complex:
+            return TypedValue(complex) | TypedValue(float) | TypedValue(int)
+    return value
+
+
 def _widen_constructor_typevar_solution(
     value: Value, *, literal_runtime_type: type | None = None
 ) -> Value:
     if literal_runtime_type is not None:
-        return TypedValue(literal_runtime_type)
+        return _promote_constructor_type_arg(TypedValue(literal_runtime_type))
     if isinstance(value, KnownValue):
-        return TypedValue(type(value.val))
+        return _promote_constructor_type_arg(TypedValue(type(value.val)))
     if isinstance(value, MultiValuedValue):
         return unite_values(
             *[_widen_constructor_typevar_solution(subval) for subval in value.vals]
         )
-    return value
+    return _promote_constructor_type_arg(value)
 
 
 class MaximumPositionalArgs(IntegerOption):

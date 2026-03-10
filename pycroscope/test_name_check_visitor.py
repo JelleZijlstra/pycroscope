@@ -49,6 +49,9 @@ from .value import (
 )
 
 BOX_FLOAT_IN_TEST_INPUT = GenericValue("<test input>.Box", [TypedValue(float)])
+BOX_FLOAT_OR_INT_IN_TEST_INPUT = GenericValue(
+    "<test input>.Box", [TypedValue(float) | TypedValue(int)]
+)
 
 # ===================================================
 # Base classes for test_scope tests.
@@ -2569,7 +2572,7 @@ class TestSubclassValue(TestNameCheckVisitorBase):
         import does_not_exist  # noqa: F401
         from typing_extensions import Generic, Self, TypeVar
 
-        from pycroscope.test_name_check_visitor import BOX_FLOAT_IN_TEST_INPUT
+        from pycroscope.test_name_check_visitor import BOX_FLOAT_OR_INT_IN_TEST_INPUT
         from pycroscope.value import assert_is_value
 
         T = TypeVar("T")
@@ -2578,7 +2581,33 @@ class TestSubclassValue(TestNameCheckVisitorBase):
             def __new__(cls, value: T) -> Self:
                 return super().__new__(cls)
 
-        assert_is_value(Box[float](1), BOX_FLOAT_IN_TEST_INPUT)
+        assert_is_value(Box[float](1), BOX_FLOAT_OR_INT_IN_TEST_INPUT)
+
+    @assert_passes(allow_import_failures=True)
+    def test_overloaded_constructor_prefers_synthetic_signature(self):
+        from typing import Any, Generic, TypeVar, overload
+
+        import does_not_exist  # noqa: F401
+        from typing_extensions import assert_type
+
+        T = TypeVar("T")
+
+        class Box(Generic[T]):
+            @overload
+            def __init__(self: "Box[list[int]]", value: int) -> None: ...
+
+            @overload
+            def __init__(self: "Box[set[str]]", value: str) -> None: ...
+
+            @overload
+            def __init__(self, value: T) -> None: ...
+
+            def __init__(self, value: Any) -> None:
+                pass
+
+        assert_type(Box(0), Box[list[int]])
+        assert_type(Box(""), Box[set[str]])
+        assert_type(Box(3.0), Box[float])
 
     @assert_passes()
     def test_init_self_annotation_disallows_class_scoped_typevars(self):
@@ -4395,7 +4424,7 @@ class TestAnnAssign(TestNameCheckVisitorBase):
         import does_not_exist  # noqa: F401
         from typing_extensions import assert_type
 
-        from pycroscope.test_name_check_visitor import BOX_FLOAT_IN_TEST_INPUT
+        from pycroscope.test_name_check_visitor import BOX_FLOAT_OR_INT_IN_TEST_INPUT
         from pycroscope.value import assert_is_value
 
         T = TypeVar("T")
@@ -4405,7 +4434,7 @@ class TestAnnAssign(TestNameCheckVisitorBase):
                 self.value = value
 
         assert_type(Box(1), Box[int])
-        assert_is_value(Box(1.0), BOX_FLOAT_IN_TEST_INPUT)
+        assert_is_value(Box(1.0), BOX_FLOAT_OR_INT_IN_TEST_INPUT)
         assert_type(Box(""), Box[str])
         assert_type(Box[float](1), Box[float | int])
 
