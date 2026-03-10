@@ -9476,11 +9476,12 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             # set within the Future returned. Without this, we'll incorrectly infer the return
             # value to be the Future instead of the Future's value.
             return
-        if info.node.decorator_list and not (
-            len(info.decorators) == 1
-            and info.decorators[0][0] in SAFE_DECORATORS_FOR_ARGSPEC_TO_RETVAL
-        ):
-            return  # With decorators we don't know what it will return
+        if info.node.decorator_list:
+            if len(info.decorators) != 1:
+                return  # With decorators we don't know what it will return
+            unapplied_decorator, _, _ = next(iter(info.decorators))
+            if unapplied_decorator not in SAFE_DECORATORS_FOR_ARGSPEC_TO_RETVAL:
+                return  # With decorators we don't know what it will return
         return_value = result.return_value
 
         if result.is_generator and return_value == KnownNone:
