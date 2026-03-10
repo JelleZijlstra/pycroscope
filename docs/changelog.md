@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Reject more invalid `Self` usages: pycroscope now reports errors for module-level `Self`, `Self` in type aliases or base-class expressions, and method signatures that use `Self` from staticmethods, metaclasses, or mismatched explicit receiver annotations.
 - Reclassify invalid inheritance diagnostics: pycroscope now reports `invalid_base` instead of `invalid_annotation` for class-base errors such as bad `Generic[...]`/`Protocol[...]` bases, inheriting from `@final` classes, and incompatible multiple `TypedDict` bases.
 - Fix type-alias attribute handling in fallback mode: `Alias: TypeAlias = int` now uses runtime `int` attributes, while `type Alias = int` continues to expose alias-object attributes like `__value__`.
 - Improve `NamedTuple` compatibility for tuple-style indexing, unpacking, and item mutation checks.

@@ -172,6 +172,7 @@ class Context:
     should_suppress_errors: bool = field(default=False, init=False)
     """While this is True, no annotation errors are emitted."""
     _being_evaluated: dict[int, Value] = field(default_factory=dict, init=False)
+    _invalid_self_nodes: set[int] = field(default_factory=set, init=False)
 
     def suppress_errors(self) -> AbstractContextManager[None]:
         """Temporarily suppress all annotation-evaluation errors."""
@@ -216,6 +217,23 @@ class Context:
         """Return the node that should be used as fallback for annotation errors."""
         return None
 
+    def invalid_self_annotation_message(self, node: ast.AST) -> str | None:
+        return None
+
+    def maybe_show_invalid_self_annotation(self, node: ast.AST | None = None) -> None:
+        if self.should_suppress_errors:
+            return
+        node = node or self.get_error_node()
+        if node is None:
+            return
+        message = self.invalid_self_annotation_message(node)
+        if message is None:
+            return
+        if id(node) in self._invalid_self_nodes:
+            return
+        self._invalid_self_nodes.add(id(node))
+        self.show_error(message, ErrorCode.invalid_annotation, node=node)
+
     def handle_undefined_name(self, name: str) -> Value:
         if self.should_suppress_errors:
             return AnyValue(AnySource.inference)
@@ -234,7 +252,10 @@ class Context:
     def get_attribute(self, root_value: Value, node: ast.Attribute) -> Value:
         if isinstance(root_value, KnownValue):
             try:
-                return KnownValue(getattr(root_value.val, node.attr))
+                value = KnownValue(getattr(root_value.val, node.attr))
+                if _is_self_annotation_value(value):
+                    self.maybe_show_invalid_self_annotation()
+                return value
             except AttributeError:
                 self.show_error(
                     f"{root_value.val!r} has no attribute {node.attr!r}", node=node
@@ -1463,6 +1484,10 @@ def _annotation_expr_from_value(value: Value, ctx: Context) -> AnnotationExpr:
         return AnnotationExpr(ctx, _type_from_value(value, ctx))
 
 
+def _is_self_annotation_value(value: Value) -> bool:
+    return isinstance(value, KnownValue) and is_typing_name(value.val, "Self")
+
+
 def _type_from_value(value: Value, ctx: Context) -> Value:
     if isinstance(value, KnownValue):
         return _type_from_runtime(value.val, ctx)
@@ -2071,12 +2096,20 @@ class _DefaultContext(Context):
                 error_node=node if self.use_name_node_for_error else self.node,
                 suppress_errors=self.should_suppress_errors,
             )
+            if _is_self_annotation_value(val):
+                self.maybe_show_invalid_self_annotation()
             return val
         elif self.globals is not None:
             if node.id in self.globals:
-                return KnownValue(self.globals[node.id])
+                val = KnownValue(self.globals[node.id])
+                if _is_self_annotation_value(val):
+                    self.maybe_show_invalid_self_annotation()
+                return val
             elif hasattr(builtins, node.id):
-                return KnownValue(getattr(builtins, node.id))
+                val = KnownValue(getattr(builtins, node.id))
+                if _is_self_annotation_value(val):
+                    self.maybe_show_invalid_self_annotation()
+                return val
         if self.should_suppress_errors:
             return AnyValue(AnySource.inference)
         self.show_error(
@@ -2085,6 +2118,14 @@ class _DefaultContext(Context):
             node=node,
         )
         return AnyValue(AnySource.error)
+
+    def invalid_self_annotation_message(self, node: ast.AST) -> str | None:
+        if self.visitor is None:
+            return None
+        method = getattr(self.visitor, "invalid_self_annotation_message", None)
+        if method is None:
+            return None
+        return method(node)
 
     def get_type_alias(
         self,

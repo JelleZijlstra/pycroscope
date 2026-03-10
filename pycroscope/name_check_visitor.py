@@ -1514,6 +1514,31 @@ class _PendingOverload:
 
 
 @dataclass
+class _SelfBaseDetectionContext(Context):
+    visitor: "NameCheckVisitor"
+    node: ast.AST
+
+    def show_error(
+        self,
+        message: str,
+        error_code: Error = ErrorCode.invalid_annotation,
+        node: ast.AST | None = None,
+    ) -> None:
+        if self.should_suppress_errors:
+            return
+        self.visitor.show_error(node or self.node, message, error_code)
+
+    def get_error_node(self) -> ast.AST | None:
+        return self.node
+
+    def get_name(self, node: ast.Name) -> Value:
+        value, _ = self.visitor.resolve_name(
+            node, error_node=self.node, suppress_errors=True
+        )
+        return value
+
+
+@dataclass
 class _PendingOverloadBlock:
     name: str
     scope: Scope
@@ -3424,6 +3449,19 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 self._check_inconsistent_generic_base_specialization(node, base_values)
                 self._check_protocol_base_validity(node, base_values)
                 for base_node, base_value in zip(node.bases, base_values):
+                    parsed_base_value = value_from_ast(
+                        base_node,
+                        ctx=_SelfBaseDetectionContext(self, base_node),
+                        error_on_unrecognized=False,
+                    )
+                    if _base_expression_contains_self(parsed_base_value):
+                        self._show_error_if_checking(
+                            base_node,
+                            self._self_error_message(
+                                "cannot be used in base class expressions"
+                            ),
+                            error_code=ErrorCode.invalid_base,
+                        )
                     if _is_type_alias_base_value(base_value):
                         self._show_error_if_checking(
                             base_node,
@@ -7158,95 +7196,162 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             )
         return classmethod_attributes
 
-    def _return_annotation_node_contains_self(self, annotation: ast.AST | None) -> bool:
-        if annotation is None:
+    def _self_error_message(self, detail: str) -> str:
+        return f"Self {detail}"
+
+    def _class_key_is_type_subclass(
+        self, class_key: type | str | None, seen: set[type | str] | None = None
+    ) -> bool:
+        if class_key is None:
             return False
-        if isinstance(annotation, ast.Name):
-            return annotation.id == "Self"
-        if isinstance(annotation, ast.Attribute):
-            return annotation.attr == "Self"
-        if isinstance(annotation, ast.Constant) and isinstance(annotation.value, str):
-            try:
-                parsed = ast.parse(annotation.value, mode="eval")
-            except SyntaxError:
-                return False
-            return self._return_annotation_node_contains_self(parsed.body)
+        if seen is None:
+            seen = set()
+        if class_key in seen:
+            return False
+        seen.add(class_key)
+        if isinstance(class_key, type):
+            return safe_issubclass(class_key, type)
+        synthetic = self._synthetic_classes_by_name.get(class_key)
+        if synthetic is None:
+            return False
         return any(
-            self._return_annotation_node_contains_self(child)
-            for child in ast.iter_child_nodes(annotation)
+            self._class_key_is_type_subclass(
+                self._base_class_key_from_value(base_value), seen
+            )
+            for base_value in synthetic.base_classes
         )
 
-    def _class_body_contains_self_annotation(self, node: ast.ClassDef) -> bool:
-        for stmt in node.body:
-            if isinstance(stmt, ast.AnnAssign):
-                if self._return_annotation_node_contains_self(stmt.annotation):
-                    return True
-            elif isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                if self._return_annotation_node_contains_self(stmt.returns):
-                    return True
-                if any(
-                    self._return_annotation_node_contains_self(arg.annotation)
-                    for arg in stmt.args.posonlyargs
-                ):
-                    return True
-                if any(
-                    self._return_annotation_node_contains_self(arg.annotation)
-                    for arg in stmt.args.args
-                ):
-                    return True
-                if any(
-                    self._return_annotation_node_contains_self(arg.annotation)
-                    for arg in stmt.args.kwonlyargs
-                ):
-                    return True
-                if self._return_annotation_node_contains_self(
-                    getattr(stmt.args.vararg, "annotation", None)
-                ):
-                    return True
-                if self._return_annotation_node_contains_self(
-                    getattr(stmt.args.kwarg, "annotation", None)
-                ):
-                    return True
-        return False
+    def _current_class_forbids_self(self) -> bool:
+        return self._class_key_is_type_subclass(self.current_class)
 
-    def _current_class_node_from_context(self) -> ast.ClassDef | None:
-        for context in reversed(self.node_context.contexts):
-            if isinstance(context, ast.ClassDef):
-                return context
+    def invalid_self_annotation_message(self, annotation: ast.AST) -> str | None:
+        function_node = self.node_context.nearest_enclosing(
+            (ast.FunctionDef, ast.AsyncFunctionDef)
+        )
+        if isinstance(function_node, (ast.FunctionDef, ast.AsyncFunctionDef)) and (
+            function_node.returns is annotation
+            or any(
+                getattr(arg, "annotation", None) is annotation
+                for arg in (
+                    *function_node.args.posonlyargs,
+                    *function_node.args.args,
+                    *function_node.args.kwonlyargs,
+                    function_node.args.vararg,
+                    function_node.args.kwarg,
+                )
+                if arg is not None
+            )
+        ):
+            return None
+        statement = self.node_context.nearest_enclosing(ast.stmt)
+        if isinstance(statement, ast.TypeAlias):
+            return self._self_error_message("cannot be used in type aliases")
+        if isinstance(statement, ast.AnnAssign) and statement.value is annotation:
+            expr = annotation_expr_from_ast(
+                statement.annotation, visitor=self, suppress_errors=True
+            )
+            _, qualifiers = expr.maybe_unqualify({Qualifier.TypeAlias})
+            if Qualifier.TypeAlias in qualifiers:
+                return self._self_error_message("cannot be used in type aliases")
+        if self.scopes.scope_type() != ScopeType.class_scope:
+            return self._self_error_message(
+                "can only be used in class attribute annotations"
+            )
+        if self._current_class_forbids_self():
+            return self._self_error_message("cannot be used in metaclass definitions")
         return None
 
-    def _runtime_annotation_contains_self(self, annotation: object) -> bool:
-        if annotation is None:
+    def _check_function_self_usage(self, info: FunctionInfo) -> bool:
+        if not _function_signature_contains_self(info):
             return False
-        if is_typing_name(annotation, "Self"):
+        if not info.is_nested_in_class:
+            self._show_error_if_checking(
+                info.node,
+                self._self_error_message(
+                    "can only be used in annotations within a class body"
+                ),
+                error_code=ErrorCode.invalid_annotation,
+            )
             return True
-        if isinstance(annotation, str):
-            try:
-                parsed = ast.parse(annotation, mode="eval")
-            except SyntaxError:
-                return False
-            return self._return_annotation_node_contains_self(parsed.body)
-        origin = get_origin(annotation)
-        if origin is None:
-            return False
-        return any(
-            self._runtime_annotation_contains_self(arg) for arg in get_args(annotation)
-        )
+        if self._current_class_forbids_self():
+            self._show_error_if_checking(
+                info.node,
+                self._self_error_message("cannot be used in metaclass definitions"),
+                error_code=ErrorCode.invalid_annotation,
+            )
+            return True
+        if self.current_class is not None:
+            if FunctionDecorator.staticmethod in info.decorator_kinds:
+                self._show_error_if_checking(
+                    info.node,
+                    self._self_error_message(
+                        "cannot be used in staticmethod signatures"
+                    ),
+                    error_code=ErrorCode.invalid_annotation,
+                )
+                return True
+            receiver = next((param for param in info.params if param.is_self), None)
+            if receiver is None:
+                self._show_error_if_checking(
+                    info.node,
+                    self._self_error_message(
+                        "methods using Self must have a receiver parameter"
+                    ),
+                    error_code=ErrorCode.invalid_annotation,
+                )
+                return True
+            if receiver.node is not None and isinstance(receiver.node, ast.arg):
+                receiver_annotation = receiver.param.annotation
+                if receiver.node.annotation is not None and not _value_contains_self(
+                    receiver_annotation
+                ):
+                    self._show_error_if_checking(
+                        info.node,
+                        self._self_error_message(
+                            "methods using Self must annotate the receiver with Self"
+                            " or leave it unannotated"
+                        ),
+                        error_code=ErrorCode.invalid_annotation,
+                    )
+                    return True
+        return False
 
     def _runtime_callable_contains_self_annotations(self, value: object) -> bool:
         annotations = safe_getattr(value, "__annotations__", None)
         if not isinstance(annotations, dict):
             return False
+        globals = None
+        module_name = safe_getattr(value, "__module__", None)
+        if isinstance(module_name, str):
+            module = sys.modules.get(module_name)
+            maybe_globals = safe_getattr(module, "__dict__", None)
+            if isinstance(maybe_globals, Mapping):
+                globals = maybe_globals
         return any(
-            self._runtime_annotation_contains_self(annotation)
+            _value_contains_self(
+                annotation_expr_from_runtime(
+                    annotation, visitor=self, globals=globals, suppress_errors=True
+                ).to_value(allow_qualifiers=True, allow_empty=True)
+            )
             for annotation in annotations.values()
         )
 
     def _runtime_class_or_bases_use_self_annotations(self, typ: type) -> bool:
         for base in typ.__mro__:
+            globals = None
+            module_name = safe_getattr(base, "__module__", None)
+            if isinstance(module_name, str):
+                module = sys.modules.get(module_name)
+                maybe_globals = safe_getattr(module, "__dict__", None)
+                if isinstance(maybe_globals, Mapping):
+                    globals = maybe_globals
             annotations = safe_getattr(base, "__annotations__", None)
             if isinstance(annotations, dict) and any(
-                self._runtime_annotation_contains_self(annotation)
+                _value_contains_self(
+                    annotation_expr_from_runtime(
+                        annotation, visitor=self, globals=globals, suppress_errors=True
+                    ).to_value(allow_qualifiers=True, allow_empty=True)
+                )
                 for annotation in annotations.values()
             ):
                 return True
@@ -7677,6 +7782,28 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                         ),
                         *params[1:],
                     ]
+            provisional_info = FunctionInfo(
+                async_kind=async_kind,
+                decorator_kinds=frozenset(decorator_kinds),
+                is_nested_in_class=is_nested_in_class,
+                decorators=decorators,
+                node=node,
+                params=params,
+                return_annotation=return_annotation,
+                has_invalid_self_usage=False,
+                is_async_generator=(
+                    _is_async_generator(node)
+                    if isinstance(node, ast.AsyncFunctionDef)
+                    else False
+                ),
+                potential_function=potential_function,
+                type_params=type_params,
+            )
+            has_invalid_self_usage = (
+                False
+                if isinstance(node, ast.Lambda)
+                else self._check_function_self_usage(provisional_info)
+            )
             yield FunctionInfo(
                 async_kind=async_kind,
                 decorator_kinds=frozenset(decorator_kinds),
@@ -7685,6 +7812,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 node=node,
                 params=params,
                 return_annotation=return_annotation,
+                has_invalid_self_usage=has_invalid_self_usage,
                 is_async_generator=(
                     _is_async_generator(node)
                     if isinstance(node, ast.AsyncFunctionDef)
@@ -7707,14 +7835,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         ) as info:
             self._function_decorator_kinds_by_node[node] = info.decorator_kinds
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                contains_self_return = _return_annotation_contains_self(
-                    info.return_annotation
+                self._function_returns_self_by_node[node] = (
+                    _return_annotation_contains_self(info.return_annotation)
                 )
-                if not contains_self_return:
-                    contains_self_return = self._return_annotation_node_contains_self(
-                        node.returns
-                    )
-                self._function_returns_self_by_node[node] = contains_self_return
             self.yield_checker.reset_yield_checks()
 
             direct_dataclass_transform_info: DataclassTransformInfo | None = None
@@ -7858,6 +7981,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         if (
             not result.has_return
             and not self._allow_missing_return(info)
+            and not info.has_invalid_self_usage
             and node.returns is not None
             and (
                 info.return_annotation is None
@@ -12832,6 +12956,13 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             return None
         if isinstance(alias_type, InputSigValue):
             return None
+        if _value_contains_self(alias_type):
+            self._show_error_if_checking(
+                node.value,
+                self._self_error_message("cannot be used in type aliases"),
+                error_code=ErrorCode.invalid_annotation,
+            )
+            return None
         if isinstance(alias_type, AnyValue):
             if alias_type.source is not AnySource.explicit:
                 return None
@@ -12886,7 +13017,16 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             has_circular_definition = True
         if self._type_alias_has_unguarded_cycle(name):
             has_circular_definition = True
+        evaluated_value = annotation_expr_from_ast(
+            value_node, visitor=self, suppress_errors=True
+        ).to_value(allow_qualifiers=True, allow_empty=True)
         if self._is_checking():
+            if _value_contains_self(evaluated_value):
+                self._show_error_if_checking(
+                    value_node,
+                    self._self_error_message("cannot be used in type aliases"),
+                    error_code=ErrorCode.invalid_annotation,
+                )
             if has_circular_definition:
                 self._show_error_if_checking(
                     node,
@@ -13014,6 +13154,12 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                             value = self.visit(node.value)
                     else:
                         value = self.visit(node.value)
+                if _value_contains_self(value):
+                    self._show_error_if_checking(
+                        node.value,
+                        self._self_error_message("cannot be used in type aliases"),
+                        error_code=ErrorCode.invalid_annotation,
+                    )
                 legacy_typevars = self._legacy_typevars_in_alias_expr(
                     node.value, type_param_values
                 )
@@ -16826,13 +16972,58 @@ def _mangle_class_attribute_name(class_name: str, attribute_name: str) -> str:
     return attribute_name
 
 
-def _return_annotation_contains_self(return_annotation: Value | None) -> bool:
-    if return_annotation is None:
+def _value_contains_self(value: Value | None) -> bool:
+    if value is None:
         return False
-    for subvalue in return_annotation.walk_values():
-        if isinstance(subvalue, TypeVarValue) and subvalue.typevar is SelfT:
+    for subvalue in value.walk_values():
+        if _is_self_value(subvalue):
             return True
     return False
+
+
+def _base_expression_contains_self(value: Value) -> bool:
+    if isinstance(value, AnnotatedValue):
+        return _base_expression_contains_self(value.value)
+    if isinstance(value, PartialValue):
+        return _base_expression_contains_self(value.root) or any(
+            _base_expression_contains_self(member) for member in value.members
+        )
+    value = replace_fallback(value)
+    if _is_self_value(value):
+        return True
+    if isinstance(value, GenericValue):
+        return any(_base_expression_contains_self(arg) for arg in value.args)
+    if isinstance(value, SubclassValue):
+        return _base_expression_contains_self(value.typ)
+    if isinstance(value, MultiValuedValue):
+        return any(_base_expression_contains_self(subvalue) for subvalue in value.vals)
+    if isinstance(value, IntersectionValue):
+        return any(_base_expression_contains_self(subvalue) for subvalue in value.vals)
+    return False
+
+
+def _is_self_value(value: Value) -> bool:
+    if isinstance(value, TypeVarValue):
+        return value.typevar is SelfT
+    return isinstance(value, KnownValue) and is_typing_name(value.val, "Self")
+
+
+def _function_signature_contains_self(info: FunctionInfo) -> bool:
+    if _value_contains_self(info.return_annotation):
+        return True
+    return any(
+        _value_contains_self(param_info.param.annotation)
+        for param_info in info.params
+        if not (
+            param_info.is_self
+            and isinstance(param_info.node, ast.arg)
+            and param_info.node.annotation is None
+        )
+    )
+
+
+def _return_annotation_contains_self(return_annotation: Value | None) -> bool:
+    return _value_contains_self(return_annotation)
 
 
 def _is_dataclass_classvar_final(expr: AnnotationExpr) -> bool:
