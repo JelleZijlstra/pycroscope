@@ -619,7 +619,9 @@ class TestImportFailureHandlingCodeSamples(TestNameCheckVisitorBase):
 
     @assert_passes(run_in_both_module_modes=True)
     def test_overload_fallback_after_import_failure(self):
-        from typing import assert_type, overload
+        from typing import overload
+
+        from typing_extensions import assert_type
 
         @overload
         def f(x: int, /) -> int: ...
@@ -1191,7 +1193,9 @@ class TestImportFailureHandlingCodeSamples(TestNameCheckVisitorBase):
     @assert_passes(run_in_both_module_modes=True)
     def test_dataclass_kw_only_checks_after_import_failure(self):
         from dataclasses import KW_ONLY, dataclass, field
-        from typing import Literal, assert_type
+        from typing import Literal
+
+        from typing_extensions import assert_type
 
         @dataclass
         class DC1:
