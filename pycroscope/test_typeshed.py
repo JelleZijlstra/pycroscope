@@ -46,6 +46,7 @@ from .value import (
     TypedDictEntry,
     TypedDictValue,
     TypedValue,
+    TypeVarParam,
     TypeVarValue,
     Value,
     assert_is_value,
@@ -538,8 +539,8 @@ class TestGetGenericBases:
         assert {
             Parent: {T: AnyValue(AnySource.generic_argument)}
         } == self.get_generic_bases(Parent)
-        assert {Parent: {T: TypeVarValue(T)}} == self.get_generic_bases(
-            Parent, [TypeVarValue(T)]
+        assert {Parent: {T: TypeVarValue(TypeVarParam(T))}} == self.get_generic_bases(
+            Parent, [TypeVarValue(TypeVarParam(T))]
         )
         assert {Child: {}, Parent: {T: TypedValue(int)}} == self.get_generic_bases(
             Child
@@ -864,7 +865,7 @@ class TestCheckerGenericBases:
         base = "test.Base"
         child = "test.Child"
         checker.register_synthetic_type_bases(
-            base, [], declared_type_params=[TypeVarValue(T)]
+            base, [], declared_type_params=[TypeVarParam(T)]
         )
         checker.register_synthetic_type_bases(
             child,
@@ -894,7 +895,7 @@ class TestCheckerGenericBases:
         base = "test.Base"
         child = "test.Child"
         checker.register_synthetic_type_bases(
-            base, [], declared_type_params=[TypeVarValue(T)]
+            base, [], declared_type_params=[TypeVarParam(T)]
         )
         checker.register_synthetic_type_bases(
             child, [SubclassValue(GenericValue(base, [TypedValue(int)]))]

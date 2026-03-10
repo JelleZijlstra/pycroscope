@@ -2753,7 +2753,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     def _contains_classvar_type_parameter(self, value: Value) -> bool:
         for subval in value.walk_values():
             if isinstance(subval, TypeVarValue):
-                if subval.typevar is SelfT:
+                if subval.typevar_param.typevar is SelfT:
                     continue
                 return True
             if isinstance(subval, InputSigValue) and isinstance(
@@ -4978,7 +4978,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         if isinstance(value, AnnotatedValue):
             return self._runtime_annotation_from_value(value.value)
         if isinstance(value, TypeVarValue):
-            return value.typevar
+            return value.typevar_param.typevar
         if isinstance(value, KnownValue):
             return value.val
         if isinstance(value, GenericValue):
@@ -6328,7 +6328,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         polarity: int,
     ) -> None:
         if isinstance(value, TypeVarValue):
-            used_polarities = type_param_polarities.get(value.typevar)
+            used_polarities = type_param_polarities.get(value.typevar_param.typevar)
             if used_polarities is not None:
                 _record_variance_polarity(used_polarities, polarity)
             return
@@ -6596,9 +6596,11 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 for walked in self._walk_values_for_variance_typevar_collection(subval):
                     if not isinstance(walked, TypeVarValue):
                         continue
-                    if not is_instance_of_typing_name(walked.typevar, "TypeVar"):
+                    if not is_instance_of_typing_name(
+                        walked.typevar_param.typevar, "TypeVar"
+                    ):
                         continue
-                    typevars_to_check.add(walked.typevar)
+                    typevars_to_check.add(walked.typevar_param.typevar)
         if not typevars_to_check:
             return
 
@@ -15356,11 +15358,14 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     def _check_typevar_default_constraints(
         self, typevar: TypeVarValue, node: ast.AST | None
     ) -> None:
-        if node is None or typevar.default is None:
+        if node is None or typevar.typevar_param.default is None:
             return
-        if typevar.bound is not None:
+        if typevar.typevar_param.bound is not None:
             can_assign = has_relation(
-                typevar.bound, typevar.default, Relation.ASSIGNABLE, self
+                typevar.typevar_param.bound,
+                typevar.typevar_param.default,
+                Relation.ASSIGNABLE,
+                self,
             )
             if isinstance(can_assign, CanAssignError):
                 self._show_error_if_checking(
@@ -15369,7 +15374,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     error_code=ErrorCode.invalid_annotation,
                 )
                 return
-        if typevar.constraints:
+        if typevar.typevar_param.constraints:
 
             def _default_matches_constraint(constraint: Value, default: Value) -> bool:
                 if constraint == default:
@@ -15388,34 +15393,41 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 if _default_matches_constraint(constraint, default):
                     return True
                 if isinstance(default, TypeVarValue):
-                    if default.bound is not None:
+                    if default.typevar_param.bound is not None:
                         return not isinstance(
                             has_relation(
-                                constraint, default.bound, Relation.ASSIGNABLE, self
+                                constraint,
+                                default.typevar_param.bound,
+                                Relation.ASSIGNABLE,
+                                self,
                             ),
                             CanAssignError,
                         )
-                    if default.constraints:
+                    if default.typevar_param.constraints:
                         return all(
                             _constraint_accepts_default(constraint, subconstraint)
-                            for subconstraint in default.constraints
+                            for subconstraint in default.typevar_param.constraints
                         )
                 return False
 
             if (
-                isinstance(typevar.default, TypeVarValue)
-                and typevar.default.constraints
+                isinstance(typevar.typevar_param.default, TypeVarValue)
+                and typevar.typevar_param.default.typevar_param.constraints
             ):
                 if all(
                     any(
                         _default_matches_constraint(constraint, default_constraint)
-                        for constraint in typevar.constraints
+                        for constraint in typevar.typevar_param.constraints
                     )
-                    for default_constraint in typevar.default.constraints
+                    for default_constraint in (
+                        typevar.typevar_param.default.typevar_param.constraints
+                    )
                 ):
                     return
-            for constraint in typevar.constraints:
-                if _constraint_accepts_default(constraint, typevar.default):
+            for constraint in typevar.typevar_param.constraints:
+                if _constraint_accepts_default(
+                    constraint, typevar.typevar_param.default
+                ):
                     return
             self._show_error_if_checking(
                 node,
@@ -17381,7 +17393,7 @@ def _base_expression_contains_self(value: Value) -> bool:
 
 def _is_self_value(value: Value) -> bool:
     if isinstance(value, TypeVarValue):
-        return value.typevar is SelfT
+        return value.typevar_param.typevar is SelfT
     return isinstance(value, KnownValue) and is_typing_name(value.val, "Self")
 
 
@@ -17672,12 +17684,12 @@ def _same_constrained_typevar_constraints(
     if left_typevar is None or right_typevar is None:
         return None
     if (
-        left_typevar.typevar is not right_typevar.typevar
-        and left_typevar.typevar != right_typevar.typevar
+        left_typevar.typevar_param.typevar is not right_typevar.typevar_param.typevar
+        and left_typevar.typevar_param.typevar != right_typevar.typevar_param.typevar
     ):
         return None
-    left_constraints = tuple(left_typevar.constraints)
-    right_constraints = tuple(right_typevar.constraints)
+    left_constraints = tuple(left_typevar.typevar_param.constraints)
+    right_constraints = tuple(right_typevar.typevar_param.constraints)
     if not left_constraints or len(left_constraints) != len(right_constraints):
         return None
     if any(
@@ -17692,7 +17704,7 @@ def _same_constrained_typevar_constraints(
 
 def _type_param_identity(value: Value) -> object | None:
     if isinstance(value, TypeVarValue):
-        return value.typevar
+        return value.typevar_param.typevar
     if isinstance(value, TypeVarTupleValue):
         return value.typevar
     if isinstance(value, InputSigValue) and isinstance(value.input_sig, ParamSpecParam):

@@ -1055,7 +1055,7 @@ def _signature_has_receiver_parameter(
     if isinstance(annotation, AnyValue):
         return False
     if any(
-        isinstance(subval, TypeVarValue) and subval.typevar is SelfT
+        isinstance(subval, TypeVarValue) and subval.typevar_param.typevar is SelfT
         for subval in annotation.walk_values()
     ):
         return True

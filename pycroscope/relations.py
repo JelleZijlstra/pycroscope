@@ -350,22 +350,28 @@ def _has_relation(
         if left == right:
             return {}
         if (
-            left.typevar is SelfT
-            and left.bound is None
+            left.typevar_param.typevar is SelfT
+            and left.typevar_param.bound is None
             and not isinstance(right, (AnyValue, TypeVarValue))
         ):
             return CanAssignError(f"{right} is not {relation.description} {left}")
         if isinstance(right, TypeVarValue):
             bounds = [
-                LowerBound(left.typevar, right),
+                LowerBound(left.typevar_param.typevar, right),
                 *left.get_inherent_bounds(),
                 *right.get_inherent_bounds(),
             ]
         else:
-            bounds = [LowerBound(left.typevar, right), *left.get_inherent_bounds()]
+            bounds = [
+                LowerBound(left.typevar_param.typevar, right),
+                *left.get_inherent_bounds(),
+            ]
         return left.make_bounds_map(bounds, right, ctx)
     if isinstance(right, TypeVarValue) and not isinstance(left, MultiValuedValue):
-        bounds = [UpperBound(right.typevar, left), *right.get_inherent_bounds()]
+        bounds = [
+            UpperBound(right.typevar_param.typevar, left),
+            *right.get_inherent_bounds(),
+        ]
         return right.make_bounds_map(bounds, left, ctx)
     if isinstance(left, TypeVarTupleValue) and not isinstance(right, MultiValuedValue):
         if isinstance(right, TypeVarTupleValue) and left.typevar is right.typevar:
@@ -697,8 +703,10 @@ def _has_relation(
                 return CanAssignError(f"{right} is not a type")
             if isinstance(left.typ, TypeVarValue):
                 return {
-                    left.typ.typevar: [
-                        LowerBound(left.typ.typevar, TypedValue(right.val))
+                    left.typ.typevar_param.typevar: [
+                        LowerBound(
+                            left.typ.typevar_param.typevar, TypedValue(right.val)
+                        )
                     ]
                 }
             elif isinstance(left.typ, TypedValue):
@@ -712,7 +720,11 @@ def _has_relation(
             if not right_tobj.is_assignable_to_type(type):
                 return CanAssignError(f"{right} is not a type")
             if isinstance(left.typ, TypeVarValue):
-                return {left.typ.typevar: [LowerBound(left.typ.typevar, right)]}
+                return {
+                    left.typ.typevar_param.typevar: [
+                        LowerBound(left.typ.typevar_param.typevar, right)
+                    ]
+                }
             elif isinstance(left.typ, TypedValue):
                 if right_tobj.is_metatype_of(left.typ.get_type_object(ctx)):
                     return {}
@@ -731,7 +743,11 @@ def _has_relation(
             if isinstance(right.typ, TypedValue):
                 return left_tobj.can_assign(left, right, ctx)
             elif isinstance(right.typ, TypeVarValue):
-                return {right.typ.typevar: [UpperBound(right.typ.typevar, left)]}
+                return {
+                    right.typ.typevar_param.typevar: [
+                        UpperBound(right.typ.typevar_param.typevar, left)
+                    ]
+                }
             else:
                 return CanAssignError(f"{right} is not {relation.description} {left}")
         else:
@@ -1053,7 +1069,8 @@ def _extract_type_form(value: Value, ctx: CanAssignContext) -> Value | CanAssign
             return CanAssignError(f"{value} is not a TypeForm")
         extracted = gradualize(type_form)
         if isinstance(extracted, (TypeVarValue, TypeVarTupleValue)) and (
-            extracted.typevar is SelfT or isinstance(extracted, TypeVarTupleValue)
+            isinstance(extracted, TypeVarTupleValue)
+            or extracted.typevar_param.typevar is SelfT
         ):
             return CanAssignError(f"{value} is not a TypeForm")
         if isinstance(extracted, (ParamSpecArgsValue, ParamSpecKwargsValue)):
@@ -1070,7 +1087,7 @@ def _extract_type_form(value: Value, ctx: CanAssignContext) -> Value | CanAssign
     if isinstance(value, (AnyValue, TypeAliasValue)):
         return value
     if isinstance(value, TypeVarValue):
-        if value.typevar is SelfT:
+        if value.typevar_param.typevar is SelfT:
             return CanAssignError(f"{value} is not a TypeForm")
         return value
     if isinstance(

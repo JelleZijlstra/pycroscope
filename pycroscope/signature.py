@@ -101,6 +101,7 @@ from .value import (
     TypeIsExtension,
     TypeVarLike,
     TypeVarMap,
+    TypeVarParam,
     TypeVarTupleValue,
     TypeVarValue,
     UnboundMethodValue,
@@ -709,13 +710,16 @@ class Signature:
             if param_name == self._return_key:
                 continue
             for subval in self.parameters[param_name].annotation.walk_values():
-                if not isinstance(subval, TypeVarValue) or not subval.constraints:
+                if (
+                    not isinstance(subval, TypeVarValue)
+                    or not subval.typevar_param.constraints
+                ):
                     continue
-                constraints = tuple(subval.constraints)
-                existing = constrained_typevars.get(subval.typevar)
+                constraints = tuple(subval.typevar_param.constraints)
+                existing = constrained_typevars.get(subval.typevar_param.typevar)
                 if existing is not None and existing != constraints:
                     return None
-                constrained_typevars[subval.typevar] = constraints
+                constrained_typevars[subval.typevar_param.typevar] = constraints
         return constrained_typevars
 
     def _specialize_constrained_typevars(self) -> "OverloadedSignature | None":
@@ -759,7 +763,7 @@ class Signature:
             annotation = self.parameters[param_name].annotation
             if not any(
                 isinstance(subval, TypeVarValue)
-                and subval.typevar in constrained_typevars
+                and subval.typevar_param.typevar in constrained_typevars
                 for subval in annotation.walk_values()
             ):
                 continue
@@ -2869,7 +2873,10 @@ def make_bound_method(
 
 K = TypeVar("K")
 V = TypeVar("V")
-MappingValue = GenericValue(collections.abc.Mapping, [TypeVarValue(K), TypeVarValue(V)])
+MappingValue = GenericValue(
+    collections.abc.Mapping,
+    [TypeVarValue(TypeVarParam(K)), TypeVarValue(TypeVarParam(V))],
+)
 
 
 def decompose_union(
@@ -3011,8 +3018,8 @@ def _try_typevartuple_callable_relation(
         def _match_callable_member(expected: Value, actual: Value) -> CanAssign:
             if isinstance(expected, TypeVarValue):
                 return {
-                    expected.typevar: [
-                        UpperBound(expected.typevar, actual),
+                    expected.typevar_param.typevar: [
+                        UpperBound(expected.typevar_param.typevar, actual),
                         *expected.get_inherent_bounds(),
                     ]
                 }
@@ -3085,8 +3092,8 @@ def _try_typevartuple_callable_relation(
         right_annotation = right_param.get_annotation()
         if isinstance(left_annotation, TypeVarValue):
             tv_map = {
-                left_annotation.typevar: [
-                    UpperBound(left_annotation.typevar, right_annotation),
+                left_annotation.typevar_param.typevar: [
+                    UpperBound(left_annotation.typevar_param.typevar, right_annotation),
                     *left_annotation.get_inherent_bounds(),
                 ]
             }
@@ -3107,8 +3114,8 @@ def _try_typevartuple_callable_relation(
         right_annotation = right_param.get_annotation()
         if isinstance(left_annotation, TypeVarValue):
             tv_map = {
-                left_annotation.typevar: [
-                    UpperBound(left_annotation.typevar, right_annotation),
+                left_annotation.typevar_param.typevar: [
+                    UpperBound(left_annotation.typevar_param.typevar, right_annotation),
                     *left_annotation.get_inherent_bounds(),
                 ]
             }

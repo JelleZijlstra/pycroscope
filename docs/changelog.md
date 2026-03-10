@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Restore concise generic-parameter names in invalid type-alias diagnostics, so errors mention forms like `~T: str`, `~P`, and `Ts` instead of full internal parameter object reprs.
 - Reject more invalid `Self` usages: pycroscope now reports errors for module-level `Self`, `Self` in type aliases or base-class expressions, and method signatures that use `Self` from staticmethods, metaclasses, or mismatched explicit receiver annotations.
 - Fix constructor result specialization for `float` arguments and overloaded `__init__` methods, so `assert_type()` now agrees with pycroscope's implicit `float | int` semantics in cases like `Box(1.0)` and `Box[float](1)`.
 - Fix `@dataclass_transform` field specifier checking for unimportable modules so converter-based defaults and constructor inputs work consistently for callables like `dict`.

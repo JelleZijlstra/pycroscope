@@ -566,6 +566,17 @@ class VoidValue(Value):
 VOID = VoidValue()
 
 
+def _type_param_to_string(
+    typevar: TypeVarLike, bound: Value | None, constraints: Sequence[Value]
+) -> str:
+    if bound is not None:
+        return f"{typevar}: {bound}"
+    if constraints:
+        constraint_list = ", ".join(map(str, constraints))
+        return f"{typevar}: ({constraint_list})"
+    return str(typevar)
+
+
 @dataclass(frozen=True)
 class TypeVarParam:
     typevar: TypeVarType
@@ -621,24 +632,15 @@ class TypeVarParam:
     def get_fallback_value(self) -> None:
         return None
 
+    def __str__(self) -> str:
+        return _type_param_to_string(self.typevar, self.bound, self.constraints)
+
 
 @dataclass(frozen=True)
 class ParamSpecParam:
     param_spec: ParamSpecLike
-    default: Value | None = None  # unsupported
+    default: Value | None = None
     variance: Variance = Variance.INVARIANT
-    bound: Value | None = None
-    constraints: Sequence[Value] = ()
-
-    def __post_init__(self) -> None:
-        if self.default is None:
-            runtime_default = safe_getattr(self.param_spec, "__default__", _NO_DEFAULT)
-            if runtime_default is not _NO_DEFAULT and runtime_default is not NoDefault:
-                object.__setattr__(
-                    self,
-                    "default",
-                    _value_from_runtime_type_param_component(runtime_default),
-                )
 
     @property
     def typevar(self) -> ParamSpecLike:
@@ -656,26 +658,15 @@ class ParamSpecParam:
     def get_fallback_value(self) -> None:
         return None
 
+    def __str__(self) -> str:
+        return str(self.param_spec)
+
 
 @dataclass(frozen=True)
 class TypeVarTupleParam:
     typevar_tuple: TypeVarTupleLike
     default: Value | None = None
     variance: Variance = Variance.INVARIANT
-    bound: Value | None = None
-    constraints: Sequence[Value] = ()
-
-    def __post_init__(self) -> None:
-        if self.default is None:
-            runtime_default = safe_getattr(
-                self.typevar_tuple, "__default__", _NO_DEFAULT
-            )
-            if runtime_default is not _NO_DEFAULT and runtime_default is not NoDefault:
-                object.__setattr__(
-                    self,
-                    "default",
-                    _value_from_runtime_type_param_component(runtime_default),
-                )
 
     @property
     def typevar(self) -> TypeVarTupleLike:
@@ -693,6 +684,9 @@ class TypeVarTupleParam:
     def get_fallback_value(self) -> None:
         return None
 
+    def __str__(self) -> str:
+        return str(self.typevar)
+
 
 TypeParam = TypeVarParam | ParamSpecParam | TypeVarTupleParam
 
@@ -701,7 +695,7 @@ def _value_from_runtime_type_param_component(component: object) -> Value:
     if isinstance(component, Value):
         return component
     if is_instance_of_typing_name(component, "TypeVar"):
-        return TypeVarValue(cast(TypeVarType, component))
+        return TypeVarValue(TypeVarParam(cast(TypeVarType, component)))
     if is_instance_of_typing_name(component, "TypeVarTuple"):
         return TypeVarTupleValue(cast(TypeVarTupleLike, component))
     if is_instance_of_typing_name(component, "ParamSpec"):
@@ -2563,63 +2557,20 @@ class IsOneOf(Bound):
     constraints: Sequence[Value]
 
 
-@dataclass(frozen=True, init=False)
+@dataclass(frozen=True)
 class TypeVarValue(Value):
     """Value representing a ``typing.TypeVar``."""
 
     typevar_param: TypeVarParam
 
-    def __init__(
-        self,
-        typevar_param: TypeVarParam | TypeVarType,
-        *,
-        bound: Value | None = None,
-        default: Value | None = None,
-        constraints: Sequence[Value] = (),
-        variance: Variance = Variance.INVARIANT,
-    ) -> None:
-        if isinstance(typevar_param, TypeVarParam):
-            param = typevar_param
-        else:
-            if not is_instance_of_typing_name(typevar_param, "TypeVar"):
-                raise TypeError(f"Expected TypeVar, got {typevar_param!r}")
-            param = TypeVarParam(
-                typevar_param,
-                bound=bound,
-                default=default,
-                constraints=constraints,
-                variance=variance,
-            )
-        object.__setattr__(self, "typevar_param", param)
-
-    @property
-    def typevar(self) -> TypeVarType:
-        return self.typevar_param.typevar
-
-    @property
-    def bound(self) -> Value | None:
-        return self.typevar_param.bound
-
-    @property
-    def default(self) -> Value | None:
-        return self.typevar_param.default
-
-    @property
-    def constraints(self) -> Sequence[Value]:
-        return self.typevar_param.constraints
-
-    @property
-    def variance(self) -> Variance:
-        return self.typevar_param.variance
-
     def substitute_typevars(self, typevars: TypeVarMap) -> Value:
-        return typevars.get(self.typevar, self)
+        return typevars.get(self.typevar_param.typevar, self)
 
     def get_inherent_bounds(self) -> Iterator[Bound]:
-        if self.bound is not None:
-            yield UpperBound(self.typevar, self.bound)
-        elif self.constraints:
-            yield IsOneOf(self.typevar, self.constraints)
+        if self.typevar_param.bound is not None:
+            yield UpperBound(self.typevar_param.typevar, self.typevar_param.bound)
+        elif self.typevar_param.constraints:
+            yield IsOneOf(self.typevar_param.typevar, self.typevar_param.constraints)
         # TODO: Consider adding this, but it leads to worse type inference
         # in some cases (inferring object where we should infer Any). Examples
         # in the taxonomy repo.
@@ -2634,29 +2585,24 @@ class TypeVarValue(Value):
     def make_bounds_map(
         self, bounds: Sequence[Bound], other: Value, ctx: CanAssignContext
     ) -> CanAssign:
-        bounds_map = {self.typevar: bounds}
+        bounds_map = {self.typevar_param.typevar: bounds}
         _, errors = pycroscope.typevar.resolve_bounds_map(bounds_map, ctx)
         if errors:
             return CanAssignError(f"Value of {self} cannot be {other}", list(errors))
         return bounds_map
 
     def get_fallback_value(self) -> Value:
-        if self.bound is not None:
-            return self.bound
-        elif self.constraints:
-            return unite_values(*self.constraints)
+        if self.typevar_param.bound is not None:
+            return self.typevar_param.bound
+        elif self.typevar_param.constraints:
+            return unite_values(*self.typevar_param.constraints)
         return AnyValue(AnySource.inference)  # TODO: should be object
 
     def get_type_value(self) -> Value:
         return self.get_fallback_value().get_type_value()
 
     def __str__(self) -> str:
-        if self.bound is not None:
-            return f"{self.typevar}: {self.bound}"
-        elif self.constraints:
-            constraints = ", ".join(map(str, self.constraints))
-            return f"{self.typevar}: ({constraints})"
-        return str(self.typevar)
+        return str(self.typevar_param)
 
 
 @dataclass(frozen=True, init=False)
@@ -2715,12 +2661,15 @@ SelfTVV = TypeVarValue(TypeVarParam(SelfT))
 
 
 def set_self(value: Value, self_value: Value) -> Value:
-    if isinstance(self_value, TypeVarValue) and self_value.typevar is SelfT:
+    if (
+        isinstance(self_value, TypeVarValue)
+        and self_value.typevar_param.typevar is SelfT
+    ):
         self_value = SelfTVV
     elif (
         isinstance(self_value, SubclassValue)
         and isinstance(self_value.typ, TypeVarValue)
-        and self_value.typ.typevar is SelfT
+        and self_value.typ.typevar_param.typevar is SelfT
     ):
         self_value = SelfTVV
     if isinstance(value, KnownValueWithTypeVars):
@@ -3543,8 +3492,10 @@ def unite_values(*values: Value) -> Value:
 
 T = TypeVar("T")
 T_co = TypeVar("T_co", covariant=True)
-IterableValue = GenericValue(collections.abc.Iterable, [TypeVarValue(T)])
-AsyncIterableValue = GenericValue(collections.abc.AsyncIterable, [TypeVarValue(T)])
+IterableValue = GenericValue(collections.abc.Iterable, [TypeVarValue(TypeVarParam(T))])
+AsyncIterableValue = GenericValue(
+    collections.abc.AsyncIterable, [TypeVarValue(TypeVarParam(T))]
+)
 
 
 class GetItemProto(Protocol[T_co]):
@@ -3552,7 +3503,7 @@ class GetItemProto(Protocol[T_co]):
         raise NotImplementedError
 
 
-GetItemProtoValue = GenericValue(GetItemProto, [TypeVarValue(T_co)])
+GetItemProtoValue = GenericValue(GetItemProto, [TypeVarValue(TypeVarParam(T_co))])
 TypingGenericAlias = type(list[int])
 
 
@@ -3684,10 +3635,11 @@ class CustomMapping(Protocol[K, V_co]):
 
 
 NominalMappingValue = GenericValue(
-    collections.abc.Mapping, [TypeVarValue(K), TypeVarValue(V)]
+    collections.abc.Mapping,
+    [TypeVarValue(TypeVarParam(K)), TypeVarValue(TypeVarParam(V))],
 )
 ProtocolMappingValue = GenericValue(
-    CustomMapping, [TypeVarValue(K), TypeVarValue(V_co)]
+    CustomMapping, [TypeVarValue(TypeVarParam(K)), TypeVarValue(TypeVarParam(V_co))]
 )
 
 
