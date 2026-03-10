@@ -5521,10 +5521,26 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         )
 
     def _get_bound_args_for_dataclass_field_signature(
-        self, signature: Signature, actual_args: ActualArguments, *, is_overload: bool
+        self,
+        signature: Signature,
+        actual_args: ActualArguments,
+        *,
+        is_overload: bool,
+        require_typevar_resolution: bool,
     ) -> BoundArgs | None:
         ctx = _DataclassFieldInferenceCallContext(self)
-        return signature.bind_arguments(actual_args, ctx)
+        bound_args = signature.bind_arguments(actual_args, ctx)
+        if bound_args is None or not require_typevar_resolution:
+            return bound_args
+        ret = signature.check_call_preprocessed(
+            actual_args, ctx, is_overload=is_overload
+        )
+        if ret.is_error or ret.remaining_arguments is not None:
+            return None
+        return bound_args
+
+    def _is_stdlib_dataclass_field_callee(self, callee: Value) -> bool:
+        return isinstance(callee, KnownValue) and callee.val is dataclass_field
 
     def _get_dataclass_field_call_bound_args_from_resolved_call(
         self,
@@ -5542,16 +5558,23 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         actual_args = preprocess_args(arguments, preprocess_ctx)
         if actual_args is None:
             return None
+        require_typevar_resolution = self._is_stdlib_dataclass_field_callee(callee)
 
         if isinstance(signature, Signature):
             return self._get_bound_args_for_dataclass_field_signature(
-                signature, actual_args, is_overload=False
+                signature,
+                actual_args,
+                is_overload=False,
+                require_typevar_resolution=require_typevar_resolution,
             )
 
         last = len(signature.signatures) - 1
         for i, overload_sig in enumerate(signature.signatures):
             bound_args = self._get_bound_args_for_dataclass_field_signature(
-                overload_sig, actual_args, is_overload=i != last
+                overload_sig,
+                actual_args,
+                is_overload=i != last,
+                require_typevar_resolution=require_typevar_resolution,
             )
             if bound_args is not None:
                 return bound_args
@@ -14740,8 +14763,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         if (
             dataclass_field_options is not None
             and dataclass_field_options.bound_args_available
+            and not self._is_stdlib_dataclass_field_callee(callee_wrapped)
         ):
-            with self.catch_errors() as call_errors:
+            with self.catch_errors():
                 return_value = self.check_call(
                     node, callee_wrapped, args, keywords, allow_call=self.in_annotation
                 )
