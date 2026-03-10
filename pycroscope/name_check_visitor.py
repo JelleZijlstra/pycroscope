@@ -32,7 +32,7 @@ from collections.abc import Callable, Container, Generator, Iterable, Mapping, S
 from contextlib import AbstractContextManager
 from dataclasses import dataclass, replace
 from dataclasses import field as dataclass_field
-from functools import lru_cache
+from functools import lru_cache, partial
 from itertools import chain
 from pathlib import Path
 from types import GenericAlias
@@ -169,6 +169,7 @@ from .signature import (
     ParameterKind,
     Signature,
     SigParameter,
+    _promote_constructor_type_arg,
     preprocess_args,
 )
 from .stacked_scopes import (
@@ -209,6 +210,7 @@ from .suggested_type import (
 )
 from .type_object import TypeObject, get_mro
 from .typeshed import TypeshedFinder
+from .typevar import resolve_bounds_map
 from .value import (
     NO_RETURN_VALUE,
     SYS_PLATFORM_EXTENSION,
@@ -1555,11 +1557,14 @@ class _EnumMemberTracker:
 
 @dataclass(frozen=True)
 class _DataclassFieldCallOptions:
+    bound_args_available: bool = False
     init: bool | None = None
     kw_only: bool | None = None
     alias: str | None = None
     has_default: bool = False
+    default_value: Value | None = None
     default_factory: Value | None = None
+    converter_value: Value | None = None
     converter_input_type: Value | None = None
 
 
@@ -1640,6 +1645,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     current_dataclass_info: DataclassInfo | None
     current_class_key: type | str | None
     current_class_type_params: Sequence[TypeParam] | None
+    current_class_declared_type_param_identities: set[object] | None
+    disallowed_type_param_identities: set[object] | None
+    in_type_alias_definition: bool
     _active_pep695_type_params: list[set[object]]
     current_enum_members: _EnumMemberTracker | None
     current_function: object | None
@@ -1716,6 +1724,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         self.current_dataclass_info = None
         self.current_class_key = None
         self.current_class_type_params = None
+        self.current_class_declared_type_param_identities = None
+        self.disallowed_type_param_identities = None
+        self.in_type_alias_definition = False
         self._active_pep695_type_params = []
         self.current_synthetic_typeddict = None
         self.current_function_name = None
@@ -2751,6 +2762,148 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 return True
         return False
 
+    def _bound_type_param_identities_for_current_function(self) -> set[object]:
+        info = self.current_function_info
+        if info is None:
+            return set()
+        identities: set[object] = {
+            type_param.typevar
+            for type_param in info.type_params
+            if is_instance_of_typing_name(type_param.typevar, "TypeVar")
+        }
+        for param_info in info.params:
+            identities.update(
+                self._type_param_identities_in_value(param_info.param.annotation)
+            )
+        if info.return_annotation is not None:
+            identities.update(
+                self._type_param_identities_in_value(info.return_annotation)
+            )
+        return identities
+
+    def _type_param_identities_in_value(self, value: Value) -> set[object]:
+        if isinstance(value, TypeAliasValue):
+            return set()
+        identities: set[object] = set()
+        for subval in value.walk_values():
+            if isinstance(subval, TypeAliasValue):
+                continue
+            identity = _type_param_identity(subval)
+            if (
+                identity is None
+                or identity is SelfT
+                or not is_instance_of_typing_name(identity, "TypeVar")
+            ):
+                continue
+            identities.add(identity)
+        return identities
+
+    def _allowed_type_param_identities_in_current_annotation_context(
+        self,
+    ) -> set[object]:
+        identities = self._bound_type_param_identities_for_current_function()
+        if self.current_class_type_params is not None:
+            identities.update(
+                type_param.typevar for type_param in self.current_class_type_params
+            )
+        if self.current_class_declared_type_param_identities is not None:
+            identities.update(self.current_class_declared_type_param_identities)
+        identities.update(chain.from_iterable(self._active_pep695_type_params))
+        return identities
+
+    def _check_invalid_type_parameter_usage(
+        self, value: Value, error_node: ast.AST
+    ) -> None:
+        type_param = _type_param_value_from_value(value)
+        if not isinstance(type_param, TypeVarParam) or type_param.typevar is SelfT:
+            return
+        identity = type_param.typevar
+        if (
+            self.disallowed_type_param_identities is not None
+            and identity in self.disallowed_type_param_identities
+        ):
+            self._show_error_if_checking(
+                error_node,
+                "Type parameter is not valid in this annotation context",
+                error_code=ErrorCode.invalid_annotation,
+            )
+            return
+        if self.in_type_alias_definition:
+            return
+        if not self.in_annotation:
+            return
+        if (
+            identity
+            in self._allowed_type_param_identities_in_current_annotation_context()
+        ):
+            return
+        self._show_error_if_checking(
+            error_node,
+            "Type parameter is not valid in this annotation context",
+            error_code=ErrorCode.invalid_annotation,
+        )
+
+    def _node_contains_type_param_reference(self, node: ast.AST) -> bool:
+        for subnode in ast.walk(node):
+            if not isinstance(subnode, ast.Name) or not isinstance(
+                subnode.ctx, ast.Load
+            ):
+                continue
+            resolved, _ = self.resolve_name(
+                subnode, error_node=subnode, suppress_errors=True
+            )
+            for subval in flatten_values(resolved, unwrap_annotated=True):
+                identity = _type_param_identity(subval)
+                if identity is not None and is_instance_of_typing_name(
+                    identity, "TypeVar"
+                ):
+                    return True
+        return False
+
+    def _outer_type_param_identities_for_nested_class(self) -> set[object]:
+        identities = self._bound_type_param_identities_for_current_function()
+        if self.current_class_type_params is not None:
+            identities.update(
+                type_param.typevar for type_param in self.current_class_type_params
+            )
+        if self.current_class_declared_type_param_identities is not None:
+            identities.update(self.current_class_declared_type_param_identities)
+        return identities
+
+    def _class_body_type_alias_disallowed_type_param_identities(
+        self,
+    ) -> set[object] | None:
+        if self.scopes.scope_type() != ScopeType.class_scope:
+            return None
+        identities: set[object] = set()
+        if self.current_class_type_params is not None:
+            identities.update(
+                type_param.typevar for type_param in self.current_class_type_params
+            )
+        if self.current_class_declared_type_param_identities is not None:
+            identities.update(self.current_class_declared_type_param_identities)
+        return identities or None
+
+    def _evaluate_type_alias_node(
+        self,
+        value_node: ast.AST,
+        *,
+        suppress_errors: bool,
+        disallowed_type_param_identities: set[object] | None = None,
+    ) -> Value:
+        with (
+            override(self, "in_annotation", True),
+            override(self, "in_type_alias_definition", True),
+            override(
+                self,
+                "disallowed_type_param_identities",
+                disallowed_type_param_identities,
+            ),
+        ):
+            return annotation_expr_from_ast(
+                value_node, visitor=self, suppress_errors=suppress_errors
+            ).to_value(allow_qualifiers=True, allow_empty=True)
+
     def _record_synthetic_dataclass_field_metadata(
         self,
         name: str,
@@ -3305,6 +3458,8 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     error_node, f"Undefined name: {node.id}", ErrorCode.undefined_name
                 )
             return AnyValue(AnySource.error), origin
+        if self.in_annotation or self.disallowed_type_param_identities is not None:
+            self._check_invalid_type_parameter_usage(value, error_node)
         assert not isinstance(value, (TypeVarParam, ParamSpecParam, TypeVarTupleParam))
         if isinstance(value, InputSigValue):
             # ParamSpecs are stored as InputSigValues and cannot be converted to a
@@ -3436,7 +3591,13 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                         " with type parameter syntax",
                         error_code=ErrorCode.invalid_annotation,
                     )
-            base_values = self._generic_visit_list(node.bases)
+            disallowed_type_params = (
+                self._outer_type_param_identities_for_nested_class()
+            )
+            with override(
+                self, "disallowed_type_param_identities", disallowed_type_params or None
+            ):
+                base_values = self._generic_visit_list(node.bases)
             if self._is_checking():
                 self._check_typevartuple_usage_in_type_parameter_bases(
                     node, base_values
@@ -3482,7 +3643,10 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             ):
                 self.enum_class_keys.add(class_key)
             self._check_for_final_base_classes(node, base_values)
-            keyword_values = [(kw, self.visit(kw.value)) for kw in node.keywords]
+            with override(
+                self, "disallowed_type_param_identities", disallowed_type_params or None
+            ):
+                keyword_values = [(kw, self.visit(kw.value)) for kw in node.keywords]
             if self._is_checking():
                 self._check_generic_metaclass_keyword(keyword_values)
             dataclass_semantics = self._get_class_dataclass_semantics(
@@ -3943,6 +4107,11 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 override(self, "current_synthetic_typeddict", synthetic_typeddict),
                 override(self, "current_class_key", class_key),
                 override(self, "current_dataclass_info", dataclass_semantics),
+                override(
+                    self,
+                    "current_class_declared_type_param_identities",
+                    {type_param.typevar for type_param in type_param_values},
+                ),
                 override(
                     self, "current_class_type_params", tuple(method_type_param_values)
                 ),
@@ -5556,18 +5725,26 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         )
 
     def _get_bound_args_for_dataclass_field_signature(
-        self, signature: Signature, actual_args: ActualArguments, *, is_overload: bool
+        self,
+        signature: Signature,
+        actual_args: ActualArguments,
+        *,
+        is_overload: bool,
+        require_typevar_resolution: bool,
     ) -> BoundArgs | None:
         ctx = _DataclassFieldInferenceCallContext(self)
         bound_args = signature.bind_arguments(actual_args, ctx)
-        if bound_args is None:
-            return None
+        if bound_args is None or not require_typevar_resolution:
+            return bound_args
         ret = signature.check_call_preprocessed(
             actual_args, ctx, is_overload=is_overload
         )
         if ret.is_error or ret.remaining_arguments is not None:
             return None
         return bound_args
+
+    def _is_stdlib_dataclass_field_callee(self, callee: Value) -> bool:
+        return isinstance(callee, KnownValue) and callee.val is dataclass_field
 
     def _get_dataclass_field_call_bound_args_from_resolved_call(
         self,
@@ -5585,16 +5762,23 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         actual_args = preprocess_args(arguments, preprocess_ctx)
         if actual_args is None:
             return None
+        require_typevar_resolution = self._is_stdlib_dataclass_field_callee(callee)
 
         if isinstance(signature, Signature):
             return self._get_bound_args_for_dataclass_field_signature(
-                signature, actual_args, is_overload=False
+                signature,
+                actual_args,
+                is_overload=False,
+                require_typevar_resolution=require_typevar_resolution,
             )
 
         last = len(signature.signatures) - 1
         for i, overload_sig in enumerate(signature.signatures):
             bound_args = self._get_bound_args_for_dataclass_field_signature(
-                overload_sig, actual_args, is_overload=i != last
+                overload_sig,
+                actual_args,
+                is_overload=i != last,
+                require_typevar_resolution=require_typevar_resolution,
             )
             if bound_args is not None:
                 return bound_args
@@ -5651,11 +5835,14 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 converter_sig, checker=self
             )
         return _DataclassFieldCallOptions(
+            bound_args_available=True,
             init=init,
             kw_only=kw_only,
             alias=alias,
             has_default=has_default,
+            default_value=default_value,
             default_factory=default_factory,
+            converter_value=converter_value,
             converter_input_type=converter_input_type,
         )
 
@@ -12072,7 +12259,10 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         runtime_type_alias_value = self._make_runtime_type_alias_assignment_value(node)
         if runtime_type_alias_value is not None:
             if self.annotate:
-                with self.catch_errors():
+                with (
+                    self.catch_errors(),
+                    override(self, "in_type_alias_definition", True),
+                ):
                     self.visit(node.value)
             value = runtime_type_alias_value
         elif (
@@ -12083,7 +12273,11 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         ):
             value = KnownValue(self.current_enum_members.by_name[node.value.id])
         else:
-            value = self.visit(node.value)
+            if implicit_type_alias_assignment_value is not None:
+                with override(self, "in_type_alias_definition", True):
+                    value = self.visit(node.value)
+            else:
+                value = self.visit(node.value)
 
         with (
             override(self, "being_assigned", value),
@@ -12205,6 +12399,11 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         )
 
     def _validate_runtime_type_expression(self, node: ast.AST) -> None:
+        if self.in_type_alias_definition:
+            return
+        if isinstance(node, ast.Call):
+            self._validate_runtime_type_expression(node.func)
+            return
         if not isinstance(node, ast.Subscript):
             return
         has_unpack = False
@@ -12218,11 +12417,14 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             if isinstance(subnode, ast.Attribute) and subnode.attr == "Unpack":
                 has_unpack = True
                 break
-        if not has_unpack:
+        if not has_unpack and not self._node_contains_type_param_reference(node.slice):
             return
-        annotation_expr_from_ast(
-            node, visitor=self, suppress_errors=self._is_collecting()
-        )
+        with override(self, "in_annotation", True):
+            annotation_expr_from_ast(
+                node, visitor=self, suppress_errors=self._is_collecting()
+            )
+        if has_unpack:
+            return
 
     def is_in_typeddict_definition(self) -> bool:
         return (
@@ -12288,10 +12490,22 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                         f"Type alias {node.target.id} has a circular definition",
                         error_code=ErrorCode.invalid_annotation,
                     )
-            alias_expr = annotation_expr_from_ast(
-                node.value, self, suppress_errors=self._is_collecting()
+            disallowed_type_params = (
+                self._class_body_type_alias_disallowed_type_param_identities()
             )
-            alias_type, alias_qualifiers = alias_expr.maybe_unqualify(set(Qualifier))
+            with (
+                override(self, "in_annotation", True),
+                override(self, "in_type_alias_definition", True),
+                override(
+                    self, "disallowed_type_param_identities", disallowed_type_params
+                ),
+            ):
+                alias_expr = annotation_expr_from_ast(
+                    node.value, self, suppress_errors=self._is_collecting()
+                )
+                alias_type, alias_qualifiers = alias_expr.maybe_unqualify(
+                    set(Qualifier)
+                )
             if Qualifier.ClassVar in alias_qualifiers:
                 self._show_error_if_checking(
                     node.value,
@@ -12316,14 +12530,17 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 )
             if isinstance(node.target, ast.Name) and alias_type is not None:
                 type_params = self._infer_type_alias_type_params(node.value, alias_type)
+                alias_evaluator = partial(
+                    self._evaluate_type_alias_node,
+                    node.value,
+                    suppress_errors=True,
+                    disallowed_type_param_identities=disallowed_type_params,
+                )
                 explicit_type_alias_assignment_value = TypeAliasValue(
                     node.target.id,
                     self.module.__name__ if self.module is not None else "",
                     TypeAlias(
-                        lambda value_node=node.value: annotation_expr_from_ast(
-                            value_node, visitor=self, suppress_errors=True
-                        ).to_value(allow_qualifiers=True, allow_empty=True),
-                        lambda type_params=type_params: type_params,
+                        alias_evaluator, lambda type_params=type_params: type_params
                     ),
                     runtime_allows_value_call=True,
                     uses_type_alias_object_semantics=_uses_type_alias_object_semantics(
@@ -12406,7 +12623,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         )
         alias: str | None = None
         is_dataclass_field_call = False
+        dataclass_default_value: Value | None = None
         dataclass_default_factory: Value | None = None
+        dataclass_converter_value: Value | None = None
         dataclass_converter_input_type: Value | None = None
         dataclass_field_name: str | None = None
         if (
@@ -12471,7 +12690,10 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         if node.value is not None:
             if explicit_type_alias_assignment_value is not None:
                 if self.annotate:
-                    with self.catch_errors():
+                    with (
+                        self.catch_errors(),
+                        override(self, "in_type_alias_definition", True),
+                    ):
                         self.visit(node.value)
                 is_yield = False
                 alias_runtime_value = explicit_type_alias_assignment_value.get_value()
@@ -12495,7 +12717,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     is not None
                 ):
                     is_dataclass_field_call = True
+                    dataclass_default_value = inferred_options.default_value
                     dataclass_default_factory = inferred_options.default_factory
+                    dataclass_converter_value = inferred_options.converter_value
                     dataclass_converter_input_type = (
                         inferred_options.converter_input_type
                     )
@@ -12535,6 +12759,34 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                         alias = alias_keyword.value
 
                 if expected_type is not None:
+                    if (
+                        is_current_class_dataclass
+                        and is_dataclass_field_call
+                        and dataclass_converter_value is not None
+                    ):
+                        converter_sig = self.signature_from_value(
+                            dataclass_converter_value
+                        )
+                        specialized_converter_input_type = (
+                            _callable_first_positional_parameter_type_for_return(
+                                converter_sig, expected_type, checker=self
+                            )
+                        )
+                        if specialized_converter_input_type is not None:
+                            dataclass_converter_input_type = (
+                                specialized_converter_input_type
+                            )
+                    if (
+                        is_current_class_dataclass
+                        and is_dataclass_field_call
+                        and dataclass_converter_value is not None
+                        and dataclass_converter_input_type is None
+                    ):
+                        self._show_error_if_checking(
+                            node,
+                            "Dataclass converter must accept a positional argument",
+                            error_code=ErrorCode.incompatible_argument,
+                        )
                     if not (is_current_class_dataclass and is_dataclass_field_call):
                         can_assign = has_relation(
                             expected_type, value, Relation.ASSIGNABLE, self
@@ -12554,6 +12806,34 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     if (
                         is_current_class_dataclass
                         and is_dataclass_field_call
+                        and dataclass_default_value is not None
+                    ):
+                        expected_factory_type = (
+                            dataclass_converter_input_type
+                            if dataclass_converter_input_type is not None
+                            else expected_type
+                        )
+                        can_assign_default = has_relation(
+                            expected_factory_type,
+                            dataclass_default_value,
+                            Relation.ASSIGNABLE,
+                            self,
+                        )
+                        if isinstance(can_assign_default, CanAssignError):
+                            self._show_error_if_checking(
+                                node,
+                                "Dataclass default value is incompatible with field type"
+                                f" {expected_factory_type}",
+                                error_code=(
+                                    ErrorCode.incompatible_call
+                                    if dataclass_converter_value is not None
+                                    else ErrorCode.incompatible_assignment
+                                ),
+                                detail=can_assign_default.display(),
+                            )
+                    if (
+                        is_current_class_dataclass
+                        and is_dataclass_field_call
                         and dataclass_default_factory is not None
                     ):
                         expected_factory_type = (
@@ -12561,11 +12841,8 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                             if dataclass_converter_input_type is not None
                             else expected_type
                         )
-                        default_factory_sig = self.signature_from_value(
-                            dataclass_default_factory
-                        )
-                        default_factory_return = _callable_return_type_from_signature(
-                            default_factory_sig, checker=self
+                        default_factory_return = _default_factory_return_value(
+                            dataclass_default_factory, checker=self
                         )
                         if default_factory_return is not None:
                             can_assign_return = has_relation(
@@ -12579,7 +12856,11 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                                     node,
                                     "Dataclass default_factory return type is incompatible"
                                     f" with field type {expected_factory_type}",
-                                    error_code=ErrorCode.incompatible_assignment,
+                                    error_code=(
+                                        ErrorCode.incompatible_call
+                                        if dataclass_converter_value is not None
+                                        else ErrorCode.incompatible_assignment
+                                    ),
                                     detail=can_assign_return.display(),
                                 )
 
@@ -12935,11 +13216,23 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             )
             if not _is_valid_implicit_type_alias_name_value(resolved):
                 return None
+        disallowed_type_params = (
+            self._class_body_type_alias_disallowed_type_param_identities()
+        )
         with self.catch_errors() as alias_errors:
-            alias_expr = annotation_expr_from_ast(
-                node.value, visitor=self, suppress_errors=False
-            )
-            alias_type = alias_expr.to_value(allow_qualifiers=True, allow_empty=True)
+            with (
+                override(self, "in_annotation", True),
+                override(self, "in_type_alias_definition", True),
+                override(
+                    self, "disallowed_type_param_identities", disallowed_type_params
+                ),
+            ):
+                alias_expr = annotation_expr_from_ast(
+                    node.value, visitor=self, suppress_errors=False
+                )
+                alias_type = alias_expr.to_value(
+                    allow_qualifiers=True, allow_empty=True
+                )
         invalid_annotation_errors = [
             caught
             for caught in alias_errors
@@ -12980,9 +13273,12 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         if not type_params:
             return None
         alias = TypeAlias(
-            lambda value_node=node.value: annotation_expr_from_ast(
-                value_node, visitor=self, suppress_errors=True
-            ).to_value(allow_qualifiers=True, allow_empty=True),
+            partial(
+                self._evaluate_type_alias_node,
+                node.value,
+                suppress_errors=True,
+                disallowed_type_param_identities=disallowed_type_params,
+            ),
             lambda type_params=tuple(type_params): type_params,
         )
         return (
@@ -13052,12 +13348,21 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 self._show_error_if_checking(
                     node, message, error_code=ErrorCode.invalid_annotation
                 )
+        with (
+            override(self, "in_annotation", True),
+            override(self, "in_type_alias_definition", True),
+        ):
+            annotation_expr_from_ast(
+                value_node,
+                visitor=self,
+                suppress_errors=self._is_collecting() or has_circular_definition,
+            )
         if has_circular_definition:
             evaluator = lambda: AnyValue(AnySource.error)
         else:
-            evaluator = lambda: annotation_expr_from_ast(
-                value_node, visitor=self, suppress_errors=True
-            ).to_value(allow_qualifiers=True, allow_empty=True)
+            evaluator = lambda value_node=value_node: self._evaluate_type_alias_node(
+                value_node, suppress_errors=True
+            )
         return TypeAliasValue(
             name,
             self.module.__name__ if self.module is not None else "",
@@ -14794,17 +15099,20 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         else:
             keywords = []
 
+        dataclass_field_options: _DataclassFieldCallOptions | None = None
         if (
             self._is_current_class_dataclass()
             and self.scopes.scope_type() == ScopeType.class_scope
         ):
-            inferred_options = (
+            dataclass_field_options = (
                 self._infer_dataclass_field_call_options_from_resolved_call(
                     callee_wrapped, args, keywords, node
                 )
             )
-            if inferred_options is not None:
-                self._dataclass_field_call_options_by_node[id(node)] = inferred_options
+            if dataclass_field_options is not None:
+                self._dataclass_field_call_options_by_node[id(node)] = (
+                    dataclass_field_options
+                )
             else:
                 self._dataclass_field_call_options_by_node.pop(id(node), None)
 
@@ -14818,9 +15126,19 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
 
         self._check_unsafe_super_protocol_call(node)
 
-        return_value = self.check_call(
-            node, callee_wrapped, args, keywords, allow_call=self.in_annotation
-        )
+        if (
+            dataclass_field_options is not None
+            and dataclass_field_options.bound_args_available
+            and not self._is_stdlib_dataclass_field_callee(callee_wrapped)
+        ):
+            with self.catch_errors():
+                return_value = self.check_call(
+                    node, callee_wrapped, args, keywords, allow_call=self.in_annotation
+                )
+        else:
+            return_value = self.check_call(
+                node, callee_wrapped, args, keywords, allow_call=self.in_annotation
+            )
 
         if self._is_checking():
             self.yield_checker.record_call(callee_wrapped, node)
@@ -15682,6 +16000,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 ]
         else:
             return return_value
+        type_args = [_promote_constructor_type_arg(arg) for arg in type_args]
 
         def _specialize(value: Value) -> Value | None:
             if allow_annotated_specialization and isinstance(value, AnnotatedValue):
@@ -16705,6 +17024,38 @@ def _callable_return_type_from_signature(
     return None
 
 
+def _default_factory_return_value(
+    factory: Value, *, checker: "NameCheckVisitor"
+) -> Value | None:
+    with checker.catch_errors() as call_errors:
+        return_value = checker.check_call(None, factory, ())
+    if not call_errors:
+        return return_value
+    signature = checker.signature_from_value(factory)
+    return _callable_return_type_from_signature(signature, checker=checker)
+
+
+def _specialize_first_positional_parameter_type_in_signature(
+    signature: Signature, expected_return: Value, *, checker: "NameCheckVisitor"
+) -> Value | None:
+    parameter_type = _first_positional_parameter_type_in_signature(signature)
+    if parameter_type is None:
+        return None
+    bounds_map = has_relation(
+        expected_return, signature.return_value, Relation.ASSIGNABLE, checker
+    )
+    if isinstance(bounds_map, CanAssignError):
+        return None
+    if not signature.all_typevars:
+        return parameter_type
+    typevar_map, errors = resolve_bounds_map(
+        bounds_map, checker, all_typevars=signature.all_typevars
+    )
+    if errors:
+        return None
+    return parameter_type.substitute_typevars(typevar_map)
+
+
 def _first_positional_parameter_type_in_signature(signature: Signature) -> Value | None:
     for parameter in signature.parameters.values():
         if parameter.kind in (
@@ -16751,12 +17102,34 @@ def _callable_first_positional_parameter_type(
         for overload in signature.signatures:
             parameter_type = _first_positional_parameter_type_in_signature(overload)
             if parameter_type is None:
-                return None
+                continue
             parameter_types.append(parameter_type)
         if not parameter_types:
             return None
         return unite_values(*parameter_types)
     return None
+
+
+def _callable_first_positional_parameter_type_for_return(
+    signature: MaybeSignature, expected_return: Value, *, checker: "NameCheckVisitor"
+) -> Value | None:
+    if isinstance(signature, BoundMethodSignature):
+        signature = signature.get_signature(ctx=checker)
+    if isinstance(signature, Signature):
+        return _specialize_first_positional_parameter_type_in_signature(
+            signature, expected_return, checker=checker
+        )
+    if isinstance(signature, OverloadedSignature):
+        parameter_types: list[Value] = []
+        for overload in signature.signatures:
+            parameter_type = _specialize_first_positional_parameter_type_in_signature(
+                overload, expected_return, checker=checker
+            )
+            if parameter_type is not None:
+                parameter_types.append(parameter_type)
+        if parameter_types:
+            return unite_values(*parameter_types)
+    return _callable_first_positional_parameter_type(signature, checker=checker)
 
 
 def _slot_names_from_runtime_slots(value: object) -> tuple[str, ...] | None:
@@ -16878,7 +17251,9 @@ def _type_param_value_from_value(value: Value) -> TypeParam | None:
         return value.typevar_tuple_param
     if isinstance(value, InputSigValue) and isinstance(value.input_sig, ParamSpecParam):
         return value.input_sig
-    if value in (VOID, UNINITIALIZED_VALUE) or isinstance(value, ReferencingValue):
+    if value in (VOID, UNINITIALIZED_VALUE) or isinstance(
+        value, ReferencingValue | TypeAliasValue
+    ):
         return None
     value = replace_fallback(value)
     if isinstance(value, MultiValuedValue):
