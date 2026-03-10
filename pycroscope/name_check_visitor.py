@@ -32,7 +32,7 @@ from collections.abc import Callable, Container, Generator, Iterable, Mapping, S
 from contextlib import AbstractContextManager
 from dataclasses import dataclass, replace
 from dataclasses import field as dataclass_field
-from functools import lru_cache
+from functools import lru_cache, partial
 from itertools import chain
 from pathlib import Path
 from types import GenericAlias
@@ -1618,6 +1618,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     current_dataclass_info: DataclassInfo | None
     current_class_key: type | str | None
     current_class_type_params: Sequence[TypeParam] | None
+    current_class_declared_type_param_identities: set[object] | None
+    disallowed_type_param_identities: set[object] | None
+    in_type_alias_definition: bool
     _active_pep695_type_params: list[set[object]]
     current_enum_members: _EnumMemberTracker | None
     current_function: object | None
@@ -1694,6 +1697,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         self.current_dataclass_info = None
         self.current_class_key = None
         self.current_class_type_params = None
+        self.current_class_declared_type_param_identities = None
+        self.disallowed_type_param_identities = None
+        self.in_type_alias_definition = False
         self._active_pep695_type_params = []
         self.current_synthetic_typeddict = None
         self.current_function_name = None
@@ -2729,6 +2735,148 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 return True
         return False
 
+    def _bound_type_param_identities_for_current_function(self) -> set[object]:
+        info = self.current_function_info
+        if info is None:
+            return set()
+        identities: set[object] = {
+            type_param.typevar
+            for type_param in info.type_params
+            if is_instance_of_typing_name(type_param.typevar, "TypeVar")
+        }
+        for param_info in info.params:
+            identities.update(
+                self._type_param_identities_in_value(param_info.param.annotation)
+            )
+        if info.return_annotation is not None:
+            identities.update(
+                self._type_param_identities_in_value(info.return_annotation)
+            )
+        return identities
+
+    def _type_param_identities_in_value(self, value: Value) -> set[object]:
+        if isinstance(value, TypeAliasValue):
+            return set()
+        identities: set[object] = set()
+        for subval in value.walk_values():
+            if isinstance(subval, TypeAliasValue):
+                continue
+            identity = _type_param_identity(subval)
+            if (
+                identity is None
+                or identity is SelfT
+                or not is_instance_of_typing_name(identity, "TypeVar")
+            ):
+                continue
+            identities.add(identity)
+        return identities
+
+    def _allowed_type_param_identities_in_current_annotation_context(
+        self,
+    ) -> set[object]:
+        identities = self._bound_type_param_identities_for_current_function()
+        if self.current_class_type_params is not None:
+            identities.update(
+                type_param.typevar for type_param in self.current_class_type_params
+            )
+        if self.current_class_declared_type_param_identities is not None:
+            identities.update(self.current_class_declared_type_param_identities)
+        identities.update(chain.from_iterable(self._active_pep695_type_params))
+        return identities
+
+    def _check_invalid_type_parameter_usage(
+        self, value: Value, error_node: ast.AST
+    ) -> None:
+        type_param = _type_param_value_from_value(value)
+        if not isinstance(type_param, TypeVarParam) or type_param.typevar is SelfT:
+            return
+        identity = type_param.typevar
+        if (
+            self.disallowed_type_param_identities is not None
+            and identity in self.disallowed_type_param_identities
+        ):
+            self._show_error_if_checking(
+                error_node,
+                "Type parameter is not valid in this annotation context",
+                error_code=ErrorCode.invalid_annotation,
+            )
+            return
+        if self.in_type_alias_definition:
+            return
+        if not self.in_annotation:
+            return
+        if (
+            identity
+            in self._allowed_type_param_identities_in_current_annotation_context()
+        ):
+            return
+        self._show_error_if_checking(
+            error_node,
+            "Type parameter is not valid in this annotation context",
+            error_code=ErrorCode.invalid_annotation,
+        )
+
+    def _node_contains_type_param_reference(self, node: ast.AST) -> bool:
+        for subnode in ast.walk(node):
+            if not isinstance(subnode, ast.Name) or not isinstance(
+                subnode.ctx, ast.Load
+            ):
+                continue
+            resolved, _ = self.resolve_name(
+                subnode, error_node=subnode, suppress_errors=True
+            )
+            for subval in flatten_values(resolved, unwrap_annotated=True):
+                identity = _type_param_identity(subval)
+                if identity is not None and is_instance_of_typing_name(
+                    identity, "TypeVar"
+                ):
+                    return True
+        return False
+
+    def _outer_type_param_identities_for_nested_class(self) -> set[object]:
+        identities = self._bound_type_param_identities_for_current_function()
+        if self.current_class_type_params is not None:
+            identities.update(
+                type_param.typevar for type_param in self.current_class_type_params
+            )
+        if self.current_class_declared_type_param_identities is not None:
+            identities.update(self.current_class_declared_type_param_identities)
+        return identities
+
+    def _class_body_type_alias_disallowed_type_param_identities(
+        self,
+    ) -> set[object] | None:
+        if self.scopes.scope_type() != ScopeType.class_scope:
+            return None
+        identities: set[object] = set()
+        if self.current_class_type_params is not None:
+            identities.update(
+                type_param.typevar for type_param in self.current_class_type_params
+            )
+        if self.current_class_declared_type_param_identities is not None:
+            identities.update(self.current_class_declared_type_param_identities)
+        return identities or None
+
+    def _evaluate_type_alias_node(
+        self,
+        value_node: ast.AST,
+        *,
+        suppress_errors: bool,
+        disallowed_type_param_identities: set[object] | None = None,
+    ) -> Value:
+        with (
+            override(self, "in_annotation", True),
+            override(self, "in_type_alias_definition", True),
+            override(
+                self,
+                "disallowed_type_param_identities",
+                disallowed_type_param_identities,
+            ),
+        ):
+            return annotation_expr_from_ast(
+                value_node, visitor=self, suppress_errors=suppress_errors
+            ).to_value(allow_qualifiers=True, allow_empty=True)
+
     def _record_synthetic_dataclass_field_metadata(
         self,
         name: str,
@@ -3283,6 +3431,8 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     error_node, f"Undefined name: {node.id}", ErrorCode.undefined_name
                 )
             return AnyValue(AnySource.error), origin
+        if self.in_annotation or self.disallowed_type_param_identities is not None:
+            self._check_invalid_type_parameter_usage(value, error_node)
         assert not isinstance(value, (TypeVarParam, ParamSpecParam, TypeVarTupleParam))
         if isinstance(value, InputSigValue):
             # ParamSpecs are stored as InputSigValues and cannot be converted to a
@@ -3414,7 +3564,13 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                         " with type parameter syntax",
                         error_code=ErrorCode.invalid_annotation,
                     )
-            base_values = self._generic_visit_list(node.bases)
+            disallowed_type_params = (
+                self._outer_type_param_identities_for_nested_class()
+            )
+            with override(
+                self, "disallowed_type_param_identities", disallowed_type_params or None
+            ):
+                base_values = self._generic_visit_list(node.bases)
             if self._is_checking():
                 self._check_typevartuple_usage_in_type_parameter_bases(
                     node, base_values
@@ -3447,7 +3603,10 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             ):
                 self.enum_class_keys.add(class_key)
             self._check_for_final_base_classes(node, base_values)
-            keyword_values = [(kw, self.visit(kw.value)) for kw in node.keywords]
+            with override(
+                self, "disallowed_type_param_identities", disallowed_type_params or None
+            ):
+                keyword_values = [(kw, self.visit(kw.value)) for kw in node.keywords]
             if self._is_checking():
                 self._check_generic_metaclass_keyword(keyword_values)
             dataclass_semantics = self._get_class_dataclass_semantics(
@@ -3908,6 +4067,11 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 override(self, "current_synthetic_typeddict", synthetic_typeddict),
                 override(self, "current_class_key", class_key),
                 override(self, "current_dataclass_info", dataclass_semantics),
+                override(
+                    self,
+                    "current_class_declared_type_param_identities",
+                    {type_param.typevar for type_param in type_param_values},
+                ),
                 override(
                     self, "current_class_type_params", tuple(method_type_param_values)
                 ),
@@ -11969,7 +12133,10 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         runtime_type_alias_value = self._make_runtime_type_alias_assignment_value(node)
         if runtime_type_alias_value is not None:
             if self.annotate:
-                with self.catch_errors():
+                with (
+                    self.catch_errors(),
+                    override(self, "in_type_alias_definition", True),
+                ):
                     self.visit(node.value)
             value = runtime_type_alias_value
         elif (
@@ -11980,7 +12147,11 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         ):
             value = KnownValue(self.current_enum_members.by_name[node.value.id])
         else:
-            value = self.visit(node.value)
+            if implicit_type_alias_assignment_value is not None:
+                with override(self, "in_type_alias_definition", True):
+                    value = self.visit(node.value)
+            else:
+                value = self.visit(node.value)
 
         with (
             override(self, "being_assigned", value),
@@ -12102,6 +12273,11 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         )
 
     def _validate_runtime_type_expression(self, node: ast.AST) -> None:
+        if self.in_type_alias_definition:
+            return
+        if isinstance(node, ast.Call):
+            self._validate_runtime_type_expression(node.func)
+            return
         if not isinstance(node, ast.Subscript):
             return
         has_unpack = False
@@ -12115,11 +12291,14 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             if isinstance(subnode, ast.Attribute) and subnode.attr == "Unpack":
                 has_unpack = True
                 break
-        if not has_unpack:
+        if not has_unpack and not self._node_contains_type_param_reference(node.slice):
             return
-        annotation_expr_from_ast(
-            node, visitor=self, suppress_errors=self._is_collecting()
-        )
+        with override(self, "in_annotation", True):
+            annotation_expr_from_ast(
+                node, visitor=self, suppress_errors=self._is_collecting()
+            )
+        if has_unpack:
+            return
 
     def is_in_typeddict_definition(self) -> bool:
         return (
@@ -12185,10 +12364,22 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                         f"Type alias {node.target.id} has a circular definition",
                         error_code=ErrorCode.invalid_annotation,
                     )
-            alias_expr = annotation_expr_from_ast(
-                node.value, self, suppress_errors=self._is_collecting()
+            disallowed_type_params = (
+                self._class_body_type_alias_disallowed_type_param_identities()
             )
-            alias_type, alias_qualifiers = alias_expr.maybe_unqualify(set(Qualifier))
+            with (
+                override(self, "in_annotation", True),
+                override(self, "in_type_alias_definition", True),
+                override(
+                    self, "disallowed_type_param_identities", disallowed_type_params
+                ),
+            ):
+                alias_expr = annotation_expr_from_ast(
+                    node.value, self, suppress_errors=self._is_collecting()
+                )
+                alias_type, alias_qualifiers = alias_expr.maybe_unqualify(
+                    set(Qualifier)
+                )
             if Qualifier.ClassVar in alias_qualifiers:
                 self._show_error_if_checking(
                     node.value,
@@ -12213,14 +12404,17 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 )
             if isinstance(node.target, ast.Name) and alias_type is not None:
                 type_params = self._infer_type_alias_type_params(node.value, alias_type)
+                alias_evaluator = partial(
+                    self._evaluate_type_alias_node,
+                    node.value,
+                    suppress_errors=True,
+                    disallowed_type_param_identities=disallowed_type_params,
+                )
                 explicit_type_alias_assignment_value = TypeAliasValue(
                     node.target.id,
                     self.module.__name__ if self.module is not None else "",
                     TypeAlias(
-                        lambda value_node=node.value: annotation_expr_from_ast(
-                            value_node, visitor=self, suppress_errors=True
-                        ).to_value(allow_qualifiers=True, allow_empty=True),
-                        lambda type_params=type_params: type_params,
+                        alias_evaluator, lambda type_params=type_params: type_params
                     ),
                     runtime_allows_value_call=True,
                     uses_type_alias_object_semantics=_uses_type_alias_object_semantics(
@@ -12370,7 +12564,10 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         if node.value is not None:
             if explicit_type_alias_assignment_value is not None:
                 if self.annotate:
-                    with self.catch_errors():
+                    with (
+                        self.catch_errors(),
+                        override(self, "in_type_alias_definition", True),
+                    ):
                         self.visit(node.value)
                 is_yield = False
                 alias_runtime_value = explicit_type_alias_assignment_value.get_value()
@@ -12893,11 +13090,23 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             )
             if not _is_valid_implicit_type_alias_name_value(resolved):
                 return None
+        disallowed_type_params = (
+            self._class_body_type_alias_disallowed_type_param_identities()
+        )
         with self.catch_errors() as alias_errors:
-            alias_expr = annotation_expr_from_ast(
-                node.value, visitor=self, suppress_errors=False
-            )
-            alias_type = alias_expr.to_value(allow_qualifiers=True, allow_empty=True)
+            with (
+                override(self, "in_annotation", True),
+                override(self, "in_type_alias_definition", True),
+                override(
+                    self, "disallowed_type_param_identities", disallowed_type_params
+                ),
+            ):
+                alias_expr = annotation_expr_from_ast(
+                    node.value, visitor=self, suppress_errors=False
+                )
+                alias_type = alias_expr.to_value(
+                    allow_qualifiers=True, allow_empty=True
+                )
         invalid_annotation_errors = [
             caught
             for caught in alias_errors
@@ -12931,9 +13140,12 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         if not type_params:
             return None
         alias = TypeAlias(
-            lambda value_node=node.value: annotation_expr_from_ast(
-                value_node, visitor=self, suppress_errors=True
-            ).to_value(allow_qualifiers=True, allow_empty=True),
+            partial(
+                self._evaluate_type_alias_node,
+                node.value,
+                suppress_errors=True,
+                disallowed_type_param_identities=disallowed_type_params,
+            ),
             lambda type_params=tuple(type_params): type_params,
         )
         return (
@@ -12994,12 +13206,21 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 self._show_error_if_checking(
                     node, message, error_code=ErrorCode.invalid_annotation
                 )
+        with (
+            override(self, "in_annotation", True),
+            override(self, "in_type_alias_definition", True),
+        ):
+            annotation_expr_from_ast(
+                value_node,
+                visitor=self,
+                suppress_errors=self._is_collecting() or has_circular_definition,
+            )
         if has_circular_definition:
             evaluator = lambda: AnyValue(AnySource.error)
         else:
-            evaluator = lambda: annotation_expr_from_ast(
-                value_node, visitor=self, suppress_errors=True
-            ).to_value(allow_qualifiers=True, allow_empty=True)
+            evaluator = lambda value_node=value_node: self._evaluate_type_alias_node(
+                value_node, suppress_errors=True
+            )
         return TypeAliasValue(
             name,
             self.module.__name__ if self.module is not None else "",
@@ -16882,7 +17103,9 @@ def _type_param_value_from_value(value: Value) -> TypeParam | None:
         return value.typevar_tuple_param
     if isinstance(value, InputSigValue) and isinstance(value.input_sig, ParamSpecParam):
         return value.input_sig
-    if value in (VOID, UNINITIALIZED_VALUE) or isinstance(value, ReferencingValue):
+    if value in (VOID, UNINITIALIZED_VALUE) or isinstance(
+        value, ReferencingValue | TypeAliasValue
+    ):
         return None
     value = replace_fallback(value)
     if isinstance(value, MultiValuedValue):
