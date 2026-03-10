@@ -1300,6 +1300,13 @@ class TestImportFailureHandlingCodeSamples(TestNameCheckVisitorBase):
         class WithBadFactory:
             a: int = field(default_factory=str)  # E: incompatible_assignment
 
+        @dataclass
+        class WithDictFactory:
+            a: dict[tuple[str, int], str] = field(default_factory=dict)
+
+        with_dict_factory = WithDictFactory()
+        assert_type(with_dict_factory.a, dict[tuple[str, int], str])
+
         class DataclassProto(Protocol):
             __dataclass_fields__: ClassVar[dict[str, Any]]
 

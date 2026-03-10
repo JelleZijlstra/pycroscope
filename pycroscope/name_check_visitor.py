@@ -12518,11 +12518,8 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                             if dataclass_converter_input_type is not None
                             else expected_type
                         )
-                        default_factory_sig = self.signature_from_value(
-                            dataclass_default_factory
-                        )
-                        default_factory_return = _callable_return_type_from_signature(
-                            default_factory_sig, checker=self
+                        default_factory_return = _default_factory_return_value(
+                            dataclass_default_factory, checker=self
                         )
                         if default_factory_return is not None:
                             can_assign_return = has_relation(
@@ -16656,6 +16653,17 @@ def _callable_return_type_from_signature(
             return None
         return unite_values(*(sig.return_value for sig in signature.signatures))
     return None
+
+
+def _default_factory_return_value(
+    factory: Value, *, checker: "NameCheckVisitor"
+) -> Value | None:
+    with checker.catch_errors() as call_errors:
+        return_value = checker.check_call(None, factory, ())
+    if not call_errors:
+        return return_value
+    signature = checker.signature_from_value(factory)
+    return _callable_return_type_from_signature(signature, checker=checker)
 
 
 def _specialize_first_positional_parameter_type_in_signature(
