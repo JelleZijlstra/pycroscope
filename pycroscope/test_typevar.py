@@ -273,6 +273,58 @@ class TestTypeVar(TestNameCheckVisitorBase):
             ...
 
     @assert_passes(run_in_both_module_modes=True)
+    def test_typevar_scoping_in_annotations(self):
+        from typing import Generic, TypeVar
+
+        T = TypeVar("T")
+        S = TypeVar("S")
+
+        def func(x: T) -> list[T]:
+            ok: list[T] = []
+            _bad: list[S] = []  # E: invalid_annotation
+            return ok
+
+        class Box(Generic[T]):
+            attr: list[S] = []  # E: invalid_annotation
+
+        _global_value: T  # E: invalid_annotation
+        global_list: list[T] = []  # E: invalid_annotation
+        list[T]()  # E: invalid_annotation
+
+    @assert_passes(run_in_both_module_modes=True)
+    def test_nested_classes_do_not_capture_outer_type_params(self):
+        from typing import Generic, Iterable, TypeVar
+
+        T = TypeVar("T")
+        S = TypeVar("S")
+
+        def func(x: T) -> None:
+            class Bad(Generic[T]):  # E: invalid_annotation
+                ...
+
+        class Outer(Generic[T]):
+            class Bad(Iterable[T]):  # E: invalid_annotation
+                ...
+
+            class AlsoBad:
+                attr: list[T]  # E: invalid_annotation
+
+            class Inner(Iterable[S]): ...
+
+            ok: Inner[T]
+
+    @assert_passes(run_in_both_module_modes=True)
+    def test_class_body_type_alias_cannot_capture_class_type_params(self):
+        from typing import Generic, TypeAlias, TypeVar
+
+        T = TypeVar("T")
+
+        Alias: TypeAlias = list[T]
+
+        class Outer(Generic[T]):
+            BadAlias: TypeAlias = list[T]  # E: invalid_annotation
+
+    @assert_passes(run_in_both_module_modes=True)
     def test_nested_alias_variance_after_import_failure(self):
         from typing import Generic, TypeVar
 
