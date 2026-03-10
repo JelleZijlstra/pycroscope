@@ -1,7 +1,7 @@
 # static analysis: ignore
 
 from .test_name_check_visitor import TestNameCheckVisitorBase
-from .test_node_visitor import assert_passes
+from .test_node_visitor import assert_passes, skip_before
 
 
 class TestTypeForm(TestNameCheckVisitorBase):
@@ -124,9 +124,8 @@ class TestTypeForm(TestNameCheckVisitorBase):
     def test_invalid_type_expressions_for_implicit_typeform(self):
         import typing
 
-        from typing_extensions import Self, TypeForm, TypeVarTuple, Unpack
+        from typing_extensions import Self, TypeForm
 
-        Ts = TypeVarTuple("Ts")
         var = 1
 
         bad1: TypeForm = tuple()  # E: incompatible_assignment
@@ -138,10 +137,18 @@ class TestTypeForm(TestNameCheckVisitorBase):
         bad6: TypeForm = typing.Literal[""]
         bad7: TypeForm = typing.ClassVar[int]  # E: incompatible_assignment
         bad8: TypeForm = typing.Final[int]  # E: incompatible_assignment
-        bad9: TypeForm = Unpack[Ts]  # E: incompatible_assignment
-        bad10: TypeForm = typing.Optional  # E: incompatible_assignment
-        bad11: TypeForm = "int + str"  # E: incompatible_assignment
-        bad1, bad2, bad3, bad4, bad5, bad6, bad7, bad8, bad9, bad10, bad11
+        bad9: TypeForm = typing.Optional  # E: incompatible_assignment
+        bad10: TypeForm = "int + str"  # E: incompatible_assignment
+        bad1, bad2, bad3, bad4, bad5, bad6, bad7, bad8, bad9, bad10
+
+    @skip_before((3, 11))
+    @assert_passes()
+    def test_unpack_is_not_implicit_typeform(self):
+        from typing_extensions import TypeForm, TypeVarTuple, Unpack
+
+        Ts = TypeVarTuple("Ts")
+        bad: TypeForm = Unpack[Ts]  # E: incompatible_assignment
+        bad
 
     @assert_passes()
     def test_union_typevar_typeform_assignment(self):

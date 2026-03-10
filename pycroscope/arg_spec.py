@@ -29,19 +29,14 @@ from .annotations import (
     Context,
     RuntimeEvaluator,
     annotation_expr_from_runtime,
-    make_type_var_value,
+    make_type_param,
     type_from_runtime,
 )
 from .extensions import CustomCheck, TypeGuard, get_type_evaluations
 from .extensions import get_overloads as pycroscope_get_overloads
 from .find_unused import used
 from .functions import translate_vararg_type
-from .input_sig import (
-    InputSigValue,
-    ParamSpecSig,
-    coerce_paramspec_specialization_to_input_sig,
-    extract_type_params,
-)
+from .input_sig import InputSigValue, coerce_paramspec_specialization_to_input_sig
 from .maybe_asynq import asynq, qcore
 from .options import Options, PyObjectSequenceOption
 from .safe import (
@@ -87,19 +82,26 @@ from .value import (
     NewTypeValue,
     ParamSpecArgsValue,
     ParamSpecKwargsValue,
+    ParamSpecParam,
     SequenceValue,
     SubclassValue,
     TypedDictEntry,
     TypedDictValue,
     TypedValue,
+    TypeParam,
     TypeVarLike,
     TypeVarMap,
+    TypeVarParam,
+    TypeVarTupleParam,
+    TypeVarTupleValue,
     TypeVarValue,
     Value,
     get_namedtuple_field_annotation,
     is_async_iterable,
     is_iterable,
+    iter_type_params_in_value,
     make_coro_type,
+    type_param_to_value,
 )
 
 _GET_OVERLOADS = []
@@ -409,6 +411,7 @@ class ArgSpecCache:
         self.ctx = ctx
         self.known_argspecs = {}
         self.generic_bases_cache = {}
+        self.type_params_cache = {}
         self.default_context = AnnotationsContext(self)
         self.safe_bases = tuple(self.options.get_value_for(ClassesSafeToInstantiate))
         self._did_load_default_argspecs_with_cache = False
@@ -604,7 +607,7 @@ class ArgSpecCache:
             and seen_paramspec_args.param_spec is typ.param_spec
         ):
             kind = ParameterKind.PARAM_SPEC
-            typ = InputSigValue(ParamSpecSig(typ.param_spec))
+            typ = InputSigValue(ParamSpecParam(typ.param_spec))
         return (
             SigParameter(parameter.name, kind, default=default, annotation=typ),
             make_everything_pos_only,
@@ -986,7 +989,10 @@ class ArgSpecCache:
                 if should_ignore:
                     return_type = AnyValue(AnySource.error)
                 elif type_params:
-                    return_type = GenericValue(obj, type_params)
+                    return_type = GenericValue(
+                        obj,
+                        [type_param_to_value(type_param) for type_param in type_params],
+                    )
                 else:
                     return_type = TypedValue(obj)
                 if isinstance(override, inspect.Signature):
@@ -1045,7 +1051,10 @@ class ArgSpecCache:
                 bound_self_value: Value = TypedValue(obj)
             else:
                 if type_params:
-                    self_annotation_value = GenericValue(obj, type_params)
+                    self_annotation_value = GenericValue(
+                        obj,
+                        [type_param_to_value(type_param) for type_param in type_params],
+                    )
                 else:
                     self_annotation_value = TypedValue(obj)
                 bound_self_value = self_annotation_value
@@ -1094,7 +1103,7 @@ class ArgSpecCache:
         return None
 
     def _namedtuple_constructor_signature(
-        self, obj: type, type_params: Sequence[Value]
+        self, obj: type, type_params: Sequence[TypeParam]
     ) -> Signature:
         fields = tuple(getattr(obj, "_fields", ()))
         defaults = tuple(getattr(obj.__new__, "__defaults__", ()) or ())
@@ -1137,7 +1146,9 @@ class ArgSpecCache:
                 ],
             )
         elif type_params:
-            return_type = GenericValue(obj, type_params)
+            return_type = GenericValue(
+                obj, [type_param_to_value(type_param) for type_param in type_params]
+            )
         else:
             return_type = TypedValue(obj)
 
@@ -1217,11 +1228,20 @@ class ArgSpecCache:
             # Python 2.
             return None
 
-    def get_type_parameters(self, typ: type | str) -> list[Value]:
-        bases = self.get_generic_bases(typ, substitute_typevars=False)
-        tv_map = bases.get(typ, {})
-        if tv_map:
-            return [tv for tv in tv_map.values()]
+    def get_type_parameters(self, typ: type | str) -> list[TypeParam]:
+        try:
+            cached = self.type_params_cache[typ]
+        except Exception:
+            cached = None
+        if cached is not None:
+            return list(cached)
+        self._get_generic_bases_cached(typ)
+        try:
+            cached = self.type_params_cache[typ]
+        except Exception:
+            cached = None
+        if cached is not None:
+            return list(cached)
         if isinstance(typ, str):
             return []
         runtime_type_params = safe_getattr(typ, "__type_params__", ())
@@ -1231,15 +1251,16 @@ class ArgSpecCache:
             runtime_type_params_iter = iter(runtime_type_params)
         except TypeError:
             return []
-        wrapped: list[Value] = []
+        type_params: list[TypeParam] = []
         for type_param in runtime_type_params_iter:
             try:
-                wrapped.append(
-                    make_type_var_value(type_param, ctx=self.default_context)
+                type_params.append(
+                    make_type_param(type_param, ctx=self.default_context)
                 )
             except TypeError:
                 continue
-        return wrapped
+        self.type_params_cache[typ] = tuple(type_params)
+        return type_params
 
     def get_generic_bases(
         self,
@@ -1258,8 +1279,8 @@ class ArgSpecCache:
         generic_bases = self._get_generic_bases_cached(typ)
         if typ not in generic_bases:
             return generic_bases
-        my_typevars = generic_bases[typ]
-        if not my_typevars:
+        type_params = tuple(self.get_type_parameters(typ))
+        if not type_params:
             return generic_bases
         tv_map: dict[TypeVarLike, Value] = {}
         paramspec_generic_arg_map: dict[
@@ -1267,20 +1288,18 @@ class ArgSpecCache:
         ] = {}
         if substitute_typevars:
             specialized_args = self._specialize_generic_type_params(
-                tuple(my_typevars.values()), generic_args
+                type_params, generic_args, use_defaults_for_omitted_args=False
             )
-            for tv_value, value in zip(my_typevars.values(), specialized_args):
-                if isinstance(tv_value, TypeVarValue):
-                    tv_map[tv_value.typevar] = value
-                elif isinstance(tv_value, InputSigValue) and isinstance(
-                    tv_value.input_sig, ParamSpecSig
-                ):
-                    paramspec_generic_arg_map[tv_value.input_sig.param_spec] = value
+            for type_param, value in zip(type_params, specialized_args):
+                if isinstance(type_param, ParamSpecParam):
+                    paramspec_generic_arg_map[type_param.param_spec] = value
+                else:
+                    tv_map[type_param.typevar] = value
 
         def _substitute_base_arg(value: Value) -> Value:
             if (
                 isinstance(value, InputSigValue)
-                and isinstance(value.input_sig, ParamSpecSig)
+                and isinstance(value.input_sig, ParamSpecParam)
                 and value.input_sig.param_spec in paramspec_generic_arg_map
             ):
                 # For class generic arguments, ParamSpec specializations are stored as
@@ -1294,7 +1313,11 @@ class ArgSpecCache:
         }
 
     def _specialize_generic_type_params(
-        self, type_params: Sequence[Value], generic_args: Sequence[Value]
+        self,
+        type_params: Sequence[TypeParam],
+        generic_args: Sequence[Value],
+        *,
+        use_defaults_for_omitted_args: bool = True,
     ) -> list[Value]:
         """Map concrete generic args to declared type parameters.
 
@@ -1305,19 +1328,24 @@ class ArgSpecCache:
         if not type_params:
             return []
 
-        def _coerce_specialized_arg(type_param: Value, value: Value) -> Value:
-            if isinstance(type_param, InputSigValue) and isinstance(
-                type_param.input_sig, ParamSpecSig
-            ):
-                return coerce_paramspec_specialization_to_input_sig(value)
-            if isinstance(type_param, TypeVarValue) and type_param.is_paramspec():
+        generic_args = tuple(
+            (
+                type_param_to_value(arg)
+                if isinstance(arg, (TypeVarParam, ParamSpecParam, TypeVarTupleParam))
+                else arg
+            )
+            for arg in generic_args
+        )
+
+        def _coerce_specialized_arg(type_param: TypeParam, value: Value) -> Value:
+            if isinstance(type_param, ParamSpecParam):
                 return coerce_paramspec_specialization_to_input_sig(value)
             return value
 
         variadic_indexes = [
             i
             for i, type_param in enumerate(type_params)
-            if isinstance(type_param, TypeVarValue) and type_param.is_typevartuple()
+            if isinstance(type_param, TypeVarTupleParam)
         ]
         if len(variadic_indexes) != 1 or not generic_args:
             specialized = []
@@ -1327,18 +1355,21 @@ class ArgSpecCache:
                     generic_args[i]
                     if i < len(generic_args)
                     else self._default_type_argument_for_param(
-                        type_param, substitutions
+                        type_param,
+                        substitutions,
+                        use_defaults=use_defaults_for_omitted_args,
                     )
                 )
                 value = _coerce_specialized_arg(type_param, value)
                 specialized.append(value)
-                if isinstance(type_param, TypeVarValue):
-                    substitutions[type_param.typevar] = value
+                substitutions[type_param.typevar] = value
             return specialized
 
         variadic_index = variadic_indexes[0]
         if len(generic_args) == len(type_params):
             variadic_arg = generic_args[variadic_index]
+            if isinstance(variadic_arg, TypeVarTupleValue):
+                return list(generic_args)
             if (
                 isinstance(variadic_arg, SequenceValue)
                 and variadic_arg.typ is tuple
@@ -1367,7 +1398,9 @@ class ArgSpecCache:
                     generic_args[i]
                     if i < prefix_explicit_count
                     else self._default_type_argument_for_param(
-                        type_params[i], variadic_substitutions
+                        type_params[i],
+                        variadic_substitutions,
+                        use_defaults=use_defaults_for_omitted_args,
                     )
                 )
             elif i == variadic_index:
@@ -1382,7 +1415,9 @@ class ArgSpecCache:
                 suffix_index = i - variadic_index - 1
                 value = (
                     self._default_type_argument_for_param(
-                        type_params[i], variadic_substitutions
+                        type_params[i],
+                        variadic_substitutions,
+                        use_defaults=use_defaults_for_omitted_args,
                     )
                     if suffix_index < omitted_suffix_count
                     else generic_args[
@@ -1391,13 +1426,12 @@ class ArgSpecCache:
                 )
             value = _coerce_specialized_arg(type_params[i], value)
             specialized.append(value)
-            if isinstance(type_params[i], TypeVarValue):
-                variadic_substitutions[type_params[i].typevar] = value
+            variadic_substitutions[type_params[i].typevar] = value
         return specialized
 
     def _split_variadic_generic_args(
         self,
-        type_params: Sequence[Value],
+        type_params: Sequence[TypeParam],
         generic_args: Sequence[Value],
         variadic_index: int,
     ) -> tuple[int, int] | None:
@@ -1423,16 +1457,12 @@ class ArgSpecCache:
             return prefix_explicit_count, suffix_explicit_count
         return None
 
-    def _specialization_param_has_default(self, type_param: Value) -> bool:
-        if isinstance(type_param, TypeVarValue):
-            return type_param.default is not None
-        if isinstance(type_param, InputSigValue) and isinstance(
-            type_param.input_sig, ParamSpecSig
-        ):
-            if type_param.input_sig.default is not None:
-                return True
+    def _specialization_param_has_default(self, type_param: TypeParam) -> bool:
+        if type_param.default is not None:
+            return True
+        if isinstance(type_param, ParamSpecParam):
             runtime_default = safe_getattr(
-                type_param.input_sig.param_spec, "__default__", _NO_DEFAULT
+                type_param.param_spec, "__default__", _NO_DEFAULT
             )
             return (
                 runtime_default is not _NO_DEFAULT and runtime_default is not NoDefault
@@ -1440,24 +1470,20 @@ class ArgSpecCache:
         return False
 
     def _default_type_argument_for_param(
-        self, type_param: Value, substitutions: TypeVarMap | None = None
+        self,
+        type_param: TypeParam,
+        substitutions: TypeVarMap | None = None,
+        *,
+        use_defaults: bool = True,
     ) -> Value:
-        if isinstance(type_param, TypeVarValue):
-            if type_param.default is not None:
-                default = type_param.default
-                if substitutions is not None:
-                    default = default.substitute_typevars(substitutions)
-                return default
-        elif isinstance(type_param, InputSigValue) and isinstance(
-            type_param.input_sig, ParamSpecSig
-        ):
-            if type_param.input_sig.default is not None:
-                default = type_param.input_sig.default
-                if substitutions is not None:
-                    default = default.substitute_typevars(substitutions)
-                return default
+        if use_defaults and type_param.default is not None:
+            default = type_param.default
+            if substitutions is not None:
+                default = default.substitute_typevars(substitutions)
+            return default
+        if use_defaults and isinstance(type_param, ParamSpecParam):
             runtime_default = safe_getattr(
-                type_param.input_sig.param_spec, "__default__", _NO_DEFAULT
+                type_param.param_spec, "__default__", _NO_DEFAULT
             )
             if runtime_default is not _NO_DEFAULT and runtime_default is not NoDefault:
                 return type_from_runtime(runtime_default, ctx=self.default_context)
@@ -1512,10 +1538,22 @@ class ArgSpecCache:
             key=lambda base: not isinstance(base, TypedValue)
             or base.typ is not Generic,
         )
-        my_typevars = uniq_chain(extract_type_params(base) for base in bases)
+        my_typevars = tuple(
+            uniq_chain(tuple(iter_type_params_in_value(base)) for base in bases)
+        )
+        self.type_params_cache[typ] = my_typevars
         generic_bases = {}
         generic_bases[typ] = {
-            tv: make_type_var_value(tv, ctx=self.default_context) for tv in my_typevars
+            type_param.typevar: (
+                TypeVarValue(type_param)
+                if isinstance(type_param, TypeVarParam)
+                else (
+                    TypeVarTupleValue(type_param)
+                    if isinstance(type_param, TypeVarTupleParam)
+                    else InputSigValue(type_param)
+                )
+            )
+            for type_param in my_typevars
         }
         for base in bases:
             if isinstance(base, TypedValue):

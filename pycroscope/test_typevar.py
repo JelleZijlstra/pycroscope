@@ -456,11 +456,21 @@ class TestTypeVar(TestNameCheckVisitorBase):
 
         class BadOrder(Generic[DefaultT, T]): ...  # E: invalid_annotation
 
+        class GoodAfterVariadic(Generic[Unpack[Ts], P]): ...
+
+    @skip_before((3, 11))
+    @assert_passes(allow_import_failures=True)
+    def test_class_type_param_defaults_cannot_follow_variadic(self):
+        from typing import Generic
+
+        from typing_extensions import TypeVar, TypeVarTuple, Unpack
+
+        Ts = TypeVarTuple("Ts")
+        DefaultAfterVariadic = TypeVar("DefaultAfterVariadic", default=bool)
+
         class BadAfterVariadic(  # E: invalid_annotation
             Generic[Unpack[Ts], DefaultAfterVariadic]
         ): ...
-
-        class GoodAfterVariadic(Generic[Unpack[Ts], P]): ...
 
     @assert_passes(allow_import_failures=True)
     def test_generic_default_specialization_after_import_failure(self):

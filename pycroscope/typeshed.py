@@ -33,13 +33,12 @@ from .annotations import (
     DecoratorValue,
     SyntheticEvaluator,
     annotation_expr_from_value,
-    make_type_var_value,
     value_from_ast,
 )
 from .error_code import Error, ErrorCode
 from .extensions import deprecated as deprecated_decorator
 from .extensions import evaluated, overload, real_overload
-from .input_sig import extract_type_params
+from .input_sig import InputSigValue
 from .node_visitor import Failure
 from .options import (
     InvalidConfigOption,
@@ -76,12 +75,18 @@ from .value import (
     TypedDictEntry,
     TypedDictValue,
     TypedValue,
+    TypeParam,
+    TypeVarParam,
+    TypeVarTupleParam,
+    TypeVarTupleValue,
     TypeVarValue,
     UninitializedValue,
     Value,
     annotate_value,
+    iter_type_params_in_value,
     make_coro_type,
     replace_fallback,
+    type_param_to_value,
     unannotate_value,
 )
 
@@ -270,7 +275,7 @@ class TypeshedFinder:
         obj: object,
         *,
         allow_call: bool = False,
-        type_params: Sequence[Value] = (),
+        type_params: Sequence[TypeParam] = (),
     ) -> ConcreteSignature | None:
         if isinstance(obj, str):
             # Synthetic type
@@ -341,7 +346,7 @@ class TypeshedFinder:
         obj: object,
         *,
         allow_call: bool = False,
-        type_params: Sequence[Value] = (),
+        type_params: Sequence[TypeParam] = (),
     ) -> ConcreteSignature | None:
         info = self._get_info_for_name(fq_name)
         mod, _ = fq_name.rsplit(".", maxsplit=1)
@@ -905,7 +910,7 @@ class TypeshedFinder:
         objclass: type | None = None,
         *,
         allow_call: bool = False,
-        type_params: Sequence[Value] = (),
+        type_params: Sequence[TypeParam] = (),
     ) -> ConcreteSignature | None:
         if isinstance(info, typeshed_client.NameInfo):
             if isinstance(info.ast, (ast.FunctionDef, ast.AsyncFunctionDef)):
@@ -957,7 +962,13 @@ class TypeshedFinder:
                     else:
                         typ = fq_name
                     if type_params:
-                        self_val = GenericValue(typ, type_params)
+                        self_val = GenericValue(
+                            typ,
+                            [
+                                type_param_to_value(type_param)
+                                for type_param in type_params
+                            ],
+                        )
                     else:
                         self_val = TypedValue(typ)
                     if from_init:
@@ -1154,16 +1165,23 @@ class TypeshedFinder:
             if bases is None:
                 typ = TypedValue(objclass)
             else:
-                typevars = uniq_chain(extract_type_params(base) for base in bases)
+                typevars = uniq_chain(
+                    tuple(iter_type_params_in_value(base)) for base in bases
+                )
                 if typevars:
                     typ = GenericValue(
                         objclass,
                         [
-                            make_type_var_value(
-                                tv,
-                                _AnnotationContext(finder=self, module=tv.__module__),
+                            (
+                                TypeVarValue(type_param)
+                                if isinstance(type_param, TypeVarParam)
+                                else (
+                                    TypeVarTupleValue(type_param)
+                                    if isinstance(type_param, TypeVarTupleParam)
+                                    else InputSigValue(type_param)
+                                )
                             )
-                            for tv in typevars
+                            for type_param in typevars
                         ],
                     )
                 else:

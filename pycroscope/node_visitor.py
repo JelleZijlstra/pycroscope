@@ -442,6 +442,8 @@ class BaseNodeVisitor(ast.NodeVisitor):
             kwargs = dict(args.__dict__)
         markdown_output = kwargs.pop("markdown_output", None)
         json_output = kwargs.pop("json_output", None)
+        assert markdown_output is None or isinstance(markdown_output, str)
+        assert json_output is None or isinstance(json_output, str)
 
         verbose = kwargs.pop("verbose", 0)
         if verbose == 0 or verbose is None:
@@ -459,6 +461,10 @@ class BaseNodeVisitor(ast.NodeVisitor):
         autofix = kwargs.pop("autofix", False)
         repeat_until_no_errors = kwargs.pop("repeat_until_no_errors", False)
         num_iterations = kwargs.pop("num_iterations", 1)
+        assert isinstance(run_fixer, bool)
+        assert isinstance(autofix, bool)
+        assert isinstance(repeat_until_no_errors, bool)
+        assert isinstance(num_iterations, int)
         kwargs = cls.prepare_constructor_kwargs(kwargs)
         if repeat_until_no_errors:
             iteration = 0

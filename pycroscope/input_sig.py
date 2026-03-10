@@ -1,15 +1,11 @@
-import typing
 from collections.abc import Container, Iterable, Sequence
 from dataclasses import dataclass
-from functools import lru_cache
 from typing import Literal
 
-import typing_extensions
 from typing_extensions import Self, assert_never
 
 import pycroscope
 from pycroscope.relations import Relation
-from pycroscope.safe import is_instance_of_typing_name
 from pycroscope.stacked_scopes import Composite
 from pycroscope.value import (
     AnySource,
@@ -20,32 +16,14 @@ from pycroscope.value import (
     CanAssignError,
     KnownValue,
     LowerBound,
+    ParamSpecParam,
     SequenceValue,
     TypedValue,
-    TypeVarLike,
     TypeVarMap,
-    TypeVarValue,
     UpperBound,
     Value,
     replace_known_sequence_value,
 )
-
-ParamSpecLike = typing_extensions.ParamSpec | typing.ParamSpec
-
-
-@dataclass(frozen=True)
-class ParamSpecSig:
-    param_spec: ParamSpecLike
-    default: Value | None = None  # unsupported
-
-    def substitute_typevars(self, typevars: TypeVarMap) -> "InputSig":
-        if self.param_spec in typevars:
-            return assert_input_sig(typevars[self.param_spec])
-        return self
-
-    def walk_values(self) -> Iterable[Value]:
-        if self.default is not None:
-            yield from self.default.walk_values()
 
 
 @dataclass(frozen=True)
@@ -80,7 +58,7 @@ class ActualArguments:
     kwargs_required: bool
     pos_or_keyword_params: Container[int | str]
     ellipsis: bool = False
-    param_spec: ParamSpecSig | None = None
+    param_spec: ParamSpecParam | None = None
 
     def substitute_typevars(self, typevars: TypeVarMap) -> Self:
         return self
@@ -113,7 +91,7 @@ class FullSignature:
         return str(self.sig)
 
 
-InputSig = ActualArguments | ParamSpecSig | AnySig | FullSignature
+InputSig = ActualArguments | ParamSpecParam | AnySig | FullSignature
 
 
 @dataclass(frozen=True)
@@ -123,7 +101,12 @@ class InputSigValue(Value):
     input_sig: InputSig
 
     def substitute_typevars(self, typevars: TypeVarMap) -> Value:
-        return InputSigValue(self.input_sig.substitute_typevars(typevars))
+        substituted = self.input_sig.substitute_typevars(typevars)
+        if isinstance(substituted, InputSigValue):
+            return substituted
+        if isinstance(substituted, Value):
+            return coerce_paramspec_specialization_to_input_sig(substituted)
+        return InputSigValue(substituted)
 
     def walk_values(self) -> Iterable[Value]:
         yield self
@@ -152,7 +135,7 @@ def input_sigs_have_relation(
         if relation is Relation.SUBTYPE:
             return CanAssignError("Cannot be assigned to")
         return {}
-    elif isinstance(left, ParamSpecSig):
+    elif isinstance(left, ParamSpecParam):
         return {left.param_spec: [LowerBound(left.param_spec, InputSigValue(right))]}
     elif isinstance(left, ActualArguments):
         if left == right:
@@ -163,7 +146,7 @@ def input_sigs_have_relation(
             if relation is Relation.SUBTYPE:
                 return CanAssignError("Cannot be assigned")
             return {}
-        elif isinstance(right, ParamSpecSig):
+        elif isinstance(right, ParamSpecParam):
             return {
                 right.param_spec: [UpperBound(right.param_spec, InputSigValue(left))]
             }
@@ -210,38 +193,6 @@ def solve_paramspec(
     return InputSigValue(solution)
 
 
-def extract_type_params(value: Value) -> Iterable[TypeVarLike]:
-    for val in value.walk_values():
-        if isinstance(val, TypeVarValue):
-            yield val.typevar
-        elif isinstance(val, InputSigValue):
-            input_sig = val.input_sig
-            if isinstance(input_sig, ParamSpecSig):
-                yield input_sig.param_spec
-
-
-@lru_cache(maxsize=1)
-def _wrap_type_param_context() -> object:
-    from pycroscope.checker import Checker
-
-    return Checker().arg_spec_cache.default_context
-
-
-def wrap_type_param(type_param: TypeVarLike) -> Value:
-    """Wrap a type parameter in the corresponding Value representation."""
-    if is_instance_of_typing_name(type_param, "ParamSpec"):
-        # static analysis: ignore[incompatible_argument]
-        return InputSigValue(ParamSpecSig(type_param))
-    elif is_instance_of_typing_name(
-        type_param, "TypeVarTuple"
-    ) or is_instance_of_typing_name(type_param, "TypeVar"):
-        from pycroscope.annotations import make_type_var_value
-
-        return make_type_var_value(type_param, ctx=_wrap_type_param_context())
-    else:
-        raise TypeError(f"Unsupported type parameter: {type_param!r}")
-
-
 def coerce_paramspec_specialization_to_input_sig(value: Value) -> Value:
     """Convert class-generic ParamSpec list/tuple forms to InputSigValue.
 
@@ -252,8 +203,6 @@ def coerce_paramspec_specialization_to_input_sig(value: Value) -> Value:
     """
 
     if isinstance(value, InputSigValue):
-        return value
-    if isinstance(value, TypeVarValue) and value.is_paramspec():
         return value
     if isinstance(value, AnyValue):
         return InputSigValue(ELLIPSIS)

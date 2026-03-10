@@ -28,10 +28,8 @@ from .input_sig import (
     AnySig,
     FullSignature,
     InputSigValue,
-    ParamSpecSig,
     assert_input_sig,
     coerce_paramspec_specialization_to_input_sig,
-    extract_type_params,
     input_sigs_have_relation,
 )
 from .maybe_asynq import asynq
@@ -86,6 +84,7 @@ from .value import (
     ParameterTypeGuardExtension,
     ParamSpecArgsValue,
     ParamSpecKwargsValue,
+    ParamSpecParam,
     PartialValue,
     PartialValueOperation,
     PredicateValue,
@@ -102,6 +101,7 @@ from .value import (
     TypeIsExtension,
     TypeVarLike,
     TypeVarMap,
+    TypeVarTupleValue,
     TypeVarValue,
     UnboundMethodValue,
     UpperBound,
@@ -110,6 +110,7 @@ from .value import (
     concrete_values_from_iterable,
     flatten_values,
     get_tv_map,
+    iter_type_params_in_value,
     replace_fallback,
     replace_known_sequence_value,
     stringify_object,
@@ -227,7 +228,7 @@ Argument = tuple[
     | str
     | PossibleArg
     | Literal[ARGS, KWARGS, ELLIPSIS]
-    | ParamSpecSig
+    | ParamSpecParam
     | PosOrKeyword,
 ]
 
@@ -549,7 +550,7 @@ class SigParameter:
             return val, ELLIPSIS
         elif self.kind is ParameterKind.PARAM_SPEC:
             assert isinstance(self.annotation, InputSigValue) and isinstance(
-                self.annotation.input_sig, ParamSpecSig
+                self.annotation.input_sig, ParamSpecParam
             )
             return val, self.annotation.input_sig
         elif self.kind is ParameterKind.VAR_KEYWORD:
@@ -616,10 +617,16 @@ class Signature:
 
     def __post_init__(self) -> None:
         for param_name, param in self.parameters.items():
-            typevars = list(extract_type_params(param.annotation))
+            typevars = [
+                type_param.typevar
+                for type_param in iter_type_params_in_value(param.annotation)
+            ]
             if typevars:
                 self.typevars_of_params[param_name] = typevars
-        return_typevars = list(extract_type_params(self.return_value))
+        return_typevars = [
+            type_param.typevar
+            for type_param in iter_type_params_in_value(self.return_value)
+        ]
         if return_typevars:
             self.typevars_of_params[self._return_key] = return_typevars
         self.all_typevars.update(
@@ -1303,7 +1310,7 @@ class Signature:
                 ):
                     star_kwargs_consumed = True
                     star_args_consumed = True
-                    sig = ParamSpecSig(actual_args.star_kwargs.param_spec)
+                    sig = ParamSpecParam(actual_args.star_kwargs.param_spec)
                     composite = Composite(InputSigValue(sig))
                     bound_args[param.name] = KWARGS, composite
                 else:
@@ -1809,7 +1816,7 @@ class Signature:
         for name, param in self.parameters.items():
             if param.kind is ParameterKind.PARAM_SPEC:
                 input_sig = assert_input_sig(param.annotation)
-                if isinstance(input_sig, ParamSpecSig):
+                if isinstance(input_sig, ParamSpecParam):
                     tv = input_sig.param_spec
                     if tv in typevars:
                         replacement_value = typevars[tv]
@@ -1820,7 +1827,7 @@ class Signature:
                         )
                         replacement = assert_input_sig(replacement_value)
                         new_val = replacement.substitute_typevars(typevars)
-                        if isinstance(new_val, ParamSpecSig):
+                        if isinstance(new_val, ParamSpecParam):
                             new_param = SigParameter(
                                 param.name,
                                 param.kind,
@@ -1880,6 +1887,48 @@ class Signature:
                                             break
                                 existing_names.add(replacement_name)
                                 params.append((replacement_name, replacement_param))
+                        elif isinstance(new_val, Value):
+                            rebound = assert_input_sig(new_val)
+                            if isinstance(rebound, ParamSpecParam):
+                                new_param = SigParameter(
+                                    param.name,
+                                    param.kind,
+                                    annotation=InputSigValue(rebound),
+                                )
+                                params.append((name, new_param))
+                            elif isinstance(rebound, AnySig):
+                                if not params:
+                                    params.append((ELLIPSIS_PARAM.name, ELLIPSIS_PARAM))
+                                else:
+                                    params.append((name, param))
+                            elif isinstance(rebound, ActualArguments):
+                                new_param = SigParameter(
+                                    param.name,
+                                    ParameterKind.PARAM_SPEC,
+                                    annotation=InputSigValue(rebound),
+                                )
+                                params.append((param.name, new_param))
+                            else:
+                                existing_names = {
+                                    param_name for param_name, _ in params
+                                }
+                                next_unnamed_index = len(existing_names)
+                                for (
+                                    replacement_param
+                                ) in rebound.sig.parameters.values():
+                                    replacement_name = replacement_param.name
+                                    if replacement_name in existing_names:
+                                        while True:
+                                            candidate = f"@{next_unnamed_index}"
+                                            next_unnamed_index += 1
+                                            if candidate not in existing_names:
+                                                replacement_name = candidate
+                                                replacement_param = replace(
+                                                    replacement_param, name=candidate
+                                                )
+                                                break
+                                    existing_names.add(replacement_name)
+                                    params.append((replacement_name, replacement_param))
                         else:
                             assert_never(new_val)
                     else:
@@ -2119,11 +2168,11 @@ def preprocess_args(
                 processed_args.append(
                     (
                         Composite(
-                            InputSigValue(ParamSpecSig(arg.value.param_spec)),
+                            InputSigValue(ParamSpecParam(arg.value.param_spec)),
                             arg.varname,
                             arg.node,
                         ),
-                        ParamSpecSig(arg.value.param_spec),
+                        ParamSpecParam(arg.value.param_spec),
                     )
                 )
                 continue
@@ -2227,7 +2276,7 @@ def preprocess_args(
     seen_param_spec = False
 
     for arg, label in processed_args:
-        if seen_param_spec and not isinstance(label, ParamSpecSig):
+        if seen_param_spec and not isinstance(label, ParamSpecParam):
             ctx.on_error("Arguments cannot follow ParamSpec.args", node=arg.node)
             return None
         if label is None or (isinstance(label, PossibleArg) and label.name is None):
@@ -2276,7 +2325,7 @@ def preprocess_args(
             pok_indices.add(len(more_processed_args))
             more_processed_kwargs[label.name] = (label.is_required, arg)
             more_processed_args.append((label.is_required, arg))
-        elif isinstance(label, ParamSpecSig):
+        elif isinstance(label, ParamSpecParam):
             if param_spec is not None:
                 ctx.on_error("Multiple ParamSpecs passed")
                 continue
@@ -2867,8 +2916,7 @@ def _typevartuple_param_index(params: Sequence[SigParameter]) -> int | None:
     indices = [
         i
         for i, param in enumerate(params)
-        if isinstance(param.annotation, TypeVarValue)
-        and param.annotation.is_typevartuple()
+        if isinstance(param.annotation, TypeVarTupleValue)
     ]
     if len(indices) == 1:
         return indices[0]
@@ -2928,6 +2976,47 @@ def _try_typevartuple_callable_relation(
     relation: Literal[Relation.ASSIGNABLE, Relation.SUBTYPE],
     ctx: CanAssignContext,
 ) -> CanAssign | None:
+    for template_sig, concrete_sig in ((left, right), (right, left)):
+        template_params = list(template_sig.parameters.values())
+        if len(template_params) != 1:
+            continue
+        template_param = template_params[0]
+        if template_param.kind is not ParameterKind.VAR_POSITIONAL:
+            continue
+        expected_members = _extract_var_positional_members(template_param.annotation)
+        if expected_members is None:
+            continue
+
+        concrete_params = list(concrete_sig.parameters.values())
+        if any(
+            param.kind
+            not in (ParameterKind.POSITIONAL_ONLY, ParameterKind.POSITIONAL_OR_KEYWORD)
+            for param in concrete_params
+        ):
+            continue
+
+        def _match_callable_member(expected: Value, actual: Value) -> CanAssign:
+            if isinstance(expected, TypeVarValue):
+                return {
+                    expected.typevar: [
+                        UpperBound(expected.typevar, actual),
+                        *expected.get_inherent_bounds(),
+                    ]
+                }
+            return has_relation(actual, expected, relation, ctx)
+
+        tuple_pattern_tv_map = _match_typevartuple_members(
+            expected_members=expected_members,
+            actual_members=[param.get_annotation() for param in concrete_params],
+            match_member=_match_callable_member,
+            incompatible_message=lambda index: (
+                f"type of parameter {concrete_params[index].name!r} is incompatible"
+            ),
+            length_error="callable has too few parameters",
+        )
+        if tuple_pattern_tv_map is not None:
+            return tuple_pattern_tv_map
+
     left_params = list(left.parameters.values())
     right_params = list(right.parameters.values())
 
@@ -2973,7 +3062,7 @@ def _try_typevartuple_callable_relation(
         suffix = len(right_params) - marker_index - 1
         middle = left_params[prefix : len(left_params) - suffix]
 
-    bounds_maps: list[BoundsMap] = []
+    captured_bounds_maps: list[BoundsMap] = []
     for i in range(prefix):
         left_param = left_params[i]
         right_param = right_params[i]
@@ -2981,10 +3070,7 @@ def _try_typevartuple_callable_relation(
             return CanAssignError(f"param {left_param.name!r} has no default")
         left_annotation = left_param.get_annotation()
         right_annotation = right_param.get_annotation()
-        if (
-            isinstance(left_annotation, TypeVarValue)
-            and not left_annotation.is_typevartuple()
-        ):
+        if isinstance(left_annotation, TypeVarValue):
             tv_map = {
                 left_annotation.typevar: [
                     UpperBound(left_annotation.typevar, right_annotation),
@@ -2997,7 +3083,7 @@ def _try_typevartuple_callable_relation(
             return CanAssignError(
                 f"type of parameter {left_param.name!r} is incompatible", [tv_map]
             )
-        bounds_maps.append(tv_map)
+        captured_bounds_maps.append(tv_map)
 
     for i in range(1, suffix + 1):
         left_param = left_params[-i]
@@ -3006,10 +3092,7 @@ def _try_typevartuple_callable_relation(
             return CanAssignError(f"param {left_param.name!r} has no default")
         left_annotation = left_param.get_annotation()
         right_annotation = right_param.get_annotation()
-        if (
-            isinstance(left_annotation, TypeVarValue)
-            and not left_annotation.is_typevartuple()
-        ):
+        if isinstance(left_annotation, TypeVarValue):
             tv_map = {
                 left_annotation.typevar: [
                     UpperBound(left_annotation.typevar, right_annotation),
@@ -3022,20 +3105,20 @@ def _try_typevartuple_callable_relation(
             return CanAssignError(
                 f"type of parameter {left_param.name!r} is incompatible", [tv_map]
             )
-        bounds_maps.append(tv_map)
+        captured_bounds_maps.append(tv_map)
 
     marker_annotation = marker_param.annotation
-    assert isinstance(marker_annotation, TypeVarValue), marker_annotation
+    assert isinstance(marker_annotation, TypeVarTupleValue), marker_annotation
     captured_members = [
         (False, _widen_typevartuple_inferred_value(param.get_annotation()))
         for param in middle
     ]
     captured = SequenceValue(tuple, captured_members)
-    bounds_maps.append(
+    captured_bounds_maps.append(
         {marker_annotation.typevar: [LowerBound(marker_annotation.typevar, captured)]}
     )
 
-    return unify_bounds_maps(bounds_maps)
+    return unify_bounds_maps(captured_bounds_maps)
 
 
 def _try_match_typevartuple_var_positional(
@@ -3068,7 +3151,7 @@ def _try_match_typevartuple_var_positional(
         tv_entries = [
             member
             for is_many, member in repeated_members
-            if is_many and isinstance(member, TypeVarValue) and member.is_typevartuple()
+            if is_many and isinstance(member, TypeVarTupleValue)
         ]
         if len(tv_entries) != 1:
             return None
@@ -3113,10 +3196,33 @@ def _match_typevartuple_var_positional_members(
     actual_members: Sequence[Value],
     ctx: CanAssignContext,
 ) -> CanAssign | None:
+    def _match_member(expected: Value, actual: Value) -> CanAssign:
+        actual = _widen_typevartuple_inferred_value(actual)
+        return has_relation(expected, actual, Relation.ASSIGNABLE, ctx)
+
+    return _match_typevartuple_members(
+        expected_members=expected_members,
+        actual_members=actual_members,
+        match_member=_match_member,
+        incompatible_message=lambda _index: (
+            f"type of parameter {param_name!r} is incompatible"
+        ),
+        length_error=f"parameter {param_name!r} is not accepted",
+    )
+
+
+def _match_typevartuple_members(
+    *,
+    expected_members: tuple[tuple[bool, Value], ...],
+    actual_members: Sequence[Value],
+    match_member: Callable[[Value, Value], CanAssign],
+    incompatible_message: Callable[[int], str],
+    length_error: str,
+) -> CanAssign | None:
     tv_entries = [
         (i, member)
         for i, (is_many, member) in enumerate(expected_members)
-        if is_many and isinstance(member, TypeVarValue) and member.is_typevartuple()
+        if is_many and isinstance(member, TypeVarTupleValue)
     ]
     if len(tv_entries) != 1:
         return None
@@ -3131,27 +3237,20 @@ def _match_typevartuple_var_positional_members(
     prefix = marker_index
     suffix = len(expected_members) - marker_index - 1
     if len(actual_members) < prefix + suffix:
-        return CanAssignError(f"parameter {param_name!r} is not accepted")
+        return CanAssignError(length_error)
 
     bounds_maps: list[BoundsMap] = []
     for i in range(prefix):
-        expected = expected_members[i][1]
-        actual = _widen_typevartuple_inferred_value(actual_members[i])
-        tv_map = has_relation(expected, actual, Relation.ASSIGNABLE, ctx)
+        tv_map = match_member(expected_members[i][1], actual_members[i])
         if isinstance(tv_map, CanAssignError):
-            return CanAssignError(
-                f"type of parameter {param_name!r} is incompatible", [tv_map]
-            )
+            return CanAssignError(incompatible_message(i), [tv_map])
         bounds_maps.append(tv_map)
 
     for i in range(1, suffix + 1):
-        expected = expected_members[-i][1]
-        actual = _widen_typevartuple_inferred_value(actual_members[-i])
-        tv_map = has_relation(expected, actual, Relation.ASSIGNABLE, ctx)
+        actual_index = len(actual_members) - i
+        tv_map = match_member(expected_members[-i][1], actual_members[actual_index])
         if isinstance(tv_map, CanAssignError):
-            return CanAssignError(
-                f"type of parameter {param_name!r} is incompatible", [tv_map]
-            )
+            return CanAssignError(incompatible_message(actual_index), [tv_map])
         bounds_maps.append(tv_map)
 
     middle_start = prefix
@@ -3170,10 +3269,7 @@ def _match_typevartuple_var_positional_members(
 
 
 def _contains_typevartuple(value: Value) -> bool:
-    return any(
-        isinstance(subval, TypeVarValue) and subval.is_typevartuple()
-        for subval in value.walk_values()
-    )
+    return any(isinstance(subval, TypeVarTupleValue) for subval in value.walk_values())
 
 
 def _extract_var_positional_members(
@@ -3200,7 +3296,7 @@ def _extract_var_positional_members(
         inner = replace_known_sequence_value(annotation.members[0])
         if isinstance(inner, SequenceValue) and inner.typ is tuple:
             return inner.members
-        if isinstance(inner, TypeVarValue) and inner.is_typevartuple():
+        if isinstance(inner, TypeVarTupleValue):
             return ((True, inner),)
         if (
             isinstance(inner, GenericValue)
@@ -3215,7 +3311,7 @@ def _extract_var_positional_members(
         inner = replace_known_sequence_value(annotation.root)
         if isinstance(inner, SequenceValue) and inner.typ is tuple:
             return inner.members
-        if isinstance(inner, TypeVarValue) and inner.is_typevartuple():
+        if isinstance(inner, TypeVarTupleValue):
             return ((True, inner),)
         if (
             isinstance(inner, GenericValue)
@@ -3233,8 +3329,7 @@ def _signature_has_standalone_typevartuple_param(sig: ConcreteSignature) -> bool
             for overload in sig.signatures
         )
     return any(
-        isinstance(param.annotation, TypeVarValue)
-        and param.annotation.is_typevartuple()
+        isinstance(param.annotation, TypeVarTupleValue)
         for param in sig.parameters.values()
     )
 
@@ -3675,7 +3770,7 @@ def signatures_have_relation(
                 # Concatenate[...,] uses AnySig to represent the open-ended tail.
                 consumed_paramspec = True
                 continue
-            if not isinstance(my_annotation, ParamSpecSig):
+            if not isinstance(my_annotation, ParamSpecParam):
                 return CanAssignError(f"invalid ParamSpec annotation {my_annotation!r}")
             tv_maps.append(
                 {
@@ -3698,7 +3793,7 @@ def signatures_have_relation(
             else:
                 assert_never(relation)
         else:
-            assert_never(my_param.kind)
+            return CanAssignError(f"unsupported parameter kind {my_param.kind!r}")
 
     if not consumed_paramspec:
         for param in their_params:
