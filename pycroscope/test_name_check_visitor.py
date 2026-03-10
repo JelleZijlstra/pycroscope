@@ -1191,6 +1191,7 @@ class TestImportFailureHandlingCodeSamples(TestNameCheckVisitorBase):
     @assert_passes(run_in_both_module_modes=True)
     def test_dataclass_kw_only_checks_after_import_failure(self):
         from dataclasses import KW_ONLY, dataclass, field
+        from typing import Literal, assert_type
 
         @dataclass
         class DC1:
@@ -1213,6 +1214,11 @@ class TestImportFailureHandlingCodeSamples(TestNameCheckVisitorBase):
             c: float
 
         def capybara() -> None:
+            assert_type(DC1.__match_args__, tuple[Literal["a"]])
+            assert_type(DC2.__match_args__, tuple[Literal["a"]])
+            assert_type(DC3.__match_args__, tuple[Literal["a"]])
+            assert_type(DC4.__match_args__, tuple[Literal["a"], Literal["c"]])
+
             DC1("hi")
             DC1(a="hi")
             DC1(a="hi", b=1)
