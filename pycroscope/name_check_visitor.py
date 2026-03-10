@@ -210,6 +210,7 @@ from .suggested_type import (
 )
 from .type_object import TypeObject, get_mro
 from .typeshed import TypeshedFinder
+from .typevar import resolve_bounds_map
 from .value import (
     NO_RETURN_VALUE,
     SYS_PLATFORM_EXTENSION,
@@ -1529,11 +1530,14 @@ class _EnumMemberTracker:
 
 @dataclass(frozen=True)
 class _DataclassFieldCallOptions:
+    bound_args_available: bool = False
     init: bool | None = None
     kw_only: bool | None = None
     alias: str | None = None
     has_default: bool = False
+    default_value: Value | None = None
     default_factory: Value | None = None
+    converter_value: Value | None = None
     converter_input_type: Value | None = None
 
 
@@ -5520,15 +5524,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         self, signature: Signature, actual_args: ActualArguments, *, is_overload: bool
     ) -> BoundArgs | None:
         ctx = _DataclassFieldInferenceCallContext(self)
-        bound_args = signature.bind_arguments(actual_args, ctx)
-        if bound_args is None:
-            return None
-        ret = signature.check_call_preprocessed(
-            actual_args, ctx, is_overload=is_overload
-        )
-        if ret.is_error or ret.remaining_arguments is not None:
-            return None
-        return bound_args
+        return signature.bind_arguments(actual_args, ctx)
 
     def _get_dataclass_field_call_bound_args_from_resolved_call(
         self,
@@ -5612,11 +5608,14 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 converter_sig, checker=self
             )
         return _DataclassFieldCallOptions(
+            bound_args_available=True,
             init=init,
             kw_only=kw_only,
             alias=alias,
             has_default=has_default,
+            default_value=default_value,
             default_factory=default_factory,
+            converter_value=converter_value,
             converter_input_type=converter_input_type,
         )
 
@@ -12281,7 +12280,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         )
         alias: str | None = None
         is_dataclass_field_call = False
+        dataclass_default_value: Value | None = None
         dataclass_default_factory: Value | None = None
+        dataclass_converter_value: Value | None = None
         dataclass_converter_input_type: Value | None = None
         dataclass_field_name: str | None = None
         if (
@@ -12370,7 +12371,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     is not None
                 ):
                     is_dataclass_field_call = True
+                    dataclass_default_value = inferred_options.default_value
                     dataclass_default_factory = inferred_options.default_factory
+                    dataclass_converter_value = inferred_options.converter_value
                     dataclass_converter_input_type = (
                         inferred_options.converter_input_type
                     )
@@ -12410,6 +12413,34 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                         alias = alias_keyword.value
 
                 if expected_type is not None:
+                    if (
+                        is_current_class_dataclass
+                        and is_dataclass_field_call
+                        and dataclass_converter_value is not None
+                    ):
+                        converter_sig = self.signature_from_value(
+                            dataclass_converter_value
+                        )
+                        specialized_converter_input_type = (
+                            _callable_first_positional_parameter_type_for_return(
+                                converter_sig, expected_type, checker=self
+                            )
+                        )
+                        if specialized_converter_input_type is not None:
+                            dataclass_converter_input_type = (
+                                specialized_converter_input_type
+                            )
+                    if (
+                        is_current_class_dataclass
+                        and is_dataclass_field_call
+                        and dataclass_converter_value is not None
+                        and dataclass_converter_input_type is None
+                    ):
+                        self._show_error_if_checking(
+                            node,
+                            "Dataclass converter must accept a positional argument",
+                            error_code=ErrorCode.incompatible_argument,
+                        )
                     if not (is_current_class_dataclass and is_dataclass_field_call):
                         can_assign = has_relation(
                             expected_type, value, Relation.ASSIGNABLE, self
@@ -12426,6 +12457,34 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     # annotation can be used to adjust pycroscope's type inference.
                     value = expected_type
 
+                    if (
+                        is_current_class_dataclass
+                        and is_dataclass_field_call
+                        and dataclass_default_value is not None
+                    ):
+                        expected_factory_type = (
+                            dataclass_converter_input_type
+                            if dataclass_converter_input_type is not None
+                            else expected_type
+                        )
+                        can_assign_default = has_relation(
+                            expected_factory_type,
+                            dataclass_default_value,
+                            Relation.ASSIGNABLE,
+                            self,
+                        )
+                        if isinstance(can_assign_default, CanAssignError):
+                            self._show_error_if_checking(
+                                node,
+                                "Dataclass default value is incompatible with field type"
+                                f" {expected_factory_type}",
+                                error_code=(
+                                    ErrorCode.incompatible_call
+                                    if dataclass_converter_value is not None
+                                    else ErrorCode.incompatible_assignment
+                                ),
+                                detail=can_assign_default.display(),
+                            )
                     if (
                         is_current_class_dataclass
                         and is_dataclass_field_call
@@ -12454,7 +12513,11 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                                     node,
                                     "Dataclass default_factory return type is incompatible"
                                     f" with field type {expected_factory_type}",
-                                    error_code=ErrorCode.incompatible_assignment,
+                                    error_code=(
+                                        ErrorCode.incompatible_call
+                                        if dataclass_converter_value is not None
+                                        else ErrorCode.incompatible_assignment
+                                    ),
                                     detail=can_assign_return.display(),
                                 )
 
@@ -14647,17 +14710,20 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         else:
             keywords = []
 
+        dataclass_field_options: _DataclassFieldCallOptions | None = None
         if (
             self._is_current_class_dataclass()
             and self.scopes.scope_type() == ScopeType.class_scope
         ):
-            inferred_options = (
+            dataclass_field_options = (
                 self._infer_dataclass_field_call_options_from_resolved_call(
                     callee_wrapped, args, keywords, node
                 )
             )
-            if inferred_options is not None:
-                self._dataclass_field_call_options_by_node[id(node)] = inferred_options
+            if dataclass_field_options is not None:
+                self._dataclass_field_call_options_by_node[id(node)] = (
+                    dataclass_field_options
+                )
             else:
                 self._dataclass_field_call_options_by_node.pop(id(node), None)
 
@@ -14671,9 +14737,18 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
 
         self._check_unsafe_super_protocol_call(node)
 
-        return_value = self.check_call(
-            node, callee_wrapped, args, keywords, allow_call=self.in_annotation
-        )
+        if (
+            dataclass_field_options is not None
+            and dataclass_field_options.bound_args_available
+        ):
+            with self.catch_errors() as call_errors:
+                return_value = self.check_call(
+                    node, callee_wrapped, args, keywords, allow_call=self.in_annotation
+                )
+        else:
+            return_value = self.check_call(
+                node, callee_wrapped, args, keywords, allow_call=self.in_annotation
+            )
 
         if self._is_checking():
             self.yield_checker.record_call(callee_wrapped, node)
@@ -16559,6 +16634,27 @@ def _callable_return_type_from_signature(
     return None
 
 
+def _specialize_first_positional_parameter_type_in_signature(
+    signature: Signature, expected_return: Value, *, checker: "NameCheckVisitor"
+) -> Value | None:
+    parameter_type = _first_positional_parameter_type_in_signature(signature)
+    if parameter_type is None:
+        return None
+    bounds_map = has_relation(
+        expected_return, signature.return_value, Relation.ASSIGNABLE, checker
+    )
+    if isinstance(bounds_map, CanAssignError):
+        return None
+    if not signature.all_typevars:
+        return parameter_type
+    typevar_map, errors = resolve_bounds_map(
+        bounds_map, checker, all_typevars=signature.all_typevars
+    )
+    if errors:
+        return None
+    return parameter_type.substitute_typevars(typevar_map)
+
+
 def _first_positional_parameter_type_in_signature(signature: Signature) -> Value | None:
     for parameter in signature.parameters.values():
         if parameter.kind in (
@@ -16605,12 +16701,34 @@ def _callable_first_positional_parameter_type(
         for overload in signature.signatures:
             parameter_type = _first_positional_parameter_type_in_signature(overload)
             if parameter_type is None:
-                return None
+                continue
             parameter_types.append(parameter_type)
         if not parameter_types:
             return None
         return unite_values(*parameter_types)
     return None
+
+
+def _callable_first_positional_parameter_type_for_return(
+    signature: MaybeSignature, expected_return: Value, *, checker: "NameCheckVisitor"
+) -> Value | None:
+    if isinstance(signature, BoundMethodSignature):
+        signature = signature.get_signature(ctx=checker)
+    if isinstance(signature, Signature):
+        return _specialize_first_positional_parameter_type_in_signature(
+            signature, expected_return, checker=checker
+        )
+    if isinstance(signature, OverloadedSignature):
+        parameter_types: list[Value] = []
+        for overload in signature.signatures:
+            parameter_type = _specialize_first_positional_parameter_type_in_signature(
+                overload, expected_return, checker=checker
+            )
+            if parameter_type is not None:
+                parameter_types.append(parameter_type)
+        if parameter_types:
+            return unite_values(*parameter_types)
+    return _callable_first_positional_parameter_type(signature, checker=checker)
 
 
 def _slot_names_from_runtime_slots(value: object) -> tuple[str, ...] | None:

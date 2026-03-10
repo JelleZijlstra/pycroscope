@@ -185,11 +185,10 @@ def _promote_constructor_type_arg(value: Value) -> Value:
         return unite_values(
             *[_promote_constructor_type_arg(subval) for subval in value.vals]
         )
-    root = replace_fallback(value)
-    if isinstance(root, TypedValue):
-        if root.typ is float:
+    if isinstance(value, TypedValue):
+        if value.typ is float:
             return TypedValue(float) | TypedValue(int)
-        if root.typ is complex:
+        if value.typ is complex:
             return TypedValue(complex) | TypedValue(float) | TypedValue(int)
     return value
 

@@ -1063,25 +1063,29 @@ class TestDataclassTransform(TestNameCheckVisitorBase):
             value: int = model_field(converter=to_int)
             class_value: ConverterClass = model_field(converter=ConverterClass)
             converted_default: int = model_field(converter=to_int, default_factory=str)
+            mapping_value: dict[str, str] = model_field(converter=dict, default=())
 
             # E: incompatible_call
             bad_default: int = model_field(converter=to_int, default_factory=int)
 
         def check_calls() -> None:
-            model = Model("1", b"3", "2")
+            model = Model("1", b"3", "2", (("a", "1"),))
             assert_type(model.value, int)
             assert_type(model.class_value, ConverterClass)
+            assert_type(model.mapping_value, dict[str, str])
 
             model.value = "4"
             model.class_value = "5"
             model.class_value = b"6"
+            model.mapping_value = {"b": "2"}
+            model.mapping_value = (("c", "3"),)
 
             model.value = 4  # E: incompatible_assignment
             model.class_value = 7  # E: incompatible_assignment
 
-            Model(1, b"3", "2")  # E: incompatible_argument
-            Model("1", 2, "3")  # E: incompatible_argument
-            Model("1", b"3", 2)  # E: incompatible_argument
+            Model(1, b"3", "2", ())  # E: incompatible_argument
+            Model("1", 2, "3", ())  # E: incompatible_argument
+            Model("1", b"3", 2, ())  # E: incompatible_argument
 
     @assert_passes(allow_import_failures=True)
     def test_dataclass_transform_descriptor_fields_after_import_failure(self):
