@@ -32,7 +32,7 @@ from collections.abc import Callable, Container, Generator, Iterable, Mapping, S
 from contextlib import AbstractContextManager
 from dataclasses import dataclass, replace
 from dataclasses import field as dataclass_field
-from functools import lru_cache
+from functools import lru_cache, partial
 from itertools import chain
 from pathlib import Path
 from types import GenericAlias
@@ -12381,7 +12381,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 )
             if isinstance(node.target, ast.Name) and alias_type is not None:
                 type_params = self._infer_type_alias_type_params(node.value, alias_type)
-                alias_evaluator = functools.partial(
+                alias_evaluator = partial(
                     self._evaluate_type_alias_node,
                     node.value,
                     suppress_errors=True,
@@ -13056,7 +13056,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         if not type_params:
             return None
         alias = TypeAlias(
-            functools.partial(
+            partial(
                 self._evaluate_type_alias_node,
                 node.value,
                 suppress_errors=True,
