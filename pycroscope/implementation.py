@@ -3,6 +3,7 @@ import collections
 import collections.abc
 import inspect
 import re
+import sys
 import typing
 from collections.abc import Callable, Iterable, Sequence
 from itertools import product
@@ -26,6 +27,8 @@ from .relations import (
     check_hashability,
     has_relation,
     intersect_values,
+    is_assignable,
+    is_equivalent,
     is_equivalent_with_reason,
 )
 from .safe import (
@@ -2688,6 +2691,65 @@ def _dataclass_transform_impl(ctx: CallContext) -> Value:
     return AnnotatedValue(TypedValue(_IdentityCallable), [extension])
 
 
+def _typevar_impl(ctx: CallContext) -> Value:
+    if isinstance(ctx.vars["name"], KnownValue) and isinstance(
+        ctx.vars["name"].val, str
+    ):
+        # We special case TypeVar to avoid having to deal with the fact that it
+        # is a generic function at runtime. This allows us to give better
+        # error messages for unsupported arguments and to support using TypeVar
+        # in annotations without needing to import it from typing_extensions.
+        pass
+    if ctx.vars["bound"] is _NO_ARG_SENTINEL:
+        bound = None
+    else:
+        bound = type_from_value(
+            ctx.vars["bound"], ctx.visitor, ctx.ast_for_arg("bound")
+        )
+    if (
+        isinstance(ctx.vars["constraints"], SequenceValue)
+        and ctx.vars["constraints"].members
+    ):
+        constraints = [
+            type_from_value(constraint, ctx.visitor, ctx.ast_for_arg("constraints"))
+            for constraint in ctx.vars["constraints"].get_member_sequence() or ()
+        ]
+    else:
+        constraints = None
+    if bound is not None and constraints is not None:
+        ctx.show_error(
+            "TypeVar cannot have both bound and constraints",
+            ErrorCode.incompatible_call,
+            node=ctx.node,
+        )
+    if ctx.vars["default"] is _NO_ARG_SENTINEL:
+        default = None
+    else:
+        default = type_from_value(
+            ctx.vars["default"], ctx.visitor, ctx.ast_for_arg("default")
+        )
+
+    if bound is not None and default is not None:
+        if not is_assignable(bound, default, ctx.visitor):
+            ctx.show_error(
+                "TypeVar default must be assignable to its bound",
+                ErrorCode.incompatible_call,
+                arg="default",
+            )
+    if constraints is not None and default is not None:
+        if not any(
+            is_equivalent(constraint, default, ctx.visitor)
+            for constraint in constraints
+        ):
+            ctx.show_error(
+                "TypeVar default must be one of its constraints",
+                ErrorCode.incompatible_call,
+                arg="default",
+            )
+
+    return ctx.inferred_return_value
+
+
 _POS_ONLY = ParameterKind.POSITIONAL_ONLY
 _ENCODING_PARAMETER = SigParameter(
     "encoding", annotation=TypedValue(str), default=KnownValue("")
@@ -3239,6 +3301,64 @@ def get_default_argspecs() -> dict[object, Signature]:
             ),
         ]
     for mod in typing, typing_extensions:
+        try:
+            typevar_class = getattr(mod, "TypeVar")
+        except AttributeError:
+            pass
+        else:
+            typevar_params = [
+                SigParameter("name", _POS_ONLY, annotation=TypedValue(str)),
+                SigParameter(
+                    "constraints",
+                    ParameterKind.VAR_POSITIONAL,
+                    annotation=GenericValue(tuple, [TypeFormValue(TypedValue(object))]),
+                ),
+                SigParameter(
+                    "bound",
+                    ParameterKind.KEYWORD_ONLY,
+                    default=_NO_ARG_SENTINEL,
+                    annotation=TypeFormValue(TypedValue(object)),
+                ),
+                SigParameter(
+                    "covariant",
+                    ParameterKind.KEYWORD_ONLY,
+                    default=KnownValue(False),
+                    annotation=TypedValue(bool),
+                ),
+                SigParameter(
+                    "contravariant",
+                    ParameterKind.KEYWORD_ONLY,
+                    default=KnownValue(False),
+                    annotation=TypedValue(bool),
+                ),
+            ]
+            if sys.version_info >= (3, 11) or mod is typing_extensions:
+                typevar_params.append(
+                    SigParameter(
+                        "infer_variance",
+                        ParameterKind.KEYWORD_ONLY,
+                        default=KnownValue(False),
+                        annotation=TypedValue(bool),
+                    )
+                )
+            if sys.version_info >= (3, 12) or mod is typing_extensions:
+                typevar_params.append(
+                    SigParameter(
+                        "default",
+                        ParameterKind.KEYWORD_ONLY,
+                        default=_NO_ARG_SENTINEL,
+                        annotation=TypeFormValue(TypedValue(object)),
+                    )
+                )
+            sig = Signature.make(
+                typevar_params,
+                return_annotation=TypedValue(typevar_class),
+                callable=typevar_class,
+                impl=_typevar_impl,
+                allow_call=True,
+            )
+            signatures.append(sig)
+
         try:
             typeform_func = getattr(mod, "TypeForm")
         except AttributeError:

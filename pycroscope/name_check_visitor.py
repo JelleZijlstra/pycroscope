@@ -15790,92 +15790,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 error_code=ErrorCode.invalid_annotation,
             )
 
-    def _maybe_build_typevar_call_value(
-        self,
-        callee: Value,
-        args: Iterable[Composite],
-        keywords: Sequence[tuple[str | None, Composite]],
-    ) -> TypeVarValue | None:
-        if not (
-            isinstance(callee, KnownValue) and is_typing_name(callee.val, "TypeVar")
-        ):
-            return None
-
-        args = tuple(args)
-        if not args:
-            return None
-        name_arg = args[0].value
-        if not (isinstance(name_arg, KnownValue) and isinstance(name_arg.val, str)):
-            return None
-
-        def _typevar_arg_to_type(composite: Composite) -> Value:
-            value = composite.value
-            suppress_errors = isinstance(value, KnownValue) and isinstance(
-                value.val, str
-            )
-            return type_from_value(
-                value, self, composite.node, suppress_errors=suppress_errors
-            )
-
-        constraints = [_typevar_arg_to_type(arg) for arg in args[1:]]
-        bound = default = None
-        covariant = False
-        contravariant = False
-        infer_variance = False
-        for keyword, composite in keywords:
-            if keyword is None:
-                return None
-            kwarg_value = composite.value
-            if keyword in ("covariant", "contravariant", "infer_variance"):
-                if not (
-                    isinstance(kwarg_value, KnownValue)
-                    and isinstance(kwarg_value.val, bool)
-                ):
-                    return None
-                if keyword == "covariant":
-                    covariant = kwarg_value.val
-                elif keyword == "contravariant":
-                    contravariant = kwarg_value.val
-                else:
-                    infer_variance = kwarg_value.val
-            elif keyword == "bound":
-                bound = _typevar_arg_to_type(composite)
-            elif keyword == "default":
-                default = _typevar_arg_to_type(composite)
-            else:
-                return None
-
-        try:
-            if infer_variance:
-                kwargs_with_infer = {
-                    "covariant": covariant,
-                    "contravariant": contravariant,
-                    "infer_variance": True,
-                }
-                typevar = typing_extensions.TypeVar(name_arg.val, **kwargs_with_infer)
-            else:
-                typevar = TypeVar(
-                    name_arg.val, covariant=covariant, contravariant=contravariant
-                )
-        except Exception:
-            return None
-
-        if covariant:
-            variance = Variance.COVARIANT
-        elif contravariant:
-            variance = Variance.CONTRAVARIANT
-        else:
-            variance = Variance.INVARIANT
-        return TypeVarValue(
-            TypeVarParam(
-                typevar,
-                bound=bound,
-                constraints=tuple(constraints),
-                default=default,
-                variance=variance,
-            )
-        )
-
     def _call_assignment_target_name(self, node: ast.AST | None) -> str | None:
         if not isinstance(node, ast.Call):
             return None
@@ -16114,24 +16028,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             local = self.get_local_return_value(extended_argspec)
             if local is not None:
                 return_value = local
-
-        synthesized_typevar = self._maybe_build_typevar_call_value(
-            callee_wrapped, args, keywords
-        )
-        if synthesized_typevar is not None:
-            self._check_typevar_default_constraints(synthesized_typevar, node)
-        if synthesized_typevar is not None and (
-            isinstance(return_value, AnyValue)
-            or (
-                isinstance(return_value, KnownValue)
-                and is_typing_name(return_value.val, "TypeVar")
-            )
-            or (
-                isinstance(return_value, TypedValue)
-                and is_typing_name(return_value.typ, "TypeVar")
-            )
-        ):
-            return_value = synthesized_typevar
 
         if (
             allow_call
