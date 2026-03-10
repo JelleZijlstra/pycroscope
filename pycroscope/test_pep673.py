@@ -170,6 +170,67 @@ class TestPEP673(TestNameCheckVisitorBase):
         def capybara():
             assert_type(Registry.children, list[Registry])
 
+    @assert_passes(run_in_both_module_modes=True)
+    def test_invalid_self_contexts(self):
+        from typing import Any, TypeAlias, TypeVar
+        from typing import TypeAlias as TAlias
+
+        from typing_extensions import Self
+
+        def foo(bar: Self) -> Self: ...  # E: invalid_annotation
+
+        _bar: Self  # E: invalid_annotation
+        TupleSelf: TypeAlias = tuple[Self]  # E: invalid_annotation
+        AliasTupleSelf: TAlias = tuple[Self]  # E: invalid_annotation
+
+        TFoo = TypeVar("TFoo", bound="Foo")
+
+        class Foo:
+            # E: invalid_annotation
+            def has_existing_self_annotation(self: TFoo) -> Self:
+                raise NotImplementedError
+
+            @staticmethod
+            def make() -> Self:  # E: invalid_annotation
+                raise NotImplementedError
+
+            @staticmethod
+            def return_parameter(foo: Self) -> Self:  # E: invalid_annotation
+                raise NotImplementedError
+
+        class Meta(type):
+            def __new__(cls, *args: Any) -> Self:  # E: invalid_annotation
+                raise NotImplementedError
+
+    @assert_passes(run_in_both_module_modes=True)
+    def test_invalid_self_in_nested_class_body_method(self):
+        from typing_extensions import Self
+
+        class Foo:
+            try:
+
+                @staticmethod
+                def make() -> Self:  # E: invalid_annotation
+                    raise NotImplementedError
+
+            finally:
+                pass
+
+    @assert_passes(allow_import_failures=True)
+    def test_invalid_self_bases(self):
+        from typing import Generic, TypeVar
+
+        from typing_extensions import Self
+
+        T = TypeVar("T")
+
+        class Box(Generic[T]):
+            pass
+
+        class BadGeneric(Box[Self]): ...  # E: invalid_base
+
+        class BadSelf(Self): ...  # E: invalid_base
+
     @assert_passes()
     def test_stub(self):
         def capybara():
