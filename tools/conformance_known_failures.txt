@@ -6,7 +6,6 @@
 generics_self_usage
 
 # Doesn't detect when you use a TypeVar in the wrong place
-generics_scoping
 generics_syntax_scoping
 
 # Various issues, defaults not correctly implemented

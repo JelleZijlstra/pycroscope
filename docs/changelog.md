@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Fix generic scoping checks so pycroscope now rejects out-of-scope type parameters in local and class-body annotations, nested class definitions, class-body type aliases, and runtime type expressions like `list[T]()` at module scope.
 - Reclassify invalid inheritance diagnostics: pycroscope now reports `invalid_base` instead of `invalid_annotation` for class-base errors such as bad `Generic[...]`/`Protocol[...]` bases, inheriting from `@final` classes, and incompatible multiple `TypedDict` bases.
 - Fix type-alias attribute handling in fallback mode: `Alias: TypeAlias = int` now uses runtime `int` attributes, while `type Alias = int` continues to expose alias-object attributes like `__value__`.
 - Improve `NamedTuple` compatibility for tuple-style indexing, unpacking, and item mutation checks.
