@@ -90,6 +90,7 @@ from .value import (
     TypedDictValue,
     TypedValue,
     TypeFormValue,
+    TypeVarParam,
     TypeVarValue,
     Value,
     assert_is_value,
@@ -2640,8 +2641,12 @@ def get_default_argspecs() -> dict[object, Signature]:
             callable=runtime.is_compatible,  # static analysis: ignore[deprecated]
         ),
         Signature.make(
-            [SigParameter("value", _POS_ONLY, annotation=TypeVarValue(T))],
-            return_annotation=TypeVarValue(T),
+            [
+                SigParameter(
+                    "value", _POS_ONLY, annotation=TypeVarValue(TypeVarParam(T))
+                )
+            ],
+            return_annotation=TypeVarValue(TypeVarParam(T)),
             impl=_reveal_type_impl,
             callable=reveal_type,
         ),
@@ -2652,8 +2657,12 @@ def get_default_argspecs() -> dict[object, Signature]:
             callable=reveal_locals,
         ),
         Signature.make(
-            [SigParameter("value", _POS_ONLY, annotation=TypeVarValue(T))],
-            return_annotation=TypeVarValue(T),
+            [
+                SigParameter(
+                    "value", _POS_ONLY, annotation=TypeVarValue(TypeVarParam(T))
+                )
+            ],
+            return_annotation=TypeVarValue(TypeVarParam(T)),
             impl=_dump_value_impl,
             callable=dump_value,
         ),
@@ -2853,13 +2862,16 @@ def get_default_argspecs() -> dict[object, Signature]:
                 SigParameter(
                     "self",
                     _POS_ONLY,
-                    annotation=GenericValue(dict, [TypeVarValue(K), TypeVarValue(V)]),
+                    annotation=GenericValue(
+                        dict,
+                        [TypeVarValue(TypeVarParam(K)), TypeVarValue(TypeVarParam(V))],
+                    ),
                 ),
                 SigParameter("k", _POS_ONLY),
             ],
             callable=dict.__getitem__,
             impl=_dict_getitem_impl,
-            return_annotation=TypeVarValue(V),
+            return_annotation=TypeVarValue(TypeVarParam(V)),
         ),
         Signature.make(
             [
@@ -2927,11 +2939,21 @@ def get_default_argspecs() -> dict[object, Signature]:
                 SigParameter(
                     "self",
                     _POS_ONLY,
-                    annotation=GenericValue(dict, [TypeVarValue(K), TypeVarValue(V)]),
+                    annotation=GenericValue(
+                        dict,
+                        [TypeVarValue(TypeVarParam(K)), TypeVarValue(TypeVarParam(V))],
+                    ),
                 )
             ],
             return_annotation=DictIncompleteValue(
-                dict, [KVPair(TypeVarValue(K), TypeVarValue(V), is_many=True)]
+                dict,
+                [
+                    KVPair(
+                        TypeVarValue(TypeVarParam(K)),
+                        TypeVarValue(TypeVarParam(V)),
+                        is_many=True,
+                    )
+                ],
             ),
             callable=dict.copy,
         ),
@@ -3009,10 +3031,12 @@ def get_default_argspecs() -> dict[object, Signature]:
         ),
         Signature.make(
             [
-                SigParameter("val", _POS_ONLY, annotation=TypeVarValue(T)),
+                SigParameter(
+                    "val", _POS_ONLY, annotation=TypeVarValue(TypeVarParam(T))
+                ),
                 SigParameter("typ", _POS_ONLY),
             ],
-            return_annotation=TypeVarValue(T),
+            return_annotation=TypeVarValue(TypeVarParam(T)),
             callable=assert_type,
             impl=_assert_type_impl,
         ),
@@ -3123,8 +3147,12 @@ def get_default_argspecs() -> dict[object, Signature]:
             pass
         else:
             sig = Signature.make(
-                [SigParameter("value", _POS_ONLY, annotation=TypeVarValue(T))],
-                return_annotation=TypeVarValue(T),
+                [
+                    SigParameter(
+                        "value", _POS_ONLY, annotation=TypeVarValue(TypeVarParam(T))
+                    )
+                ],
+                return_annotation=TypeVarValue(TypeVarParam(T)),
                 impl=_reveal_type_impl,
                 callable=reveal_type_func,
             )
@@ -3136,10 +3164,12 @@ def get_default_argspecs() -> dict[object, Signature]:
         else:
             sig = Signature.make(
                 [
-                    SigParameter("val", _POS_ONLY, annotation=TypeVarValue(T)),
+                    SigParameter(
+                        "val", _POS_ONLY, annotation=TypeVarValue(TypeVarParam(T))
+                    ),
                     SigParameter("typ", _POS_ONLY),
                 ],
-                return_annotation=TypeVarValue(T),
+                return_annotation=TypeVarValue(TypeVarParam(T)),
                 callable=assert_type_func,
                 impl=_assert_type_impl,
             )

@@ -1155,7 +1155,7 @@ class ArgSpecCache:
         field_by_typevar: dict[object, str] = {}
         for field, annotation in field_annotations.items():
             if isinstance(annotation, TypeVarValue):
-                field_by_typevar[annotation.typevar] = field
+                field_by_typevar[annotation.typevar_param.typevar] = field
 
         impl: Impl | None = None
         if class_type_params and field_by_typevar:

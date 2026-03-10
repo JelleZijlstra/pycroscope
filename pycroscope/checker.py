@@ -93,6 +93,7 @@ from .value import (
     TypeFormValue,
     TypeParam,
     TypeVarLike,
+    TypeVarParam,
     TypeVarTupleValue,
     TypeVarValue,
     UnboundMethodValue,
@@ -1047,7 +1048,7 @@ class Checker:
             else class_type.rsplit(".", maxsplit=1)[-1]
         )
         typevar = TypeVar(f"_Ctor_{class_name}_T", *constraints)
-        tv_value = TypeVarValue(typevar)
+        tv_value = TypeVarValue(TypeVarParam(typevar))
         generic_param = SigParameter(
             first_param.name,
             kind=first_param.kind,
@@ -1643,7 +1644,8 @@ class Checker:
                         isinstance(subval, TypeVarValue)
                         and any(
                             isinstance(arg, TypeVarValue)
-                            and arg.typevar is subval.typevar
+                            and arg.typevar_param.typevar
+                            is subval.typevar_param.typevar
                             for arg in bound_self_value.args
                         )
                         for param in params
@@ -2138,7 +2140,7 @@ class Checker:
             if isinstance(annotation, AnnotatedValue):
                 annotation = annotation.value
             if isinstance(annotation, TypeVarValue):
-                field_by_typevar[annotation.typevar] = name
+                field_by_typevar[annotation.typevar_param.typevar] = name
 
         impl = None
         type_params = self.get_type_parameters(value.class_type.typ)
@@ -2580,7 +2582,7 @@ class Checker:
                     return ANY_SIGNATURE
                 return argspec
             else:
-                typevar_bound = value.typ.bound
+                typevar_bound = value.typ.typevar_param.bound
                 if isinstance(typevar_bound, TypeVarValue):
                     typevar_bound = typevar_bound.get_fallback_value()
                 if typevar_bound is None:

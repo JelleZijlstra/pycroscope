@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from typing import List, NewType, TypeVar
 
 import pytest
-from typing_extensions import TypeVarTuple
+from typing_extensions import ParamSpec, TypeVarTuple
 
 from .checker import Checker
 from .maybe_asynq import asynq
@@ -21,6 +21,7 @@ from .value import (
     GenericValue,
     KnownValue,
     NewTypeValue,
+    ParamSpecParam,
     SequenceValue,
     TypedValue,
     TypeVarParam,
@@ -38,6 +39,18 @@ NT = NewType("NT", int)
 def test_typevartuple_value_accepts_runtime_param() -> None:
     ts = TypeVarTuple("Ts")
     assert TypeVarTupleValue(TypeVarTupleParam(ts)) == TypeVarTupleValue(ts)
+
+
+def test_type_param_str_is_concise() -> None:
+    bounded = TypeVar("S", bound=int)
+    constrained = TypeVar("T", str, bytes)
+    p = ParamSpec("P")
+    ts = TypeVarTuple("Ts")
+
+    assert str(TypeVarParam(bounded)) == "~S: int"
+    assert str(TypeVarParam(constrained)) == "~T: (str, bytes)"
+    assert str(ParamSpecParam(p)) == "~P"
+    assert str(TypeVarTupleParam(ts)) == "Ts"
 
 
 def test_get_type_parameters_ignores_non_iterable_runtime_type_params() -> None:
@@ -113,7 +126,7 @@ def test_collapse_constructor_overloads_to_single_generic() -> None:
     [param] = collapsed.parameters.values()
     assert param.name == "value"
     assert isinstance(param.annotation, TypeVarValue)
-    assert param.annotation.typevar.__constraints__ == (int, str)
+    assert param.annotation.typevar_param.typevar.__constraints__ == (int, str)
     assert collapsed.return_value == GenericValue("test.Box", [param.annotation])
 
 

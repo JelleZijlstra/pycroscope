@@ -1286,6 +1286,8 @@ def _validate_type_alias_arg_values(
             if len(type_params) == len(args_vals):
                 normalized_args[i] = normalized
             continue
+        if not isinstance(type_param, TypeVarParam):
+            continue
         if type_param.bound is not None and not _is_assignable_for_alias_arg(
             type_param.bound, arg, ctx
         ):

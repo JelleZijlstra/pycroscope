@@ -439,7 +439,9 @@ class TypeshedFinder:
                 # The way AbstractSet/Set is handled between collections and typing is
                 # too confusing, just hardcode it.
                 if typ is AbstractSet:
-                    return [GenericValue(Collection, (TypeVarValue(T_co),))]
+                    return [
+                        GenericValue(Collection, (TypeVarValue(TypeVarParam(T_co)),))
+                    ]
                 if typ is collections.abc.Callable:
                     return None
                 if sys.version_info >= (3, 10) and typ is types.UnionType:
@@ -454,9 +456,11 @@ class TypeshedFinder:
             else:
                 fq_name = val.typ
                 if fq_name == "collections.abc.Set":
-                    return [GenericValue(Collection, (TypeVarValue(T_co),))]
+                    return [
+                        GenericValue(Collection, (TypeVarValue(TypeVarParam(T_co)),))
+                    ]
                 elif fq_name == "contextlib.AbstractContextManager":
-                    return [GenericValue(Protocol, (TypeVarValue(T_co),))]
+                    return [GenericValue(Protocol, (TypeVarValue(TypeVarParam(T_co)),))]
                 elif fq_name in (
                     "typing.Callable",
                     "collections.abc.Callable",

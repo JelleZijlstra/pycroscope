@@ -18,6 +18,7 @@ from .value import (
     TypedDictEntry,
     TypedDictValue,
     TypedValue,
+    TypeVarParam,
     TypeVarValue,
     assert_is_value,
 )
@@ -1152,9 +1153,10 @@ class TestTypeVar(TestNameCheckVisitorBase):
         from typing_extensions import Literal
 
         IntT = TypeVar("IntT", bound=int)
+        expected = TypeVarValue(TypeVarParam(IntT, bound=TypedValue(int)))
 
         def f(x: IntT) -> IntT:
-            assert_is_value(x, TypeVarValue(IntT, bound=TypedValue(int)))
+            assert_is_value(x, expected)
             print(x + 1)
             return x
 
@@ -1653,7 +1655,7 @@ class TestCustomCheck(TestNameCheckVisitorBase):
 
             def walk_values(self) -> Iterable[Value]:
                 if isinstance(self.value, TypeVar):
-                    yield TypeVarValue(self.value)
+                    yield TypeVarValue(TypeVarParam(self.value))
 
             def substitute_typevars(self, typevars: TypeVarMap) -> "GreaterThan":
                 if isinstance(self.value, TypeVar) and self.value in typevars:

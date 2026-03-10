@@ -1,11 +1,18 @@
 from typing import TypeVar
 
 from .predicates import is_universally_assignable
-from .value import AnySource, AnyValue, IntersectionValue, TypedValue, TypeVarValue
+from .value import (
+    AnySource,
+    AnyValue,
+    IntersectionValue,
+    TypedValue,
+    TypeVarParam,
+    TypeVarValue,
+)
 
 
 def test_is_universally_assignable_intersection() -> None:
-    typevar = TypeVarValue(TypeVar("T_pred"))
+    typevar = TypeVarValue(TypeVarParam(TypeVar("T_pred")))
     value = IntersectionValue((typevar, AnyValue(AnySource.unannotated)))
     assert is_universally_assignable(value, TypedValue(int))
 

@@ -269,6 +269,25 @@ class TestTypeAliasType(TestNameCheckVisitorBase):
         def f(x: Alias[[int, str]]) -> None:
             pass
 
+    def test_typealiastype_bound_error_message_uses_concise_type_param_str(self):
+        errors = self._run_str(
+            """
+            from typing import TypeVar
+
+            from typing_extensions import TypeAliasType
+
+            S = TypeVar("S", bound=str)
+            Alias = TypeAliasType("Alias", list[S], type_params=(S,))
+
+            bad: Alias[int]
+            """,
+            fail_after_first=False,
+        )
+        assert len(errors) == 1
+        assert (
+            "Type argument int is not compatible with ~S: str" in errors[0]["message"]
+        )
+
     @skip_before((3, 12))
     def test_312_runtime_typealiastype_variadic_specialization(self):
         self.assert_passes("""

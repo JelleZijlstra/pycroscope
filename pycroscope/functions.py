@@ -102,7 +102,7 @@ def _type_param_identities_for_class(enclosing_class: TypedValue | None) -> set[
     identities: set[object] = set()
     for arg in enclosing_class.args:
         if isinstance(arg, TypeVarValue):
-            identities.add(arg.typevar)
+            identities.add(arg.typevar_param.typevar)
     return identities
 
 
@@ -287,9 +287,9 @@ def _paramspec_identities_from_value(value: Value) -> set[object]:
         elif isinstance(subval, (ParamSpecArgsValue, ParamSpecKwargsValue)):
             identities.add(subval.param_spec)
         elif isinstance(subval, TypeVarValue) and is_instance_of_typing_name(
-            subval.typevar, "ParamSpec"
+            subval.typevar_param.typevar, "ParamSpec"
         ):
-            identities.add(subval.typevar)
+            identities.add(subval.typevar_param.typevar)
     return identities
 
 
@@ -510,7 +510,7 @@ def compute_parameters(
                     )
                     if class_type_param_ids and any(
                         isinstance(subval, TypeVarValue)
-                        and subval.typevar in class_type_param_ids
+                        and subval.typevar_param.typevar in class_type_param_ids
                         for subval in inner_value.walk_values()
                     ):
                         ctx.show_error(

@@ -265,7 +265,7 @@ def get_attribute(ctx: AttrContext) -> Value:
 
 def _get_attribute_from_type_alias(value: TypeAliasValue, ctx: AttrContext) -> Value:
     type_params = tuple(
-        param.typevar if isinstance(param, TypeVarValue) else param
+        param.typevar_param.typevar if isinstance(param, TypeVarValue) else param
         for param in value.alias.get_type_params()
     )
     if ctx.attr == "__value__":
@@ -1436,7 +1436,7 @@ def _substitute_typevars(
         result = result.substitute_typevars(substituted_typevars)
     if generic_args and typ in generic_bases:
         ordered_typevars = [
-            val.typevar if isinstance(val, TypeVarValue) else None
+            val.typevar_param.typevar if isinstance(val, TypeVarValue) else None
             for val in generic_bases[typ].values()
         ]
         tv_map = {
