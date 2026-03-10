@@ -6933,8 +6933,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     def _base_values_for_generic_analysis(
         self, node: ast.ClassDef, base_values: Sequence[Value]
     ) -> Sequence[Value]:
-        if self.module is not None:
-            return base_values
         if not any(isinstance(base_node, ast.Subscript) for base_node in node.bases):
             return base_values
         if (
@@ -6950,7 +6948,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             )
         ):
             # Generic[T] / Protocol[T] bases usually preserve enough runtime
-            # information even in static fallback mode.
+            # information in either module mode.
             return base_values
         analyzed_bases = [
             self._value_for_variance_annotation(base_node) for base_node in node.bases

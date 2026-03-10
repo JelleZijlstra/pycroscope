@@ -361,14 +361,12 @@ class TestSyntheticType(TestNameCheckVisitorBase):
 
         cached_func((1, 2, 3))
 
-    @assert_passes(allow_import_failures=True)
+    @assert_passes(run_in_both_module_modes=True)
     def test_protocol_subtyping_after_import_failure(self):
         from typing import Protocol, Sequence, TypeVar
 
         class Proto1(Protocol):
             pass
-
-        Proto1()  # E: incompatible_call
 
         class Proto2(Protocol):
             def method1(self) -> None: ...
@@ -423,6 +421,9 @@ class TestSyntheticType(TestNameCheckVisitorBase):
             v3: Proto7[int, float] = p6  # E: incompatible_assignment
             v4: Proto7[float, object] = p6  # E: incompatible_assignment
             print(v1, v2, v3, v4)
+
+        def capybara() -> None:
+            Proto1()  # E: incompatible_call
 
     @assert_passes()
     def test_protocol_shorthand_type_parameter_order(self):

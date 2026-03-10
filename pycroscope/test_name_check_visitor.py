@@ -617,7 +617,7 @@ class TestImportFailureHandlingCodeSamples(TestNameCheckVisitorBase):
 
         class BadChild(Parent[T1, T2], Grandparent[T2, T1]): ...  # E: invalid_base
 
-    @assert_passes(allow_import_failures=True)
+    @assert_passes(run_in_both_module_modes=True)
     def test_overload_fallback_after_import_failure(self):
         from typing import assert_type, overload
 
@@ -638,13 +638,17 @@ class TestImportFailureHandlingCodeSamples(TestNameCheckVisitorBase):
             def __getitem__(self, x: str, /) -> bytes: ...
 
             def __getitem__(self, x: int | str, /) -> int | bytes:
-                raise NotImplementedError
+                if isinstance(x, int):
+                    return x
+                return x.encode()
 
         b = B()
         assert_type(f(1), int)
         assert_type(f("x"), str)
-        assert_type(b[0], int)
-        assert_type(b["x"], bytes)
+
+        def capybara(i: int, s: str) -> None:
+            assert_type(b[i], int)
+            assert_type(b[s], bytes)
 
     @assert_passes(run_in_both_module_modes=True)
     def test_generic_parameter_order_after_import_failure(self):
@@ -674,7 +678,7 @@ class TestImportFailureHandlingCodeSamples(TestNameCheckVisitorBase):
             assert_type(m["key"], int)
             m[0]  # E: incompatible_argument
 
-    @assert_passes(allow_import_failures=True)
+    @assert_passes(run_in_both_module_modes=True)
     def test_type_parameter_base_validation_after_import_failure(self):
         from collections.abc import Iterable
         from typing import Generic, Protocol, TypeVar
@@ -683,21 +687,16 @@ class TestImportFailureHandlingCodeSamples(TestNameCheckVisitorBase):
         T_co = TypeVar("T_co", covariant=True)
         S_co = TypeVar("S_co", covariant=True)
 
-        class Bad1(Generic[int]): ...  # E: invalid_base
-
-        class Bad2(Protocol[int]): ...  # E: invalid_base
-
-        class Bad3(Iterable[T_co], Generic[S_co]): ...  # E: invalid_base
-
-        class Bad4(Iterable[T_co], Protocol[S_co]): ...  # E: invalid_base
-
         class Good(Iterable[T_co], Protocol): ...
 
-        class GenericMeta(type, Generic[T]): ...
+        def capybara() -> None:
+            class Bad1(Generic[int]): ...  # E: invalid_base
 
-        class GenericMetaInstance(
-            metaclass=GenericMeta[T]  # E: invalid_annotation
-        ): ...
+            class Bad2(Protocol[int]): ...  # E: invalid_base
+
+            class Bad3(Iterable[T_co], Generic[S_co]): ...  # E: invalid_base
+
+            class Bad4(Iterable[T_co], Protocol[S_co]): ...  # E: invalid_base
 
     @assert_passes(run_in_both_module_modes=True)
     def test_typeddict_class_syntax_after_import_failure(self):

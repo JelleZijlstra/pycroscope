@@ -314,6 +314,11 @@ def _get_attribute_from_subclass(
         # type[T] represents an arbitrary subclass of T, so class identity
         # attributes should be widened from base-class literals.
         return TypedValue(str)
+    synthetic_attr = _get_runtime_attribute_from_synthetic_dataclass(
+        typ, (), ctx, on_class=True
+    )
+    if synthetic_attr is not UNINITIALIZED_VALUE:
+        return synthetic_attr
     result, provider, should_unwrap = _get_attribute_from_mro(typ, ctx, on_class=True)
     if should_unwrap:
         result = _unwrap_value_from_subclass(result, ctx)
@@ -1325,7 +1330,12 @@ def _get_attribute_from_typed(
         types.BuiltinFunctionType,
     }:
         return GenericValue(dict, [TypedValue(str), AnyValue(AnySource.explicit)])
-    elif ctx.attr == "__hash__":
+    synthetic_attr = _get_runtime_attribute_from_synthetic_dataclass(
+        typ, generic_args, ctx, on_class=False
+    )
+    if synthetic_attr is not UNINITIALIZED_VALUE:
+        return synthetic_attr
+    if ctx.attr == "__hash__":
         synthetic_class = ctx.get_synthetic_class(typ)
         if synthetic_class is not None:
             synthetic_hash = _get_direct_attribute_from_synthetic_class(
@@ -1364,6 +1374,30 @@ def _get_attribute_from_typed(
     if ctx.attr == "name" and safe_issubclass(typ, Enum) and result == TypedValue(str):
         return annotate_value(result, [CustomCheckExtension(EnumName(typ))])
     return result
+
+
+def _get_runtime_attribute_from_synthetic_dataclass(
+    typ: type, generic_args: Sequence[Value], ctx: AttrContext, *, on_class: bool
+) -> Value:
+    synthetic_class = ctx.get_synthetic_class(typ)
+    if synthetic_class is None or not synthetic_class.is_dataclass:
+        return UNINITIALIZED_VALUE
+
+    direct = _get_direct_attribute_from_synthetic_class(synthetic_class, ctx.attr)
+    if direct is not UNINITIALIZED_VALUE:
+        direct = _substitute_typevars(typ, generic_args, direct, typ, ctx)
+        if on_class:
+            direct = _unwrap_value_from_subclass(direct, ctx)
+        else:
+            direct = _unwrap_value_from_typed(direct, typ, ctx)
+        return set_self(direct, ctx.get_self_value())
+
+    dataclass_attr = _get_synthetic_dataclass_attribute(
+        synthetic_class, ctx, on_class=on_class
+    )
+    if dataclass_attr is UNINITIALIZED_VALUE:
+        return UNINITIALIZED_VALUE
+    return set_self(dataclass_attr, ctx.get_self_value())
 
 
 def _enum_member_value_type(typ: type[Enum]) -> Value | None:
@@ -1556,6 +1590,13 @@ def _get_attribute_from_known(obj: object, ctx: AttrContext) -> Value:
     hooked_value = KnownAttributeHook.get_attribute(obj, ctx.attr, ctx.options)
     if hooked_value is not None:
         return hooked_value
+
+    if safe_isinstance(obj, type):
+        synthetic_attr = _get_runtime_attribute_from_synthetic_dataclass(
+            obj, (), ctx, on_class=True
+        )
+        if synthetic_attr is not UNINITIALIZED_VALUE:
+            return synthetic_attr
 
     result, _, _ = _get_attribute_from_mro(obj, ctx, on_class=True)
     if (
