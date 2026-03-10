@@ -43,10 +43,6 @@ typeddicts_type_consistency
 # pycroscope uses Literal[] over float
 namedtuples_define_class
 
-# float special-case promotions still leak into constructor assert_type() checks
-constructors_call_init
-constructors_call_new
-
 # Precise Literal inference with TypeVarTuple
 generics_typevartuple_basic
 generics_typevartuple_concat
