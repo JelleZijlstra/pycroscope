@@ -298,6 +298,8 @@ from .value import (
 )
 from .yield_checker import YieldChecker
 
+_AST_TYPE_ALIAS = getattr(ast, "TypeAlias", None)
+
 if sys.version_info >= (3, 11):
     TryNode = ast.Try | ast.TryStar
 else:
@@ -7244,7 +7246,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         ):
             return None
         statement = self.node_context.nearest_enclosing(ast.stmt)
-        if isinstance(statement, ast.TypeAlias):
+        if _AST_TYPE_ALIAS is not None and isinstance(statement, _AST_TYPE_ALIAS):
             return self._self_error_message("cannot be used in type aliases")
         if isinstance(statement, ast.AnnAssign) and statement.value is annotation:
             expr = annotation_expr_from_ast(
