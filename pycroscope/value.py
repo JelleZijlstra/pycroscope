@@ -72,12 +72,9 @@ ParamSpecLike = (
     ExternalType["typing.ParamSpec"] | ExternalType["typing_extensions.ParamSpec"]
 )
 if sys.version_info >= (3, 11):
-    TypeVarTupleLike = (
-        ExternalType["typing.TypeVarTuple"]
-        | ExternalType["typing_extensions.TypeVarTuple"]
-    )
+    TypeVarTupleLike = typing.TypeVarTuple | typing_extensions.TypeVarTuple
 else:
-    TypeVarTupleLike = ExternalType["typing_extensions.TypeVarTuple"]
+    TypeVarTupleLike = typing_extensions.TypeVarTuple
 TypeVarLike = TypeVarType | ParamSpecLike | TypeVarTupleLike
 
 TypeVarMap = Mapping[TypeVarLike, ExternalType["pycroscope.value.Value"]]

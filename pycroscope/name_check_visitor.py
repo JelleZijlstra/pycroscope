@@ -13619,12 +13619,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         if has_circular_definition:
             evaluator = lambda: AnyValue(AnySource.error)
         else:
-            ast_value_node = cast(ast.AST, value_node)
-
-            def evaluator() -> Value:
-                return self._evaluate_type_alias_node(
-                    ast_value_node, suppress_errors=True
-                )
+            evaluator = lambda value_node=value_node: self._evaluate_type_alias_node(
+                value_node, suppress_errors=True
+            )
 
         return TypeAliasValue(
             name,

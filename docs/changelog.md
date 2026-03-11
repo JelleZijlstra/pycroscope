@@ -3,6 +3,8 @@
 ## Unreleased
 
 - Improve `TypeVar` handling by distinguishing declared type parameters from call-site inference variables, so pycroscope no longer solves rigid `TypeVar`s during ordinary assignability checks and now preserves more accurate generic-call and recursive type-alias behavior.
+- Fix context-manager inference for cases like `contextlib.nullcontext()` and unions of different context manager implementations, so `with` bindings and exit-type checks now keep the right types instead of falling back to imprecise results or spurious errors.
+- Improve several inference edge cases: `iter(d.values())` now produces an `Iterator` with the right value type, tuple-valued attributes stay narrowed after truthiness and `len()` checks, and bitwise operations on `enum.Flag`/`re.RegexFlag` preserve the enum type.
 
 - Restore concise generic-parameter names in invalid type-alias diagnostics, so errors mention forms like `~T: str`, `~P`, and `Ts` instead of full internal parameter object reprs.
 - Fix `Generic[...]` and `Protocol[...]` base validation parity between importable and import-failure analysis, including PEP 695 class declarations like `class C[T](Generic[T])` that should be rejected consistently.

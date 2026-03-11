@@ -207,6 +207,23 @@ class TestFunctionDefinitions(TestNameCheckVisitorBase):
             fun4 = lambda a, b, c: a if c else b
             assert_type(fun4(1, 2, 3), Literal[1, 2])
 
+    @assert_passes()
+    def test_lambda_default_uses_narrowed_value(self):
+        import ast
+
+        from typing_extensions import assert_type
+
+        def accept(node: ast.AST) -> str:
+            return ast.dump(node)
+
+        def capybara(value_node: ast.AST | None) -> None:
+            if value_node is None:
+                return
+            evaluator = lambda value_node=value_node: accept(value_node)
+            assert_type(evaluator(), str)
+            evaluator2 = lambda: accept(value_node)
+            assert_type(evaluator2(), str)
+
 
 class TestDecorators(TestNameCheckVisitorBase):
     @assert_passes()

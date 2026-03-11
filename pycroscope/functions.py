@@ -45,6 +45,7 @@ from .value import (
     CanAssignError,
     DeprecatedExtension,
     GenericValue,
+    InferenceVarValue,
     KnownValue,
     ParamSpecArgsValue,
     ParamSpecKwargsValue,
@@ -544,7 +545,7 @@ def compute_parameters(
                     error_code=ErrorCode.missing_parameter_annotation,
                 )
             if isinstance(node, ast.Lambda):
-                value = TypeVarValue(TypeVarParam(TypeVar(f"T{tv_index}")))
+                value = InferenceVarValue(TypeVarParam(TypeVar(f"T{tv_index}")))
                 tv_index += 1
             else:
                 value = AnyValue(AnySource.unannotated)

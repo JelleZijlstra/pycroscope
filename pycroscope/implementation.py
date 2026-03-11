@@ -3031,7 +3031,13 @@ def get_default_argspecs() -> dict[object, Signature]:
             impl=_cast_impl,
         ),
         Signature.make(
-            [SigParameter("val", _POS_ONLY), SigParameter("typ", _POS_ONLY)],
+            [
+                SigParameter(
+                    "val", _POS_ONLY, annotation=TypeVarValue(TypeVarParam(T))
+                ),
+                SigParameter("typ", _POS_ONLY),
+            ],
+            return_annotation=TypeVarValue(TypeVarParam(T)),
             callable=assert_type,
             impl=_assert_type_impl,
         ),
