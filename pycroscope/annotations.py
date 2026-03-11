@@ -170,7 +170,7 @@ def _is_valid_pep586_literal_value(value: object) -> bool:
 
 
 @runtime_checkable
-class _AnnotationVisitor(ErrorContext, CanAssignContext, Protocol):
+class AnnotationVisitor(ErrorContext, CanAssignContext, Protocol):
     def resolve_name(
         self,
         node: ast.Name,
@@ -198,7 +198,7 @@ class Context:
     """While this is True, no annotation errors are emitted."""
     _being_evaluated: dict[int, Value] = field(default_factory=dict, init=False)
     _invalid_self_nodes: set[int] = field(default_factory=set, init=False)
-    visitor: _AnnotationVisitor | None = field(default=None, kw_only=True)
+    visitor: AnnotationVisitor | None = field(default=None, kw_only=True)
     can_assign_ctx: CanAssignContext | None = field(default=None, kw_only=True)
 
     def suppress_errors(self) -> AbstractContextManager[None]:
@@ -2170,7 +2170,7 @@ class _DefaultContext(Context):
         use_name_node_for_error: bool = False,
     ) -> None:
         super().__init__(can_assign_ctx=visitor)
-        if isinstance(visitor, _AnnotationVisitor):
+        if isinstance(visitor, AnnotationVisitor):
             self.visitor = visitor
         self.node = node
         self.globals = globals

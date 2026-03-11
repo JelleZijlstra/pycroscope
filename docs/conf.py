@@ -54,6 +54,7 @@ intersphinx_mapping = {"python": ("https://docs.python.org/3", None)}
 
 nitpick_ignore = [
     ("py:class", "inspect._empty"),
+    ("py:class", "pycroscope.annotations.AnnotationVisitor"),
     ("py:class", "pycroscope.checker.Checker"),
     ("py:class", "pycroscope.error_code.Error"),
     ("py:class", "pycroscope.extensions._T"),
