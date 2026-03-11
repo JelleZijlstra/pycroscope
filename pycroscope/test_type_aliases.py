@@ -44,8 +44,10 @@ class TestRecursion(TestNameCheckVisitorBase):
 
         GenericTypeAlias1 = list["GenericTypeAlias1[T1]" | T1]
         GenericTypeAlias2 = list["GenericTypeAlias2[T1, T2]" | T1 | T2]
+        SpecializedTypeAlias1 = GenericTypeAlias1[str]
 
         g2: GenericTypeAlias1[str] = ["hi", "bye", [""], [["hi"]]]
+        g1: SpecializedTypeAlias1 = ["hi", ["hi", "hi"]]
         g3: GenericTypeAlias1[str] = ["hi", [2.4]]  # E: incompatible_assignment
         g6: GenericTypeAlias2[str, int] = [  # E: incompatible_assignment
             [3, ["hi", 3, [3.4]]],

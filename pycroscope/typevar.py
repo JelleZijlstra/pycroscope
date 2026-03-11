@@ -23,8 +23,10 @@ from .value import (
     OrBound,
     SequenceValue,
     TypedValue,
+    TypeParam,
     TypeVarLike,
     TypeVarMap,
+    TypeVarTupleParam,
     UpperBound,
     Value,
     replace_known_sequence_value,
@@ -95,10 +97,13 @@ def solve(bounds: Iterable[Bound], ctx: CanAssignContext) -> Value | CanAssignEr
     top = TOP
     options = None
     is_typevartuple = False
+    type_param: TypeParam | None = None
 
     for bound in bounds:
+        if type_param is None and isinstance(bound, (LowerBound, UpperBound, IsOneOf)):
+            type_param = bound.type_param
         if isinstance(bound, LowerBound):
-            if is_instance_of_typing_name(bound.typevar, "TypeVarTuple"):
+            if isinstance(bound.type_param, TypeVarTupleParam):
                 is_typevartuple = True
                 if bottom is not BOTTOM:
                     merged = _merge_typevartuple_lower_bounds(bottom, bound.value, ctx)
@@ -132,7 +137,7 @@ def solve(bounds: Iterable[Bound], ctx: CanAssignContext) -> Value | CanAssignEr
                 # TODO shouldn't this use intersection?
                 bottom = unite_values(bottom, bound.value)
         elif isinstance(bound, UpperBound):
-            if is_instance_of_typing_name(bound.typevar, "TypeVarTuple"):
+            if isinstance(bound.type_param, TypeVarTupleParam):
                 is_typevartuple = True
             if top is TOP or top.is_assignable(bound.value, ctx):
                 top = bound.value
@@ -167,7 +172,7 @@ def solve(bounds: Iterable[Bound], ctx: CanAssignContext) -> Value | CanAssignEr
             # TODO figure out how to handle this
             continue
         elif isinstance(bound, IsOneOf):
-            if is_instance_of_typing_name(bound.typevar, "TypeVarTuple"):
+            if isinstance(bound.type_param, TypeVarTupleParam):
                 is_typevartuple = True
             options = bound.constraints
         else:
@@ -200,6 +205,9 @@ def solve(bounds: Iterable[Bound], ctx: CanAssignContext) -> Value | CanAssignEr
                     ),
                 ],
             )
+        # Bounds maps in pycroscope are used for inference. When both lower and
+        # upper bounds are present, the lower bound is the more precise compatible
+        # solution; callers that need widened results already do that explicitly.
         solution = bottom
 
     if options is not None:

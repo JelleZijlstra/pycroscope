@@ -178,7 +178,8 @@ def with_implementation(fn: object, implementation_fn: Impl) -> Generator[None]:
                 callable=fn,
                 impl=implementation_fn,
             )
-        known_argspecs = dict(ArgSpecCache.DEFAULT_ARGSPECS)
+        known_argspecs: dict[object, MaybeSignature] = {}
+        known_argspecs.update(ArgSpecCache.DEFAULT_ARGSPECS)
         known_argspecs[fn] = argspec
         with override(ArgSpecCache, "DEFAULT_ARGSPECS", known_argspecs):
             yield
@@ -409,7 +410,7 @@ class ArgSpecCache:
         self.options = options
         self.ts_finder = ts_finder
         self.ctx = ctx
-        self.known_argspecs = {}
+        self.known_argspecs: dict[object, MaybeSignature] = {}
         self.generic_bases_cache = {}
         self.type_params_cache = {}
         self.default_context = AnnotationsContext(self)
@@ -417,7 +418,8 @@ class ArgSpecCache:
         self._did_load_default_argspecs_with_cache = False
         self._loading_default_argspecs_with_cache = False
 
-        default_argspecs = dict(self.DEFAULT_ARGSPECS)
+        default_argspecs: dict[object, MaybeSignature] = {}
+        default_argspecs.update(self.DEFAULT_ARGSPECS)
         for provider in _BUILTIN_KNOWN_SIGNATURES:
             default_argspecs.update(provider(self))
         for provider in options.get_value_for(KnownSignatures):

@@ -13,7 +13,7 @@ from collections import defaultdict
 from collections.abc import Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, ClassVar, Generic, TypeVar
+from typing import Any, ClassVar, Generic, TypeVar, cast
 
 if sys.version_info >= (3, 11):
     import tomllib
@@ -172,7 +172,7 @@ class ConfigOption(Generic[T]):
 
 
 class BooleanOption(ConfigOption[bool]):
-    default_value = False
+    default_value: ClassVar[Any] = False
 
     @classmethod
     def parse(cls: "type[BooleanOption]", data: object, source_path: Path) -> bool:
@@ -225,7 +225,7 @@ class ConcatenatedOption(ConfigOption[Sequence[T]]):
 
 
 class StringSequenceOption(ConcatenatedOption[str]):
-    default_value: ClassVar[Sequence[str]] = []
+    default_value: ClassVar[Any] = ()
 
     @classmethod
     def parse(
@@ -248,7 +248,7 @@ class StringSequenceOption(ConcatenatedOption[str]):
 
 
 class PathSequenceOption(ConfigOption[Sequence[Path]]):
-    default_value: ClassVar[Sequence[Path]] = ()
+    default_value: ClassVar[Any] = ()
 
     @classmethod
     def parse(
@@ -272,7 +272,7 @@ class PathSequenceOption(ConfigOption[Sequence[Path]]):
 
 
 class OptionalPathOption(ConfigOption[Path | None]):
-    default_value = None
+    default_value: ClassVar[Any] = None
 
     @classmethod
     def parse(cls: "type[OptionalPathOption]", data: object, source_path: Path) -> Path:
@@ -293,7 +293,7 @@ class OptionalPathOption(ConfigOption[Path | None]):
 class PyObjectSequenceOption(ConcatenatedOption[T]):
     """Represents a sequence of objects parsed as Python objects."""
 
-    default_value: ClassVar[Sequence[T]] = ()
+    default_value: ClassVar[Any] = cast(Sequence[T], ())
 
     @classmethod
     def parse(
@@ -367,16 +367,16 @@ class Options:
     def is_error_code_enabled(self, code: Error) -> bool:
         option = ConfigOption.registry[code.name]
         try:
-            return self._get_value_for_no_default(option)
+            return cast(bool, self._get_value_for_no_default(option))
         except NotFound:
-            return option.default_value
+            return cast(bool, option.default_value)
 
     def is_error_code_enabled_anywhere(self, code: Error) -> bool:
         option = ConfigOption.registry[code.name]
         instances = self.options.get(option.name, ())
         if any(instance.value for instance in instances):
             return True
-        return option.default_value
+        return cast(bool, option.default_value)
 
     def display(self) -> None:
         print("Options:")
@@ -408,7 +408,9 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
 
 @used  # used by docs/conf.py when generating Sphinx configuration docs
 def render_config_options_markdown(
-    *, excluded_options: Collection[str] = frozenset(), include_error_codes: bool = True
+    *,
+    excluded_options: Collection[str] = frozenset[str](),
+    include_error_codes: bool = True,
 ) -> str:
     """Render registered configuration options as a Markdown bullet list."""
     all_excluded_options = set(excluded_options)
@@ -443,7 +445,7 @@ def render_config_options_markdown(
 
 
 def parse_config_file(
-    path: Path, *, priority: int = 0, seen_paths: Collection[Path] = frozenset()
+    path: Path, *, priority: int = 0, seen_paths: Collection[Path] = frozenset[Path]()
 ) -> Iterable[ConfigOption[Any]]:
     try:
         path = path.resolve(strict=True)

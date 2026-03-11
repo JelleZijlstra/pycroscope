@@ -1,6 +1,6 @@
 import sys
 from pathlib import Path
-from typing import final
+from typing import cast, final
 
 from . import importer
 
@@ -32,7 +32,7 @@ def test_load_module_from_file_pyi(tmp_path: Path) -> None:
     stub = pkg / "mod.pyi"
     stub.write_text("VALUE = 42\n", encoding="utf-8")
 
-    sys.path.insert(0, str(tmp_path))
+    cast(list[str], sys.path).insert(0, str(tmp_path))
     try:
         module, is_compiled = importer.load_module_from_file(
             str(stub), import_paths=[str(tmp_path)]
@@ -43,4 +43,4 @@ def test_load_module_from_file_pyi(tmp_path: Path) -> None:
     finally:
         sys.modules.pop("pkg.mod", None)
         sys.modules.pop("pkg", None)
-        sys.path.remove(str(tmp_path))
+        cast(list[str], sys.path).remove(str(tmp_path))

@@ -72,12 +72,9 @@ ParamSpecLike = (
     ExternalType["typing.ParamSpec"] | ExternalType["typing_extensions.ParamSpec"]
 )
 if sys.version_info >= (3, 11):
-    TypeVarTupleLike = (
-        ExternalType["typing.TypeVarTuple"]
-        | ExternalType["typing_extensions.TypeVarTuple"]
-    )
+    TypeVarTupleLike = typing.TypeVarTuple | typing_extensions.TypeVarTuple
 else:
-    TypeVarTupleLike = ExternalType["typing_extensions.TypeVarTuple"]
+    TypeVarTupleLike = typing_extensions.TypeVarTuple
 TypeVarLike = TypeVarType | ParamSpecLike | TypeVarTupleLike
 
 TypeVarMap = Mapping[TypeVarLike, ExternalType["pycroscope.value.Value"]]
@@ -746,6 +743,31 @@ def iter_type_params_in_value(value: Value) -> Iterator[TypeParam]:
                 subval.input_sig, ParamSpecParam
             ):
                 yield subval.input_sig
+
+
+def get_type_params_by_typevar(value: Value) -> dict[TypeVarLike, TypeParam]:
+    return {
+        type_param.typevar: type_param
+        for type_param in iter_type_params_in_value(value)
+    }
+
+
+def make_inference_typevar_map(values: Iterable[Value]) -> TypeVarMap:
+    inference_map: dict[TypeVarLike, Value] = {}
+    for value in values:
+        for type_param in iter_type_params_in_value(value):
+            if isinstance(type_param, TypeVarParam):
+                inference_map.setdefault(
+                    type_param.typevar, InferenceVarValue(type_param)
+                )
+    return inference_map
+
+
+def freshen_typevars_for_inference(value: Value) -> Value:
+    inference_map = make_inference_typevar_map([value])
+    if not inference_map:
+        return value
+    return value.substitute_typevars(inference_map)
 
 
 @dataclass
@@ -2184,7 +2206,16 @@ class CallableValue(TypedValue):
         self.signature = signature
 
     def substitute_typevars(self, typevars: TypeVarMap) -> Value:
-        return CallableValue(self.signature.substitute_typevars(typevars), self.typ)
+        from .signature import keep_inferable_typevars_from_params
+
+        return CallableValue(
+            keep_inferable_typevars_from_params(
+                self.signature.substitute_typevars(
+                    typevars, infer_substituted_typevars=True
+                )
+            ),
+            self.typ,
+        )
 
     def walk_values(self) -> Iterable[Value]:
         yield self
@@ -2523,25 +2554,32 @@ class Bound:
 
 
 @dataclass(frozen=True)
-class LowerBound(Bound):
-    """LowerBound(T, V) means V must be assignable to the value of T."""
+class _TypeParamBound(Bound):
+    type_param: TypeParam
 
-    typevar: TypeVarLike
-    value: Value
-
-    def __str__(self) -> str:
-        return f"{self.typevar} >= {self.value}"
+    @property
+    def typevar(self) -> TypeVarLike:
+        return self.type_param.typevar
 
 
 @dataclass(frozen=True)
-class UpperBound(Bound):
-    """UpperBound(T, V) means the value of T must be assignable to V."""
+class LowerBound(_TypeParamBound):
+    """LowerBound(T, V) means V must be assignable to the value of T."""
 
-    typevar: TypeVarLike
     value: Value
 
     def __str__(self) -> str:
-        return f"{self.typevar} <= {self.value}"
+        return f"{self.type_param} >= {self.value}"
+
+
+@dataclass(frozen=True)
+class UpperBound(_TypeParamBound):
+    """UpperBound(T, V) means the value of T must be assignable to V."""
+
+    value: Value
+
+    def __str__(self) -> str:
+        return f"{self.type_param} <= {self.value}"
 
 
 @dataclass(frozen=True)
@@ -2552,8 +2590,7 @@ class OrBound(Bound):
 
 
 @dataclass(frozen=True)
-class IsOneOf(Bound):
-    typevar: TypeVarLike
+class IsOneOf(_TypeParamBound):
     constraints: Sequence[Value]
 
 
@@ -2568,9 +2605,9 @@ class TypeVarValue(Value):
 
     def get_inherent_bounds(self) -> Iterator[Bound]:
         if self.typevar_param.bound is not None:
-            yield UpperBound(self.typevar_param.typevar, self.typevar_param.bound)
+            yield UpperBound(self.typevar_param, self.typevar_param.bound)
         elif self.typevar_param.constraints:
-            yield IsOneOf(self.typevar_param.typevar, self.typevar_param.constraints)
+            yield IsOneOf(self.typevar_param, self.typevar_param.constraints)
         # TODO: Consider adding this, but it leads to worse type inference
         # in some cases (inferring object where we should infer Any). Examples
         # in the taxonomy repo.
@@ -2582,14 +2619,12 @@ class TypeVarValue(Value):
     ) -> CanAssignError | None:
         return self.get_fallback_value().can_overlap(other, ctx, mode)
 
-    def make_bounds_map(
-        self, bounds: Sequence[Bound], other: Value, ctx: CanAssignContext
-    ) -> CanAssign:
-        bounds_map = {self.typevar_param.typevar: bounds}
-        _, errors = pycroscope.typevar.resolve_bounds_map(bounds_map, ctx)
-        if errors:
-            return CanAssignError(f"Value of {self} cannot be {other}", list(errors))
-        return bounds_map
+    def get_upper_bound_value(self) -> Value:
+        if self.typevar_param.bound is not None:
+            return self.typevar_param.bound
+        elif self.typevar_param.constraints:
+            return unite_values(*self.typevar_param.constraints)
+        return TypedValue(object)
 
     def get_fallback_value(self) -> Value:
         if self.typevar_param.bound is not None:
@@ -2603,6 +2638,22 @@ class TypeVarValue(Value):
 
     def __str__(self) -> str:
         return str(self.typevar_param)
+
+
+@dataclass(frozen=True)
+class InferenceVarValue(TypeVarValue):
+    """A fresh inference variable created from a declared TypeVar."""
+
+    def make_bounds_map(
+        self, bounds: Sequence[Bound], other: Value, ctx: CanAssignContext
+    ) -> CanAssign:
+        bounds_map = {self.typevar_param.typevar: bounds}
+        if self.typevar_param.bound is None and not self.typevar_param.constraints:
+            return bounds_map
+        _, errors = pycroscope.typevar.resolve_bounds_map(bounds_map, ctx)
+        if errors:
+            return CanAssignError(f"Value of {self} cannot be {other}", list(errors))
+        return bounds_map
 
 
 @dataclass(frozen=True, init=False)
@@ -2660,23 +2711,38 @@ class TypeVarTupleValue(Value):
 SelfTVV = TypeVarValue(TypeVarParam(SelfT))
 
 
+def receiver_to_self_type(self_value: Value) -> Value:
+    if isinstance(self_value, KnownValueWithTypeVars) and SelfT in self_value.typevars:
+        return receiver_to_self_type(self_value.typevars[SelfT])
+    if isinstance(self_value, SequenceValue):
+        if self_value.typ in (list, set):
+            return self_value.simplify()
+        return self_value
+    if isinstance(self_value, DictIncompleteValue):
+        return self_value.simplify()
+    if isinstance(self_value, KnownValue):
+        replaced = replace_known_sequence_value(self_value)
+        if isinstance(replaced, SequenceValue) and replaced.typ in (list, set):
+            return replaced.simplify()
+        if isinstance(replaced, DictIncompleteValue):
+            return replaced.simplify()
+        if not isinstance(replaced, KnownValue):
+            return replaced
+        return TypedValue(
+            replaced.val if isinstance(replaced.val, type) else type(replaced.val)
+        )
+    if isinstance(self_value, SubclassValue):
+        return self_value.typ
+    return self_value
+
+
 def set_self(value: Value, self_value: Value) -> Value:
-    if (
-        isinstance(self_value, TypeVarValue)
-        and self_value.typevar_param.typevar is SelfT
-    ):
-        self_value = SelfTVV
-    elif (
-        isinstance(self_value, SubclassValue)
-        and isinstance(self_value.typ, TypeVarValue)
-        and self_value.typ.typevar_param.typevar is SelfT
-    ):
-        self_value = SelfTVV
+    self_type = receiver_to_self_type(self_value)
     if isinstance(value, KnownValueWithTypeVars):
         merged_typevars = dict(value.typevars)
-        merged_typevars[SelfT] = self_value
+        merged_typevars[SelfT] = self_type
         return KnownValueWithTypeVars(value.val, merged_typevars)
-    return value.substitute_typevars({SelfT: self_value})
+    return value.substitute_typevars({SelfT: self_type})
 
 
 @dataclass(frozen=True)
@@ -3117,13 +3183,13 @@ class AnnotatedValue(Value):
         """Return any metadata of the given type."""
         for data in self.metadata:
             if isinstance(data, typ):
-                yield data
+                yield cast(T, data)
 
     def get_custom_check_of_type(self, typ: type[T]) -> Iterable[T]:
         """Return any CustomChecks of the given type in the metadata."""
         for custom_check in self.get_metadata_of_type(CustomCheckExtension):
             if isinstance(custom_check.custom_check, typ):
-                yield custom_check.custom_check
+                yield cast(T, custom_check.custom_check)
 
     def has_metadata_of_type(self, typ: type[Extension]) -> bool:
         """Return whether there is metadat of the given type."""
@@ -3345,13 +3411,10 @@ def flatten_values(val: Value, *, unwrap_annotated: bool = False) -> Iterable[Va
 def get_tv_map(
     left: Value, right: Value, ctx: CanAssignContext
 ) -> TypeVarMap | CanAssignError:
-    bounds_map = left.can_assign(right, ctx)
-    if isinstance(bounds_map, CanAssignError):
-        return bounds_map
-    tv_map, errors = pycroscope.typevar.resolve_bounds_map(bounds_map, ctx)
-    if errors:
-        return CanAssignError(children=list(errors))
-    return tv_map
+    from .relations import Relation
+    from .relations import get_tv_map as relation_get_tv_map
+
+    return relation_get_tv_map(left, right, Relation.ASSIGNABLE, ctx)
 
 
 def unify_bounds_maps(bounds_maps: Sequence[BoundsMap]) -> BoundsMap:
@@ -3593,6 +3656,8 @@ def concrete_values_from_iterable(
             and isinstance(value.val, (types.GenericAlias, TypingGenericAlias))
         ) or is_instance_of_typing_name(value.val, "TypeVarTuple"):
             return [KnownValue(c) for c in value.val]
+        if isinstance(value.val, type) and safe_issubclass(value.val, enum.Enum):
+            return TypedValue(value.val)
     iterable_type = is_iterable(value, ctx)
     if isinstance(iterable_type, Value):
         val = iterable_type
@@ -3795,6 +3860,10 @@ def _class_keys_match(left: type | str, right: type | str) -> bool:
 def ordered_namedtuple_fields_from_synthetic(
     synthetic: SyntheticClassObjectValue,
 ) -> tuple[str, ...]:
+    has_namedtuple_marker_base = any(
+        isinstance(base, KnownValue) and is_typing_name(base.val, "NamedTuple")
+        for base in synthetic.base_classes
+    )
     runtime_class_value = synthetic.class_attributes.get("%runtime_class")
     if (
         isinstance(runtime_class_value, KnownValue)
@@ -3822,13 +3891,42 @@ def ordered_namedtuple_fields_from_synthetic(
         allowed_names.update(
             name for name in default_fields.val if isinstance(name, str)
         )
-    return tuple(
-        name
-        for name in synthetic.class_attributes
-        if not name.startswith("%")
-        and name not in synthetic.method_attributes
-        and (not allowed_names or name in allowed_names)
-    )
+    inherited: list[str] = []
+    for base in synthetic.base_classes:
+        for subval in flatten_values(replace_fallback(base)):
+            if isinstance(subval, SyntheticClassObjectValue):
+                marker = subval.class_attributes.get("%namedtuple")
+                runtime_class = subval.class_attributes.get("%runtime_class")
+                if (
+                    isinstance(marker, KnownValue)
+                    and marker.val is True
+                    or (
+                        isinstance(runtime_class, KnownValue)
+                        and isinstance(runtime_class.val, type)
+                        and is_namedtuple_class(runtime_class.val)
+                    )
+                ):
+                    inherited.extend(ordered_namedtuple_fields_from_synthetic(subval))
+            elif isinstance(subval, KnownValue) and isinstance(subval.val, type):
+                fields_obj = safe_getattr(subval.val, "_fields", None)
+                if is_namedtuple_class(subval.val) and isinstance(fields_obj, tuple):
+                    inherited.extend(
+                        field for field in fields_obj if isinstance(field, str)
+                    )
+    local_fields: list[str] = []
+    if has_namedtuple_marker_base or not inherited:
+        local_fields = [
+            name
+            for name in synthetic.class_attributes
+            if not name.startswith("%")
+            and name not in synthetic.method_attributes
+            and (not allowed_names or name in allowed_names)
+        ]
+    ordered_fields: list[str] = []
+    for name in [*inherited, *local_fields]:
+        if name not in ordered_fields:
+            ordered_fields.append(name)
+    return tuple(ordered_fields)
 
 
 def get_namedtuple_field_annotation(namedtuple_type: type, field_name: str) -> object:
@@ -3839,9 +3937,48 @@ def get_namedtuple_field_annotation(namedtuple_type: type, field_name: str) -> o
     return typing.Any
 
 
+def get_namedtuple_field_value_from_synthetic(
+    synthetic_class: SyntheticClassObjectValue, field_name: str, ctx: CanAssignContext
+) -> Value | None:
+    from .annotations import type_from_runtime
+
+    field_value = synthetic_class.class_attributes.get(field_name)
+    if field_value is not None:
+        return field_value
+    runtime_class_value = synthetic_class.class_attributes.get("%runtime_class")
+    if (
+        isinstance(runtime_class_value, KnownValue)
+        and isinstance(runtime_class_value.val, type)
+        and is_namedtuple_class(runtime_class_value.val)
+    ):
+        return type_from_runtime(
+            get_namedtuple_field_annotation(runtime_class_value.val, field_name),
+            visitor=ctx,
+            suppress_errors=True,
+        )
+    for base_value in synthetic_class.base_classes:
+        for subval in flatten_values(replace_fallback(base_value)):
+            if isinstance(subval, SyntheticClassObjectValue):
+                field_value = get_namedtuple_field_value_from_synthetic(
+                    subval, field_name, ctx
+                )
+                if field_value is not None:
+                    return field_value
+            elif isinstance(subval, KnownValue) and isinstance(subval.val, type):
+                if is_namedtuple_class(subval.val):
+                    return type_from_runtime(
+                        get_namedtuple_field_annotation(subval.val, field_name),
+                        visitor=ctx,
+                        suppress_errors=True,
+                    )
+    return None
+
+
 def namedtuple_members_from_value(
     value: Value, ctx: CanAssignContext | None = None
 ) -> tuple[tuple[bool, Value], ...] | None:
+    from .annotations import type_from_runtime
+
     def _get_synthetic_class(class_key: type | str) -> SyntheticClassObjectValue | None:
         if ctx is None:
             return None
@@ -3885,7 +4022,6 @@ def namedtuple_members_from_value(
             fields_obj = safe_getattr(class_key, "_fields", None)
             if not isinstance(fields_obj, tuple):
                 return None
-            from .annotations import type_from_runtime
 
             members: list[tuple[bool, Value]] = []
             for field_name in fields_obj:
@@ -3905,14 +4041,19 @@ def namedtuple_members_from_value(
             field_names = ordered_namedtuple_fields_from_synthetic(synthetic)
             if not field_names:
                 return None
-            return tuple(
-                (
-                    False,
-                    synthetic.class_attributes[field_name].substitute_typevars(tv_map),
+            assert ctx is not None
+
+            tuple_members: list[tuple[bool, Value]] = []
+            for field_name in field_names:
+                field_value = get_namedtuple_field_value_from_synthetic(
+                    synthetic, field_name, ctx
                 )
-                for field_name in field_names
-                if field_name in synthetic.class_attributes
-            )
+                if field_value is None:
+                    continue
+                tuple_members.append((False, field_value.substitute_typevars(tv_map)))
+            if tuple_members:
+                return tuple(tuple_members)
+            return None
 
         if ctx is None:
             return None

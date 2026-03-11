@@ -162,6 +162,11 @@ def test_known_value() -> None:
     assert_cannot_assign(KnownValue(nan), KnownValue(0.0))
 
 
+def test_none_and_nonetype_are_equivalent() -> None:
+    assert_can_assign(TypedValue(types.NoneType), KnownValue(None))
+    assert_can_assign(KnownValue(None), TypedValue(types.NoneType))
+
+
 @skip_if_not_installed("asynq")
 def test_unbound_method_value() -> None:
     from pycroscope.asynq_tests import PropertyObject

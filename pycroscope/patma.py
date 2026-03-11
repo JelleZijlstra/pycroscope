@@ -8,7 +8,7 @@ import ast
 import collections.abc
 import enum
 import itertools
-from collections.abc import Callable, Container, Sequence
+from collections.abc import Callable, Container, Iterable, Sequence
 from dataclasses import dataclass, replace
 from typing import Any, TypeVar
 
@@ -282,7 +282,8 @@ class PatmaVisitor(ast.NodeVisitor):
         )
         if isinstance(unpacked, CanAssignError):
             unpacked = itertools.repeat(AnyValue(AnySource.generic_argument))
-        for pat, subject in zip(node.patterns, unpacked):
+        subjects: Iterable[Value] = unpacked
+        for pat, subject in zip(node.patterns, subjects):
             with override(self.visitor, "match_subject", Composite(subject)):
                 constraints.append(self.visit(pat))
         return AndConstraint.make(constraints)

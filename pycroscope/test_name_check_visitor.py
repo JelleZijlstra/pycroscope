@@ -415,6 +415,26 @@ class TestImportFailureHandling(TestNameCheckVisitorBase):
             assert_type(func3(TeamUser), TeamUser)
             type.unknown  # E: undefined_attribute
 
+    @assert_passes()
+    def test_generic_constructor_accepts_known_protocol_value(self):
+        import logging
+        import sys
+
+        logging.StreamHandler(sys.stderr)
+
+    @assert_passes(allow_import_failures=True)
+    def test_callable_protocol_after_import_failure(self):
+        from typing import Any, Callable, Protocol
+
+        _Bad: Callable[int]  # E: invalid_annotation
+
+        class Proto(Protocol):
+            def __call__(self, *args: Any, **kwargs: Any) -> None: ...
+
+        def f(p: Proto) -> None:
+            cb: Callable[..., None] = p
+            cb()
+
     @assert_passes(run_in_both_module_modes=True)
     def test_type_union_annotation_after_import_failure(self):
         class User: ...

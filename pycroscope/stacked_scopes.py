@@ -42,6 +42,7 @@ from pycroscope.relations import (
 )
 
 from .analysis_lib import Sentinel, override
+from .annotated_types import MaxLen, MinLen
 from .boolability import get_boolability
 from .extensions import reveal_type
 from .safe import safe_equals
@@ -57,7 +58,9 @@ from .value import (
     KnownValue,
     MultiValuedValue,
     ParamSpecParam,
+    PredicateValue,
     ReferencingValue,
+    SequenceValue,
     SubclassValue,
     TypedValue,
     TypeVarMap,
@@ -417,10 +420,22 @@ class Constraint(AbstractConstraint):
             boolability = get_boolability(inner_value)
             if self.positive:
                 if not boolability.is_safely_false():
-                    yield value
+                    narrowed = _maybe_narrow_for_truthiness(
+                        value, positive=True, ctx=ctx
+                    )
+                    if narrowed is not None and narrowed is not NO_RETURN_VALUE:
+                        yield narrowed
+                    else:
+                        yield value
             else:
                 if not boolability.is_safely_true():
-                    yield value
+                    narrowed = _maybe_narrow_for_truthiness(
+                        value, positive=False, ctx=ctx
+                    )
+                    if narrowed is not None and narrowed is not NO_RETURN_VALUE:
+                        yield narrowed
+                    else:
+                        yield value
 
         elif self.constraint_type == ConstraintType.predicate:
             new_value = self.value(value, self.positive)
@@ -482,6 +497,20 @@ class NullConstraint(AbstractConstraint):
 
 NULL_CONSTRAINT = NullConstraint()
 """The single instance of :class:`NullConstraint`."""
+
+
+def _maybe_narrow_for_truthiness(
+    value: Value, *, positive: bool, ctx: CanAssignContext
+) -> Value | None:
+    inner_value = replace_fallback(value)
+    predicate = PredicateValue(MinLen(1)) if positive else PredicateValue(MaxLen(0))
+    if isinstance(inner_value, SequenceValue) and inner_value.typ is tuple:
+        return intersect_values(value, predicate, ctx)
+    if isinstance(inner_value, KnownValue) and isinstance(inner_value.val, tuple):
+        return intersect_values(value, predicate, ctx)
+    if isinstance(inner_value, TypedValue) and inner_value.typ is tuple:
+        return intersect_values(value, predicate, ctx)
+    return None
 
 
 @dataclass(frozen=True)
@@ -1524,7 +1553,8 @@ class StackedScopes:
         simplification_limit: int | None = None,
     ) -> None:
         self.simplification_limit = simplification_limit
-        module_scope_vars: dict[Varname, Value] = dict(module_vars)
+        module_scope_vars: dict[Varname, Value] = {}
+        module_scope_vars.update(module_vars)
         self.scopes = [
             self._builtin_scope,
             ModuleScope(

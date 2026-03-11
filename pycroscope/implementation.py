@@ -2590,7 +2590,8 @@ V = TypeVar("V")
 
 
 class _IdentityCallable:
-    def __call__(self, arg: T, /) -> T: ...
+    def __call__(self, arg: T, /) -> T:
+        raise NotImplementedError
 
 
 def get_default_argspecs() -> dict[object, Signature]:

@@ -207,6 +207,23 @@ class TestFunctionDefinitions(TestNameCheckVisitorBase):
             fun4 = lambda a, b, c: a if c else b
             assert_type(fun4(1, 2, 3), Literal[1, 2])
 
+    @assert_passes()
+    def test_lambda_default_uses_narrowed_value(self):
+        import ast
+
+        from typing_extensions import assert_type
+
+        def accept(node: ast.AST) -> str:
+            return ast.dump(node)
+
+        def capybara(value_node: ast.AST | None) -> None:
+            if value_node is None:
+                return
+            evaluator = lambda value_node=value_node: accept(value_node)
+            assert_type(evaluator(), str)
+            evaluator2 = lambda: accept(value_node)
+            assert_type(evaluator2(), str)
+
 
 class TestDecorators(TestNameCheckVisitorBase):
     @assert_passes()
@@ -262,6 +279,41 @@ class TestDecorators(TestNameCheckVisitorBase):
                 assert_type(b, int)
             with collections_generator_three() as c:
                 assert_type(c, int)
+
+    @assert_passes()
+    def test_nullcontext(self):
+        import collections.abc
+        import contextlib
+        import types
+        from contextlib import AbstractContextManager
+
+        def capybara(flag: bool) -> None:
+            direct: AbstractContextManager[None] = contextlib.nullcontext()
+            with direct as direct_value:
+                assert_type(direct_value, None)
+
+            with contextlib.nullcontext(None) as explicit_value:
+                assert_type(explicit_value, None)
+
+            none_value: types.NoneType = None
+            assert_type(none_value, None)
+            assert_type(None, types.NoneType)
+
+            if flag:
+                ctx: AbstractContextManager[None] = contextlib.nullcontext()
+            else:
+
+                @contextlib.contextmanager
+                def make_cm() -> collections.abc.Generator[None]:
+                    yield
+
+                ctx = make_cm()
+
+            with ctx:
+                pass
+
+            with contextlib.nullcontext():
+                pass
 
 
 class TestAsyncGenerator(TestNameCheckVisitorBase):

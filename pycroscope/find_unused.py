@@ -101,7 +101,7 @@ class UnusedObjectFinder:
     print_output: bool = True
     print_all: bool = False
     usages: dict[ModuleType, dict[str, set[str]]] = field(
-        default_factory=lambda: defaultdict(lambda: defaultdict(set)), init=False
+        default_factory=dict, init=False
     )
     import_stars: dict[ModuleType, set[ModuleType]] = field(
         default_factory=lambda: defaultdict(set), init=False
@@ -138,7 +138,8 @@ class UnusedObjectFinder:
         if not self.enabled:
             return
         try:
-            self.usages[owner][attr].add(using_module)
+            module_usages = self.usages.setdefault(owner, {})
+            module_usages.setdefault(attr, set()).add(using_module)
         except Exception:
             pass
 
@@ -160,7 +161,7 @@ class UnusedObjectFinder:
             part.startswith("test") for part in module.__name__.split(".")
         )
         for attr, value in module.__dict__.items():
-            usages = self.usages[module][attr]
+            usages = self.usages.get(module, {}).get(attr, set())
             if self.print_all:
                 message = f"{len(usages)} ({usages})"
                 yield UnusedObject(module, attr, value, message)
@@ -204,7 +205,9 @@ class UnusedObjectFinder:
         if module in self.recursive_stack:
             return _UsageKind.unused
         self.recursive_stack.add(module)
-        usage = _UsageKind.aggregate_modules(self.usages[module][attr])
+        usage = _UsageKind.aggregate_modules(
+            self.usages.get(module, {}).get(attr, set())
+        )
         if usage is _UsageKind.used:
             return _UsageKind.used
         import_stars = self.import_stars[module]
