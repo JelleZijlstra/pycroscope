@@ -2745,7 +2745,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     attr_expr = annotation_expr_from_annotations(
                         annotations,
                         attr_name,
-                        ctx=_RuntimeAnnotationsContext(class_key, self, node),
+                        ctx=_RuntimeAnnotationsContext(
+                            class_key, node=node, visitor=self, can_assign_ctx=self
+                        ),
                     )
                     if attr_expr is not None:
                         attr_type, qualifiers = attr_expr.maybe_unqualify(

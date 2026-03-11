@@ -2248,11 +2248,7 @@ class _DefaultContext(Context):
 @dataclass
 class _RuntimeAnnotationsContext(Context):
     owner: object
-    visitor: "NameCheckVisitor | CanAssignContext | None" = None
     node: ast.AST | None = None
-
-    def __post_init__(self) -> None:
-        super().__init__()
 
     def show_error(
         self,
@@ -2290,10 +2286,7 @@ class _RuntimeAnnotationsContext(Context):
     def invalid_self_annotation_message(self, node: ast.AST) -> str | None:
         if self.visitor is None:
             return None
-        method = getattr(self.visitor, "invalid_self_annotation_message", None)
-        if method is None:
-            return None
-        return method(node)
+        return self.visitor.invalid_self_annotation_message(node)
 
 
 @dataclass(frozen=True)
