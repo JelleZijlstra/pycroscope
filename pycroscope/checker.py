@@ -601,11 +601,10 @@ class Checker:
 
     def _get_typeshed_bases(self, typ: type | str) -> set[type | str]:
         base_values = self.ts_finder.get_bases_recursively(typ)
-        arg_spec_cache = getattr(self, "arg_spec_cache", None)
         return {
             base_value.typ
             for base in base_values
-            for base_value in _iter_base_type_values(base, arg_spec_cache)
+            for base_value in _iter_base_type_values(base, self.arg_spec_cache)
         }
 
     def _get_protocol_members(self, bases: Iterable[type | str]) -> set[str]:
@@ -837,13 +836,13 @@ class Checker:
             assert pair == new_pair
 
     def can_aliases_assume_compatibility(
-        self, left: "TypeAliasValue", right: "TypeAliasValue"
+        self, left: TypeAliasValue, right: TypeAliasValue
     ) -> bool:
         return (left, right) in self.alias_assumed_compatibilities
 
     @contextmanager
     def aliases_assume_compatibility(
-        self, left: "TypeAliasValue", right: "TypeAliasValue"
+        self, left: TypeAliasValue, right: TypeAliasValue
     ) -> Generator[None]:
         pair = (left, right)
         self.alias_assumed_compatibilities.add(pair)

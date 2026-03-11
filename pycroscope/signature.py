@@ -3258,8 +3258,8 @@ def _widen_typevartuple_inferred_simple_value(value: SimpleType) -> Value:
 
 
 def _try_typevartuple_callable_relation(
-    left: "Signature",
-    right: "Signature",
+    left: Signature,
+    right: Signature,
     relation: Literal[Relation.ASSIGNABLE, Relation.SUBTYPE],
     ctx: CanAssignContext,
 ) -> CanAssign | None:

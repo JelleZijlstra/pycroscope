@@ -47,7 +47,14 @@ from typing import (
 )
 
 import typing_extensions
-from typing_extensions import NoDefault, ParamSpec, TypedDict, TypeIs
+from typing_extensions import (
+    NoDefault,
+    ParamSpec,
+    Protocol,
+    TypedDict,
+    TypeIs,
+    runtime_checkable,
+)
 
 from pycroscope.annotated_types import get_annotated_types_extension
 from pycroscope.input_sig import FullSignature, InputSigValue
@@ -162,6 +169,23 @@ def _is_valid_pep586_literal_value(value: object) -> bool:
     return isinstance(type(value), _ENUM_TYPE)
 
 
+@runtime_checkable
+class _AnnotationVisitor(ErrorContext, CanAssignContext, Protocol):
+    def resolve_name(
+        self,
+        node: ast.Name,
+        error_node: ast.AST | None = None,
+        suppress_errors: bool = False,
+    ) -> tuple[Value, object]:
+        raise NotImplementedError
+
+    def invalid_self_annotation_message(self, annotation: ast.AST) -> str | None:
+        raise NotImplementedError
+
+    def get_type_alias_cache(self) -> dict[object, TypeAlias]:
+        raise NotImplementedError
+
+
 @dataclass
 class Context:
     """A context for evaluating annotations.
@@ -174,6 +198,8 @@ class Context:
     """While this is True, no annotation errors are emitted."""
     _being_evaluated: dict[int, Value] = field(default_factory=dict, init=False)
     _invalid_self_nodes: set[int] = field(default_factory=set, init=False)
+    visitor: _AnnotationVisitor | None = field(default=None, kw_only=True)
+    can_assign_ctx: CanAssignContext | None = field(default=None, kw_only=True)
 
     def suppress_errors(self) -> AbstractContextManager[None]:
         """Temporarily suppress all annotation-evaluation errors."""
@@ -411,7 +437,7 @@ def annotation_expr_from_annotations(
 
 def type_from_runtime(
     val: object,
-    visitor: Optional["NameCheckVisitor | CanAssignContext"] = None,
+    visitor: CanAssignContext | None = None,
     node: ast.AST | None = None,
     globals: Mapping[str, object] | None = None,
     ctx: Context | None = None,
@@ -464,7 +490,7 @@ def annotation_expr_from_runtime(
 
 def type_from_value(
     value: Value,
-    visitor: Optional["NameCheckVisitor | CanAssignContext"] = None,
+    visitor: CanAssignContext | None = None,
     node: ast.AST | None = None,
     ctx: Context | None = None,
     suppress_errors: bool = False,
@@ -797,10 +823,7 @@ def make_type_param(
 
 
 def _get_can_assign_context(ctx: Context) -> CanAssignContext | None:
-    visitor = getattr(ctx, "visitor", None)
-    if visitor is None:
-        return None
-    return visitor
+    return ctx.can_assign_ctx
 
 
 def _is_assignable_for_alias_arg(expected: Value, actual: Value, ctx: Context) -> bool:
@@ -2141,13 +2164,14 @@ def _type_alias_cache_key(key: object) -> object:
 class _DefaultContext(Context):
     def __init__(
         self,
-        visitor: "NameCheckVisitor | CanAssignContext",
+        visitor: CanAssignContext | None,
         node: ast.AST | None,
         globals: Mapping[str, object] | None = None,
         use_name_node_for_error: bool = False,
     ) -> None:
-        super().__init__()
-        self.visitor = visitor
+        super().__init__(can_assign_ctx=visitor)
+        if isinstance(visitor, _AnnotationVisitor):
+            self.visitor = visitor
         self.node = node
         self.globals = globals
         self.use_name_node_for_error = use_name_node_for_error
@@ -2201,10 +2225,7 @@ class _DefaultContext(Context):
     def invalid_self_annotation_message(self, node: ast.AST) -> str | None:
         if self.visitor is None:
             return None
-        method = getattr(self.visitor, "invalid_self_annotation_message", None)
-        if method is None:
-            return None
-        return method(node)
+        return self.visitor.invalid_self_annotation_message(node)
 
     def get_type_alias(
         self,
