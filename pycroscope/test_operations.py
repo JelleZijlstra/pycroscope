@@ -70,6 +70,25 @@ class TestBinOps(TestNameCheckVisitorBase):
             assert_type(x | y, set[Union[int, Literal[1]]])
             assert_type(y | x, set[Union[int, Literal[1]]])
 
+    @assert_passes()
+    def test_enum_flag_binop(self):
+        import enum
+        import re
+
+        from typing_extensions import assert_type
+
+        class Permissions(enum.Flag):
+            READ = enum.auto()
+            WRITE = enum.auto()
+
+        def capybara(x: Permissions, y: Permissions) -> None:
+            assert_type(x | y, Permissions)
+            assert_type(x & y, Permissions)
+            assert_type(x ^ y, Permissions)
+
+        combined: re.RegexFlag = re.VERBOSE | re.DOTALL
+        assert_type(combined, re.RegexFlag)
+
 
 class TestBoolOp(TestNameCheckVisitorBase):
     @assert_passes()

@@ -813,6 +813,35 @@ def _is_assignable_for_alias_arg(expected: Value, actual: Value, ctx: Context) -
     return not isinstance(result, CanAssignError)
 
 
+def _iter_alias_arg_possibilities(actual: Value) -> Sequence[Value]:
+    if isinstance(actual, TypeVarValue):
+        if actual.typevar_param.constraints:
+            return actual.typevar_param.constraints
+        return (actual.get_upper_bound_value(),)
+    return (actual,)
+
+
+def _is_alias_arg_compatible_with_bound(
+    expected: Value, actual: Value, ctx: Context
+) -> bool:
+    return all(
+        _is_assignable_for_alias_arg(expected, possibility, ctx)
+        for possibility in _iter_alias_arg_possibilities(actual)
+    )
+
+
+def _is_alias_arg_compatible_with_constraints(
+    constraints: Sequence[Value], actual: Value, ctx: Context
+) -> bool:
+    return all(
+        any(
+            _is_assignable_for_alias_arg(constraint, possibility, ctx)
+            for constraint in constraints
+        )
+        for possibility in _iter_alias_arg_possibilities(actual)
+    )
+
+
 def _get_generic_type_parameters_for_annotation(
     typ: type, ctx: Context
 ) -> Sequence[TypeParam]:
@@ -1005,16 +1034,9 @@ def _type_from_value_type_alias_arg(
     arg: Value, type_param: TypeParam, ctx: Context
 ) -> Value:
     if isinstance(type_param, ParamSpecParam):
-        if (
-            isinstance(arg, PartialValue)
-            and arg.operation is PartialValueOperation.SUBSCRIPT
-            and isinstance(arg.root, KnownValue)
-            and is_typing_name(arg.root.val, "Concatenate")
-        ):
-            concatenate_members = [
-                _type_from_value(member, ctx) for member in arg.members
-            ]
-            return _paramspec_value_from_concatenate_members(concatenate_members, ctx)
+        concatenate_value = _maybe_paramspec_concatenate_value(arg, ctx)
+        if concatenate_value is not None:
+            return concatenate_value
         if isinstance(arg, SequenceValue) and arg.typ in (list, tuple):
             members = arg.get_member_sequence()
             if members is not None:
@@ -1054,11 +1076,33 @@ def _type_from_value_type_alias_arg(
     return _type_from_value(arg, ctx)
 
 
-def _normalize_paramspec_generic_arg(
+def _maybe_paramspec_concatenate_value(arg: Value, ctx: Context) -> Value | None:
+    if (
+        isinstance(arg, PartialValue)
+        and arg.operation is PartialValueOperation.SUBSCRIPT
+        and isinstance(arg.root, KnownValue)
+        and is_typing_name(arg.root.val, "Concatenate")
+    ):
+        concatenate_members = [_type_from_value(member, ctx) for member in arg.members]
+        return _paramspec_value_from_concatenate_members(concatenate_members, ctx)
+    if isinstance(arg, KnownValue) and is_typing_name(
+        get_origin(arg.val), "Concatenate"
+    ):
+        concatenate_members = [
+            _type_from_runtime(member, ctx) for member in get_args(arg.val)
+        ]
+        return _paramspec_value_from_concatenate_members(concatenate_members, ctx)
+    return None
+
+
+def _normalize_paramspec_generic_arg_in_context(
     arg: Value, *, allow_flat_form: bool, ctx: Context
 ) -> Value:
     if isinstance(arg, KnownValue):
         arg = replace_known_sequence_value(arg)
+    concatenate_value = _maybe_paramspec_concatenate_value(arg, ctx)
+    if concatenate_value is not None:
+        return concatenate_value
     if isinstance(arg, InputSigValue):
         return arg
     if isinstance(arg, SequenceValue) and arg.typ in (list, tuple):
@@ -1078,25 +1122,60 @@ def _normalize_paramspec_generic_arg(
     return AnyValue(AnySource.error)
 
 
-def _normalize_paramspec_generic_args(
+def _normalize_paramspec_generic_args_in_context(
     type_params: Sequence[TypeParam], args: Sequence[Value], ctx: Context
 ) -> list[Value]:
     if len(type_params) == 1 and isinstance(type_params[0], ParamSpecParam):
         if len(args) == 1:
             return [
-                _normalize_paramspec_generic_arg(args[0], allow_flat_form=True, ctx=ctx)
+                _normalize_paramspec_generic_arg_in_context(
+                    args[0], allow_flat_form=True, ctx=ctx
+                )
             ]
         return [SequenceValue(tuple, [(False, arg) for arg in args])]
     if len(type_params) == len(args):
         return [
             (
-                _normalize_paramspec_generic_arg(arg, allow_flat_form=False, ctx=ctx)
+                _normalize_paramspec_generic_arg_in_context(
+                    arg, allow_flat_form=False, ctx=ctx
+                )
                 if isinstance(type_param, ParamSpecParam)
                 else arg
             )
             for type_param, arg in zip(type_params, args)
         ]
     return list(args)
+
+
+def _ensure_annotation_context(
+    ctx: Context | CanAssignContext, node: ast.AST | None
+) -> Context:
+    if isinstance(ctx, Context):
+        return ctx
+    return _DefaultContext(ctx, node)
+
+
+def _normalize_paramspec_generic_arg(
+    arg: Value,
+    *,
+    allow_flat_form: bool,
+    ctx: Context | CanAssignContext,
+    node: ast.AST | None = None,
+) -> Value:
+    return _normalize_paramspec_generic_arg_in_context(
+        arg, allow_flat_form=allow_flat_form, ctx=_ensure_annotation_context(ctx, node)
+    )
+
+
+def _normalize_paramspec_generic_args(
+    type_params: Sequence[TypeParam],
+    args: Sequence[Value],
+    ctx: Context | CanAssignContext,
+    node: ast.AST | None = None,
+) -> list[Value]:
+    return _normalize_paramspec_generic_args_in_context(
+        type_params, args, ctx=_ensure_annotation_context(ctx, node)
+    )
 
 
 def _normalize_generic_unpack_members(
@@ -1288,13 +1367,12 @@ def _validate_type_alias_arg_values(
             continue
         if not isinstance(type_param, TypeVarParam):
             continue
-        if type_param.bound is not None and not _is_assignable_for_alias_arg(
+        if type_param.bound is not None and not _is_alias_arg_compatible_with_bound(
             type_param.bound, arg, ctx
         ):
             ctx.show_error(f"Type argument {arg} is not compatible with {type_param}")
-        elif type_param.constraints and not any(
-            _is_assignable_for_alias_arg(constraint, arg, ctx)
-            for constraint in type_param.constraints
+        elif type_param.constraints and not _is_alias_arg_compatible_with_constraints(
+            type_param.constraints, arg, ctx
         ):
             constraint_list = ", ".join(
                 str(constraint) for constraint in type_param.constraints

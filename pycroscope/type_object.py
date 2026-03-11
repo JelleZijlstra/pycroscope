@@ -13,6 +13,10 @@ from unittest import mock
 
 from typing_extensions import assert_never
 
+from pycroscope.relations import (
+    infer_positional_generic_typevar_map,
+    translate_generic_typevar_map,
+)
 from pycroscope.signature import (
     BoundMethodSignature,
     OverloadedSignature,
@@ -55,6 +59,7 @@ from .value import (
     UnboundMethodValue,
     Value,
     flatten_values,
+    freshen_typevars_for_inference,
     get_tv_map,
     replace_fallback,
     stringify_object,
@@ -252,7 +257,7 @@ class TypeObject:
             other_type_obj = other_basic.get_type_object(ctx)
         else:
             other_type_obj = None
-        other_type_key = _class_key_from_value(other_val)
+        other_type_key = _receiver_key_from_value(other_val)
 
         bounds_maps = []
         protocol_type_key: type | str | None
@@ -264,8 +269,12 @@ class TypeObject:
             protocol_self_typevar_map = _collect_protocol_self_typevar_map(
                 protocol_type_key, self.protocol_members, other_val, ctx
             )
+            actual_self_typevar_map = _collect_protocol_self_typevar_map(
+                other_type_key, self.protocol_members, other_val, ctx
+            )
         else:
             protocol_self_typevar_map = {}
+            actual_self_typevar_map = {}
         apply_synthetic_member_rules = (
             isinstance(protocol_type_key, str)
             and _get_synthetic_class_for_key(protocol_type_key, ctx) is not None
@@ -360,6 +369,8 @@ class TypeObject:
                         )
                         if refined_actual is not UNINITIALIZED_VALUE:
                             actual = refined_actual
+                if actual_self_typevar_map and actual is not UNINITIALIZED_VALUE:
+                    actual = actual.substitute_typevars(actual_self_typevar_map)
                 if (
                     actual is UNINITIALIZED_VALUE
                     and other_type_obj is not None
@@ -370,6 +381,14 @@ class TypeObject:
             if actual is UNINITIALIZED_VALUE:
                 can_assign = CanAssignError(f"{other_val} has no attribute {member!r}")
             else:
+                if _is_callable_member_value(expected, ctx):
+                    expected = _normalize_protocol_member_value_for_relation(
+                        expected, ctx, receiver=self_val
+                    )
+                if _is_callable_member_value(actual, ctx):
+                    actual = _normalize_protocol_member_value_for_relation(
+                        actual, ctx, receiver=other_val
+                    )
                 if not use_descriptor_rules:
                     can_assign = has_relation(
                         expected, actual, Relation.ASSIGNABLE, ctx
@@ -436,6 +455,21 @@ class TypeObject:
                                 f"Protocol member {member!r} is not writable"
                             )
                         else:
+                            expected_for_relation = freshen_typevars_for_inference(
+                                expected_for_relation
+                            )
+                            if _is_callable_member_value(expected_for_relation, ctx):
+                                expected_for_relation = (
+                                    _normalize_protocol_member_value_for_relation(
+                                        expected_for_relation, ctx, receiver=self_val
+                                    )
+                                )
+                            if _is_callable_member_value(actual_for_relation, ctx):
+                                actual_for_relation = (
+                                    _normalize_protocol_member_value_for_relation(
+                                        actual_for_relation, ctx, receiver=other_val
+                                    )
+                                )
                             can_assign = has_relation(
                                 expected_for_relation,
                                 actual_for_relation,
@@ -974,6 +1008,13 @@ def _is_readonly_instance_member(
 
 
 def _is_callable_member_value(value: Value, ctx: CanAssignContext) -> bool:
+    if isinstance(value, CallableValue):
+        return True
+    if isinstance(value, KnownValue) and callable(value.val):
+        return True
+    signature = ctx.signature_from_value(value)
+    if isinstance(signature, (Signature, OverloadedSignature, BoundMethodSignature)):
+        return True
     value = replace_fallback(value)
     if isinstance(value, CallableValue):
         return True
@@ -981,6 +1022,30 @@ def _is_callable_member_value(value: Value, ctx: CanAssignContext) -> bool:
         return True
     signature = ctx.signature_from_value(value)
     return isinstance(signature, (Signature, OverloadedSignature, BoundMethodSignature))
+
+
+def _normalize_protocol_member_value_for_relation(
+    value: Value, ctx: CanAssignContext, *, receiver: Value | None = None
+) -> Value:
+    signature = ctx.signature_from_value(value)
+    if isinstance(signature, BoundMethodSignature):
+        bound = signature.get_signature(ctx=ctx)
+        if bound is None:
+            bound = signature.signature.bind_self(
+                self_value=replace_fallback(signature.self_composite.value), ctx=ctx
+            )
+        if bound is not None:
+            return CallableValue(bound)
+        return CallableValue(signature.signature)
+    if (
+        receiver is not None
+        and isinstance(signature, (Signature, OverloadedSignature))
+        and _callable_value_missing_receiver(value, ctx)
+    ):
+        bound = signature.bind_self(self_value=replace_fallback(receiver), ctx=ctx)
+        if bound is not None:
+            return CallableValue(bound)
+    return value
 
 
 def _metaclass_key_for_class(
@@ -1205,53 +1270,143 @@ def _collect_protocol_self_typevar_map(
 
     This propagates `self: T` constraints across protocol members.
     """
-    if not isinstance(protocol_key, type):
+    synthetic_class = None
+    if isinstance(protocol_key, str):
+        synthetic_class = _get_synthetic_class_for_key(protocol_key, ctx)
+        if synthetic_class is None:
+            return {}
+    elif not isinstance(protocol_key, type):
         return {}
 
     tv_map: dict[TypeVarLike, Value] = {}
     for member in protocol_members:
-        descriptor = inspect.getattr_static(protocol_key, member, UNINITIALIZED_VALUE)
-        if descriptor is UNINITIALIZED_VALUE:
-            continue
-        if isinstance(descriptor, property):
-            callable_obj = descriptor.fget
-        elif isinstance(descriptor, (staticmethod, classmethod)):
-            callable_obj = None
-        elif inspect.isfunction(descriptor):
-            callable_obj = descriptor
+        receiver_for_match = receiver_value
+        if synthetic_class is not None:
+            raw_attr = synthetic_class.class_attributes.get(member, UNINITIALIZED_VALUE)
+            if raw_attr is UNINITIALIZED_VALUE:
+                continue
+            raw_attr = replace_fallback(raw_attr)
+            if isinstance(raw_attr, GenericValue) and raw_attr.typ is classmethod:
+                if not raw_attr.args:
+                    continue
+                self_annotation = SubclassValue.make(raw_attr.args[0])
+                receiver_key = _class_key_from_value(receiver_value)
+                if receiver_key is not None:
+                    class_object = _class_object_value_for_key(receiver_key, ctx)
+                else:
+                    class_object = None
+                if class_object is not None:
+                    receiver_for_match = class_object
+                else:
+                    receiver_for_match = SubclassValue.make(
+                        receiver_value.get_type_value()
+                    )
+            elif isinstance(raw_attr, GenericValue) and raw_attr.typ is staticmethod:
+                continue
+            else:
+                signature = _as_concrete_signature(
+                    ctx.signature_from_value(raw_attr), ctx
+                )
+                if signature is None:
+                    continue
+                signatures = (
+                    signature.signatures
+                    if isinstance(signature, OverloadedSignature)
+                    else [signature]
+                )
+                self_annotation = None
+                for concrete in signatures:
+                    parameters = list(concrete.parameters.values())
+                    if parameters:
+                        self_annotation = parameters[0].annotation
+                        break
+                if self_annotation is None:
+                    continue
         else:
-            callable_obj = None
-        if callable_obj is None:
+            descriptor = inspect.getattr_static(
+                protocol_key, member, UNINITIALIZED_VALUE
+            )
+            if descriptor is UNINITIALIZED_VALUE:
+                continue
+            if isinstance(descriptor, property):
+                callable_obj = descriptor.fget
+            elif isinstance(descriptor, staticmethod):
+                callable_obj = None
+            elif isinstance(descriptor, classmethod):
+                callable_obj = descriptor.__func__
+                receiver_key = _class_key_from_value(receiver_value)
+                if receiver_key is not None:
+                    class_object = _class_object_value_for_key(receiver_key, ctx)
+                else:
+                    class_object = None
+                if class_object is not None:
+                    receiver_for_match = class_object
+                else:
+                    receiver_for_match = SubclassValue.make(
+                        receiver_value.get_type_value()
+                    )
+            elif inspect.isfunction(descriptor):
+                callable_obj = descriptor
+            else:
+                callable_obj = None
+            if callable_obj is None:
+                continue
+            signature = _as_concrete_signature(
+                ctx.signature_from_value(KnownValue(callable_obj)), ctx
+            )
+            if signature is None:
+                continue
+            signatures = (
+                signature.signatures
+                if isinstance(signature, OverloadedSignature)
+                else [signature]
+            )
+            for concrete in signatures:
+                parameters = list(concrete.parameters.values())
+                if not parameters:
+                    continue
+                self_annotation = parameters[0].annotation
+                if not any(
+                    isinstance(subvalue, TypeVarValue)
+                    for subvalue in self_annotation.walk_values()
+                ):
+                    continue
+                inferred = get_tv_map(self_annotation, receiver_for_match, ctx)
+                if isinstance(inferred, CanAssignError):
+                    continue
+                translated = translate_generic_typevar_map(
+                    self_annotation, inferred, ctx
+                )
+                if not translated:
+                    translated = infer_positional_generic_typevar_map(
+                        self_annotation, receiver_for_match, ctx
+                    )
+                for typevar, value in {**inferred, **translated}.items():
+                    existing = tv_map.get(typevar)
+                    if existing is None:
+                        tv_map[typevar] = value
+                    elif existing != value:
+                        tv_map[typevar] = unite_values(existing, value)
             continue
-        signature = _as_concrete_signature(
-            ctx.signature_from_value(KnownValue(callable_obj)), ctx
-        )
-        if signature is None:
+        if not any(
+            isinstance(subvalue, TypeVarValue)
+            for subvalue in self_annotation.walk_values()
+        ):
             continue
-        signatures = (
-            signature.signatures
-            if isinstance(signature, OverloadedSignature)
-            else [signature]
-        )
-        for concrete in signatures:
-            parameters = list(concrete.parameters.values())
-            if not parameters:
-                continue
-            self_annotation = parameters[0].annotation
-            if not any(
-                isinstance(subvalue, TypeVarValue)
-                for subvalue in self_annotation.walk_values()
-            ):
-                continue
-            inferred = get_tv_map(self_annotation, receiver_value, ctx)
-            if isinstance(inferred, CanAssignError):
-                continue
-            for typevar, value in inferred.items():
-                existing = tv_map.get(typevar)
-                if existing is None:
-                    tv_map[typevar] = value
-                elif existing != value:
-                    tv_map[typevar] = unite_values(existing, value)
+        inferred = get_tv_map(self_annotation, receiver_for_match, ctx)
+        if isinstance(inferred, CanAssignError):
+            continue
+        translated = translate_generic_typevar_map(self_annotation, inferred, ctx)
+        if not translated:
+            translated = infer_positional_generic_typevar_map(
+                self_annotation, receiver_for_match, ctx
+            )
+        for typevar, value in {**inferred, **translated}.items():
+            existing = tv_map.get(typevar)
+            if existing is None:
+                tv_map[typevar] = value
+            elif existing != value:
+                tv_map[typevar] = unite_values(existing, value)
     return tv_map
 
 

@@ -101,12 +101,14 @@ from .value import (
     VariableNameValue,
     annotate_value,
     flatten_values,
+    get_namedtuple_field_value_from_synthetic,
     get_tv_map,
     has_any_base_value,
     is_union,
     iter_type_params_in_value,
     ordered_namedtuple_fields_from_synthetic,
     replace_fallback,
+    set_self,
     type_param_to_value,
     unite_values,
 )
@@ -292,10 +294,97 @@ def _replace_signature_returns(
     return signature
 
 
+def _iter_signature_variants(signature: MaybeSignature | None) -> Iterable[Signature]:
+    if signature is None:
+        return
+    if isinstance(signature, BoundMethodSignature):
+        yield from _iter_signature_variants(signature.signature)
+    elif isinstance(signature, Signature):
+        yield signature
+    else:
+        for sub_sig in signature.signatures:
+            yield from _iter_signature_variants(sub_sig)
+
+
+def _map_maybe_signature(
+    signature: MaybeSignature, transform: Callable[[Signature], Signature]
+) -> MaybeSignature:
+    if isinstance(signature, Signature):
+        return transform(signature)
+    if isinstance(signature, OverloadedSignature):
+        return OverloadedSignature(
+            [
+                cast(Signature, _map_maybe_signature(sub_sig, transform))
+                for sub_sig in signature.signatures
+            ]
+        )
+    if isinstance(signature, BoundMethodSignature):
+        inner = _map_maybe_signature(signature.signature, transform)
+        return BoundMethodSignature(
+            cast(ConcreteSignature, inner),
+            signature.self_composite,
+            return_override=signature.return_override,
+        )
+    return signature
+
+
+def _signature_allows_runtime_call(signature: MaybeSignature) -> bool:
+    return any(sig.allow_call for sig in _iter_signature_variants(signature))
+
+
+def _set_signature_allow_call(
+    signature: MaybeSignature,
+    *,
+    allow_call: bool,
+    callable_object: object | None = None,
+) -> MaybeSignature:
+    if not allow_call:
+        return signature
+
+    def transform(sig: Signature) -> Signature:
+        return dataclass_replace(
+            sig,
+            allow_call=True,
+            callable=sig.callable if callable_object is None else callable_object,
+        )
+
+    return _map_maybe_signature(signature, transform)
+
+
 def _signature_has_return_annotation(signature: ConcreteSignature) -> bool:
     if isinstance(signature, Signature):
         return signature.has_return_annotation
     return all(sig.has_return_annotation for sig in signature.signatures)
+
+
+def _signature_has_impl(signature: MaybeSignature | None) -> bool:
+    return any(
+        sig.impl is not None or sig.evaluator is not None
+        for sig in _iter_signature_variants(signature)
+    )
+
+
+def _signature_uses_custom_constructor(
+    signature: MaybeSignature | None, cls: type
+) -> bool:
+    return any(
+        sig.callable is not None and sig.callable is not cls
+        for sig in _iter_signature_variants(signature)
+    )
+
+
+def _signature_uses_metaclass_call(signature: MaybeSignature | None) -> bool:
+    return any(
+        getattr(sig.callable, "__name__", None) == "__call__"
+        for sig in _iter_signature_variants(signature)
+    )
+
+
+def _signature_returns_typeddict(signature: MaybeSignature | None) -> bool:
+    return any(
+        isinstance(sig.return_value, TypedDictValue)
+        for sig in _iter_signature_variants(signature)
+    )
 
 
 def _combine_signatures(signatures: Sequence[Signature]) -> ConcreteSignature | None:
@@ -954,7 +1043,10 @@ class Checker:
                 sig.return_value, self
             ) and sig.return_value.is_assignable(instance_type, self):
                 continue
-            if isinstance(replace_fallback(sig.return_value), TypeVarValue):
+            if any(
+                isinstance(subval, TypeVarValue)
+                for subval in sig.return_value.walk_values()
+            ):
                 continue
             if self._value_nominal_class_name(
                 sig.return_value
@@ -985,10 +1077,21 @@ class Checker:
         self_annotation_value: Value | None,
     ) -> ConcreteSignature | None:
         if isinstance(signature, BoundMethodSignature):
-            return signature.get_signature(ctx=self)
+            return signature.get_signature(
+                preserve_impl=True,
+                ctx=self,
+                self_annotation_value=self_annotation_value,
+            )
         concrete = self._as_concrete_signature(signature)
         if concrete is None:
             return None
+        if self_annotation_value is None:
+            return concrete.bind_self(
+                preserve_impl=True,
+                self_value=self_value,
+                self_annotation_value=None,
+                ctx=self,
+            )
         bound = make_bound_method(concrete, Composite(self_value), ctx=self)
         if bound is None:
             return None
@@ -1022,6 +1125,15 @@ class Checker:
             for param in params
         ):
             return None
+        generic_default = first_param.default
+        for params in params_by_sig[1:]:
+            param_default = params[0].default
+            if param_default is None:
+                continue
+            if generic_default is None:
+                generic_default = param_default
+            elif generic_default != param_default:
+                return None
 
         constraints: list[type] = []
         for sig, params in zip(signatures, params_by_sig):
@@ -1052,7 +1164,7 @@ class Checker:
         generic_param = SigParameter(
             first_param.name,
             kind=first_param.kind,
-            default=first_param.default,
+            default=generic_default,
             annotation=tv_value,
         )
         return Signature.make([generic_param], GenericValue(class_type, [tv_value]))
@@ -1149,15 +1261,56 @@ class Checker:
         )
         if method_sig is None:
             method_sig = self.arg_spec_cache.get_argspec(method_object)
+        binding_self_annotation = self_annotation_value
+        if binding_self_annotation is not None and any(
+            isinstance(subval, TypeVarValue)
+            for subval in binding_self_annotation.walk_values()
+        ):
+            binding_self_annotation = None
+        if (
+            method_name == "__init__"
+            and binding_self_annotation is None
+            and isinstance(method_sig, (Signature, OverloadedSignature))
+        ):
+            source_sigs = (
+                method_sig.signatures
+                if isinstance(method_sig, OverloadedSignature)
+                else [method_sig]
+            )
+            bound_sigs: list[Signature] = []
+            for source_sig in source_sigs:
+                params = list(source_sig.parameters.values())
+                source_self_annotation = params[0].annotation if params else None
+                bound = self._bind_constructor_like_signature(
+                    source_sig,
+                    self_value=bound_self_value,
+                    self_annotation_value=source_self_annotation,
+                )
+                if not isinstance(bound, Signature):
+                    continue
+                if self._is_uninformative_constructor_signature(bound):
+                    continue
+                return_value = (
+                    self._synthetic_constructor_return_from_self_annotation(
+                        source_self_annotation, default=bound_self_value, class_type=typ
+                    )
+                    if source_self_annotation is not None
+                    else bound_self_value
+                )
+                bound_sigs.append(bound.replace_return_value(return_value))
+            if len(bound_sigs) == 1:
+                return bound_sigs[0]
+            if bound_sigs:
+                return OverloadedSignature(bound_sigs)
         bound = self._bind_constructor_like_signature(
             method_sig,
             self_value=bound_self_value,
-            self_annotation_value=self_annotation_value,
+            self_annotation_value=binding_self_annotation,
         )
         if (
             bound is None
             and method_name == "__new__"
-            and self_annotation_value is not None
+            and binding_self_annotation is not None
         ):
             bound = self._bind_constructor_like_signature(
                 method_sig, self_value=bound_self_value, self_annotation_value=None
@@ -1178,6 +1331,7 @@ class Checker:
         instance_type = self._runtime_constructor_instance_value(typ)
         has_direct_new = "__new__" in typ.__dict__
         has_direct_init = "__init__" in typ.__dict__
+        inherited_init = safe_getattr(typ, "__init__", None)
 
         new_sig = self._get_runtime_constructor_method_signature(
             typ,
@@ -1196,6 +1350,20 @@ class Checker:
 
         if has_direct_new and not has_direct_init:
             init_sig = None
+        elif (
+            not has_direct_init
+            and inherited_init is object.__init__
+            and new_sig is not None
+        ):
+            # Builtin subclasses commonly inherit object.__init__ while exposing
+            # their real constructor surface via __new__.
+            init_sig = None
+        elif (
+            not has_direct_init
+            and inherited_init is object.__init__
+            and new_sig is None
+        ):
+            return None
 
         if new_sig is not None and init_sig is not None:
             if self._signature_allows_init_after_new(new_sig, instance_type):
@@ -1211,6 +1379,8 @@ class Checker:
         self, typ: type, *, instance_type: Value
     ) -> bool:
         metaclass = type(typ)
+        if metaclass is type:
+            return False
         if "__call__" not in safe_getattr(metaclass, "__dict__", {}):
             return False
         call_method = safe_getattr(metaclass, "__call__", None)
@@ -1718,11 +1888,15 @@ class Checker:
             if isinstance(metaclass_root, KnownValue) and isinstance(
                 metaclass_root.val, type
             ):
+                if metaclass_root.val is type:
+                    return None
                 if "__call__" not in safe_getattr(metaclass_root.val, "__dict__", {}):
                     return None
             elif isinstance(metaclass_root, TypedValue) and isinstance(
                 metaclass_root.typ, type
             ):
+                if metaclass_root.typ is type:
+                    return None
                 if "__call__" not in safe_getattr(metaclass_root.typ, "__dict__", {}):
                     return None
             if get_call_attribute is not None:
@@ -1739,8 +1913,8 @@ class Checker:
         )
         concrete = self._bind_constructor_like_signature(
             meta_sig,
-            self_value=SubclassValue(value.class_type),
-            self_annotation_value=value,
+            self_value=SubclassValue.make(instance_type),
+            self_annotation_value=SubclassValue.make(instance_type),
         )
         if concrete is None or self._is_uninformative_constructor_signature(concrete):
             return None
@@ -1819,7 +1993,7 @@ class Checker:
             "__new__",
             use_direct_method=has_direct_new,
             bound_self_value=instance_type,
-            self_annotation_value=value,
+            self_annotation_value=SubclassValue.make(instance_type),
             get_return_override=get_return_override,
             get_call_attribute=get_call_attribute,
         )
@@ -2060,6 +2234,7 @@ class Checker:
     def _synthetic_dataclass_field_annotation(self, attr: Value) -> Value:
         ctx = CheckerAttrContext(
             Composite(AnyValue(AnySource.inference)),
+            None,
             "",
             self.options,
             skip_mro=False,
@@ -2072,6 +2247,65 @@ class Checker:
     def _get_synthetic_namedtuple_constructor_signature(
         self, value: SyntheticClassObjectValue
     ) -> Signature | None:
+        def collect_default_fields(
+            synthetic: SyntheticClassObjectValue,
+        ) -> dict[str, Value]:
+            collected: dict[str, Value] = {}
+            for base in synthetic.base_classes:
+                for subval in flatten_values(replace_fallback(base)):
+                    if isinstance(subval, SyntheticClassObjectValue):
+                        collected.update(collect_default_fields(subval))
+                    elif isinstance(subval, KnownValue) and isinstance(
+                        subval.val, type
+                    ):
+                        if not is_namedtuple_class(subval.val):
+                            continue
+                        runtime_defaults = safe_getattr(
+                            subval.val, "_field_defaults", {}
+                        )
+                        if isinstance(runtime_defaults, dict):
+                            collected.update(
+                                {
+                                    name: KnownValue(default)
+                                    for name, default in runtime_defaults.items()
+                                    if isinstance(name, str)
+                                }
+                            )
+
+            runtime_class_value = synthetic.class_attributes.get(
+                "%runtime_class", UNINITIALIZED_VALUE
+            )
+            if (
+                isinstance(runtime_class_value, KnownValue)
+                and isinstance(runtime_class_value.val, type)
+                and is_namedtuple_class(runtime_class_value.val)
+            ):
+                runtime_defaults = safe_getattr(
+                    runtime_class_value.val, "_field_defaults", {}
+                )
+                if isinstance(runtime_defaults, dict):
+                    collected.update(
+                        {
+                            name: KnownValue(default)
+                            for name, default in runtime_defaults.items()
+                            if isinstance(name, str)
+                        }
+                    )
+
+            synthetic_defaults = synthetic.class_attributes.get(
+                "%namedtuple_default_fields"
+            )
+            if isinstance(synthetic_defaults, KnownValue) and isinstance(
+                synthetic_defaults.val, (set, frozenset, tuple, list)
+            ):
+                for name in synthetic_defaults.val:
+                    if not isinstance(name, str):
+                        continue
+                    collected[name] = synthetic.class_attributes.get(
+                        name, KnownValue(...)
+                    )
+            return collected
+
         has_namedtuple_marker_base = any(
             isinstance(base, KnownValue) and is_typing_name(base.val, "NamedTuple")
             for base in value.base_classes
@@ -2094,11 +2328,8 @@ class Checker:
             should_disable_runtime_call_for_namedtuple_class(runtime_namedtuple_class)
         )
         if (
-            (not has_namedtuple_marker and not has_namedtuple_runtime)
-            or value.is_dataclass
-            or "__init__" in value.method_attributes
-            or "__new__" in value.method_attributes
-        ):
+            not has_namedtuple_marker and not has_namedtuple_runtime
+        ) or value.is_dataclass:
             return None
         ordered_names = [
             name
@@ -2107,30 +2338,23 @@ class Checker:
         ]
         if not ordered_names:
             return None
-        default_fields: dict[str, Value] = {}
-        if runtime_namedtuple_class is not None:
-            runtime_defaults = safe_getattr(
-                runtime_namedtuple_class, "_field_defaults", {}
-            )
-            if isinstance(runtime_defaults, dict):
-                default_fields = {
-                    name: KnownValue(default)
-                    for name, default in runtime_defaults.items()
-                    if name in ordered_names
-                }
-        synthetic_defaults = value.class_attributes.get("%namedtuple_default_fields")
-        if isinstance(synthetic_defaults, KnownValue) and isinstance(
-            synthetic_defaults.val, (set, frozenset, tuple, list)
-        ):
-            for name in synthetic_defaults.val:
-                if isinstance(name, str) and name in ordered_names:
-                    default_fields.setdefault(name, KnownValue(...))
+        default_fields = {
+            name: default
+            for name, default in collect_default_fields(value).items()
+            if name in ordered_names
+        }
+        field_annotations: dict[str, Value] = {}
+        for name in ordered_names:
+            annotation = get_namedtuple_field_value_from_synthetic(value, name, self)
+            if annotation is None:
+                annotation = AnyValue(AnySource.inference)
+            field_annotations[name] = annotation
         params = [
             SigParameter(
                 name,
                 ParameterKind.POSITIONAL_OR_KEYWORD,
                 default=default_fields.get(name),
-                annotation=value.class_attributes[name],
+                annotation=field_annotations[name],
             )
             for name in ordered_names
         ]
@@ -2371,24 +2595,36 @@ class Checker:
                             )
                         return specialized_argspec
                     return origin_argspec
-            argspec = self.arg_spec_cache.get_argspec(value.val)
+            cached_argspec = self.arg_spec_cache.get_argspec(value.val)
+            argspec = cached_argspec
             if isinstance(value.val, type):
-                runtime_instance_type: Value | None = None
-                if self._runtime_has_explicit_new_return_annotation(value.val):
-                    runtime_instance_type = self._runtime_constructor_instance_value(
-                        value.val
-                    )
-                if (
-                    runtime_instance_type is not None
-                    and not self._runtime_metaclass_call_overrides_constructor(
+                runtime_instance_type = self._runtime_constructor_instance_value(
+                    value.val
+                )
+                runtime_metaclass_overrides_constructor = (
+                    self._runtime_metaclass_call_overrides_constructor(
                         value.val, instance_type=runtime_instance_type
                     )
-                ):
-                    runtime_constructor_sig = self._get_runtime_constructor_signature(
-                        value.val
-                    )
-                    if runtime_constructor_sig is not None:
-                        argspec = runtime_constructor_sig
+                )
+                runtime_constructor_sig: ConcreteSignature | None = None
+                preserve_custom_constructor = _signature_uses_custom_constructor(
+                    cached_argspec, value.val
+                ) and (
+                    not _signature_uses_metaclass_call(cached_argspec)
+                    or runtime_metaclass_overrides_constructor
+                )
+                should_preserve_cached_constructor = (
+                    _signature_has_impl(cached_argspec)
+                    or _signature_returns_typeddict(cached_argspec)
+                    or preserve_custom_constructor
+                )
+                if not should_preserve_cached_constructor:
+                    if not runtime_metaclass_overrides_constructor:
+                        runtime_constructor_sig = (
+                            self._get_runtime_constructor_signature(value.val)
+                        )
+                        if runtime_constructor_sig is not None:
+                            argspec = runtime_constructor_sig
                 synthetic_class = self.get_synthetic_class(value.val)
                 if synthetic_class is not None:
                     has_direct_new = "__new__" in synthetic_class.method_attributes
@@ -2411,34 +2647,46 @@ class Checker:
                         if argspec is not None
                         else None
                     )
-                    if has_direct_new and synthetic_constructor_sig is not None:
-                        argspec = synthetic_constructor_sig
-                    elif isinstance(synthetic_constructor_sig, OverloadedSignature):
-                        # Runtime signatures drop @overload relationships between
-                        # constructor parameters and return types.
-                        argspec = synthetic_constructor_sig
-                    elif (
-                        is_namedtuple_synthetic
-                        and synthetic_constructor_sig is not None
-                    ):
-                        argspec = synthetic_constructor_sig
-                    elif synthetic_class.is_dataclass:
-                        uses_default_object_constructor = (
-                            safe_getattr(value.val, "__init__", None) is object.__init__
-                            and safe_getattr(value.val, "__new__", None)
-                            is object.__new__
-                        )
-                        if synthetic_constructor_sig is not None and (
-                            argspec is None
-                            or uses_default_object_constructor
-                            or (
-                                concrete_argspec is not None
-                                and self._is_uninformative_constructor_signature(
-                                    concrete_argspec
-                                )
-                            )
+                    if not should_preserve_cached_constructor:
+                        if has_direct_new and synthetic_constructor_sig is not None:
+                            argspec = synthetic_constructor_sig
+                        elif isinstance(synthetic_constructor_sig, OverloadedSignature):
+                            # Runtime signatures drop @overload relationships between
+                            # constructor parameters and return types.
+                            argspec = synthetic_constructor_sig
+                        elif (
+                            is_namedtuple_synthetic
+                            and synthetic_constructor_sig is not None
                         ):
                             argspec = synthetic_constructor_sig
+                        elif (
+                            synthetic_constructor_sig is not None
+                            and not runtime_metaclass_overrides_constructor
+                            and runtime_constructor_sig is None
+                        ):
+                            argspec = synthetic_constructor_sig
+                        elif synthetic_class.is_dataclass:
+                            uses_default_object_constructor = (
+                                safe_getattr(value.val, "__init__", None)
+                                is object.__init__
+                                and safe_getattr(value.val, "__new__", None)
+                                is object.__new__
+                            )
+                            if synthetic_constructor_sig is not None and (
+                                argspec is None
+                                or uses_default_object_constructor
+                                or (
+                                    concrete_argspec is not None
+                                    and self._is_uninformative_constructor_signature(
+                                        concrete_argspec
+                                    )
+                                )
+                            ):
+                                argspec = synthetic_constructor_sig
+                if _signature_allows_runtime_call(cached_argspec):
+                    argspec = _set_signature_allow_call(
+                        argspec, allow_call=True, callable_object=value.val
+                    )
             if argspec is None:
                 if get_call_attribute is not None:
                     method_object = get_call_attribute(value)
@@ -2989,6 +3237,7 @@ class Checker:
         )
         if isinstance(inferred, CanAssignError):
             return normalized_attr
+        inferred = {**inferred, SelfT: self_annotation_value}
         return CallableValue(normalized_attr.signature.substitute_typevars(inferred))
 
     def is_synthetic_classmethod_attribute(
@@ -3001,8 +3250,13 @@ class Checker:
     def get_attribute_from_value(
         self, root_value: Value, attribute: str, *, prefer_typeshed: bool = False
     ) -> Value:
+        lookup_root_value: Value | None = None
         if isinstance(root_value, TypeVarValue):
-            root_value = root_value.get_fallback_value()
+            lookup_root_value = root_value.get_fallback_value()
+        elif isinstance(root_value, SubclassValue) and isinstance(
+            root_value.typ, TypeVarValue
+        ):
+            lookup_root_value = SubclassValue.make(root_value.typ.get_fallback_value())
         if is_union(root_value):
             results = [
                 self.get_attribute_from_value(
@@ -3013,6 +3267,7 @@ class Checker:
             return unite_values(*results)
         ctx = CheckerAttrContext(
             Composite(root_value),
+            lookup_root_value,
             attribute,
             self.options,
             skip_mro=False,
@@ -3194,6 +3449,19 @@ def _extract_protocol_members(typ: type) -> set[str]:
 class CheckerAttrContext(AttrContext):
     checker: Checker = field(repr=False)
 
+    def get_property_type_from_argspec(self, obj: property) -> Value:
+        if obj.fget is None:
+            return AnyValue(AnySource.inference)
+        getter = set_self(KnownValue(obj.fget), self.get_self_value())
+        getter_sig = self.checker.signature_from_value(getter)
+        bound = make_bound_method(getter_sig, self.root_composite, ctx=self.checker)
+        if bound is None:
+            return AnyValue(AnySource.inference)
+        concrete = bound.get_signature(ctx=self.checker)
+        if concrete is None or not concrete.has_return_value():
+            return AnyValue(AnySource.inference)
+        return concrete.return_value
+
     def resolve_name_from_typeshed(self, module: str, name: str) -> Value:
         return self.checker.ts_finder.resolve_name(module, name)
 
@@ -3236,6 +3504,8 @@ class CheckerAttrContext(AttrContext):
         value = _normalize_synthetic_attribute(value)
         if isinstance(value, CallableValue):
             root_value = replace_fallback(self.root_value)
+            if isinstance(root_value, AnnotatedValue):
+                root_value = replace_fallback(root_value.value)
             synthetic_root: SyntheticClassObjectValue | None = None
             if isinstance(root_value, GenericValue) and isinstance(root_value.typ, str):
                 synthetic_root = self.checker.get_synthetic_class(root_value.typ)

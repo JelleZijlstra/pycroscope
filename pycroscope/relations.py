@@ -11,7 +11,7 @@ import collections.abc
 import enum
 import struct
 import sys
-from collections.abc import Iterable, Iterator, MutableMapping, Sequence
+from collections.abc import Iterable, Iterator, Mapping, MutableMapping, Sequence
 from dataclasses import dataclass, replace
 from math import comb
 from types import FunctionType
@@ -42,6 +42,7 @@ from pycroscope.value import (
     Extension,
     GenericValue,
     GradualType,
+    InferenceVarValue,
     IntersectionValue,
     IterableValue,
     KnownValue,
@@ -67,6 +68,7 @@ from pycroscope.value import (
     TypedValue,
     TypeFormValue,
     TypeParam,
+    TypeVarLike,
     TypeVarMap,
     TypeVarParam,
     TypeVarTupleParam,
@@ -78,12 +80,16 @@ from pycroscope.value import (
     VariableNameValue,
     Variance,
     flatten_values,
+    freshen_typevars_for_inference,
+    get_type_params_by_typevar,
     get_typevar_variance,
     gradualize,
     intersect_bounds_maps,
     namedtuple_members_from_value,
+    replace_fallback,
     replace_known_sequence_value,
     stringify_object,
+    type_param_to_value,
     typify_literal,
     unify_bounds_maps,
     unite_values,
@@ -346,33 +352,37 @@ def _has_relation(
             return _has_relation(left, SubclassValue(right.class_type), relation, ctx)
 
     # TypeVarValue
-    if isinstance(left, TypeVarValue):
-        if left == right:
-            return {}
-        if (
-            left.typevar_param.typevar is SelfT
-            and left.typevar_param.bound is None
-            and not isinstance(right, (AnyValue, TypeVarValue))
-        ):
-            return CanAssignError(f"{right} is not {relation.description} {left}")
+    if (
+        isinstance(left, TypeVarValue)
+        and not isinstance(left, InferenceVarValue)
+        and isinstance(right, TypeVarValue)
+        and not isinstance(right, InferenceVarValue)
+        and left.typevar_param.typevar is right.typevar_param.typevar
+    ):
+        return {}
+    if isinstance(left, InferenceVarValue):
         if isinstance(right, TypeVarValue):
             bounds = [
-                LowerBound(left.typevar_param.typevar, right),
+                LowerBound(left.typevar_param, right),
                 *left.get_inherent_bounds(),
-                *right.get_inherent_bounds(),
             ]
         else:
             bounds = [
-                LowerBound(left.typevar_param.typevar, right),
+                LowerBound(left.typevar_param, right),
                 *left.get_inherent_bounds(),
             ]
         return left.make_bounds_map(bounds, right, ctx)
-    if isinstance(right, TypeVarValue) and not isinstance(left, MultiValuedValue):
-        bounds = [
-            UpperBound(right.typevar_param.typevar, left),
-            *right.get_inherent_bounds(),
-        ]
+    if isinstance(right, InferenceVarValue):
+        bounds = [UpperBound(right.typevar_param, left), *right.get_inherent_bounds()]
         return right.make_bounds_map(bounds, left, ctx)
+    if isinstance(left, TypeVarValue):
+        if left == right or isinstance(right, AnyValue):
+            return {}
+        return CanAssignError(f"{right} is not {relation.description} {left}")
+    if isinstance(right, TypeVarValue):
+        return _has_relation(
+            left, gradualize(right.get_upper_bound_value()), relation, ctx
+        )
     if isinstance(left, TypeVarTupleValue) and not isinstance(right, MultiValuedValue):
         if isinstance(right, TypeVarTupleValue) and left.typevar is right.typevar:
             return {}
@@ -381,7 +391,10 @@ def _has_relation(
             isinstance(right_as_tuple, SequenceValue) and right_as_tuple.typ is tuple
         ):
             right_as_tuple = SequenceValue(tuple, [(False, right)])
-        bounds = [LowerBound(left.typevar, right_as_tuple), *left.get_inherent_bounds()]
+        bounds = [
+            LowerBound(left.typevar_tuple_param, right_as_tuple),
+            *left.get_inherent_bounds(),
+        ]
         return {left.typevar: bounds}
     if isinstance(right, TypeVarTupleValue) and not isinstance(left, MultiValuedValue):
         left_as_tuple = replace_known_sequence_value(left)
@@ -390,7 +403,7 @@ def _has_relation(
         ):
             left_as_tuple = SequenceValue(tuple, [(False, left)])
         bounds = [
-            UpperBound(right.typevar, left_as_tuple),
+            UpperBound(right.typevar_tuple_param, left_as_tuple),
             *right.get_inherent_bounds(),
         ]
         return {right.typevar: bounds}
@@ -701,14 +714,14 @@ def _has_relation(
         elif isinstance(right, KnownValue):
             if not safe_isinstance(right.val, type):
                 return CanAssignError(f"{right} is not a type")
-            if isinstance(left.typ, TypeVarValue):
+            if isinstance(left.typ, InferenceVarValue):
                 return {
                     left.typ.typevar_param.typevar: [
-                        LowerBound(
-                            left.typ.typevar_param.typevar, TypedValue(right.val)
-                        )
+                        LowerBound(left.typ.typevar_param, TypedValue(right.val))
                     ]
                 }
+            elif isinstance(left.typ, TypeVarValue):
+                return CanAssignError(f"{right} is not {relation.description} {left}")
             elif isinstance(left.typ, TypedValue):
                 left_tobj = left.typ.get_type_object(ctx)
                 return left_tobj.can_assign(left, TypedValue(right.val), ctx)
@@ -719,12 +732,14 @@ def _has_relation(
             right_tobj = right.get_type_object(ctx)
             if not right_tobj.is_assignable_to_type(type):
                 return CanAssignError(f"{right} is not a type")
-            if isinstance(left.typ, TypeVarValue):
+            if isinstance(left.typ, InferenceVarValue):
                 return {
                     left.typ.typevar_param.typevar: [
-                        LowerBound(left.typ.typevar_param.typevar, right)
+                        LowerBound(left.typ.typevar_param, right)
                     ]
                 }
+            elif isinstance(left.typ, TypeVarValue):
+                return CanAssignError(f"{right} is not {relation.description} {left}")
             elif isinstance(left.typ, TypedValue):
                 if right_tobj.is_metatype_of(left.typ.get_type_object(ctx)):
                     return {}
@@ -742,12 +757,19 @@ def _has_relation(
                 return {}
             if isinstance(right.typ, TypedValue):
                 return left_tobj.can_assign(left, right, ctx)
-            elif isinstance(right.typ, TypeVarValue):
+            elif isinstance(right.typ, InferenceVarValue):
                 return {
                     right.typ.typevar_param.typevar: [
-                        UpperBound(right.typ.typevar_param.typevar, left)
+                        UpperBound(right.typ.typevar_param, left)
                     ]
                 }
+            elif isinstance(right.typ, TypeVarValue):
+                rigid_subclass = SubclassValue.make(right.typ.get_upper_bound_value())
+                if not isinstance(rigid_subclass, SubclassValue):
+                    return CanAssignError(
+                        f"{right} is not {relation.description} {left}"
+                    )
+                return _has_relation(left, rigid_subclass, relation, ctx)
             else:
                 return CanAssignError(f"{right} is not {relation.description} {left}")
         else:
@@ -773,6 +795,8 @@ def _has_relation(
                 return {}
             return CanAssignError(f"{right} is not {relation.description} {left}")
         if isinstance(right, TypedValue):
+            if left.val is None and right.typ is type(None):
+                return {}
             return CanAssignError(f"{right} is not {relation.description} {left}")
         return CanAssignError(f"{right} is not {relation.description} {left}")
 
@@ -926,7 +950,14 @@ def _has_relation(
                 right_for_check = original_right
             else:
                 right_for_check = right
-            return left_tobj.can_assign(left, right_for_check, ctx)
+            can_assign = left_tobj.can_assign(left, right_for_check, ctx)
+            if isinstance(can_assign, CanAssignError):
+                return can_assign
+            if isinstance(left, GenericValue) and left_tobj.is_protocol:
+                translated = _translate_generic_typevar_bounds(left, can_assign, ctx)
+                if translated:
+                    return unify_bounds_maps([can_assign, translated])
+            return can_assign
         elif isinstance(right, KnownValue):
             if isinstance(original_right, AnnotatedValue):
                 right_for_check = original_right
@@ -936,6 +967,11 @@ def _has_relation(
             if isinstance(can_assign, CanAssignError):
                 if left_tobj.is_instance(right.val):
                     return {}
+                return can_assign
+            if isinstance(left, GenericValue) and left_tobj.is_protocol:
+                translated = _translate_generic_typevar_bounds(left, can_assign, ctx)
+                if translated:
+                    return unify_bounds_maps([can_assign, translated])
             return can_assign
         else:
             return CanAssignError(f"{right} is not {relation.description} {left}")
@@ -972,6 +1008,127 @@ def _has_relation_for_generic_arg_pair(
     ):
         return CanAssignError(f"{left} is not {relation.description} {right}")
     return has_relation(left, right, relation, ctx)
+
+
+def _get_generic_annotation(annotation: Value) -> tuple[GenericValue, bool] | None:
+    annotation = replace_fallback(annotation)
+    if isinstance(annotation, GenericValue):
+        return annotation, False
+    if isinstance(annotation, SubclassValue) and isinstance(
+        annotation.typ, GenericValue
+    ):
+        return annotation.typ, True
+    return None
+
+
+def translate_generic_typevar_map(
+    annotation: Value, inferred: Mapping[TypeVarLike, Value], ctx: CanAssignContext
+) -> TypeVarMap:
+    generic_annotation_info = _get_generic_annotation(annotation)
+    if generic_annotation_info is None:
+        return {}
+    generic_annotation, _ = generic_annotation_info
+
+    translated: dict[TypeVarLike, Value] = {}
+    for type_param, arg in zip(
+        ctx.get_type_parameters(generic_annotation.typ),
+        generic_annotation.args,
+        strict=False,
+    ):
+        if not get_type_params_by_typevar(arg):
+            continue
+        inferred_value = inferred.get(type_param.typevar)
+        if inferred_value is None:
+            continue
+        arg_map = get_tv_map(arg, inferred_value, Relation.ASSIGNABLE, ctx)
+        if isinstance(arg_map, CanAssignError):
+            continue
+        translated.update(arg_map)
+    return translated
+
+
+def infer_positional_generic_typevar_map(
+    annotation: Value, receiver: Value, ctx: CanAssignContext
+) -> TypeVarMap:
+    generic_annotation_info = _get_generic_annotation(annotation)
+    if generic_annotation_info is None:
+        return {}
+    generic_annotation, is_subclass = generic_annotation_info
+    declared_type_params = ctx.get_type_parameters(generic_annotation.typ)
+    if len(declared_type_params) != len(generic_annotation.args):
+        return {}
+
+    positional_template: Value = GenericValue(
+        generic_annotation.typ,
+        [type_param_to_value(type_param) for type_param in declared_type_params],
+    )
+    if is_subclass:
+        positional_template = SubclassValue.make(positional_template)
+    positional_map = get_tv_map(positional_template, receiver, Relation.ASSIGNABLE, ctx)
+    if isinstance(positional_map, CanAssignError):
+        return {}
+    return translate_generic_typevar_map(annotation, positional_map, ctx)
+
+
+def _translate_generic_typevar_bounds(
+    left: GenericValue, bounds_map: BoundsMap, ctx: CanAssignContext
+) -> BoundsMap:
+    tv_map, errors = resolve_bounds_map(bounds_map, ctx)
+    if errors:
+        return {}
+
+    translated_tv_map = translate_generic_typevar_map(left, tv_map, ctx)
+    if not translated_tv_map:
+        return {}
+    type_params_by_typevar: dict[TypeVarLike, TypeParam] = {}
+    for arg in left.args:
+        type_params_by_typevar.update(get_type_params_by_typevar(arg))
+    return {
+        typevar: [
+            LowerBound(type_params_by_typevar[typevar], value),
+            UpperBound(type_params_by_typevar[typevar], value),
+        ]
+        for typevar, value in translated_tv_map.items()
+        if typevar in type_params_by_typevar
+    }
+
+
+def _get_exact_typevar_bindings(left: Value, right: Value) -> TypeVarMap:
+    from pycroscope.input_sig import InputSigValue
+
+    if isinstance(left, AnnotatedValue):
+        return _get_exact_typevar_bindings(left.value, right)
+    if isinstance(right, AnnotatedValue):
+        return _get_exact_typevar_bindings(left, right.value)
+
+    if (
+        isinstance(left, TypeVarValue)
+        and not isinstance(left, InferenceVarValue)
+        and isinstance(right, TypeVarValue)
+        and right.typevar_param.typevar is left.typevar_param.typevar
+    ):
+        return {left.typevar_param.typevar: right}
+
+    if (
+        isinstance(left, SubclassValue)
+        and isinstance(left.typ, TypeVarValue)
+        and not isinstance(left.typ, InferenceVarValue)
+        and isinstance(right, SubclassValue)
+        and isinstance(right.typ, TypeVarValue)
+        and right.typ.typevar_param.typevar is left.typ.typevar_param.typevar
+    ):
+        return {left.typ.typevar_param.typevar: right.typ}
+
+    if (
+        isinstance(left, InputSigValue)
+        and isinstance(left.input_sig, ParamSpecParam)
+        and isinstance(right, InputSigValue)
+        and isinstance(right.input_sig, ParamSpecParam)
+        and right.input_sig.param_spec is left.input_sig.param_spec
+    ):
+        return {left.input_sig.param_spec: right}
+
+    return {}
 
 
 def _has_relation_for_generic_arg(
@@ -1610,9 +1767,9 @@ def _capture_typevartuple_bounds_from_side(
         ],
     )
     bound = (
-        UpperBound(marker_member.typevar, captured)
+        UpperBound(marker_member.typevar_tuple_param, captured)
         if use_upper_bound
-        else LowerBound(marker_member.typevar, captured)
+        else LowerBound(marker_member.typevar_tuple_param, captured)
     )
     bounds_maps.append(
         {marker_member.typevar: [bound, *marker_member.get_inherent_bounds()]}
@@ -1882,12 +2039,34 @@ def _has_relation_typeddict_dict(
 def get_tv_map(
     left: Value, right: Value, relation: Relation, ctx: CanAssignContext
 ) -> TypeVarMap | CanAssignError:
-    bounds_map = has_relation(left, right, relation, ctx)
+    from pycroscope.input_sig import (
+        InputSigValue,
+        assert_input_sig,
+        input_sigs_have_relation,
+    )
+
+    original_left = left
+    left = freshen_typevars_for_inference(left)
+    if isinstance(left, InputSigValue):
+        if relation not in (Relation.ASSIGNABLE, Relation.SUBTYPE):
+            return CanAssignError(
+                "Cannot infer InputSig type variables for this relation"
+            )
+        bounds_map = input_sigs_have_relation(
+            assert_input_sig(left), assert_input_sig(right), relation, ctx
+        )
+    else:
+        bounds_map = has_relation(left, right, relation, ctx)
     if isinstance(bounds_map, CanAssignError):
         return bounds_map
-    tv_map, errors = resolve_bounds_map(bounds_map, ctx)
+    resolved_tv_map, errors = resolve_bounds_map(bounds_map, ctx)
     if errors:
         return CanAssignError(children=list(errors))
+    tv_map = dict(resolved_tv_map)
+    exact_bindings = _get_exact_typevar_bindings(original_left, right)
+    for typevar, value in exact_bindings.items():
+        if typevar not in tv_map or isinstance(tv_map[typevar], AnyValue):
+            tv_map[typevar] = value
     return tv_map
 
 

@@ -263,6 +263,41 @@ class TestDecorators(TestNameCheckVisitorBase):
             with collections_generator_three() as c:
                 assert_type(c, int)
 
+    @assert_passes()
+    def test_nullcontext(self):
+        import collections.abc
+        import contextlib
+        import types
+        from contextlib import AbstractContextManager
+
+        def capybara(flag: bool) -> None:
+            direct: AbstractContextManager[None] = contextlib.nullcontext()
+            with direct as direct_value:
+                assert_type(direct_value, None)
+
+            with contextlib.nullcontext(None) as explicit_value:
+                assert_type(explicit_value, None)
+
+            none_value: types.NoneType = None
+            assert_type(none_value, None)
+            assert_type(None, types.NoneType)
+
+            if flag:
+                ctx: AbstractContextManager[None] = contextlib.nullcontext()
+            else:
+
+                @contextlib.contextmanager
+                def make_cm() -> collections.abc.Generator[None]:
+                    yield
+
+                ctx = make_cm()
+
+            with ctx:
+                pass
+
+            with contextlib.nullcontext():
+                pass
+
 
 class TestAsyncGenerator(TestNameCheckVisitorBase):
     @assert_passes()

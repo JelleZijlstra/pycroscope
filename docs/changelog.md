@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Fixed `contextlib.nullcontext()`/`nullcontext(None)` handling and improved equivalence between `None` and `types.NoneType`.
+
 - Restore concise generic-parameter names in invalid type-alias diagnostics, so errors mention forms like `~T: str`, `~P`, and `Ts` instead of full internal parameter object reprs.
 - Fix `Generic[...]` and `Protocol[...]` base validation parity between importable and import-failure analysis, including PEP 695 class declarations like `class C[T](Generic[T])` that should be rejected consistently.
 - Fix `@dataclass_transform` parity between importable and import-failure analysis: pycroscope now reuses synthetic dataclass metadata for runtime-backed classes when checking attributes like `__hash__` and `__match_args__`, so hashability and class-pattern matching behave consistently in both modes.

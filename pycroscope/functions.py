@@ -61,6 +61,7 @@ from .value import (
     TypeVarValue,
     Value,
     annotate_value,
+    freshen_typevars_for_inference,
     get_tv_map,
     is_async_iterable,
     is_iterable,
@@ -490,7 +491,10 @@ def compute_parameters(
                     value = AnyValue(AnySource.error)
                 elif default is not None and inner_value is not None:
                     tv_map = has_relation(
-                        inner_value, default, Relation.ASSIGNABLE, ctx
+                        freshen_typevars_for_inference(inner_value),
+                        default,
+                        Relation.ASSIGNABLE,
+                        ctx,
                     )
                     if isinstance(tv_map, CanAssignError):
                         ctx.show_error(

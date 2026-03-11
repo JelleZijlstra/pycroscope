@@ -32,7 +32,7 @@ from collections.abc import Callable, Container, Generator, Iterable, Mapping, S
 from contextlib import AbstractContextManager
 from dataclasses import dataclass, replace
 from dataclasses import field as dataclass_field
-from functools import lru_cache, partial
+from functools import lru_cache
 from itertools import chain
 from pathlib import Path
 from types import GenericAlias
@@ -68,6 +68,7 @@ from .annotations import (
     Context,
     Qualifier,
     SyntheticEvaluator,
+    _normalize_paramspec_generic_args,
     annotation_expr_from_annotations,
     annotation_expr_from_ast,
     annotation_expr_from_runtime,
@@ -210,7 +211,6 @@ from .suggested_type import (
 )
 from .type_object import TypeObject, get_mro
 from .typeshed import TypeshedFinder
-from .typevar import resolve_bounds_map
 from .value import (
     NO_RETURN_VALUE,
     SYS_PLATFORM_EXTENSION,
@@ -288,6 +288,7 @@ from .value import (
     kv_pairs_from_mapping,
     make_coro_type,
     namedtuple_members_from_value,
+    ordered_namedtuple_fields_from_synthetic,
     replace_fallback,
     replace_known_sequence_value,
     set_self,
@@ -626,6 +627,7 @@ class _AttrContext(CheckerAttrContext):
     def __init__(
         self,
         root_composite: Composite,
+        lookup_root_value: Value | None,
         attr: str,
         visitor: "NameCheckVisitor",
         *,
@@ -639,6 +641,7 @@ class _AttrContext(CheckerAttrContext):
     ) -> None:
         super().__init__(
             root_composite,
+            lookup_root_value,
             attr,
             visitor.options,
             skip_mro=skip_mro,
@@ -782,6 +785,7 @@ class _AttrContext(CheckerAttrContext):
     ) -> "_AttrContext":
         return _AttrContext(
             root_composite,
+            self.lookup_root_value,
             attr,
             self.visitor,
             node=self.node,
@@ -791,6 +795,27 @@ class _AttrContext(CheckerAttrContext):
             prefer_typeshed=False,
             record_reads=self.record_reads,
             self_value=self.self_value,
+        )
+
+    def clone_for_root_composite(
+        self,
+        root_composite: Composite,
+        *,
+        lookup_root_value: Value | None = None,
+        self_value: Value | None = None,
+    ) -> "_AttrContext":
+        return _AttrContext(
+            root_composite,
+            lookup_root_value,
+            self.attr,
+            self.visitor,
+            node=self.node,
+            ignore_none=self.ignore_none,
+            skip_mro=self.skip_mro,
+            skip_unwrap=self.skip_unwrap,
+            prefer_typeshed=self.prefer_typeshed,
+            record_reads=self.record_reads,
+            self_value=self_value if self_value is not None else self.self_value,
         )
 
 
@@ -1351,6 +1376,7 @@ class ClassAttributeChecker:
             typ,
             attributes.AttrContext(
                 Composite(TypedValue(typ)),
+                None,
                 attr_name,
                 visitor.options,
                 skip_unwrap=False,
@@ -3139,6 +3165,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                             continue
                         ctx = _AttrContext(
                             Composite(root_value),
+                            None,
                             varname,
                             self,
                             node=node,
@@ -3162,6 +3189,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 ) or TypedValue(base_class)
             ctx = _AttrContext(
                 Composite(base_class_value),
+                None,
                 varname,
                 self,
                 node=node,
@@ -3709,6 +3737,11 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             is_namedtuple_synthetic = any(
                 _is_namedtuple_like_base_value(base_value) for base_value in base_values
             )
+            namedtuple_base_fields = (
+                _namedtuple_base_fields_from_base_values(base_values)
+                if self.module is None
+                else set()
+            )
             namedtuple_default_fields = frozenset(
                 statement.target.id
                 for statement in node.body
@@ -3717,18 +3750,41 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 and statement.simple
                 and statement.value is not None
             )
+            if (
+                self._is_checking()
+                and namedtuple_base_fields
+                and not any(
+                    _is_namedtuple_marker_base(base_value) for base_value in base_values
+                )
+            ):
+                for statement in node.body:
+                    if not (
+                        isinstance(statement, ast.AnnAssign)
+                        and isinstance(statement.target, ast.Name)
+                        and statement.simple
+                        and statement.target.id in namedtuple_base_fields
+                    ):
+                        continue
+                    self._show_error_if_checking(
+                        statement.target,
+                        f"Field {statement.target.id!r} conflicts with base NamedTuple field",
+                        error_code=ErrorCode.incompatible_override,
+                    )
             synthetic_base_values = tuple(
                 self._base_values_for_generic_analysis(node, base_values)
             ) or (KnownValue(object),)
             if synthetic_typeddict is not None:
                 self._validate_typeddict_class_syntax(node)
-            elif class_obj is None:
+            elif class_obj is None or is_namedtuple_synthetic:
                 synthetic_fq_name = self._get_synthetic_class_fq_name(node)
                 if synthetic_enum_runtime_class is not None:
                     synthetic_class_type: TypedValue = TypedValue(
                         synthetic_enum_runtime_class
                     )
                     class_scope_object = synthetic_enum_runtime_class
+                elif class_obj is not None:
+                    synthetic_class_type = TypedValue(class_obj)
+                    class_scope_object = class_obj
                 else:
                     synthetic_class_type = TypedValue(synthetic_fq_name)
                     class_scope_object = synthetic_fq_name
@@ -3748,6 +3804,10 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                         else None
                     ),
                 )
+                if class_obj is not None:
+                    synthetic_class.class_attributes["%runtime_class"] = KnownValue(
+                        class_obj
+                    )
                 if is_namedtuple_synthetic:
                     synthetic_class.class_attributes["%namedtuple"] = KnownValue(True)
                     if namedtuple_default_fields:
@@ -4393,6 +4453,12 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         value_to_store: Value | None = value
         if (
             self._is_checking()
+            and isinstance(synthetic_class, SyntheticClassObjectValue)
+            and _synthetic_class_is_namedtuple_like(synthetic_class)
+        ):
+            value_to_store = synthetic_class
+        if (
+            self._is_checking()
             and fallback_is_namedtuple
             and isinstance(class_obj, type)
         ):
@@ -4633,6 +4699,12 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             ):
                 continue
             base = replace_fallback(base_value)
+            if isinstance(
+                base, SyntheticClassObjectValue
+            ) and _synthetic_class_is_namedtuple_like(base):
+                namedtuple_base_fields.update(
+                    ordered_namedtuple_fields_from_synthetic(base)
+                )
             if isinstance(base, KnownValue):
                 runtime_base = base.val
             else:
@@ -5886,7 +5958,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             seen = set()
         synthetic_id = id(synthetic_class)
         if synthetic_id in seen:
-            return frozenset(), False
+            return frozenset[str](), False
         seen.add(synthetic_id)
 
         slot_names: set[str] = set()
@@ -5925,9 +5997,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         self, typ: type
     ) -> tuple[frozenset[str], bool] | None:
         if typ is object:
-            return frozenset(), False
+            return frozenset[str](), False
         if attributes.may_have_dynamic_attributes(typ):
-            return frozenset(), True
+            return frozenset[str](), True
         slot_names: set[str] = set()
         has_dict = False
         saw_slots = False
@@ -7570,6 +7642,37 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     return True
         return False
 
+    def _synthetic_class_or_bases_use_self_annotations(self, typ: str) -> bool:
+        synthetic_class = self.checker.get_synthetic_class(typ)
+        if synthetic_class is None:
+            return False
+        seen: set[int] = set()
+
+        def visit(synthetic_class: SyntheticClassObjectValue) -> bool:
+            synthetic_id = id(synthetic_class)
+            if synthetic_id in seen:
+                return False
+            seen.add(synthetic_id)
+            if any(
+                _value_contains_self(value)
+                for value in synthetic_class.class_attributes.values()
+            ):
+                return True
+            for base in synthetic_class.base_classes:
+                base = replace_fallback(base)
+                synthetic_base: SyntheticClassObjectValue | None = None
+                if isinstance(base, SyntheticClassObjectValue):
+                    synthetic_base = base
+                elif isinstance(base, GenericValue) and isinstance(base.typ, str):
+                    synthetic_base = self.checker.get_synthetic_class(base.typ)
+                elif isinstance(base, TypedValue) and isinstance(base.typ, str):
+                    synthetic_base = self.checker.get_synthetic_class(base.typ)
+                if synthetic_base is not None and visit(synthetic_base):
+                    return True
+            return False
+
+        return visit(synthetic_class)
+
     def _get_synthetic_self_returning_classmethods(
         self, node: ast.ClassDef
     ) -> set[str]:
@@ -7594,6 +7697,36 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             if isinstance(context, ast.ClassDef):
                 return context.name
         return None
+
+    def _current_class_node_from_context(self) -> ast.ClassDef | None:
+        for context in reversed(self.node_context.contexts):
+            if isinstance(context, ast.ClassDef):
+                return context
+        return None
+
+    def _current_class_bases_use_self_annotations(self) -> bool:
+        current_class_node = self._current_class_node_from_context()
+        if current_class_node is None:
+            return False
+        for base_node in current_class_node.bases:
+            base_value = replace_fallback(self.visit_expression(base_node))
+            synthetic_base: SyntheticClassObjectValue | None = None
+            if isinstance(base_value, SyntheticClassObjectValue):
+                synthetic_base = base_value
+            elif isinstance(base_value, GenericValue) and isinstance(
+                base_value.typ, str
+            ):
+                synthetic_base = self.checker.get_synthetic_class(base_value.typ)
+            elif isinstance(base_value, TypedValue) and isinstance(base_value.typ, str):
+                synthetic_base = self.checker.get_synthetic_class(base_value.typ)
+            if (
+                synthetic_base is not None
+                and self._synthetic_class_or_bases_use_self_annotations(
+                    synthetic_base.name
+                )
+            ):
+                return True
+        return False
 
     def _is_current_class_dataclass(self) -> bool:
         return self.current_dataclass_info is not None
@@ -7940,9 +8073,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 self.current_class if isinstance(self.current_class, type) else None
             )
             if (
-                self.module is not None
-                and enclosing_class is not None
-                and runtime_current_class is not None
+                enclosing_class is not None
                 and params
                 and params[0].is_self
                 and isinstance(params[0].node, ast.arg)
@@ -7963,11 +8094,59 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                         != param_info.param.annotation
                         for param_info in params[1:]
                     )
-                    or self._runtime_class_or_bases_use_self_annotations(
-                        runtime_current_class
+                    or (
+                        runtime_current_class is not None
+                        and self._runtime_class_or_bases_use_self_annotations(
+                            runtime_current_class
+                        )
+                    )
+                    or (
+                        runtime_current_class is None
+                        and isinstance(enclosing_class, TypedValue)
+                        and isinstance(enclosing_class.typ, str)
+                        and (
+                            self._synthetic_class_or_bases_use_self_annotations(
+                                enclosing_class.typ
+                            )
+                            or self._current_class_bases_use_self_annotations()
+                        )
                     )
                 )
-                if not uses_self_annotation:
+                if uses_self_annotation:
+                    if (
+                        return_annotation is not None
+                        and FunctionDecorator.classmethod not in decorator_kinds
+                        and getattr(node, "name", None) not in IMPLICIT_CLASSMETHODS
+                    ):
+                        return_annotation = return_annotation.substitute_typevars(
+                            substitutions
+                        )
+                    if (
+                        FunctionDecorator.classmethod in decorator_kinds
+                        or getattr(node, "name", None) in IMPLICIT_CLASSMETHODS
+                    ):
+                        inferred_self = SubclassValue(self_instance_value)
+                    else:
+                        inferred_self = self_instance_value
+                    params = [
+                        replace(
+                            params[0],
+                            param=replace(params[0].param, annotation=inferred_self),
+                        ),
+                        *[
+                            replace(
+                                param_info,
+                                param=replace(
+                                    param_info.param,
+                                    annotation=param_info.param.annotation.substitute_typevars(
+                                        substitutions
+                                    ),
+                                ),
+                            )
+                            for param_info in params[1:]
+                        ],
+                    ]
+                else:
                     if (
                         FunctionDecorator.classmethod in decorator_kinds
                         or getattr(node, "name", None) in IMPLICIT_CLASSMETHODS
@@ -8758,11 +8937,8 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         overload_signature: ConcreteSignature,
         implementation_signature: ConcreteSignature,
     ) -> CanAssignError | None:
-        can_assign = has_relation(
-            implementation_signature.return_value,
-            overload_signature.return_value,
-            Relation.ASSIGNABLE,
-            self,
+        can_assign = get_tv_map(
+            implementation_signature.return_value, overload_signature.return_value, self
         )
         if isinstance(can_assign, CanAssignError):
             return can_assign
@@ -9291,6 +9467,11 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         )
 
     def _maybe_replace_namedtuple_with_tuple_sequence(self, value: Value) -> Value:
+        root_value = replace_fallback(value)
+        if isinstance(root_value, SyntheticClassObjectValue):
+            return value
+        if isinstance(root_value, KnownValue) and isinstance(root_value.val, type):
+            return value
         members = namedtuple_members_from_value(value, self)
         if members is None:
             return value
@@ -11277,15 +11458,29 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             preserves_typevar = left_typevar is not None
             possibilities = []
             for constraint in same_tv_constraints:
-                result = self._visit_binop_no_mvv(
-                    Composite(constraint, left_composite.varname, left_composite.node),
-                    op,
-                    Composite(
-                        constraint, right_composite.varname, right_composite.node
-                    ),
-                    source_node,
-                    allow_call,
+                constrained_left = Composite(
+                    constraint, left_composite.varname, left_composite.node
                 )
+                constrained_right = Composite(
+                    constraint, right_composite.varname, right_composite.node
+                )
+                with self.catch_errors() as primary_errors:
+                    result = self._visit_binop_no_mvv(
+                        constrained_left, op, constrained_right, source_node, allow_call
+                    )
+                if primary_errors:
+                    with self.catch_errors() as retry_errors:
+                        retry_result = self._visit_binop_no_mvv(
+                            Composite(constraint),
+                            op,
+                            Composite(constraint),
+                            source_node,
+                            allow_call,
+                        )
+                    if retry_errors:
+                        self.show_caught_errors(primary_errors)
+                    else:
+                        result = retry_result
                 possibilities.append(result)
                 if preserves_typevar and result != constraint:
                     preserves_typevar = False
@@ -11667,6 +11862,25 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             can_assign = has_relation(
                 self.expected_return_value, value, Relation.ASSIGNABLE, self
             )
+            expected_return_values = tuple(self.expected_return_value.walk_values())
+            should_retry_with_tv_map = isinstance(can_assign, CanAssignError) and (
+                any(
+                    isinstance(subval, TypeVarValue)
+                    for subval in expected_return_values
+                )
+                and (
+                    not any(
+                        isinstance(subval, TypeVarValue)
+                        and subval.typevar_param.typevar is SelfT
+                        for subval in expected_return_values
+                    )
+                    or _value_carries_self_binding(value)
+                )
+            )
+            if should_retry_with_tv_map:
+                maybe_inferred = get_tv_map(self.expected_return_value, value, self)
+                if not isinstance(maybe_inferred, CanAssignError):
+                    can_assign = maybe_inferred
             if isinstance(can_assign, CanAssignError):
                 self._show_error_if_checking(
                     node,
@@ -11928,23 +12142,18 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             protocol = AsyncCustomContextManager
         else:
             protocol = CustomContextManager
-        val = GenericValue(
-            protocol,
-            [TypeVarValue(TypeVarParam(T_co)), TypeVarValue(TypeVarParam(U_co))],
-        )
-        can_assign = get_tv_map(val, context, self)
-        if isinstance(can_assign, CanAssignError):
+        inferred_context = self._infer_context_manager_types(context, protocol=protocol)
+        if isinstance(inferred_context, CanAssignError):
             self._show_error_if_checking(
                 node.context_expr,
                 f"{context} is not a context manager",
-                detail=str(can_assign),
+                detail=str(inferred_context),
                 error_code=ErrorCode.invalid_context_manager,
             )
             assigned = AnyValue(AnySource.error)
             can_suppress = False
         else:
-            assigned = can_assign.get(T_co, AnyValue(AnySource.generic_argument))
-            exit_assigned = can_assign.get(U_co, AnyValue(AnySource.generic_argument))
+            assigned, exit_assigned = inferred_context
             exit_boolability = get_boolability(exit_assigned)
             exit_is_bool_subtype = not isinstance(
                 has_relation(
@@ -11965,6 +12174,36 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             with override(self, "being_assigned", assigned):
                 self.visit(node.optional_vars)
         return can_suppress
+
+    def _infer_context_manager_types(
+        self, context: Value, *, protocol: type[object]
+    ) -> tuple[Value, Value] | CanAssignError:
+        members = list(flatten_values(context, unwrap_annotated=True))
+        if not members:
+            members = [context]
+        inferred: list[tuple[Value, Value]] = []
+        errors: list[CanAssignError] = []
+        for member in members:
+            val = GenericValue(
+                protocol,
+                [TypeVarValue(TypeVarParam(T_co)), TypeVarValue(TypeVarParam(U_co))],
+            )
+            can_assign = get_tv_map(val, member, self)
+            if isinstance(can_assign, CanAssignError):
+                errors.append(can_assign)
+                continue
+            inferred.append(
+                (
+                    can_assign.get(T_co, AnyValue(AnySource.generic_argument)),
+                    can_assign.get(U_co, AnyValue(AnySource.generic_argument)),
+                )
+            )
+        if errors:
+            return CanAssignError(children=errors)
+        return (
+            unite_values(*(assigned for assigned, _ in inferred)),
+            unite_values(*(exit_assigned for _, exit_assigned in inferred)),
+        )
 
     def visit_try_except(self, node: TryNode, *, is_try_star: bool = False) -> None:
         with self.scopes.subscope():
@@ -12543,12 +12782,14 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 )
             if isinstance(node.target, ast.Name) and alias_type is not None:
                 type_params = self._infer_type_alias_type_params(node.value, alias_type)
-                alias_evaluator = partial(
-                    self._evaluate_type_alias_node,
-                    node.value,
-                    suppress_errors=True,
-                    disallowed_type_param_identities=disallowed_type_params,
-                )
+
+                def alias_evaluator() -> Value:
+                    return self._evaluate_type_alias_node(
+                        node.value,
+                        suppress_errors=True,
+                        disallowed_type_param_identities=disallowed_type_params,
+                    )
+
                 explicit_type_alias_assignment_value = TypeAliasValue(
                     node.target.id,
                     self.module.__name__ if self.module is not None else "",
@@ -13280,16 +13521,18 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             for type_param in self._infer_type_alias_type_params(node.value, alias_type)
             if _is_valid_inferred_type_alias_type_param(type_param)
         )
-        if not type_params:
+        if not type_params and not isinstance(alias_type, TypeAliasValue):
             return None
-        alias = TypeAlias(
-            partial(
-                self._evaluate_type_alias_node,
+
+        def alias_evaluator() -> Value:
+            return self._evaluate_type_alias_node(
                 node.value,
                 suppress_errors=True,
                 disallowed_type_param_identities=disallowed_type_params,
-            ),
-            lambda type_params=tuple(type_params): type_params,
+            )
+
+        alias = TypeAlias(
+            alias_evaluator, lambda type_params=tuple(type_params): type_params
         )
         return (
             target_name,
@@ -13370,9 +13613,13 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         if has_circular_definition:
             evaluator = lambda: AnyValue(AnySource.error)
         else:
-            evaluator = lambda value_node=value_node: self._evaluate_type_alias_node(
-                value_node, suppress_errors=True
-            )
+            ast_value_node = cast(ast.AST, value_node)
+
+            def evaluator() -> Value:
+                return self._evaluate_type_alias_node(
+                    ast_value_node, suppress_errors=True
+                )
+
         return TypeAliasValue(
             name,
             self.module.__name__ if self.module is not None else "",
@@ -13807,45 +14054,68 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     if synthetic_subscript is not None:
                         return_value = synthetic_subscript
                     else:
-                        with self.catch_errors():
-                            getitem = self._get_dunder(
-                                node.value, stripped_root.value, "__getitem__"
+                        runtime_class_getitem: Value | None = None
+                        if isinstance(stripped_root.value, KnownValue) and isinstance(
+                            stripped_root.value.val, type
+                        ):
+                            bound_getitem = safe_getattr(
+                                stripped_root.value.val, "__getitem__", None
                             )
-                        if getitem is not UNINITIALIZED_VALUE:
+                            if (
+                                isinstance(bound_getitem, types.MethodType)
+                                and bound_getitem.__self__ is stripped_root.value.val
+                            ):
+                                runtime_class_getitem = KnownValue(bound_getitem)
+                        if runtime_class_getitem is not None:
                             return_value = self.check_call(
                                 node.value,
-                                getitem,
-                                [stripped_root, index_composite],
+                                runtime_class_getitem,
+                                [index_composite],
                                 allow_call=True,
                             )
                         else:
-                            # If there was no __getitem__, try __class_getitem__ in 3.7+
-                            cgi = self.get_attribute(
-                                Composite(stripped_root.value),
-                                "__class_getitem__",
-                                node.value,
-                            )
-                            if cgi is UNINITIALIZED_VALUE:
-                                self._show_error_if_checking(
-                                    node,
-                                    f"Object {value} does not support subscripting",
-                                    error_code=ErrorCode.unsupported_operation,
+                            with self.catch_errors():
+                                getitem = self._get_dunder(
+                                    node.value, stripped_root.value, "__getitem__"
                                 )
-                                return_value = AnyValue(AnySource.error)
+                            if getitem is not UNINITIALIZED_VALUE:
+                                return_value = self.check_call(
+                                    node.value,
+                                    getitem,
+                                    [stripped_root, index_composite],
+                                    allow_call=True,
+                                )
                             else:
-                                runtime_return_value = self.check_call(
-                                    node.value, cgi, [index_composite], allow_call=True
+                                # If there was no __getitem__, try __class_getitem__ in 3.7+
+                                cgi = self.get_attribute(
+                                    Composite(stripped_root.value),
+                                    "__class_getitem__",
+                                    node.value,
                                 )
-                                if isinstance(runtime_return_value, KnownValue):
-                                    return_value = runtime_return_value
-                                else:
-                                    return_value = PartialValue(
-                                        PartialValueOperation.SUBSCRIPT,
-                                        value,
+                                if cgi is UNINITIALIZED_VALUE:
+                                    self._show_error_if_checking(
                                         node,
-                                        self._maybe_unpack_tuple(index),
-                                        runtime_return_value,
+                                        f"Object {value} does not support subscripting",
+                                        error_code=ErrorCode.unsupported_operation,
                                     )
+                                    return_value = AnyValue(AnySource.error)
+                                else:
+                                    runtime_return_value = self.check_call(
+                                        node.value,
+                                        cgi,
+                                        [index_composite],
+                                        allow_call=True,
+                                    )
+                                    if isinstance(runtime_return_value, KnownValue):
+                                        return_value = runtime_return_value
+                                    else:
+                                        return_value = PartialValue(
+                                            PartialValueOperation.SUBSCRIPT,
+                                            value,
+                                            node,
+                                            self._maybe_unpack_tuple(index),
+                                            runtime_return_value,
+                                        )
 
                 if (
                     self._should_use_varname_value(return_value)
@@ -13956,15 +14226,15 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             if (
                 synthetic_class is None
                 or not isinstance(synthetic_class.class_type, TypedValue)
-                or not isinstance(synthetic_class.class_type.typ, str)
+                or not isinstance(synthetic_class.class_type.typ, (type, str))
             ):
                 return None
             synthetic_typ = synthetic_class.class_type.typ
-            root_for_partial = TypedValue(synthetic_typ)
+            root_for_partial = synthetic_class
         elif isinstance(value, SyntheticClassObjectValue):
             class_type = value.class_type
             if not isinstance(class_type, TypedValue) or not isinstance(
-                class_type.typ, str
+                class_type.typ, (type, str)
             ):
                 return None
             synthetic_typ = class_type.typ
@@ -13980,6 +14250,27 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         if self.checker.get_synthetic_class(synthetic_typ) is None:
             return None
         type_parameters = self.checker.get_type_parameters(synthetic_typ)
+        synthetic_class = self.checker.get_synthetic_class(synthetic_typ)
+        if not type_parameters and synthetic_class is not None:
+            type_parameters = list(
+                self.checker._infer_synthetic_type_params(synthetic_class)
+            )
+        has_explicit_class_getitem = (
+            synthetic_class is not None
+            and "__class_getitem__" in synthetic_class.class_attributes
+        )
+        if (
+            not type_parameters
+            and not has_explicit_class_getitem
+            and self._is_enum_class_key(synthetic_typ)
+        ):
+            return None
+        if type_parameters:
+            normalized_members = tuple(
+                _normalize_paramspec_generic_args(
+                    type_parameters, list(normalized_members), self, node=node
+                )
+            )
         generic_bases = self.checker.get_generic_bases(synthetic_typ, ())
         synthetic_base_key = next(
             (
@@ -13989,16 +14280,13 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             ),
             None,
         )
+        if synthetic_base_key is None and type_parameters:
+            synthetic_base_key = synthetic_typ
         if (
             not type_parameters
             and normalized_members
             and synthetic_base_key is not None
         ):
-            synthetic_class = self.checker.get_synthetic_class(synthetic_typ)
-            has_explicit_class_getitem = (
-                synthetic_class is not None
-                and "__class_getitem__" in synthetic_class.class_attributes
-            )
             has_fully_specialized_generic_base = any(
                 not self._class_keys_match(base_typ, synthetic_typ)
                 and isinstance(base_typ, str)
@@ -14488,6 +14776,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             return UNINITIALIZED_VALUE
         ctx = _AttrContext(
             lookup_composite,
+            None,
             attr,
             self,
             node=node,
@@ -14578,6 +14867,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         expected_type = self._normalize_expected_attribute_type_for_assignment(expected)
         if expected_type is None:
             return
+        use_typevar_inference = False
         class_key = self._class_key_from_attribute_root_value(root_composite.value)
         if (
             class_key is not None
@@ -14590,9 +14880,13 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             is not None
         ):
             expected_type = converter_input_type
-        can_assign = has_relation(
-            expected_type, self.being_assigned, Relation.ASSIGNABLE, self
-        )
+            use_typevar_inference = True
+        if use_typevar_inference:
+            can_assign = get_tv_map(expected_type, self.being_assigned, self)
+        else:
+            can_assign = has_relation(
+                expected_type, self.being_assigned, Relation.ASSIGNABLE, self
+            )
         if isinstance(can_assign, CanAssignError):
             self._show_error_if_checking(
                 node,
@@ -14787,12 +15081,16 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
 
         """
         resolved_self_value = self_value
+        lookup_root_value: Value | None = None
         if isinstance(root_composite.value, TypeVarValue):
             resolved_self_value = root_composite.value
-            root_composite = Composite(
-                value=root_composite.value.get_fallback_value(),
-                varname=root_composite.varname,
-                node=root_composite.node,
+            lookup_root_value = root_composite.value.get_fallback_value()
+        elif isinstance(root_composite.value, SubclassValue) and isinstance(
+            root_composite.value.typ, TypeVarValue
+        ):
+            resolved_self_value = root_composite.value
+            lookup_root_value = SubclassValue.make(
+                root_composite.value.typ.get_fallback_value()
             )
         if root_composite.value is NO_RETURN_VALUE:
             return NO_RETURN_VALUE
@@ -14947,6 +15245,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             return intersect_multi(results, self)
         ctx = _AttrContext(
             root_composite,
+            lookup_root_value,
             attr,
             self,
             node=node,
@@ -16515,7 +16814,47 @@ def _is_namedtuple_like_base_value(base_value: Value) -> bool:
     for subval in flatten_values(replace_fallback(base_value)):
         if _is_namedtuple_marker_base(subval):
             return True
+        if isinstance(subval, SyntheticClassObjectValue):
+            if _synthetic_class_is_namedtuple_like(subval):
+                return True
+            continue
+        if isinstance(subval, KnownValue) and isinstance(subval.val, type):
+            if is_namedtuple_class(subval.val):
+                return True
     return False
+
+
+def _synthetic_class_is_namedtuple_like(
+    synthetic_class: SyntheticClassObjectValue,
+) -> bool:
+    namedtuple_marker = synthetic_class.class_attributes.get("%namedtuple")
+    if isinstance(namedtuple_marker, KnownValue) and namedtuple_marker.val is True:
+        return True
+    runtime_class = synthetic_class.class_attributes.get("%runtime_class")
+    return (
+        isinstance(runtime_class, KnownValue)
+        and isinstance(runtime_class.val, type)
+        and is_namedtuple_class(runtime_class.val)
+    )
+
+
+def _namedtuple_base_fields_from_base_values(base_values: Sequence[Value]) -> set[str]:
+    fields: set[str] = set()
+    for base_value in base_values:
+        for subval in flatten_values(replace_fallback(base_value)):
+            if isinstance(subval, SyntheticClassObjectValue):
+                if _synthetic_class_is_namedtuple_like(subval):
+                    fields.update(ordered_namedtuple_fields_from_synthetic(subval))
+            elif isinstance(subval, KnownValue) and isinstance(subval.val, type):
+                if is_namedtuple_class(subval.val):
+                    field_names = safe_getattr(subval.val, "_fields", ())
+                    if isinstance(field_names, tuple):
+                        fields.update(
+                            field_name
+                            for field_name in field_names
+                            if isinstance(field_name, str)
+                        )
+    return fields
 
 
 def _populate_fallback_runtime_class(
@@ -17061,18 +17400,11 @@ def _specialize_first_positional_parameter_type_in_signature(
     parameter_type = _first_positional_parameter_type_in_signature(signature)
     if parameter_type is None:
         return None
-    bounds_map = has_relation(
-        expected_return, signature.return_value, Relation.ASSIGNABLE, checker
-    )
-    if isinstance(bounds_map, CanAssignError):
+    typevar_map = get_tv_map(signature.return_value, expected_return, checker)
+    if isinstance(typevar_map, CanAssignError):
         return None
     if not signature.all_typevars:
         return parameter_type
-    typevar_map, errors = resolve_bounds_map(
-        bounds_map, checker, all_typevars=signature.all_typevars
-    )
-    if errors:
-        return None
     return parameter_type.substitute_typevars(typevar_map)
 
 
@@ -17126,7 +17458,9 @@ def _callable_first_positional_parameter_type(
             parameter_types.append(parameter_type)
         if not parameter_types:
             return None
-        return unite_values(*parameter_types)
+        if len(parameter_types) == 1:
+            return parameter_types[0]
+        return MultiValuedValue(parameter_types)
     return None
 
 
@@ -17148,7 +17482,9 @@ def _callable_first_positional_parameter_type_for_return(
             if parameter_type is not None:
                 parameter_types.append(parameter_type)
         if parameter_types:
-            return unite_values(*parameter_types)
+            if len(parameter_types) == 1:
+                return parameter_types[0]
+            return MultiValuedValue(parameter_types)
     return _callable_first_positional_parameter_type(signature, checker=checker)
 
 
@@ -17421,6 +17757,15 @@ def _function_signature_contains_self(info: FunctionInfo) -> bool:
 
 def _return_annotation_contains_self(return_annotation: Value | None) -> bool:
     return _value_contains_self(return_annotation)
+
+
+def _value_carries_self_binding(value: Value) -> bool:
+    if isinstance(value, KnownValueWithTypeVars) and SelfT in value.typevars:
+        return True
+    return any(
+        isinstance(subval, TypeVarValue) and subval.typevar_param.typevar is SelfT
+        for subval in value.walk_values()
+    )
 
 
 def _is_dataclass_classvar_final(expr: AnnotationExpr) -> bool:

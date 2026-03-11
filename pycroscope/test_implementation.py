@@ -384,6 +384,31 @@ class TestLen(TestNameCheckVisitorBase):
                     assert_type(values[0], int)
 
     @assert_passes()
+    def test_narrowed_tuple_attr_bool_check(self):
+        from typing_extensions import assert_type
+
+        class Box:
+            values: tuple[int, ...]
+
+        def capybara(box: Box) -> None:
+            if not box.values:
+                return
+            first = box.values[1] if len(box.values) >= 2 else box.values[0]
+            assert_type(first, int)
+
+    @assert_passes()
+    def test_iter_returns_iterator(self):
+        from collections.abc import Iterator
+
+        from typing_extensions import assert_type
+
+        def capybara(d: dict[str, int]) -> None:
+            assert_type(iter(d.values()), Iterator[int])
+
+        def empty_iter() -> Iterator[int]:
+            return iter(())
+
+    @assert_passes()
     def test_narrowing_other_types(self):
         from typing_extensions import Literal, Never, TypedDict, assert_type
 

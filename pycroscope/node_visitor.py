@@ -228,7 +228,7 @@ class BaseNodeVisitor(ast.NodeVisitor):
         self.fail_after_first = fail_after_first
         self._logging_level = verbosity
         self.logger = logging.Logger(self.__class__.__name__, level=verbosity)
-        self.logger.addHandler(logging.StreamHandler())
+        self.logger.addHandler(logging.StreamHandler(sys.stderr))
         self.settings = settings
         self.all_failures = []
         self.used_ignores = set()

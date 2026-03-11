@@ -21,6 +21,7 @@ from .value import (
     TypedValue,
     TypeVarValue,
     Value,
+    freshen_typevars_for_inference,
     is_overlapping,
     replace_fallback,
     unannotate,
@@ -60,20 +61,21 @@ class IsAssignablePredicate:
     positive_only: bool
 
     def __call__(self, value: Value, positive: bool) -> Value | None:
-        compatible = is_overlapping(self.pattern_value, value, self.ctx)
+        pattern_value = freshen_typevars_for_inference(self.pattern_value)
+        compatible = is_overlapping(pattern_value, value, self.ctx)
         if positive:
             if not compatible:
                 return None
-            if self.pattern_value.is_assignable(value, self.ctx):
-                if is_universally_assignable(value, unannotate(self.pattern_value)):
-                    return self.pattern_value
+            if pattern_value.is_assignable(value, self.ctx):
+                if is_universally_assignable(value, unannotate(pattern_value)):
+                    return pattern_value
                 return value
             else:
-                return self.pattern_value
+                return pattern_value
         elif not self.positive_only:
-            if self.pattern_value.is_assignable(
+            if pattern_value.is_assignable(
                 value, self.ctx
-            ) and not is_universally_assignable(value, unannotate(self.pattern_value)):
+            ) and not is_universally_assignable(value, unannotate(pattern_value)):
                 return None
         return value
 

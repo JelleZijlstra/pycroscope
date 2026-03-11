@@ -15,7 +15,7 @@ import warnings
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, field, replace
 from types import FunctionType, MethodType
-from typing import TYPE_CHECKING, Any, ClassVar, Literal, NamedTuple, TypeVar
+from typing import TYPE_CHECKING, Any, ClassVar, Literal, NamedTuple, TypeVar, cast
 
 from typing_extensions import Protocol, Self, assert_never
 
@@ -74,8 +74,10 @@ from .value import (
     GenericValue,
     HasAttrExtension,
     HasAttrGuardExtension,
+    InferenceVarValue,
     IntersectionValue,
     KnownValue,
+    KnownValueWithTypeVars,
     KVPair,
     LowerBound,
     MultiValuedValue,
@@ -112,6 +114,7 @@ from .value import (
     flatten_values,
     get_tv_map,
     iter_type_params_in_value,
+    make_inference_typevar_map,
     replace_fallback,
     replace_known_sequence_value,
     stringify_object,
@@ -152,7 +155,7 @@ def _is_staticmethod_callable(func: FunctionType) -> bool:
 
 
 def _should_widen_constructor_typevar(typevar: TypeVarLike) -> bool:
-    return is_instance_of_typing_name(typevar, "TypeVar")
+    return is_instance_of_typing_name(typevar, "TypeVar") and typevar is not SelfT
 
 
 def _should_widen_constructor_typevar_solutions(
@@ -212,7 +215,7 @@ class MaximumPositionalArgs(IntegerOption):
     """If calls have more than this many positional arguments, attempt to
     turn them into keyword arguments."""
 
-    default_value = 10
+    default_value: ClassVar[Any] = 10
     name = "maximum_positional_args"
 
 
@@ -622,10 +625,19 @@ class Signature:
     """Type evaluator for this function."""
     deprecated: str | None = None
     """Deprecation message for this callable."""
+    bound_receiver_param_name: str | None = field(
+        default=None, repr=False, compare=False, hash=False
+    )
+    bound_receiver_composite: Composite | None = field(
+        default=None, repr=False, compare=False, hash=False
+    )
     typevars_of_params: dict[str, list[TypeVarLike]] = field(
         init=False, default_factory=dict, repr=False, compare=False, hash=False
     )
     all_typevars: set[TypeVarLike] = field(
+        init=False, default_factory=set, repr=False, compare=False, hash=False
+    )
+    inferable_typevars: set[TypeVarLike] = field(
         init=False, default_factory=set, repr=False, compare=False, hash=False
     )
 
@@ -650,6 +662,7 @@ class Signature:
                 for typevar in tv_list
             }
         )
+        self.inferable_typevars.update(self.all_typevars)
         self.validate()
 
     def __hash__(self) -> int:
@@ -1514,18 +1527,29 @@ class Signature:
         is_overload: bool = False,
     ) -> CallReturn:
         variables = {key: composite.value for key, (_, composite) in bound_args.items()}
+        composites = {param: composite for param, (_, composite) in bound_args.items()}
+        if (
+            self.bound_receiver_param_name is not None
+            and self.bound_receiver_composite is not None
+            and self.bound_receiver_param_name not in variables
+        ):
+            variables[self.bound_receiver_param_name] = (
+                self.bound_receiver_composite.value
+            )
+            composites[self.bound_receiver_param_name] = self.bound_receiver_composite
 
         if self.callable is not None and ctx.visitor is not None:
             ctx.visitor.record_call(self.callable, variables)
 
         return_value = self.return_value
-        typevar_values: TypeVarMap = {}
-        if self.all_typevars:
+        typevar_values: dict[TypeVarLike, Value] = {}
+        if self.inferable_typevars:
+            inference_signature = self.freshen_typevars_for_inference()
             bounds_maps = []
-            for param_name in self.typevars_of_params:
+            for param_name in inference_signature.typevars_of_params:
                 if param_name == self._return_key:
                     continue
-                param = self.parameters[param_name]
+                param = inference_signature.parameters[param_name]
                 bounds_map, _, _ = self._check_param_type_compatibility(
                     param, bound_args[param_name][1], ctx
                 )
@@ -1534,9 +1558,44 @@ class Signature:
                 else:
                     bounds_maps.append(bounds_map)
             resolved_bounds_map = unify_bounds_maps(bounds_maps)
-            typevar_values, errors = resolve_bounds_map(
-                resolved_bounds_map, ctx.can_assign_ctx, all_typevars=self.all_typevars
+            resolved_typevar_values, errors = resolve_bounds_map(
+                resolved_bounds_map,
+                ctx.can_assign_ctx,
+                all_typevars=inference_signature.inferable_typevars,
             )
+            typevar_values = dict(resolved_typevar_values)
+            for param_name, (_position, composite) in bound_args.items():
+                param = self.parameters[param_name]
+                param_tv_map = relations.get_tv_map(
+                    param.annotation,
+                    composite.value,
+                    Relation.ASSIGNABLE,
+                    ctx.can_assign_ctx,
+                )
+                if isinstance(param_tv_map, CanAssignError):
+                    continue
+                for typevar, value in param_tv_map.items():
+                    if isinstance(typevar_values.get(typevar), AnyValue):
+                        typevar_values[typevar] = value
+            if SelfT in self.inferable_typevars and self.parameters:
+                first_param_name = next(iter(self.parameters))
+                if first_param_name in bound_args and isinstance(
+                    typevar_values.get(SelfT), AnyValue
+                ):
+                    self_value = bound_args[first_param_name][1].value
+                    if (
+                        isinstance(self_value, KnownValueWithTypeVars)
+                        and SelfT in self_value.typevars
+                    ):
+                        typevar_values[SelfT] = self_value.typevars[SelfT]
+                    elif isinstance(self_value, SubclassValue):
+                        typevar_values[SelfT] = self_value.typ
+                    elif isinstance(self_value, KnownValue) and isinstance(
+                        self_value.val, type
+                    ):
+                        typevar_values[SelfT] = TypedValue(self_value.val)
+                    else:
+                        typevar_values[SelfT] = self_value
             should_widen_constructor_typevars = ctx.visitor is not None and (
                 _should_widen_constructor_typevar_solutions(self.callable, return_value)
                 or (
@@ -1568,8 +1627,22 @@ class Signature:
                     detail=str(CanAssignError(children=list(errors))),
                 )
                 return self.get_default_return()
-            if self._return_key in self.typevars_of_params:
-                return_value = return_value.substitute_typevars(typevar_values)
+
+        if self._return_key in self.typevars_of_params:
+            return_value = return_value.substitute_typevars(typevar_values)
+
+        if (
+            not self.parameters
+            and not self.inferable_typevars
+            and self._return_key in self.typevars_of_params
+        ):
+            zero_arg_defaults = {
+                typevar: AnyValue(AnySource.generic_argument)
+                for typevar in self.typevars_of_params[self._return_key]
+                if _should_widen_constructor_typevar(typevar)
+            }
+            if zero_arg_defaults:
+                return_value = return_value.substitute_typevars(zero_arg_defaults)
 
         param_typevar_values = {
             typevar: value
@@ -1618,7 +1691,6 @@ class Signature:
                 # You only get to do this once per call.
                 is_overload = False
 
-        composites = {param: composite for param, (_, composite) in bound_args.items()}
         # don't call the implementation function if we had an error, so that
         # the implementation function doesn't have to worry about basic
         # type checking
@@ -1664,10 +1736,11 @@ class Signature:
             runtime_return = self._maybe_perform_call(preprocessed, ctx)
             if runtime_return is not None:
                 if isinstance(return_value, ImplReturn):
+                    impl_return = cast(ImplReturn, return_value)
                     return_value = ImplReturn(
                         runtime_return,
-                        return_value.constraint,
-                        return_value.no_return_unless,
+                        impl_return.constraint,
+                        impl_return.no_return_unless,
                     )
                 else:
                     return_value = runtime_return
@@ -1732,7 +1805,7 @@ class Signature:
 
         try:
             # Runtime calls are speculative for inference, so suppress deprecations.
-            with warnings.catch_warnings():
+            with warnings.catch_warnings(record=False):
                 warnings.simplefilter("ignore", DeprecationWarning)
                 value = self.callable(*args, **kwargs)
         except Exception as e:
@@ -1828,7 +1901,9 @@ class Signature:
                 return param
         return None
 
-    def substitute_typevars(self, typevars: TypeVarMap) -> "Signature":
+    def substitute_typevars(
+        self, typevars: TypeVarMap, *, infer_substituted_typevars: bool = False
+    ) -> "Signature":
         params = []
         for name, param in self.parameters.items():
             if param.kind is ParameterKind.PARAM_SPEC:
@@ -1956,11 +2031,20 @@ class Signature:
                 params.append((name, param.substitute_typevars(typevars)))
         params_dict = dict(params)
         return_value = self.return_value.substitute_typevars(typevars)
+        bound_receiver_composite = (
+            None
+            if self.bound_receiver_composite is None
+            else self.bound_receiver_composite.substitute_typevars(typevars)
+        )
         # Returning the same object helps the local return value check, which relies
         # on identity of signature objects.
-        if return_value == self.return_value and params_dict == self.parameters:
+        if (
+            return_value == self.return_value
+            and params_dict == self.parameters
+            and bound_receiver_composite == self.bound_receiver_composite
+        ):
             return self
-        return Signature(
+        signature = Signature(
             params_dict,
             return_value,
             impl=self.impl,
@@ -1970,7 +2054,19 @@ class Signature:
             allow_call=self.allow_call,
             evaluator=self.evaluator,
             deprecated=self.deprecated,
+            bound_receiver_param_name=self.bound_receiver_param_name,
+            bound_receiver_composite=bound_receiver_composite,
         )
+        if infer_substituted_typevars:
+            inferable_typevars = set(signature.all_typevars)
+        else:
+            inferable_typevars = {
+                typevar
+                for typevar in self.inferable_typevars
+                if typevar in signature.all_typevars and typevar not in typevars
+            }
+        object.__setattr__(signature, "inferable_typevars", inferable_typevars)
+        return signature
 
     def walk_values(self) -> Iterable[Value]:
         yield from self.return_value.walk_values()
@@ -2020,7 +2116,7 @@ class Signature:
         if return_annotation is None:
             return_annotation = AnyValue(AnySource.unannotated)
             has_return_annotation = False
-        param_dict = {}
+        param_dict: dict[str, SigParameter] = {}
         i = 0
         for param in parameters:
             if param.kind is ParameterKind.VAR_POSITIONAL and isinstance(
@@ -2042,7 +2138,7 @@ class Signature:
                 i += 1
         if deprecated is None and callable is not None:
             deprecated = safe_getattr(callable, "__deprecated__", None)
-        return cls(
+        return Signature(
             param_dict,
             return_value=return_annotation,
             impl=impl,
@@ -2096,11 +2192,13 @@ class Signature:
         preserve_impl: bool = False,
         self_annotation_value: Value | None = None,
         self_value: Value | None = None,
+        self_composite: Composite | None = None,
         ctx: CanAssignContext,
     ) -> "Signature | None":
         params = list(self.parameters.values())
         if not params:
             return None
+        receiver_param_name = params[0].name
         kind = params[0].kind
         if kind in (ParameterKind.ELLIPSIS, ParameterKind.VAR_POSITIONAL):
             new_params = params
@@ -2121,12 +2219,18 @@ class Signature:
         else:
             return None
         if self_annotation_value is not None:
-            tv_map = get_tv_map(self_annotation, self_annotation_value, ctx)
+            tv_map = relations.get_tv_map(
+                self_annotation, self_annotation_value, Relation.ASSIGNABLE, ctx
+            )
             if isinstance(tv_map, CanAssignError):
                 return None
         else:
             tv_map = {}
-        if self_value is not None:
+        if SelfT not in tv_map and self_value is None:
+            derived_self = _self_type_from_annotation(self_annotation)
+            if derived_self is not None:
+                tv_map = {**tv_map, SelfT: derived_self}
+        if self_value is not None and SelfT not in tv_map:
             tv_map = {**tv_map, SelfT: self_value}
         if tv_map:
             new_params = {
@@ -2136,7 +2240,7 @@ class Signature:
         else:
             new_params = {param.name: param for param in new_params}
             return_value = self.return_value
-        return Signature(
+        signature = Signature(
             new_params,
             return_value,
             # We don't carry over the implementation function by default, because it
@@ -2147,7 +2251,33 @@ class Signature:
             has_return_annotation=self.has_return_value(),
             allow_call=self.allow_call,
             deprecated=self.deprecated,
+            bound_receiver_param_name=(
+                receiver_param_name
+                if preserve_impl and self_value is not None
+                else None
+            ),
+            bound_receiver_composite=(
+                self_composite
+                if preserve_impl and self_composite is not None
+                else (
+                    Composite(self_value)
+                    if preserve_impl and self_value is not None
+                    else None
+                )
+            ),
         )
+        object.__setattr__(
+            signature,
+            "inferable_typevars",
+            {
+                typevar
+                for param in signature.parameters.values()
+                for type_param in iter_type_params_in_value(param.annotation)
+                for typevar in [type_param.typevar]
+                if typevar in self.inferable_typevars and typevar not in tv_map
+            },
+        )
+        return signature
 
     def has_return_value(self) -> bool:
         return self.has_return_annotation or self.evaluator is not None
@@ -2155,11 +2285,43 @@ class Signature:
     def replace_return_value(self, return_value: Value) -> Self:
         return replace(self, return_value=return_value)
 
+    def freshen_typevars_for_inference(self) -> "Signature":
+        inference_map: dict[TypeVarLike, Value] = {}
+        for value in [
+            *(param.annotation for param in self.parameters.values()),
+            self.return_value,
+        ]:
+            for type_param in iter_type_params_in_value(value):
+                if (
+                    isinstance(type_param, TypeVarParam)
+                    and type_param.typevar in self.inferable_typevars
+                ):
+                    inference_map.setdefault(
+                        type_param.typevar, InferenceVarValue(type_param)
+                    )
+        if not inference_map:
+            return self
+        return self.substitute_typevars(inference_map, infer_substituted_typevars=True)
+
 
 ELLIPSIS_PARAM = SigParameter("...", ParameterKind.ELLIPSIS)
 ANY_SIGNATURE = Signature.make([ELLIPSIS_PARAM], AnyValue(AnySource.explicit))
 """:class:`Signature` that should be compatible with any other
 :class:`Signature`."""
+
+
+def _self_type_from_annotation(annotation: Value) -> Value | None:
+    annotation = replace_fallback(annotation)
+    if isinstance(annotation, SubclassValue):
+        return annotation.typ
+    if (
+        isinstance(annotation, TypeVarValue)
+        and annotation.typevar_param.typevar is SelfT
+    ):
+        return annotation.get_upper_bound_value()
+    if isinstance(annotation, (TypedValue, GenericValue)):
+        return annotation
+    return None
 
 
 def preprocess_args(
@@ -2389,7 +2551,9 @@ def _preprocess_kwargs_no_mvv(
     elif isinstance(value, DictIncompleteValue):
         return _preprocess_kwargs_kv_pairs(value.kv_pairs, ctx)
     else:
-        mapping_tv_map = get_tv_map(MappingValue, value, ctx.can_assign_ctx)
+        mapping_tv_map = relations.get_tv_map(
+            MappingValue, value, Relation.ASSIGNABLE, ctx.can_assign_ctx
+        )
         if isinstance(mapping_tv_map, CanAssignError):
             ctx.on_error(f"{value} is not a mapping", detail=str(mapping_tv_map))
             return None
@@ -2713,8 +2877,15 @@ class OverloadedSignature:
                 details.append(CanAssignError(f"In overload {sig}", [inner]))
         return CanAssignError(children=details)
 
-    def substitute_typevars(self, typevars: TypeVarMap) -> "OverloadedSignature":
-        new_sigs = [sig.substitute_typevars(typevars) for sig in self.signatures]
+    def substitute_typevars(
+        self, typevars: TypeVarMap, *, infer_substituted_typevars: bool = False
+    ) -> "OverloadedSignature":
+        new_sigs = [
+            sig.substitute_typevars(
+                typevars, infer_substituted_typevars=infer_substituted_typevars
+            )
+            for sig in self.signatures
+        ]
         if all(sig1 is sig2 for sig1, sig2 in zip(self.signatures, new_sigs)):
             return self
         return OverloadedSignature(new_sigs)
@@ -2725,6 +2896,7 @@ class OverloadedSignature:
         preserve_impl: bool = False,
         self_value: Value | None = None,
         self_annotation_value: Value | None = None,
+        self_composite: Composite | None = None,
         ctx: CanAssignContext,
     ) -> "ConcreteSignature | None":
         bound_sigs = [
@@ -2732,6 +2904,7 @@ class OverloadedSignature:
                 preserve_impl=preserve_impl,
                 self_value=self_value,
                 self_annotation_value=self_annotation_value,
+                self_composite=self_composite,
                 ctx=ctx,
             )
             for sig in self.signatures
@@ -2779,6 +2952,28 @@ class OverloadedSignature:
 ConcreteSignature = Signature | OverloadedSignature
 
 
+def keep_inferable_typevars_from_params(
+    signature: ConcreteSignature,
+) -> ConcreteSignature:
+    if isinstance(signature, OverloadedSignature):
+        trimmed_signatures: list[Signature] = []
+        for sig in signature.signatures:
+            trimmed = keep_inferable_typevars_from_params(sig)
+            assert isinstance(trimmed, Signature)
+            trimmed_signatures.append(trimmed)
+        return OverloadedSignature(trimmed_signatures)
+
+    inferable_from_params = {
+        type_param.typevar
+        for param in signature.parameters.values()
+        for type_param in iter_type_params_in_value(param.annotation)
+    }
+    if signature.inferable_typevars == inferable_from_params:
+        return signature
+    object.__setattr__(signature, "inferable_typevars", inferable_from_params)
+    return signature
+
+
 @dataclass(frozen=True)
 class BoundMethodSignature:
     """Signature for a method bound to a particular value."""
@@ -2814,6 +3009,7 @@ class BoundMethodSignature:
         return self.signature.bind_self(
             preserve_impl=preserve_impl,
             self_value=self.self_composite.value,
+            self_composite=self.self_composite,
             ctx=ctx,
             self_annotation_value=self_annotation_value,
         )
@@ -2831,9 +3027,13 @@ class BoundMethodSignature:
             return self.return_override
         return AnyValue(AnySource.unannotated)
 
-    def substitute_typevars(self, typevars: TypeVarMap) -> "BoundMethodSignature":
+    def substitute_typevars(
+        self, typevars: TypeVarMap, *, infer_substituted_typevars: bool = False
+    ) -> "BoundMethodSignature":
         return BoundMethodSignature(
-            self.signature.substitute_typevars(typevars),
+            self.signature.substitute_typevars(
+                typevars, infer_substituted_typevars=infer_substituted_typevars
+            ),
             self.self_composite.substitute_typevars(typevars),
             (
                 self.return_override.substitute_typevars(typevars)
@@ -2996,7 +3196,18 @@ def _try_typevartuple_callable_relation(
     relation: Literal[Relation.ASSIGNABLE, Relation.SUBTYPE],
     ctx: CanAssignContext,
 ) -> CanAssign | None:
+    left_inference_map = make_inference_typevar_map(
+        [param.annotation for param in left.parameters.values()]
+    )
+    if left_inference_map:
+        left = left.substitute_typevars(left_inference_map)
+
     for template_sig, concrete_sig in ((left, right), (right, left)):
+        template_inference_map = make_inference_typevar_map(
+            [param.annotation for param in template_sig.parameters.values()]
+        )
+        if template_inference_map:
+            template_sig = template_sig.substitute_typevars(template_inference_map)
         template_params = list(template_sig.parameters.values())
         if len(template_params) != 1:
             continue
@@ -3016,10 +3227,10 @@ def _try_typevartuple_callable_relation(
             continue
 
         def _match_callable_member(expected: Value, actual: Value) -> CanAssign:
-            if isinstance(expected, TypeVarValue):
+            if isinstance(expected, InferenceVarValue):
                 return {
                     expected.typevar_param.typevar: [
-                        UpperBound(expected.typevar_param.typevar, actual),
+                        UpperBound(expected.typevar_param, actual),
                         *expected.get_inherent_bounds(),
                     ]
                 }
@@ -3090,10 +3301,10 @@ def _try_typevartuple_callable_relation(
             return CanAssignError(f"param {left_param.name!r} has no default")
         left_annotation = left_param.get_annotation()
         right_annotation = right_param.get_annotation()
-        if isinstance(left_annotation, TypeVarValue):
+        if isinstance(left_annotation, InferenceVarValue):
             tv_map = {
                 left_annotation.typevar_param.typevar: [
-                    UpperBound(left_annotation.typevar_param.typevar, right_annotation),
+                    UpperBound(left_annotation.typevar_param, right_annotation),
                     *left_annotation.get_inherent_bounds(),
                 ]
             }
@@ -3112,10 +3323,10 @@ def _try_typevartuple_callable_relation(
             return CanAssignError(f"param {left_param.name!r} has no default")
         left_annotation = left_param.get_annotation()
         right_annotation = right_param.get_annotation()
-        if isinstance(left_annotation, TypeVarValue):
+        if isinstance(left_annotation, InferenceVarValue):
             tv_map = {
                 left_annotation.typevar_param.typevar: [
-                    UpperBound(left_annotation.typevar_param.typevar, right_annotation),
+                    UpperBound(left_annotation.typevar_param, right_annotation),
                     *left_annotation.get_inherent_bounds(),
                 ]
             }
@@ -3135,7 +3346,11 @@ def _try_typevartuple_callable_relation(
     ]
     captured = SequenceValue(tuple, captured_members)
     captured_bounds_maps.append(
-        {marker_annotation.typevar: [LowerBound(marker_annotation.typevar, captured)]}
+        {
+            marker_annotation.typevar: [
+                LowerBound(marker_annotation.typevar_tuple_param, captured)
+            ]
+        }
     )
 
     return unify_bounds_maps(captured_bounds_maps)
@@ -3283,7 +3498,11 @@ def _match_typevartuple_members(
         ],
     )
     bounds_maps.append(
-        {marker_member.typevar: [LowerBound(marker_member.typevar, captured)]}
+        {
+            marker_member.typevar: [
+                LowerBound(marker_member.typevar_tuple_param, captured)
+            ]
+        }
     )
     return unify_bounds_maps(bounds_maps)
 
@@ -3523,6 +3742,11 @@ def signatures_have_relation(
             else:
                 return can_assign
         return CanAssignError("overloaded function is incompatible", errors)
+
+    if isinstance(left, Signature):
+        left = left.freshen_typevars_for_inference()
+    if isinstance(right, Signature):
+        right = right.freshen_typevars_for_inference()
 
     # Callable[..., Any] is compatible with an asynq callable too.
     if (
@@ -3795,10 +4019,7 @@ def signatures_have_relation(
             tv_maps.append(
                 {
                     my_annotation.param_spec: [
-                        LowerBound(
-                            my_annotation.param_spec,
-                            InputSigValue(FullSignature(new_sig)),
-                        )
+                        LowerBound(my_annotation, InputSigValue(FullSignature(new_sig)))
                     ]
                 }
             )

@@ -663,6 +663,51 @@ class TestSolve(TestNameCheckVisitorBase):
             pick_first(b"a", "b")  # E: incompatible_call
 
     @assert_passes()
+    def test_rigid_constrained_typevar_is_not_assignable_to_constraint_member(self):
+        from typing import TypeVar
+
+        T = TypeVar("T", int, str)
+
+        def takes_int(x: int) -> None:
+            pass
+
+        def capybara(x: T) -> T:
+            takes_int(x)  # E: incompatible_argument
+            return x
+
+    @assert_passes()
+    def test_rigid_unconstrained_typevar_is_not_assignable_to_concrete_parameter(self):
+        from typing import TypeVar
+
+        T = TypeVar("T")
+
+        def takes_int(x: int) -> None:
+            pass
+
+        def capybara(x: T) -> T:
+            takes_int(x)  # E: incompatible_argument
+            return x
+
+    @assert_passes()
+    def test_rigid_bound_typevar_is_not_assignable_to_narrower_parameter(self):
+        from typing import TypeVar
+
+        class Base:
+            pass
+
+        class Child(Base):
+            pass
+
+        T = TypeVar("T", bound=Base)
+
+        def takes_child(x: Child) -> None:
+            pass
+
+        def capybara(x: T) -> T:
+            takes_child(x)  # E: incompatible_argument
+            return x
+
+    @assert_passes()
     def test_constrained_typevar_binop_preserves_typevar(self):
         from typing import TypeVar
 
@@ -676,6 +721,17 @@ class TestSolve(TestNameCheckVisitorBase):
             assert_type(concat(b, b), bytes)
             concat(s, b)  # E: incompatible_call
             concat(b, s)  # E: incompatible_call
+
+    @assert_passes()
+    def test_rigid_typevar_target_rejects_concrete_assignment(self):
+        from typing import TypeVar
+
+        T = TypeVar("T", int, str)
+
+        def capybara(x: T) -> T:
+            y: T = 1  # E: incompatible_assignment
+            print(y)
+            return x
 
     @assert_passes()
     def test_constraint_cannot_contain_typevars(self):
@@ -710,6 +766,61 @@ class TestSolve(TestNameCheckVisitorBase):
         def capybara(c: CallableT, u: UnionT) -> None:
             c(3)
             u(3)
+
+    @assert_passes()
+    def test_rigid_type_typevar_is_not_assignable_to_narrower_type_object(self):
+        from typing import TypeVar
+
+        class Base:
+            pass
+
+        class Child(Base):
+            pass
+
+        T = TypeVar("T", bound=Base)
+
+        def takes_child_type(x: type[Child]) -> None:
+            pass
+
+        def capybara(cls: type[T]) -> type[T]:
+            takes_child_type(cls)  # E: incompatible_argument
+            return cls
+
+    @assert_passes()
+    def test_rigid_typevar_uses_upper_bound_as_source(self):
+        from typing import TypeVar
+
+        class Base:
+            pass
+
+        T = TypeVar("T", bound=Base)
+
+        def takes_base(x: Base) -> None:
+            pass
+
+        def capybara(x: T) -> T:
+            takes_base(x)
+            return x
+
+    @assert_passes()
+    def test_type_typevar_inference_still_works(self):
+        from typing import TypeVar
+
+        from typing_extensions import assert_type
+
+        class Base:
+            pass
+
+        class Child(Base):
+            pass
+
+        T = TypeVar("T", bound=Base)
+
+        def keep_type(cls: type[T]) -> type[T]:
+            return cls
+
+        def capybara() -> None:
+            assert_type(keep_type(Child), type[Child])
 
     @assert_passes()
     def test_min_enum(self):
