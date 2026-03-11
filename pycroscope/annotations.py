@@ -2461,13 +2461,8 @@ class _Visitor(ast.NodeVisitor):
             try:
                 kwargs = {"covariant": covariant, "contravariant": contravariant}
                 if infer_variance:
-                    typevar_ctor = (
-                        TypeVar
-                        if sys.version_info >= (3, 12)
-                        else typing_extensions.TypeVar
-                    )
                     kwargs_with_infer = {**kwargs, "infer_variance": True}
-                    tv = typevar_ctor(name_val.val, **kwargs_with_infer)
+                    tv = typing_extensions.TypeVar(name_val.val, **kwargs_with_infer)
                 else:
                     tv = TypeVar(name_val.val, **kwargs)
             except Exception as e:

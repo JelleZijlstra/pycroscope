@@ -15806,17 +15806,12 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
 
         try:
             if infer_variance:
-                typevar_ctor = (
-                    TypeVar
-                    if sys.version_info >= (3, 12)
-                    else typing_extensions.TypeVar
-                )
                 kwargs_with_infer = {
                     "covariant": covariant,
                     "contravariant": contravariant,
                     "infer_variance": True,
                 }
-                typevar = typevar_ctor(name_arg.val, **kwargs_with_infer)
+                typevar = typing_extensions.TypeVar(name_arg.val, **kwargs_with_infer)
             else:
                 typevar = TypeVar(
                     name_arg.val, covariant=covariant, contravariant=contravariant
