@@ -2306,6 +2306,22 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     synthetic_name = mangled
                     if isinstance(synthetic_value, KnownValue):
                         synthetic_value = TypedValue(type(synthetic_value.val))
+            if (
+                synthetic_name == name
+                and self.current_function_name is None
+                and not synthetic_name.startswith("_")
+            ):
+                unwrapped, forced_member, forced_nonmember = (
+                    _unwrap_enum_member_wrapper(synthetic_value)
+                )
+                if forced_member or (
+                    not forced_nonmember
+                    and not _is_nonmember_enum_assignment_value(unwrapped, self)
+                ):
+                    synthetic_value = (
+                        self._get_enclosing_class_value_for_method()
+                        or TypedValue(self.current_class)
+                    )
         synthetic_class.class_attributes[synthetic_name] = synthetic_value
         if not synthetic_name.startswith("%"):
             self._discard_synthetic_instance_only_annotation_name(synthetic_name)

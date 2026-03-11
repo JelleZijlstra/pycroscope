@@ -456,7 +456,7 @@ def _synthetic_dataclass_init_enabled(value: SyntheticClassObjectValue) -> bool:
 class Checker:
     raw_options: InitVar[Options | None] = None
     options: Options = field(init=False)
-    arg_spec_cache: ArgSpecCache = field(init=False, repr=False)
+    arg_spec_cache: ArgSpecCache | None = field(default=None, init=False, repr=False)
     ts_finder: TypeshedFinder = field(init=False, repr=False)
     reexport_tracker: ImplicitReexportTracker = field(init=False, repr=False)
     callable_tracker: CallableTracker = field(init=False, repr=False)
