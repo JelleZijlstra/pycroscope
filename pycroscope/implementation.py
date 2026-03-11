@@ -6,7 +6,7 @@ import re
 import typing
 from collections.abc import Callable, Iterable, Sequence
 from itertools import product
-from typing import NewType, TypeVar
+from typing import NewType, TypeVar, cast
 
 import typing_extensions
 
@@ -2533,14 +2533,10 @@ def _runtime_type_from_value(value: Value) -> object | None:
                 return None
             args.append(runtime_arg)
         try:
-            runtime_type = value.typ
+            rt = value.typ
             if len(args) == 1:
-                return runtime_type[
-                    args[0]
-                ]  # static analysis: ignore[unsupported_operation]
-            return runtime_type[
-                tuple(args)
-            ]  # static analysis: ignore[unsupported_operation]
+                return rt[args[0]]  # static analysis: ignore[unsupported_operation]
+            return rt[tuple(args)]  # static analysis: ignore[unsupported_operation]
         except Exception:
             return None
     return None
