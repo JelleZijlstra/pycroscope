@@ -1623,6 +1623,63 @@ class TestDictSetItem(TestNameCheckVisitorBase):
 
 class TestIssubclass(TestNameCheckVisitorBase):
     @assert_passes()
+    def test_isinstance_with_generic_classinfo(self) -> None:
+        from typing import TypeVar
+
+        from typing_extensions import assert_type
+
+        T = TypeVar("T")
+
+        def capybara(x: object, typ: type[T]) -> None:
+            if isinstance(x, typ):
+                assert_type(x, T)
+
+    @assert_passes()
+    def test_isinstance_with_generic_classinfo_negative_narrowing(self) -> None:
+        from typing import TypeVar
+
+        from typing_extensions import assert_type
+
+        T = TypeVar("T")
+
+        def capybara(x: int | str, typ: type[int]) -> None:
+            if isinstance(x, typ):
+                assert_type(x, int)
+            else:
+                assert_type(x, int | str)
+
+        def acouchi(x: int | str | bytes, typ: type[str]) -> None:
+            if isinstance(x, typ):
+                assert_type(x, str)
+            else:
+                assert_type(x, int | str | bytes)
+
+        def pacarana(x: object, typ: type[T]) -> None:
+            if isinstance(x, typ):
+                assert_type(x, T)
+            else:
+                assert_type(x, object)
+
+    @assert_passes()
+    def test_isinstance_with_local_namedtuple_classinfo(self) -> None:
+        from typing import NamedTuple
+
+        from typing_extensions import assert_type
+
+        class ImplReturn(NamedTuple):
+            return_value: object
+            constraint: int
+            no_return_unless: str
+
+        def capybara(x: ImplReturn | list[int], y: object) -> None:
+            if isinstance(x, ImplReturn):
+                assert_type(x, ImplReturn)
+                x = ImplReturn(y, x.constraint, x.no_return_unless)
+                assert_type(x, ImplReturn)
+            else:
+                assert_type(x, list[int])
+
+    @assert_passes()
     def test(self) -> None:
         def capybara(x: type, y):
             assert_type(x, type)

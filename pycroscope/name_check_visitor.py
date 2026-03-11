@@ -43,7 +43,6 @@ from typing import (
     Optional,
     TypeVar,
     Union,
-    cast,
     get_args,
     get_origin,
 )
@@ -69,6 +68,7 @@ from .annotations import (
     Qualifier,
     SyntheticEvaluator,
     _normalize_paramspec_generic_args,
+    _RuntimeAnnotationsContext,
     annotation_expr_from_annotations,
     annotation_expr_from_ast,
     annotation_expr_from_runtime,
@@ -2696,6 +2696,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         self,
         class_key: type | str,
         attr_name: str,
+        node: ast.AST | None = None,
         seen: set[type | str] | None = None,
         substitutions: TypeVarMap | None = None,
     ) -> Value:
@@ -2743,7 +2744,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 class_dict = safe_getattr(class_key, "__dict__", None)
                 if not isinstance(class_dict, Mapping) or attr_name not in class_dict:
                     attr_expr = annotation_expr_from_annotations(
-                        annotations, attr_name, ctx=cast(Context, self)
+                        annotations,
+                        attr_name,
+                        ctx=_RuntimeAnnotationsContext(class_key, self, node),
                     )
                     if attr_expr is not None:
                         attr_type, qualifiers = attr_expr.maybe_unqualify(
@@ -2760,7 +2763,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             if self._class_keys_match(base_class, class_key):
                 continue
             value = self._get_instance_only_annotation_value_for_class_key(
-                base_class, attr_name, seen, _merged_substitutions(tv_map)
+                base_class, attr_name, node, seen, _merged_substitutions(tv_map)
             )
             if value is not UNINITIALIZED_VALUE:
                 return value
@@ -2771,7 +2774,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 if base_key is None or self._class_keys_match(base_key, class_key):
                     continue
                 value = self._get_instance_only_annotation_value_for_class_key(
-                    base_key, attr_name, seen, substitutions
+                    base_key, attr_name, node, seen, substitutions
                 )
                 if value is not UNINITIALIZED_VALUE:
                     return value
@@ -5115,7 +5118,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             return None
         if expr.args:
             return None
-        kwargs: dict[str, object] = {}
+        kwargs: dict[str, Any] = {}
         for kw in expr.keywords:
             if kw.arg is None:
                 return None
@@ -5124,7 +5127,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 return None
             kwargs[kw.arg] = value.val
         try:
-            return cast(Any, dataclass_field)(**kwargs)
+            return dataclass_field(**kwargs)
         except Exception:
             return None
 
@@ -6384,7 +6387,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 is_instance_of_typing_name(type_param, "TypeVar")
                 for type_param in type_params
             ):
-                return cast(tuple[TypeVarLike, ...], type_params)
+                return type_params
         return None
 
     def _value_for_variance_annotation(self, annotation: ast.expr) -> Value:
@@ -15114,7 +15117,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             and self._is_instance_only_member(self.current_class_key, attr)
         ):
             static_member = self._get_instance_only_annotation_value_for_class_key(
-                self.current_class_key, attr
+                self.current_class_key, attr, node
             )
             if static_member is not UNINITIALIZED_VALUE:
                 return static_member
@@ -15807,7 +15810,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     "contravariant": contravariant,
                     "infer_variance": True,
                 }
-                typevar = cast(Any, TypeVar)(name_arg.val, **kwargs_with_infer)
+                typevar = TypeVar(name_arg.val, **kwargs_with_infer)
             else:
                 typevar = TypeVar(
                     name_arg.val, covariant=covariant, contravariant=contravariant

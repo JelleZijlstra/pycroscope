@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Fix a crash when resolving inherited string annotations for instance attributes accessed through `cls` in methods, so these attributes now infer their annotated types instead of raising an internal error.
+- Improve `isinstance()` narrowing for local class objects, including `NamedTuple` classes, so branches now narrow correctly even when the class object comes from pycroscope's synthetic local-class representation.
+- Improve `isinstance()` narrowing for generic class objects, so checks like `if isinstance(x, typ):` with `typ: type[T]` now narrow `x` using the type parameter instead of falling back to an imprecise type.
 - Improve `TypeVar` handling by distinguishing declared type parameters from call-site inference variables, so pycroscope no longer solves rigid `TypeVar`s during ordinary assignability checks and now preserves more accurate generic-call and recursive type-alias behavior.
 - Fix context-manager inference for cases like `contextlib.nullcontext()` and unions of different context manager implementations, so `with` bindings and exit-type checks now keep the right types instead of falling back to imprecise results or spurious errors.
 - Improve several inference edge cases: `iter(d.values())` now produces an `Iterator` with the right value type, tuple-valued attributes stay narrowed after truthiness and `len()` checks, and bitwise operations on `enum.Flag`/`re.RegexFlag` preserve the enum type.

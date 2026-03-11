@@ -13,7 +13,7 @@ from collections import defaultdict
 from collections.abc import Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, ClassVar, Generic, TypeVar, cast
+from typing import Any, ClassVar, Generic, TypeVar
 
 if sys.version_info >= (3, 11):
     import tomllib
@@ -293,7 +293,7 @@ class OptionalPathOption(ConfigOption[Path | None]):
 class PyObjectSequenceOption(ConcatenatedOption[T]):
     """Represents a sequence of objects parsed as Python objects."""
 
-    default_value: ClassVar[Any] = cast(Sequence[T], ())
+    default_value: ClassVar[Any] = ()
 
     @classmethod
     def parse(
@@ -367,16 +367,16 @@ class Options:
     def is_error_code_enabled(self, code: Error) -> bool:
         option = ConfigOption.registry[code.name]
         try:
-            return cast(bool, self._get_value_for_no_default(option))
+            return self._get_value_for_no_default(option)
         except NotFound:
-            return cast(bool, option.default_value)
+            return option.default_value
 
     def is_error_code_enabled_anywhere(self, code: Error) -> bool:
         option = ConfigOption.registry[code.name]
         instances = self.options.get(option.name, ())
         if any(instance.value for instance in instances):
             return True
-        return cast(bool, option.default_value)
+        return option.default_value
 
     def display(self) -> None:
         print("Options:")

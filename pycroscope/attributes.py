@@ -4,16 +4,17 @@ Code for retrieving the value of attributes.
 
 """
 
-import ast
 import enum
 import inspect
 import sys
 import types
+import typing
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from enum import Enum
-from typing import Any, ClassVar, cast, get_origin
+from typing import Any, ClassVar, get_origin
 
+import typing_extensions
 from typing_extensions import assert_never
 
 if sys.version_info >= (3, 14):
@@ -22,7 +23,11 @@ else:
     from inspect import get_annotations
 
 from .annotated_types import EnumName
-from .annotations import Context, annotation_expr_from_annotations, type_from_runtime
+from .annotations import (
+    _RuntimeAnnotationsContext,
+    annotation_expr_from_annotations,
+    type_from_runtime,
+)
 from .input_sig import (
     FullSignature,
     InputSigValue,
@@ -107,6 +112,10 @@ _ENUM_INSTANCE_DESCRIPTOR_TYPES = tuple(
     if descriptor_type is not None
 )
 _SYNTHETIC_PROPERTY_GETTER_PREFIX = "%property_getter:"
+if sys.version_info >= (3, 12):
+    RuntimeTypeAliasType = typing.TypeAliasType | typing_extensions.TypeAliasType
+else:
+    RuntimeTypeAliasType = typing_extensions.TypeAliasType
 
 
 @dataclass
@@ -327,15 +336,17 @@ def _get_attribute_from_type_alias(value: TypeAliasValue, ctx: AttrContext) -> V
     return UNINITIALIZED_VALUE
 
 
-def _get_attribute_from_runtime_type_alias(value: object, ctx: AttrContext) -> Value:
+def _get_attribute_from_runtime_type_alias(
+    value: RuntimeTypeAliasType, ctx: AttrContext
+) -> Value:
     if ctx.attr == "__value__":
-        return KnownValue(cast(Any, value).__value__)
+        return KnownValue(value.__value__)
     if ctx.attr == "__type_params__":
-        return KnownValue(tuple(cast(Any, value).__type_params__))
+        return KnownValue(tuple(value.__type_params__))
     if ctx.attr == "__name__":
-        return KnownValue(cast(Any, value).__name__)
+        return KnownValue(value.__name__)
     if ctx.attr == "__module__":
-        return KnownValue(cast(Any, value).__module__)
+        return KnownValue(value.__module__)
     return UNINITIALIZED_VALUE
 
 
@@ -1862,34 +1873,11 @@ def _get_attribute_from_unbound(
     return result
 
 
-@dataclass
-class AnnotationsContext(Context):
-    attr_ctx: AttrContext
-    cls: object
-
-    def __post_init__(self) -> None:
-        super().__init__()
-
-    def get_name(self, node: ast.Name) -> Value:
-        try:
-            if isinstance(self.cls, types.ModuleType):
-                globals = self.cls.__dict__
-            else:
-                globals = sys.modules[self.cls.__module__].__dict__
-        except Exception:
-            return AnyValue(AnySource.error)
-        else:
-            return self.get_name_from_globals(node.id, globals)
-
-    def get_signature(self, callable: object) -> MaybeSignature:
-        return self.attr_ctx.get_signature(callable)
-
-
 def _get_triple_from_annotations(
     annotations: dict[str, object], typ: object, ctx: AttrContext
 ) -> tuple[Value, object, bool] | None:
     attr_expr = annotation_expr_from_annotations(
-        annotations, ctx.attr, ctx=AnnotationsContext(ctx, typ)
+        annotations, ctx.attr, ctx=_RuntimeAnnotationsContext(typ)
     )
     if attr_expr is not None:
         attr_type, qualifiers = attr_expr.maybe_unqualify(
@@ -2023,7 +2011,7 @@ def get_attrs_attribute(typ: object, ctx: AttrContext) -> Value | None:
                 if attr_attr.name == ctx.attr:
                     if attr_attr.type is not None:
                         return type_from_runtime(
-                            attr_attr.type, ctx=AnnotationsContext(ctx, typ)
+                            attr_attr.type, ctx=_RuntimeAnnotationsContext(typ)
                         )
                     else:
                         return AnyValue(AnySource.unannotated)

@@ -6,7 +6,7 @@ import re
 import typing
 from collections.abc import Callable, Iterable, Sequence
 from itertools import product
-from typing import Any, NewType, TypeVar, cast
+from typing import NewType, TypeVar
 
 import typing_extensions
 
@@ -177,8 +177,28 @@ def _isinstance_or_issubclass_impl(
         )
         return TypedValue(bool)
     varname = ctx.varname_for_arg(first_arg_name)
-    if varname is None or not isinstance(class_or_tuple, KnownValue):
+    if varname is None:
         return TypedValue(bool)
+    if not isinstance(class_or_tuple, KnownValue):
+        narrowed = _narrowed_value_from_classinfo_value(
+            class_or_tuple, is_subclass_check=is_subclass_check
+        )
+        if narrowed is None:
+            return TypedValue(bool)
+        narrowed_value, allow_negative_narrowing = narrowed
+        if allow_negative_narrowing:
+            constraint = Constraint(
+                varname, ConstraintType.intersect_with, True, narrowed_value
+            )
+            return annotate_with_constraint(TypedValue(bool), constraint)
+
+        def predicate(value: Value, positive: bool) -> Value | None:
+            if not positive:
+                return value
+            return _narrow_value_for_dynamic_classinfo(value, narrowed_value, ctx)
+
+        constraint = Constraint(varname, ConstraintType.predicate, True, predicate)
+        return annotate_with_constraint(TypedValue(bool), constraint)
     try:
         narrowed_types = list(_resolve_isinstance_arg(class_or_tuple.val))
     except _CannotResolve as e:
@@ -197,6 +217,95 @@ def _isinstance_or_issubclass_impl(
         narrowed_type = unite_values(*[TypedValue(typ) for typ in narrowed_types])
     constraint = Constraint(varname, ConstraintType.intersect_with, True, narrowed_type)
     return annotate_with_constraint(TypedValue(bool), constraint)
+
+
+def _narrowed_value_from_classinfo_value(
+    classinfo: Value, *, is_subclass_check: bool
+) -> tuple[Value, bool] | None:
+    classinfo = replace_fallback(classinfo)
+    if isinstance(classinfo, AnnotatedValue):
+        return _narrowed_value_from_classinfo_value(
+            classinfo.value, is_subclass_check=is_subclass_check
+        )
+    if isinstance(classinfo, KnownValue):
+        try:
+            narrowed_types = list(_resolve_isinstance_arg(classinfo.val))
+        except _CannotResolve:
+            return None
+        if is_subclass_check:
+            return (
+                unite_values(
+                    *[SubclassValue(TypedValue(typ)) for typ in narrowed_types]
+                ),
+                True,
+            )
+        return (unite_values(*[TypedValue(typ) for typ in narrowed_types]), True)
+    if isinstance(classinfo, MultiValuedValue):
+        narrowed = [
+            narrowing
+            for subval in classinfo.vals
+            if (
+                narrowing := _narrowed_value_from_classinfo_value(
+                    subval, is_subclass_check=is_subclass_check
+                )
+            )
+            is not None
+        ]
+        if not narrowed:
+            return None
+        return (
+            unite_values(*[narrowed_value for narrowed_value, _ in narrowed]),
+            all(allow_negative_narrowing for _, allow_negative_narrowing in narrowed),
+        )
+    if isinstance(classinfo, SequenceValue) and classinfo.typ is tuple:
+        narrowed = []
+        for is_many, member in classinfo.members:
+            if is_many:
+                return None
+            narrowing = _narrowed_value_from_classinfo_value(
+                member, is_subclass_check=is_subclass_check
+            )
+            if narrowing is None:
+                return None
+            narrowed.append(narrowing)
+        if not narrowed:
+            return None
+        return (
+            unite_values(*[narrowed_value for narrowed_value, _ in narrowed]),
+            all(allow_negative_narrowing for _, allow_negative_narrowing in narrowed),
+        )
+    if isinstance(classinfo, SyntheticClassObjectValue):
+        if is_subclass_check:
+            return (SubclassValue(classinfo.class_type), True)
+        return (classinfo.class_type, True)
+    if isinstance(classinfo, SubclassValue):
+        if is_subclass_check:
+            return (classinfo, False)
+        return (classinfo.typ, False)
+    return None
+
+
+def _narrow_value_for_dynamic_classinfo(
+    value: Value, narrowed_value: Value, ctx: CallContext
+) -> Value:
+    if isinstance(narrowed_value, AnnotatedValue):
+        return _narrow_value_for_dynamic_classinfo(value, narrowed_value.value, ctx)
+    if isinstance(narrowed_value, MultiValuedValue):
+        narrowed_vals = [
+            _narrow_value_for_dynamic_classinfo(value, subval, ctx)
+            for subval in narrowed_value.vals
+        ]
+        return unite_values(*narrowed_vals)
+    if isinstance(narrowed_value, TypeVarValue):
+        fallback = narrowed_value.get_fallback_value()
+        narrowed = intersect_values(value, fallback, ctx.visitor)
+        if narrowed is NO_RETURN_VALUE:
+            return NO_RETURN_VALUE
+        if narrowed == fallback:
+            return narrowed_value
+        return IntersectionValue((narrowed_value, narrowed))
+    narrowed_value = replace_fallback(narrowed_value)
+    return intersect_values(value, narrowed_value, ctx.visitor)
 
 
 class _CannotResolve(Exception):
@@ -2424,10 +2533,14 @@ def _runtime_type_from_value(value: Value) -> object | None:
                 return None
             args.append(runtime_arg)
         try:
-            runtime_type = cast(Any, value.typ)
+            runtime_type = value.typ
             if len(args) == 1:
-                return runtime_type[args[0]]
-            return runtime_type[tuple(args)]
+                return runtime_type[
+                    args[0]
+                ]  # static analysis: ignore[unsupported_operation]
+            return runtime_type[
+                tuple(args)
+            ]  # static analysis: ignore[unsupported_operation]
         except Exception:
             return None
     return None
@@ -2483,7 +2596,7 @@ def _newtype_impl(ctx: CallContext) -> Value:
     runtime_supertype = _runtime_type_from_value(supertype)
     if runtime_supertype is None:
         return ctx.inferred_return_value
-    return KnownValue(cast(Any, NewType)(name_value.val, runtime_supertype))
+    return KnownValue(NewType(name_value.val, runtime_supertype))
 
 
 # Should not be necessary, but by default we pick up a wrong signature for

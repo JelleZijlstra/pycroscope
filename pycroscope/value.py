@@ -42,7 +42,7 @@ from contextlib import AbstractContextManager
 from dataclasses import InitVar, dataclass, field
 from itertools import chain
 from types import FunctionType, ModuleType
-from typing import Any, Optional, TypeVar, Union, cast
+from typing import Any, Optional, TypeVar, Union
 
 import typing_extensions
 from typing_extensions import NoDefault, Protocol, assert_never
@@ -692,13 +692,13 @@ def _value_from_runtime_type_param_component(component: object) -> Value:
     if isinstance(component, Value):
         return component
     if is_instance_of_typing_name(component, "TypeVar"):
-        return TypeVarValue(TypeVarParam(cast(TypeVarType, component)))
+        return TypeVarValue(TypeVarParam(component))
     if is_instance_of_typing_name(component, "TypeVarTuple"):
-        return TypeVarTupleValue(cast(TypeVarTupleLike, component))
+        return TypeVarTupleValue(component)
     if is_instance_of_typing_name(component, "ParamSpec"):
         from pycroscope.input_sig import InputSigValue
 
-        return InputSigValue(ParamSpecParam(cast(ParamSpecLike, component)))
+        return InputSigValue(ParamSpecParam(component))
     if isinstance(component, tuple):
         return SequenceValue(
             tuple,
@@ -3183,13 +3183,13 @@ class AnnotatedValue(Value):
         """Return any metadata of the given type."""
         for data in self.metadata:
             if isinstance(data, typ):
-                yield cast(T, data)
+                yield data
 
     def get_custom_check_of_type(self, typ: type[T]) -> Iterable[T]:
         """Return any CustomChecks of the given type in the metadata."""
         for custom_check in self.get_metadata_of_type(CustomCheckExtension):
             if isinstance(custom_check.custom_check, typ):
-                yield cast(T, custom_check.custom_check)
+                yield custom_check.custom_check
 
     def has_metadata_of_type(self, typ: type[Extension]) -> bool:
         """Return whether there is metadat of the given type."""
