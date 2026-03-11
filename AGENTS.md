@@ -16,6 +16,10 @@
 
 - Before finishing, run the linting/tests relevant to the files you changed.
 - `test_self.py` is often useful for finding regressions. Run it with the `full` extra enabled or it will be skipped.
+- Run conformance CI with the same interpreter you want pycroscope itself to use, because `tools/conformance_ci.py`
+  invokes `sys.executable -m pycroscope` under the hood.
+- Use this form from the repo root: `uv run --python 3.12 python tools/conformance_ci.py --typing-repo ~/py/typing`
+  (optionally prefix `UV_CACHE_DIR=/tmp/uv-cache`).
 - When fixing regressions found by `test_self.py`, add separate test cases instead of just relying on `test_self.py`.
 - When writing test cases, prefer using code samples (`@assert_passes()`) instead of tests that directly
   invoke pycroscope functions. Code samples should represent user-written code that triggers the pycroscope

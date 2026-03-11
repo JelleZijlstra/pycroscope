@@ -2714,11 +2714,21 @@ class TypeVarTupleValue(Value):
 SelfTVV = TypeVarValue(TypeVarParam(SelfT))
 
 
-def _receiver_to_self_type(self_value: Value) -> Value:
+def receiver_to_self_type(self_value: Value) -> Value:
     if isinstance(self_value, KnownValueWithTypeVars) and SelfT in self_value.typevars:
-        return _receiver_to_self_type(self_value.typevars[SelfT])
+        return receiver_to_self_type(self_value.typevars[SelfT])
+    if isinstance(self_value, SequenceValue):
+        if self_value.typ in (list, set):
+            return self_value.simplify()
+        return self_value
+    if isinstance(self_value, DictIncompleteValue):
+        return self_value.simplify()
     if isinstance(self_value, KnownValue):
         replaced = replace_known_sequence_value(self_value)
+        if isinstance(replaced, SequenceValue) and replaced.typ in (list, set):
+            return replaced.simplify()
+        if isinstance(replaced, DictIncompleteValue):
+            return replaced.simplify()
         if not isinstance(replaced, KnownValue):
             return replaced
         return TypedValue(
@@ -2730,7 +2740,7 @@ def _receiver_to_self_type(self_value: Value) -> Value:
 
 
 def set_self(value: Value, self_value: Value) -> Value:
-    self_type = _receiver_to_self_type(self_value)
+    self_type = receiver_to_self_type(self_value)
     if isinstance(value, KnownValueWithTypeVars):
         merged_typevars = dict(value.typevars)
         merged_typevars[SelfT] = self_type

@@ -74,7 +74,6 @@ from .value import (
     HasAttrGuardExtension,
     IntersectionValue,
     KnownValue,
-    KnownValueWithTypeVars,
     KVPair,
     MultiValuedValue,
     NewTypeValue,
@@ -83,7 +82,6 @@ from .value import (
     PartialValueOperation,
     PredicateValue,
     Qualifier,
-    SelfT,
     SequenceValue,
     SubclassValue,
     SyntheticClassObjectValue,
@@ -99,8 +97,6 @@ from .value import (
     concrete_values_from_iterable,
     dump_value,
     flatten_values,
-    get_tv_map,
-    is_iterable,
     kv_pairs_from_mapping,
     len_of_value,
     namedtuple_members_from_value,
@@ -585,9 +581,6 @@ def _setattr_impl(ctx: CallContext) -> Value:
 
 
 def _super_impl(ctx: CallContext) -> Value:
-    def make_super_value(super_value: super, receiver: Value) -> Value:
-        return KnownValueWithTypeVars(super_value, {SelfT: receiver})
-
     typ = ctx.vars["type"]
     obj = ctx.vars["obj"]
     if typ is _NO_ARG_SENTINEL:
@@ -619,17 +612,13 @@ def _super_impl(ctx: CallContext) -> Value:
                     typ = first_arg.typ.typ
                     if isinstance(typ, str):
                         return AnyValue(AnySource.inference)
-                    return make_super_value(super(current_class, typ), first_arg.typ)
+                    return KnownValue(super(current_class, typ))
                 elif isinstance(first_arg, KnownValue):
-                    return make_super_value(
-                        super(current_class, first_arg.val), first_arg
-                    )
+                    return KnownValue(super(current_class, first_arg.val))
                 elif isinstance(first_arg, TypedValue):
                     if isinstance(first_arg.typ, str):
                         return AnyValue(AnySource.inference)
-                    return make_super_value(
-                        super(current_class, first_arg.typ), first_arg
-                    )
+                    return TypedValue(super(current_class, first_arg.typ))
                 else:
                     return AnyValue(AnySource.inference)
         return AnyValue(AnySource.inference)
@@ -674,9 +663,9 @@ def _super_impl(ctx: CallContext) -> Value:
         return AnyValue(AnySource.error)
 
     if is_value:
-        return make_super_value(super_val, obj)
+        return TypedValue(super_val)
     else:
-        return make_super_value(super_val, obj)
+        return KnownValue(super_val)
 
 
 def _tuple_impl(ctx: CallContext) -> ImplReturn:
@@ -691,69 +680,138 @@ def _set_impl(ctx: CallContext) -> ImplReturn:
     return _sequence_impl(set, ctx)
 
 
-def _iter_impl(ctx: CallContext) -> ImplReturn:
-    object_value = ctx.vars["object"]
-    sentinel = ctx.vars.get("sentinel", _NO_ARG_SENTINEL)
-
-    def iterator_of(value: Value) -> Value:
-        from .suggested_type import prepare_type
-
-        item_type = is_iterable(replace_known_sequence_value(value), ctx.visitor)
-        if isinstance(item_type, CanAssignError):
-            ctx.show_error(
-                f"{value} is not iterable",
-                ErrorCode.unsupported_operation,
-                arg="object",
-                detail=str(item_type),
-            )
-            item_type = AnyValue(AnySource.error)
-        else:
-            item_type = prepare_type(item_type, ctx.visitor)
-        return GenericValue(collections.abc.Iterator, [item_type])
-
-    if sentinel is _NO_ARG_SENTINEL:
-        return flatten_unions(iterator_of, object_value)
-
-    def from_callable(value: Value) -> Value:
-        signature = ctx.visitor.signature_from_value(value)
-        if isinstance(signature, Signature):
-            return GenericValue(collections.abc.Iterator, [signature.return_value])
-        if isinstance(signature, OverloadedSignature):
-            return GenericValue(
-                collections.abc.Iterator,
-                [
-                    unite_values(
-                        *(sub_sig.return_value for sub_sig in signature.signatures)
-                    )
-                ],
-            )
-        return GenericValue(
-            collections.abc.Iterator, [AnyValue(AnySource.generic_argument)]
+def _key_value_types_from_mapping(
+    value: Value, ctx: CallContext
+) -> tuple[Value, Value] | None:
+    value = replace_known_sequence_value(value)
+    if isinstance(value, TypedValue):
+        generic_args = value.get_generic_args_for_type(
+            collections.abc.Mapping, ctx.visitor
         )
-
-    return flatten_unions(from_callable, object_value)
-
-
-def _next_impl(ctx: CallContext) -> Value:
-    iterator_value = ctx.vars["i"]
-    default = ctx.vars.get("default", _NO_ARG_SENTINEL)
-    iterator_type = GenericValue(
-        collections.abc.Iterator, [TypeVarValue(TypeVarParam(T))]
+        if generic_args is not None and len(generic_args) == 2:
+            return generic_args[0], generic_args[1]
+    pairs = kv_pairs_from_mapping(value, ctx.visitor)
+    if isinstance(pairs, CanAssignError):
+        return None
+    if not pairs:
+        return None
+    return (
+        unite_values(*(pair.key for pair in pairs)),
+        unite_values(*(pair.value for pair in pairs)),
     )
-    tv_map = get_tv_map(iterator_type, iterator_value, ctx.visitor)
-    if isinstance(tv_map, CanAssignError):
-        ctx.show_error(
-            f"{iterator_value} is not an iterator",
-            ErrorCode.incompatible_argument,
-            arg="i",
-            detail=str(tv_map),
+
+
+def _key_value_types_from_pair_iterable(
+    value: Value, ctx: CallContext
+) -> tuple[Value, Value] | None:
+    value = replace_known_sequence_value(value)
+    if isinstance(value, TypedValue):
+        generic_args = value.get_generic_args_for_type(
+            collections.abc.Iterable, ctx.visitor
         )
-        result = AnyValue(AnySource.error)
+        if generic_args is not None and len(generic_args) == 1:
+            item = replace_known_sequence_value(generic_args[0])
+            if (
+                isinstance(item, GenericValue)
+                and item.typ is tuple
+                and len(item.args) == 2
+            ):
+                return item.args[0], item.args[1]
+            if isinstance(item, SequenceValue) and item.typ is tuple:
+                members = item.get_member_sequence()
+                if members is not None and len(members) == 2:
+                    return members[0], members[1]
+    concrete = concrete_values_from_iterable(value, ctx.visitor)
+    if isinstance(concrete, CanAssignError):
+        return None
+    if isinstance(concrete, Value):
+        items = [concrete]
     else:
-        result = tv_map.get(T, AnyValue(AnySource.generic_argument))
-    if default is not _NO_ARG_SENTINEL:
-        return unite_values(result, default)
-    return result
+        items = list(concrete)
+    pair_types: list[tuple[Value, Value]] = []
+    for item in items:
+        item = replace_known_sequence_value(item)
+        if isinstance(item, SequenceValue) and item.typ is tuple:
+            members = item.get_member_sequence()
+            if members is None or len(members) != 2:
+                return None
+            pair_types.append((members[0], members[1]))
+        elif (
+            isinstance(item, GenericValue) and item.typ is tuple and len(item.args) == 2
+        ):
+            pair_types.append((item.args[0], item.args[1]))
+        else:
+            return None
+    if not pair_types:
+        return None
+    return (
+        unite_values(*(key for key, _ in pair_types)),
+        unite_values(*(val for _, val in pair_types)),
+    )
+
+
+def _dict_impl(ctx: CallContext) -> Value:
+    iterable = ctx.vars["iterable"]
+    kwargs = ctx.vars["kwargs"]
+    key_types: list[Value] = []
+    value_types: list[Value] = []
+    known_pairs: list[KVPair] = []
+
+    if iterable is not _NO_ARG_SENTINEL:
+        if inferred := _key_value_types_from_mapping(iterable, ctx):
+            key_type, value_type = inferred
+            key_types.append(key_type)
+            value_types.append(value_type)
+        elif inferred := _key_value_types_from_pair_iterable(iterable, ctx):
+            key_type, value_type = inferred
+            key_types.append(key_type)
+            value_types.append(value_type)
+
+    for key, (_required, value) in _get_known_kwargs_entries(kwargs).items():
+        known_pairs.append(KVPair(KnownValue(key), value))
+        key_types.append(TypedValue(str))
+        value_types.append(value)
+
+    if known_pairs and iterable is _NO_ARG_SENTINEL:
+        return DictIncompleteValue(dict, known_pairs)
+    if key_types and value_types:
+        return GenericValue(
+            dict, [unite_values(*key_types), unite_values(*value_types)]
+        )
+    if iterable is _NO_ARG_SENTINEL:
+        return DictIncompleteValue(dict, [])
+    return TypedValue(dict)
+
+
+def _defaultdict_impl(ctx: CallContext) -> Value:
+    default_factory = ctx.vars["default_factory"]
+    iterable = ctx.vars["iterable"]
+    kwargs = ctx.vars["kwargs"]
+    key_type = AnyValue(AnySource.generic_argument)
+    value_type = AnyValue(AnySource.generic_argument)
+
+    if default_factory is not _NO_ARG_SENTINEL:
+        signature = ctx.visitor.signature_from_value(default_factory)
+        if isinstance(signature, Signature):
+            value_type = signature.return_value
+        elif isinstance(signature, OverloadedSignature):
+            value_type = unite_values(
+                *(sub_sig.return_value for sub_sig in signature.signatures)
+            )
+
+    if iterable is not _NO_ARG_SENTINEL:
+        if inferred := _key_value_types_from_mapping(iterable, ctx):
+            key_type, inferred_value_type = inferred
+            value_type = unite_values(value_type, inferred_value_type)
+        elif inferred := _key_value_types_from_pair_iterable(iterable, ctx):
+            key_type, inferred_value_type = inferred
+            value_type = unite_values(value_type, inferred_value_type)
+
+    for _key, (_required, kw_value) in _get_known_kwargs_entries(kwargs).items():
+        key_type = unite_values(key_type, TypedValue(str))
+        value_type = unite_values(value_type, kw_value)
+
+    return GenericValue(collections.defaultdict, [key_type, value_type])
 
 
 def _sequence_impl(typ: type, ctx: CallContext) -> ImplReturn:
@@ -2092,10 +2150,6 @@ def _recursive_unanotate(val: Value) -> Value:
 def _assert_type_impl(ctx: CallContext) -> Value:
     val = ctx.vars["val"]
     typ = ctx.vars["typ"]
-    if (val_composite := ctx.composite_for_arg("val")) is not None:
-        val = val_composite.value
-    if (typ_composite := ctx.composite_for_arg("typ")) is not None:
-        typ = typ_composite.value
     expected_type = type_from_value(typ, visitor=ctx.visitor, node=ctx.node)
     can_assign = is_equivalent_with_reason(val, expected_type, ctx.visitor)
     if isinstance(can_assign, CanAssignError):
@@ -2675,7 +2729,7 @@ class _IdentityCallable:
 
 
 def get_default_argspecs() -> dict[object, Signature]:
-    signatures: list[Signature] = []
+    signatures = []
     try:
         special_form_getitem = getattr(typing, "_SpecialForm").__getitem__
     except Exception:
@@ -2847,6 +2901,25 @@ def get_default_argspecs() -> dict[object, Signature]:
             impl=_set_impl,
             callable=set,
             return_annotation=TypedValue(set),
+        ),
+        Signature.make(
+            [
+                SigParameter("iterable", _POS_ONLY, default=_NO_ARG_SENTINEL),
+                SigParameter("kwargs", ParameterKind.VAR_KEYWORD),
+            ],
+            impl=_dict_impl,
+            callable=dict,
+            return_annotation=TypedValue(dict),
+        ),
+        Signature.make(
+            [
+                SigParameter("default_factory", _POS_ONLY, default=_NO_ARG_SENTINEL),
+                SigParameter("iterable", _POS_ONLY, default=_NO_ARG_SENTINEL),
+                SigParameter("kwargs", ParameterKind.VAR_KEYWORD),
+            ],
+            impl=_defaultdict_impl,
+            callable=collections.defaultdict,
+            return_annotation=TypedValue(collections.defaultdict),
         ),
         Signature.make(
             [
@@ -3371,34 +3444,29 @@ def _re_impl_with_pattern(ctx: CallContext) -> Value:
     return ctx.inferred_return_value
 
 
-DEFAULT_ARGSPECS_WITH_CACHE_CALLABLES = {
-    re.compile: _re_impl_with_pattern,
-    re.search: _re_impl_with_pattern,
-    re.match: _re_impl_with_pattern,
-    re.fullmatch: _re_impl_with_pattern,
-    re.split: _re_impl_with_pattern,
-    re.findall: _re_impl_with_pattern,
-    re.finditer: _re_impl_with_pattern,
-    re.sub: _re_impl_with_pattern,
-    re.subn: _re_impl_with_pattern,
-    iter: _iter_impl,
-    next: _next_impl,
-}
+DEFAULT_ARGSPECS_WITH_CACHE_CALLABLES = (
+    re.compile,
+    re.search,
+    re.match,
+    re.fullmatch,
+    re.split,
+    re.findall,
+    re.finditer,
+    re.sub,
+    re.subn,
+)
 
 
 def uses_default_argspecs_with_cache(obj: object) -> bool:
-    try:
-        return obj in DEFAULT_ARGSPECS_WITH_CACHE_CALLABLES
-    except TypeError:
-        return False
+    return obj in DEFAULT_ARGSPECS_WITH_CACHE_CALLABLES
 
 
 def get_default_argspecs_with_cache(
     asc: "pycroscope.arg_spec.ArgSpecCache",
 ) -> dict[object, ConcreteSignature]:
     sigs = {}
-    for func, impl in DEFAULT_ARGSPECS_WITH_CACHE_CALLABLES.items():
-        sig = asc.get_argspec(func, impl=impl)
+    for func in DEFAULT_ARGSPECS_WITH_CACHE_CALLABLES:
+        sig = asc.get_argspec(func, impl=_re_impl_with_pattern)
         assert isinstance(
             sig, (Signature, OverloadedSignature)
         ), f"failed to find signature for {func}: {sig}"

@@ -404,6 +404,7 @@ class TestLen(TestNameCheckVisitorBase):
 
         def capybara(d: dict[str, int]) -> None:
             assert_type(iter(d.values()), Iterator[int])
+            assert_type(next(iter(d.values())), int)
 
         def empty_iter() -> Iterator[int]:
             return iter(())

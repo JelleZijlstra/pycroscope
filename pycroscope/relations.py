@@ -814,6 +814,12 @@ def _has_relation(
         right = typify_literal(right)
 
     # TypedValue
+    if (
+        isinstance(left, TypedValue)
+        and left.typ is type(None)
+        and right == KnownValue(None)
+    ):
+        return {}
     if isinstance(left, SequenceValue):
         if isinstance(right, SequenceValue):
             return _has_relation_sequence(left, right, relation, ctx)

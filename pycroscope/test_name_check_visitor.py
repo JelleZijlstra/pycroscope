@@ -415,6 +415,13 @@ class TestImportFailureHandling(TestNameCheckVisitorBase):
             assert_type(func3(TeamUser), TeamUser)
             type.unknown  # E: undefined_attribute
 
+    @assert_passes()
+    def test_generic_constructor_accepts_known_protocol_value(self):
+        import logging
+        import sys
+
+        logging.StreamHandler(sys.stderr)
+
     @assert_passes(run_in_both_module_modes=True)
     def test_type_union_annotation_after_import_failure(self):
         class User: ...

@@ -1484,8 +1484,8 @@ def _get_attribute_from_typed(
     )
     if synthetic_attr is not UNINITIALIZED_VALUE:
         return synthetic_attr
-    synthetic_class = ctx.get_synthetic_class(typ)
     if ctx.attr == "__hash__":
+        synthetic_class = ctx.get_synthetic_class(typ)
         if synthetic_class is not None:
             synthetic_hash = _get_direct_attribute_from_synthetic_class(
                 synthetic_class, "__hash__"

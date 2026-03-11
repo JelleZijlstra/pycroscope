@@ -29,7 +29,6 @@ from .value import (
     TypeVarTupleParam,
     UpperBound,
     Value,
-    Variance,
     replace_known_sequence_value,
     unite_values,
 )
@@ -206,10 +205,10 @@ def solve(bounds: Iterable[Bound], ctx: CanAssignContext) -> Value | CanAssignEr
                     ),
                 ],
             )
-        if type_param is not None and type_param.variance is Variance.COVARIANT:
-            solution = top
-        else:
-            solution = bottom
+        # Bounds maps in pycroscope are used for inference. When both lower and
+        # upper bounds are present, the lower bound is the more precise compatible
+        # solution; callers that need widened results already do that explicitly.
+        solution = bottom
 
     if options is not None:
         can_assigns = [

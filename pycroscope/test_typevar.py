@@ -708,6 +708,24 @@ class TestSolve(TestNameCheckVisitorBase):
             return x
 
     @assert_passes()
+    def test_covariant_bound_inference_prefers_precise_solution(self):
+        from collections.abc import Iterator, ValuesView
+        from typing import Protocol, TypeVar
+
+        from typing_extensions import assert_type
+
+        T_co = TypeVar("T_co", bound=Iterator[object], covariant=True)
+
+        class HasIter(Protocol[T_co]):
+            def __iter__(self) -> T_co: ...
+
+        def capybara(x: HasIter[T_co]) -> T_co:
+            return x.__iter__()
+
+        def check(values: ValuesView[int]) -> None:
+            assert_type(capybara(values), Iterator[int])
+
+    @assert_passes()
     def test_constrained_typevar_binop_preserves_typevar(self):
         from typing import TypeVar
 

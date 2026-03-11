@@ -3504,8 +3504,6 @@ class CheckerAttrContext(AttrContext):
         value = _normalize_synthetic_attribute(value)
         if isinstance(value, CallableValue):
             root_value = replace_fallback(self.root_value)
-            if isinstance(root_value, AnnotatedValue):
-                root_value = replace_fallback(root_value.value)
             synthetic_root: SyntheticClassObjectValue | None = None
             if isinstance(root_value, GenericValue) and isinstance(root_value.typ, str):
                 synthetic_root = self.checker.get_synthetic_class(root_value.typ)
@@ -3520,10 +3518,7 @@ class CheckerAttrContext(AttrContext):
                 )
             ):
                 raw_attr = synthetic_root.class_attributes.get(attr_name)
-                if raw_attr is not None and not any(
-                    isinstance(subval, TypeVarValue)
-                    for subval in root_value.walk_values()
-                ):
+                if raw_attr is not None:
                     return self.checker._specialize_synthetic_classmethod(
                         raw_attr, value, self_annotation_value=root_value
                     )

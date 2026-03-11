@@ -15,7 +15,7 @@ from collections.abc import Callable, Generator, Mapping, Sequence
 from dataclasses import dataclass, replace
 from re import Pattern
 from types import FunctionType, MethodType, ModuleType
-from typing import Any, ClassVar, Generic, TypeVar
+from typing import Any, Generic, TypeVar
 from unittest import mock
 
 import typing_extensions
@@ -396,9 +396,7 @@ else:
 
 
 class ArgSpecCache:
-    DEFAULT_ARGSPECS: ClassVar[dict[object, Signature]] = (
-        implementation.get_default_argspecs()
-    )
+    DEFAULT_ARGSPECS = implementation.get_default_argspecs()
 
     def __init__(
         self,

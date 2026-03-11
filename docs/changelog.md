@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- Fixed `contextlib.nullcontext()`/`nullcontext(None)` handling and improved equivalence between `None` and `types.NoneType`.
+- Improve `TypeVar` handling by distinguishing declared type parameters from call-site inference variables, so pycroscope no longer solves rigid `TypeVar`s during ordinary assignability checks and now preserves more accurate generic-call and recursive type-alias behavior.
 
 - Restore concise generic-parameter names in invalid type-alias diagnostics, so errors mention forms like `~T: str`, `~P`, and `Ts` instead of full internal parameter object reprs.
 - Fix `Generic[...]` and `Protocol[...]` base validation parity between importable and import-failure analysis, including PEP 695 class declarations like `class C[T](Generic[T])` that should be rejected consistently.

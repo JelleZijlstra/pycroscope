@@ -115,6 +115,7 @@ from .value import (
     get_tv_map,
     iter_type_params_in_value,
     make_inference_typevar_map,
+    receiver_to_self_type,
     replace_fallback,
     replace_known_sequence_value,
     stringify_object,
@@ -156,6 +157,18 @@ def _is_staticmethod_callable(func: FunctionType) -> bool:
 
 def _should_widen_constructor_typevar(typevar: TypeVarLike) -> bool:
     return is_instance_of_typing_name(typevar, "TypeVar") and typevar is not SelfT
+
+
+def _is_identity_typevar_solution(typevar: TypeVarLike, value: Value) -> bool:
+    if is_instance_of_typing_name(typevar, "ParamSpec"):
+        return (
+            isinstance(value, InputSigValue)
+            and isinstance(value.input_sig, ParamSpecParam)
+            and value.input_sig.param_spec is typevar
+        )
+    if is_instance_of_typing_name(typevar, "TypeVarTuple"):
+        return isinstance(value, TypeVarTupleValue) and value.typevar is typevar
+    return isinstance(value, TypeVarValue) and value.typevar_param.typevar is typevar
 
 
 def _should_widen_constructor_typevar_solutions(
@@ -215,7 +228,7 @@ class MaximumPositionalArgs(IntegerOption):
     """If calls have more than this many positional arguments, attempt to
     turn them into keyword arguments."""
 
-    default_value: ClassVar[Any] = 10
+    default_value = 10
     name = "maximum_positional_args"
 
 
@@ -638,7 +651,10 @@ class Signature:
         init=False, default_factory=set, repr=False, compare=False, hash=False
     )
     inferable_typevars: set[TypeVarLike] = field(
-        init=False, default_factory=set, repr=False, compare=False, hash=False
+        default_factory=set, repr=False, compare=False, hash=False
+    )
+    use_default_inferable_typevars: bool = field(
+        default=True, repr=False, compare=False, hash=False
     )
 
     def __post_init__(self) -> None:
@@ -662,7 +678,8 @@ class Signature:
                 for typevar in tv_list
             }
         )
-        self.inferable_typevars.update(self.all_typevars)
+        if self.use_default_inferable_typevars:
+            self.inferable_typevars.update(self.all_typevars)
         self.validate()
 
     def __hash__(self) -> int:
@@ -2060,13 +2077,26 @@ class Signature:
         if infer_substituted_typevars:
             inferable_typevars = set(signature.all_typevars)
         else:
+            solved_typevars = {
+                typevar
+                for typevar, value in typevars.items()
+                if not _is_identity_typevar_solution(typevar, value)
+            }
             inferable_typevars = {
                 typevar
                 for typevar in self.inferable_typevars
-                if typevar in signature.all_typevars and typevar not in typevars
+                if typevar in signature.all_typevars and typevar not in solved_typevars
             }
-        object.__setattr__(signature, "inferable_typevars", inferable_typevars)
-        return signature
+        if (
+            inferable_typevars == signature.inferable_typevars
+            and not signature.use_default_inferable_typevars
+        ):
+            return signature
+        return replace(
+            signature,
+            inferable_typevars=inferable_typevars,
+            use_default_inferable_typevars=False,
+        )
 
     def walk_values(self) -> Iterable[Value]:
         yield from self.return_value.walk_values()
@@ -2266,18 +2296,30 @@ class Signature:
                 )
             ),
         )
-        object.__setattr__(
+        solved_typevars = {
+            typevar
+            for typevar, value in tv_map.items()
+            if not _is_identity_typevar_solution(typevar, value)
+        }
+        remaining_param_typevars = {
+            type_param.typevar
+            for param in signature.parameters.values()
+            for type_param in iter_type_params_in_value(param.annotation)
+        }
+        inferable_typevars = {
+            typevar
+            for typevar in self.inferable_typevars
+            if typevar in signature.all_typevars
+            and typevar not in solved_typevars
+            and (typevar not in tv_map or typevar in remaining_param_typevars)
+        }
+        if inferable_typevars == signature.inferable_typevars:
+            return signature
+        return replace(
             signature,
-            "inferable_typevars",
-            {
-                typevar
-                for param in signature.parameters.values()
-                for type_param in iter_type_params_in_value(param.annotation)
-                for typevar in [type_param.typevar]
-                if typevar in self.inferable_typevars and typevar not in tv_map
-            },
+            inferable_typevars=inferable_typevars,
+            use_default_inferable_typevars=False,
         )
-        return signature
 
     def has_return_value(self) -> bool:
         return self.has_return_annotation or self.evaluator is not None
@@ -2970,8 +3012,11 @@ def keep_inferable_typevars_from_params(
     }
     if signature.inferable_typevars == inferable_from_params:
         return signature
-    object.__setattr__(signature, "inferable_typevars", inferable_from_params)
-    return signature
+    return replace(
+        signature,
+        inferable_typevars=inferable_from_params,
+        use_default_inferable_typevars=False,
+    )
 
 
 @dataclass(frozen=True)
@@ -2988,9 +3033,32 @@ class BoundMethodSignature:
         visitor: "NameCheckVisitor",
         node: ast.AST | None,
     ) -> Value:
-        ret = self.signature.check_call(
-            [(self.self_composite, None), *args], visitor, node
+        self_composite = self.self_composite
+        has_impl = (
+            self.signature.impl is not None
+            if isinstance(self.signature, Signature)
+            else any(sig.impl is not None for sig in self.signature.signatures)
         )
+        if not has_impl:
+            normalized_value = self_composite.value
+            if isinstance(normalized_value, SequenceValue) and normalized_value.typ in (
+                list,
+                set,
+            ):
+                normalized_value = normalized_value.simplify()
+            elif isinstance(normalized_value, DictIncompleteValue):
+                normalized_value = normalized_value.simplify()
+            elif isinstance(normalized_value, KnownValue):
+                replaced = replace_known_sequence_value(normalized_value)
+                if isinstance(replaced, SequenceValue) and replaced.typ in (list, set):
+                    normalized_value = replaced.simplify()
+                elif isinstance(replaced, DictIncompleteValue):
+                    normalized_value = replaced.simplify()
+            if normalized_value != self_composite.value:
+                self_composite = Composite(
+                    normalized_value, self_composite.varname, self_composite.node
+                )
+        ret = self.signature.check_call([(self_composite, None), *args], visitor, node)
         if self.return_override is not None and not self.signature.has_return_value():
             if isinstance(ret, AnnotatedValue):
                 return annotate_value(self.return_override, ret.metadata)
@@ -3005,7 +3073,7 @@ class BoundMethodSignature:
         self_annotation_value: Value | None = None,
     ) -> ConcreteSignature | None:
         if self_annotation_value is None:
-            self_annotation_value = self.self_composite.value
+            self_annotation_value = receiver_to_self_type(self.self_composite.value)
         return self.signature.bind_self(
             preserve_impl=preserve_impl,
             self_value=self.self_composite.value,

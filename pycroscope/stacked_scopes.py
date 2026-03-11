@@ -1553,7 +1553,8 @@ class StackedScopes:
         simplification_limit: int | None = None,
     ) -> None:
         self.simplification_limit = simplification_limit
-        module_scope_vars: dict[Varname, Value] = dict(module_vars)
+        module_scope_vars: dict[Varname, Value] = {}
+        module_scope_vars.update(module_vars)
         self.scopes = [
             self._builtin_scope,
             ModuleScope(

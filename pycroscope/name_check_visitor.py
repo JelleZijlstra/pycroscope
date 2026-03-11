@@ -32,7 +32,7 @@ from collections.abc import Callable, Container, Generator, Iterable, Mapping, S
 from contextlib import AbstractContextManager
 from dataclasses import dataclass, replace
 from dataclasses import field as dataclass_field
-from functools import lru_cache
+from functools import lru_cache, partial
 from itertools import chain
 from pathlib import Path
 from types import GenericAlias
@@ -3176,7 +3176,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                         base_value = attributes.get_attribute(ctx)
                         if base_value is not UNINITIALIZED_VALUE:
                             yield base_class, base_value
-        for base_class in self.checker.get_generic_bases(current_class):
+        for base_class, base_typevar_map in self.checker.get_generic_bases(
+            current_class
+        ).items():
             if self._class_keys_match(base_class, current_class):
                 continue
             if isinstance(base_class, str):
@@ -3199,6 +3201,8 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             )
             base_value = attributes.get_attribute(ctx)
             if base_value is not UNINITIALIZED_VALUE:
+                if base_typevar_map:
+                    base_value = base_value.substitute_typevars(base_typevar_map)
                 yield base_class, base_value
 
     def _check_for_incompatible_overrides(
@@ -5958,7 +5962,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             seen = set()
         synthetic_id = id(synthetic_class)
         if synthetic_id in seen:
-            return frozenset[str](), False
+            return frozenset(), False
         seen.add(synthetic_id)
 
         slot_names: set[str] = set()
@@ -5997,9 +6001,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         self, typ: type
     ) -> tuple[frozenset[str], bool] | None:
         if typ is object:
-            return frozenset[str](), False
+            return frozenset(), False
         if attributes.may_have_dynamic_attributes(typ):
-            return frozenset[str](), True
+            return frozenset(), True
         slot_names: set[str] = set()
         has_dict = False
         saw_slots = False
@@ -7762,7 +7766,11 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 self._flush_pending_overload_block_for_scope(
                     self.scopes.current_scope()
                 )
-                class_scope_values = dict(self.scopes.current_scope().variables)
+                class_scope_values = {
+                    name: value
+                    for name, value in self.scopes.current_scope().variables.items()
+                    if isinstance(name, str)
+                }
 
             if isinstance(current_class, type):
                 return KnownValue(current_class), class_scope_values
@@ -12782,13 +12790,12 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 )
             if isinstance(node.target, ast.Name) and alias_type is not None:
                 type_params = self._infer_type_alias_type_params(node.value, alias_type)
-
-                def alias_evaluator() -> Value:
-                    return self._evaluate_type_alias_node(
-                        node.value,
-                        suppress_errors=True,
-                        disallowed_type_param_identities=disallowed_type_params,
-                    )
+                alias_evaluator = partial(
+                    self._evaluate_type_alias_node,
+                    node.value,
+                    suppress_errors=True,
+                    disallowed_type_param_identities=disallowed_type_params,
+                )
 
                 explicit_type_alias_assignment_value = TypeAliasValue(
                     node.target.id,
@@ -13524,15 +13531,14 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         if not type_params and not isinstance(alias_type, TypeAliasValue):
             return None
 
-        def alias_evaluator() -> Value:
-            return self._evaluate_type_alias_node(
+        alias = TypeAlias(
+            partial(
+                self._evaluate_type_alias_node,
                 node.value,
                 suppress_errors=True,
                 disallowed_type_param_identities=disallowed_type_params,
-            )
-
-        alias = TypeAlias(
-            alias_evaluator, lambda type_params=tuple(type_params): type_params
+            ),
+            lambda type_params=tuple(type_params): type_params,
         )
         return (
             target_name,
@@ -17458,9 +17464,7 @@ def _callable_first_positional_parameter_type(
             parameter_types.append(parameter_type)
         if not parameter_types:
             return None
-        if len(parameter_types) == 1:
-            return parameter_types[0]
-        return MultiValuedValue(parameter_types)
+        return unite_values(*parameter_types)
     return None
 
 
@@ -17482,9 +17486,7 @@ def _callable_first_positional_parameter_type_for_return(
             if parameter_type is not None:
                 parameter_types.append(parameter_type)
         if parameter_types:
-            if len(parameter_types) == 1:
-                return parameter_types[0]
-            return MultiValuedValue(parameter_types)
+            return unite_values(*parameter_types)
     return _callable_first_positional_parameter_type(signature, checker=checker)
 
 
