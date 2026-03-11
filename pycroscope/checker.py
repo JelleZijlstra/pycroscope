@@ -456,7 +456,7 @@ def _synthetic_dataclass_init_enabled(value: SyntheticClassObjectValue) -> bool:
 class Checker:
     raw_options: InitVar[Options | None] = None
     options: Options = field(init=False)
-    arg_spec_cache: ArgSpecCache = field(init=False, repr=False)
+    _arg_spec_cache: ArgSpecCache | None = field(default=None, init=False, repr=False)
     ts_finder: TypeshedFinder = field(init=False, repr=False)
     reexport_tracker: ImplicitReexportTracker = field(init=False, repr=False)
     callable_tracker: CallableTracker = field(init=False, repr=False)
@@ -485,7 +485,7 @@ class Checker:
         else:
             self.options = raw_options
         self.ts_finder = TypeshedFinder.make(self, self.options)
-        self.arg_spec_cache = ArgSpecCache(
+        self._arg_spec_cache = ArgSpecCache(
             self.options,
             self.ts_finder,
             self,
@@ -500,6 +500,12 @@ class Checker:
 
     def maybe_get_variable_name_value(self, varname: str) -> VariableNameValue | None:
         return VariableNameValue.from_varname(varname, self.vnv_map)
+
+    @property
+    def arg_spec_cache(self) -> ArgSpecCache:
+        arg_spec_cache = self._arg_spec_cache
+        assert arg_spec_cache is not None
+        return arg_spec_cache
 
     def resolve_name(
         self,
@@ -601,11 +607,10 @@ class Checker:
 
     def _get_typeshed_bases(self, typ: type | str) -> set[type | str]:
         base_values = self.ts_finder.get_bases_recursively(typ)
-        arg_spec_cache = getattr(self, "arg_spec_cache", None)
         return {
             base_value.typ
             for base in base_values
-            for base_value in _iter_base_type_values(base, arg_spec_cache)
+            for base_value in _iter_base_type_values(base, self._arg_spec_cache)
         }
 
     def _get_protocol_members(self, bases: Iterable[type | str]) -> set[str]:
@@ -837,13 +842,13 @@ class Checker:
             assert pair == new_pair
 
     def can_aliases_assume_compatibility(
-        self, left: "TypeAliasValue", right: "TypeAliasValue"
+        self, left: TypeAliasValue, right: TypeAliasValue
     ) -> bool:
         return (left, right) in self.alias_assumed_compatibilities
 
     @contextmanager
     def aliases_assume_compatibility(
-        self, left: "TypeAliasValue", right: "TypeAliasValue"
+        self, left: TypeAliasValue, right: TypeAliasValue
     ) -> Generator[None]:
         pair = (left, right)
         self.alias_assumed_compatibilities.add(pair)

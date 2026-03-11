@@ -296,7 +296,7 @@ def _paramspec_identities_from_value(value: Value) -> set[object]:
 
 
 def _paramspec_identities_from_context(ctx: Context) -> set[object]:
-    info = getattr(ctx, "current_function_info", None)
+    info = ctx.current_function_info
     identities: set[object] = set()
     if isinstance(info, FunctionInfo):
         for param_info in info.params:
@@ -308,7 +308,7 @@ def _paramspec_identities_from_context(ctx: Context) -> set[object]:
         for type_param in info.type_params:
             if is_instance_of_typing_name(type_param.typevar, "ParamSpec"):
                 identities.add(type_param.typevar)
-    current_class_type_params = getattr(ctx, "current_class_type_params", None)
+    current_class_type_params = ctx.current_class_type_params
     if current_class_type_params is not None:
         for type_param in current_class_type_params:
             if is_instance_of_typing_name(type_param.typevar, "ParamSpec"):
@@ -356,7 +356,7 @@ def compute_parameters(
         for kw_default in node.args.kw_defaults
     ]
 
-    posonly_args = getattr(node.args, "posonlyargs", [])
+    posonly_args = node.args.posonlyargs
     num_without_defaults = len(node.args.args) + len(posonly_args) - len(defaults)
     vararg_defaults = [None] if node.args.vararg is not None else []
     defaults = [
@@ -505,11 +505,7 @@ def compute_parameters(
                             error_code=ErrorCode.incompatible_default,
                             detail=tv_map.display(),
                         )
-                if (
-                    is_self
-                    and getattr(node, "name", None) == "__init__"
-                    and inner_value is not None
-                ):
+                if is_self and node.name == "__init__" and inner_value is not None:
                     class_type_param_ids = _type_param_identities_for_class(
                         enclosing_class
                     )
@@ -527,7 +523,7 @@ def compute_parameters(
         elif is_self:
             assert enclosing_class is not None
             self_tv_value = TypeVarValue(TypeVarParam(SelfT, bound=enclosing_class))
-            if is_classmethod or getattr(node, "name", None) in IMPLICIT_CLASSMETHODS:
+            if is_classmethod or node.name in IMPLICIT_CLASSMETHODS:
                 value = SubclassValue(self_tv_value)
             else:
                 # normal method

@@ -1124,8 +1124,7 @@ class NodeTransformer(ast.NodeVisitor):
 
     def generic_visit(self, node: ast.AST) -> ast.AST:
         attributes = {}
-        for field, _ in ast.iter_fields(node):
-            old_value = getattr(node, field, None)
+        for field, old_value in ast.iter_fields(node):
             if isinstance(old_value, list):
                 new_value = []
                 for value in old_value:

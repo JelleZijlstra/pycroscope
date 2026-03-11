@@ -1546,7 +1546,6 @@ class _PendingOverload:
 
 @dataclass
 class _SelfBaseDetectionContext(Context):
-    visitor: "NameCheckVisitor"
     node: ast.AST
 
     def show_error(
@@ -1557,16 +1556,19 @@ class _SelfBaseDetectionContext(Context):
     ) -> None:
         if self.should_suppress_errors:
             return
-        self.visitor.show_error(node or self.node, message, error_code)
+        if self.visitor is not None:
+            self.visitor.show_error(node or self.node, message, error_code)
 
     def get_error_node(self) -> ast.AST | None:
         return self.node
 
     def get_name(self, node: ast.Name) -> Value:
-        value, _ = self.visitor.resolve_name(
-            node, error_node=self.node, suppress_errors=True
-        )
-        return value
+        if self.visitor is not None:
+            value, _ = self.visitor.resolve_name(
+                node, error_node=self.node, suppress_errors=True
+            )
+            return value
+        return AnyValue(AnySource.error)
 
 
 @dataclass
@@ -2089,11 +2091,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
 
     def generic_visit(self, node: ast.AST) -> None:
         # Inlined version of ast.Visitor.generic_visit for performance.
-        for field in node._fields:
-            try:
-                value = getattr(node, field)
-            except AttributeError:
-                continue
+        for _, value in ast.iter_fields(node):
             if isinstance(value, list):
                 for item in value:
                     if isinstance(item, ast.AST):
@@ -2308,6 +2306,22 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     synthetic_name = mangled
                     if isinstance(synthetic_value, KnownValue):
                         synthetic_value = TypedValue(type(synthetic_value.val))
+            if (
+                synthetic_name == name
+                and self.current_function_name is None
+                and not synthetic_name.startswith("_")
+            ):
+                unwrapped, forced_member, forced_nonmember = (
+                    _unwrap_enum_member_wrapper(synthetic_value)
+                )
+                if forced_member or (
+                    not forced_nonmember
+                    and not _is_nonmember_enum_assignment_value(unwrapped, self)
+                ):
+                    synthetic_value = (
+                        self._get_enclosing_class_value_for_method()
+                        or TypedValue(self.current_class)
+                    )
         synthetic_class.class_attributes[synthetic_name] = synthetic_value
         if not synthetic_name.startswith("%"):
             self._discard_synthetic_instance_only_annotation_name(synthetic_name)
@@ -2747,7 +2761,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     attr_expr = annotation_expr_from_annotations(
                         annotations,
                         attr_name,
-                        ctx=_RuntimeAnnotationsContext(class_key, self, node),
+                        ctx=_RuntimeAnnotationsContext(
+                            class_key, node=node, visitor=self, can_assign_ctx=self
+                        ),
                     )
                     if attr_expr is not None:
                         attr_type, qualifiers = attr_expr.maybe_unqualify(
@@ -3652,7 +3668,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 for base_node, base_value in zip(node.bases, base_values):
                     parsed_base_value = value_from_ast(
                         base_node,
-                        ctx=_SelfBaseDetectionContext(self, base_node),
+                        ctx=_SelfBaseDetectionContext(base_node, visitor=self),
                         error_on_unrecognized=False,
                     )
                     if _base_expression_contains_self(parsed_base_value):
@@ -7511,7 +7527,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         if isinstance(function_node, (ast.FunctionDef, ast.AsyncFunctionDef)) and (
             function_node.returns is annotation
             or any(
-                getattr(arg, "annotation", None) is annotation
+                arg.annotation is annotation
                 for arg in (
                     *function_node.args.posonlyargs,
                     *function_node.args.args,
@@ -8125,17 +8141,23 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     )
                 )
                 if uses_self_annotation:
+                    is_named_method = isinstance(
+                        node, (ast.FunctionDef, ast.AsyncFunctionDef)
+                    )
+                    is_implicit_classmethod = (
+                        is_named_method and node.name in IMPLICIT_CLASSMETHODS
+                    )
                     if (
                         return_annotation is not None
                         and FunctionDecorator.classmethod not in decorator_kinds
-                        and getattr(node, "name", None) not in IMPLICIT_CLASSMETHODS
+                        and not is_implicit_classmethod
                     ):
                         return_annotation = return_annotation.substitute_typevars(
                             substitutions
                         )
                     if (
                         FunctionDecorator.classmethod in decorator_kinds
-                        or getattr(node, "name", None) in IMPLICIT_CLASSMETHODS
+                        or is_implicit_classmethod
                     ):
                         inferred_self = SubclassValue(self_instance_value)
                     else:
@@ -8159,9 +8181,15 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                         ],
                     ]
                 else:
+                    is_named_method = isinstance(
+                        node, (ast.FunctionDef, ast.AsyncFunctionDef)
+                    )
+                    is_implicit_classmethod = (
+                        is_named_method and node.name in IMPLICIT_CLASSMETHODS
+                    )
                     if (
                         FunctionDecorator.classmethod in decorator_kinds
-                        or getattr(node, "name", None) in IMPLICIT_CLASSMETHODS
+                        or is_implicit_classmethod
                     ):
                         fallback_self = SubclassValue(enclosing_class)
                     else:
@@ -17019,7 +17047,7 @@ def _unwrap_enum_member_wrapper(value: Value) -> tuple[Value, bool, bool]:
 
 
 def _is_nonmember_enum_assignment_value(
-    value: Value, checker: "NameCheckVisitor"
+    value: Value, checker: NameCheckVisitor
 ) -> bool:
     """Whether an Enum class-body assignment should stay a non-member.
 
@@ -17377,7 +17405,7 @@ def _is_absent_dataclass_default_value(value: Value) -> bool:
 
 
 def _callable_return_type_from_signature(
-    signature: MaybeSignature, *, checker: "NameCheckVisitor"
+    signature: MaybeSignature, *, checker: NameCheckVisitor
 ) -> Value | None:
     if isinstance(signature, BoundMethodSignature):
         signature = signature.get_signature(ctx=checker)
@@ -17391,7 +17419,7 @@ def _callable_return_type_from_signature(
 
 
 def _default_factory_return_value(
-    factory: Value, *, checker: "NameCheckVisitor"
+    factory: Value, *, checker: NameCheckVisitor
 ) -> Value | None:
     with checker.catch_errors() as call_errors:
         return_value = checker.check_call(None, factory, ())
@@ -17402,7 +17430,7 @@ def _default_factory_return_value(
 
 
 def _specialize_first_positional_parameter_type_in_signature(
-    signature: Signature, expected_return: Value, *, checker: "NameCheckVisitor"
+    signature: Signature, expected_return: Value, *, checker: NameCheckVisitor
 ) -> Value | None:
     parameter_type = _first_positional_parameter_type_in_signature(signature)
     if parameter_type is None:
@@ -17448,7 +17476,7 @@ def _first_argument_type_for_var_positional_annotation(annotation: Value) -> Val
 
 
 def _callable_first_positional_parameter_type(
-    signature: MaybeSignature, *, checker: "NameCheckVisitor"
+    signature: MaybeSignature, *, checker: NameCheckVisitor
 ) -> Value | None:
     if isinstance(signature, BoundMethodSignature):
         signature = signature.get_signature(ctx=checker)
@@ -17470,7 +17498,7 @@ def _callable_first_positional_parameter_type(
 
 
 def _callable_first_positional_parameter_type_for_return(
-    signature: MaybeSignature, expected_return: Value, *, checker: "NameCheckVisitor"
+    signature: MaybeSignature, expected_return: Value, *, checker: NameCheckVisitor
 ) -> Value | None:
     if isinstance(signature, BoundMethodSignature):
         signature = signature.get_signature(ctx=checker)
