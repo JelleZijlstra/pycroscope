@@ -2791,6 +2791,23 @@ class Checker:
             if typ is collections.abc.Callable or typ is types.FunctionType:
                 return ANY_SIGNATURE
             if isinstance(typ, str):
+                synthetic_class = self.get_synthetic_class(typ)
+                if synthetic_class is not None:
+                    synthetic_call = synthetic_class.class_attributes.get("__call__")
+                    if (
+                        synthetic_call is not None
+                        and "__call__" in synthetic_class.method_attributes
+                    ):
+                        normalized_call = normalize_synthetic_descriptor_attribute(
+                            synthetic_call
+                        )
+                        if isinstance(normalized_call, CallableValue):
+                            bound = self._bind_synthetic_method(
+                                normalized_call.signature, self_annotation_value=value
+                            )
+                            if bound is not None:
+                                return bound
+                            return normalized_call.signature
                 if get_call_attribute is not None:
                     call_method = get_call_attribute(value)
                 else:
