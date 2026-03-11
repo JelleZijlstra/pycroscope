@@ -36,6 +36,8 @@ from .value import (
     SequenceValue,
     SubclassValue,
     TypedValue,
+    TypeVarParam,
+    TypeVarValue,
     Value,
     concrete_values_from_iterable,
     unite_and_simplify,
@@ -883,6 +885,26 @@ def test_typeform_intersection_simplification() -> None:
     obj_and_tf = intersect_values(TypedValue(object), typeform_int, CTX)
     assert tf_and_obj == typeform_int
     assert obj_and_tf == typeform_int
+
+
+def test_typevar_intersection_preserves_typevar() -> None:
+    typevar_value = TypeVarValue(TypeVarParam(typing.TypeVar("T")))
+    narrowed_int = intersect_values(typevar_value, TypedValue(int), CTX)
+    narrowed_str = intersect_values(typevar_value, TypedValue(str), CTX)
+
+    assert intersect_values(typevar_value, TypedValue(object), CTX) == typevar_value
+    assert narrowed_int == (value.IntersectionValue((typevar_value, TypedValue(int))))
+    assert_can_assign(typevar_value, narrowed_int)
+    assert_can_assign(typevar_value, MultiValuedValue([narrowed_int, narrowed_str]))
+
+
+def test_constrained_typevar_intersection_simplifies() -> None:
+    anystr_value = TypeVarValue(TypeVarParam(typing.TypeVar("AnyStr", str, bytes)))
+
+    class StrSub(str):
+        pass
+
+    assert intersect_values(anystr_value, TypedValue(StrSub), CTX) == TypedValue(StrSub)
 
 
 def test_io() -> None:

@@ -260,6 +260,20 @@ class TestTypeAliasType(TestNameCheckVisitorBase):
             f([s])  # E: incompatible_argument
 
     @assert_passes()
+    def test_typing_extensions_runtime_attributes(self):
+        from typing import Literal, TypeVar
+
+        from typing_extensions import TypeAliasType, assert_type
+
+        T = TypeVar("T")
+        Alias = TypeAliasType("Alias", list[T], type_params=(T,))
+
+        assert_type(Alias.__name__, Literal["Alias"])
+        print(Alias.__module__)
+        print(Alias.__value__)
+        print(Alias.__type_params__)
+
+    @assert_passes()
     def test_typing_extensions_paramspec_list_arg(self):
         from typing import Callable, ParamSpec
 

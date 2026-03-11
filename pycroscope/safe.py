@@ -165,7 +165,7 @@ def is_union(obj: object) -> bool:
     return is_typing_name(obj, "Union") or (UnionType is not None and obj is UnionType)
 
 
-def is_instance_of_typing_name(obj: object, name: str) -> bool:
+def is_instance_of_typing_name(obj: object, name: str) -> typing_extensions.TypeIs[Any]:
     objs, _ = _fill_typing_name_cache(name)
     return isinstance(obj, objs)
 

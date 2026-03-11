@@ -378,6 +378,31 @@ def _has_relation(
     if isinstance(left, TypeVarValue):
         if left == right or isinstance(right, AnyValue):
             return {}
+        if isinstance(right, MultiValuedValue):
+            bounds_maps = []
+            for val in right.vals:
+                can_assign = _has_relation(left, gradualize(val), relation, ctx)
+                if isinstance(can_assign, CanAssignError):
+                    return can_assign
+                bounds_maps.append(can_assign)
+            return unify_bounds_maps(bounds_maps)
+        if isinstance(right, IntersectionValue):
+            simplified_right = intersect_multi(right.vals, ctx)
+            if not isinstance(simplified_right, IntersectionValue):
+                return _has_relation(left, simplified_right, relation, ctx)
+            bounds_maps = []
+            errors = []
+            for val in simplified_right.vals:
+                can_assign = _has_relation(left, gradualize(val), relation, ctx)
+                if isinstance(can_assign, CanAssignError):
+                    errors.append(can_assign)
+                else:
+                    bounds_maps.append(can_assign)
+            if not bounds_maps:
+                return CanAssignError(
+                    f"{right} is not {relation.description} {left}", children=errors
+                )
+            return unify_bounds_maps(bounds_maps)
         return CanAssignError(f"{right} is not {relation.description} {left}")
     if isinstance(right, TypeVarValue):
         return _has_relation(
@@ -2546,6 +2571,8 @@ def _intersect_wrapper(
     right: GradualType,
     ctx: CanAssignContext,
 ) -> TypeOrIrreducible:
+    if isinstance(left, TypeVarValue):
+        return _intersect_typevar_value(left, right, ctx)
     left_inner = left.get_fallback_value()
     result = _intersect_values_inner(left_inner, right, ctx)
     if result is NO_RETURN_VALUE:
@@ -2555,6 +2582,25 @@ def _intersect_wrapper(
     # Example: NT = NewType("NT", Literal[1, 2, 3])
     # NT & Literal[2, 3, 4] = NT & Literal[2, 3]
     return IntersectionValue((left_inner, result))
+
+
+def _intersect_typevar_value(
+    left: TypeVarValue, right: GradualType, ctx: CanAssignContext
+) -> TypeOrIrreducible:
+    left_inner = left.get_fallback_value()
+    result = _intersect_values_inner(left_inner, right, ctx)
+    if result is NO_RETURN_VALUE:
+        return NO_RETURN_VALUE
+    if result is Irreducible:
+        return Irreducible
+    if result == left_inner:
+        return left
+    if left.typevar_param.constraints and any(
+        is_subtype(constraint, result, ctx)
+        for constraint in left.typevar_param.constraints
+    ):
+        return result
+    return IntersectionValue((left, result))
 
 
 def _intersect_alias(

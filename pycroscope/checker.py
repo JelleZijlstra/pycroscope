@@ -15,7 +15,7 @@ from collections.abc import Callable, Generator, Iterable, Iterator, Sequence
 from contextlib import AbstractContextManager, contextmanager
 from dataclasses import InitVar, dataclass, field
 from dataclasses import replace as dataclass_replace
-from typing import TypeVar, cast
+from typing import TypeVar
 
 from typing_extensions import assert_never
 
@@ -312,18 +312,17 @@ def _map_maybe_signature(
     if isinstance(signature, Signature):
         return transform(signature)
     if isinstance(signature, OverloadedSignature):
-        return OverloadedSignature(
-            [
-                cast(Signature, _map_maybe_signature(sub_sig, transform))
-                for sub_sig in signature.signatures
-            ]
-        )
+        mapped_signatures: list[Signature] = []
+        for sub_sig in signature.signatures:
+            mapped = _map_maybe_signature(sub_sig, transform)
+            assert isinstance(mapped, Signature)
+            mapped_signatures.append(mapped)
+        return OverloadedSignature(mapped_signatures)
     if isinstance(signature, BoundMethodSignature):
         inner = _map_maybe_signature(signature.signature, transform)
+        assert isinstance(inner, ConcreteSignature)
         return BoundMethodSignature(
-            cast(ConcreteSignature, inner),
-            signature.self_composite,
-            return_override=signature.return_override,
+            inner, signature.self_composite, return_override=signature.return_override
         )
     return signature
 
@@ -669,7 +668,7 @@ class Checker:
                 merged[base] = {}
             base_map: dict[TypeVarLike, Value] = merged[base]
             base_map.update(substituted_tv_map)
-        return cast(GenericBases, merged)
+        return merged
 
     def get_type_parameters(self, typ: type | str) -> list[TypeParam]:
         declared_type_params = self._get_synthetic_declared_type_params(typ)

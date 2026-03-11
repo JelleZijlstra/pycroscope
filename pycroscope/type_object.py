@@ -8,7 +8,7 @@ import collections.abc
 import inspect
 from collections.abc import Callable, Container, Mapping, Sequence
 from dataclasses import dataclass, field, replace
-from typing import cast, get_origin
+from typing import get_origin
 from unittest import mock
 
 from typing_extensions import assert_never
@@ -538,7 +538,7 @@ class TypeObject:
         return self.typ in types
 
     def can_be_unbound_method(self) -> bool:
-        return self.is_exactly({cast(type, Callable), collections.abc.Callable, object})
+        return self.is_exactly({Callable, collections.abc.Callable, object})
 
     def is_metatype_of(self, other: "TypeObject") -> bool:
         if isinstance(self.typ, type) and isinstance(other.typ, type):

@@ -1543,7 +1543,6 @@ class TestImportFailureHandlingCodeSamples(TestNameCheckVisitorBase):
             x1, y1, units1 = p
             assert_type(x1, int)
             assert_type(units1, str)
-
             _x2, _y2 = p  # E: bad_unpack
             _x3, _y3, _units3, _other = p  # E: bad_unpack
 
@@ -1555,6 +1554,18 @@ class TestImportFailureHandlingCodeSamples(TestNameCheckVisitorBase):
             x4, y4, units4 = pn
             assert_type(x4, int)
             assert_type(units4, str)
+
+    @assert_passes(run_in_both_module_modes=True)
+    def test_inherited_string_annotation_accessed_through_cls(self):
+        from typing_extensions import assert_type
+
+        class Base:
+            x: "int"
+
+        class Child(Base):
+            @classmethod
+            def f(cls) -> None:
+                assert_type(cls.x, int)
 
     @assert_passes()
     def test_incompatible_annotated_attribute_assignment(self):

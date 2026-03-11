@@ -15,7 +15,7 @@ import warnings
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, field, replace
 from types import FunctionType, MethodType
-from typing import TYPE_CHECKING, Any, ClassVar, Literal, NamedTuple, TypeVar, cast
+from typing import TYPE_CHECKING, Any, ClassVar, Literal, NamedTuple, TypeVar
 
 from typing_extensions import Protocol, Self, assert_never
 
@@ -1753,11 +1753,10 @@ class Signature:
             runtime_return = self._maybe_perform_call(preprocessed, ctx)
             if runtime_return is not None:
                 if isinstance(return_value, ImplReturn):
-                    impl_return = cast(ImplReturn, return_value)
                     return_value = ImplReturn(
                         runtime_return,
-                        impl_return.constraint,
-                        impl_return.no_return_unless,
+                        return_value.constraint,
+                        return_value.no_return_unless,
                     )
                 else:
                     return_value = runtime_return

@@ -28,6 +28,8 @@ import ast
 import builtins
 import contextlib
 import enum
+import sys
+import types
 import typing
 from collections.abc import Callable, Container, Generator, Hashable, Mapping, Sequence
 from contextlib import AbstractContextManager
@@ -40,7 +42,6 @@ from typing import (
     Optional,
     TypeVar,
     Union,
-    cast,
     get_args,
     get_origin,
 )
@@ -789,11 +790,9 @@ def make_type_param(
             variance=get_typevar_variance(tv),
         )
     if is_instance_of_typing_name(tv, "ParamSpec"):
-        return ParamSpecParam(cast(ParamSpec, tv), default=default)
+        return ParamSpecParam(tv, default=default)
     if is_instance_of_typing_name(tv, "TypeVarTuple"):
-        return TypeVarTupleParam(
-            cast(typing_extensions.TypeVarTuple, tv), default=default
-        )
+        return TypeVarTupleParam(tv, default=default)
     raise TypeError(f"Unsupported type parameter: {tv!r}")
 
 
@@ -801,7 +800,7 @@ def _get_can_assign_context(ctx: Context) -> CanAssignContext | None:
     visitor = getattr(ctx, "visitor", None)
     if visitor is None:
         return None
-    return cast(CanAssignContext, visitor)
+    return visitor
 
 
 def _is_assignable_for_alias_arg(expected: Value, actual: Value, ctx: Context) -> bool:
@@ -1902,7 +1901,7 @@ def _type_from_subscripted_value(
         return _type_from_subscripted_value(runtime_alias, members, ctx)
     root = root.val
     if is_instance_of_typing_name(root, "TypeAliasType"):
-        alias_object = cast(Any, root)
+        alias_object = root
         runtime_type_params = tuple(alias_object.__type_params__)
         type_params = tuple(make_type_param(tp, ctx=ctx) for tp in runtime_type_params)
         if len(members) == len(type_params):
@@ -1936,7 +1935,7 @@ def _type_from_subscripted_value(
                 error_code=ErrorCode.invalid_literal,
             )
             return AnyValue(AnySource.error)
-        known_members = cast(Sequence[KnownValue], members)
+        known_members = members
         invalid_members = [
             elt for elt in known_members if not _is_valid_pep586_literal_value(elt.val)
         ]
@@ -2225,6 +2224,57 @@ class _DefaultContext(Context):
         return super().get_type_alias(key, evaluator, evaluate_type_params)
 
 
+@dataclass
+class _RuntimeAnnotationsContext(Context):
+    owner: object
+    visitor: "NameCheckVisitor | CanAssignContext | None" = None
+    node: ast.AST | None = None
+
+    def __post_init__(self) -> None:
+        super().__init__()
+
+    def show_error(
+        self,
+        message: str,
+        error_code: Error = ErrorCode.invalid_annotation,
+        node: ast.AST | None = None,
+    ) -> None:
+        if self.should_suppress_errors:
+            return
+        error_node = node or self.node
+        if self.visitor is not None and error_node is not None:
+            self.visitor.show_error(error_node, message, error_code)
+
+    def get_error_node(self) -> ast.AST | None:
+        return self.node
+
+    def get_name(self, node: ast.Name) -> Value:
+        try:
+            if isinstance(self.owner, types.ModuleType):
+                globals_dict = self.owner.__dict__
+            else:
+                globals_dict = sys.modules[self.owner.__module__].__dict__
+        except Exception:
+            if self.visitor is None:
+                return AnyValue(AnySource.error)
+            value, _ = self.visitor.resolve_name(
+                node, error_node=self.node, suppress_errors=self.should_suppress_errors
+            )
+        else:
+            value = self.get_name_from_globals(node.id, globals_dict)
+        if _is_self_annotation_value(value):
+            self.maybe_show_invalid_self_annotation()
+        return value
+
+    def invalid_self_annotation_message(self, node: ast.AST) -> str | None:
+        if self.visitor is None:
+            return None
+        method = getattr(self.visitor, "invalid_self_annotation_message", None)
+        if method is None:
+            return None
+        return method(node)
+
+
 @dataclass(frozen=True)
 class DecoratorValue(Value):
     decorator: object
@@ -2412,7 +2462,7 @@ class _Visitor(ast.NodeVisitor):
                 kwargs = {"covariant": covariant, "contravariant": contravariant}
                 if infer_variance:
                     kwargs_with_infer = {**kwargs, "infer_variance": True}
-                    tv = cast(Any, TypeVar)(name_val.val, **kwargs_with_infer)
+                    tv = typing_extensions.TypeVar(name_val.val, **kwargs_with_infer)
                 else:
                     tv = TypeVar(name_val.val, **kwargs)
             except Exception as e:
@@ -2636,7 +2686,7 @@ def _value_of_origin_args(
             return AnyValue(AnySource.error)
         return TypeFormValue(_type_from_runtime(args[0], ctx))
     elif is_instance_of_typing_name(origin, "TypeAliasType"):
-        alias_object = cast(Any, origin)
+        alias_object = origin
         type_params = tuple(
             make_type_param(type_param, ctx)
             for type_param in alias_object.__type_params__

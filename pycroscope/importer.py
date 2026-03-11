@@ -12,7 +12,6 @@ from collections.abc import Sequence
 from functools import lru_cache
 from pathlib import Path
 from types import ModuleType
-from typing import cast
 
 
 @lru_cache
@@ -57,7 +56,9 @@ def load_module_from_file(
     for restrict_init in (True, False):
         for import_path, module_path in candidate_paths:  # use sys.path order
             if module_path in sys.modules:
-                existing = cast(ModuleType, sys.modules[module_path])
+                existing = sys.modules[module_path]
+                if not isinstance(existing, ModuleType):
+                    continue
                 is_compiled = getattr(existing, "__file__", None) != str(abspath)
                 if verbose:
                     print(
