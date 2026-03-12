@@ -8,7 +8,6 @@ import enum
 import inspect
 import sys
 import types
-import typing
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, field, replace
 from enum import Enum
@@ -114,7 +113,9 @@ _ENUM_INSTANCE_DESCRIPTOR_TYPES = tuple(
     if descriptor_type is not None
 )
 if sys.version_info >= (3, 12):
-    RuntimeTypeAliasType = typing.TypeAliasType | typing_extensions.TypeAliasType
+    import typing as _typing
+
+    RuntimeTypeAliasType = _typing.TypeAliasType | typing_extensions.TypeAliasType
 else:
     RuntimeTypeAliasType = typing_extensions.TypeAliasType
 
@@ -1772,7 +1773,10 @@ def _get_attribute_from_super(obj: super, ctx: AttrContext) -> Value:
 
 
 def _get_attribute_from_known(obj: object, ctx: AttrContext) -> Value:
-    ctx.record_attr_read(type(obj))
+    if safe_isinstance(obj, type):
+        ctx.record_attr_read(obj)
+    else:
+        ctx.record_attr_read(type(obj))
 
     if isinstance(obj, super):
         return _get_attribute_from_super(obj, ctx)

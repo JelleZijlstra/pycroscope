@@ -23,8 +23,6 @@ import typing_extensions
 
 import pycroscope
 
-from .safe import get_fully_qualified_name
-
 if TYPE_CHECKING:
     from .value import AnySource, CanAssign, CanAssignContext, TypeVarMap, Value
 
@@ -605,6 +603,8 @@ else:
         return all the runtime overloads.
 
         """
+        from .safe import get_fully_qualified_name
+
         key = get_fully_qualified_name(func)
         if key is not None:
             _overloads[key].append(func)

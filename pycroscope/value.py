@@ -344,6 +344,11 @@ class CanAssignContext(Protocol):
     def record_any_used(self) -> None:
         """Record that Any was used to secure a match."""
 
+    def record_protocol_implementation(
+        self, protocol: type[object], implementing_class: type[object]
+    ) -> None:
+        """Record that implementing_class was shown assignable to protocol."""
+
     def set_exclude_any(self) -> AbstractContextManager[None]:
         """Within this context, `Any` is compatible only with itself."""
         return contextlib.nullcontext()

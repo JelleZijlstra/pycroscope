@@ -57,7 +57,6 @@ FILE_ENVIRON_KEY = "ANS_STATIC_ANALYSIS_FILE"
 # If this comment occurs in a line with an error, or if the line before the error contains exactly
 # this comment, the error is ignored.
 IGNORE_COMMENT = "# static analysis: ignore"
-TYPE_IGNORE_COMMENT = "# type: ignore"
 _TYPE_IGNORE_INLINE_RE = re.compile(r"#\s*type:\s*ignore(?:\[[^\s\]]+\])?(?=\s|$)")
 _TYPE_IGNORE_FILE_LEVEL_RE = re.compile(r"#\s*type:\s*ignore(?:\[[^\s\]]+\])?")
 

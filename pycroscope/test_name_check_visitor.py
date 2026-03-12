@@ -2931,6 +2931,37 @@ class TestClassAttributeChecker(TestNameCheckVisitorBase):
                 # base
                 self.consume(self.grass)
 
+    @assert_passes()
+    def test_attribute_checker_respects_isinstance_narrowing_for_attributes(self):
+        from dataclasses import dataclass
+
+        class Value:
+            pass
+
+        @dataclass
+        class CombinedReturn:
+            children: list[int]
+
+        def f(x: Value | CombinedReturn | None) -> list[int]:
+            if isinstance(x, CombinedReturn):
+                return x.children
+            return []
+
+    @assert_passes()
+    def test_attribute_checker_respects_isinstance_narrowing_for_methods(self):
+        class Value:
+            pass
+
+        class AnnotationExpr:
+            def unqualify(self, values: set[object]) -> tuple[int, set[object]]:
+                return 1, values
+
+        def f(x: AnnotationExpr | Value) -> int:
+            if isinstance(x, AnnotationExpr):
+                inner, _ = x.unqualify(set())
+                return inner
+            return 0
+
 
 class TestBadRaise(TestNameCheckVisitorBase):
     @assert_passes()

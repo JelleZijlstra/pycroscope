@@ -263,6 +263,14 @@ class TypeObject:
                 and not isinstance(result, CanAssignError)
             ):
                 self._protocol_positive_cache[cache_key] = result
+            if (
+                not isinstance(result, CanAssignError)
+                and isinstance(self.typ, type)
+                and isinstance(other.typ, type)
+                and not other.is_protocol
+                and not isinstance(other_basic, SubclassValue)
+            ):
+                ctx.record_protocol_implementation(self.typ, other.typ)
             return result
 
     def _is_callable_protocol_assignment_target(self, other: "TypeObject") -> bool:
@@ -1144,21 +1152,6 @@ def _get_property_member_value(
     ctx: CanAssignContext,
 ) -> tuple[Value | None, bool]:
     return _specialize_declared_property_value(class_key, member, resolved_value, ctx)
-
-
-def _get_synthetic_member_value(
-    class_key: type | str, member: str, ctx: CanAssignContext
-) -> Value | None:
-    match = lookup_declared_symbol_with_owner(class_key, member, ctx)
-    if match is None:
-        return None
-    owner, symbol = match
-    if symbol.member_value is not None:
-        return symbol.member_value
-    synthetic = _get_synthetic_class_for_key(owner, ctx)
-    if synthetic is None:
-        return None
-    return get_synthetic_member_value(synthetic, member)
 
 
 def _is_readonly_instance_member(

@@ -14,7 +14,7 @@ import sys
 from collections.abc import Iterable, Iterator, Mapping, MutableMapping, Sequence
 from dataclasses import dataclass, replace
 from math import comb
-from types import FunctionType
+from types import FunctionType, ModuleType
 from typing import Literal, Protocol
 
 from typing_extensions import assert_never
@@ -94,6 +94,12 @@ from pycroscope.value import (
     unify_bounds_maps,
     unite_values,
 )
+
+
+def _ignore_unused_sizeof_pyobject(
+    module: ModuleType, attr: str, value: object
+) -> bool:
+    return module.__name__ == __name__ and attr == "SIZEOF_PYOBJECT"
 
 
 class Relation(enum.Enum):
