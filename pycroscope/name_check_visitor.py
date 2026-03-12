@@ -503,7 +503,11 @@ AST_TO_REVERSE = {
     for node_cls, (op, _, _) in COMPARATOR_TO_OPERATOR.items()
 }
 
-SAFE_DECORATORS_FOR_ARGSPEC_TO_RETVAL = [KnownValue(property)]
+SAFE_DECORATORS_FOR_ARGSPEC_TO_RETVAL = [
+    KnownValue(property),
+    KnownValue(classmethod),
+    KnownValue(staticmethod),
+]
 if sys.version_info < (3, 11):
     SAFE_DECORATORS_FOR_ARGSPEC_TO_RETVAL.append(KnownValue(asyncio.coroutine))
 if asynq is not None:
@@ -746,6 +750,12 @@ class _AttrContext(CheckerAttrContext):
             return super().bind_synthetic_instance_attribute(attr_name, value)
         synthetic_class = self.checker.get_synthetic_class(synthetic_typ)
         is_dunder = attr_name.startswith("__") and attr_name.endswith("__")
+        if (
+            synthetic_class is not None
+            and attr_name == "__init__"
+            and synthetic_class.is_dataclass
+        ):
+            return super().bind_synthetic_instance_attribute(attr_name, value)
         if is_dunder and attr_name != "__init__":
             return super().bind_synthetic_instance_attribute(attr_name, value)
         should_bind = (
@@ -2016,6 +2026,8 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         self._fill_method_cache()
 
     def get_local_return_value(self, sig: MaybeSignature) -> Value | None:
+        if isinstance(sig, BoundMethodSignature):
+            return self.get_local_return_value(sig.signature)
         val, saved_sig = self._argspec_to_retval.get(id(sig), (None, None))
         if sig is not saved_sig:
             return None
@@ -3650,6 +3662,19 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         if isinstance(class_key, type):
             return safe_issubclass(class_key, enum.Enum)
         return False
+
+    def _is_effectively_final_class_key(self, class_key: type | str | None) -> bool:
+        if class_key is None:
+            return False
+        if class_key in self.final_class_keys or self._is_enum_class_key(class_key):
+            return True
+        if isinstance(class_key, type):
+            if getattr(class_key, "__final__", False):
+                return True
+        try:
+            return self.checker.ts_finder.is_final(class_key)
+        except Exception:
+            return False
 
     @contextlib.contextmanager
     def _set_current_class(self, current_class: type | str | None) -> Generator[None]:
@@ -7549,130 +7574,30 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     return True
         return False
 
-    def _runtime_callable_contains_self_annotations(self, value: object) -> bool:
-        annotations = safe_getattr(value, "__annotations__", None)
-        if not isinstance(annotations, dict):
-            return False
-        globals = None
-        module_name = safe_getattr(value, "__module__", None)
-        if isinstance(module_name, str):
-            module = sys.modules.get(module_name)
-            maybe_globals = safe_getattr(module, "__dict__", None)
-            if isinstance(maybe_globals, Mapping):
-                globals = maybe_globals
-        return any(
-            _value_contains_self(
-                annotation_expr_from_runtime(
-                    annotation, visitor=self, globals=globals, suppress_errors=True
-                ).to_value(allow_qualifiers=True, allow_empty=True)
+    def _get_synthetic_self_returning_classmethods(
+        self, node: ast.ClassDef
+    ) -> set[str]:
+        self_returning_classmethods = set()
+        for stmt in node.body:
+            if not isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            decorator_kinds = self._function_decorator_kinds_by_node.get(
+                stmt, frozenset()
             )
-            for annotation in annotations.values()
-        )
-
-    def _runtime_class_or_bases_use_self_annotations(self, typ: type) -> bool:
-        for base in typ.__mro__:
-            globals = None
-            module_name = safe_getattr(base, "__module__", None)
-            if isinstance(module_name, str):
-                module = sys.modules.get(module_name)
-                maybe_globals = safe_getattr(module, "__dict__", None)
-                if isinstance(maybe_globals, Mapping):
-                    globals = maybe_globals
-            annotations = safe_getattr(base, "__annotations__", None)
-            if isinstance(annotations, dict) and any(
-                _value_contains_self(
-                    annotation_expr_from_runtime(
-                        annotation, visitor=self, globals=globals, suppress_errors=True
-                    ).to_value(allow_qualifiers=True, allow_empty=True)
-                )
-                for annotation in annotations.values()
-            ):
-                return True
-            for value in safe_getattr(base, "__dict__", {}).values():
-                if isinstance(value, property):
-                    if any(
-                        func is not None
-                        and self._runtime_callable_contains_self_annotations(func)
-                        for func in (value.fget, value.fset, value.fdel)
-                    ):
-                        return True
-                elif isinstance(value, (classmethod, staticmethod)):
-                    if self._runtime_callable_contains_self_annotations(value.__func__):
-                        return True
-                elif self._runtime_callable_contains_self_annotations(value):
-                    return True
-        return False
-
-    def _synthetic_class_or_bases_use_self_annotations(self, typ: str) -> bool:
-        synthetic_class = self.checker.get_synthetic_class(typ)
-        if synthetic_class is None:
-            return False
-        seen: set[int] = set()
-
-        def visit(synthetic_class: SyntheticClassObjectValue) -> bool:
-            synthetic_id = id(synthetic_class)
-            if synthetic_id in seen:
-                return False
-            seen.add(synthetic_id)
-            if any(
-                _value_contains_self(symbol.typ)
-                or (
-                    symbol.member_value is not None
-                    and _value_contains_self(symbol.member_value)
-                )
-                for symbol in synthetic_class.declared_symbols.values()
-            ):
-                return True
-            for base in synthetic_class.base_classes:
-                base = replace_fallback(base)
-                synthetic_base: SyntheticClassObjectValue | None = None
-                if isinstance(base, SyntheticClassObjectValue):
-                    synthetic_base = base
-                elif isinstance(base, GenericValue) and isinstance(base.typ, str):
-                    synthetic_base = self.checker.get_synthetic_class(base.typ)
-                elif isinstance(base, TypedValue) and isinstance(base.typ, str):
-                    synthetic_base = self.checker.get_synthetic_class(base.typ)
-                if synthetic_base is not None and visit(synthetic_base):
-                    return True
-            return False
-
-        return visit(synthetic_class)
+            if FunctionDecorator.classmethod not in decorator_kinds:
+                continue
+            if not self._function_returns_self_by_node.get(stmt, False):
+                continue
+            self_returning_classmethods.add(
+                _mangle_class_attribute_name(node.name, stmt.name)
+            )
+        return self_returning_classmethods
 
     def _current_class_name_from_context(self) -> str | None:
         for context in reversed(self.node_context.contexts):
             if isinstance(context, ast.ClassDef):
                 return context.name
         return None
-
-    def _current_class_node_from_context(self) -> ast.ClassDef | None:
-        for context in reversed(self.node_context.contexts):
-            if isinstance(context, ast.ClassDef):
-                return context
-        return None
-
-    def _current_class_bases_use_self_annotations(self) -> bool:
-        current_class_node = self._current_class_node_from_context()
-        if current_class_node is None:
-            return False
-        for base_node in current_class_node.bases:
-            base_value = replace_fallback(self.visit_expression(base_node))
-            synthetic_base: SyntheticClassObjectValue | None = None
-            if isinstance(base_value, SyntheticClassObjectValue):
-                synthetic_base = base_value
-            elif isinstance(base_value, GenericValue) and isinstance(
-                base_value.typ, str
-            ):
-                synthetic_base = self.checker.get_synthetic_class(base_value.typ)
-            elif isinstance(base_value, TypedValue) and isinstance(base_value.typ, str):
-                synthetic_base = self.checker.get_synthetic_class(base_value.typ)
-            if (
-                synthetic_base is not None
-                and self._synthetic_class_or_bases_use_self_annotations(
-                    synthetic_base.name
-                )
-            ):
-                return True
-        return False
 
     def _is_current_class_dataclass(self) -> bool:
         return self.current_dataclass_info is not None
@@ -8019,9 +7944,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                             error_code=ErrorCode.invalid_annotation,
                         )
                     return_annotation = AnyValue(AnySource.error)
-            runtime_current_class = (
-                self.current_class if isinstance(self.current_class, type) else None
-            )
             if (
                 enclosing_class is not None
                 and params
@@ -8029,100 +7951,63 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 and isinstance(params[0].node, ast.arg)
                 and params[0].node.annotation is None
             ):
+                is_named_method = isinstance(
+                    node, (ast.FunctionDef, ast.AsyncFunctionDef)
+                )
+                use_implicit_self = not self._is_effectively_final_class_key(
+                    self.current_class_key
+                )
+                if is_named_method and node.name == "__init__":
+                    use_implicit_self = False
                 self_instance_value = TypeVarValue(
                     TypeVarParam(SelfT, bound=enclosing_class)
                 )
                 substitutions: TypeVarMap = {SelfT: self_instance_value}
-                uses_self_annotation = (
-                    (
-                        return_annotation is not None
-                        and return_annotation.substitute_typevars(substitutions)
-                        != return_annotation
-                    )
-                    or any(
-                        param_info.param.annotation.substitute_typevars(substitutions)
-                        != param_info.param.annotation
-                        for param_info in params[1:]
-                    )
-                    or (
-                        runtime_current_class is not None
-                        and self._runtime_class_or_bases_use_self_annotations(
-                            runtime_current_class
-                        )
-                    )
-                    or (
-                        runtime_current_class is None
-                        and isinstance(enclosing_class, TypedValue)
-                        and isinstance(enclosing_class.typ, str)
-                        and (
-                            self._synthetic_class_or_bases_use_self_annotations(
-                                enclosing_class.typ
-                            )
-                            or self._current_class_bases_use_self_annotations()
-                        )
-                    )
+                is_implicit_classmethod = (
+                    is_named_method and node.name in IMPLICIT_CLASSMETHODS
                 )
-                if uses_self_annotation:
-                    is_named_method = isinstance(
-                        node, (ast.FunctionDef, ast.AsyncFunctionDef)
+                if (
+                    use_implicit_self
+                    and return_annotation is not None
+                    and FunctionDecorator.classmethod not in decorator_kinds
+                    and not is_implicit_classmethod
+                ):
+                    return_annotation = return_annotation.substitute_typevars(
+                        substitutions
                     )
-                    is_implicit_classmethod = (
-                        is_named_method and node.name in IMPLICIT_CLASSMETHODS
-                    )
-                    if (
-                        return_annotation is not None
-                        and FunctionDecorator.classmethod not in decorator_kinds
-                        and not is_implicit_classmethod
-                    ):
-                        return_annotation = return_annotation.substitute_typevars(
-                            substitutions
-                        )
-                    if (
-                        FunctionDecorator.classmethod in decorator_kinds
-                        or is_implicit_classmethod
-                    ):
-                        inferred_self = SubclassValue(self_instance_value)
-                    else:
-                        inferred_self = self_instance_value
-                    params = [
-                        replace(
-                            params[0],
-                            param=replace(params[0].param, annotation=inferred_self),
-                        ),
-                        *[
-                            replace(
-                                param_info,
-                                param=replace(
-                                    param_info.param,
-                                    annotation=param_info.param.annotation.substitute_typevars(
-                                        substitutions
-                                    ),
-                                ),
-                            )
-                            for param_info in params[1:]
-                        ],
-                    ]
+                if (
+                    FunctionDecorator.classmethod in decorator_kinds
+                    or is_implicit_classmethod
+                ):
+                    inferred_self = SubclassValue(self_instance_value)
                 else:
-                    is_named_method = isinstance(
-                        node, (ast.FunctionDef, ast.AsyncFunctionDef)
-                    )
-                    is_implicit_classmethod = (
-                        is_named_method and node.name in IMPLICIT_CLASSMETHODS
-                    )
+                    inferred_self = self_instance_value
+                if not use_implicit_self:
                     if (
                         FunctionDecorator.classmethod in decorator_kinds
                         or is_implicit_classmethod
                     ):
-                        fallback_self = SubclassValue(enclosing_class)
+                        inferred_self = SubclassValue(enclosing_class)
                     else:
-                        fallback_self = enclosing_class
-                    params = [
+                        inferred_self = enclosing_class
+                params = [
+                    replace(
+                        params[0],
+                        param=replace(params[0].param, annotation=inferred_self),
+                    ),
+                    *[
                         replace(
-                            params[0],
-                            param=replace(params[0].param, annotation=fallback_self),
-                        ),
-                        *params[1:],
-                    ]
+                            param_info,
+                            param=replace(
+                                param_info.param,
+                                annotation=param_info.param.annotation.substitute_typevars(
+                                    substitutions
+                                ),
+                            ),
+                        )
+                        for param_info in params[1:]
+                    ],
+                ]
             provisional_info = FunctionInfo(
                 async_kind=async_kind,
                 decorator_kinds=frozenset(decorator_kinds),
@@ -8316,6 +8201,42 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 override(self, "current_function_info", info),
             ):
                 result = self._visit_function_body(info)
+                merged_dataclass_transform_info = direct_dataclass_transform_info
+                if overload_dataclass_transform_info is not None:
+                    if merged_dataclass_transform_info is None:
+                        merged_dataclass_transform_info = (
+                            overload_dataclass_transform_info
+                        )
+                    else:
+                        merged_dataclass_transform_info = (
+                            _merge_dataclass_transform_infos(
+                                [
+                                    merged_dataclass_transform_info,
+                                    overload_dataclass_transform_info,
+                                ]
+                            )
+                        )
+                if (
+                    FunctionDecorator.overload not in info.decorator_kinds
+                    and FunctionDecorator.evaluated not in info.decorator_kinds
+                    and static_overload_signature is None
+                    and node.returns is None
+                ):
+                    refined_scope_value = compute_value_of_function(
+                        info_for_computed_value, self, result=result.return_value
+                    )
+                    if merged_dataclass_transform_info is not None:
+                        refined_scope_value = annotate_value(
+                            refined_scope_value,
+                            [
+                                DataclassTransformExtension(
+                                    merged_dataclass_transform_info
+                                )
+                            ],
+                        )
+                    self.scopes.current_scope().variables[
+                        node.name
+                    ] = refined_scope_value
 
         self.check_typeis(info)
 
@@ -9675,9 +9596,17 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             val = KnownValue(fget)
 
         sig = self.signature_from_value(val)
-        if sig is None or sig.has_return_value():
-            return
-        self._argspec_to_retval[id(sig)] = (return_value, sig)
+        sigs_to_store = []
+        if sig is not None and not sig.has_return_value():
+            sigs_to_store.append(sig)
+        if isinstance(val, KnownValue):
+            underlying_function = safe_getattr(val.val, "__func__", None)
+            if underlying_function is not None:
+                underlying_sig = self.arg_spec_cache.get_argspec(underlying_function)
+                if underlying_sig is not None and not underlying_sig.has_return_value():
+                    sigs_to_store.append(underlying_sig)
+        for sig in sigs_to_store:
+            self._argspec_to_retval[id(sig)] = (return_value, sig)
 
     def _get_potential_function(self, node: FunctionDefNode) -> object | None:
         scope_type = self.scopes.scope_type()
@@ -14717,26 +14646,36 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     composite.get_varname(), self.being_assigned, node, self.state
                 )
 
-            if isinstance(root_composite.value, TypedValue):
-                typ = root_composite.value.typ
+            root_value_for_attr_set = root_composite.value
+            if isinstance(root_value_for_attr_set, TypeVarValue):
+                root_value_for_attr_set = root_value_for_attr_set.get_fallback_value()
+            elif isinstance(root_value_for_attr_set, SubclassValue) and isinstance(
+                root_value_for_attr_set.typ, TypeVarValue
+            ):
+                root_value_for_attr_set = SubclassValue.make(
+                    root_value_for_attr_set.typ.get_fallback_value()
+                )
+
+            if isinstance(root_value_for_attr_set, TypedValue):
+                typ = root_value_for_attr_set.typ
                 if isinstance(typ, type):
                     if should_record_type_attr_set:
                         self._record_type_attr_set(
                             typ, node.attr, node, self.being_assigned
                         )
-            elif isinstance(root_composite.value, GenericValue):
-                typ = root_composite.value.typ
+            elif isinstance(root_value_for_attr_set, GenericValue):
+                typ = root_value_for_attr_set.typ
                 if isinstance(typ, type):
                     if should_record_type_attr_set:
                         self._record_type_attr_set(
                             typ, node.attr, node, self.being_assigned
                         )
-            elif isinstance(root_composite.value, KnownValue) and not isinstance(
-                root_composite.value.val, type
+            elif isinstance(root_value_for_attr_set, KnownValue) and not isinstance(
+                root_value_for_attr_set.val, type
             ):
                 if should_record_type_attr_set:
                     self._record_type_attr_set(
-                        type(root_composite.value.val),
+                        type(root_value_for_attr_set.val),
                         node.attr,
                         node,
                         self.being_assigned,
@@ -14794,7 +14733,26 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             ):
                 local_value = self._get_composite(composite.get_varname(), node, value)
                 if local_value is not UNINITIALIZED_VALUE:
-                    value = local_value
+                    declared_value: Value | None = None
+                    if (
+                        self.current_class_key is not None
+                        and self._is_current_method_receiver_node(node.value)
+                    ):
+                        declared_value = self._declared_current_receiver_attribute_type(
+                            node.attr
+                        )
+                    if declared_value is not None and (
+                        self.module is None
+                        or isinstance(
+                            has_relation(
+                                declared_value, local_value, Relation.ASSIGNABLE, self
+                            ),
+                            CanAssignError,
+                        )
+                    ):
+                        value = declared_value
+                    else:
+                        value = local_value
             if root_composite.value == KnownValue(sys):
                 if node.attr == "platform":
                     value = annotate_value(value, [SYS_PLATFORM_EXTENSION])
@@ -14885,6 +14843,41 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         return attributes._synthetic_dataclass_converter_input_types(
             synthetic_class
         ).get(field_name)
+
+    def _declared_current_receiver_attribute_type(self, attr_name: str) -> Value | None:
+        class_key = self.current_class_key
+        if class_key is None and isinstance(self.current_class, (type, str)):
+            class_key = self.current_class
+        if class_key is None:
+            class_name = self._current_class_name_from_context()
+            if class_name is not None:
+                class_key = self._get_synthetic_class_fq_name_from_name(class_name)
+        if class_key is None:
+            return None
+        synthetic_class = self.checker.get_synthetic_class(class_key)
+        if synthetic_class is None:
+            if isinstance(class_key, str):
+                synthetic_class = self._synthetic_classes_by_name.get(class_key)
+            if synthetic_class is None:
+                return None
+        selected_name = attr_name
+        if selected_name not in synthetic_class.declared_symbols:
+            class_name = self._current_class_name_from_context()
+            if class_name is not None:
+                mangled = _mangle_class_attribute_name(class_name, attr_name)
+                if mangled in synthetic_class.declared_symbols:
+                    selected_name = mangled
+        symbol = synthetic_class.declared_symbols.get(selected_name)
+        if (
+            symbol is None
+            or symbol.is_method
+            or symbol.is_classvar
+            or symbol.is_initvar
+        ):
+            return None
+        if symbol.property_info is not None:
+            return symbol.property_info.getter_type
+        return symbol.typ
 
     def _check_attribute_assignment_type(
         self, node: ast.Attribute, root_composite: Composite
@@ -16568,10 +16561,22 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         synthetic_class = self.checker.get_synthetic_class(class_key)
         if synthetic_class is None:
             return
+        existing = synthetic_class.declared_symbols.get(node.attr)
+        synthesized_type = self.being_assigned
+        if (
+            existing is not None
+            and existing.is_instance_only
+            and not existing.is_method
+            and not existing.is_classvar
+        ):
+            # Keep declared instance attribute types stable across self-assignments;
+            # the assignment should update the stored member value, not narrow the field
+            # to a concrete initializer like False or defaultdict(...).
+            synthesized_type = existing.typ
         self._merge_synthetic_declared_symbol(
             synthetic_class,
             node.attr,
-            ClassSymbol(self.being_assigned, member_value=self.being_assigned),
+            ClassSymbol(synthesized_type, member_value=self.being_assigned),
         )
 
     def _record_type_attr_read(self, typ: type, attr_name: str, node: ast.AST) -> None:

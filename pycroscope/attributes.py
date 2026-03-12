@@ -645,6 +645,16 @@ def _get_direct_attribute_from_synthetic_instance(
     self_value: SyntheticClassObjectValue, attr_name: str, ctx: AttrContext
 ) -> Value:
     selected_name = _select_synthetic_attribute_name(self_value, attr_name)
+    symbol = self_value.declared_symbols.get(selected_name)
+    if symbol is not None:
+        if symbol.is_initvar:
+            return UNINITIALIZED_VALUE
+        if symbol.property_info is not None:
+            return symbol.property_info.getter_type
+        if not symbol.is_method and not symbol.is_classvar:
+            # Instance attributes should use their declared type rather than a
+            # concrete stored member value like False or {} from initialization.
+            return symbol.typ
     direct = _get_direct_attribute_from_synthetic_class(self_value, attr_name, ctx)
     if direct is not UNINITIALIZED_VALUE:
         direct_value = replace_fallback(direct)
@@ -654,9 +664,6 @@ def _get_direct_attribute_from_synthetic_instance(
             direct_value.val, property
         ):
             return direct
-    symbol = self_value.declared_symbols.get(selected_name)
-    if symbol is not None and symbol.property_info is not None:
-        return symbol.property_info.getter_type
     return direct
 
 
@@ -1004,6 +1011,14 @@ def _maybe_resolve_synthetic_dataclass_descriptor_attribute(
         or (attr_name.startswith("__") and attr_name.endswith("__"))
     ):
         return value
+    candidate = replace_fallback(value)
+    if isinstance(candidate, AnnotatedValue):
+        candidate = replace_fallback(candidate.value)
+    if isinstance(candidate, KnownValue) and isinstance(candidate.val, property):
+        # Let the dedicated property path resolve getter types. Treating
+        # properties as generic descriptors here can collapse them to the
+        # runtime property object instead of the getter's annotated value.
+        return value
     descriptor_get_type = _synthetic_descriptor_get_type(
         value, on_class=on_class, instance_value=ctx.get_self_value(), ctx=ctx
     )
@@ -1340,6 +1355,24 @@ def _synthetic_class_has_any_base(self_value: SyntheticClassObjectValue) -> bool
     return any(has_any_base_value(base) for base in self_value.base_classes)
 
 
+def _should_prefer_synthetic_instance_lookup(
+    synthetic_class: SyntheticClassObjectValue, attr_name: str, self_value: Value
+) -> bool:
+    if attr_name == "__init__" and _synthetic_dataclass_init_enabled(synthetic_class):
+        return synthetic_class.is_dataclass
+    selected_name = _select_synthetic_attribute_name(synthetic_class, attr_name)
+    symbol = synthetic_class.declared_symbols.get(selected_name)
+    if symbol is None:
+        return False
+    if symbol.is_initvar:
+        return True
+    if symbol.property_info is not None:
+        return True
+    if symbol.is_method or symbol.is_classvar:
+        return False
+    return symbol.is_instance_only or _contains_self_typevar(self_value)
+
+
 def _contains_self_typevar(value: Value) -> bool:
     return any(
         isinstance(subval, TypeVarValue) and subval.typevar_param.typevar is SelfT
@@ -1353,7 +1386,9 @@ def _get_attribute_from_typed(
     ctx.record_attr_read(typ)
 
     synthetic_class = ctx.get_synthetic_class(typ)
-    if synthetic_class is not None and _contains_self_typevar(ctx.get_self_value()):
+    if synthetic_class is not None and _should_prefer_synthetic_instance_lookup(
+        synthetic_class, ctx.attr, ctx.get_self_value()
+    ):
         synthetic_result = _get_direct_attribute_from_synthetic_instance(
             synthetic_class, ctx.attr, ctx
         )
@@ -1802,6 +1837,37 @@ def _get_attribute_from_known(obj: object, ctx: AttrContext) -> Value:
         )
         if synthetic_attr is not UNINITIALIZED_VALUE:
             return synthetic_attr
+    else:
+        synthetic_class = ctx.get_synthetic_class(type(obj))
+        if synthetic_class is not None and _should_prefer_synthetic_instance_lookup(
+            synthetic_class, ctx.attr, ctx.get_self_value()
+        ):
+            synthetic_result = _get_direct_attribute_from_synthetic_instance(
+                synthetic_class, ctx.attr, ctx
+            )
+            if synthetic_result is not UNINITIALIZED_VALUE:
+                synthetic_result = (
+                    _maybe_resolve_synthetic_dataclass_descriptor_attribute(
+                        synthetic_class, ctx.attr, synthetic_result, ctx, on_class=False
+                    )
+                )
+            if synthetic_result is UNINITIALIZED_VALUE:
+                synthetic_result = _get_synthetic_dataclass_attribute(
+                    synthetic_class, ctx, on_class=False
+                )
+            if synthetic_result is not UNINITIALIZED_VALUE:
+                synthetic_result = _maybe_resolve_synthetic_property_attribute(
+                    synthetic_result, ctx
+                )
+                if _is_synthetic_method_attribute(synthetic_class, ctx.attr) and (
+                    not ctx.should_include_synthetic_methods()
+                ):
+                    synthetic_result = UNINITIALIZED_VALUE
+            if synthetic_result is not UNINITIALIZED_VALUE:
+                synthetic_result = ctx.bind_synthetic_instance_attribute(
+                    ctx.attr, synthetic_result
+                )
+                return set_self(synthetic_result, ctx.get_self_value())
 
     result, _, _ = _get_attribute_from_mro(obj, ctx, on_class=True)
     if isinstance(result, KnownValue) and (

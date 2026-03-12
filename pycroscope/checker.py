@@ -218,9 +218,31 @@ def _replace_signature_return(
         return signature.replace_return_value(return_value)
     if isinstance(signature, BoundMethodSignature):
         return BoundMethodSignature(
-            signature.signature.replace_return_value(return_value),
-            signature.self_composite,
-            return_override=signature.return_override,
+            signature.signature, signature.self_value, return_override=return_value
+        )
+    return signature
+
+
+def _attach_signature_bound_receiver(
+    signature: MaybeSignature, receiver_value: Value
+) -> MaybeSignature:
+    receiver_composite = Composite(receiver_value)
+    if isinstance(signature, Signature):
+        return dataclass_replace(
+            signature,
+            bound_receiver_param_name="%receiver",
+            bound_receiver_composite=receiver_composite,
+        )
+    if isinstance(signature, OverloadedSignature):
+        return OverloadedSignature(
+            [
+                dataclass_replace(
+                    sub_sig,
+                    bound_receiver_param_name="%receiver",
+                    bound_receiver_composite=receiver_composite,
+                )
+                for sub_sig in signature.signatures
+            ]
         )
     return signature
 
@@ -326,7 +348,7 @@ def _map_maybe_signature(
         inner = _map_maybe_signature(signature.signature, transform)
         assert isinstance(inner, ConcreteSignature)
         return BoundMethodSignature(
-            inner, signature.self_composite, return_override=signature.return_override
+            inner, signature.self_value, return_override=signature.return_override
         )
     return signature
 
@@ -2641,6 +2663,20 @@ class Checker:
                     return None
                 else:
                     return ANY_SIGNATURE
+            if argspec is not None and not argspec.has_return_value():
+                local_return = get_return_override(argspec)
+                if local_return is None and isinstance(value.val, object):
+                    underlying_function = safe_getattr(value.val, "__func__", None)
+                    if underlying_function is not None:
+                        underlying_sig = self.arg_spec_cache.get_argspec(
+                            underlying_function
+                        )
+                        if underlying_sig is not None:
+                            local_return = get_return_override(underlying_sig)
+                if local_return is not None:
+                    argspec = _replace_signature_return(argspec, local_return)
+            if argspec is None:
+                return None
             if isinstance(value, KnownValueWithTypeVars):
                 return argspec.substitute_typevars(value.typevars)
             return argspec
@@ -2754,6 +2790,10 @@ class Checker:
                             bound = self._bind_synthetic_method(
                                 normalized_call.signature, self_annotation_value=value
                             )
+                            if bound is None:
+                                bound = normalized_call.signature.bind_self(
+                                    self_value=value, ctx=self
+                                )
                             if bound is not None:
                                 return bound
                             return normalized_call.signature
@@ -2789,12 +2829,16 @@ class Checker:
                 if value.typ.typ is tuple:
                     # Probably an unknown namedtuple
                     return ANY_SIGNATURE
-                argspec = self.arg_spec_cache.get_argspec(
-                    value.typ.typ, allow_synthetic_type=True
+                argspec = self.signature_from_value(
+                    KnownValue(value.typ.typ),
+                    get_return_override=get_return_override,
+                    get_call_attribute=get_call_attribute,
                 )
                 if argspec is None:
                     return ANY_SIGNATURE
-                return argspec
+                return _attach_signature_bound_receiver(
+                    _replace_signature_return(argspec, value.typ), value
+                )
             else:
                 typevar_bound = value.typ.typevar_param.bound
                 if isinstance(typevar_bound, TypeVarValue):
@@ -2811,7 +2855,9 @@ class Checker:
                 )
                 if argspec is None:
                     return ANY_SIGNATURE
-                return _replace_signature_return(argspec, value.typ)
+                return _attach_signature_bound_receiver(
+                    _replace_signature_return(argspec, value.typ), value
+                )
         elif isinstance(value, AnyValue):
             return ANY_SIGNATURE
         elif isinstance(value, MultiValuedValue):
@@ -3424,6 +3470,8 @@ class CheckerAttrContext(AttrContext):
         symbol = _lookup_synthetic_declared_symbol(
             synthetic_root, attr_name, self.checker
         )
+        if attr_name == "__init__" and synthetic_root.is_dataclass:
+            return value
         if symbol is None or not symbol.is_method:
             return value
         if symbol.is_staticmethod or symbol.is_classmethod:

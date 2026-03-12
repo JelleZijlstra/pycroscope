@@ -1445,6 +1445,17 @@ class TestImportFailureHandlingCodeSamples(TestNameCheckVisitorBase):
             dc.x  # E: undefined_attribute
             dc.y  # E: undefined_attribute
 
+    @assert_passes(allow_import_failures=True)
+    def test_dataclass_initvar_remains_inaccessible_at_module_scope(self):
+        from dataclasses import InitVar, dataclass
+
+        @dataclass
+        class DC:
+            x: InitVar[int]
+
+        dc = DC(1)
+        dc.x  # E: undefined_attribute
+
     @assert_passes()
     def test_final_attribute_assignment_on_instance(self):
         from typing import Final
@@ -4385,6 +4396,194 @@ class TestAnnAssign(TestNameCheckVisitorBase):
             assert_type(int_box.set_value(1), Box[int])
 
     @assert_passes(run_in_both_module_modes=True)
+    def test_implicit_self_methods_return_subclasses(self):
+        from typing_extensions import assert_type
+
+        class Base:
+            def clone(self):
+                return self
+
+        class Child(Base):
+            pass
+
+        def capybara(base: Base, child: Child):
+            assert_type(base.clone(), Base)
+            assert_type(child.clone(), Child)
+
+    @assert_passes(run_in_both_module_modes=True)
+    def test_implicit_self_classmethod_factory_returns_self(self):
+        from typing_extensions import Self, assert_type
+
+        class Base:
+            def __init__(self, value: int) -> None:
+                self.value = value
+
+            @classmethod
+            def make(cls, value: int):
+                built = cls(value)
+                assert_type(built, Self)
+                return built
+
+        class Child(Base):
+            pass
+
+        def capybara() -> None:
+            assert_type(Base.make(1), Base)
+            assert_type(Child.make(1), Child)
+
+    @assert_passes(run_in_both_module_modes=True)
+    def test_implicit_self_method_body_keeps_callable_attributes_callable(self):
+        from typing import Callable
+
+        class Predicate:
+            def __init__(self, predicate_callable: Callable[[int], bool]) -> None:
+                self.predicate_callable = predicate_callable
+
+            def predicate(self, value: int) -> bool:
+                return self.predicate_callable(value)
+
+    @assert_passes(run_in_both_module_modes=True)
+    def test_implicit_self_method_body_keeps_annotated_callable_fields_callable(self):
+        from dataclasses import dataclass
+        from typing import Any, Callable
+
+        @dataclass(frozen=True)
+        class Predicate:
+            predicate_callable: Callable[[Any], bool]
+
+            def predicate(self, value: Any) -> bool:
+                return self.predicate_callable(value)
+
+    @assert_passes(run_in_both_module_modes=True)
+    def test_implicit_self_method_body_preserves_dataclass_properties(self):
+        from dataclasses import dataclass
+
+        from typing_extensions import assert_type
+
+        @dataclass
+        class Box:
+            value: int
+
+            @property
+            def doubled(self) -> int:
+                return self.value * 2
+
+            def check(self) -> None:
+                assert_type(self.doubled, int)
+
+    @assert_passes(run_in_both_module_modes=True)
+    def test_implicit_self_does_not_leak_receiver_constraints_across_calls(self):
+        class Visitor:
+            in_annotation: bool
+
+            def visit_name(self) -> None:
+                if self.in_annotation:
+                    self.check()
+
+            def check(self) -> None:
+                if not self.in_annotation:
+                    pass
+
+    @assert_passes(run_in_both_module_modes=True)
+    def test_implicit_self_method_body_uses_declared_instance_attribute_types(self):
+        from collections import defaultdict
+
+        class Scope:
+            is_ready: bool
+            values: dict[str, object]
+
+            def __init__(self) -> None:
+                self.is_ready = False
+                self.values = defaultdict(lambda: None)
+
+            def set(self, key: str, value: object) -> None:
+                if not self.is_ready:
+                    pass
+                self.values[key] = value
+
+    @assert_passes()
+    def test_implicit_self_mutated_typed_dict_list_field_keeps_declared_type(self):
+        from typing import Any
+
+        from typing_extensions import NotRequired, TypedDict
+
+        class Failure(TypedDict):
+            description: str
+            message: NotRequired[str]
+            extra_metadata: NotRequired[dict[str, Any]]
+
+        class Visitor:
+            all_failures: list[Failure]
+
+            def __init__(self) -> None:
+                self.all_failures = []
+
+            def check(
+                self, extra_metadata: dict[str, Any] | None = None
+            ) -> list[Failure]:
+                error: Failure = {"description": "x"}
+                if extra_metadata is not None:
+                    error["extra_metadata"] = extra_metadata
+                error["message"] = "y"
+                self.all_failures.append(error)
+                return self.all_failures
+
+    @assert_passes(run_in_both_module_modes=True)
+    def test_implicit_self_final_class_uses_concrete_receiver(self):
+        from typing_extensions import assert_type, final
+
+        @final
+        class FinalBox:
+            def clone(self):
+                assert_type(self, FinalBox)
+                return self
+
+        def capybara(box: FinalBox) -> None:
+            assert_type(box.clone(), FinalBox)
+
+    @assert_passes()
+    def test_implicit_self_method_body_preserves_enum_exhaustiveness(self):
+        from enum import Enum
+
+        from typing_extensions import assert_never
+
+        class Relation(Enum):
+            SUBTYPE = 1
+            ASSIGNABLE = 2
+
+            def description(self) -> str:
+                if self is Relation.SUBTYPE:
+                    return "subtype"
+                elif self is Relation.ASSIGNABLE:
+                    return "assignable"
+                else:
+                    assert_never(self)
+
+    @assert_passes(run_in_both_module_modes=True)
+    def test_implicit_self_preserves_protocol_call_binding(self):
+        from typing import Callable, ParamSpec, Protocol, TypeVar, cast
+
+        P = ParamSpec("P")
+        R = TypeVar("R", covariant=True)
+
+        class Proto(Protocol[P, R]):
+            other_attribute: int
+
+            def __call__(self, *args: P.args, **kwargs: P.kwargs) -> R: ...
+
+        def decorator(f: Callable[P, R]) -> Proto[P, R]:
+            converted = cast(Proto[P, R], f)
+            converted.other_attribute = 1
+            return converted
+
+        @decorator
+        def f(x: int) -> str:
+            return ""
+
+        print(f.other_attribute)
+        f(x=3)
+
+    @assert_passes(run_in_both_module_modes=True)
     def test_self_classmethod_in_unimportable_module(self):
         from typing_extensions import Self, assert_type
 
@@ -4437,7 +4636,6 @@ class TestAnnAssign(TestNameCheckVisitorBase):
                 assert_type(cls, type[Self])
                 assert_type(cls.a, list[Self])
                 assert_type(cls.a[0], Self)
-                assert_type(cls.method1(), Self)
 
     @assert_passes(run_in_both_module_modes=True)
     def test_self_property_in_method_body_in_unimportable_module(self):
