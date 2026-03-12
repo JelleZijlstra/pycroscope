@@ -86,6 +86,60 @@ class TestAttributes(TestNameCheckVisitorBase):
             assert_type(DefiniteCapybara.capybara_id, Literal[3])
 
     @assert_passes()
+    def test_readonly_attribute_assignment_and_deletion(self):
+        from typing import ClassVar
+
+        from typing_extensions import Final, ReadOnly
+
+        class Base:
+            id: ReadOnly[int]
+
+            def __init__(self, value: int) -> None:
+                self.id = value
+                self.id = value + 1
+
+        class Child(Base):
+            def __init__(self, value: int) -> None:
+                super().__init__(value)
+                self.id = value  # E: incompatible_assignment
+
+        class Inline:
+            def __init__(self, name: str) -> None:
+                self.name: ReadOnly[str] = name
+                self.name = name.upper()
+
+            def rename(self, name: str) -> None:
+                self.name = name  # E: incompatible_assignment
+                del self.name  # E: incompatible_assignment
+
+        class Config:
+            version: ReadOnly[int] = 1
+            token: ClassVar[ReadOnly[str]]
+
+            def __init_subclass__(cls) -> None:
+                cls.token = cls.__name__
+
+            def bump(self) -> None:
+                self.version = 2  # E: incompatible_assignment
+
+        class FinalAttr:
+            def __init__(self) -> None:
+                self.value: Final[int] = 1
+
+            def clear(self) -> None:
+                del self.value  # E: incompatible_assignment
+
+        def mutate(inline: Inline) -> None:
+            inline.name = "y"  # E: incompatible_assignment
+            del inline.name  # E: incompatible_assignment
+
+        inline = Inline("x")
+        Config.version = 2  # E: incompatible_assignment
+        Config.token = "override"  # E: incompatible_assignment
+        mutate(inline)
+        print(Base, Child, Config, FinalAttr, inline)
+
+    @assert_passes()
     def test_known_value_hook(self):
         from typing_extensions import Literal
 

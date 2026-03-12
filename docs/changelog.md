@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Add PEP 767 `ReadOnly` attribute support for classes and protocols, including assignment/deletion errors for readonly members, protocol matching for readonly attributes, and `Final`-attribute deletion errors.
 - Fix a crash when resolving inherited string annotations for instance attributes accessed through `cls` in methods, so these attributes now infer their annotated types instead of raising an internal error.
 - Improve `isinstance()` narrowing for local class objects, including `NamedTuple` classes, so branches now narrow correctly even when the class object comes from pycroscope's synthetic local-class representation.
 - Improve `isinstance()` narrowing for generic class objects, so checks like `if isinstance(x, typ):` with `typ: type[T]` now narrow `x` using the type parameter instead of falling back to an imprecise type.

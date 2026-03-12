@@ -8,7 +8,7 @@ import collections.abc
 import inspect
 from collections.abc import Callable, Container, Mapping, Sequence
 from dataclasses import dataclass, field, replace
-from typing import get_origin
+from typing import get_args, get_origin
 from unittest import mock
 
 from typing_extensions import assert_never
@@ -27,6 +27,7 @@ from pycroscope.signature import (
 
 from .safe import (
     is_namedtuple_class,
+    is_typing_name,
     safe_getattr,
     safe_in,
     safe_isinstance,
@@ -69,6 +70,7 @@ from .value import (
 
 SYNTHETIC_PROPERTY_GETTER_PREFIX = "%property_getter:"
 SYNTHETIC_PROPERTY_SETTER_PREFIX = "%property_setter:"
+SYNTHETIC_READONLY_ATTRIBUTES_KEY = "%readonly_attributes"
 
 
 def _as_concrete_signature(
@@ -88,6 +90,7 @@ class _MemberDescriptor:
     is_property: bool
     property_has_setter: bool
     is_writable: bool
+    is_readonly: bool
 
 
 def get_mro(typ: type | super) -> Sequence[type]:
@@ -442,6 +445,7 @@ class TypeObject:
                             not expected_desc.is_method
                             and not expected_desc.is_property
                             and not expected_desc.is_classvar
+                            and not expected_desc.is_readonly
                             and not _is_callable_member_value(expected_desc.value, ctx)
                         )
                         expected_requires_writable = (
@@ -634,6 +638,9 @@ def _describe_member_for_type(
         and not _is_property_marker_value(value)
     ):
         value = TypedValue(property)
+    is_readonly = class_key is not None and is_readonly_annotated_member(
+        class_key, member, ctx
+    )
     if is_classvar or is_method:
         is_writable = False
     elif is_property:
@@ -649,6 +656,74 @@ def _describe_member_for_type(
         is_property=is_property,
         property_has_setter=property_has_setter,
         is_writable=is_writable,
+        is_readonly=is_readonly,
+    )
+
+
+def _readonly_names_from_mapping(attributes: Mapping[str, Value]) -> set[str]:
+    raw = attributes.get(SYNTHETIC_READONLY_ATTRIBUTES_KEY)
+    if isinstance(raw, KnownValue) and isinstance(
+        raw.val, (set, frozenset, tuple, list)
+    ):
+        return {item for item in raw.val if isinstance(item, str)}
+    return set()
+
+
+def _runtime_annotation_has_readonly(annotation: object) -> bool:
+    origin = get_origin(annotation)
+    if is_typing_name(annotation, "ReadOnly") or is_typing_name(origin, "ReadOnly"):
+        return True
+    if isinstance(annotation, str):
+        return "ReadOnly" in annotation
+    if origin is not None:
+        args = get_args(annotation)
+        if args and (
+            is_typing_name(origin, "Annotated")
+            or is_typing_name(origin, "ClassVar")
+            or is_typing_name(origin, "Final")
+        ):
+            return _runtime_annotation_has_readonly(args[0])
+    return False
+
+
+def is_readonly_annotated_member(
+    class_key: type | str, member: str, ctx: CanAssignContext
+) -> bool:
+    return _is_readonly_annotated_member(class_key, member, ctx, seen=set())
+
+
+def _is_readonly_annotated_member(
+    class_key: type | str, member: str, ctx: CanAssignContext, *, seen: set[type | str]
+) -> bool:
+    if class_key in seen:
+        return False
+    seen.add(class_key)
+
+    synthetic = _get_synthetic_class_for_key(class_key, ctx)
+    if synthetic is not None:
+        if member in _readonly_names_from_mapping(synthetic.class_attributes):
+            return True
+        annotations = synthetic.class_attributes.get("__annotations__")
+        if (
+            isinstance(annotations, KnownValue)
+            and isinstance(annotations.val, Mapping)
+            and member in annotations.val
+            and _runtime_annotation_has_readonly(annotations.val[member])
+        ):
+            return True
+
+    if isinstance(class_key, type):
+        annotations = safe_getattr(class_key, "__annotations__", None)
+        if (
+            isinstance(annotations, Mapping)
+            and member in annotations
+            and _runtime_annotation_has_readonly(annotations[member])
+        ):
+            return True
+
+    return any(
+        _is_readonly_annotated_member(base, member, ctx, seen=seen)
+        for base in _iter_base_keys(class_key, ctx)
     )
 
 
@@ -711,6 +786,11 @@ def _checker_ctx(ctx: CanAssignContext) -> object:
 def _get_synthetic_class_for_key(
     class_key: type | str, ctx: CanAssignContext
 ) -> SyntheticClassObjectValue | None:
+    get_synthetic_class = safe_getattr(ctx, "get_synthetic_class", None)
+    if callable(get_synthetic_class):
+        synthetic = get_synthetic_class(class_key)
+        if synthetic is not None:
+            return synthetic
     checker = _checker_ctx(ctx)
     get_synthetic_class = safe_getattr(checker, "get_synthetic_class", None)
     if callable(get_synthetic_class):
@@ -984,6 +1064,8 @@ def _is_readonly_instance_member(
         dataclass_params = safe_getattr(class_key, "__dataclass_params__", None)
         if safe_getattr(dataclass_params, "frozen", None) is True:
             return True
+    if is_readonly_annotated_member(class_key, member, ctx):
+        return True
 
     synthetic = _get_synthetic_class_for_key(class_key, ctx)
     if synthetic is not None:

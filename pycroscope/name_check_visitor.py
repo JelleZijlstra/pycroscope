@@ -210,7 +210,12 @@ from .suggested_type import (
     prepare_type,
     should_suggest_type,
 )
-from .type_object import TypeObject, get_mro
+from .type_object import (
+    SYNTHETIC_READONLY_ATTRIBUTES_KEY,
+    TypeObject,
+    get_mro,
+    is_readonly_annotated_member,
+)
 from .typeshed import TypeshedFinder
 from .value import (
     NO_RETURN_VALUE,
@@ -1848,6 +1853,11 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             return None
         return val
 
+    def get_synthetic_class(self, typ: type | str) -> SyntheticClassObjectValue | None:
+        if isinstance(typ, type):
+            return self._get_synthetic_class_for_runtime_type(typ)
+        return self._synthetic_classes_by_name.get(typ)
+
     def make_type_object(self, typ: type | super | str) -> TypeObject:
         return self.checker.make_type_object(typ)
 
@@ -2284,8 +2294,23 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         if isinstance(current_class, str):
             return self._synthetic_classes_by_name.get(current_class)
         if isinstance(current_class, type):
-            return self.checker.get_synthetic_class(current_class)
+            return self._get_synthetic_class_for_runtime_type(current_class)
         return None
+
+    def _get_synthetic_class_for_runtime_type(
+        self, typ: type
+    ) -> SyntheticClassObjectValue | None:
+        synthetic_class = self.checker.get_synthetic_class(typ)
+        if synthetic_class is not None:
+            return synthetic_class
+        synthetic_class = self._synthetic_classes_by_name.get(
+            f"{typ.__module__}.{typ.__qualname__}"
+        )
+        if synthetic_class is not None:
+            return synthetic_class
+        return self._synthetic_classes_by_name.get(
+            self._get_synthetic_class_fq_name_from_name(typ.__name__)
+        )
 
     def _set_synthetic_class_attribute(self, name: str, value: Value) -> None:
         synthetic_class = self._get_synthetic_class_for_current_scope()
@@ -2338,6 +2363,29 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         classvar_names.add(name)
         synthetic_class.class_attributes["%classvars"] = KnownValue(
             frozenset(classvar_names)
+        )
+
+    def _record_synthetic_readonly_name(self, name: str) -> None:
+        synthetic_class = self._get_synthetic_class_for_current_scope()
+        if synthetic_class is None:
+            current_class = self.current_class
+            if isinstance(current_class, type):
+                synthetic_class = self.checker._ensure_synthetic_class(current_class)
+            else:
+                return
+        existing = synthetic_class.class_attributes.get(
+            SYNTHETIC_READONLY_ATTRIBUTES_KEY
+        )
+        readonly_names: set[str] = set()
+        if isinstance(existing, KnownValue) and isinstance(
+            existing.val, (set, frozenset, tuple, list)
+        ):
+            readonly_names.update(
+                item for item in existing.val if isinstance(item, str)
+            )
+        readonly_names.add(name)
+        synthetic_class.class_attributes[SYNTHETIC_READONLY_ATTRIBUTES_KEY] = (
+            KnownValue(frozenset(readonly_names))
         )
 
     def _record_synthetic_instance_only_annotation_name(self, name: str) -> None:
@@ -2516,7 +2564,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     ) -> bool:
         synthetic_class: SyntheticClassObjectValue | None = None
         if isinstance(class_key, type):
-            synthetic_class = self.checker.get_synthetic_class(class_key)
+            synthetic_class = self._get_synthetic_class_for_runtime_type(class_key)
         elif isinstance(class_key, str):
             synthetic_class = self._synthetic_classes_by_name.get(class_key)
         if (
@@ -2530,6 +2578,35 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 class_key
             )
         return False
+
+    def _is_direct_readonly_member(self, class_key: type | str, attr_name: str) -> bool:
+        synthetic_class: SyntheticClassObjectValue | None = None
+        if isinstance(class_key, type):
+            synthetic_class = self._get_synthetic_class_for_runtime_type(class_key)
+        elif isinstance(class_key, str):
+            synthetic_class = self._synthetic_classes_by_name.get(class_key)
+        if synthetic_class is None:
+            if isinstance(class_key, type):
+                annotations = safe_getattr(class_key, "__annotations__", None)
+                return (
+                    isinstance(annotations, Mapping)
+                    and attr_name in annotations
+                    and _is_runtime_readonly_annotation(annotations[attr_name])
+                )
+            return False
+        if attr_name in _readonly_names_from_mapping(synthetic_class.class_attributes):
+            return True
+        if isinstance(class_key, type):
+            annotations = safe_getattr(class_key, "__annotations__", None)
+            return (
+                isinstance(annotations, Mapping)
+                and attr_name in annotations
+                and _is_runtime_readonly_annotation(annotations[attr_name])
+            )
+        return False
+
+    def _is_readonly_member(self, class_key: type | str, attr_name: str) -> bool:
+        return is_readonly_annotated_member(class_key, attr_name, self)
 
     def _classvar_names_for_class_key(
         self, class_key: type | str, seen: set[type | str]
@@ -9146,6 +9223,19 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             and self._is_class_object_attribute_root(root_value) is False
         )
 
+    def _is_allowed_readonly_annotation_target(self, target: ast.expr) -> bool:
+        if (
+            isinstance(target, ast.Name)
+            and self.scopes.scope_type() == ScopeType.class_scope
+        ):
+            return True
+        return (
+            isinstance(target, ast.Attribute)
+            and self.current_class_key is not None
+            and self.current_function_name == "__init__"
+            and self._is_current_method_receiver_node(target.value)
+        )
+
     def _current_method_receiver_name(self) -> str | None:
         info = self.current_function_info
         if info is None:
@@ -9238,6 +9328,38 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 )
                 return False
         return True
+
+    def _is_allowed_readonly_attribute_initialization(
+        self, node: ast.Attribute, root_value: Value
+    ) -> bool:
+        if (
+            self.current_class_key is None
+            or not self._is_current_method_receiver_node(node.value)
+            or not self._is_direct_readonly_member(self.current_class_key, node.attr)
+        ):
+            return False
+        class_object_status = self._is_class_object_attribute_root(root_value)
+        if self.current_function_name == "__init__":
+            return class_object_status is not True
+        if self.current_function_name == "__init_subclass__":
+            return class_object_status is not False and self._is_direct_classvar_member(
+                self.current_class_key, node.attr
+            )
+        return False
+
+    def _is_assignment_to_readonly_attribute(
+        self, node: ast.Attribute, root_value: Value
+    ) -> bool:
+        if self._is_allowed_readonly_attribute_initialization(node, root_value):
+            return False
+        class_key = self._class_key_for_attribute_target(node, root_value)
+        return class_key is not None and self._is_readonly_member(class_key, node.attr)
+
+    def _is_deletion_of_readonly_attribute(
+        self, node: ast.Attribute, root_value: Value
+    ) -> bool:
+        class_key = self._class_key_for_attribute_target(node, root_value)
+        return class_key is not None and self._is_readonly_member(class_key, node.attr)
 
     def _is_class_object_attribute_root(self, value: Value) -> bool | None:
         if (
@@ -12757,14 +12879,18 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 ),
             )
         else:
-            # TODO: validate these qualifiers more
-            qualifiers = {
+            allowed_qualifiers = {
                 Qualifier.Final,
                 Qualifier.ClassVar,
                 Qualifier.TypeAlias,
                 Qualifier.InitVar,
             }
-            expected_type, qualifiers = expr.maybe_unqualify(qualifiers)
+            if self._is_allowed_readonly_annotation_target(node.target):
+                allowed_qualifiers.add(Qualifier.ReadOnly)
+            expected_type, qualifiers = expr.maybe_unqualify(
+                allowed_qualifiers,
+                mutually_exclusive_qualifiers=((Qualifier.Final, Qualifier.ReadOnly),),
+            )
         if Qualifier.TypeAlias in qualifiers and node.value is not None:
             if isinstance(node.target, ast.Name):
                 if self._is_collecting():
@@ -12902,6 +13028,16 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             and isinstance(node.target, ast.Name)
         ):
             self._record_synthetic_classvar_name(node.target.id)
+        readonly_name: str | None = None
+        if Qualifier.ReadOnly in qualifiers:
+            if self.scopes.scope_type() == ScopeType.class_scope and isinstance(
+                node.target, ast.Name
+            ):
+                readonly_name = node.target.id
+            elif self._is_allowed_readonly_annotation_target(
+                node.target
+            ) and isinstance(node.target, ast.Attribute):
+                readonly_name = node.target.attr
         is_current_class_dataclass = self._is_current_class_dataclass()
         has_default = node.value is not None
         init = True
@@ -13174,6 +13310,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             override(self, "ann_assign_type", (ann_assign_declared_type, is_final)),
         ):
             self.visit(node.target)
+
+        if readonly_name is not None:
+            self._record_synthetic_readonly_name(readonly_name)
 
         if is_class_annotation_without_value and not has_classvar:
             assert isinstance(node.target, ast.Name)
@@ -14668,12 +14807,29 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             )
             if is_namedtuple_field:
                 self._show_namedtuple_attribute_mutation_error(node)
+            is_readonly_assignment = (
+                not is_final_assignment
+                and not is_classvar_instance_assignment
+                and not is_instance_member_class_assignment
+                and not is_frozen_dataclass_assignment
+                and not is_namedtuple_field
+                and self._is_assignment_to_readonly_attribute(
+                    node, root_composite.value
+                )
+            )
+            if is_readonly_assignment:
+                self._show_error_if_checking(
+                    node,
+                    f"Cannot assign to readonly attribute {node.attr!r}",
+                    error_code=ErrorCode.incompatible_assignment,
+                )
             is_slots_assignment = (
                 not is_final_assignment
                 and not is_classvar_instance_assignment
                 and not is_instance_member_class_assignment
                 and not is_frozen_dataclass_assignment
                 and not is_namedtuple_field
+                and not is_readonly_assignment
                 and self._is_assignment_to_non_slot_attribute(
                     root_composite.value, node.attr
                 )
@@ -14690,6 +14846,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 and not is_instance_member_class_assignment
                 and not is_frozen_dataclass_assignment
                 and not is_namedtuple_field
+                and not is_readonly_assignment
                 and not is_slots_assignment
             ):
                 self._check_attribute_assignment_type(node, root_composite)
@@ -14700,6 +14857,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 and not is_instance_member_class_assignment
                 and not is_frozen_dataclass_assignment
                 and not is_namedtuple_field
+                and not is_readonly_assignment
                 and not is_slots_assignment
             )
             if (
@@ -14752,10 +14910,25 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 use_fallback=True,
                 ignore_none=self.options.get_value_for(IgnoreNoneAttributes),
             )
-            if isinstance(node.ctx, ast.Del) and self._is_namedtuple_field_attribute(
-                root_composite.value, node.attr
-            ):
-                self._show_namedtuple_attribute_mutation_error(node)
+            if isinstance(node.ctx, ast.Del):
+                if self._is_assignment_to_final_attribute(node, root_composite.value):
+                    self._show_error_if_checking(
+                        node,
+                        f"Cannot delete final name {node.attr}",
+                        error_code=ErrorCode.incompatible_assignment,
+                    )
+                elif self._is_namedtuple_field_attribute(
+                    root_composite.value, node.attr
+                ):
+                    self._show_namedtuple_attribute_mutation_error(node)
+                elif self._is_deletion_of_readonly_attribute(
+                    node, root_composite.value
+                ):
+                    self._show_error_if_checking(
+                        node,
+                        f"Cannot delete readonly attribute {node.attr!r}",
+                        error_code=ErrorCode.incompatible_assignment,
+                    )
             self._check_deprecated_property_getter(node, root_composite.value)
             if not self.check_deprecation(node, value):
                 self._check_deprecated_method_attribute(
@@ -16805,6 +16978,15 @@ def _instance_only_names_from_mapping(attributes: Mapping[str, Value]) -> set[st
     return set()
 
 
+def _readonly_names_from_mapping(attributes: Mapping[str, Value]) -> set[str]:
+    raw = attributes.get(SYNTHETIC_READONLY_ATTRIBUTES_KEY)
+    if isinstance(raw, KnownValue) and isinstance(
+        raw.val, (set, frozenset, tuple, list)
+    ):
+        return {item for item in raw.val if isinstance(item, str)}
+    return set()
+
+
 def _is_newtype_base_value(base_value: Value) -> bool:
     for subval in flatten_values(replace_fallback(base_value)):
         if not isinstance(subval, KnownValue):
@@ -18257,6 +18439,22 @@ def _is_runtime_classvar_annotation(annotation: object) -> bool:
     if is_typing_name(annotation, "ClassVar") or is_typing_name(origin, "ClassVar"):
         return True
     return isinstance(annotation, str) and "ClassVar" in annotation
+
+
+def _is_runtime_readonly_annotation(annotation: object) -> bool:
+    origin = get_origin(annotation)
+    if is_typing_name(annotation, "ReadOnly") or is_typing_name(origin, "ReadOnly"):
+        return True
+    if isinstance(annotation, str):
+        return "ReadOnly" in annotation
+    args = get_args(annotation)
+    if args and (
+        is_typing_name(origin, "Annotated")
+        or is_typing_name(origin, "ClassVar")
+        or is_typing_name(origin, "Final")
+    ):
+        return _is_runtime_readonly_annotation(args[0])
+    return False
 
 
 def _is_typing_alias_value(value: object) -> bool:
