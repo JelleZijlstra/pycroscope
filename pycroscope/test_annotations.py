@@ -1883,6 +1883,38 @@ class TestRequired(TestNameCheckVisitorBase):
             x: Required[int]  # E: invalid_annotation
             y: NotRequired[int]  # E: invalid_annotation
 
+    def test_readonly_attribute_annotation_contexts(self):
+        self.assert_passes("""
+            from __future__ import annotations
+
+            from typing import Annotated, ClassVar
+
+            from typing_extensions import Final, ReadOnly
+
+            class Valid:
+                a: ReadOnly[int]
+                b: ClassVar[ReadOnly[int]]
+                c: ReadOnly[ClassVar[int]]
+                d: Annotated[ReadOnly[int], "meta"]
+                e: ReadOnly[Annotated[int, "meta"]]
+
+                def __init__(self, value: int):
+                    self.f: ReadOnly[int] = value
+                    self.f = value + 1
+
+            not_ok: ReadOnly[int] = 1  # E: invalid_annotation
+
+            def bad_param(x: ReadOnly[int]) -> None:  # E: invalid_annotation
+                y: ReadOnly[int] = x  # E: invalid_annotation
+                print(y)
+
+            class Invalid:
+                a: Final[ReadOnly[int]] = 1  # E: invalid_annotation
+                b: ReadOnly[Final[int]] = 1  # E: invalid_annotation
+
+            print(Valid, Invalid, bad_param, not_ok)
+        """)
+
     @assert_passes()
     def test_invalid_qualifiers_in_typeddict(self):
         from typing import TYPE_CHECKING, ClassVar, TypedDict

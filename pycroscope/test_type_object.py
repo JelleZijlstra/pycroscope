@@ -630,6 +630,45 @@ class TestSyntheticType(TestNameCheckVisitorBase):
         )
 
     @assert_passes()
+    def test_protocol_readonly_data_member(self):
+        from functools import cached_property
+        from typing import Protocol, Sequence
+
+        from typing_extensions import ReadOnly
+
+        class WantsReadOnlyData(Protocol):
+            val: ReadOnly[Sequence[float]]
+
+        class PlainAttrImpl:
+            val: Sequence[float] = [0]
+
+        class ReadOnlyAttrImpl:
+            val: ReadOnly[Sequence[float]]
+
+            def __init__(self) -> None:
+                self.val = [0]
+
+        class PropertyImpl:
+            @property
+            def val(self) -> Sequence[float]:
+                return [0]
+
+        class CachedPropertyImpl:
+            @cached_property
+            def val(self) -> Sequence[float]:
+                return [0]
+
+        class BadTypeImpl:
+            val: Sequence[str] = ["x"]
+
+        ok1: WantsReadOnlyData = PlainAttrImpl()
+        ok2: WantsReadOnlyData = ReadOnlyAttrImpl()
+        ok3: WantsReadOnlyData = PropertyImpl()
+        ok4: WantsReadOnlyData = CachedPropertyImpl()
+        bad: WantsReadOnlyData = BadTypeImpl()  # E: incompatible_assignment
+        print(ok1, ok2, ok3, ok4, bad)
+
+    @assert_passes()
     def test_custom_subclasscheck(self):
         class _ThriftEnumMeta(type):
             def __subclasscheck__(self, subclass):
