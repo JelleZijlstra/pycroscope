@@ -51,7 +51,7 @@ from unittest.mock import ANY
 
 import typeshed_client
 import typing_extensions
-from typing_extensions import Protocol, TypeVarTuple, assert_never, is_typeddict
+from typing_extensions import Protocol, assert_never, is_typeddict
 
 from pycroscope.input_sig import ActualArguments, InputSigValue
 
@@ -13824,7 +13824,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             return typevar
 
         def visit_TypeVarTuple(self, node: ast.TypeVarTuple) -> Value:
-            tv = TypeVarTuple(node.name)
+            tv = typing_extensions.TypeVarTuple(node.name)
             typevar = TypeVarTupleValue(TypeVarTupleParam(tv))
             self._set_name_in_scope(node.name, node, typevar)
             return typevar
@@ -17826,8 +17826,9 @@ def _class_body_attribute_names(node: ast.ClassDef) -> Iterable[str]:
                 statement.target, node.name
             )
         elif _AST_TYPE_ALIAS is not None and isinstance(statement, _AST_TYPE_ALIAS):
-            if isinstance(statement.name, ast.Name):
-                yield _mangle_class_attribute_name(node.name, statement.name.id)
+            statement_name = safe_getattr(statement, "name", None)
+            if isinstance(statement_name, ast.Name):
+                yield _mangle_class_attribute_name(node.name, statement_name.id)
 
 
 def _attribute_names_from_assignment_target(

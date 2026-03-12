@@ -7,7 +7,6 @@ Code for getting annotations from typeshed (and from third-party stubs generally
 import ast
 import builtins
 import collections.abc
-import enum
 import inspect
 import sys
 import types
@@ -93,7 +92,9 @@ from .value import (
 PROPERTY_LIKE = {KnownValue(property), KnownValue(types.DynamicClassAttribute)}
 
 if sys.version_info >= (3, 11):
-    PROPERTY_LIKE.add(KnownValue(enum.property))
+    from enum import property as enum_property
+
+    PROPERTY_LIKE.add(KnownValue(enum_property))
 
 
 T_co = TypeVar("T_co", covariant=True)
