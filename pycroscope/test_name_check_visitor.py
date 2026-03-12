@@ -1567,6 +1567,22 @@ class TestImportFailureHandlingCodeSamples(TestNameCheckVisitorBase):
             def f(cls) -> None:
                 assert_type(cls.x, int)
 
+    @assert_passes(run_in_both_module_modes=True)
+    def test_inherited_generic_annotation_accessed_through_cls(self):
+        from typing import Generic, TypeVar
+
+        from typing_extensions import assert_type
+
+        T = TypeVar("T")
+
+        class Base(Generic[T]):
+            x: T
+
+        class Child(Base[int]):
+            @classmethod
+            def f(cls) -> None:
+                assert_type(cls.x, int)
+
     @assert_passes()
     def test_incompatible_annotated_attribute_assignment(self):
         class C:
@@ -4212,6 +4228,16 @@ class TestAnnAssign(TestNameCheckVisitorBase):
         class Point(RGB):
             def __init__(self, blue: str) -> None:
                 self.rgb = 0, 0, blue  # E: incompatible_assignment
+
+    @assert_passes()
+    def test_protocol_assignment_to_declared_self_attribute(self):
+        from typing import Protocol
+
+        class Proto(Protocol):
+            value: int
+
+            def __init__(self) -> None:
+                self.value = 3
 
     @assert_passes(run_in_both_module_modes=True)
     def test_protocol_class_object_method_and_property_shapes(self):

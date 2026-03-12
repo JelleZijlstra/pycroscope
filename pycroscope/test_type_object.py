@@ -1,5 +1,6 @@
 # static analysis: ignore
 
+from .checker import Checker
 from .test_name_check_visitor import TestNameCheckVisitorBase
 from .test_node_visitor import assert_passes
 from .type_object import (
@@ -7,13 +8,18 @@ from .type_object import (
     _class_key_from_value,
     _iter_base_keys,
     _should_use_permissive_dunder_hash,
+    lookup_declared_symbol,
+    lookup_declared_symbol_with_owner,
 )
 from .value import (
+    AnnotatedValue,
     AnySource,
     AnyValue,
     CallableValue,
+    ClassSymbol,
     GenericValue,
     IntersectionValue,
+    KnownValue,
     MultiValuedValue,
     SubclassValue,
     SyntheticClassObjectValue,
@@ -97,6 +103,90 @@ def test_permissive_dunder_hash_class_object_detection() -> None:
     )
 
 
+def test_runtime_declared_symbol_uses_annotation_expr_parsing() -> None:
+    from typing import Annotated, ClassVar
+
+    from typing_extensions import ReadOnly
+
+    class Runtime:
+        attr: Annotated[ClassVar[ReadOnly[int]], "meta"]
+
+    checker = Checker()
+    symbol = checker.make_type_object(Runtime).get_declared_symbol("attr", checker)
+    assert symbol is not None
+    assert symbol.is_classvar
+    assert symbol.is_readonly
+    assert not symbol.is_instance_only
+    assert symbol.typ == AnnotatedValue(TypedValue(int), [KnownValue("meta")])
+
+
+def test_synthetic_declared_symbol_overrides_raw_attribute_value() -> None:
+    checker = Checker()
+    synthetic = SyntheticClassObjectValue(
+        "Impl",
+        TypedValue("mod.Impl"),
+        declared_symbols={
+            "attr": ClassSymbol(
+                TypedValue(object), is_instance_only=True, member_value=TypedValue(str)
+            )
+        },
+    )
+    checker.register_synthetic_class(synthetic)
+
+    symbol = checker.make_type_object("mod.Impl").get_declared_symbol("attr", checker)
+    assert symbol is not None
+    assert symbol.is_instance_only
+    assert symbol.typ == TypedValue(object)
+    assert symbol.member_value == TypedValue(str)
+
+
+def test_inherited_symbol_lookup_respects_shadowing() -> None:
+    from typing import ClassVar
+
+    from typing_extensions import ReadOnly
+
+    class Base:
+        x: ClassVar[ReadOnly[int]]
+
+    class Child(Base):
+        x: int = 1
+
+    checker = Checker()
+    symbol = lookup_declared_symbol(Child, "x", checker)
+    assert symbol is not None
+    assert not symbol.is_classvar
+    assert not symbol.is_readonly
+    assert symbol.typ == TypedValue(int)
+
+
+def test_inherited_symbol_lookup_returns_declaring_class() -> None:
+    class Base:
+        x: int = 1
+
+    class Child(Base):
+        pass
+
+    checker = Checker()
+    match = lookup_declared_symbol_with_owner(Child, "x", checker)
+    assert match is not None
+    owner, symbol = match
+    assert owner is Base
+    assert symbol.typ == TypedValue(int)
+
+
+def test_runtime_declared_symbol_includes_plain_class_dict_entry() -> None:
+    class Meta(type):
+        answer = 1
+
+    checker = Checker()
+    symbol = checker.make_type_object(Meta).get_declared_symbol("answer", checker)
+    assert symbol is not None
+    assert not symbol.is_method
+    assert not symbol.is_property
+    assert symbol.typ == KnownValue(1)
+    assert symbol.member_value == KnownValue(1)
+
+
 class TestNumerics(TestNameCheckVisitorBase):
     @assert_passes()
     def test_float(self):
@@ -146,6 +236,49 @@ class TestNumerics(TestNameCheckVisitorBase):
 
 
 class TestSyntheticType(TestNameCheckVisitorBase):
+    @assert_passes(run_in_both_module_modes=True)
+    def test_inherited_generic_property_specializes_in_protocol_check(self):
+        from typing import Generic, Protocol, TypeVar
+
+        T = TypeVar("T")
+
+        class Base(Generic[T]):
+            @property
+            def value(self) -> T:
+                raise NotImplementedError
+
+        class Child(Base[str]):
+            pass
+
+        class WantsInt(Protocol):
+            @property
+            def value(self) -> int: ...
+
+        def takes(value: WantsInt) -> None:
+            pass
+
+        def capybara(child: Child) -> None:
+            takes(child)  # E: incompatible_argument
+
+    @assert_passes()
+    def test_protocol_class_object_uses_metaclass_data_member(self):
+        from typing import Protocol
+
+        class WantsAnswer(Protocol):
+            answer: int
+
+        class Meta(type):
+            answer = 1
+
+        class C(metaclass=Meta):
+            pass
+
+        def takes(value: WantsAnswer) -> None:
+            pass
+
+        def capybara() -> None:
+            takes(C)
+
     @assert_passes()
     def test_callable_protocol_nonstandard_receiver_name(self):
         from typing import Protocol

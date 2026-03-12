@@ -719,9 +719,12 @@ def _has_relation(
             else:
                 return {}
         hash_attr = ctx.get_attribute_from_value(right, "__hash__")
+        if hash_attr is UNINITIALIZED_VALUE:
+            return CanAssignError(f"{right} is not hashable")
         for subval in flatten_values(hash_attr, unwrap_annotated=True):
             if isinstance(subval, KnownValue) and subval.val is None:
                 return CanAssignError(f"{right} is not hashable")
+        return {}
 
     # SubclassValue
     if isinstance(left, SubclassValue):
