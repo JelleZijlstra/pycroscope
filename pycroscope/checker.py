@@ -60,7 +60,7 @@ from .signature import (
 )
 from .stacked_scopes import Composite
 from .suggested_type import CallableTracker
-from .type_object import TypeObject, get_mro
+from .type_object import TypeObject, get_mro, lookup_declared_symbol
 from .typeshed import TypeshedFinder
 from .value import (
     NO_RETURN_VALUE,
@@ -71,6 +71,7 @@ from .value import (
     CallableValue,
     CanAssignContext,
     CanAssignError,
+    ClassSymbol,
     GenericValue,
     HasAttrExtension,
     IntersectionValue,
@@ -102,9 +103,12 @@ from .value import (
     annotate_value,
     flatten_values,
     get_namedtuple_field_value_from_synthetic,
+    get_synthetic_member_value,
     get_tv_map,
     has_any_base_value,
     is_union,
+    iter_synthetic_dataclass_field_candidates,
+    iter_synthetic_member_values,
     iter_type_params_in_value,
     ordered_namedtuple_fields_from_synthetic,
     replace_fallback,
@@ -446,10 +450,9 @@ def _extract_generic_args_from_self_annotation(
 
 
 def _synthetic_dataclass_init_enabled(value: SyntheticClassObjectValue) -> bool:
-    raw_flag = value.class_attributes.get("%dataclass_init")
-    if isinstance(raw_flag, KnownValue) and isinstance(raw_flag.val, bool):
-        return raw_flag.val
-    return True
+    if value.dataclass_info is None:
+        return True
+    return value.dataclass_info.init
 
 
 @dataclass
@@ -767,9 +770,16 @@ class Checker:
         if synthetic_class is None:
             return
         for member in cleaned_members:
-            synthetic_class.class_attributes.setdefault(
-                member, AnyValue(AnySource.inference)
-            )
+            existing = synthetic_class.declared_symbols.get(member)
+            if existing is None:
+                synthetic_class.declared_symbols[member] = ClassSymbol(
+                    AnyValue(AnySource.inference),
+                    member_value=AnyValue(AnySource.inference),
+                )
+            elif existing.member_value is None:
+                synthetic_class.declared_symbols[member] = dataclass_replace(
+                    existing, member_value=AnyValue(AnySource.inference)
+                )
         for key in self._iter_generic_override_keys(typ):
             self.type_object_cache.pop(key, None)
 
@@ -807,10 +817,8 @@ class Checker:
             return set()
         return {
             member
-            for member in synthetic_class.class_attributes
-            if member not in EXCLUDED_PROTOCOL_MEMBERS
-            and member != "__slots__"
-            and not member.startswith("%")
+            for member in synthetic_class.declared_symbols
+            if member not in EXCLUDED_PROTOCOL_MEMBERS and member != "__slots__"
         }
 
     def get_signature(
@@ -1222,7 +1230,8 @@ class Checker:
         get_return_override: Callable[[MaybeSignature], Value | None],
         get_call_attribute: Callable[[Value], Value] | None,
     ) -> bool:
-        if "__new__" not in value.method_attributes:
+        new_symbol = value.declared_symbols.get("__new__")
+        if new_symbol is None or not new_symbol.is_method:
             return False
         new_sig = self._get_synthetic_constructor_method_signature(
             value,
@@ -1502,7 +1511,8 @@ class Checker:
         get_return_override: Callable[[MaybeSignature], Value | None],
         get_call_attribute: Callable[[Value], Value] | None,
     ) -> bool:
-        has_direct_init = "__init__" in synthetic_class.method_attributes
+        init_symbol = synthetic_class.declared_symbols.get("__init__")
+        has_direct_init = init_symbol is not None and init_symbol.is_method
         init_sig = self._get_synthetic_constructor_method_signature(
             synthetic_class,
             "__init__",
@@ -1524,10 +1534,12 @@ class Checker:
         get_return_override: Callable[[MaybeSignature], Value | None],
         get_call_attribute: Callable[[Value], Value] | None,
     ) -> bool:
-        has_direct_new = "__new__" in synthetic_class.method_attributes
+        new_symbol = synthetic_class.declared_symbols.get("__new__")
+        has_direct_new = new_symbol is not None and new_symbol.is_method
         if has_direct_new:
-            method = synthetic_class.class_attributes.get(
-                "__new__", UNINITIALIZED_VALUE
+            method = (
+                get_synthetic_member_value(synthetic_class, "__new__")
+                or UNINITIALIZED_VALUE
             )
             if not isinstance(method, Value):
                 return True
@@ -1626,7 +1638,7 @@ class Checker:
             return ()
         class_type = value.class_type.typ
         for method_name in ("__new__", "__init__"):
-            method_value = value.class_attributes.get(method_name)
+            method_value = get_synthetic_member_value(value, method_name)
             if not isinstance(method_value, CallableValue):
                 continue
             signatures = (
@@ -1677,9 +1689,7 @@ class Checker:
 
         for base in value.base_classes:
             _record_type_params(base)
-        for name, attr in value.class_attributes.items():
-            if name.startswith("%"):
-                continue
+        for _, attr in iter_synthetic_member_values(value):
             _record_type_params(attr)
         return tuple(inferred)
 
@@ -1715,7 +1725,9 @@ class Checker:
         get_call_attribute: Callable[[Value], Value] | None,
     ) -> ConcreteSignature | None:
         if use_direct_method:
-            method = value.class_attributes.get(method_name, UNINITIALIZED_VALUE)
+            method = (
+                get_synthetic_member_value(value, method_name) or UNINITIALIZED_VALUE
+            )
             if not isinstance(method, Value):
                 return None
         else:
@@ -1728,7 +1740,7 @@ class Checker:
             get_call_attribute=get_call_attribute,
         )
         if use_direct_method and method_name in {"__new__", "__init__"}:
-            runtime_class = value.class_attributes.get("%runtime_class")
+            runtime_class = value.runtime_class
             if isinstance(runtime_class, KnownValue) and isinstance(
                 runtime_class.val, type
             ):
@@ -1878,13 +1890,15 @@ class Checker:
         get_return_override: Callable[[MaybeSignature], Value | None],
         get_call_attribute: Callable[[Value], Value] | None,
     ) -> ConcreteSignature | None:
-        metaclass = value.class_attributes.get("%metaclass")
+        metaclass = value.metaclass
         if not isinstance(metaclass, Value):
             return None
 
         if isinstance(metaclass, SyntheticClassObjectValue):
             # Ignore the default metaclass call behavior; only use an explicit override.
-            meta_call = metaclass.class_attributes.get("__call__", UNINITIALIZED_VALUE)
+            meta_call = (
+                get_synthetic_member_value(metaclass, "__call__") or UNINITIALIZED_VALUE
+            )
             if meta_call is UNINITIALIZED_VALUE:
                 return None
         else:
@@ -1953,9 +1967,7 @@ class Checker:
         ):
             return enum_argspec
 
-        runtime_class = value.class_attributes.get(
-            "%runtime_class", UNINITIALIZED_VALUE
-        )
+        runtime_class = value.runtime_class or UNINITIALIZED_VALUE
         runtime_uses_default_object_constructor = (
             isinstance(runtime_class, KnownValue)
             and isinstance(runtime_class.val, type)
@@ -1979,8 +1991,10 @@ class Checker:
         instance_type = self._make_synthetic_constructor_instance_value(
             value, apply_default_type_args=apply_default_type_args
         )
-        has_direct_new = "__new__" in value.method_attributes
-        has_direct_init = "__init__" in value.method_attributes
+        new_symbol = value.declared_symbols.get("__new__")
+        init_symbol = value.declared_symbols.get("__init__")
+        has_direct_new = new_symbol is not None and new_symbol.is_method
+        has_direct_init = init_symbol is not None and init_symbol.is_method
         dataclass_init_enabled = _synthetic_dataclass_init_enabled(value)
 
         metaclass_call = self._get_synthetic_metaclass_call_signature(
@@ -2057,7 +2071,7 @@ class Checker:
         self, value: SyntheticClassObjectValue, instance_type: Value
     ) -> Signature | None:
         params = self._get_synthetic_dataclass_field_parameters(value)
-        if not params and not value.class_attributes:
+        if not params and value.dataclass_info is None:
             return None
         try:
             return Signature.make(params, instance_type)
@@ -2133,88 +2147,33 @@ class Checker:
                         field_order.append(inherited.field_name)
                     entries_by_field[inherited.field_name] = inherited
 
-        classvar_names: set[str] = set()
-        classvars = value.class_attributes.get("%classvars")
-        if isinstance(classvars, KnownValue) and isinstance(
-            classvars.val, (set, frozenset, tuple, list)
-        ):
-            classvar_names.update(
-                name for name in classvars.val if isinstance(name, str)
-            )
-        default_fields: set[str] = set()
-        default_names = value.class_attributes.get("%dataclass_default_fields")
-        if isinstance(default_names, KnownValue) and isinstance(
-            default_names.val, (set, frozenset, tuple, list)
-        ):
-            default_fields.update(
-                name for name in default_names.val if isinstance(name, str)
-            )
-        init_false_fields: set[str] = set()
-        init_false_names = value.class_attributes.get("%dataclass_init_false_fields")
-        if isinstance(init_false_names, KnownValue) and isinstance(
-            init_false_names.val, (set, frozenset, tuple, list)
-        ):
-            init_false_fields.update(
-                name for name in init_false_names.val if isinstance(name, str)
-            )
-        initvar_fields: set[str] = set()
-        initvar_names = value.class_attributes.get("%dataclass_initvar_fields")
-        if isinstance(initvar_names, KnownValue) and isinstance(
-            initvar_names.val, (set, frozenset, tuple, list)
-        ):
-            initvar_fields.update(
-                name for name in initvar_names.val if isinstance(name, str)
-            )
-        kw_only_fields: set[str] = set()
-        kw_only_names = value.class_attributes.get("%dataclass_kw_only_fields")
-        if isinstance(kw_only_names, KnownValue) and isinstance(
-            kw_only_names.val, (set, frozenset, tuple, list)
-        ):
-            kw_only_fields.update(
-                name for name in kw_only_names.val if isinstance(name, str)
-            )
-        aliases: dict[str, str] = {}
-        alias_names = value.class_attributes.get("%dataclass_field_aliases")
-        if isinstance(alias_names, KnownValue) and isinstance(alias_names.val, dict):
-            aliases = {
-                field_name: alias
-                for field_name, alias in alias_names.val.items()
-                if isinstance(field_name, str) and isinstance(alias, str)
-            }
         converter_input_types = _synthetic_dataclass_converter_input_types(value)
-        ordered_fields: list[str] = []
-        order = value.class_attributes.get("%dataclass_field_order")
-        if isinstance(order, KnownValue) and isinstance(order.val, (tuple, list)):
-            ordered_fields = [name for name in order.val if isinstance(name, str)]
-        field_names = (
-            ordered_fields
-            if ordered_fields
-            else [
-                name
-                for name in value.class_attributes
-                if not name.startswith("%") and not _is_dunder(name)
-            ]
-        )
-
-        for name in field_names:
-            attr = value.class_attributes.get(name, UNINITIALIZED_VALUE)
+        for name, attr, symbol, field_info in iter_synthetic_dataclass_field_candidates(
+            value
+        ):
             excluded = (
                 attr is UNINITIALIZED_VALUE
-                or name in value.method_attributes
-                or name in classvar_names
-                or name in init_false_fields
+                or symbol is not None
+                and (symbol.is_method or symbol.is_classvar)
+                or field_info is not None
+                and not field_info.init
             )
             if excluded:
                 entries_by_field.pop(name, None)
                 continue
-            param_name = aliases.get(name, name)
+            param_name = (
+                field_info.alias
+                if field_info is not None and field_info.alias is not None
+                else name
+            )
             annotation = converter_input_types.get(name)
             if annotation is None:
                 annotation = self._synthetic_dataclass_field_annotation(attr)
+            has_default = field_info is not None and field_info.has_default
             if isinstance(attr, KnownValue):
-                default: Value | None = attr if name in default_fields else None
+                default: Value | None = attr if has_default else None
             else:
-                default = KnownValue(...) if name in default_fields else None
+                default = KnownValue(...) if has_default else None
             if name not in field_order:
                 field_order.append(name)
             entries_by_field[name] = _DataclassFieldEntry(
@@ -2223,13 +2182,13 @@ class Checker:
                     param_name,
                     (
                         ParameterKind.KEYWORD_ONLY
-                        if name in kw_only_fields
+                        if field_info is not None and field_info.kw_only
                         else ParameterKind.POSITIONAL_OR_KEYWORD
                     ),
                     default=default,
                     annotation=annotation,
                 ),
-                is_initvar=name in initvar_fields,
+                is_initvar=symbol is not None and symbol.is_initvar,
             )
         return [
             entries_by_field[name] for name in field_order if name in entries_by_field
@@ -2276,9 +2235,7 @@ class Checker:
                                 }
                             )
 
-            runtime_class_value = synthetic.class_attributes.get(
-                "%runtime_class", UNINITIALIZED_VALUE
-            )
+            runtime_class_value = synthetic.runtime_class or UNINITIALIZED_VALUE
             if (
                 isinstance(runtime_class_value, KnownValue)
                 and isinstance(runtime_class_value.val, type)
@@ -2296,31 +2253,21 @@ class Checker:
                         }
                     )
 
-            synthetic_defaults = synthetic.class_attributes.get(
-                "%namedtuple_default_fields"
-            )
-            if isinstance(synthetic_defaults, KnownValue) and isinstance(
-                synthetic_defaults.val, (set, frozenset, tuple, list)
-            ):
-                for name in synthetic_defaults.val:
-                    if not isinstance(name, str):
-                        continue
-                    collected[name] = synthetic.class_attributes.get(
-                        name, KnownValue(...)
-                    )
+            if synthetic.namedtuple_info is not None:
+                for name in synthetic.namedtuple_info.default_fields:
+                    collected[name] = get_synthetic_member_value(
+                        synthetic, name
+                    ) or KnownValue(...)
             return collected
 
         has_namedtuple_marker_base = any(
             isinstance(base, KnownValue) and is_typing_name(base.val, "NamedTuple")
             for base in value.base_classes
         )
-        namedtuple_marker = value.class_attributes.get("%namedtuple")
         has_namedtuple_marker = has_namedtuple_marker_base or (
-            isinstance(namedtuple_marker, KnownValue) and namedtuple_marker.val is True
+            value.namedtuple_info is not None
         )
-        runtime_class_value = value.class_attributes.get(
-            "%runtime_class", UNINITIALIZED_VALUE
-        )
+        runtime_class_value = value.runtime_class or UNINITIALIZED_VALUE
         runtime_namedtuple_class: type | None = None
         if (
             isinstance(runtime_class_value, KnownValue)
@@ -2631,13 +2578,10 @@ class Checker:
                             argspec = runtime_constructor_sig
                 synthetic_class = self.get_synthetic_class(value.val)
                 if synthetic_class is not None:
-                    has_direct_new = "__new__" in synthetic_class.method_attributes
+                    new_symbol = synthetic_class.declared_symbols.get("__new__")
+                    has_direct_new = new_symbol is not None and new_symbol.is_method
                     is_namedtuple_synthetic = (
-                        isinstance(
-                            synthetic_class.class_attributes.get("%namedtuple"),
-                            KnownValue,
-                        )
-                        and synthetic_class.class_attributes["%namedtuple"].val is True
+                        synthetic_class.namedtuple_info is not None
                     )
                     synthetic_constructor_sig = (
                         self._get_synthetic_constructor_signature(
@@ -2758,7 +2702,7 @@ class Checker:
             )
             if constructor_sig is not None:
                 return constructor_sig
-            runtime_class = value.class_attributes.get("%runtime_class")
+            runtime_class = value.runtime_class
             if isinstance(runtime_class, KnownValue) and isinstance(
                 runtime_class.val, type
             ):
@@ -2772,7 +2716,7 @@ class Checker:
                 value.class_type.typ, allow_synthetic_type=True
             )
             if argspec is None:
-                init_attr = value.class_attributes.get("__init__")
+                init_attr = get_synthetic_member_value(value, "__init__")
                 if init_attr is not None:
                     init_sig = self.signature_from_value(init_attr)
                     if isinstance(init_sig, BoundMethodSignature):
@@ -2797,10 +2741,14 @@ class Checker:
             if isinstance(typ, str):
                 synthetic_class = self.get_synthetic_class(typ)
                 if synthetic_class is not None:
-                    synthetic_call = synthetic_class.class_attributes.get("__call__")
+                    synthetic_call = get_synthetic_member_value(
+                        synthetic_class, "__call__"
+                    )
+                    call_symbol = synthetic_class.declared_symbols.get("__call__")
                     if (
                         synthetic_call is not None
-                        and "__call__" in synthetic_class.method_attributes
+                        and call_symbol is not None
+                        and call_symbol.is_method
                     ):
                         normalized_call = normalize_synthetic_descriptor_attribute(
                             synthetic_call
@@ -2935,7 +2883,7 @@ class Checker:
                 get_call_attribute=get_call_attribute,
             ):
                 preserve_exact_return = True
-            runtime_class = root.class_attributes.get("%runtime_class")
+            runtime_class = root.runtime_class
             if (
                 isinstance(runtime_class, KnownValue)
                 and isinstance(runtime_class.val, type)
@@ -3074,7 +3022,7 @@ class Checker:
             return _make_incompatible_constructor_signature(specialized_instance_type)
         runtime_class_for_synthetic = None
         if synthetic_root is not None and not isinstance(class_type, type):
-            runtime_class = synthetic_root.class_attributes.get("%runtime_class")
+            runtime_class = synthetic_root.runtime_class
             if isinstance(runtime_class, KnownValue) and isinstance(
                 runtime_class.val, type
             ):
@@ -3158,16 +3106,6 @@ class Checker:
     def _make_synthetic_class_instance_value(
         self, value: SyntheticClassObjectValue
     ) -> Value:
-        initvar_fields: set[str] = set()
-        initvar_names = value.class_attributes.get("%dataclass_initvar_fields")
-        if isinstance(initvar_names, KnownValue) and isinstance(
-            initvar_names.val, (set, frozenset, tuple, list)
-        ):
-            initvar_fields.update(
-                name for name in initvar_names.val if isinstance(name, str)
-            )
-        staticmethod_fields = _synthetic_staticmethod_names(value)
-        classmethod_fields = _synthetic_classmethod_names(value)
         metadata = [
             HasAttrExtension(
                 KnownValue(name),
@@ -3175,12 +3113,21 @@ class Checker:
                     name,
                     attr,
                     self_annotation_value=value.class_type,
-                    is_staticmethod=name in staticmethod_fields,
-                    is_classmethod=name in classmethod_fields,
+                    is_staticmethod=(
+                        value.declared_symbols.get(name) is not None
+                        and value.declared_symbols[name].is_staticmethod
+                    ),
+                    is_classmethod=(
+                        value.declared_symbols.get(name) is not None
+                        and value.declared_symbols[name].is_classmethod
+                    ),
                 ),
             )
-            for name, attr in value.class_attributes.items()
-            if not name.startswith("%") and name not in initvar_fields
+            for name, attr in iter_synthetic_member_values(value)
+            if not (
+                value.declared_symbols.get(name) is not None
+                and value.declared_symbols[name].is_initvar
+            )
         ]
         if self._synthetic_class_has_any_base(value):
             instance: Value = AnyValue(AnySource.from_another)
@@ -3317,26 +3264,13 @@ def _normalize_synthetic_attribute(attr: Value) -> Value:
     return attr
 
 
-def _synthetic_staticmethod_names(
-    synthetic_class: SyntheticClassObjectValue,
-) -> set[str]:
-    staticmethods = synthetic_class.class_attributes.get("%staticmethods")
-    if isinstance(staticmethods, KnownValue) and isinstance(
-        staticmethods.val, (set, frozenset, tuple, list)
-    ):
-        return {name for name in staticmethods.val if isinstance(name, str)}
-    return set()
-
-
-def _synthetic_classmethod_names(
-    synthetic_class: SyntheticClassObjectValue,
-) -> set[str]:
-    classmethods = synthetic_class.class_attributes.get("%classmethods")
-    if isinstance(classmethods, KnownValue) and isinstance(
-        classmethods.val, (set, frozenset, tuple, list)
-    ):
-        return {name for name in classmethods.val if isinstance(name, str)}
-    return set()
+def _lookup_synthetic_declared_symbol(
+    synthetic_class: SyntheticClassObjectValue, attr_name: str, checker: Checker
+) -> ClassSymbol | None:
+    class_type = synthetic_class.class_type
+    if isinstance(class_type, TypedValue) and isinstance(class_type.typ, (type, str)):
+        return lookup_declared_symbol(class_type.typ, attr_name, checker)
+    return synthetic_class.declared_symbols.get(attr_name)
 
 
 def _is_synthetic_staticmethod_attribute(
@@ -3346,35 +3280,9 @@ def _is_synthetic_staticmethod_attribute(
     *,
     seen: set[int],
 ) -> bool:
-    synthetic_id = id(synthetic_class)
-    if synthetic_id in seen:
-        return False
-    seen.add(synthetic_id)
-    if attr_name in _synthetic_staticmethod_names(synthetic_class):
-        return True
-    for base in synthetic_class.base_classes:
-        for base_value in flatten_values(base, unwrap_annotated=True):
-            base_value = replace_fallback(base_value)
-            synthetic_base: SyntheticClassObjectValue | None = None
-            if isinstance(base_value, SyntheticClassObjectValue):
-                synthetic_base = base_value
-            elif isinstance(base_value, GenericValue) and isinstance(
-                base_value.typ, (type, str)
-            ):
-                synthetic_base = checker.get_synthetic_class(base_value.typ)
-            elif isinstance(base_value, TypedValue) and isinstance(
-                base_value.typ, (type, str)
-            ):
-                synthetic_base = checker.get_synthetic_class(base_value.typ)
-            elif isinstance(base_value, KnownValue) and isinstance(
-                base_value.val, type
-            ):
-                synthetic_base = checker.get_synthetic_class(base_value.val)
-            if synthetic_base is not None and _is_synthetic_staticmethod_attribute(
-                synthetic_base, attr_name, checker, seen=seen
-            ):
-                return True
-    return False
+    del seen
+    symbol = _lookup_synthetic_declared_symbol(synthetic_class, attr_name, checker)
+    return symbol is not None and symbol.is_staticmethod
 
 
 def _is_synthetic_classmethod_attribute(
@@ -3384,35 +3292,9 @@ def _is_synthetic_classmethod_attribute(
     *,
     seen: set[int],
 ) -> bool:
-    synthetic_id = id(synthetic_class)
-    if synthetic_id in seen:
-        return False
-    seen.add(synthetic_id)
-    if attr_name in _synthetic_classmethod_names(synthetic_class):
-        return True
-    for base in synthetic_class.base_classes:
-        for base_value in flatten_values(base, unwrap_annotated=True):
-            base_value = replace_fallback(base_value)
-            synthetic_base: SyntheticClassObjectValue | None = None
-            if isinstance(base_value, SyntheticClassObjectValue):
-                synthetic_base = base_value
-            elif isinstance(base_value, GenericValue) and isinstance(
-                base_value.typ, (type, str)
-            ):
-                synthetic_base = checker.get_synthetic_class(base_value.typ)
-            elif isinstance(base_value, TypedValue) and isinstance(
-                base_value.typ, (type, str)
-            ):
-                synthetic_base = checker.get_synthetic_class(base_value.typ)
-            elif isinstance(base_value, KnownValue) and isinstance(
-                base_value.val, type
-            ):
-                synthetic_base = checker.get_synthetic_class(base_value.val)
-            if synthetic_base is not None and _is_synthetic_classmethod_attribute(
-                synthetic_base, attr_name, checker, seen=seen
-            ):
-                return True
-    return False
+    del seen
+    symbol = _lookup_synthetic_declared_symbol(synthetic_class, attr_name, checker)
+    return symbol is not None and symbol.is_classmethod
 
 
 EXCLUDED_PROTOCOL_MEMBERS: set[str] = {
@@ -3538,7 +3420,7 @@ class CheckerAttrContext(AttrContext):
                     synthetic_root, attr_name, self.checker, seen=set()
                 )
             ):
-                raw_attr = synthetic_root.class_attributes.get(attr_name)
+                raw_attr = get_synthetic_member_value(synthetic_root, attr_name)
                 if raw_attr is not None:
                     return self.checker._specialize_synthetic_classmethod(
                         raw_attr, value, self_annotation_value=root_value

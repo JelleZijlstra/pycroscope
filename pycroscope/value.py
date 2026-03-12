@@ -2055,23 +2055,29 @@ class SyntheticClassObjectValue(Value):
     base_classes: Sequence[Value] = field(
         default_factory=tuple, compare=False, hash=False, repr=False
     )
-    class_attributes: MutableMapping[str, Value] = field(
-        default_factory=dict, compare=False, hash=False, repr=False
-    )
-    method_attributes: set[str] = field(
-        default_factory=set, compare=False, hash=False, repr=False
-    )
     generic_bases: MutableMapping[type | str, dict[TypeVarLike, Value]] = field(
         default_factory=dict, compare=False, hash=False, repr=False
     )
-    is_dataclass: bool = field(default=False, compare=False, hash=False, repr=False)
-    dataclass_frozen: bool | None = field(
+    runtime_class: Value | None = field(
         default=None, compare=False, hash=False, repr=False
     )
-    dataclass_order: bool | None = field(
+    metaclass: Value | None = field(default=None, compare=False, hash=False, repr=False)
+    namedtuple_info: "NamedTupleInfo | None" = field(
+        default=None, compare=False, hash=False, repr=False
+    )
+    dataclass_info: "DataclassInfo | None" = field(
+        default=None, compare=False, hash=False, repr=False
+    )
+    dataclass_transform_info: "DataclassTransformInfo | None" = field(
         default=None, compare=False, hash=False, repr=False
     )
     declared_type_params: Sequence[TypeParam] = field(
+        default_factory=tuple, compare=False, hash=False, repr=False
+    )
+    declared_symbols: MutableMapping[str, "ClassSymbol"] = field(
+        default_factory=dict, compare=False, hash=False, repr=False
+    )
+    dataclass_field_order: tuple[str, ...] = field(
         default_factory=tuple, compare=False, hash=False, repr=False
     )
 
@@ -2081,23 +2087,66 @@ class SyntheticClassObjectValue(Value):
         return SyntheticClassObjectValue(
             self.name,
             substituted,
-            tuple(base.substitute_typevars(typevars) for base in self.base_classes),
-            {
-                key: val.substitute_typevars(typevars)
-                for key, val in self.class_attributes.items()
-            },
-            set(self.method_attributes),
-            {
+            base_classes=tuple(
+                base.substitute_typevars(typevars) for base in self.base_classes
+            ),
+            generic_bases={
                 base_typ: {
                     typevar: value.substitute_typevars(typevars)
                     for typevar, value in tv_map.items()
                 }
                 for base_typ, tv_map in self.generic_bases.items()
             },
-            self.is_dataclass,
-            self.dataclass_frozen,
-            self.dataclass_order,
-            tuple(self.declared_type_params),
+            runtime_class=(
+                self.runtime_class.substitute_typevars(typevars)
+                if self.runtime_class is not None
+                else None
+            ),
+            metaclass=(
+                self.metaclass.substitute_typevars(typevars)
+                if self.metaclass is not None
+                else None
+            ),
+            namedtuple_info=self.namedtuple_info,
+            dataclass_info=(
+                self.dataclass_info.substitute_typevars(typevars)
+                if self.dataclass_info is not None
+                else None
+            ),
+            dataclass_transform_info=(
+                self.dataclass_transform_info.substitute_typevars(typevars)
+                if self.dataclass_transform_info is not None
+                else None
+            ),
+            declared_type_params=tuple(self.declared_type_params),
+            declared_symbols={
+                key: ClassSymbol(
+                    symbol.typ.substitute_typevars(typevars),
+                    symbol.qualifiers,
+                    is_instance_only=symbol.is_instance_only,
+                    is_method=symbol.is_method,
+                    is_classmethod=symbol.is_classmethod,
+                    is_staticmethod=symbol.is_staticmethod,
+                    returns_self_on_class_access=symbol.returns_self_on_class_access,
+                    property_info=(
+                        symbol.property_info.substitute_typevars(typevars)
+                        if symbol.property_info is not None
+                        else None
+                    ),
+                    member_value=(
+                        symbol.member_value.substitute_typevars(typevars)
+                        if symbol.member_value is not None
+                        else None
+                    ),
+                    dataclass_field=(
+                        symbol.dataclass_field.substitute_typevars(typevars)
+                        if symbol.dataclass_field is not None
+                        else None
+                    ),
+                )
+                for key, symbol in self.declared_symbols.items()
+            },
+            dataclass_field_order=tuple(self.dataclass_field_order),
         )
 
     def walk_values(self) -> Iterable[Value]:
@@ -2105,11 +2154,70 @@ class SyntheticClassObjectValue(Value):
         yield from self.class_type.walk_values()
         for base in self.base_classes:
             yield from base.walk_values()
-        for val in self.class_attributes.values():
-            yield from val.walk_values()
+        if self.runtime_class is not None:
+            yield from self.runtime_class.walk_values()
+        if self.metaclass is not None:
+            yield from self.metaclass.walk_values()
+        if self.dataclass_info is not None:
+            yield from self.dataclass_info.walk_values()
+        if self.namedtuple_info is not None:
+            yield from self.namedtuple_info.walk_values()
+        if self.dataclass_transform_info is not None:
+            yield from self.dataclass_transform_info.walk_values()
+        for symbol in self.declared_symbols.values():
+            yield from symbol.typ.walk_values()
+            if symbol.property_info is not None:
+                yield from symbol.property_info.walk_values()
+            if symbol.member_value is not None:
+                yield from symbol.member_value.walk_values()
+            if symbol.dataclass_field is not None:
+                yield from symbol.dataclass_field.walk_values()
         for tv_map in self.generic_bases.values():
             for val in tv_map.values():
                 yield from val.walk_values()
+
+    @property
+    def is_dataclass(self) -> bool:
+        return self.dataclass_info is not None
+
+    @property
+    def dataclass_frozen(self) -> bool | None:
+        if self.dataclass_info is None:
+            return None
+        return self.dataclass_info.frozen
+
+    @property
+    def dataclass_order(self) -> bool | None:
+        if self.dataclass_info is None:
+            return None
+        return self.dataclass_info.order
+
+    def walk_values(self) -> Iterable["Value"]:
+        yield self
+        yield from self.class_type.walk_values()
+        for base in self.base_classes:
+            yield from base.walk_values()
+        for typevar_map in self.generic_bases.values():
+            for value in typevar_map.values():
+                yield from value.walk_values()
+        if self.runtime_class is not None:
+            yield from self.runtime_class.walk_values()
+        if self.metaclass is not None:
+            yield from self.metaclass.walk_values()
+        if self.namedtuple_info is not None:
+            yield from self.namedtuple_info.walk_values()
+        if self.dataclass_info is not None:
+            yield from self.dataclass_info.walk_values()
+        if self.dataclass_transform_info is not None:
+            yield from self.dataclass_transform_info.walk_values()
+        for symbol in self.declared_symbols.values():
+            yield from symbol.typ.walk_values()
+            if symbol.property_info is not None:
+                yield from symbol.property_info.walk_values()
+            if symbol.member_value is not None:
+                yield from symbol.member_value.walk_values()
+            if symbol.dataclass_field is not None:
+                yield from symbol.dataclass_field.walk_values()
 
     def get_type_value(self) -> Value:
         if isinstance(self.class_type, TypedValue) and isinstance(
@@ -3114,6 +3222,100 @@ class DataclassTransformInfo:
 
 
 @dataclass(frozen=True)
+class DataclassInfo:
+    init: bool
+    eq: bool
+    frozen: bool | None
+    unsafe_hash: bool
+    match_args: bool
+    order: bool
+    slots: bool
+    kw_only_default: bool
+    field_specifiers: tuple[Value, ...]
+
+    def substitute_typevars(self, typevars: TypeVarMap) -> "DataclassInfo":
+        return DataclassInfo(
+            init=self.init,
+            eq=self.eq,
+            frozen=self.frozen,
+            unsafe_hash=self.unsafe_hash,
+            match_args=self.match_args,
+            order=self.order,
+            slots=self.slots,
+            kw_only_default=self.kw_only_default,
+            field_specifiers=tuple(
+                value.substitute_typevars(typevars) for value in self.field_specifiers
+            ),
+        )
+
+    def walk_values(self) -> Iterable[Value]:
+        for field_specifier in self.field_specifiers:
+            yield from field_specifier.walk_values()
+
+
+@dataclass(frozen=True)
+class DataclassFieldInfo:
+    has_default: bool = False
+    init: bool = True
+    kw_only: bool = False
+    alias: str | None = None
+    converter_input_type: Value | None = None
+
+    def substitute_typevars(self, typevars: TypeVarMap) -> "DataclassFieldInfo":
+        return DataclassFieldInfo(
+            has_default=self.has_default,
+            init=self.init,
+            kw_only=self.kw_only,
+            alias=self.alias,
+            converter_input_type=(
+                self.converter_input_type.substitute_typevars(typevars)
+                if self.converter_input_type is not None
+                else None
+            ),
+        )
+
+    def walk_values(self) -> Iterable[Value]:
+        if self.converter_input_type is not None:
+            yield from self.converter_input_type.walk_values()
+
+
+@dataclass(frozen=True)
+class PropertyInfo:
+    getter_type: Value
+    setter_type: Value | None = None
+    getter_deprecation: str | None = None
+    setter_deprecation: str | None = None
+
+    def substitute_typevars(self, typevars: TypeVarMap) -> "PropertyInfo":
+        return PropertyInfo(
+            getter_type=self.getter_type.substitute_typevars(typevars),
+            setter_type=(
+                self.setter_type.substitute_typevars(typevars)
+                if self.setter_type is not None
+                else None
+            ),
+            getter_deprecation=self.getter_deprecation,
+            setter_deprecation=self.setter_deprecation,
+        )
+
+    def walk_values(self) -> Iterable[Value]:
+        yield from self.getter_type.walk_values()
+        if self.setter_type is not None:
+            yield from self.setter_type.walk_values()
+
+
+@dataclass(frozen=True)
+class NamedTupleInfo:
+    default_fields: tuple[str, ...] = ()
+
+    def substitute_typevars(self, typevars: TypeVarMap) -> "NamedTupleInfo":
+        return self
+
+    def walk_values(self) -> Iterable[Value]:
+        yield from ()
+
+
+@dataclass(frozen=True)
 class DataclassTransformExtension(Extension):
     info: DataclassTransformInfo
 
@@ -3864,7 +4066,7 @@ def ordered_namedtuple_fields_from_synthetic(
         isinstance(base, KnownValue) and is_typing_name(base.val, "NamedTuple")
         for base in synthetic.base_classes
     )
-    runtime_class_value = synthetic.class_attributes.get("%runtime_class")
+    runtime_class_value = synthetic.runtime_class
     if (
         isinstance(runtime_class_value, KnownValue)
         and isinstance(runtime_class_value.val, type)
@@ -3876,35 +4078,23 @@ def ordered_namedtuple_fields_from_synthetic(
         ):
             return fields_obj
 
-    instance_only = synthetic.class_attributes.get("%instance_only_annotations")
-    default_fields = synthetic.class_attributes.get("%namedtuple_default_fields")
     allowed_names: set[str] = set()
-    if isinstance(instance_only, KnownValue) and isinstance(
-        instance_only.val, (set, frozenset, tuple, list)
-    ):
-        allowed_names.update(
-            name for name in instance_only.val if isinstance(name, str)
-        )
-    if isinstance(default_fields, KnownValue) and isinstance(
-        default_fields.val, (set, frozenset, tuple, list)
-    ):
-        allowed_names.update(
-            name for name in default_fields.val if isinstance(name, str)
-        )
+    allowed_names.update(
+        name
+        for name, symbol in synthetic.declared_symbols.items()
+        if symbol.is_instance_only and not symbol.is_classvar and not symbol.is_initvar
+    )
+    if synthetic.namedtuple_info is not None:
+        allowed_names.update(synthetic.namedtuple_info.default_fields)
     inherited: list[str] = []
     for base in synthetic.base_classes:
         for subval in flatten_values(replace_fallback(base)):
             if isinstance(subval, SyntheticClassObjectValue):
-                marker = subval.class_attributes.get("%namedtuple")
-                runtime_class = subval.class_attributes.get("%runtime_class")
-                if (
-                    isinstance(marker, KnownValue)
-                    and marker.val is True
-                    or (
-                        isinstance(runtime_class, KnownValue)
-                        and isinstance(runtime_class.val, type)
-                        and is_namedtuple_class(runtime_class.val)
-                    )
+                runtime_class = subval.runtime_class
+                if subval.namedtuple_info is not None or (
+                    isinstance(runtime_class, KnownValue)
+                    and isinstance(runtime_class.val, type)
+                    and is_namedtuple_class(runtime_class.val)
                 ):
                     inherited.extend(ordered_namedtuple_fields_from_synthetic(subval))
             elif isinstance(subval, KnownValue) and isinstance(subval.val, type):
@@ -3917,11 +4107,18 @@ def ordered_namedtuple_fields_from_synthetic(
     if has_namedtuple_marker_base or not inherited:
         local_fields = [
             name
-            for name in synthetic.class_attributes
-            if not name.startswith("%")
-            and name not in synthetic.method_attributes
+            for name, _ in iter_synthetic_member_values(synthetic)
+            if not (
+                synthetic.declared_symbols.get(name) is not None
+                and synthetic.declared_symbols[name].is_method
+            )
             and (not allowed_names or name in allowed_names)
         ]
+        for name in allowed_names:
+            symbol = synthetic.declared_symbols.get(name)
+            if symbol is None or symbol.is_method or name in local_fields:
+                continue
+            local_fields.append(name)
     ordered_fields: list[str] = []
     for name in [*inherited, *local_fields]:
         if name not in ordered_fields:
@@ -3942,10 +4139,10 @@ def get_namedtuple_field_value_from_synthetic(
 ) -> Value | None:
     from .annotations import type_from_runtime
 
-    field_value = synthetic_class.class_attributes.get(field_name)
+    field_value = get_synthetic_member_value(synthetic_class, field_name)
     if field_value is not None:
         return field_value
-    runtime_class_value = synthetic_class.class_attributes.get("%runtime_class")
+    runtime_class_value = synthetic_class.runtime_class
     if (
         isinstance(runtime_class_value, KnownValue)
         and isinstance(runtime_class_value.val, type)
@@ -4036,8 +4233,7 @@ def namedtuple_members_from_value(
         if synthetic is None:
             return None
 
-        namedtuple_marker = synthetic.class_attributes.get("%namedtuple")
-        if isinstance(namedtuple_marker, KnownValue) and namedtuple_marker.val is True:
+        if synthetic.namedtuple_info is not None:
             field_names = ordered_namedtuple_fields_from_synthetic(synthetic)
             if not field_names:
                 return None
@@ -4269,6 +4465,88 @@ class Qualifier(enum.Enum):
     NotRequired = "NotRequired"
     InitVar = "InitVar"
     TypeAlias = "TypeAlias"
+
+
+@dataclass(frozen=True)
+class ClassSymbol:
+    typ: "Value"
+    qualifiers: frozenset[Qualifier] = frozenset()
+    is_instance_only: bool = False
+    is_method: bool = False
+    is_classmethod: bool = False
+    is_staticmethod: bool = False
+    returns_self_on_class_access: bool = False
+    property_info: PropertyInfo | None = None
+    member_value: "Value | None" = None
+    dataclass_field: DataclassFieldInfo | None = None
+
+    @property
+    def is_classvar(self) -> bool:
+        return Qualifier.ClassVar in self.qualifiers
+
+    @property
+    def is_readonly(self) -> bool:
+        return Qualifier.ReadOnly in self.qualifiers
+
+    @property
+    def is_initvar(self) -> bool:
+        return Qualifier.InitVar in self.qualifiers
+
+    @property
+    def is_property(self) -> bool:
+        return self.property_info is not None
+
+    @property
+    def property_has_setter(self) -> bool:
+        return (
+            self.property_info is not None
+            and self.property_info.setter_type is not None
+        )
+
+
+def get_synthetic_member_value(
+    synthetic_class: SyntheticClassObjectValue, name: str
+) -> Value | None:
+    symbol = synthetic_class.declared_symbols.get(name)
+    if symbol is None:
+        return None
+    return symbol.member_value
+
+
+def iter_synthetic_member_values(
+    synthetic_class: SyntheticClassObjectValue,
+) -> Iterator[tuple[str, Value]]:
+    for name, symbol in synthetic_class.declared_symbols.items():
+        if symbol.member_value is None:
+            continue
+        yield name, symbol.member_value
+
+
+def iter_synthetic_member_names(
+    synthetic_class: SyntheticClassObjectValue,
+) -> Iterator[str]:
+    for name, _ in iter_synthetic_member_values(synthetic_class):
+        yield name
+
+
+def iter_synthetic_dataclass_field_candidates(
+    synthetic_class: SyntheticClassObjectValue,
+) -> Iterator[tuple[str, Value, ClassSymbol | None, DataclassFieldInfo | None]]:
+    ordered_fields = list(synthetic_class.dataclass_field_order)
+    field_names = (
+        ordered_fields
+        if ordered_fields
+        else [
+            name
+            for name in iter_synthetic_member_names(synthetic_class)
+            if not (name.startswith("__") and name.endswith("__"))
+        ]
+    )
+    for name in field_names:
+        attr = get_synthetic_member_value(synthetic_class, name) or UNINITIALIZED_VALUE
+        symbol = synthetic_class.declared_symbols.get(name)
+        field = symbol.dataclass_field if symbol is not None else None
+        yield name, attr, symbol, field
 
 
 @dataclass(frozen=True)

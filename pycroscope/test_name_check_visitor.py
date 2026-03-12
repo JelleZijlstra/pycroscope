@@ -1567,6 +1567,22 @@ class TestImportFailureHandlingCodeSamples(TestNameCheckVisitorBase):
             def f(cls) -> None:
                 assert_type(cls.x, int)
 
+    @assert_passes(run_in_both_module_modes=True)
+    def test_inherited_generic_annotation_accessed_through_cls(self):
+        from typing import Generic, TypeVar
+
+        from typing_extensions import assert_type
+
+        T = TypeVar("T")
+
+        class Base(Generic[T]):
+            x: T
+
+        class Child(Base[int]):
+            @classmethod
+            def f(cls) -> None:
+                assert_type(cls.x, int)
+
     @assert_passes()
     def test_incompatible_annotated_attribute_assignment(self):
         class C:

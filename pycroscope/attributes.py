@@ -9,7 +9,7 @@ import inspect
 import sys
 import types
 import typing
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, field, replace
 from enum import Enum
 from typing import Any, ClassVar, get_origin
@@ -55,6 +55,7 @@ from .signature import (
     make_bound_method,
 )
 from .stacked_scopes import Composite
+from .type_object import lookup_declared_symbol, lookup_declared_symbol_with_owner
 from .value import (
     UNINITIALIZED_VALUE,
     AnnotatedValue,
@@ -91,8 +92,9 @@ from .value import (
     UnboundMethodValue,
     Value,
     annotate_value,
-    flatten_values,
+    get_synthetic_member_value,
     has_any_base_value,
+    iter_synthetic_dataclass_field_candidates,
     replace_fallback,
     set_self,
     stringify_object,
@@ -111,7 +113,6 @@ _ENUM_INSTANCE_DESCRIPTOR_TYPES = tuple(
     )
     if descriptor_type is not None
 )
-_SYNTHETIC_PROPERTY_GETTER_PREFIX = "%property_getter:"
 if sys.version_info >= (3, 12):
     RuntimeTypeAliasType = typing.TypeAliasType | typing_extensions.TypeAliasType
 else:
@@ -271,8 +272,8 @@ def get_attribute(ctx: AttrContext) -> Value:
                     self_value: Value = root_value.typ
                     if isinstance(
                         root_value.typ, TypedValue
-                    ) and _is_recursive_synthetic_self_classmethod_attribute(
-                        synthetic_class, ctx.attr, ctx, seen=set()
+                    ) and _is_synthetic_self_classmethod_attribute(
+                        synthetic_class, ctx.attr, ctx
                     ):
                         self_value = TypeVarValue(
                             TypeVarParam(SelfT, bound=root_value.typ)
@@ -492,7 +493,7 @@ def _get_attribute_from_synthetic_type(
     synthetic_class = ctx.get_synthetic_class(fq_name)
     if synthetic_class is not None:
         result = _get_direct_attribute_from_synthetic_instance(
-            synthetic_class, ctx.attr
+            synthetic_class, ctx.attr, ctx
         )
         if result is not UNINITIALIZED_VALUE:
             result = _maybe_resolve_synthetic_dataclass_descriptor_attribute(
@@ -536,7 +537,7 @@ def _get_attribute_from_synthetic_type_bases(
             synthetic_class = ctx.get_synthetic_class(base_typ)
             if synthetic_class is not None:
                 result = _get_direct_attribute_from_synthetic_instance(
-                    synthetic_class, ctx.attr
+                    synthetic_class, ctx.attr, ctx
                 )
                 if result is not UNINITIALIZED_VALUE:
                     if _is_synthetic_method_attribute(synthetic_class, ctx.attr) and (
@@ -594,7 +595,7 @@ def _get_attribute_from_synthetic_class_inner(
     seen: set[int],
     runtime_type: type | None = None,
 ) -> Value:
-    direct = _get_direct_attribute_from_synthetic_class(self_value, ctx.attr)
+    direct = _get_direct_attribute_from_synthetic_class(self_value, ctx.attr, ctx)
     if direct is not UNINITIALIZED_VALUE:
         direct = _maybe_resolve_synthetic_dataclass_descriptor_attribute(
             self_value, ctx.attr, direct, ctx, on_class=True
@@ -620,17 +621,18 @@ def _get_attribute_from_synthetic_class_inner(
 
 
 def _get_direct_attribute_from_synthetic_class(
-    self_value: SyntheticClassObjectValue, attr_name: str
+    self_value: SyntheticClassObjectValue, attr_name: str, ctx: AttrContext
 ) -> Value:
     selected_name = _select_synthetic_attribute_name(self_value, attr_name)
     if _is_synthetic_initvar_attribute(self_value, selected_name):
         return UNINITIALIZED_VALUE
-    if selected_name not in self_value.class_attributes:
+    raw_value = get_synthetic_member_value(self_value, selected_name)
+    if raw_value is None:
         return UNINITIALIZED_VALUE
     result = _normalize_synthetic_class_attribute(
-        self_value.class_attributes[selected_name],
+        raw_value,
         is_self_returning_classmethod=_is_synthetic_self_classmethod_attribute(
-            self_value, selected_name
+            self_value, selected_name, ctx
         ),
     )
     if _should_deliteralize_synthetic_enum_attr(self_value, selected_name):
@@ -639,22 +641,22 @@ def _get_direct_attribute_from_synthetic_class(
 
 
 def _get_direct_attribute_from_synthetic_instance(
-    self_value: SyntheticClassObjectValue, attr_name: str
+    self_value: SyntheticClassObjectValue, attr_name: str, ctx: AttrContext
 ) -> Value:
     selected_name = _select_synthetic_attribute_name(self_value, attr_name)
-    getter_key = f"{_SYNTHETIC_PROPERTY_GETTER_PREFIX}{selected_name}"
-    if getter_key in self_value.class_attributes:
-        return self_value.class_attributes[getter_key]
-    return _get_direct_attribute_from_synthetic_class(self_value, attr_name)
+    symbol = self_value.declared_symbols.get(selected_name)
+    if symbol is not None and symbol.property_info is not None:
+        return symbol.property_info.getter_type
+    return _get_direct_attribute_from_synthetic_class(self_value, attr_name, ctx)
 
 
 def _select_synthetic_attribute_name(
     self_value: SyntheticClassObjectValue, attr_name: str
 ) -> str:
     selected_name = attr_name
-    if selected_name not in self_value.class_attributes:
+    if selected_name not in self_value.declared_symbols:
         mangled = _maybe_mangle_private_name(selected_name, self_value.name)
-        if mangled is not None and mangled in self_value.class_attributes:
+        if mangled is not None and mangled in self_value.declared_symbols:
             selected_name = mangled
     return selected_name
 
@@ -662,12 +664,9 @@ def _select_synthetic_attribute_name(
 def _is_synthetic_method_attribute(
     self_value: SyntheticClassObjectValue, attr_name: str
 ) -> bool:
-    selected_name = attr_name
-    if selected_name not in self_value.method_attributes:
-        mangled = _maybe_mangle_private_name(selected_name, self_value.name)
-        if mangled is not None:
-            selected_name = mangled
-    if selected_name in self_value.method_attributes:
+    selected_name = _select_synthetic_attribute_name(self_value, attr_name)
+    symbol = self_value.declared_symbols.get(selected_name)
+    if symbol is not None and symbol.is_method:
         return True
     return (
         self_value.is_dataclass
@@ -676,23 +675,18 @@ def _is_synthetic_method_attribute(
     )
 
 
-def _synthetic_dataclass_flag(
-    self_value: SyntheticClassObjectValue, flag_name: str, *, default: bool
-) -> bool:
-    raw_value = self_value.class_attributes.get(flag_name)
-    if isinstance(raw_value, KnownValue) and isinstance(raw_value.val, bool):
-        return raw_value.val
-    return default
-
-
 def _synthetic_dataclass_init_enabled(self_value: SyntheticClassObjectValue) -> bool:
-    return _synthetic_dataclass_flag(self_value, "%dataclass_init", default=True)
+    if self_value.dataclass_info is None:
+        return True
+    return self_value.dataclass_info.init
 
 
 def _synthetic_dataclass_match_args_enabled(
     self_value: SyntheticClassObjectValue,
 ) -> bool:
-    return _synthetic_dataclass_flag(self_value, "%dataclass_match_args", default=True)
+    if self_value.dataclass_info is None:
+        return True
+    return self_value.dataclass_info.match_args
 
 
 def _iter_synthetic_dataclass_base_init_parameters(
@@ -720,19 +714,13 @@ def _iter_synthetic_dataclass_base_init_parameters(
 def _synthetic_dataclass_converter_input_types(
     synthetic_class: SyntheticClassObjectValue,
 ) -> dict[str, Value]:
-    raw_converter_input_types = synthetic_class.class_attributes.get(
-        "%dataclass_converter_input_types"
-    )
-    if not (
-        isinstance(raw_converter_input_types, KnownValue)
-        and isinstance(raw_converter_input_types.val, Mapping)
-    ):
-        return {}
-    return {
-        field_name: input_type
-        for field_name, input_type in raw_converter_input_types.val.items()
-        if isinstance(field_name, str) and isinstance(input_type, Value)
-    }
+    converter_input_types: dict[str, Value] = {}
+    for field_name, symbol in synthetic_class.declared_symbols.items():
+        field = symbol.dataclass_field
+        if field is None or field.converter_input_type is None:
+            continue
+        converter_input_types[field_name] = field.converter_input_type
+    return converter_input_types
 
 
 def _get_synthetic_dataclass_init_parameters(
@@ -760,80 +748,29 @@ def _get_synthetic_dataclass_init_parameters(
                     field_order.append(inherited.name)
                 params_by_field[inherited.name] = inherited
 
-    classvar_names: set[str] = set()
-    classvars = synthetic_class.class_attributes.get("%classvars")
-    if isinstance(classvars, KnownValue) and isinstance(
-        classvars.val, (set, frozenset, tuple, list)
-    ):
-        classvar_names.update(name for name in classvars.val if isinstance(name, str))
-
-    default_fields: set[str] = set()
-    default_names = synthetic_class.class_attributes.get("%dataclass_default_fields")
-    if isinstance(default_names, KnownValue) and isinstance(
-        default_names.val, (set, frozenset, tuple, list)
-    ):
-        default_fields.update(
-            name for name in default_names.val if isinstance(name, str)
-        )
-
-    init_false_fields: set[str] = set()
-    init_false_names = synthetic_class.class_attributes.get(
-        "%dataclass_init_false_fields"
-    )
-    if isinstance(init_false_names, KnownValue) and isinstance(
-        init_false_names.val, (set, frozenset, tuple, list)
-    ):
-        init_false_fields.update(
-            name for name in init_false_names.val if isinstance(name, str)
-        )
-
-    kw_only_fields: set[str] = set()
-    kw_only_names = synthetic_class.class_attributes.get("%dataclass_kw_only_fields")
-    if isinstance(kw_only_names, KnownValue) and isinstance(
-        kw_only_names.val, (set, frozenset, tuple, list)
-    ):
-        kw_only_fields.update(
-            name for name in kw_only_names.val if isinstance(name, str)
-        )
-
-    aliases: dict[str, str] = {}
-    alias_names = synthetic_class.class_attributes.get("%dataclass_field_aliases")
-    if isinstance(alias_names, KnownValue) and isinstance(alias_names.val, dict):
-        aliases = {
-            field_name: alias
-            for field_name, alias in alias_names.val.items()
-            if isinstance(field_name, str) and isinstance(alias, str)
-        }
     converter_input_types = _synthetic_dataclass_converter_input_types(synthetic_class)
-
-    ordered_fields: list[str] = []
-    order = synthetic_class.class_attributes.get("%dataclass_field_order")
-    if isinstance(order, KnownValue) and isinstance(order.val, (tuple, list)):
-        ordered_fields = [name for name in order.val if isinstance(name, str)]
-    field_names = (
-        ordered_fields
-        if ordered_fields
-        else [
-            name
-            for name in synthetic_class.class_attributes
-            if not name.startswith("%")
-            and not (name.startswith("__") and name.endswith("__"))
-        ]
-    )
-
-    for field_name in field_names:
-        attr = synthetic_class.class_attributes.get(field_name, UNINITIALIZED_VALUE)
+    for (
+        field_name,
+        attr,
+        symbol,
+        field_info,
+    ) in iter_synthetic_dataclass_field_candidates(synthetic_class):
         excluded = (
             attr is UNINITIALIZED_VALUE
-            or field_name in synthetic_class.method_attributes
-            or field_name in classvar_names
-            or field_name in init_false_fields
+            or symbol is not None
+            and (symbol.is_method or symbol.is_classvar)
+            or field_info is not None
+            and not field_info.init
         )
         if excluded:
             params_by_field.pop(field_name, None)
             continue
 
-        parameter_name = aliases.get(field_name, field_name)
+        parameter_name = (
+            field_info.alias
+            if field_info is not None and field_info.alias is not None
+            else field_name
+        )
         annotation = converter_input_types.get(field_name)
         if annotation is None:
             annotation = _synthetic_dataclass_parameter_annotation_for_field(attr, ctx)
@@ -842,10 +779,14 @@ def _get_synthetic_dataclass_init_parameters(
             parameter_name,
             (
                 ParameterKind.KEYWORD_ONLY
-                if field_name in kw_only_fields
+                if field_info is not None and field_info.kw_only
                 else ParameterKind.POSITIONAL_OR_KEYWORD
             ),
-            default=KnownValue(...) if field_name in default_fields else None,
+            default=(
+                KnownValue(...)
+                if field_info is not None and field_info.has_default
+                else None
+            ),
             annotation=annotation,
         )
         if field_name not in field_order:
@@ -1046,7 +987,10 @@ def _maybe_resolve_synthetic_dataclass_descriptor_attribute(
 ) -> Value:
     if (
         not synthetic_class.is_dataclass
-        or attr_name in synthetic_class.method_attributes
+        or (
+            synthetic_class.declared_symbols.get(attr_name) is not None
+            and synthetic_class.declared_symbols[attr_name].is_method
+        )
         or (attr_name.startswith("__") and attr_name.endswith("__"))
     ):
         return value
@@ -1109,64 +1053,21 @@ def _get_synthetic_dataclass_attribute(
 def _is_synthetic_initvar_attribute(
     self_value: SyntheticClassObjectValue, attr_name: str
 ) -> bool:
-    initvar_fields = self_value.class_attributes.get("%dataclass_initvar_fields")
-    if not isinstance(initvar_fields, KnownValue) or not isinstance(
-        initvar_fields.val, (set, frozenset, tuple, list)
-    ):
-        return False
-    return attr_name in initvar_fields.val
+    symbol = self_value.declared_symbols.get(attr_name)
+    return symbol is not None and symbol.is_initvar
 
 
 def _is_synthetic_self_classmethod_attribute(
-    self_value: SyntheticClassObjectValue, attr_name: str
+    self_value: SyntheticClassObjectValue, attr_name: str, ctx: AttrContext
 ) -> bool:
-    self_classmethods = self_value.class_attributes.get("%self_classmethods")
-    if not isinstance(self_classmethods, KnownValue) or not isinstance(
-        self_classmethods.val, (set, frozenset, tuple, list)
-    ):
-        return False
-    return attr_name in self_classmethods.val
-
-
-def _is_recursive_synthetic_self_classmethod_attribute(
-    self_value: SyntheticClassObjectValue,
-    attr_name: str,
-    ctx: AttrContext,
-    *,
-    seen: set[int],
-) -> bool:
-    synthetic_id = id(self_value)
-    if synthetic_id in seen:
-        return False
-    seen.add(synthetic_id)
-    if _is_synthetic_self_classmethod_attribute(self_value, attr_name):
-        return True
-    for base in self_value.base_classes:
-        for base_value in flatten_values(base, unwrap_annotated=True):
-            base_value = replace_fallback(base_value)
-            synthetic_base: SyntheticClassObjectValue | None = None
-            if isinstance(base_value, SyntheticClassObjectValue):
-                synthetic_base = base_value
-            elif isinstance(base_value, GenericValue) and isinstance(
-                base_value.typ, (type, str)
-            ):
-                synthetic_base = ctx.get_synthetic_class(base_value.typ)
-            elif isinstance(base_value, TypedValue) and isinstance(
-                base_value.typ, (type, str)
-            ):
-                synthetic_base = ctx.get_synthetic_class(base_value.typ)
-            elif isinstance(base_value, KnownValue) and isinstance(
-                base_value.val, type
-            ):
-                synthetic_base = ctx.get_synthetic_class(base_value.val)
-            if (
-                synthetic_base is not None
-                and _is_recursive_synthetic_self_classmethod_attribute(
-                    synthetic_base, attr_name, ctx, seen=seen
-                )
-            ):
-                return True
-    return False
+    class_type = self_value.class_type
+    if isinstance(class_type, TypedValue) and isinstance(class_type.typ, (type, str)):
+        symbol = lookup_declared_symbol(
+            class_type.typ, attr_name, ctx.get_can_assign_context()
+        )
+    else:
+        symbol = self_value.declared_symbols.get(attr_name)
+    return symbol is not None and symbol.returns_self_on_class_access
 
 
 def normalize_synthetic_descriptor_attribute(
@@ -1441,7 +1342,7 @@ def _get_attribute_from_typed(
     synthetic_class = ctx.get_synthetic_class(typ)
     if synthetic_class is not None and _contains_self_typevar(ctx.get_self_value()):
         synthetic_result = _get_direct_attribute_from_synthetic_instance(
-            synthetic_class, ctx.attr
+            synthetic_class, ctx.attr, ctx
         )
         if synthetic_result is not UNINITIALIZED_VALUE:
             synthetic_result = _maybe_resolve_synthetic_dataclass_descriptor_attribute(
@@ -1499,7 +1400,7 @@ def _get_attribute_from_typed(
         synthetic_class = ctx.get_synthetic_class(typ)
         if synthetic_class is not None:
             synthetic_hash = _get_direct_attribute_from_synthetic_class(
-                synthetic_class, "__hash__"
+                synthetic_class, "__hash__", ctx
             )
             if synthetic_hash is not UNINITIALIZED_VALUE:
                 return set_self(synthetic_hash, ctx.get_self_value())
@@ -1543,7 +1444,7 @@ def _get_runtime_attribute_from_synthetic_dataclass(
     if synthetic_class is None or not synthetic_class.is_dataclass:
         return UNINITIALIZED_VALUE
 
-    direct = _get_direct_attribute_from_synthetic_class(synthetic_class, ctx.attr)
+    direct = _get_direct_attribute_from_synthetic_class(synthetic_class, ctx.attr, ctx)
     if direct is not UNINITIALIZED_VALUE:
         direct = _substitute_typevars(typ, generic_args, direct, typ, ctx)
         if on_class:
@@ -1652,6 +1553,25 @@ def _unwrap_value_from_typed(result: Value, typ: type, ctx: AttrContext) -> Valu
     typevars = result.typevars if isinstance(result, KnownValueWithTypeVars) else None
     cls_val = result.val
     if isinstance(cls_val, property):
+        can_assign_ctx = ctx.get_can_assign_context()
+        if can_assign_ctx is not None:
+            match = lookup_declared_symbol_with_owner(typ, ctx.attr, can_assign_ctx)
+            if match is not None:
+                owner, symbol = match
+                if symbol.property_info is not None:
+                    self_value = replace_fallback(ctx.get_self_value())
+                    generic_args: Sequence[Value] = ()
+                    if isinstance(self_value, GenericValue) and self_value.typ is typ:
+                        generic_args = self_value.args
+                    elif (
+                        isinstance(self_value, SubclassValue)
+                        and isinstance(replace_fallback(self_value.typ), GenericValue)
+                        and replace_fallback(self_value.typ).typ is typ
+                    ):
+                        generic_args = replace_fallback(self_value.typ).args
+                    return _substitute_typevars(
+                        typ, generic_args, symbol.property_info.getter_type, owner, ctx
+                    )
         return ctx.get_property_type_from_argspec(cls_val)
     elif is_bound_classmethod(cls_val):
         return result

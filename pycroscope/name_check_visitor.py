@@ -69,7 +69,6 @@ from .annotations import (
     Qualifier,
     SyntheticEvaluator,
     _normalize_paramspec_generic_args,
-    _RuntimeAnnotationsContext,
     annotation_expr_from_annotations,
     annotation_expr_from_ast,
     annotation_expr_from_runtime,
@@ -211,10 +210,12 @@ from .suggested_type import (
     should_suggest_type,
 )
 from .type_object import (
-    SYNTHETIC_READONLY_ATTRIBUTES_KEY,
     TypeObject,
     get_mro,
     is_readonly_annotated_member,
+    lookup_declared_symbol,
+    lookup_declared_symbol_with_owner,
+    merge_declared_symbol,
 )
 from .typeshed import TypeshedFinder
 from .value import (
@@ -232,8 +233,11 @@ from .value import (
     CallableValue,
     CanAssign,
     CanAssignError,
+    ClassSymbol,
     ConstraintExtension,
     CustomCheckExtension,
+    DataclassFieldInfo,
+    DataclassInfo,
     DataclassTransformDecoratorExtension,
     DataclassTransformExtension,
     DataclassTransformInfo,
@@ -248,12 +252,14 @@ from .value import (
     KnownValueWithTypeVars,
     KVPair,
     MultiValuedValue,
+    NamedTupleInfo,
     NoReturnConstraintExtension,
     OverlapMode,
     ParamSpecParam,
     PartialValue,
     PartialValueOperation,
     PredicateValue,
+    PropertyInfo,
     ReferencingValue,
     SelfT,
     SequenceValue,
@@ -284,12 +290,14 @@ from .value import (
     annotate_value,
     concrete_values_from_iterable,
     flatten_values,
+    get_synthetic_member_value,
     get_tv_map,
     get_typevar_variance,
     has_any_base_value,
     is_async_iterable,
     is_iterable,
     is_union,
+    iter_synthetic_member_names,
     iter_type_params_in_value,
     kv_pairs_from_mapping,
     make_coro_type,
@@ -501,11 +509,6 @@ if sys.version_info < (3, 11):
 if asynq is not None:
     SAFE_DECORATORS_FOR_ARGSPEC_TO_RETVAL.append(KnownValue(asynq.asynq))
 
-SYNTHETIC_PROPERTY_GETTER_PREFIX = "%property_getter:"
-SYNTHETIC_PROPERTY_SETTER_PREFIX = "%property_setter:"
-SYNTHETIC_PROPERTY_GETTER_DEPRECATED_PREFIX = "%property_getter_deprecated:"
-SYNTHETIC_PROPERTY_SETTER_DEPRECATED_PREFIX = "%property_setter_deprecated:"
-
 
 class _AsyncGeneratorDetector(ast.NodeVisitor):
     """Detect whether an async function body contains a yield."""
@@ -697,7 +700,8 @@ class _AttrContext(CheckerAttrContext):
         if synthetic_id in seen:
             return False
         seen.add(synthetic_id)
-        if attr_name in synthetic_class.method_attributes:
+        symbol = synthetic_class.declared_symbols.get(attr_name)
+        if symbol is not None and symbol.is_method:
             return True
         for base in synthetic_class.base_classes:
             base = replace_fallback(base)
@@ -752,7 +756,7 @@ class _AttrContext(CheckerAttrContext):
                     # synthetic attribute normalization; binding again drops one
                     # real parameter.
                     return super().bind_synthetic_instance_attribute(attr_name, value)
-                raw_attr = synthetic_class.class_attributes.get(attr_name)
+                raw_attr = get_synthetic_member_value(synthetic_class, attr_name)
                 if raw_attr is not None:
                     raw_attr = replace_fallback(raw_attr)
                     if (
@@ -833,37 +837,6 @@ class _SyntheticTypedDictContext:
     local_items: dict[str, tuple[TypedDictEntry, ast.AST]] = dataclass_field(
         default_factory=dict
     )
-
-
-@dataclass(frozen=True)
-class DataclassInfo:
-    init: bool
-    eq: bool
-    frozen: bool | None
-    unsafe_hash: bool
-    match_args: bool
-    order: bool
-    slots: bool
-    kw_only_default: bool
-    field_specifiers: tuple[Value, ...]
-
-    @classmethod
-    def from_transform_info_and_options(
-        cls, info: DataclassTransformInfo, keywords: Mapping[str, ast.expr]
-    ) -> "DataclassInfo":
-        return DataclassInfo(
-            init=_extract_bool(keywords.get("init"), True),
-            eq=_extract_bool(keywords.get("eq"), info.eq_default),
-            frozen=_extract_bool(keywords.get("frozen"), info.frozen_default),
-            unsafe_hash=_extract_bool(keywords.get("unsafe_hash"), False),
-            match_args=_extract_bool(keywords.get("match_args"), True),
-            order=_extract_bool(keywords.get("order"), info.order_default),
-            slots=_extract_bool(keywords.get("slots"), False),
-            kw_only_default=_extract_bool(
-                keywords.get("kw_only"), info.kw_only_default
-            ),
-            field_specifiers=info.field_specifiers,
-        )
 
 
 @dataclass(frozen=True)
@@ -2284,7 +2257,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             return AnyValue(AnySource.inference), EMPTY_ORIGIN
         origin = current_scope.set(varname, value, lookup_node, self.state)
         if scope_type == ScopeType.class_scope:
-            self._set_synthetic_class_attribute(varname, value)
+            self._set_synthetic_class_attribute(varname, value, node=node)
         return value, origin
 
     def _get_synthetic_class_for_current_scope(
@@ -2312,7 +2285,146 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             self._get_synthetic_class_fq_name_from_name(typ.__name__)
         )
 
-    def _set_synthetic_class_attribute(self, name: str, value: Value) -> None:
+    def _ensure_synthetic_class_for_current_scope(
+        self,
+    ) -> SyntheticClassObjectValue | None:
+        synthetic_class = self._get_synthetic_class_for_current_scope()
+        if synthetic_class is not None:
+            return synthetic_class
+        current_class = self.current_class
+        if isinstance(current_class, type):
+            return self.checker._ensure_synthetic_class(current_class)
+        return None
+
+    def _update_synthetic_declared_symbol(
+        self,
+        name: str,
+        *,
+        typ: Value | None = None,
+        add_qualifiers: Container[Qualifier] = (),
+        is_instance_only: bool | None = None,
+        is_method: bool | None = None,
+        is_classmethod: bool | None = None,
+        is_staticmethod: bool | None = None,
+        returns_self_on_class_access: bool | None = None,
+        property_info: PropertyInfo | None = None,
+        member_value: Value | None = None,
+    ) -> None:
+        synthetic_class = self._ensure_synthetic_class_for_current_scope()
+        if synthetic_class is None:
+            return
+        existing = synthetic_class.declared_symbols.get(name)
+        qualifiers = set(existing.qualifiers if existing is not None else ())
+        qualifiers.update(add_qualifiers)
+        synthetic_class.declared_symbols[name] = ClassSymbol(
+            (
+                typ
+                if typ is not None
+                else (
+                    existing.typ
+                    if existing is not None
+                    else AnyValue(AnySource.inference)
+                )
+            ),
+            frozenset(qualifiers),
+            is_instance_only=(
+                (existing.is_instance_only if existing is not None else False)
+                if is_instance_only is None
+                else is_instance_only
+            ),
+            is_method=(
+                (existing.is_method if existing is not None else False)
+                if is_method is None
+                else is_method
+            ),
+            is_classmethod=(
+                (existing.is_classmethod if existing is not None else False)
+                if is_classmethod is None
+                else is_classmethod
+            ),
+            is_staticmethod=(
+                (existing.is_staticmethod if existing is not None else False)
+                if is_staticmethod is None
+                else is_staticmethod
+            ),
+            returns_self_on_class_access=(
+                (
+                    existing.returns_self_on_class_access
+                    if existing is not None
+                    else False
+                )
+                if returns_self_on_class_access is None
+                else returns_self_on_class_access
+            ),
+            property_info=(
+                property_info
+                if property_info is not None
+                else existing.property_info if existing is not None else None
+            ),
+            member_value=(
+                member_value
+                if member_value is not None
+                else existing.member_value if existing is not None else None
+            ),
+            dataclass_field=existing.dataclass_field if existing is not None else None,
+        )
+
+    def _set_synthetic_member_on_class(
+        self,
+        synthetic_class: SyntheticClassObjectValue,
+        name: str,
+        value: Value,
+        *,
+        typ: Value | None = None,
+        is_method: bool | None = None,
+        is_classmethod: bool | None = None,
+        is_staticmethod: bool | None = None,
+        returns_self_on_class_access: bool | None = None,
+        property_info: PropertyInfo | None = None,
+    ) -> None:
+        existing = synthetic_class.declared_symbols.get(name)
+        synthetic_class.declared_symbols[name] = ClassSymbol(
+            typ if typ is not None else existing.typ if existing is not None else value,
+            existing.qualifiers if existing is not None else frozenset(),
+            is_instance_only=(
+                existing.is_instance_only if existing is not None else False
+            ),
+            is_method=(
+                (existing.is_method if existing is not None else False)
+                if is_method is None
+                else is_method
+            ),
+            is_classmethod=(
+                (existing.is_classmethod if existing is not None else False)
+                if is_classmethod is None
+                else is_classmethod
+            ),
+            is_staticmethod=(
+                (existing.is_staticmethod if existing is not None else False)
+                if is_staticmethod is None
+                else is_staticmethod
+            ),
+            returns_self_on_class_access=(
+                (
+                    existing.returns_self_on_class_access
+                    if existing is not None
+                    else False
+                )
+                if returns_self_on_class_access is None
+                else returns_self_on_class_access
+            ),
+            property_info=(
+                property_info
+                if property_info is not None
+                else existing.property_info if existing is not None else None
+            ),
+            member_value=value,
+            dataclass_field=existing.dataclass_field if existing is not None else None,
+        )
+
+    def _set_synthetic_class_attribute(
+        self, name: str, value: Value, *, node: ast.AST | None = None
+    ) -> None:
         synthetic_class = self._get_synthetic_class_for_current_scope()
         if synthetic_class is None:
             return
@@ -2344,84 +2456,56 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                         self._get_enclosing_class_value_for_method()
                         or TypedValue(self.current_class)
                     )
-        synthetic_class.class_attributes[synthetic_name] = synthetic_value
         if not synthetic_name.startswith("%"):
+            declared_type = value
+            if self.ann_assign_type is not None and self.ann_assign_type[0] is not None:
+                declared_type = self.ann_assign_type[0]
+            is_method = isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+            is_classmethod = False
+            is_staticmethod = False
+            returns_self_on_class_access = False
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                is_classmethod, is_staticmethod, returns_self_on_class_access = (
+                    self._synthetic_method_symbol_flags(node)
+                )
+            self._set_synthetic_member_on_class(
+                synthetic_class,
+                synthetic_name,
+                synthetic_value,
+                typ=declared_type or synthetic_value,
+                is_method=is_method,
+                is_classmethod=is_classmethod,
+                is_staticmethod=is_staticmethod,
+                returns_self_on_class_access=returns_self_on_class_access,
+            )
             self._discard_synthetic_instance_only_annotation_name(synthetic_name)
+        else:
+            raise AssertionError(
+                f"unexpected synthetic class metadata attribute {synthetic_name!r}"
+            )
+
+    def _merge_synthetic_declared_symbol(
+        self, synthetic_class: SyntheticClassObjectValue, name: str, symbol: ClassSymbol
+    ) -> None:
+        synthetic_class.declared_symbols[name] = merge_declared_symbol(
+            synthetic_class.declared_symbols.get(name), symbol
+        )
 
     def _record_synthetic_classvar_name(self, name: str) -> None:
-        synthetic_class = self._get_synthetic_class_for_current_scope()
-        if synthetic_class is None:
-            return
-        existing = synthetic_class.class_attributes.get("%classvars")
-        classvar_names: set[str] = set()
-        if isinstance(existing, KnownValue) and isinstance(
-            existing.val, (set, frozenset, tuple, list)
-        ):
-            classvar_names.update(
-                item for item in existing.val if isinstance(item, str)
-            )
-        classvar_names.add(name)
-        synthetic_class.class_attributes["%classvars"] = KnownValue(
-            frozenset(classvar_names)
+        self._update_synthetic_declared_symbol(
+            name, add_qualifiers={Qualifier.ClassVar}
         )
 
     def _record_synthetic_readonly_name(self, name: str) -> None:
-        synthetic_class = self._get_synthetic_class_for_current_scope()
-        if synthetic_class is None:
-            current_class = self.current_class
-            if isinstance(current_class, type):
-                synthetic_class = self.checker._ensure_synthetic_class(current_class)
-            else:
-                return
-        existing = synthetic_class.class_attributes.get(
-            SYNTHETIC_READONLY_ATTRIBUTES_KEY
-        )
-        readonly_names: set[str] = set()
-        if isinstance(existing, KnownValue) and isinstance(
-            existing.val, (set, frozenset, tuple, list)
-        ):
-            readonly_names.update(
-                item for item in existing.val if isinstance(item, str)
-            )
-        readonly_names.add(name)
-        synthetic_class.class_attributes[SYNTHETIC_READONLY_ATTRIBUTES_KEY] = (
-            KnownValue(frozenset(readonly_names))
+        self._update_synthetic_declared_symbol(
+            name, add_qualifiers={Qualifier.ReadOnly}
         )
 
     def _record_synthetic_instance_only_annotation_name(self, name: str) -> None:
-        synthetic_class = self._get_synthetic_class_for_current_scope()
-        if synthetic_class is None:
-            return
-        existing = synthetic_class.class_attributes.get("%instance_only_annotations")
-        names: set[str] = set()
-        if isinstance(existing, KnownValue) and isinstance(
-            existing.val, (set, frozenset, tuple, list)
-        ):
-            names.update(item for item in existing.val if isinstance(item, str))
-        names.add(name)
-        synthetic_class.class_attributes["%instance_only_annotations"] = KnownValue(
-            frozenset(names)
-        )
+        self._update_synthetic_declared_symbol(name, is_instance_only=True)
 
     def _discard_synthetic_instance_only_annotation_name(self, name: str) -> None:
-        synthetic_class = self._get_synthetic_class_for_current_scope()
-        if synthetic_class is None:
-            return
-        existing = synthetic_class.class_attributes.get("%instance_only_annotations")
-        if not isinstance(existing, KnownValue) or not isinstance(
-            existing.val, (set, frozenset, tuple, list)
-        ):
-            return
-        names = {item for item in existing.val if isinstance(item, str)}
-        if name not in names:
-            return
-        names.discard(name)
-        if names:
-            synthetic_class.class_attributes["%instance_only_annotations"] = KnownValue(
-                frozenset(names)
-            )
-        else:
-            synthetic_class.class_attributes.pop("%instance_only_annotations", None)
+        self._update_synthetic_declared_symbol(name, is_instance_only=False)
 
     def _record_synthetic_property_metadata(
         self, node: FunctionDefNode, info: FunctionInfo, function_value: Value
@@ -2438,7 +2522,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             return
 
         mangled_name = _mangle_class_attribute_name(class_name, node.name)
-        getter_key = f"{SYNTHETIC_PROPERTY_GETTER_PREFIX}{mangled_name}"
         decorator_deprecation = self._deprecation_message_from_decorators(
             info.decorators
         )
@@ -2454,16 +2537,21 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 if info.return_annotation is not None
                 else AnyValue(AnySource.unannotated)
             )
-            synthetic_class.class_attributes[getter_key] = getter_value
-            if (
-                getter_deprecation := self._deprecation_message_from_value(
-                    function_value
-                )
-                or decorator_deprecation
-            ) is not None:
-                synthetic_class.class_attributes[
-                    f"{SYNTHETIC_PROPERTY_GETTER_DEPRECATED_PREFIX}{mangled_name}"
-                ] = KnownValue(getter_deprecation)
+            self._update_synthetic_declared_symbol(
+                mangled_name,
+                typ=getter_value,
+                is_method=False,
+                is_classmethod=False,
+                is_staticmethod=False,
+                returns_self_on_class_access=False,
+                property_info=PropertyInfo(
+                    getter_type=getter_value,
+                    getter_deprecation=(
+                        self._deprecation_message_from_value(function_value)
+                        or decorator_deprecation
+                    ),
+                ),
+            )
 
         setter_target_name: str | None = None
         for decorator in node.decorator_list:
@@ -2490,16 +2578,38 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 setter_value = AnyValue(AnySource.unannotated)
             else:
                 setter_value = setter_annotation
-        synthetic_class.class_attributes[
-            f"{SYNTHETIC_PROPERTY_SETTER_PREFIX}{mangled_target}"
-        ] = setter_value
-        if (
-            setter_deprecation := self._deprecation_message_from_value(function_value)
-            or decorator_deprecation
-        ) is not None:
-            synthetic_class.class_attributes[
-                f"{SYNTHETIC_PROPERTY_SETTER_DEPRECATED_PREFIX}{mangled_target}"
-            ] = KnownValue(setter_deprecation)
+        existing = synthetic_class.declared_symbols.get(mangled_target)
+        existing_property_info = (
+            existing.property_info if existing is not None else None
+        )
+        self._update_synthetic_declared_symbol(
+            mangled_target,
+            is_method=False,
+            is_classmethod=False,
+            is_staticmethod=False,
+            returns_self_on_class_access=False,
+            property_info=PropertyInfo(
+                getter_type=(
+                    existing_property_info.getter_type
+                    if existing_property_info is not None
+                    else (
+                        existing.typ
+                        if existing is not None
+                        else AnyValue(AnySource.inference)
+                    )
+                ),
+                setter_type=setter_value,
+                getter_deprecation=(
+                    existing_property_info.getter_deprecation
+                    if existing_property_info is not None
+                    else None
+                ),
+                setter_deprecation=(
+                    self._deprecation_message_from_value(function_value)
+                    or decorator_deprecation
+                ),
+            ),
+        )
 
     def _deprecation_message_from_value(self, value: Value) -> str | None:
         value = replace_fallback(value)
@@ -2534,7 +2644,8 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         return None
 
     def _is_classvar_member(self, class_key: type | str, attr_name: str) -> bool:
-        return attr_name in self._classvar_names_for_class_key(class_key, set())
+        symbol = lookup_declared_symbol(class_key, attr_name, self)
+        return symbol is not None and symbol.is_classvar
 
     def _class_keys_match(self, left: type | str, right: type | str) -> bool:
         if left == right:
@@ -2545,330 +2656,86 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             return left == _runtime_type_generic_alias(right)
         return False
 
+    def _get_direct_declared_symbol(
+        self, class_key: type | str, attr_name: str
+    ) -> ClassSymbol | None:
+        return self.checker.make_type_object(class_key).get_declared_symbol(
+            attr_name, self
+        )
+
     def _is_direct_classvar_member(self, class_key: type | str, attr_name: str) -> bool:
-        synthetic_class: SyntheticClassObjectValue | None = None
-        if isinstance(class_key, type):
-            synthetic_class = self.checker.get_synthetic_class(class_key)
-        elif isinstance(class_key, str):
-            synthetic_class = self._synthetic_classes_by_name.get(class_key)
-        if synthetic_class is not None and attr_name in _classvar_names_from_mapping(
-            synthetic_class.class_attributes
-        ):
-            return True
-        if isinstance(class_key, type):
-            return attr_name in self._runtime_classvar_names_for_class(class_key)
-        return False
+        symbol = self._get_direct_declared_symbol(class_key, attr_name)
+        return symbol is not None and symbol.is_classvar
 
     def _is_direct_instance_only_member(
         self, class_key: type | str, attr_name: str
     ) -> bool:
-        synthetic_class: SyntheticClassObjectValue | None = None
-        if isinstance(class_key, type):
-            synthetic_class = self._get_synthetic_class_for_runtime_type(class_key)
-        elif isinstance(class_key, str):
-            synthetic_class = self._synthetic_classes_by_name.get(class_key)
-        if (
-            synthetic_class is not None
-            and attr_name
-            in _instance_only_names_from_mapping(synthetic_class.class_attributes)
-        ):
-            return True
-        if isinstance(class_key, type):
-            return attr_name in self._runtime_instance_only_annotation_names_for_class(
-                class_key
-            )
-        return False
-
-    def _is_direct_readonly_member(self, class_key: type | str, attr_name: str) -> bool:
-        synthetic_class: SyntheticClassObjectValue | None = None
-        if isinstance(class_key, type):
-            synthetic_class = self._get_synthetic_class_for_runtime_type(class_key)
-        elif isinstance(class_key, str):
-            synthetic_class = self._synthetic_classes_by_name.get(class_key)
-        if synthetic_class is None:
-            if isinstance(class_key, type):
-                annotations = safe_getattr(class_key, "__annotations__", None)
-                return (
-                    isinstance(annotations, Mapping)
-                    and attr_name in annotations
-                    and _is_runtime_readonly_annotation(annotations[attr_name])
-                )
-            return False
-        if attr_name in _readonly_names_from_mapping(synthetic_class.class_attributes):
-            return True
-        if isinstance(class_key, type):
-            annotations = safe_getattr(class_key, "__annotations__", None)
-            return (
-                isinstance(annotations, Mapping)
-                and attr_name in annotations
-                and _is_runtime_readonly_annotation(annotations[attr_name])
-            )
-        return False
-
-    def _is_readonly_member(self, class_key: type | str, attr_name: str) -> bool:
-        return is_readonly_annotated_member(class_key, attr_name, self)
-
-    def _classvar_names_for_class_key(
-        self, class_key: type | str, seen: set[type | str]
-    ) -> set[str]:
-        if class_key in seen:
-            return set()
-        seen.add(class_key)
-        names: set[str] = set()
-        synthetic_class: SyntheticClassObjectValue | None = None
-        if isinstance(class_key, type):
-            synthetic_class = self.checker.get_synthetic_class(class_key)
-        elif isinstance(class_key, str):
-            synthetic_class = self._synthetic_classes_by_name.get(class_key)
-        if synthetic_class is not None:
-            names.update(_classvar_names_from_mapping(synthetic_class.class_attributes))
-            for base in synthetic_class.base_classes:
-                for base_value in flatten_values(base, unwrap_annotated=True):
-                    base_key: type | str | None = None
-                    if isinstance(base_value, SyntheticClassObjectValue):
-                        class_type = base_value.class_type
-                        if isinstance(class_type, TypedValue) and isinstance(
-                            class_type.typ, (type, str)
-                        ):
-                            base_key = class_type.typ
-                    elif isinstance(base_value, GenericValue) and isinstance(
-                        base_value.typ, (type, str)
-                    ):
-                        base_key = base_value.typ
-                    elif isinstance(base_value, TypedValue) and isinstance(
-                        base_value.typ, (type, str)
-                    ):
-                        base_key = base_value.typ
-                    elif isinstance(base_value, KnownValue) and isinstance(
-                        base_value.val, type
-                    ):
-                        base_key = base_value.val
-                    if base_key is not None:
-                        names.update(self._classvar_names_for_class_key(base_key, seen))
-        if isinstance(class_key, type):
-            names.update(self._runtime_classvar_names_for_class(class_key))
-            for base_class in self.checker.get_generic_bases(class_key):
-                if base_class != class_key:
-                    names.update(self._classvar_names_for_class_key(base_class, seen))
-        else:
-            for base_class in self.checker.get_generic_bases(class_key):
-                if base_class != class_key:
-                    names.update(self._classvar_names_for_class_key(base_class, seen))
-        return names
-
-    def _runtime_classvar_names_for_class(self, cls: type) -> set[str]:
-        annotations = safe_getattr(cls, "__annotations__", None)
-        if not isinstance(annotations, Mapping):
-            return set()
-        names: set[str] = set()
-        for name, annotation in annotations.items():
-            if not isinstance(name, str):
-                continue
-            if _is_runtime_classvar_annotation(annotation):
-                names.add(name)
-        return names
-
-    def _class_attribute_names_for_class_key(self, class_key: type | str) -> set[str]:
-        names: set[str] = set()
-        synthetic_class: SyntheticClassObjectValue | None = None
-        if isinstance(class_key, type):
-            synthetic_class = self.checker.get_synthetic_class(class_key)
-        elif isinstance(class_key, str):
-            synthetic_class = self._synthetic_classes_by_name.get(class_key)
-        if synthetic_class is not None:
-            names.update(
-                name
-                for name in synthetic_class.class_attributes
-                if isinstance(name, str) and not name.startswith("%")
-            )
-        if isinstance(class_key, type):
-            class_dict = safe_getattr(class_key, "__dict__", None)
-            if isinstance(class_dict, Mapping):
-                names.update(name for name in class_dict if isinstance(name, str))
-        return names
-
-    def _is_instance_only_member(self, class_key: type | str, attr_name: str) -> bool:
-        return attr_name in self._instance_only_annotation_names_for_class_key(
-            class_key, set()
+        symbol = self._get_direct_declared_symbol(class_key, attr_name)
+        return (
+            symbol is not None
+            and symbol.is_instance_only
+            and not symbol.is_classvar
+            and not symbol.is_initvar
         )
 
-    def _instance_only_annotation_names_for_class_key(
-        self, class_key: type | str, seen: set[type | str]
-    ) -> set[str]:
-        if class_key in seen:
-            return set()
-        seen.add(class_key)
-        names: set[str] = set()
-        blocked_names = self._class_attribute_names_for_class_key(class_key)
-        synthetic_class: SyntheticClassObjectValue | None = None
-        if isinstance(class_key, type):
-            synthetic_class = self.checker.get_synthetic_class(class_key)
-        elif isinstance(class_key, str):
-            synthetic_class = self._synthetic_classes_by_name.get(class_key)
-        if synthetic_class is not None:
-            names.update(
-                _instance_only_names_from_mapping(synthetic_class.class_attributes)
-            )
-            for base in synthetic_class.base_classes:
-                for base_value in flatten_values(base, unwrap_annotated=True):
-                    base_key: type | str | None = None
-                    if isinstance(base_value, SyntheticClassObjectValue):
-                        class_type = base_value.class_type
-                        if isinstance(class_type, TypedValue) and isinstance(
-                            class_type.typ, (type, str)
-                        ):
-                            base_key = class_type.typ
-                    elif isinstance(base_value, GenericValue) and isinstance(
-                        base_value.typ, (type, str)
-                    ):
-                        base_key = base_value.typ
-                    elif isinstance(base_value, TypedValue) and isinstance(
-                        base_value.typ, (type, str)
-                    ):
-                        base_key = base_value.typ
-                    elif isinstance(base_value, KnownValue) and isinstance(
-                        base_value.val, type
-                    ):
-                        base_key = base_value.val
-                    if base_key is not None:
-                        names.update(
-                            name
-                            for name in (
-                                self._instance_only_annotation_names_for_class_key(
-                                    base_key, seen
-                                )
-                            )
-                            if name not in blocked_names
-                        )
-        if isinstance(class_key, type):
-            names.update(
-                self._runtime_instance_only_annotation_names_for_class(class_key)
-            )
-            for base_class in self.checker.get_generic_bases(class_key):
-                if base_class != class_key:
-                    names.update(
-                        name
-                        for name in self._instance_only_annotation_names_for_class_key(
-                            base_class, seen
-                        )
-                        if name not in blocked_names
-                    )
-        else:
-            for base_class in self.checker.get_generic_bases(class_key):
-                if base_class != class_key:
-                    names.update(
-                        name
-                        for name in self._instance_only_annotation_names_for_class_key(
-                            base_class, seen
-                        )
-                        if name not in blocked_names
-                    )
-        return names
+    def _is_direct_readonly_member(self, class_key: type | str, attr_name: str) -> bool:
+        symbol = self._get_direct_declared_symbol(class_key, attr_name)
+        return symbol is not None and symbol.is_readonly
 
-    def _runtime_instance_only_annotation_names_for_class(self, cls: type) -> set[str]:
-        annotations = safe_getattr(cls, "__annotations__", None)
-        if not isinstance(annotations, Mapping):
-            return set()
-        class_dict = safe_getattr(cls, "__dict__", None)
-        names: set[str] = set()
-        for name, annotation in annotations.items():
-            if not isinstance(name, str):
-                continue
-            if _is_runtime_classvar_annotation(annotation):
-                continue
-            if isinstance(class_dict, Mapping) and name in class_dict:
-                continue
-            names.add(name)
-        return names
+    def _is_instance_only_member(self, class_key: type | str, attr_name: str) -> bool:
+        symbol = lookup_declared_symbol(class_key, attr_name, self)
+        return (
+            symbol is not None
+            and symbol.is_instance_only
+            and not symbol.is_classvar
+            and not symbol.is_initvar
+        )
 
     def _get_instance_only_annotation_value_for_class_key(
-        self,
-        class_key: type | str,
-        attr_name: str,
-        node: ast.AST | None = None,
-        seen: set[type | str] | None = None,
-        substitutions: TypeVarMap | None = None,
+        self, class_key: type | str, attr_name: str, node: ast.AST | None = None
     ) -> Value:
-        if seen is None:
-            seen = set()
-        if class_key in seen:
-            return UNINITIALIZED_VALUE
-        seen.add(class_key)
-
-        def _apply_substitutions(value: Value) -> Value:
-            if substitutions is None:
+        def _apply_owner_substitutions(owner: type | str, value: Value) -> Value:
+            if self._class_keys_match(owner, class_key):
                 return value
-            return value.substitute_typevars(substitutions)
+            substitutions = self.checker.get_generic_bases(class_key).get(owner)
+            if not substitutions:
+                return value
+            merged: dict[TypeVarLike, Value] = {}
+            for typevar, substituted in substitutions.items():
+                merged[typevar] = substituted.substitute_typevars(merged)
+            return value.substitute_typevars(merged)
 
-        def _merged_substitutions(tv_map: TypeVarMap) -> dict[TypeVarLike, Value]:
-            merged = dict(substitutions or {})
-            for typevar, value in tv_map.items():
-                merged[typevar] = value.substitute_typevars(merged)
-            return merged
-
-        synthetic_class: SyntheticClassObjectValue | None = None
-        if isinstance(class_key, type):
-            synthetic_class = self.checker.get_synthetic_class(class_key)
-        elif isinstance(class_key, str):
+        direct_type_object = self.checker.make_type_object(class_key)
+        if isinstance(class_key, str):
             synthetic_class = self._synthetic_classes_by_name.get(class_key)
+        elif isinstance(class_key, type):
+            synthetic_class = self.checker.get_synthetic_class(class_key)
+        else:
+            synthetic_class = None
         if synthetic_class is not None:
             candidate_names = self._property_attr_candidates(
                 attr_name, synthetic_class.name
             )
-            instance_only_names = _instance_only_names_from_mapping(
-                synthetic_class.class_attributes
-            )
             for candidate in candidate_names:
-                if candidate not in instance_only_names:
+                symbol = direct_type_object.get_declared_symbol(candidate, self)
+                if (
+                    symbol is None
+                    or not symbol.is_instance_only
+                    or symbol.is_classvar
+                    or symbol.is_initvar
+                ):
                     continue
-                value = synthetic_class.class_attributes.get(
-                    candidate, UNINITIALIZED_VALUE
-                )
-                if value is not UNINITIALIZED_VALUE:
-                    return _apply_substitutions(value)
+                return _apply_owner_substitutions(class_key, symbol.typ)
 
-        if isinstance(class_key, type):
-            annotations = safe_getattr(class_key, "__annotations__", None)
-            if isinstance(annotations, Mapping) and attr_name in annotations:
-                class_dict = safe_getattr(class_key, "__dict__", None)
-                if not isinstance(class_dict, Mapping) or attr_name not in class_dict:
-                    attr_expr = annotation_expr_from_annotations(
-                        annotations,
-                        attr_name,
-                        ctx=_RuntimeAnnotationsContext(
-                            class_key, node=node, visitor=self, can_assign_ctx=self
-                        ),
-                    )
-                    if attr_expr is not None:
-                        attr_type, qualifiers = attr_expr.maybe_unqualify(
-                            {Qualifier.ClassVar, Qualifier.Final, Qualifier.InitVar}
-                        )
-                        if (
-                            attr_type is not None
-                            and Qualifier.ClassVar not in qualifiers
-                            and Qualifier.InitVar not in qualifiers
-                        ):
-                            return _apply_substitutions(attr_type)
-
-        for base_class, tv_map in self.checker.get_generic_bases(class_key).items():
-            if self._class_keys_match(base_class, class_key):
-                continue
-            value = self._get_instance_only_annotation_value_for_class_key(
-                base_class, attr_name, node, seen, _merged_substitutions(tv_map)
-            )
-            if value is not UNINITIALIZED_VALUE:
-                return value
-
-        if synthetic_class is not None:
-            for base in synthetic_class.base_classes:
-                base_key = self._base_class_key_from_value(base)
-                if base_key is None or self._class_keys_match(base_key, class_key):
-                    continue
-                value = self._get_instance_only_annotation_value_for_class_key(
-                    base_key, attr_name, node, seen, substitutions
-                )
-                if value is not UNINITIALIZED_VALUE:
-                    return value
+        match = lookup_declared_symbol_with_owner(class_key, attr_name, self)
+        if match is not None:
+            owner, symbol = match
+            if (
+                symbol.is_instance_only
+                and not symbol.is_classvar
+                and not symbol.is_initvar
+            ):
+                return _apply_owner_substitutions(owner, symbol.typ)
 
         return UNINITIALIZED_VALUE
 
@@ -3041,121 +2908,40 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         if synthetic_class is None:
             return
 
-        existing_order = synthetic_class.class_attributes.get("%dataclass_field_order")
-        field_order: list[str] = []
-        if isinstance(existing_order, KnownValue) and isinstance(
-            existing_order.val, (tuple, list)
-        ):
-            field_order = [item for item in existing_order.val if isinstance(item, str)]
+        field_order = list(synthetic_class.dataclass_field_order)
         if name not in field_order:
             field_order.append(name)
+        object.__setattr__(synthetic_class, "dataclass_field_order", tuple(field_order))
 
-        existing_defaults = synthetic_class.class_attributes.get(
-            "%dataclass_default_fields"
-        )
-        default_fields: set[str] = set()
-        if isinstance(existing_defaults, KnownValue) and isinstance(
-            existing_defaults.val, (set, frozenset, tuple, list)
-        ):
-            default_fields.update(
-                item for item in existing_defaults.val if isinstance(item, str)
-            )
-        if has_default:
-            default_fields.add(name)
-        else:
-            default_fields.discard(name)
-
-        existing_init_false = synthetic_class.class_attributes.get(
-            "%dataclass_init_false_fields"
-        )
-        init_false_fields: set[str] = set()
-        if isinstance(existing_init_false, KnownValue) and isinstance(
-            existing_init_false.val, (set, frozenset, tuple, list)
-        ):
-            init_false_fields.update(
-                item for item in existing_init_false.val if isinstance(item, str)
-            )
-        if not init:
-            init_false_fields.add(name)
-        else:
-            init_false_fields.discard(name)
-
-        existing_initvar = synthetic_class.class_attributes.get(
-            "%dataclass_initvar_fields"
-        )
-        initvar_fields: set[str] = set()
-        if isinstance(existing_initvar, KnownValue) and isinstance(
-            existing_initvar.val, (set, frozenset, tuple, list)
-        ):
-            initvar_fields.update(
-                item for item in existing_initvar.val if isinstance(item, str)
-            )
+        existing = synthetic_class.declared_symbols.get(name)
+        qualifiers = set(existing.qualifiers if existing is not None else ())
         if initvar:
-            initvar_fields.add(name)
+            qualifiers.add(Qualifier.InitVar)
         else:
-            initvar_fields.discard(name)
-
-        existing_kw_only = synthetic_class.class_attributes.get(
-            "%dataclass_kw_only_fields"
-        )
-        kw_only_fields: set[str] = set()
-        if isinstance(existing_kw_only, KnownValue) and isinstance(
-            existing_kw_only.val, (set, frozenset, tuple, list)
-        ):
-            kw_only_fields.update(
-                item for item in existing_kw_only.val if isinstance(item, str)
-            )
-        if kw_only:
-            kw_only_fields.add(name)
-        else:
-            kw_only_fields.discard(name)
-
-        existing_aliases = synthetic_class.class_attributes.get(
-            "%dataclass_field_aliases"
-        )
-        aliases: dict[str, str] = {}
-        if isinstance(existing_aliases, KnownValue) and isinstance(
-            existing_aliases.val, Mapping
-        ):
-            aliases.update(
-                {
-                    str(field_name): alias_name
-                    for field_name, alias_name in existing_aliases.val.items()
-                    if isinstance(field_name, str) and isinstance(alias_name, str)
-                }
-            )
-        if alias is not None:
-            aliases[name] = alias
-        else:
-            aliases.pop(name, None)
-        converter_input_types = attributes._synthetic_dataclass_converter_input_types(
-            synthetic_class
-        )
-        if converter_input_type is not None:
-            converter_input_types[name] = converter_input_type
-        else:
-            converter_input_types.pop(name, None)
-
-        synthetic_class.class_attributes["%dataclass_field_order"] = KnownValue(
-            tuple(field_order)
-        )
-        synthetic_class.class_attributes["%dataclass_default_fields"] = KnownValue(
-            frozenset(default_fields)
-        )
-        synthetic_class.class_attributes["%dataclass_init_false_fields"] = KnownValue(
-            frozenset(init_false_fields)
-        )
-        synthetic_class.class_attributes["%dataclass_initvar_fields"] = KnownValue(
-            frozenset(initvar_fields)
-        )
-        synthetic_class.class_attributes["%dataclass_kw_only_fields"] = KnownValue(
-            frozenset(kw_only_fields)
-        )
-        synthetic_class.class_attributes["%dataclass_field_aliases"] = KnownValue(
-            dict(aliases)
-        )
-        synthetic_class.class_attributes["%dataclass_converter_input_types"] = (
-            KnownValue(dict(converter_input_types))
+            qualifiers.discard(Qualifier.InitVar)
+        synthetic_class.declared_symbols[name] = ClassSymbol(
+            existing.typ if existing is not None else AnyValue(AnySource.inference),
+            frozenset(qualifiers),
+            is_instance_only=(
+                existing.is_instance_only if existing is not None else False
+            ),
+            is_method=(existing.is_method if existing is not None else False),
+            is_classmethod=(existing.is_classmethod if existing is not None else False),
+            is_staticmethod=(
+                existing.is_staticmethod if existing is not None else False
+            ),
+            returns_self_on_class_access=(
+                existing.returns_self_on_class_access if existing is not None else False
+            ),
+            property_info=existing.property_info if existing is not None else None,
+            member_value=existing.member_value if existing is not None else None,
+            dataclass_field=DataclassFieldInfo(
+                has_default=has_default,
+                init=init,
+                kw_only=kw_only,
+                alias=alias,
+                converter_input_type=converter_input_type,
+            ),
         )
 
     def _get_base_class_attributes(
@@ -3890,54 +3676,45 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     node.name,
                     synthetic_class_type,
                     base_classes=synthetic_base_values,
-                    is_dataclass=dataclass_semantics is not None,
-                    dataclass_frozen=(
-                        dataclass_semantics.frozen
-                        if dataclass_semantics is not None
-                        else None
-                    ),
-                    dataclass_order=(
-                        dataclass_semantics.order
-                        if dataclass_semantics is not None
-                        else None
-                    ),
+                    dataclass_info=dataclass_semantics,
+                    dataclass_transform_info=dataclass_transform_info,
                 )
                 if class_obj is not None:
-                    synthetic_class.class_attributes["%runtime_class"] = KnownValue(
-                        class_obj
-                    )
+                    _set_synthetic_runtime_class(synthetic_class, KnownValue(class_obj))
                 if is_namedtuple_synthetic:
-                    synthetic_class.class_attributes["%namedtuple"] = KnownValue(True)
-                    if namedtuple_default_fields:
-                        synthetic_class.class_attributes[
-                            "%namedtuple_default_fields"
-                        ] = KnownValue(namedtuple_default_fields)
+                    _set_synthetic_namedtuple_info(
+                        synthetic_class,
+                        NamedTupleInfo(default_fields=tuple(namedtuple_default_fields)),
+                    )
                 if dataclass_transform_info is not None:
-                    synthetic_class.class_attributes["%dataclass_transform"] = (
-                        KnownValue(True)
+                    _set_synthetic_dataclass_transform_info(
+                        synthetic_class, dataclass_transform_info
                     )
-                    synthetic_class.class_attributes[
-                        "%dataclass_transform_eq_default"
-                    ] = KnownValue(dataclass_transform_info.eq_default)
-                    synthetic_class.class_attributes[
-                        "%dataclass_transform_frozen_default"
-                    ] = KnownValue(dataclass_transform_info.frozen_default)
-                    synthetic_class.class_attributes[
-                        "%dataclass_transform_kw_only_default"
-                    ] = KnownValue(dataclass_transform_info.kw_only_default)
-                    synthetic_class.class_attributes[
-                        "%dataclass_transform_order_default"
-                    ] = KnownValue(dataclass_transform_info.order_default)
-                    synthetic_class.class_attributes[
-                        "%dataclass_transform_field_specifiers"
-                    ] = KnownValue(tuple(dataclass_transform_info.field_specifiers))
-                synthetic_methods = self._get_synthetic_method_attributes(node)
-                synthetic_class.method_attributes.update(synthetic_methods)
-                for method_name in synthetic_methods:
-                    synthetic_class.class_attributes.setdefault(
-                        method_name, AnyValue(AnySource.from_another)
-                    )
-                _record_dataclass_slots_flag(synthetic_class, dataclass_semantics)
+                for method_name, (
+                    is_classmethod,
+                    is_staticmethod,
+                    returns_self_on_class_access,
+                ) in self._get_synthetic_method_symbol_flags(node).items():
+                    member_value = get_synthetic_member_value(
+                        synthetic_class, method_name
+                    ) or AnyValue(AnySource.from_another)
+                    existing = synthetic_class.declared_symbols.get(method_name)
+                    if existing is None or not existing.is_property:
+                        self._merge_synthetic_declared_symbol(
+                            synthetic_class,
+                            method_name,
+                            ClassSymbol(
+                                member_value,
+                                is_method=True,
+                                is_classmethod=is_classmethod,
+                                is_staticmethod=is_staticmethod,
+                                returns_self_on_class_access=(
+                                    returns_self_on_class_access
+                                ),
+                                member_value=member_value,
+                            ),
+                        )
+                _set_synthetic_dataclass_info(synthetic_class, dataclass_semantics)
                 self._synthetic_classes_by_name[synthetic_fq_name] = synthetic_class
                 self.checker.register_synthetic_class(synthetic_class)
                 dataclass_metadata_class = synthetic_class
@@ -3956,71 +3733,22 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                         node.name,
                         TypedValue(class_obj),
                         base_classes=synthetic_base_values,
-                        is_dataclass=dataclass_semantics is not None,
-                        dataclass_frozen=(
-                            dataclass_semantics.frozen
-                            if dataclass_semantics is not None
-                            else None
-                        ),
-                        dataclass_order=(
-                            dataclass_semantics.order
-                            if dataclass_semantics is not None
-                            else None
-                        ),
+                        dataclass_info=dataclass_semantics,
+                        dataclass_transform_info=dataclass_transform_info,
                     )
                     self.checker.register_synthetic_class(existing)
                 else:
                     existing = replace(
                         existing,
                         base_classes=synthetic_base_values,
-                        is_dataclass=dataclass_semantics is not None,
-                        dataclass_frozen=(
-                            dataclass_semantics.frozen
-                            if dataclass_semantics is not None
-                            else None
-                        ),
-                        dataclass_order=(
-                            dataclass_semantics.order
-                            if dataclass_semantics is not None
-                            else None
-                        ),
+                        dataclass_info=dataclass_semantics,
+                        dataclass_transform_info=dataclass_transform_info,
                     )
                     self.checker.register_synthetic_class(existing)
-                if dataclass_transform_info is not None:
-                    existing.class_attributes["%dataclass_transform"] = KnownValue(True)
-                    existing.class_attributes["%dataclass_transform_eq_default"] = (
-                        KnownValue(dataclass_transform_info.eq_default)
-                    )
-                    existing.class_attributes["%dataclass_transform_frozen_default"] = (
-                        KnownValue(dataclass_transform_info.frozen_default)
-                    )
-                    existing.class_attributes[
-                        "%dataclass_transform_kw_only_default"
-                    ] = KnownValue(dataclass_transform_info.kw_only_default)
-                    existing.class_attributes["%dataclass_transform_order_default"] = (
-                        KnownValue(dataclass_transform_info.order_default)
-                    )
-                    existing.class_attributes[
-                        "%dataclass_transform_field_specifiers"
-                    ] = KnownValue(tuple(dataclass_transform_info.field_specifiers))
-                else:
-                    existing.class_attributes.pop("%dataclass_transform", None)
-                    existing.class_attributes.pop(
-                        "%dataclass_transform_eq_default", None
-                    )
-                    existing.class_attributes.pop(
-                        "%dataclass_transform_frozen_default", None
-                    )
-                    existing.class_attributes.pop(
-                        "%dataclass_transform_kw_only_default", None
-                    )
-                    existing.class_attributes.pop(
-                        "%dataclass_transform_order_default", None
-                    )
-                    existing.class_attributes.pop(
-                        "%dataclass_transform_field_specifiers", None
-                    )
-                _record_dataclass_slots_flag(existing, dataclass_semantics)
+                _set_synthetic_dataclass_transform_info(
+                    existing, dataclass_transform_info
+                )
+                _set_synthetic_dataclass_info(existing, dataclass_semantics)
                 dataclass_metadata_class = existing
             generic_class_key = (
                 class_scope_object
@@ -4416,57 +4144,50 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                         for name, value in class_scope_values.items()
                         if not name.startswith("%")
                     }
-                    self_returning_classmethods = (
-                        self._get_synthetic_self_returning_classmethods(node)
-                    )
-                    classmethods = self._get_synthetic_classmethod_attributes(node)
+                    method_symbol_flags = self._get_synthetic_method_symbol_flags(node)
                     # Keep the prebound synthetic class object and fill in the
                     # discovered class attributes on that same object so
                     # references captured during class analysis (including bases
                     # of later synthetic classes) see the enriched attributes.
-                    synthetic_class.class_attributes.update(class_attributes)
+                    for name, attr_value in class_attributes.items():
+                        self._set_synthetic_member_on_class(
+                            synthetic_class, name, attr_value
+                        )
                     if is_namedtuple_synthetic:
-                        synthetic_class.class_attributes["%namedtuple"] = KnownValue(
-                            True
-                        )
-                        if namedtuple_default_fields:
-                            synthetic_class.class_attributes[
-                                "%namedtuple_default_fields"
-                            ] = KnownValue(namedtuple_default_fields)
-                        else:
-                            synthetic_class.class_attributes.pop(
-                                "%namedtuple_default_fields", None
-                            )
-                    else:
-                        synthetic_class.class_attributes.pop("%namedtuple", None)
-                        synthetic_class.class_attributes.pop(
-                            "%namedtuple_default_fields", None
-                        )
-                    if self_returning_classmethods:
-                        synthetic_class.class_attributes["%self_classmethods"] = (
-                            KnownValue(frozenset(self_returning_classmethods))
+                        _set_synthetic_namedtuple_info(
+                            synthetic_class,
+                            NamedTupleInfo(
+                                default_fields=tuple(namedtuple_default_fields)
+                            ),
                         )
                     else:
-                        synthetic_class.class_attributes.pop("%self_classmethods", None)
-                    if classmethods:
-                        synthetic_class.class_attributes["%classmethods"] = KnownValue(
-                            frozenset(classmethods)
-                        )
-                    else:
-                        synthetic_class.class_attributes.pop("%classmethods", None)
-                    staticmethods = self._get_synthetic_staticmethod_attributes(node)
-                    if staticmethods:
-                        synthetic_class.class_attributes["%staticmethods"] = KnownValue(
-                            frozenset(staticmethods)
-                        )
-                    else:
-                        synthetic_class.class_attributes.pop("%staticmethods", None)
+                        _set_synthetic_namedtuple_info(synthetic_class, None)
                     if isinstance(metaclass_value, Value):
-                        synthetic_class.class_attributes["%metaclass"] = metaclass_value
-                    synthetic_class.method_attributes.clear()
-                    synthetic_class.method_attributes.update(
-                        self._get_synthetic_method_attributes(node)
-                    )
+                        _set_synthetic_metaclass(synthetic_class, metaclass_value)
+                    for method_name, (
+                        is_classmethod,
+                        is_staticmethod,
+                        returns_self_on_class_access,
+                    ) in method_symbol_flags.items():
+                        existing = synthetic_class.declared_symbols.get(method_name)
+                        member_value = get_synthetic_member_value(
+                            synthetic_class, method_name
+                        )
+                        if existing is None or not existing.is_property:
+                            self._merge_synthetic_declared_symbol(
+                                synthetic_class,
+                                method_name,
+                                ClassSymbol(
+                                    member_value or AnyValue(AnySource.from_another),
+                                    is_method=True,
+                                    is_classmethod=is_classmethod,
+                                    is_staticmethod=is_staticmethod,
+                                    returns_self_on_class_access=(
+                                        returns_self_on_class_access
+                                    ),
+                                    member_value=member_value,
+                                ),
+                            )
                     self._apply_dataclass_slots_semantics(
                         synthetic_class, dataclass_semantics
                     )
@@ -4481,7 +4202,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 if dataclass_semantics is not None:
                     dataclass_check_class = synthetic_class
                 if isinstance(metaclass_value, Value):
-                    synthetic_class.class_attributes["%metaclass"] = metaclass_value
+                    _set_synthetic_metaclass(synthetic_class, metaclass_value)
                 if synthetic_fq_name is not None:
                     self._synthetic_classes_by_name[synthetic_fq_name] = synthetic_class
             elif (
@@ -4494,42 +4215,39 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     for name, value in class_scope_values.items()
                     if not name.startswith("%")
                 }
-                self_returning_classmethods = (
-                    self._get_synthetic_self_returning_classmethods(node)
-                )
-                classmethods = self._get_synthetic_classmethod_attributes(node)
-                dataclass_metadata_class.class_attributes.update(class_attributes)
-                if self_returning_classmethods:
-                    dataclass_metadata_class.class_attributes["%self_classmethods"] = (
-                        KnownValue(frozenset(self_returning_classmethods))
-                    )
-                else:
-                    dataclass_metadata_class.class_attributes.pop(
-                        "%self_classmethods", None
-                    )
-                if classmethods:
-                    dataclass_metadata_class.class_attributes["%classmethods"] = (
-                        KnownValue(frozenset(classmethods))
-                    )
-                else:
-                    dataclass_metadata_class.class_attributes.pop("%classmethods", None)
-                staticmethods = self._get_synthetic_staticmethod_attributes(node)
-                if staticmethods:
-                    dataclass_metadata_class.class_attributes["%staticmethods"] = (
-                        KnownValue(frozenset(staticmethods))
-                    )
-                else:
-                    dataclass_metadata_class.class_attributes.pop(
-                        "%staticmethods", None
+                method_symbol_flags = self._get_synthetic_method_symbol_flags(node)
+                for name, attr_value in class_attributes.items():
+                    self._set_synthetic_member_on_class(
+                        dataclass_metadata_class, name, attr_value
                     )
                 if isinstance(metaclass_value, Value):
-                    dataclass_metadata_class.class_attributes["%metaclass"] = (
-                        metaclass_value
+                    _set_synthetic_metaclass(dataclass_metadata_class, metaclass_value)
+                for method_name, (
+                    is_classmethod,
+                    is_staticmethod,
+                    returns_self_on_class_access,
+                ) in method_symbol_flags.items():
+                    existing = dataclass_metadata_class.declared_symbols.get(
+                        method_name
                     )
-                dataclass_metadata_class.method_attributes.clear()
-                dataclass_metadata_class.method_attributes.update(
-                    self._get_synthetic_method_attributes(node)
-                )
+                    member_value = get_synthetic_member_value(
+                        dataclass_metadata_class, method_name
+                    )
+                    if existing is None or not existing.is_property:
+                        self._merge_synthetic_declared_symbol(
+                            dataclass_metadata_class,
+                            method_name,
+                            ClassSymbol(
+                                member_value or AnyValue(AnySource.from_another),
+                                is_method=True,
+                                is_classmethod=is_classmethod,
+                                is_staticmethod=is_staticmethod,
+                                returns_self_on_class_access=(
+                                    returns_self_on_class_access
+                                ),
+                                member_value=member_value,
+                            ),
+                        )
                 self._apply_dataclass_slots_semantics(
                     dataclass_metadata_class, dataclass_semantics
                 )
@@ -5112,7 +4830,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     ) -> type | None:
         base = replace_fallback(base_value)
         if allow_synthetic_class_base and isinstance(base, SyntheticClassObjectValue):
-            runtime_class = base.class_attributes.get("%runtime_class")
+            runtime_class = base.runtime_class
             if isinstance(runtime_class, KnownValue) and isinstance(
                 runtime_class.val, type
             ):
@@ -5238,9 +4956,10 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         if not self._is_enum_class_key(class_key):
             return
 
-        class_attributes = synthetic_class.class_attributes
         enum_value_type = self.enum_value_type_by_class.get(class_key)
-        ignore_names = _enum_ignore_names(class_attributes.get("_ignore_"))
+        ignore_names = _enum_ignore_names(
+            get_synthetic_member_value(synthetic_class, "_ignore_")
+        )
         member_literal_values: dict[str, object] = {}
         member_order: list[str] = []
         missing: Value | None = None
@@ -5249,7 +4968,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             stmt_forced_member, stmt_forced_nonmember = (
                 _enum_statement_member_decorators(statement)
             )
-            value = class_attributes.get(member_name, missing)
+            value = get_synthetic_member_value(synthetic_class, member_name)
+            if value is None:
+                value = missing
             if value is missing:
                 if stmt_forced_nonmember:
                     continue
@@ -5322,12 +5043,15 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     enum_value_type, unwrapped, statement
                 )
 
-        for attr_name in list(class_attributes):
+        for attr_name in list(synthetic_class.declared_symbols):
+            symbol = synthetic_class.declared_symbols.get(attr_name)
+            if symbol is None or symbol.member_value is None:
+                continue
             mangled = _mangle_private_enum_name(node.name, attr_name)
             if mangled is None:
                 continue
-            class_attributes.setdefault(mangled, class_attributes[attr_name])
-            del class_attributes[attr_name]
+            synthetic_class.declared_symbols.setdefault(mangled, symbol)
+            del synthetic_class.declared_symbols[attr_name]
 
         runtime_enum = self._make_synthetic_enum_runtime_class(
             node, synthetic_class.base_classes, member_literal_values, member_order
@@ -5338,8 +5062,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         object.__setattr__(synthetic_class, "class_type", TypedValue(runtime_enum))
         for member_name in member_order:
             try:
-                class_attributes[member_name] = KnownValue(
-                    getattr(runtime_enum, member_name)
+                member_value = KnownValue(getattr(runtime_enum, member_name))
+                self._set_synthetic_member_on_class(
+                    synthetic_class, member_name, member_value
                 )
             except Exception:
                 continue
@@ -5499,65 +5224,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     def _get_dataclass_transform_info_from_synthetic_class(
         self, value: SyntheticClassObjectValue
     ) -> DataclassTransformInfo | None:
-        transform_marker = value.class_attributes.get("%dataclass_transform")
-        if not (
-            isinstance(transform_marker, KnownValue) and transform_marker.val is True
-        ):
-            return None
-
-        eq_default: bool = True
-        raw_eq_default = value.class_attributes.get("%dataclass_transform_eq_default")
-        if isinstance(raw_eq_default, KnownValue) and isinstance(
-            raw_eq_default.val, bool
-        ):
-            eq_default = raw_eq_default.val
-
-        frozen_default: bool = False
-        raw_frozen_default = value.class_attributes.get(
-            "%dataclass_transform_frozen_default"
-        )
-        if isinstance(raw_frozen_default, KnownValue) and isinstance(
-            raw_frozen_default.val, bool
-        ):
-            frozen_default = raw_frozen_default.val
-
-        kw_only_default: bool = False
-        raw_kw_only_default = value.class_attributes.get(
-            "%dataclass_transform_kw_only_default"
-        )
-        if isinstance(raw_kw_only_default, KnownValue) and isinstance(
-            raw_kw_only_default.val, bool
-        ):
-            kw_only_default = raw_kw_only_default.val
-
-        order_default: bool = False
-        raw_order_default = value.class_attributes.get(
-            "%dataclass_transform_order_default"
-        )
-        if isinstance(raw_order_default, KnownValue) and isinstance(
-            raw_order_default.val, bool
-        ):
-            order_default = raw_order_default.val
-
-        field_specifiers: tuple[Value, ...] = ()
-        raw_field_specifiers = value.class_attributes.get(
-            "%dataclass_transform_field_specifiers"
-        )
-        if isinstance(raw_field_specifiers, KnownValue) and isinstance(
-            raw_field_specifiers.val, (tuple, list)
-        ):
-            values = [
-                item for item in raw_field_specifiers.val if isinstance(item, Value)
-            ]
-            field_specifiers = tuple(values)
-
-        return DataclassTransformInfo(
-            eq_default=eq_default,
-            frozen_default=frozen_default,
-            kw_only_default=kw_only_default,
-            order_default=order_default,
-            field_specifiers=field_specifiers,
-        )
+        return value.dataclass_transform_info
 
     def _get_dataclass_transform_info_from_value(
         self, value: Value
@@ -5715,7 +5382,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 keywords = _extract_keywords(decorator.keywords)
             else:
                 keywords = {}
-            final_info = DataclassInfo.from_transform_info_and_options(info, keywords)
+            final_info = _dataclass_info_from_transform_info_and_options(info, keywords)
 
         base_transform_infos = [
             info
@@ -5747,7 +5414,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     ErrorCode.multiple_dataclass_transform,
                 )
                 continue
-            final_info = DataclassInfo.from_transform_info_and_options(
+            final_info = _dataclass_info_from_transform_info_and_options(
                 base_transform_info, class_keywords
             )
 
@@ -5760,7 +5427,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     ErrorCode.multiple_dataclass_transform,
                 )
             else:
-                final_info = DataclassInfo.from_transform_info_and_options(
+                final_info = _dataclass_info_from_transform_info_and_options(
                     metaclass_transform_info, class_keywords
                 )
                 if "frozen" not in class_keywords:
@@ -5813,11 +5480,17 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     ) -> None:
         if semantics is None:
             return
-        if "__hash__" in synthetic_class.class_attributes:
+        if get_synthetic_member_value(synthetic_class, "__hash__") is not None:
             return
         synthesized_hash = _synthesize_dataclass_hash_attribute(semantics)
         if synthesized_hash is not None:
-            synthetic_class.class_attributes["__hash__"] = synthesized_hash
+            self._merge_synthetic_declared_symbol(
+                synthetic_class,
+                "__hash__",
+                ClassSymbol(
+                    synthesized_hash, is_method=True, member_value=synthesized_hash
+                ),
+            )
 
     def _check_dataclass_slots_definition(
         self, node: ast.ClassDef, semantics: DataclassInfo
@@ -5839,44 +5512,44 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     ) -> None:
         if semantics is None:
             return
-        _record_dataclass_slots_flag(synthetic_class, semantics)
+        _set_synthetic_dataclass_info(synthetic_class, semantics)
         if semantics.slots is not True:
             return
-        if "__slots__" in synthetic_class.class_attributes:
+        if get_synthetic_member_value(synthetic_class, "__slots__") is not None:
             return
         slot_names = self._dataclass_slot_names_from_synthetic_class(synthetic_class)
         if slot_names is None:
             return
-        synthetic_class.class_attributes["__slots__"] = KnownValue(slot_names)
+        slot_value = KnownValue(slot_names)
+        self._merge_synthetic_declared_symbol(
+            synthetic_class,
+            "__slots__",
+            ClassSymbol(slot_value, member_value=slot_value),
+        )
 
     def _dataclass_slot_names_from_synthetic_class(
         self, synthetic_class: SyntheticClassObjectValue
     ) -> tuple[str, ...] | None:
-        local_names = _known_string_sequence_values(
-            synthetic_class.class_attributes.get("%dataclass_field_order")
-        )
+        local_names = synthetic_class.dataclass_field_order
         if local_names is None or not local_names:
-            classvar_names = set(
-                _known_string_sequence_values(
-                    synthetic_class.class_attributes.get("%classvars")
-                )
-                or ()
-            )
             local_names = tuple(
                 name
-                for name in synthetic_class.class_attributes
-                if not name.startswith("%")
-                and not (name.startswith("__") and name.endswith("__"))
-                and name not in synthetic_class.method_attributes
-                and name not in classvar_names
+                for name in iter_synthetic_member_names(synthetic_class)
+                if not (name.startswith("__") and name.endswith("__"))
+                and (
+                    synthetic_class.declared_symbols.get(name) is None
+                    or not synthetic_class.declared_symbols[name].is_method
+                    and not synthetic_class.declared_symbols[name].is_classvar
+                )
             )
-        initvar_names = set(
-            _known_string_sequence_values(
-                synthetic_class.class_attributes.get("%dataclass_initvar_fields")
+        return tuple(
+            name
+            for name in local_names
+            if not (
+                synthetic_class.declared_symbols.get(name) is not None
+                and synthetic_class.declared_symbols[name].is_initvar
             )
-            or ()
         )
-        return tuple(name for name in local_names if name not in initvar_names)
 
     def _is_dataclass_kw_only_marker_annotation(self, node: ast.expr) -> bool:
         if isinstance(node, ast.Name):
@@ -6061,17 +5734,17 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
 
         slot_names: set[str] = set()
         has_dict = False
-        if "__slots__" in synthetic_class.class_attributes:
-            names = _known_string_sequence_values(
-                synthetic_class.class_attributes.get("__slots__")
-            )
+        slot_value = get_synthetic_member_value(synthetic_class, "__slots__")
+        if slot_value is not None:
+            names = _known_string_sequence_values(slot_value)
             if names is None:
                 return None
             normalized_names, local_has_dict = _normalize_slot_names(names)
             slot_names.update(normalized_names)
             has_dict = has_dict or local_has_dict
-        elif synthetic_class.class_attributes.get("%dataclass_slots") == KnownValue(
-            True
+        elif (
+            synthetic_class.dataclass_info is not None
+            and synthetic_class.dataclass_info.slots is True
         ):
             dataclass_slot_names = self._dataclass_slot_names_from_synthetic_class(
                 synthetic_class
@@ -6369,7 +6042,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         post_init_node = _get_dataclass_post_init_node(node)
         if post_init_node is None:
             return
-        post_init_value = dataclass_class.class_attributes.get("__post_init__")
+        post_init_value = get_synthetic_member_value(dataclass_class, "__post_init__")
         if post_init_value is None:
             return
         post_init_params = self.checker.get_synthetic_dataclass_post_init_parameters(
@@ -6405,8 +6078,10 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         dataclass_class: SyntheticClassObjectValue,
         decorator_values: DecoratorValues,
     ) -> None:
-        raw_init = dataclass_class.class_attributes.get("%dataclass_init")
-        if isinstance(raw_init, KnownValue) and raw_init.val is False:
+        if (
+            dataclass_class.dataclass_info is not None
+            and not dataclass_class.dataclass_info.init
+        ):
             return
         error_node = next(
             (
@@ -6417,35 +6092,17 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             node,
         )
 
-        field_order = _known_string_sequence_values(
-            dataclass_class.class_attributes.get("%dataclass_field_order")
-        )
+        field_order = dataclass_class.dataclass_field_order
         if not field_order:
             return
-        default_fields = set(
-            _known_string_sequence_values(
-                dataclass_class.class_attributes.get("%dataclass_default_fields")
-            )
-            or ()
-        )
-        init_false_fields = set(
-            _known_string_sequence_values(
-                dataclass_class.class_attributes.get("%dataclass_init_false_fields")
-            )
-            or ()
-        )
-        kw_only_fields = set(
-            _known_string_sequence_values(
-                dataclass_class.class_attributes.get("%dataclass_kw_only_fields")
-            )
-            or ()
-        )
 
         saw_default = False
         for field_name in field_order:
-            if field_name in init_false_fields or field_name in kw_only_fields:
+            symbol = dataclass_class.declared_symbols.get(field_name)
+            field = symbol.dataclass_field if symbol is not None else None
+            if field is not None and (not field.init or field.kw_only):
                 continue
-            if field_name in default_fields:
+            if field is not None and field.has_default:
                 saw_default = True
                 continue
             if saw_default:
@@ -7527,44 +7184,27 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             qualname_parts.append(name)
         return ".".join(qualname_parts)
 
-    def _get_synthetic_method_attributes(self, node: ast.ClassDef) -> set[str]:
-        method_attributes = set()
+    def _synthetic_method_symbol_flags(
+        self, node: ast.FunctionDef | ast.AsyncFunctionDef
+    ) -> tuple[bool, bool, bool]:
+        decorator_kinds = self._function_decorator_kinds_by_node.get(node, frozenset())
+        is_classmethod = FunctionDecorator.classmethod in decorator_kinds
+        return (
+            is_classmethod,
+            FunctionDecorator.staticmethod in decorator_kinds,
+            is_classmethod and self._function_returns_self_by_node.get(node, False),
+        )
+
+    def _get_synthetic_method_symbol_flags(
+        self, node: ast.ClassDef
+    ) -> dict[str, tuple[bool, bool, bool]]:
+        method_attributes = {}
         for stmt in node.body:
             if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                method_attributes.add(
+                method_attributes[
                     _mangle_class_attribute_name(node.name, stmt.name)
-                )
+                ] = self._synthetic_method_symbol_flags(stmt)
         return method_attributes
-
-    def _get_synthetic_staticmethod_attributes(self, node: ast.ClassDef) -> set[str]:
-        staticmethod_attributes = set()
-        for stmt in node.body:
-            if not isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                continue
-            decorator_kinds = self._function_decorator_kinds_by_node.get(
-                stmt, frozenset()
-            )
-            if FunctionDecorator.staticmethod not in decorator_kinds:
-                continue
-            staticmethod_attributes.add(
-                _mangle_class_attribute_name(node.name, stmt.name)
-            )
-        return staticmethod_attributes
-
-    def _get_synthetic_classmethod_attributes(self, node: ast.ClassDef) -> set[str]:
-        classmethod_attributes = set()
-        for stmt in node.body:
-            if not isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                continue
-            decorator_kinds = self._function_decorator_kinds_by_node.get(
-                stmt, frozenset()
-            )
-            if FunctionDecorator.classmethod not in decorator_kinds:
-                continue
-            classmethod_attributes.add(
-                _mangle_class_attribute_name(node.name, stmt.name)
-            )
-        return classmethod_attributes
 
     def _self_error_message(self, detail: str) -> str:
         return f"Self {detail}"
@@ -7752,8 +7392,12 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 return False
             seen.add(synthetic_id)
             if any(
-                _value_contains_self(value)
-                for value in synthetic_class.class_attributes.values()
+                _value_contains_self(symbol.typ)
+                or (
+                    symbol.member_value is not None
+                    and _value_contains_self(symbol.member_value)
+                )
+                for symbol in synthetic_class.declared_symbols.values()
             ):
                 return True
             for base in synthetic_class.base_classes:
@@ -7770,25 +7414,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             return False
 
         return visit(synthetic_class)
-
-    def _get_synthetic_self_returning_classmethods(
-        self, node: ast.ClassDef
-    ) -> set[str]:
-        self_returning_classmethods = set()
-        for stmt in node.body:
-            if not isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                continue
-            decorator_kinds = self._function_decorator_kinds_by_node.get(
-                stmt, frozenset()
-            )
-            if FunctionDecorator.classmethod not in decorator_kinds:
-                continue
-            if not self._function_returns_self_by_node.get(stmt, False):
-                continue
-            self_returning_classmethods.add(
-                _mangle_class_attribute_name(node.name, stmt.name)
-            )
-        return self_returning_classmethods
 
     def _current_class_name_from_context(self) -> str | None:
         for context in reversed(self.node_context.contexts):
@@ -9109,11 +8734,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             synthetic_class = self.checker.get_synthetic_class(class_key)
             if synthetic_class is None:
                 return set()
-            provided = {
-                name
-                for name in synthetic_class.class_attributes
-                if not name.startswith("%")
-            }
+            provided = set(iter_synthetic_member_names(synthetic_class))
             return provided - self._required_abstract_members_for_base(class_key)
 
         class_dict = safe_getattr(class_key, "__dict__", None)
@@ -9353,13 +8974,17 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         if self._is_allowed_readonly_attribute_initialization(node, root_value):
             return False
         class_key = self._class_key_for_attribute_target(node, root_value)
-        return class_key is not None and self._is_readonly_member(class_key, node.attr)
+        return class_key is not None and is_readonly_annotated_member(
+            class_key, node.attr, self
+        )
 
     def _is_deletion_of_readonly_attribute(
         self, node: ast.Attribute, root_value: Value
     ) -> bool:
         class_key = self._class_key_for_attribute_target(node, root_value)
-        return class_key is not None and self._is_readonly_member(class_key, node.attr)
+        return class_key is not None and is_readonly_annotated_member(
+            class_key, node.attr, self
+        )
 
     def _is_class_object_attribute_root(self, value: Value) -> bool | None:
         if (
@@ -9575,24 +9200,8 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             assert_never(value)
         synthetic = self.checker.get_synthetic_class(class_key)
         if synthetic is not None:
-            namedtuple_marker = synthetic.class_attributes.get("%namedtuple")
-            fields = synthetic.class_attributes.get("%instance_only_annotations")
-            if (
-                isinstance(namedtuple_marker, KnownValue)
-                and namedtuple_marker.val is True
-            ):
-                if (
-                    isinstance(fields, KnownValue)
-                    and isinstance(fields.val, (set, frozenset, tuple, list))
-                    and all(isinstance(field, str) for field in fields.val)
-                ):
-                    return set(fields.val)
-                return {
-                    name
-                    for name in synthetic.class_attributes
-                    if not name.startswith("%")
-                    and name not in synthetic.method_attributes
-                }
+            if synthetic.namedtuple_info is not None:
+                return set(ordered_namedtuple_fields_from_synthetic(synthetic))
         if not isinstance(class_key, type) or not is_namedtuple_class(class_key):
             return None
         fields = safe_getattr(class_key, "_fields", None)
@@ -13105,7 +12714,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         )
         if is_class_annotation_without_value:
             self._set_synthetic_class_attribute(
-                node.target.id, expected_type or AnyValue(AnySource.error)
+                node.target.id, expected_type or AnyValue(AnySource.error), node=node
             )
 
         if node.value is not None:
@@ -14426,7 +14035,8 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             )
         has_explicit_class_getitem = (
             synthetic_class is not None
-            and "__class_getitem__" in synthetic_class.class_attributes
+            and get_synthetic_member_value(synthetic_class, "__class_getitem__")
+            is not None
         )
         if (
             not type_parameters
@@ -15185,7 +14795,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             return None
         class_name = class_key.rsplit(".", maxsplit=1)[-1]
         for candidate in self._property_attr_candidates(attr_name, class_name):
-            member = synthetic_class.class_attributes.get(candidate)
+            member = get_synthetic_member_value(synthetic_class, candidate)
             if member is None:
                 continue
             message = self._deprecation_message_from_value(member)
@@ -15233,19 +14843,17 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         if synthetic_class is None:
             return None
         class_name = class_key.rsplit(".", maxsplit=1)[-1]
-        prefix = (
-            SYNTHETIC_PROPERTY_SETTER_DEPRECATED_PREFIX
-            if is_setter
-            else SYNTHETIC_PROPERTY_GETTER_DEPRECATED_PREFIX
-        )
         for candidate in self._property_attr_candidates(attr_name, class_name):
-            deprecation_value = synthetic_class.class_attributes.get(
-                f"{prefix}{candidate}"
+            symbol = lookup_declared_symbol(class_key, candidate, self)
+            if symbol is None or symbol.property_info is None:
+                continue
+            message = (
+                symbol.property_info.setter_deprecation
+                if is_setter
+                else symbol.property_info.getter_deprecation
             )
-            if isinstance(deprecation_value, KnownValue) and isinstance(
-                deprecation_value.val, str
-            ):
-                return deprecation_value.val
+            if message is not None:
+                return message
         return None
 
     def _property_attr_candidates(
@@ -16390,7 +15998,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             ):
                 runtime_class = callee.root.val
             elif isinstance(callee.root, SyntheticClassObjectValue):
-                runtime_value = callee.root.class_attributes.get("%runtime_class")
+                runtime_value = callee.root.runtime_class
                 if isinstance(runtime_value, KnownValue) and isinstance(
                     runtime_value.val, type
                 ):
@@ -16480,7 +16088,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             ):
                 origin = callee.root.class_type.typ
                 allow_annotated_specialization = True
-                runtime_class = callee.root.class_attributes.get("%runtime_class")
+                runtime_class = callee.root.runtime_class
                 preserve_exact_type_args = (
                     isinstance(runtime_class, KnownValue)
                     and isinstance(runtime_class.val, type)
@@ -16574,14 +16182,35 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             ),
             base_classes=(TypedValue(tuple),),
         )
-        synthetic.class_attributes["%runtime_class"] = return_value
-        synthetic.method_attributes.update(
-            name
-            for name, attr in runtime_class.__dict__.items()
-            if callable(attr) or isinstance(attr, (staticmethod, classmethod, property))
-        )
+        _set_synthetic_runtime_class(synthetic, return_value)
         for name, attr in runtime_class.__dict__.items():
-            synthetic.class_attributes[name] = KnownValue(attr)
+            if isinstance(attr, property):
+                synthetic.declared_symbols[name] = ClassSymbol(
+                    AnyValue(AnySource.inference),
+                    property_info=PropertyInfo(
+                        AnyValue(AnySource.inference),
+                        setter_type=(
+                            AnyValue(AnySource.inference)
+                            if attr.fset is not None
+                            else None
+                        ),
+                    ),
+                    member_value=KnownValue(attr),
+                )
+            elif callable(attr) or isinstance(attr, (staticmethod, classmethod)):
+                is_staticmethod = isinstance(attr, staticmethod)
+                is_classmethod = isinstance(attr, classmethod)
+                synthetic.declared_symbols[name] = ClassSymbol(
+                    KnownValue(attr),
+                    is_method=True,
+                    is_classmethod=is_classmethod,
+                    is_staticmethod=is_staticmethod,
+                    member_value=KnownValue(attr),
+                )
+            else:
+                synthetic.declared_symbols[name] = ClassSymbol(
+                    KnownValue(attr), member_value=KnownValue(attr)
+                )
         self.checker.register_synthetic_class(synthetic)
         return synthetic
 
@@ -16696,7 +16325,11 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         synthetic_class = self.checker.get_synthetic_class(class_key)
         if synthetic_class is None:
             return
-        synthetic_class.class_attributes[node.attr] = self.being_assigned
+        self._merge_synthetic_declared_symbol(
+            synthetic_class,
+            node.attr,
+            ClassSymbol(self.being_assigned, member_value=self.being_assigned),
+        )
 
     def _record_type_attr_read(self, typ: type, attr_name: str, node: ast.AST) -> None:
         if self.attribute_checker is not None:
@@ -16711,12 +16344,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     def _is_dataclass_initvar_attribute(self, typ: type, attr_name: str) -> bool:
         synthetic = self.checker.get_synthetic_class(typ)
         if synthetic is not None:
-            initvar_names = synthetic.class_attributes.get("%dataclass_initvar_fields")
-            if isinstance(initvar_names, KnownValue) and isinstance(
-                initvar_names.val, (set, frozenset, tuple, list)
-            ):
-                if attr_name in initvar_names.val:
-                    return True
+            symbol = synthetic.declared_symbols.get(attr_name)
+            if symbol is not None and symbol.is_initvar:
+                return True
         try:
             annotations = typ.__annotations__
         except Exception:
@@ -16960,33 +16590,6 @@ def _maybe_normalize_filename(filename: str) -> str:
         return os.path.abspath(filename)
 
 
-def _classvar_names_from_mapping(attributes: Mapping[str, Value]) -> set[str]:
-    classvars = attributes.get("%classvars")
-    if isinstance(classvars, KnownValue) and isinstance(
-        classvars.val, (set, frozenset, tuple, list)
-    ):
-        return {item for item in classvars.val if isinstance(item, str)}
-    return set()
-
-
-def _instance_only_names_from_mapping(attributes: Mapping[str, Value]) -> set[str]:
-    raw = attributes.get("%instance_only_annotations")
-    if isinstance(raw, KnownValue) and isinstance(
-        raw.val, (set, frozenset, tuple, list)
-    ):
-        return {item for item in raw.val if isinstance(item, str)}
-    return set()
-
-
-def _readonly_names_from_mapping(attributes: Mapping[str, Value]) -> set[str]:
-    raw = attributes.get(SYNTHETIC_READONLY_ATTRIBUTES_KEY)
-    if isinstance(raw, KnownValue) and isinstance(
-        raw.val, (set, frozenset, tuple, list)
-    ):
-        return {item for item in raw.val if isinstance(item, str)}
-    return set()
-
-
 def _is_newtype_base_value(base_value: Value) -> bool:
     for subval in flatten_values(replace_fallback(base_value)):
         if not isinstance(subval, KnownValue):
@@ -17039,10 +16642,9 @@ def _is_namedtuple_like_base_value(base_value: Value) -> bool:
 def _synthetic_class_is_namedtuple_like(
     synthetic_class: SyntheticClassObjectValue,
 ) -> bool:
-    namedtuple_marker = synthetic_class.class_attributes.get("%namedtuple")
-    if isinstance(namedtuple_marker, KnownValue) and namedtuple_marker.val is True:
+    if synthetic_class.namedtuple_info is not None:
         return True
-    runtime_class = synthetic_class.class_attributes.get("%runtime_class")
+    runtime_class = synthetic_class.runtime_class
     return (
         isinstance(runtime_class, KnownValue)
         and isinstance(runtime_class.val, type)
@@ -17299,6 +16901,22 @@ def _extract_bool(expr: ast.expr | None, default: bool) -> bool:
     return value
 
 
+def _dataclass_info_from_transform_info_and_options(
+    info: DataclassTransformInfo, keywords: Mapping[str, ast.expr]
+) -> DataclassInfo:
+    return DataclassInfo(
+        init=_extract_bool(keywords.get("init"), True),
+        eq=_extract_bool(keywords.get("eq"), info.eq_default),
+        frozen=_extract_bool(keywords.get("frozen"), info.frozen_default),
+        unsafe_hash=_extract_bool(keywords.get("unsafe_hash"), False),
+        match_args=_extract_bool(keywords.get("match_args"), True),
+        order=_extract_bool(keywords.get("order"), info.order_default),
+        slots=_extract_bool(keywords.get("slots"), False),
+        kw_only_default=_extract_bool(keywords.get("kw_only"), info.kw_only_default),
+        field_specifiers=info.field_specifiers,
+    )
+
+
 def _get_bool_literal(node: ast.AST) -> bool | None:
     if isinstance(node, ast.Constant) and isinstance(node.value, bool):
         return node.value
@@ -17445,19 +17063,34 @@ def _normalize_slot_names(raw_names: Iterable[str]) -> tuple[tuple[str, ...], bo
     return tuple(names), has_dict
 
 
-def _record_dataclass_slots_flag(
+def _set_synthetic_dataclass_info(
     synthetic_class: SyntheticClassObjectValue, semantics: DataclassInfo | None
 ) -> None:
-    if semantics is None:
-        synthetic_class.class_attributes.pop("%dataclass_slots", None)
-        synthetic_class.class_attributes.pop("%dataclass_init", None)
-        synthetic_class.class_attributes.pop("%dataclass_match_args", None)
-        return
-    synthetic_class.class_attributes["%dataclass_slots"] = KnownValue(semantics.slots)
-    synthetic_class.class_attributes["%dataclass_init"] = KnownValue(semantics.init)
-    synthetic_class.class_attributes["%dataclass_match_args"] = KnownValue(
-        semantics.match_args
-    )
+    object.__setattr__(synthetic_class, "dataclass_info", semantics)
+
+
+def _set_synthetic_dataclass_transform_info(
+    synthetic_class: SyntheticClassObjectValue, info: DataclassTransformInfo | None
+) -> None:
+    object.__setattr__(synthetic_class, "dataclass_transform_info", info)
+
+
+def _set_synthetic_runtime_class(
+    synthetic_class: SyntheticClassObjectValue, runtime_class: Value | None
+) -> None:
+    object.__setattr__(synthetic_class, "runtime_class", runtime_class)
+
+
+def _set_synthetic_metaclass(
+    synthetic_class: SyntheticClassObjectValue, metaclass: Value | None
+) -> None:
+    object.__setattr__(synthetic_class, "metaclass", metaclass)
+
+
+def _set_synthetic_namedtuple_info(
+    synthetic_class: SyntheticClassObjectValue, info: NamedTupleInfo | None
+) -> None:
+    object.__setattr__(synthetic_class, "namedtuple_info", info)
 
 
 def _is_dataclass_kw_only_marker_value(value: Value) -> bool:
@@ -18432,29 +18065,6 @@ def _has_annotation_for_attr(typ: type, attr: str) -> bool:
     except Exception:
         # __annotations__ doesn't exist or isn't a dict
         return False
-
-
-def _is_runtime_classvar_annotation(annotation: object) -> bool:
-    origin = get_origin(annotation)
-    if is_typing_name(annotation, "ClassVar") or is_typing_name(origin, "ClassVar"):
-        return True
-    return isinstance(annotation, str) and "ClassVar" in annotation
-
-
-def _is_runtime_readonly_annotation(annotation: object) -> bool:
-    origin = get_origin(annotation)
-    if is_typing_name(annotation, "ReadOnly") or is_typing_name(origin, "ReadOnly"):
-        return True
-    if isinstance(annotation, str):
-        return "ReadOnly" in annotation
-    args = get_args(annotation)
-    if args and (
-        is_typing_name(origin, "Annotated")
-        or is_typing_name(origin, "ClassVar")
-        or is_typing_name(origin, "Final")
-    ):
-        return _is_runtime_readonly_annotation(args[0])
-    return False
 
 
 def _is_typing_alias_value(value: object) -> bool:
