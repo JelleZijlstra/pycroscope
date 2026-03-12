@@ -681,9 +681,6 @@ class _AttrContext(CheckerAttrContext):
     def should_ignore_none_attributes(self) -> bool:
         return self.ignore_none
 
-    def should_include_synthetic_methods(self) -> bool:
-        return self.attr != "__call__"
-
     def _synthetic_instance_attr_is_method(
         self,
         synthetic_class: SyntheticClassObjectValue,
@@ -5354,7 +5351,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         if target.id == "dataclass":
             return True
         value = self.scopes.get(target.id, target, self.state, can_assign_ctx=self)
-        return _is_dataclass_decorator_value(value)
+        return _is_known_decorator(value, dataclasses.dataclass)
 
     def _get_dataclass_decorator_options(
         self, decorator_values: DecoratorValues
@@ -8254,8 +8251,8 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         ) as info:
             self._function_decorator_kinds_by_node[node] = info.decorator_kinds
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                self._function_returns_self_by_node[node] = (
-                    _return_annotation_contains_self(info.return_annotation)
+                self._function_returns_self_by_node[node] = _value_contains_self(
+                    info.return_annotation
                 )
             self.yield_checker.reset_yield_checks()
 
@@ -8795,7 +8792,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             )
 
         overload_kinds = {
-            _method_decorator_kind(decorator_kinds=pending.decorator_kinds)
+            FunctionDecorator.method_kind_for(pending.decorator_kinds)
             for pending in overloads
         }
         kind_mismatch = False
@@ -8808,9 +8805,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             )
         elif impl_info is not None:
             (overload_kind,) = overload_kinds
-            impl_kind = _method_decorator_kind(
-                decorator_kinds=impl_info.decorator_kinds
-            )
+            impl_kind = FunctionDecorator.method_kind_for(impl_info.decorator_kinds)
             if impl_kind != overload_kind:
                 kind_mismatch = True
                 self._show_error_if_checking(
@@ -17137,10 +17132,6 @@ def _is_known_decorator(value: Value, decorator: object) -> bool:
     return isinstance(value, KnownValue) and value.val is decorator
 
 
-def _is_dataclass_decorator_value(value: Value) -> bool:
-    return _is_known_decorator(value, dataclasses.dataclass)
-
-
 def _merge_dataclass_transform_infos(
     infos: Sequence[DataclassTransformInfo],
 ) -> DataclassTransformInfo:
@@ -17786,10 +17777,6 @@ def _function_signature_contains_self(info: FunctionInfo) -> bool:
     )
 
 
-def _return_annotation_contains_self(return_annotation: Value | None) -> bool:
-    return _value_contains_self(return_annotation)
-
-
 def _value_carries_self_binding(value: Value) -> bool:
     if isinstance(value, KnownValueWithTypeVars) and SelfT in value.typevars:
         return True
@@ -17806,10 +17793,6 @@ def _is_dataclass_classvar_final(expr: AnnotationExpr) -> bool:
         if qualifier in {Qualifier.Final, Qualifier.ClassVar}
     ]
     return qualifier_order == [Qualifier.Final, Qualifier.ClassVar]
-
-
-def _method_decorator_kind(*, decorator_kinds: Container[FunctionDecorator]) -> str:
-    return FunctionDecorator.method_kind_for(decorator_kinds)
 
 
 def _is_typealiastype_value(value: Value) -> bool:

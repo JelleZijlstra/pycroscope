@@ -137,9 +137,7 @@ class VarnameGenerator:
             else:
                 return f"{node.id}_result"
         elif isinstance(node, ast.Attribute):
-            if node.attr == "async" or node.attr == "asynq":
-                return self._get_candidate(node.value)
-            elif node.attr.endswith("_async"):
+            if node.attr in {"async", "asynq"} or node.attr.endswith("_async"):
                 # probably a method call like .get_async
                 return self._get_candidate(node.value)
             else:

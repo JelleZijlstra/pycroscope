@@ -721,10 +721,7 @@ class TypeshedFinder:
                 if info.child_nodes and attr in info.child_nodes:
                     return info.child_nodes[attr], mod
                 return None
-            elif isinstance(info.ast, ast.Assign):
-                return None  # TODO maybe we need this for aliased methods
-            else:
-                return None
+            return None  # TODO maybe we need this for aliased methods
         return None
 
     def _has_own_attribute(self, typ: type | str, attr: str) -> bool:

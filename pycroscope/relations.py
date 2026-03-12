@@ -361,16 +361,7 @@ def _has_relation(
     ):
         return {}
     if isinstance(left, InferenceVarValue):
-        if isinstance(right, TypeVarValue):
-            bounds = [
-                LowerBound(left.typevar_param, right),
-                *left.get_inherent_bounds(),
-            ]
-        else:
-            bounds = [
-                LowerBound(left.typevar_param, right),
-                *left.get_inherent_bounds(),
-            ]
+        bounds = [LowerBound(left.typevar_param, right), *left.get_inherent_bounds()]
         return left.make_bounds_map(bounds, right, ctx)
     if isinstance(right, InferenceVarValue):
         bounds = [UpperBound(right.typevar_param, left), *right.get_inherent_bounds()]
