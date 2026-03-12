@@ -4229,6 +4229,16 @@ class TestAnnAssign(TestNameCheckVisitorBase):
             def __init__(self, blue: str) -> None:
                 self.rgb = 0, 0, blue  # E: incompatible_assignment
 
+    @assert_passes()
+    def test_protocol_assignment_to_declared_self_attribute(self):
+        from typing import Protocol
+
+        class Proto(Protocol):
+            value: int
+
+            def __init__(self) -> None:
+                self.value = 3
+
     @assert_passes(run_in_both_module_modes=True)
     def test_protocol_class_object_method_and_property_shapes(self):
         from typing import Any, Protocol

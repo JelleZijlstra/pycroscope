@@ -16313,7 +16313,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         if self._is_class_object_attribute_root(root_value) is False:
             class_type = self.checker.make_type_object(class_key)
             if class_type.is_protocol:
-                if node.attr not in class_type.protocol_members:
+                if class_type.get_declared_symbol(node.attr, self) is None:
                     self._show_error_if_checking(
                         node,
                         "Protocol members cannot be defined via assignment to self",
