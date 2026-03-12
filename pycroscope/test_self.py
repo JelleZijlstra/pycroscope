@@ -10,7 +10,10 @@ import textwrap
 from pathlib import Path
 
 import pycroscope
+from pycroscope import node_visitor
 from pycroscope.error_code import ErrorCode
+from pycroscope.find_unused import UnusedObjectFinder
+from pycroscope.test_name_check_visitor import _make_module
 from pycroscope.test_node_visitor import skip_if_not_installed
 
 
@@ -30,19 +33,51 @@ def _files_for_self_check() -> list[str]:
 
 
 def _check_all_files_with_annotations() -> None:
+    failures, missing_annotations = _check_files_with_annotations(
+        _files_for_self_check()
+    )
+    assert not failures, "".join(
+        failure["message"] for failure in failures if "message" in failure
+    )
+    if missing_annotations:
+        for filename, node in missing_annotations:
+            print(
+                f"{filename}:{getattr(node, 'lineno')}:{getattr(node, 'col_offset')}:"
+                f" {ast.dump(node)}"
+            )
+        assert False, f"found no annotations on {len(missing_annotations)} expressions"
+
+
+def _check_files_with_annotations(
+    files: list[str],
+) -> tuple[list[node_visitor.Failure], list[tuple[str, ast.AST]]]:
     settings = PycroscopeVisitor._get_default_settings()
     if settings is not None:
         settings[ErrorCode.implicit_any] = False
-    kwargs: dict[str, object] = {"settings": settings, "files": _files_for_self_check()}
+    kwargs: dict[str, object] = {"settings": settings, "files": files}
     kwargs = dict(PycroscopeVisitor.prepare_constructor_kwargs(kwargs))
-    files = PycroscopeVisitor.get_files_to_check(False, **kwargs)
-    failures = []
-    missing_annotations = []
-    for filename in files:
+    files_to_check = PycroscopeVisitor.get_files_to_check(False, **kwargs)
+    failures: list[node_visitor.Failure] = []
+    missing_annotations: list[tuple[str, ast.AST]] = []
+    unused_finder = UnusedObjectFinder(
+        kwargs["checker"].options,
+        enabled=kwargs["checker"].options.get_value_for(
+            pycroscope.shared_options.EnforceNoUnused
+        ),
+        print_output=False,
+    )
+    for filename in files_to_check:
         with open(filename, encoding="utf-8") as f:
             contents = f.read()
         tree = ast.parse(contents.encode("utf-8"), filename)
-        visitor = PycroscopeVisitor(filename, contents, tree, annotate=True, **kwargs)
+        visitor = PycroscopeVisitor(
+            filename,
+            contents,
+            tree,
+            annotate=True,
+            unused_finder=unused_finder,
+            **kwargs,
+        )
         failures += visitor.check()
         for node in ast.walk(tree):
             if (
@@ -53,11 +88,25 @@ def _check_all_files_with_annotations() -> None:
             ):
                 missing_annotations.append((filename, node))
     failures += PycroscopeVisitor.perform_final_checks(kwargs)
-    assert not failures, "".join(failure["message"] for failure in failures)
-    if missing_annotations:
-        for filename, node in missing_annotations:
-            print(f"{filename}:{node.lineno}:{node.col_offset}: {ast.dump(node)}")
-        assert False, f"found no annotations on {len(missing_annotations)} expressions"
+    failures += _unused_object_failures(unused_finder)
+    return failures, missing_annotations
+
+
+def _unused_object_failures(
+    unused_finder: UnusedObjectFinder,
+) -> list[node_visitor.Failure]:
+    failures: list[node_visitor.Failure] = []
+    for unused_object in unused_finder.get_unused_objects():
+        failure = str(unused_object)
+        failures.append(
+            {
+                "filename": node_visitor.UNUSED_OBJECT_FILENAME,
+                "absolute_filename": node_visitor.UNUSED_OBJECT_FILENAME,
+                "message": failure + "\n",
+                "description": failure,
+            }
+        )
+    return failures
 
 
 def _missing_annotations_for_tree(tree: ast.AST) -> list[ast.AST]:
@@ -96,6 +145,42 @@ def test_typealiastype_subscript_annotation(tmp_path: Path) -> None:
     failures = visitor.check()
     assert not any(failure["code"].name == "internal_error" for failure in failures)
     assert not _missing_annotations_for_tree(tree)
+
+
+def test_self_check_reports_unused_objects() -> None:
+    code = textwrap.dedent("""
+        def unused() -> None:
+            pass
+    """)
+    filename = "capybara_module.py"
+    tree = ast.parse(code.encode("utf-8"), filename)
+    settings = PycroscopeVisitor._get_default_settings()
+    if settings is not None:
+        settings[ErrorCode.implicit_any] = False
+    kwargs: dict[str, object] = {"settings": settings, "files": [filename]}
+    kwargs = dict(PycroscopeVisitor.prepare_constructor_kwargs(kwargs))
+    unused_finder = UnusedObjectFinder(
+        kwargs["checker"].options,
+        enabled=kwargs["checker"].options.get_value_for(
+            pycroscope.shared_options.EnforceNoUnused
+        ),
+        print_output=False,
+    )
+    visitor = PycroscopeVisitor(
+        filename,
+        code,
+        tree,
+        annotate=True,
+        module=_make_module(code),
+        unused_finder=unused_finder,
+        **kwargs,
+    )
+    failures = visitor.check()
+    failures += PycroscopeVisitor.perform_final_checks(kwargs)
+    failures += _unused_object_failures(unused_finder)
+    assert any(
+        failure["description"].endswith(".unused: unused") for failure in failures
+    )
 
 
 @skip_if_not_installed("asynq")

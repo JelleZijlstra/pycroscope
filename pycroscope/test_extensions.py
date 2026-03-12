@@ -2,7 +2,6 @@ import sys
 from types import FunctionType
 from typing import List, Optional, TypeVar, Union
 
-import pytest
 from typing_extensions import get_args
 
 from .extensions import AsynqCallable, get_overloads, overload
@@ -28,6 +27,8 @@ def test_asynq_callable() -> None:
     if sys.version_info >= (3, 11):
         assert List[AsynqCallable[[str], int]] == List[AsynqCallable[[T], int]][str]
     else:
+        import pytest
+
         with pytest.raises(TypeError):
             # Unfortunately this doesn't work because typing doesn't know how to
             # get TypeVars out of an AsynqCallable instances. Solving this is hard

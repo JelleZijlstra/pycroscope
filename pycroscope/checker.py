@@ -398,15 +398,6 @@ def _combine_signatures(signatures: Sequence[Signature]) -> ConcreteSignature | 
     return OverloadedSignature(list(signatures))
 
 
-def _signature_has_no_parameters(signature: ConcreteSignature) -> bool:
-    signatures = (
-        signature.signatures
-        if isinstance(signature, OverloadedSignature)
-        else [signature]
-    )
-    return all(not sig.parameters for sig in signatures)
-
-
 def _make_incompatible_constructor_signature(instance_type: Value) -> Signature:
     return Signature.make(
         [
@@ -887,6 +878,12 @@ class Checker:
 
     def record_any_used(self) -> None:
         """Record that Any was used to secure a match."""
+        pass
+
+    def record_protocol_implementation(
+        self, protocol: type[object], implementing_class: type[object]
+    ) -> None:
+        """Record that implementing_class was shown assignable to protocol."""
         pass
 
     def set_exclude_any(self) -> AbstractContextManager[None]:

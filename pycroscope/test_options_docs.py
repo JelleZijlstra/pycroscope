@@ -1,8 +1,10 @@
-from . import name_check_visitor  # noqa: F401
 from .options import render_config_options_markdown
 
 
 def test_render_config_options_markdown() -> None:
+    from . import name_check_visitor
+
+    assert name_check_visitor is not None
     rendered = render_config_options_markdown(
         excluded_options=frozenset({"paths", "import_paths"}), include_error_codes=False
     )

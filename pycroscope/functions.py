@@ -5,7 +5,6 @@ Code for understanding function definitions.
 """
 
 import ast
-import asyncio
 import builtins
 import collections.abc
 import enum
@@ -70,6 +69,9 @@ from .value import (
     replace_fallback,
     unite_values,
 )
+
+if sys.version_info < (3, 11):
+    import asyncio
 
 FunctionDefNode = ast.FunctionDef | ast.AsyncFunctionDef
 FunctionNode = FunctionDefNode | ast.Lambda

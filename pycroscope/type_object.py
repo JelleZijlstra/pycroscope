@@ -263,6 +263,14 @@ class TypeObject:
                 and not isinstance(result, CanAssignError)
             ):
                 self._protocol_positive_cache[cache_key] = result
+            if (
+                not isinstance(result, CanAssignError)
+                and isinstance(self.typ, type)
+                and isinstance(other.typ, type)
+                and not other.is_protocol
+                and not isinstance(other_basic, SubclassValue)
+            ):
+                ctx.record_protocol_implementation(self.typ, other.typ)
             return result
 
     def _is_callable_protocol_assignment_target(self, other: "TypeObject") -> bool:

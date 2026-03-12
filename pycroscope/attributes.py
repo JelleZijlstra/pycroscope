@@ -1772,7 +1772,10 @@ def _get_attribute_from_super(obj: super, ctx: AttrContext) -> Value:
 
 
 def _get_attribute_from_known(obj: object, ctx: AttrContext) -> Value:
-    ctx.record_attr_read(type(obj))
+    if safe_isinstance(obj, type):
+        ctx.record_attr_read(obj)
+    else:
+        ctx.record_attr_read(type(obj))
 
     if isinstance(obj, super):
         return _get_attribute_from_super(obj, ctx)
