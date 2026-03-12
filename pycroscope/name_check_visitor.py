@@ -724,55 +724,67 @@ class _AttrContext(CheckerAttrContext):
         # Treat synthetic instance methods like bound methods in both expression
         # and relation contexts. Callable fields that aren't methods should
         # remain regular callables when accessed on an instance.
-        if isinstance(value, CallableValue):
-            root_value = replace_fallback(self.root_composite.value)
-            if isinstance(root_value, AnnotatedValue):
-                root_value = replace_fallback(root_value.value)
-            synthetic_typ: str | None = None
-            generic_args: Sequence[Value] = ()
-            if isinstance(root_value, GenericValue) and isinstance(root_value.typ, str):
-                synthetic_typ = root_value.typ
-                generic_args = root_value.args
-            elif isinstance(root_value, TypedValue) and isinstance(root_value.typ, str):
-                synthetic_typ = root_value.typ
-            if synthetic_typ is None:
-                return super().bind_synthetic_instance_attribute(attr_name, value)
-            synthetic_class = self.checker.get_synthetic_class(synthetic_typ)
-            is_dunder = attr_name.startswith("__") and attr_name.endswith("__")
-            if is_dunder and attr_name != "__init__":
-                return super().bind_synthetic_instance_attribute(attr_name, value)
-            should_bind = synthetic_class is not None and (
-                self._synthetic_instance_attr_is_method(
-                    synthetic_class, attr_name, seen=set()
-                )
+        root_value = replace_fallback(self.root_composite.value)
+        if isinstance(root_value, AnnotatedValue):
+            root_value = replace_fallback(root_value.value)
+        synthetic_typ: type | str | None = None
+        generic_args: Sequence[Value] = ()
+        if isinstance(root_value, GenericValue) and isinstance(
+            root_value.typ, (type, str)
+        ):
+            synthetic_typ = root_value.typ
+            generic_args = root_value.args
+        elif isinstance(root_value, TypedValue) and isinstance(
+            root_value.typ, (type, str)
+        ):
+            synthetic_typ = root_value.typ
+        elif isinstance(root_value, KnownValue) and not isinstance(
+            root_value.val, type
+        ):
+            synthetic_typ = type(root_value.val)
+        if synthetic_typ is None:
+            return super().bind_synthetic_instance_attribute(attr_name, value)
+        synthetic_class = self.checker.get_synthetic_class(synthetic_typ)
+        is_dunder = attr_name.startswith("__") and attr_name.endswith("__")
+        if is_dunder and attr_name != "__init__":
+            return super().bind_synthetic_instance_attribute(attr_name, value)
+        should_bind = (
+            synthetic_class is not None
+            and self._synthetic_instance_attr_is_method(
+                synthetic_class, attr_name, seen=set()
             )
-            if not should_bind:
+        )
+        if not should_bind:
+            return super().bind_synthetic_instance_attribute(attr_name, value)
+        if synthetic_class is not None:
+            if self.checker.is_synthetic_classmethod_attribute(
+                synthetic_class, attr_name
+            ):
+                # classmethod attributes are already descriptor-adjusted by
+                # synthetic attribute normalization; binding again drops one
+                # real parameter.
                 return super().bind_synthetic_instance_attribute(attr_name, value)
-            if synthetic_class is not None:
-                if self.checker.is_synthetic_classmethod_attribute(
-                    synthetic_class, attr_name
+            raw_attr = get_synthetic_member_value(synthetic_class, attr_name)
+            if raw_attr is not None:
+                raw_attr = replace_fallback(raw_attr)
+                if (
+                    isinstance(raw_attr, GenericValue)
+                    and raw_attr.typ in {classmethod, staticmethod}
+                ) or (
+                    isinstance(raw_attr, KnownValue)
+                    and isinstance(raw_attr.val, (classmethod, staticmethod))
                 ):
-                    # classmethod attributes are already descriptor-adjusted by
+                    # classmethod/staticmethod are already descriptor-adjusted by
                     # synthetic attribute normalization; binding again drops one
                     # real parameter.
                     return super().bind_synthetic_instance_attribute(attr_name, value)
-                raw_attr = get_synthetic_member_value(synthetic_class, attr_name)
-                if raw_attr is not None:
-                    raw_attr = replace_fallback(raw_attr)
-                    if (
-                        isinstance(raw_attr, GenericValue)
-                        and raw_attr.typ in {classmethod, staticmethod}
-                    ) or (
-                        isinstance(raw_attr, KnownValue)
-                        and isinstance(raw_attr.val, (classmethod, staticmethod))
-                    ):
-                        # classmethod/staticmethod are already descriptor-adjusted by
-                        # synthetic attribute normalization; binding again drops one
-                        # real parameter.
-                        return super().bind_synthetic_instance_attribute(
-                            attr_name, value
-                        )
-            bound_signature = value.signature.bind_self(
+        signature = (
+            value.signature
+            if isinstance(value, CallableValue)
+            else self.signature_from_value(value)
+        )
+        if isinstance(signature, ConcreteSignature):
+            bound_signature = signature.bind_self(
                 self_annotation_value=None,
                 self_value=self.root_composite.value,
                 ctx=self.checker,
@@ -2301,7 +2313,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         name: str,
         *,
         typ: Value | None = None,
-        add_qualifiers: Container[Qualifier] = (),
+        add_qualifiers: Iterable[Qualifier] = (),
         is_instance_only: bool | None = None,
         is_method: bool | None = None,
         is_classmethod: bool | None = None,
@@ -2472,7 +2484,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 synthetic_class,
                 synthetic_name,
                 synthetic_value,
-                typ=declared_type or synthetic_value,
+                typ=declared_type,
                 is_method=is_method,
                 is_classmethod=is_classmethod,
                 is_staticmethod=is_staticmethod,
@@ -2644,8 +2656,26 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         return None
 
     def _is_classvar_member(self, class_key: type | str, attr_name: str) -> bool:
-        symbol = lookup_declared_symbol(class_key, attr_name, self)
-        return symbol is not None and symbol.is_classvar
+        match = lookup_declared_symbol_with_owner(class_key, attr_name, self)
+        if match is None:
+            return False
+        owner, symbol = match
+        if symbol.is_classvar:
+            return True
+        if (
+            owner == class_key
+            and not symbol.qualifiers
+            and not symbol.is_instance_only
+            and not symbol.is_method
+            and not symbol.is_property
+            and symbol.dataclass_field is None
+        ):
+            return any(
+                self._is_classvar_member(base_key, attr_name)
+                for base_key in self._direct_base_class_keys(class_key)
+                if not self._class_keys_match(base_key, class_key)
+            )
+        return False
 
     def _class_keys_match(self, left: type | str, right: type | str) -> bool:
         if left == right:

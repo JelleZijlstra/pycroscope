@@ -3148,15 +3148,30 @@ class Checker:
     ) -> Value:
         raw_attr = attr
         attr = normalize_synthetic_descriptor_attribute(attr)
-        if isinstance(attr, CallableValue):
+        signature = (
+            attr.signature
+            if isinstance(attr, CallableValue)
+            else self.signature_from_value(attr)
+        )
+        if isinstance(signature, ConcreteSignature):
             if is_staticmethod:
-                return attr
+                return (
+                    attr
+                    if isinstance(attr, CallableValue)
+                    else CallableValue(signature)
+                )
             if is_classmethod:
                 return self._specialize_synthetic_classmethod(
-                    raw_attr, attr, self_annotation_value=self_annotation_value
+                    raw_attr,
+                    (
+                        attr
+                        if isinstance(attr, CallableValue)
+                        else CallableValue(signature)
+                    ),
+                    self_annotation_value=self_annotation_value,
                 )
             maybe_bound = self._bind_synthetic_method(
-                attr.signature, self_annotation_value=self_annotation_value
+                signature, self_annotation_value=self_annotation_value
             )
             if maybe_bound is not None:
                 return CallableValue(maybe_bound)
@@ -3405,29 +3420,42 @@ class CheckerAttrContext(AttrContext):
 
     def bind_synthetic_instance_attribute(self, attr_name: str, value: Value) -> Value:
         value = _normalize_synthetic_attribute(value)
-        if isinstance(value, CallableValue):
-            root_value = replace_fallback(self.root_value)
-            synthetic_root: SyntheticClassObjectValue | None = None
-            if isinstance(root_value, GenericValue) and isinstance(root_value.typ, str):
-                synthetic_root = self.checker.get_synthetic_class(root_value.typ)
-            elif isinstance(root_value, TypedValue) and isinstance(root_value.typ, str):
-                synthetic_root = self.checker.get_synthetic_class(root_value.typ)
-            if synthetic_root is not None and (
-                _is_synthetic_staticmethod_attribute(
-                    synthetic_root, attr_name, self.checker, seen=set()
+        root_value = replace_fallback(self.root_value)
+        synthetic_root: SyntheticClassObjectValue | None = None
+        if isinstance(root_value, GenericValue) and isinstance(
+            root_value.typ, (type, str)
+        ):
+            synthetic_root = self.checker.get_synthetic_class(root_value.typ)
+        elif isinstance(root_value, TypedValue) and isinstance(
+            root_value.typ, (type, str)
+        ):
+            synthetic_root = self.checker.get_synthetic_class(root_value.typ)
+        elif isinstance(root_value, KnownValue) and not isinstance(
+            root_value.val, type
+        ):
+            synthetic_root = self.checker.get_synthetic_class(type(root_value.val))
+        if synthetic_root is None:
+            return value
+        symbol = _lookup_synthetic_declared_symbol(
+            synthetic_root, attr_name, self.checker
+        )
+        if symbol is None or not symbol.is_method:
+            return value
+        if symbol.is_staticmethod or symbol.is_classmethod:
+            raw_attr = get_synthetic_member_value(synthetic_root, attr_name)
+            if raw_attr is not None and isinstance(value, CallableValue):
+                return self.checker._specialize_synthetic_classmethod(
+                    raw_attr, value, self_annotation_value=root_value
                 )
-                or _is_synthetic_classmethod_attribute(
-                    synthetic_root, attr_name, self.checker, seen=set()
-                )
-            ):
-                raw_attr = get_synthetic_member_value(synthetic_root, attr_name)
-                if raw_attr is not None:
-                    return self.checker._specialize_synthetic_classmethod(
-                        raw_attr, value, self_annotation_value=root_value
-                    )
-                return value
+            return value
+        signature = (
+            value.signature
+            if isinstance(value, CallableValue)
+            else self.signature_from_value(value)
+        )
+        if isinstance(signature, ConcreteSignature):
             maybe_bound = self.checker._bind_synthetic_method(
-                value.signature, self_annotation_value=self.root_value
+                signature, self_annotation_value=self.root_value
             )
             if maybe_bound is not None:
                 return CallableValue(maybe_bound)

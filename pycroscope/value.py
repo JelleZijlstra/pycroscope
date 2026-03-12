@@ -2149,33 +2149,6 @@ class SyntheticClassObjectValue(Value):
             dataclass_field_order=tuple(self.dataclass_field_order),
         )
 
-    def walk_values(self) -> Iterable[Value]:
-        yield self
-        yield from self.class_type.walk_values()
-        for base in self.base_classes:
-            yield from base.walk_values()
-        if self.runtime_class is not None:
-            yield from self.runtime_class.walk_values()
-        if self.metaclass is not None:
-            yield from self.metaclass.walk_values()
-        if self.dataclass_info is not None:
-            yield from self.dataclass_info.walk_values()
-        if self.namedtuple_info is not None:
-            yield from self.namedtuple_info.walk_values()
-        if self.dataclass_transform_info is not None:
-            yield from self.dataclass_transform_info.walk_values()
-        for symbol in self.declared_symbols.values():
-            yield from symbol.typ.walk_values()
-            if symbol.property_info is not None:
-                yield from symbol.property_info.walk_values()
-            if symbol.member_value is not None:
-                yield from symbol.member_value.walk_values()
-            if symbol.dataclass_field is not None:
-                yield from symbol.dataclass_field.walk_values()
-        for tv_map in self.generic_bases.values():
-            for val in tv_map.values():
-                yield from val.walk_values()
-
     @property
     def is_dataclass(self) -> bool:
         return self.dataclass_info is not None

@@ -644,10 +644,19 @@ def _get_direct_attribute_from_synthetic_instance(
     self_value: SyntheticClassObjectValue, attr_name: str, ctx: AttrContext
 ) -> Value:
     selected_name = _select_synthetic_attribute_name(self_value, attr_name)
+    direct = _get_direct_attribute_from_synthetic_class(self_value, attr_name, ctx)
+    if direct is not UNINITIALIZED_VALUE:
+        direct_value = replace_fallback(direct)
+        if isinstance(direct_value, AnnotatedValue):
+            direct_value = replace_fallback(direct_value.value)
+        if isinstance(direct_value, KnownValue) and isinstance(
+            direct_value.val, property
+        ):
+            return direct
     symbol = self_value.declared_symbols.get(selected_name)
     if symbol is not None and symbol.property_info is not None:
         return symbol.property_info.getter_type
-    return _get_direct_attribute_from_synthetic_class(self_value, attr_name, ctx)
+    return direct
 
 
 def _select_synthetic_attribute_name(
@@ -1061,10 +1070,13 @@ def _is_synthetic_self_classmethod_attribute(
     self_value: SyntheticClassObjectValue, attr_name: str, ctx: AttrContext
 ) -> bool:
     class_type = self_value.class_type
-    if isinstance(class_type, TypedValue) and isinstance(class_type.typ, (type, str)):
-        symbol = lookup_declared_symbol(
-            class_type.typ, attr_name, ctx.get_can_assign_context()
-        )
+    can_assign_ctx = ctx.get_can_assign_context()
+    if (
+        can_assign_ctx is not None
+        and isinstance(class_type, TypedValue)
+        and isinstance(class_type.typ, (type, str))
+    ):
+        symbol = lookup_declared_symbol(class_type.typ, attr_name, can_assign_ctx)
     else:
         symbol = self_value.declared_symbols.get(attr_name)
     return symbol is not None and symbol.returns_self_on_class_access
@@ -1444,14 +1456,19 @@ def _get_runtime_attribute_from_synthetic_dataclass(
     if synthetic_class is None or not synthetic_class.is_dataclass:
         return UNINITIALIZED_VALUE
 
-    direct = _get_direct_attribute_from_synthetic_class(synthetic_class, ctx.attr, ctx)
-    if direct is not UNINITIALIZED_VALUE:
-        direct = _substitute_typevars(typ, generic_args, direct, typ, ctx)
-        if on_class:
-            direct = _unwrap_value_from_subclass(direct, ctx)
-        else:
-            direct = _unwrap_value_from_typed(direct, typ, ctx)
-        return set_self(direct, ctx.get_self_value())
+    selected_name = _select_synthetic_attribute_name(synthetic_class, ctx.attr)
+    symbol = synthetic_class.declared_symbols.get(selected_name)
+    if symbol is None or not symbol.is_method:
+        direct = _get_direct_attribute_from_synthetic_class(
+            synthetic_class, ctx.attr, ctx
+        )
+        if direct is not UNINITIALIZED_VALUE:
+            direct = _substitute_typevars(typ, generic_args, direct, typ, ctx)
+            if on_class:
+                direct = _unwrap_value_from_subclass(direct, ctx)
+            else:
+                direct = _unwrap_value_from_typed(direct, typ, ctx)
+            return set_self(direct, ctx.get_self_value())
 
     dataclass_attr = _get_synthetic_dataclass_attribute(
         synthetic_class, ctx, on_class=on_class
@@ -1558,17 +1575,23 @@ def _unwrap_value_from_typed(result: Value, typ: type, ctx: AttrContext) -> Valu
             match = lookup_declared_symbol_with_owner(typ, ctx.attr, can_assign_ctx)
             if match is not None:
                 owner, symbol = match
-                if symbol.property_info is not None:
+                if (
+                    symbol.property_info is not None
+                    and not _should_resolve_runtime_property_from_argspec(
+                        cls_val, symbol.property_info.getter_type
+                    )
+                ):
                     self_value = replace_fallback(ctx.get_self_value())
                     generic_args: Sequence[Value] = ()
                     if isinstance(self_value, GenericValue) and self_value.typ is typ:
                         generic_args = self_value.args
-                    elif (
-                        isinstance(self_value, SubclassValue)
-                        and isinstance(replace_fallback(self_value.typ), GenericValue)
-                        and replace_fallback(self_value.typ).typ is typ
-                    ):
-                        generic_args = replace_fallback(self_value.typ).args
+                    elif isinstance(self_value, SubclassValue):
+                        subclass_typ = replace_fallback(self_value.typ)
+                        if (
+                            isinstance(subclass_typ, GenericValue)
+                            and subclass_typ.typ is typ
+                        ):
+                            generic_args = subclass_typ.args
                     return _substitute_typevars(
                         typ, generic_args, symbol.property_info.getter_type, owner, ctx
                     )
@@ -1620,6 +1643,24 @@ def _unwrap_value_from_typed(result: Value, typ: type, ctx: AttrContext) -> Valu
         return AnyValue(AnySource.error)
     else:
         return result
+
+
+def _should_resolve_runtime_property_from_argspec(
+    prop: property, getter_type: Value
+) -> bool:
+    if (
+        isinstance(getter_type, AnyValue)
+        and getter_type.source is AnySource.unannotated
+    ):
+        return True
+    getter = prop.fget
+    if getter is None:
+        return False
+    try:
+        parameters = tuple(inspect.signature(getter).parameters.values())
+    except (TypeError, ValueError):
+        return False
+    return bool(parameters) and parameters[0].annotation is not inspect.Signature.empty
 
 
 _KAH = Callable[[object, str], Value | None]
