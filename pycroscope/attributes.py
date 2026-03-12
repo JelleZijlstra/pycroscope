@@ -647,6 +647,8 @@ def _get_direct_attribute_from_synthetic_instance(
     selected_name = _select_synthetic_attribute_name(self_value, attr_name)
     symbol = self_value.declared_symbols.get(selected_name)
     if symbol is not None:
+        if symbol.is_initvar:
+            return UNINITIALIZED_VALUE
         if symbol.property_info is not None:
             return symbol.property_info.getter_type
         if not symbol.is_method and not symbol.is_classvar:
@@ -1356,13 +1358,19 @@ def _synthetic_class_has_any_base(self_value: SyntheticClassObjectValue) -> bool
 def _should_prefer_synthetic_instance_lookup(
     synthetic_class: SyntheticClassObjectValue, attr_name: str, self_value: Value
 ) -> bool:
-    if _contains_self_typevar(self_value):
-        return True
+    if attr_name == "__init__" and _synthetic_dataclass_init_enabled(synthetic_class):
+        return synthetic_class.is_dataclass
     selected_name = _select_synthetic_attribute_name(synthetic_class, attr_name)
     symbol = synthetic_class.declared_symbols.get(selected_name)
     if symbol is None:
         return False
-    return symbol.is_instance_only or symbol.property_info is not None
+    if symbol.is_initvar:
+        return True
+    if symbol.property_info is not None:
+        return True
+    if symbol.is_method or symbol.is_classvar:
+        return False
+    return symbol.is_instance_only or _contains_self_typevar(self_value)
 
 
 def _contains_self_typevar(value: Value) -> bool:

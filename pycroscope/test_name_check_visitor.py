@@ -1445,6 +1445,17 @@ class TestImportFailureHandlingCodeSamples(TestNameCheckVisitorBase):
             dc.x  # E: undefined_attribute
             dc.y  # E: undefined_attribute
 
+    @assert_passes(allow_import_failures=True)
+    def test_dataclass_initvar_remains_inaccessible_at_module_scope(self):
+        from dataclasses import InitVar, dataclass
+
+        @dataclass
+        class DC:
+            x: InitVar[int]
+
+        dc = DC(1)
+        dc.x  # E: undefined_attribute
+
     @assert_passes()
     def test_final_attribute_assignment_on_instance(self):
         from typing import Final
@@ -4547,6 +4558,30 @@ class TestAnnAssign(TestNameCheckVisitorBase):
                     return "assignable"
                 else:
                     assert_never(self)
+
+    @assert_passes(run_in_both_module_modes=True)
+    def test_implicit_self_preserves_protocol_call_binding(self):
+        from typing import Callable, ParamSpec, Protocol, TypeVar, cast
+
+        P = ParamSpec("P")
+        R = TypeVar("R", covariant=True)
+
+        class Proto(Protocol[P, R]):
+            other_attribute: int
+
+            def __call__(self, *args: P.args, **kwargs: P.kwargs) -> R: ...
+
+        def decorator(f: Callable[P, R]) -> Proto[P, R]:
+            converted = cast(Proto[P, R], f)
+            converted.other_attribute = 1
+            return converted
+
+        @decorator
+        def f(x: int) -> str:
+            return ""
+
+        print(f.other_attribute)
+        f(x=3)
 
     @assert_passes(run_in_both_module_modes=True)
     def test_self_classmethod_in_unimportable_module(self):

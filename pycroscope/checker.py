@@ -2790,6 +2790,10 @@ class Checker:
                             bound = self._bind_synthetic_method(
                                 normalized_call.signature, self_annotation_value=value
                             )
+                            if bound is None:
+                                bound = normalized_call.signature.bind_self(
+                                    self_value=value, ctx=self
+                                )
                             if bound is not None:
                                 return bound
                             return normalized_call.signature
@@ -3466,6 +3470,8 @@ class CheckerAttrContext(AttrContext):
         symbol = _lookup_synthetic_declared_symbol(
             synthetic_root, attr_name, self.checker
         )
+        if attr_name == "__init__" and synthetic_root.is_dataclass:
+            return value
         if symbol is None or not symbol.is_method:
             return value
         if symbol.is_staticmethod or symbol.is_classmethod:

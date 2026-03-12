@@ -750,6 +750,12 @@ class _AttrContext(CheckerAttrContext):
             return super().bind_synthetic_instance_attribute(attr_name, value)
         synthetic_class = self.checker.get_synthetic_class(synthetic_typ)
         is_dunder = attr_name.startswith("__") and attr_name.endswith("__")
+        if (
+            synthetic_class is not None
+            and attr_name == "__init__"
+            and synthetic_class.is_dataclass
+        ):
+            return super().bind_synthetic_instance_attribute(attr_name, value)
         if is_dunder and attr_name != "__init__":
             return super().bind_synthetic_instance_attribute(attr_name, value)
         should_bind = (
@@ -7945,16 +7951,18 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 and isinstance(params[0].node, ast.arg)
                 and params[0].node.annotation is None
             ):
+                is_named_method = isinstance(
+                    node, (ast.FunctionDef, ast.AsyncFunctionDef)
+                )
                 use_implicit_self = not self._is_effectively_final_class_key(
                     self.current_class_key
                 )
+                if is_named_method and node.name == "__init__":
+                    use_implicit_self = False
                 self_instance_value = TypeVarValue(
                     TypeVarParam(SelfT, bound=enclosing_class)
                 )
                 substitutions: TypeVarMap = {SelfT: self_instance_value}
-                is_named_method = isinstance(
-                    node, (ast.FunctionDef, ast.AsyncFunctionDef)
-                )
                 is_implicit_classmethod = (
                     is_named_method and node.name in IMPLICIT_CLASSMETHODS
                 )
@@ -14860,7 +14868,12 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 if mangled in synthetic_class.declared_symbols:
                     selected_name = mangled
         symbol = synthetic_class.declared_symbols.get(selected_name)
-        if symbol is None or symbol.is_method or symbol.is_classvar:
+        if (
+            symbol is None
+            or symbol.is_method
+            or symbol.is_classvar
+            or symbol.is_initvar
+        ):
             return None
         if symbol.property_info is not None:
             return symbol.property_info.getter_type
