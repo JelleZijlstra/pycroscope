@@ -26,7 +26,7 @@ from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 from types import ModuleType
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 from typing_extensions import NotRequired, Protocol, TypedDict
 
@@ -245,7 +245,7 @@ class BaseNodeVisitor(ast.NodeVisitor):
         """Runs the class's checks on a tree."""
         self.log(logging.INFO, "Check file", self.filename)
         self.visit(self.tree)
-        return self.all_failures
+        return cast(list[Failure], self.all_failures)
 
     def check_for_test(self, apply_changes: bool = False) -> Any:
         """Entry point for testing. Also applies all changes if apply_changes is on."""

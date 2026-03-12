@@ -1208,7 +1208,7 @@ def _normalize_protocol_member_value_for_relation(
         bound = signature.get_signature(ctx=ctx)
         if bound is None:
             bound = signature.signature.bind_self(
-                self_value=replace_fallback(signature.self_composite.value), ctx=ctx
+                self_value=replace_fallback(signature.self_value), ctx=ctx
             )
         if bound is not None:
             return CallableValue(bound)

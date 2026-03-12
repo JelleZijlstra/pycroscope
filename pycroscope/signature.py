@@ -134,6 +134,12 @@ ELLIPSIS = Sentinel("ellipsis")
 ELLIPSIS_COMPOSITE = Composite(AnyValue(AnySource.ellipsis_callable))
 
 
+def _sanitize_bound_receiver_composite(composite: Composite) -> Composite:
+    # Receiver calls should preserve the receiver's type, but not caller-local
+    # constraint state like branch-specific varnames.
+    return Composite(unannotate(composite.value))
+
+
 def _is_staticmethod_callable(func: FunctionType) -> bool:
     module = inspect.getmodule(func)
     if module is None:
@@ -1594,12 +1600,32 @@ class Signature:
                 for typevar, value in param_tv_map.items():
                     if isinstance(typevar_values.get(typevar), AnyValue):
                         typevar_values[typevar] = value
-            if SelfT in self.inferable_typevars and self.parameters:
-                first_param_name = next(iter(self.parameters))
-                if first_param_name in bound_args and isinstance(
-                    typevar_values.get(SelfT), AnyValue
-                ):
-                    self_value = bound_args[first_param_name][1].value
+            if SelfT in self.inferable_typevars:
+                self_value = None
+                if self.bound_receiver_composite is not None:
+                    self_value = self.bound_receiver_composite.value
+                elif self.parameters:
+                    first_param_name = next(iter(self.parameters))
+                    first_param = self.parameters[first_param_name]
+                    should_use_first_arg = any(
+                        type_param.typevar is SelfT
+                        for type_param in iter_type_params_in_value(
+                            first_param.annotation
+                        )
+                    ) or (
+                        isinstance(self.callable, (FunctionType, MethodType))
+                        and safe_getattr(self.callable, "__name__", None)
+                        not in {"__init__", "__new__"}
+                        and any(
+                            type_param.typevar is SelfT
+                            for type_param in iter_type_params_in_value(
+                                self.return_value
+                            )
+                        )
+                    )
+                    if first_param_name in bound_args and should_use_first_arg:
+                        self_value = bound_args[first_param_name][1].value
+                if self_value is not None:
                     if (
                         isinstance(self_value, KnownValueWithTypeVars)
                         and SelfT in self_value.typevars
@@ -2281,18 +2307,12 @@ class Signature:
             allow_call=self.allow_call,
             deprecated=self.deprecated,
             bound_receiver_param_name=(
-                receiver_param_name
-                if preserve_impl and self_value is not None
-                else None
+                receiver_param_name if self_value is not None else None
             ),
             bound_receiver_composite=(
-                self_composite
-                if preserve_impl and self_composite is not None
-                else (
-                    Composite(self_value)
-                    if preserve_impl and self_value is not None
-                    else None
-                )
+                _sanitize_bound_receiver_composite(self_composite)
+                if self_composite is not None
+                else Composite(self_value) if self_value is not None else None
             ),
         )
         solved_typevars = {
@@ -3023,7 +3043,7 @@ class BoundMethodSignature:
     """Signature for a method bound to a particular value."""
 
     signature: ConcreteSignature
-    self_composite: Composite
+    self_value: Value
     return_override: Value | None = None
 
     def check_call(
@@ -3032,14 +3052,14 @@ class BoundMethodSignature:
         visitor: "NameCheckVisitor",
         node: ast.AST | None,
     ) -> Value:
-        self_composite = self.self_composite
+        self_value = self.self_value
         has_impl = (
             self.signature.impl is not None
             if isinstance(self.signature, Signature)
             else any(sig.impl is not None for sig in self.signature.signatures)
         )
         if not has_impl:
-            normalized_value = self_composite.value
+            normalized_value = self_value
             if isinstance(normalized_value, SequenceValue) and normalized_value.typ in (
                 list,
                 set,
@@ -3053,11 +3073,11 @@ class BoundMethodSignature:
                     normalized_value = replaced.simplify()
                 elif isinstance(replaced, DictIncompleteValue):
                     normalized_value = replaced.simplify()
-            if normalized_value != self_composite.value:
-                self_composite = Composite(
-                    normalized_value, self_composite.varname, self_composite.node
-                )
-        ret = self.signature.check_call([(self_composite, None), *args], visitor, node)
+            if normalized_value != self_value:
+                self_value = normalized_value
+        ret = self.signature.check_call(
+            [(Composite(self_value), None), *args], visitor, node
+        )
         if self.return_override is not None and not self.signature.has_return_value():
             if isinstance(ret, AnnotatedValue):
                 return annotate_value(self.return_override, ret.metadata)
@@ -3072,11 +3092,11 @@ class BoundMethodSignature:
         self_annotation_value: Value | None = None,
     ) -> ConcreteSignature | None:
         if self_annotation_value is None:
-            self_annotation_value = receiver_to_self_type(self.self_composite.value)
+            self_annotation_value = receiver_to_self_type(self.self_value)
         return self.signature.bind_self(
             preserve_impl=preserve_impl,
-            self_value=self.self_composite.value,
-            self_composite=self.self_composite,
+            self_value=self.self_value,
+            self_composite=Composite(self.self_value),
             ctx=ctx,
             self_annotation_value=self_annotation_value,
         )
@@ -3101,7 +3121,7 @@ class BoundMethodSignature:
             self.signature.substitute_typevars(
                 typevars, infer_substituted_typevars=infer_substituted_typevars
             ),
-            self.self_composite.substitute_typevars(typevars),
+            self.self_value.substitute_typevars(typevars),
             (
                 self.return_override.substitute_typevars(typevars)
                 if self.return_override is not None
@@ -3110,7 +3130,7 @@ class BoundMethodSignature:
         )
 
     def __str__(self) -> str:
-        return f"{self.signature} bound to {self.self_composite.value}"
+        return f"{self.signature} bound to {self.self_value}"
 
 
 MaybeSignature = None | Signature | BoundMethodSignature | OverloadedSignature
@@ -3125,15 +3145,16 @@ def make_bound_method(
 ) -> BoundMethodSignature | None:
     if argspec is None:
         return None
+    self_value = _sanitize_bound_receiver_composite(self_composite).value
     if isinstance(argspec, (Signature, OverloadedSignature)):
-        return BoundMethodSignature(argspec, self_composite, return_override)
+        return BoundMethodSignature(argspec, self_value, return_override)
     elif isinstance(argspec, BoundMethodSignature):
         if return_override is None:
             return_override = argspec.return_override
         sig = argspec.get_signature(ctx=ctx)
         if sig is None:
             return None
-        return BoundMethodSignature(sig, self_composite, return_override)
+        return BoundMethodSignature(sig, self_value, return_override)
     else:
         assert_never(argspec)
 

@@ -4,6 +4,8 @@
 
 - Improve `--find-unused-attributes` so it now reports unused non-method attributes too, handles inheritance and overrides more accurately for polymorphic attribute access, treats concrete classes proven compatible with protocols as implementations of those protocols, skips `TypedDict` fields and framework-generated members, and supports config hooks to ignore patterns like `visit_*` methods on AST visitors and helper classes in test-only modules.
 - Restore the self-check's unused-object enforcement so repo-wide self-checks once again fail on genuinely unused module-level objects.
+- Speed up `test_self.py` and other `Self`-heavy analysis by removing runtime/base-class `Self` annotation scans and using a simpler implicit-`Self` receiver model.
+- Treat unannotated `self` and `cls` in non-final classes more like `Self`, including in method bodies and classmethod factories, while keeping final classes and enums concrete.
 - Add PEP 767 `ReadOnly` attribute support for classes and protocols, including assignment/deletion errors for readonly members, protocol matching for readonly attributes, and `Final`-attribute deletion errors.
 - Fix a crash when resolving inherited string annotations for instance attributes accessed through `cls` in methods, so these attributes now infer their annotated types instead of raising an internal error.
 - Improve `isinstance()` narrowing for local class objects, including `NamedTuple` classes, so branches now narrow correctly even when the class object comes from pycroscope's synthetic local-class representation.
