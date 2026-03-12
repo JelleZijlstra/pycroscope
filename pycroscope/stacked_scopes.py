@@ -60,7 +60,6 @@ from .value import (
     ParamSpecParam,
     PredicateValue,
     ReferencingValue,
-    SequenceValue,
     SubclassValue,
     TypedValue,
     TypeVarMap,
@@ -504,13 +503,14 @@ def _maybe_narrow_for_truthiness(
 ) -> Value | None:
     inner_value = replace_fallback(value)
     predicate = PredicateValue(MinLen(1)) if positive else PredicateValue(MaxLen(0))
-    if isinstance(inner_value, SequenceValue) and inner_value.typ is tuple:
-        return intersect_values(value, predicate, ctx)
-    if isinstance(inner_value, KnownValue) and isinstance(inner_value.val, tuple):
-        return intersect_values(value, predicate, ctx)
-    if isinstance(inner_value, TypedValue) and inner_value.typ is tuple:
-        return intersect_values(value, predicate, ctx)
-    return None
+    match inner_value:
+        case KnownValue(val=val) if isinstance(val, tuple):
+            pass
+        case TypedValue(typ=typ) if typ is tuple:
+            pass
+        case _:
+            return None
+    return intersect_values(value, predicate, ctx)
 
 
 @dataclass(frozen=True)

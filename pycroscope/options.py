@@ -365,11 +365,7 @@ class Options:
         return option.get_value_from_instances(instances, self.module_path)
 
     def is_error_code_enabled(self, code: Error) -> bool:
-        option = ConfigOption.registry[code.name]
-        try:
-            return self._get_value_for_no_default(option)
-        except NotFound:
-            return option.default_value
+        return self.get_value_for(ConfigOption.registry[code.name])
 
     def is_error_code_enabled_anywhere(self, code: Error) -> bool:
         option = ConfigOption.registry[code.name]
