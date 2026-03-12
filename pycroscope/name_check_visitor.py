@@ -851,37 +851,6 @@ class _SyntheticTypedDictContext:
     )
 
 
-@dataclass(frozen=True)
-class DataclassInfo:
-    init: bool
-    eq: bool
-    frozen: bool | None
-    unsafe_hash: bool
-    match_args: bool
-    order: bool
-    slots: bool
-    kw_only_default: bool
-    field_specifiers: tuple[Value, ...]
-
-    @classmethod
-    def from_transform_info_and_options(
-        cls, info: DataclassTransformInfo, keywords: Mapping[str, ast.expr]
-    ) -> "DataclassInfo":
-        return DataclassInfo(
-            init=_extract_bool(keywords.get("init"), True),
-            eq=_extract_bool(keywords.get("eq"), info.eq_default),
-            frozen=_extract_bool(keywords.get("frozen"), info.frozen_default),
-            unsafe_hash=_extract_bool(keywords.get("unsafe_hash"), False),
-            match_args=_extract_bool(keywords.get("match_args"), True),
-            order=_extract_bool(keywords.get("order"), info.order_default),
-            slots=_extract_bool(keywords.get("slots"), False),
-            kw_only_default=_extract_bool(
-                keywords.get("kw_only"), info.kw_only_default
-            ),
-            field_specifiers=info.field_specifiers,
-        )
-
-
 class ComprehensionLengthInferenceLimit(IntegerOption):
     """If we iterate over something longer than this, we don't try to infer precise
     types for comprehensions. Increasing this can hurt performance."""

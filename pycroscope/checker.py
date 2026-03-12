@@ -3285,18 +3285,6 @@ def _lookup_synthetic_declared_symbol(
     return synthetic_class.declared_symbols.get(attr_name)
 
 
-def _is_synthetic_staticmethod_attribute(
-    synthetic_class: SyntheticClassObjectValue,
-    attr_name: str,
-    checker: Checker,
-    *,
-    seen: set[int],
-) -> bool:
-    del seen
-    symbol = _lookup_synthetic_declared_symbol(synthetic_class, attr_name, checker)
-    return symbol is not None and symbol.is_staticmethod
-
-
 def _is_synthetic_classmethod_attribute(
     synthetic_class: SyntheticClassObjectValue,
     attr_name: str,

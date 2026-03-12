@@ -1154,21 +1154,6 @@ def _get_property_member_value(
     return _specialize_declared_property_value(class_key, member, resolved_value, ctx)
 
 
-def _get_synthetic_member_value(
-    class_key: type | str, member: str, ctx: CanAssignContext
-) -> Value | None:
-    match = lookup_declared_symbol_with_owner(class_key, member, ctx)
-    if match is None:
-        return None
-    owner, symbol = match
-    if symbol.member_value is not None:
-        return symbol.member_value
-    synthetic = _get_synthetic_class_for_key(owner, ctx)
-    if synthetic is None:
-        return None
-    return get_synthetic_member_value(synthetic, member)
-
-
 def _is_readonly_instance_member(
     class_key: type | str, member: str, ctx: CanAssignContext
 ) -> bool:
