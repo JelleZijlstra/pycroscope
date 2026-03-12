@@ -16,6 +16,7 @@ import collections.abc
 import contextlib
 import dataclasses
 import enum
+import inspect
 import itertools
 import logging
 import operator
@@ -1065,6 +1066,17 @@ class IgnoredUnusedClassAttributes(ConcatenatedOption[tuple[type, set[str]]]):
         return final
 
 
+@dataclass(frozen=True)
+class UnusedClassAttribute:
+    typ: type
+    attr_name: str
+    is_method: bool
+
+    def __str__(self) -> str:
+        kind = "method" if self.is_method else "attribute"
+        return f"Unused {kind}: {self.typ!r}.{self.attr_name}"
+
+
 class CheckForDuplicateValues(PyObjectSequenceOption[type]):
     """For subclasses of these classes, we error if multiple attributes have the same
     value. This is used for the duplicate_enum check."""
@@ -1141,7 +1153,9 @@ class ClassAttributeChecker:
         self.should_serialize = should_serialize
         self.all_failures = []
         self.types_with_dynamic_attrs = set()
+        self.unused_attributes: list[UnusedClassAttribute] = []
         self.filename_to_visitor = {}
+        self.class_body_attributes = collections.defaultdict(set)
         # Dictionary from type to list of (attr_name, node, filename) tuples
         self.attributes_read = collections.defaultdict(list)
         # Dictionary from type to set of attributes that are set on that class
@@ -1191,6 +1205,11 @@ class ClassAttributeChecker:
             return
         self.attributes_set[serialized].add(attr_name)
         self.merge_attribute_value(serialized, attr_name, value)
+
+    def record_class_body_attribute(self, typ: type, attr_name: str) -> None:
+        serialized = self.serialize_type(typ)
+        if serialized is not None:
+            self.class_body_attributes[serialized].add(attr_name)
 
     def merge_attribute_value(
         self, serialized: object, attr_name: str, value: Value
@@ -1305,49 +1324,143 @@ class ClassAttributeChecker:
     def check_unused_attributes(self) -> None:
         """Attempts to find attributes.
 
-        This relies on comparing the set of attributes read on each class with the attributes in the
-        class's ``__dict__``. It has many false positives and should be considered experimental.
-
-        Some known causes of false positives:
-
-        - Methods called in base classes of children (mixins)
-        - Special methods like ``__eq__``
-        - Insufficiently powerful type inference
-
+        This is still approximate, but it reasons about inheritance by resolving each
+        recorded read against the receiver class and all examined subclasses.
         """
-        all_attrs_read = collections.defaultdict(set)
+        self.unused_attributes = list(self.get_unused_attributes())
+        for unused_attribute in self.unused_attributes:
+            print(unused_attribute)
 
-        def _add_attrs(typ: Any, attr_names_read: set[str]) -> None:
-            if typ is None:
-                return
-            all_attrs_read[typ] |= attr_names_read
-            for base_cls in typ.__bases__:
-                all_attrs_read[base_cls] |= attr_names_read
-            if isinstance(typ, type):
-                for child_cls in get_subclasses_recursively(typ):
-                    all_attrs_read[child_cls] |= attr_names_read
-
-        for serialized, attrs_read in self.attributes_read.items():
-            attr_names_read = {attr_name for attr_name, _, _ in attrs_read}
-            _add_attrs(self.unserialize_type(serialized), attr_names_read)
-
+    def get_unused_attributes(self) -> Iterable[UnusedClassAttribute]:
+        ignored_everywhere = set(self.options.get_value_for(IgnoredUnusedAttributes))
+        ignored_by_class = collections.defaultdict(set)
         for typ, attrs in self.options.get_value_for(IgnoredUnusedClassAttributes):
-            _add_attrs(typ, attrs)
+            for candidate in self._iter_related_classes(typ):
+                serialized = self.serialize_type(candidate)
+                if serialized is not None:
+                    ignored_by_class[serialized] |= attrs
 
-        ignored = set(self.options.get_value_for(IgnoredUnusedAttributes))
-        for typ, attrs_read in sorted(all_attrs_read.items(), key=self._cls_sort):
-            if self.serialize_type(typ) not in self.classes_examined:
+        declared_by_class = {}
+        for serialized in sorted(self.classes_examined, key=self._cls_sort):
+            typ = self.unserialize_type(serialized)
+            if typ is None or not isinstance(typ, type):
                 continue
-            existing_attrs = set(typ.__dict__.keys())
-            for attr in existing_attrs - attrs_read - ignored:
-                # server calls will always show up as unused here
-                if safe_getattr(safe_getattr(typ, attr, None), "server_call", False):
+            declared = self._get_declared_attributes(typ)
+            if declared:
+                declared_by_class[serialized] = declared
+
+        used_pairs = set()
+        for serialized, attrs_read in self.attributes_read.items():
+            typ = self.unserialize_type(serialized)
+            if typ is None or not isinstance(typ, type):
+                continue
+            for attr_name, _, _ in attrs_read:
+                for runtime_cls in self._iter_runtime_classes(typ):
+                    owner = self._find_declaring_class(
+                        runtime_cls, attr_name, declared_by_class
+                    )
+                    if owner is None:
+                        continue
+                    owner_serialized = self.serialize_type(owner)
+                    if owner_serialized is not None:
+                        used_pairs.add((owner_serialized, attr_name))
+
+        for serialized in sorted(declared_by_class, key=self._cls_sort):
+            typ = self.unserialize_type(serialized)
+            if typ is None:
+                continue
+            if any(
+                self.serialize_type(base_cls) in self.types_with_dynamic_attrs
+                for base_cls in get_mro(typ)
+            ):
+                continue
+            ignored_for_class = ignored_everywhere | ignored_by_class[serialized]
+            for attr_name in sorted(declared_by_class[serialized]):
+                if attr_name in ignored_for_class:
                     continue
-                print(f"Unused method: {typ!r}.{attr}")
+                if self._should_ignore_unused_attribute(typ, attr_name):
+                    continue
+                if (serialized, attr_name) in used_pairs:
+                    continue
+                yield UnusedClassAttribute(
+                    typ, attr_name, self._is_method_attribute(typ, attr_name)
+                )
+
+    def _iter_related_classes(self, typ: type) -> Iterable[type]:
+        yield from get_mro(typ)
+        yield from get_subclasses_recursively(typ)
+
+    def _iter_runtime_classes(self, typ: type) -> Iterable[type]:
+        for candidate in itertools.chain([typ], get_subclasses_recursively(typ)):
+            serialized = self.serialize_type(candidate)
+            if serialized in self.classes_examined:
+                yield candidate
+
+    def _find_declaring_class(
+        self, typ: type, attr_name: str, declared_by_class: Mapping[object, set[str]]
+    ) -> type | None:
+        for base_cls in get_mro(typ):
+            serialized = self.serialize_type(base_cls)
+            if serialized is None:
+                continue
+            if attr_name in declared_by_class.get(serialized, ()):
+                return base_cls
+        return None
+
+    def _get_declared_attributes(self, typ: type) -> set[str]:
+        serialized = self.serialize_type(typ)
+        if serialized is None:
+            return set()
+        declared = set(self.attributes_set[serialized])
+        declared |= set(self.class_body_attributes[serialized])
+        return declared
+
+    def _should_ignore_unused_attribute(self, typ: type, attr_name: str) -> bool:
+        if attr_name.startswith("__") and attr_name.endswith("__"):
+            return True
+        if attr_name in {
+            "__annotations__",
+            "__dict__",
+            "__doc__",
+            "__module__",
+            "__weakref__",
+        }:
+            return True
+        if self._should_ignore_test_attribute(typ, attr_name):
+            return True
+        if safe_getattr(safe_getattr(typ, attr_name, None), "server_call", False):
+            return True
+        return False
+
+    def _is_method_attribute(self, typ: type, attr_name: str) -> bool:
+        raw_value = typ.__dict__.get(attr_name)
+        if isinstance(raw_value, (staticmethod, classmethod)):
+            return True
+        return inspect.isfunction(raw_value) or inspect.ismethoddescriptor(raw_value)
+
+    def _should_ignore_test_attribute(self, typ: type, attr_name: str) -> bool:
+        if not self._is_method_attribute(typ, attr_name):
+            return False
+        if attr_name in {
+            "setUp",
+            "tearDown",
+            "setup_class",
+            "setup_method",
+            "teardown_class",
+            "teardown_method",
+        }:
+            return True
+        module_name = safe_getattr(typ, "__module__", "")
+        if not isinstance(module_name, str):
+            return False
+        is_test_module = any(part.startswith("test") for part in module_name.split("."))
+        if is_test_module and attr_name.startswith("test"):
+            return True
+        return typ.__name__.startswith("Test") and attr_name.startswith("test")
 
     # sort by module + name in order to get errors in a reasonable order
-    def _cls_sort(self, pair: tuple[Any, Any]) -> tuple[str, ...]:
-        typ = pair[0]
+    def _cls_sort(self, pair: Any) -> tuple[str, ...]:
+        typ = pair[0] if isinstance(pair, tuple) else pair
         if hasattr(typ, "__name__") and isinstance(typ.__name__, str):
             return (str(typ.__module__), str(typ.__name__))
         else:
@@ -4020,6 +4133,8 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     base_values_for_registration,
                     declared_type_params=registered_type_param_values,
                 )
+            if isinstance(class_scope_object, type):
+                self._record_class_body_attributes(node, class_scope_object)
             with (
                 self._active_pep695_type_param_scope(type_param_values),
                 override(self, "current_synthetic_typeddict", synthetic_typeddict),
@@ -16320,6 +16435,12 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         if self.attribute_checker is not None:
             self.attribute_checker.record_class_examined(cls)
 
+    def _record_class_body_attributes(self, node: ast.ClassDef, cls: type) -> None:
+        if self.attribute_checker is None:
+            return
+        for attr_name in _class_body_attribute_names(node):
+            self.attribute_checker.record_class_body_attribute(cls, attr_name)
+
     def _record_type_has_dynamic_attrs(self, typ: type) -> None:
         if self.attribute_checker is not None:
             self.attribute_checker.record_type_has_dynamic_attrs(typ)
@@ -16592,6 +16713,8 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         for checker in extra_data:
             if checker is None:
                 continue
+            for serialized, attrs in checker.class_body_attributes.items():
+                attribute_checker.class_body_attributes[serialized] |= attrs
             for serialized, attrs in checker.attributes_read.items():
                 attribute_checker.attributes_read[serialized] += attrs
             for serialized, attrs in checker.attributes_set.items():
@@ -16602,10 +16725,11 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                         serialized, attr_name, value
                     )
             attribute_checker.modules_examined |= checker.modules_examined
-            attribute_checker.classes_examined |= checker.modules_examined
+            attribute_checker.classes_examined |= checker.classes_examined
             attribute_checker.types_with_dynamic_attrs |= (
                 checker.types_with_dynamic_attrs
             )
+            attribute_checker.unused_attributes += checker.unused_attributes
             attribute_checker.filename_to_visitor.update(checker.filename_to_visitor)
 
     # Protocol compliance
@@ -17570,6 +17694,32 @@ def _mangle_class_attribute_name(class_name: str, attribute_name: str) -> str:
     if attribute_name.startswith("__") and not attribute_name.endswith("__"):
         return f"_{class_name}{attribute_name}"
     return attribute_name
+
+
+def _class_body_attribute_names(node: ast.ClassDef) -> Iterable[str]:
+    for statement in node.body:
+        if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            yield _mangle_class_attribute_name(node.name, statement.name)
+        elif isinstance(statement, ast.Assign):
+            for target in statement.targets:
+                yield from _attribute_names_from_assignment_target(target, node.name)
+        elif isinstance(statement, ast.AnnAssign):
+            yield from _attribute_names_from_assignment_target(
+                statement.target, node.name
+            )
+        elif _AST_TYPE_ALIAS is not None and isinstance(statement, _AST_TYPE_ALIAS):
+            if isinstance(statement.name, ast.Name):
+                yield _mangle_class_attribute_name(node.name, statement.name.id)
+
+
+def _attribute_names_from_assignment_target(
+    target: ast.AST, class_name: str
+) -> Iterable[str]:
+    if isinstance(target, ast.Name):
+        yield _mangle_class_attribute_name(class_name, target.id)
+    elif isinstance(target, (ast.Tuple, ast.List)):
+        for elt in target.elts:
+            yield from _attribute_names_from_assignment_target(elt, class_name)
 
 
 def _value_contains_self(value: Value | None) -> bool:

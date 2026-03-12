@@ -1,8 +1,15 @@
 # static analysis: ignore
+import ast
+import textwrap
 from typing import Dict, Union
 
 from .attributes import normalize_synthetic_descriptor_attribute
-from .test_name_check_visitor import TestNameCheckVisitorBase
+from .error_code import DISABLED_IN_TESTS, ErrorCode
+from .test_name_check_visitor import (
+    ClassAttributeChecker,
+    TestNameCheckVisitorBase,
+    _make_module,
+)
 from .test_node_visitor import (
     assert_passes,
     only_before,
@@ -33,6 +40,32 @@ def test_normalize_synthetic_descriptor_attribute_empty_args() -> None:
 
 
 class TestAttributes(TestNameCheckVisitorBase):
+    def _get_unused_attributes(self, code_str):
+        code_str = textwrap.dedent(code_str)
+        tree = ast.parse(code_str, "<test input>")
+        settings = {code: code not in DISABLED_IN_TESTS for code in ErrorCode}
+        kwargs = self.visitor_cls.prepare_constructor_kwargs({"settings": settings})
+        with ClassAttributeChecker(
+            enabled=True,
+            should_check_unused_attributes=True,
+            options=kwargs["checker"].options,
+        ) as attribute_checker:
+            visitor = self.visitor_cls(
+                "<test input>",
+                code_str,
+                tree,
+                module=_make_module(code_str),
+                attribute_checker=attribute_checker,
+                **kwargs,
+            )
+            result = visitor.check_for_test()
+            result += visitor.perform_final_checks(kwargs)
+        assert not result
+        return {
+            (item.typ.__name__, item.attr_name, item.is_method)
+            for item in attribute_checker.unused_attributes
+        }
+
     @skip_if_not_installed("attr")
     @assert_passes()
     def test_attrs(self):
@@ -84,6 +117,105 @@ class TestAttributes(TestNameCheckVisitorBase):
             assert_type(Capybara.capybara_id, int | None)
             assert_type(DefiniteCapybara().capybara_id, Literal[3])
             assert_type(DefiniteCapybara.capybara_id, Literal[3])
+
+    def test_unused_attributes_follow_overrides(self):
+        unused = self._get_unused_attributes("""
+            class Base:
+                value: int = 1
+
+                def method(self) -> int:
+                    return 1
+
+            class Child(Base):
+                value: int = 2
+
+                def method(self) -> int:
+                    return 2
+
+            def use(child: Child) -> int:
+                return child.method() + child.value
+        """)
+        assert ("Base", "method", True) in unused
+        assert ("Base", "value", False) in unused
+        assert ("Child", "method", True) not in unused
+        assert ("Child", "value", False) not in unused
+
+    def test_unused_attributes_consider_polymorphism(self):
+        unused = self._get_unused_attributes("""
+            class Base:
+                def method(self) -> int:
+                    return 1
+
+            class Child(Base):
+                def method(self) -> int:
+                    return 2
+
+            def use(obj: Base) -> int:
+                return obj.method()
+        """)
+        assert ("Base", "method", True) not in unused
+        assert ("Child", "method", True) not in unused
+
+    def test_inherited_reads_mark_base_attribute_used(self):
+        unused = self._get_unused_attributes("""
+            class Base:
+                value = 1
+
+            class Child(Base):
+                pass
+
+            def use(child: Child) -> int:
+                return child.value
+        """)
+        assert ("Base", "value", False) not in unused
+
+    def test_unused_nonmethod_attribute(self):
+        unused = self._get_unused_attributes("""
+            class Config:
+                enabled = True
+
+                def __init__(self) -> None:
+                    self.cache = 0
+
+                def is_enabled(self) -> bool:
+                    return self.enabled
+        """)
+        assert ("Config", "cache", False) in unused
+        assert ("Config", "enabled", False) not in unused
+
+    def test_unused_test_methods_are_ignored(self):
+        unused = self._get_unused_attributes("""
+            class TestThing:
+                def test_case(self) -> None:
+                    pass
+
+                def helper(self) -> None:
+                    pass
+        """)
+        assert ("TestThing", "test_case", True) not in unused
+        assert ("TestThing", "helper", True) in unused
+
+    def test_unused_enum_internals_are_ignored(self):
+        unused = self._get_unused_attributes("""
+            import enum
+
+            class Rodent(enum.Enum):
+                capybara = 1
+                guinea_pig = 2
+        """)
+        assert ("Rodent", "_member_map_", False) not in unused
+        assert ("Rodent", "_value2member_map_", False) not in unused
+
+    def test_unused_namedtuple_framework_attributes_are_ignored(self):
+        unused = self._get_unused_attributes("""
+            from typing import NamedTuple
+
+            class Pair(NamedTuple):
+                left: int
+                right: int
+        """)
+        assert ("Pair", "_field_defaults", False) not in unused
+        assert ("Pair", "_fields", False) not in unused
 
     @assert_passes()
     def test_readonly_attribute_assignment_and_deletion(self):
