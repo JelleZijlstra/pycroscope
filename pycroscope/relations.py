@@ -714,6 +714,29 @@ def _has_relation(
             return {}
         elif isinstance(right, TypedValue) and right.typ is type:
             return {}
+        elif isinstance(right, TypedValue) and isinstance(right.typ, (type, str)):
+            get_synthetic_class = getattr(ctx, "get_synthetic_class", None)
+            if callable(get_synthetic_class):
+                synthetic_class = get_synthetic_class(right.typ)
+                if synthetic_class is not None:
+                    symbol = synthetic_class.declared_symbols.get("__hash__")
+                    if symbol is not None and symbol.member_value == KnownValue(None):
+                        return CanAssignError(f"{right} is not hashable")
+            if isinstance(right.typ, type):
+                try:
+                    mro = list(type.mro(right.typ))
+                except Exception:
+                    mro = []
+                for base_cls in mro:
+                    try:
+                        base_dict = base_cls.__dict__
+                    except Exception:
+                        continue
+                    if "__hash__" not in base_dict:
+                        continue
+                    if base_dict["__hash__"] is None:
+                        return CanAssignError(f"{right} is not hashable")
+                    break
         # And that means we also get to use this more direct check for KnownValue
         elif isinstance(right, KnownValue):
             try:
@@ -1249,8 +1272,32 @@ def _extract_type_form(value: Value, ctx: CanAssignContext) -> Value | CanAssign
         from pycroscope.annotations import type_from_runtime, type_from_value
 
         if isinstance(value.val, str):
+            error_node = None
+            node_context = getattr(ctx, "node_context", None)
+            if node_context is not None and node_context.contexts:
+                error_node = node_context.contexts[-1]
+            existing_failures = getattr(ctx, "all_failures", None)
+            initial_failure_count = (
+                len(existing_failures) if isinstance(existing_failures, list) else None
+            )
             # Use lexical scope when evaluating quoted type expressions.
-            type_form = type_from_value(value, visitor=ctx, suppress_errors=True)
+            type_form = type_from_value(
+                value,
+                visitor=ctx,
+                node=error_node,
+                suppress_errors=True,
+                allow_undefined_names=True,
+            )
+            if (
+                type_form == AnyValue(AnySource.error)
+                and initial_failure_count is not None
+                and isinstance(existing_failures, list)
+                and any(
+                    failure["code"].name == "undefined_name"
+                    for failure in existing_failures[initial_failure_count:]
+                )
+            ):
+                return type_form
         else:
             type_form = type_from_runtime(value.val, visitor=ctx, suppress_errors=True)
         if type_form == AnyValue(AnySource.error):

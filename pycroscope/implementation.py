@@ -2105,9 +2105,21 @@ def _cast_impl(ctx: CallContext) -> Value:
     return type_from_value(typ, visitor=ctx.visitor, node=ctx.node)
 
 
+def _type_from_typeform_arg(
+    value: Value, ctx: CallContext, arg: str | None = None
+) -> Value:
+    allow_undefined_names = isinstance(value, KnownValue) and isinstance(value.val, str)
+    return type_from_value(
+        value,
+        visitor=ctx.visitor,
+        node=ctx.ast_for_arg(arg) if arg is not None else ctx.node,
+        allow_undefined_names=allow_undefined_names,
+    )
+
+
 def _typeform_impl(ctx: CallContext) -> Value:
     typ = ctx.vars["typ"]
-    type_form = type_from_value(typ, visitor=ctx.visitor, node=ctx.node)
+    type_form = _type_from_typeform_arg(typ, ctx)
     if type_form == AnyValue(AnySource.error):
         return AnyValue(AnySource.error)
     return TypeFormValue(type_form)
@@ -2697,15 +2709,13 @@ def _typevar_impl(ctx: CallContext) -> Value:
     if ctx.vars["bound"] is NO_ARG_SENTINEL:
         bound = None
     else:
-        bound = type_from_value(
-            ctx.vars["bound"], ctx.visitor, ctx.ast_for_arg("bound")
-        )
+        bound = _type_from_typeform_arg(ctx.vars["bound"], ctx, "bound")
     if (
         isinstance(ctx.vars["constraints"], SequenceValue)
         and ctx.vars["constraints"].members
     ):
         constraints = [
-            type_from_value(constraint, ctx.visitor, ctx.ast_for_arg("constraints"))
+            _type_from_typeform_arg(constraint, ctx, "constraints")
             for constraint in ctx.vars["constraints"].get_member_sequence() or ()
         ]
     else:
@@ -2719,9 +2729,7 @@ def _typevar_impl(ctx: CallContext) -> Value:
     if ctx.vars["default"] is NO_ARG_SENTINEL:
         default = None
     else:
-        default = type_from_value(
-            ctx.vars["default"], ctx.visitor, ctx.ast_for_arg("default")
-        )
+        default = _type_from_typeform_arg(ctx.vars["default"], ctx, "default")
 
     if bound is not None and default is not None:
         if not is_assignable(bound, default, ctx.visitor):

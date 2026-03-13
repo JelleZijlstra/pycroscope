@@ -2193,6 +2193,12 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             module_scope = self.scopes.module_scope()
             if isinstance(module_scope, ModuleScope):
                 module_scope.start_check_phase()
+            relation_cache = self.checker.get_relation_cache()
+            if relation_cache is not None:
+                # Collect-phase annotation evaluation may intentionally treat
+                # later-defined names as unknowns, so relation results from that
+                # phase are not always valid once the full module scope exists.
+                relation_cache.clear()
             with override(self, "state", VisitorState.check_names):
                 self.visit(self.tree)
                 self._flush_pending_overload_blocks()
@@ -4510,6 +4516,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             and self.scopes.scope_type() == ScopeType.module_scope
             and synthetic_typeddict is None
         ):
+            current_scope = self.scopes.current_scope()
+            if isinstance(current_scope, ModuleScope) and synthetic_class is not None:
+                current_scope.set_future_value(node.name, synthetic_class)
             # In the collect phase we don't always visit top-level class bodies.
             # Avoid storing placeholder values that later get unioned with the
             # check-phase result.
@@ -15617,7 +15626,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         if isinstance(value, KnownValue):
             if is_typing_name(value.val, "TypedDict"):
                 return True
-            value = type_from_value(value, self, suppress_errors=True)
+            value = type_from_value(value, self, allow_undefined_names=True)
         if any(
             _type_param_identity(subval, self) is not None
             for subval in value.walk_values()

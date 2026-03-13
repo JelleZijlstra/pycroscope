@@ -91,6 +91,7 @@ from .signature import (
 )
 from .value import (
     NO_RETURN_VALUE,
+    UNINITIALIZED_VALUE,
     AnnotatedValue,
     AnnotationExpr,
     AnySource,
@@ -201,6 +202,8 @@ class Context:
 
     should_suppress_errors: bool = field(default=False, init=False)
     """While this is True, no annotation errors are emitted."""
+    should_allow_undefined_names: bool = field(default=False, init=False)
+    """While this is True, unresolved names may evaluate to an unknown type."""
     _being_evaluated: dict[int, Value] = field(default_factory=dict, init=False)
     _invalid_self_nodes: set[int] = field(default_factory=set, init=False)
     visitor: AnnotationVisitor | None = field(default=None, kw_only=True)
@@ -209,6 +212,10 @@ class Context:
     def suppress_errors(self) -> AbstractContextManager[None]:
         """Temporarily suppress all annotation-evaluation errors."""
         return override(self, "should_suppress_errors", True)
+
+    def allow_undefined_names(self) -> AbstractContextManager[None]:
+        """Temporarily treat undefined annotation names as unknown types."""
+        return override(self, "should_allow_undefined_names", True)
 
     def is_being_evaluted(self, obj: object) -> Value | None:
         return self._being_evaluated.get(id(obj))
@@ -267,6 +274,11 @@ class Context:
         self.show_error(message, ErrorCode.invalid_annotation, node=node)
 
     def handle_undefined_name(self, name: str) -> Value:
+        if self.should_allow_undefined_names and not self.should_suppress_errors:
+            self.show_error(
+                f"Undefined name {name!r} used in annotation", ErrorCode.undefined_name
+            )
+            return AnyValue(AnySource.error)
         if self.should_suppress_errors:
             return AnyValue(AnySource.inference)
         self.show_error(
@@ -447,6 +459,7 @@ def type_from_runtime(
     globals: Mapping[str, object] | None = None,
     ctx: Context | None = None,
     suppress_errors: bool = False,
+    allow_undefined_names: bool = False,
 ) -> Value:
     """Given a runtime annotation object, return a
     :class:`pycroscope.value.Value`.
@@ -470,8 +483,15 @@ def type_from_runtime(
 
     if ctx is None:
         ctx = _DefaultContext(visitor, node, globals)
+    if suppress_errors and allow_undefined_names:
+        with ctx.suppress_errors():
+            with ctx.allow_undefined_names():
+                return _type_from_runtime(val, ctx)
     if suppress_errors:
         with ctx.suppress_errors():
+            return _type_from_runtime(val, ctx)
+    if allow_undefined_names:
+        with ctx.allow_undefined_names():
             return _type_from_runtime(val, ctx)
     return _type_from_runtime(val, ctx)
 
@@ -484,11 +504,19 @@ def annotation_expr_from_runtime(
     globals: Mapping[str, object] | None = None,
     ctx: Context | None = None,
     suppress_errors: bool = False,
+    allow_undefined_names: bool = False,
 ) -> AnnotationExpr:
     if ctx is None:
         ctx = _DefaultContext(visitor, node, globals)
+    if suppress_errors and allow_undefined_names:
+        with ctx.suppress_errors():
+            with ctx.allow_undefined_names():
+                return _annotation_expr_from_runtime(val, ctx)
     if suppress_errors:
         with ctx.suppress_errors():
+            return _annotation_expr_from_runtime(val, ctx)
+    if allow_undefined_names:
+        with ctx.allow_undefined_names():
             return _annotation_expr_from_runtime(val, ctx)
     return _annotation_expr_from_runtime(val, ctx)
 
@@ -499,6 +527,7 @@ def type_from_value(
     node: ast.AST | None = None,
     ctx: Context | None = None,
     suppress_errors: bool = False,
+    allow_undefined_names: bool = False,
 ) -> Value:
     """Given a :class:`pycroscope.value.Value` representing an annotation,
     return a :class:`pycroscope.value.Value` representing the type.
@@ -522,8 +551,15 @@ def type_from_value(
     """
     if ctx is None:
         ctx = _DefaultContext(visitor, node)
+    if suppress_errors and allow_undefined_names:
+        with ctx.suppress_errors():
+            with ctx.allow_undefined_names():
+                return _type_from_value(value, ctx)
     if suppress_errors:
         with ctx.suppress_errors():
+            return _type_from_value(value, ctx)
+    if allow_undefined_names:
+        with ctx.allow_undefined_names():
             return _type_from_value(value, ctx)
     return _type_from_value(value, ctx)
 
@@ -535,11 +571,19 @@ def annotation_expr_from_value(
     node: ast.AST | None = None,
     ctx: Context | None = None,
     suppress_errors: bool = False,
+    allow_undefined_names: bool = False,
 ) -> AnnotationExpr:
     if ctx is None:
         ctx = _DefaultContext(visitor, node)
+    if suppress_errors and allow_undefined_names:
+        with ctx.suppress_errors():
+            with ctx.allow_undefined_names():
+                return _annotation_expr_from_value(value, ctx)
     if suppress_errors:
         with ctx.suppress_errors():
+            return _annotation_expr_from_value(value, ctx)
+    if allow_undefined_names:
+        with ctx.allow_undefined_names():
             return _annotation_expr_from_value(value, ctx)
     return _annotation_expr_from_value(value, ctx)
 
@@ -2339,7 +2383,9 @@ class _DefaultContext(Context):
         error_code: Error = ErrorCode.invalid_annotation,
         node: ast.AST | None = None,
     ) -> None:
-        if self.should_suppress_errors:
+        if self.should_suppress_errors and not (
+            self.should_allow_undefined_names and error_code is ErrorCode.undefined_name
+        ):
             return
         if node is None:
             node = self.node
@@ -2351,11 +2397,37 @@ class _DefaultContext(Context):
 
     def get_name(self, node: ast.Name) -> Value:
         if self.visitor is not None:
+            if self.should_allow_undefined_names:
+                val, defining_scope, _ = self.visitor.scopes.get_with_scope(
+                    node.id, None, self.visitor.state, can_assign_ctx=self.visitor
+                )
+                if val is UNINITIALIZED_VALUE:
+                    if self.visitor._is_collecting():
+                        return AnyValue(AnySource.inference)
+                    self.show_error(
+                        f"Undefined name {node.id!r} used in annotation",
+                        ErrorCode.undefined_name,
+                        node=node,
+                    )
+                    return AnyValue(AnySource.error)
+                if self.visitor.in_annotation and defining_scope is not None:
+                    declared_type = defining_scope.get_declared_type(node.id)
+                    if isinstance(declared_type, TypeAliasValue):
+                        val = declared_type
+                if _is_self_annotation_value(val):
+                    self.maybe_show_invalid_self_annotation()
+                return val
             val, _ = self.visitor.resolve_name(
                 node,
                 error_node=node if self.use_name_node_for_error else self.node,
-                suppress_errors=self.should_suppress_errors,
+                suppress_errors=(
+                    self.should_suppress_errors or self.should_allow_undefined_names
+                ),
             )
+            if self.should_allow_undefined_names and val == AnyValue(AnySource.error):
+                # Allow unresolved forward refs without suppressing other
+                # annotation errors.
+                val = AnyValue(AnySource.inference)
             if _is_self_annotation_value(val):
                 self.maybe_show_invalid_self_annotation()
             return val
@@ -2370,6 +2442,13 @@ class _DefaultContext(Context):
                 if _is_self_annotation_value(val):
                     self.maybe_show_invalid_self_annotation()
                 return val
+        if self.should_allow_undefined_names and not self.should_suppress_errors:
+            self.show_error(
+                f"Undefined name {node.id!r} used in annotation",
+                ErrorCode.undefined_name,
+                node=node,
+            )
+            return AnyValue(AnySource.error)
         if self.should_suppress_errors:
             return AnyValue(AnySource.inference)
         self.show_error(
@@ -2413,7 +2492,9 @@ class _RuntimeAnnotationsContext(Context):
         error_code: Error = ErrorCode.invalid_annotation,
         node: ast.AST | None = None,
     ) -> None:
-        if self.should_suppress_errors:
+        if self.should_suppress_errors and not (
+            self.should_allow_undefined_names and error_code is ErrorCode.undefined_name
+        ):
             return
         error_node = node or self.node
         if self.visitor is not None and error_node is not None:
@@ -2593,11 +2674,11 @@ class _Visitor(ast.NodeVisitor):
             def _typevar_arg_to_type(arg_value: Value) -> Value:
                 # String bounds/constraints may contain forward refs to names that
                 # are defined later in the file.
-                suppress_errors = isinstance(arg_value, KnownValue) and isinstance(
-                    arg_value.val, str
-                )
+                allow_undefined_names = isinstance(
+                    arg_value, KnownValue
+                ) and isinstance(arg_value.val, str)
                 return type_from_value(
-                    arg_value, ctx=self.ctx, suppress_errors=suppress_errors
+                    arg_value, ctx=self.ctx, allow_undefined_names=allow_undefined_names
                 )
 
             constraints = []
