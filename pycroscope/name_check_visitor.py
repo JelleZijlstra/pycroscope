@@ -18031,7 +18031,7 @@ def _type_param_identity(value: Value, visitor: NameCheckVisitor) -> object | No
         return value.typevar
     if isinstance(value, InputSigValue) and isinstance(value.input_sig, ParamSpecParam):
         return value.input_sig.param_spec
-    type_param = make_type_param_from_value(value, visitor)
+    type_param = make_type_param_from_value(value, visitor=visitor)
     if type_param is not None:
         return type_param.typevar
     return None
