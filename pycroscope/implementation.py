@@ -2731,10 +2731,21 @@ def _typevar_impl(ctx: CallContext) -> Value:
                 arg="default",
             )
     if constraints is not None and default is not None:
-        if not any(
-            is_equivalent(constraint, default, ctx.visitor)
-            for constraint in constraints
-        ):
+        if isinstance(default, TypeVarValue) and default.typevar_param.constraints:
+            default_constraints = default.typevar_param.constraints
+            default_matches_constraints = all(
+                any(
+                    is_equivalent(constraint, default_constraint, ctx.visitor)
+                    for constraint in constraints
+                )
+                for default_constraint in default_constraints
+            )
+        else:
+            default_matches_constraints = any(
+                is_equivalent(constraint, default, ctx.visitor)
+                for constraint in constraints
+            )
+        if not default_matches_constraints:
             ctx.show_error(
                 "TypeVar default must be one of its constraints",
                 ErrorCode.incompatible_call,

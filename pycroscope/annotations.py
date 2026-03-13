@@ -883,6 +883,32 @@ def _extract_common_type_param_args(
     return name, default
 
 
+def _type_param_component_from_runtime(val: object, ctx: Context) -> Value:
+    if is_instance_of_typing_name(val, "TypeVar"):
+        return TypeVarValue(make_type_param(val, ctx=ctx))
+    if is_instance_of_typing_name(val, "TypeVarTuple"):
+        return TypeVarTupleValue(make_type_param(val, ctx=ctx))
+    if is_instance_of_typing_name(val, "ParamSpec"):
+        return InputSigValue(make_type_param(val, ctx=ctx))
+    if isinstance(val, tuple):
+        return SequenceValue(
+            tuple,
+            [
+                (False, _type_param_component_from_runtime(member, ctx))
+                for member in val
+            ],
+        )
+    if isinstance(val, list):
+        return SequenceValue(
+            list,
+            [
+                (False, _type_param_component_from_runtime(member, ctx))
+                for member in val
+            ],
+        )
+    return _type_from_runtime(val, ctx)
+
+
 def make_type_param(
     tv: TypeVarLike,
     ctx: Context | None = None,
@@ -895,7 +921,7 @@ def make_type_param(
         ctx = _DefaultContext(visitor, node)
     runtime_default = getattr(tv, "__default__", NoDefault)
     if runtime_default is not NoDefault:
-        default = _type_from_runtime(runtime_default, ctx)
+        default = _type_param_component_from_runtime(runtime_default, ctx)
     else:
         default = None
     if isinstance(tv, (TypeVar, typing_extensions.TypeVar)):
@@ -1712,6 +1738,16 @@ def _type_from_value(value: Value, ctx: Context) -> Value:
         if value.operation is PartialValueOperation.BITOR:
             return _type_from_bitor_value(value.root, value.members, ctx)
         return value.get_fallback_value()
+    elif isinstance(value, PartialCallValue):
+        type_param = make_type_param_from_value(value, ctx=ctx)
+        if isinstance(type_param, TypeVarParam):
+            return TypeVarValue(type_param)
+        if isinstance(type_param, TypeVarTupleParam):
+            return TypeVarTupleValue(type_param)
+        if isinstance(type_param, ParamSpecParam):
+            return InputSigValue(type_param)
+        ctx.show_error(f"Unrecognized annotation {value}")
+        return AnyValue(AnySource.error)
     elif isinstance(value, AnyValue):
         return value
     elif isinstance(value, InputSigValue):
