@@ -1,10 +1,10 @@
 # static analysis: ignore
 import functools
 from dataclasses import dataclass
-from typing import List, NewType, TypeVar
+from typing import List, NewType
 
 import pytest
-from typing_extensions import ParamSpec, TypeVarTuple
+from typing_extensions import ParamSpec, TypeVar, TypeVarTuple
 
 from .checker import Checker
 from .maybe_asynq import asynq
@@ -26,7 +26,6 @@ from .value import (
     TypedValue,
     TypeVarParam,
     TypeVarTupleParam,
-    TypeVarTupleValue,
     TypeVarValue,
     assert_is_value,
     match_typevar_arguments,
@@ -36,19 +35,17 @@ T = TypeVar("T")
 NT = NewType("NT", int)
 
 
-def test_typevartuple_value_accepts_runtime_param() -> None:
-    ts = TypeVarTuple("Ts")
-    assert TypeVarTupleValue(TypeVarTupleParam(ts)) == TypeVarTupleValue(ts)
-
-
 def test_type_param_str_is_concise() -> None:
     bounded = TypeVar("S", bound=int)
     constrained = TypeVar("T", str, bytes)
     p = ParamSpec("P")
     ts = TypeVarTuple("Ts")
 
-    assert str(TypeVarParam(bounded)) == "~S: int"
-    assert str(TypeVarParam(constrained)) == "~T: (str, bytes)"
+    assert str(TypeVarParam(bounded, bound=TypedValue(int))) == "~S: int"
+    assert (
+        str(TypeVarParam(constrained, constraints=(TypedValue(str), TypedValue(bytes))))
+        == "~T: (str, bytes)"
+    )
     assert str(ParamSpecParam(p)) == "~P"
     assert str(TypeVarTupleParam(ts)) == "Ts"
 
@@ -65,14 +62,17 @@ def test_get_type_parameters_ignores_non_iterable_runtime_type_params() -> None:
 def test_match_typevar_arguments_preserves_suffix_after_default_before_typevartuple() -> (
     None
 ):
-    from typing_extensions import TypeVar, TypeVarTuple
 
     default_t = TypeVar("DefaultT", default=int)
     ts = TypeVarTuple("Ts")
     u = TypeVar("U")
 
     assert match_typevar_arguments(
-        [TypeVarParam(default_t), TypeVarTupleParam(ts), TypeVarParam(u)],
+        [
+            TypeVarParam(default_t, default=TypedValue(int)),
+            TypeVarTupleParam(ts),
+            TypeVarParam(u),
+        ],
         [TypedValue(str)],
     ) == [
         (default_t, TypedValue(int)),
@@ -82,15 +82,17 @@ def test_match_typevar_arguments_preserves_suffix_after_default_before_typevartu
 
 
 def test_specialize_generic_type_params_preserves_suffix_with_default_prefix() -> None:
-    from typing_extensions import TypeVar, TypeVarTuple
-
     checker = Checker()
     default_t = TypeVar("DefaultT", default=int)
     ts = TypeVarTuple("Ts")
     u = TypeVar("U")
 
     assert checker.arg_spec_cache._specialize_generic_type_params(
-        [TypeVarParam(default_t), TypeVarTupleParam(ts), TypeVarParam(u)],
+        [
+            TypeVarParam(default_t, default=TypedValue(int)),
+            TypeVarTupleParam(ts),
+            TypeVarParam(u),
+        ],
         [TypedValue(str)],
     ) == [TypedValue(int), SequenceValue(tuple, []), TypedValue(str)]
 

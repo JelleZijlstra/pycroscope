@@ -82,6 +82,7 @@ from .safe import is_instance_of_typing_name, is_typing_name, is_union, safe_get
 from .signature import (
     ANY_SIGNATURE,
     ELLIPSIS_PARAM,
+    NO_ARG_SENTINEL,
     InvalidSignature,
     ParameterKind,
     Signature,
@@ -112,6 +113,7 @@ from .value import (
     ParamSpecArgsValue,
     ParamSpecKwargsValue,
     ParamSpecParam,
+    PartialCallValue,
     PartialValue,
     PartialValueOperation,
     Qualifier,
@@ -140,6 +142,7 @@ from .value import (
     get_typevar_variance,
     iter_type_params_in_value,
     match_typevar_arguments,
+    replace_fallback,
     replace_known_sequence_value,
     unite_values,
 )
@@ -780,6 +783,104 @@ def _type_from_runtime(val: Any, ctx: Context) -> Value:
     else:
         ctx.show_error(f"Invalid type annotation {val}")
         return AnyValue(AnySource.error)
+
+
+def make_type_param_from_value(
+    value: Value,
+    ctx: Context | None = None,
+    *,
+    visitor: "NameCheckVisitor | None" = None,
+    node: ast.AST | None = None,
+) -> TypeParam | None:
+    if ctx is None:
+        assert visitor is not None, "visitor must be provided if ctx is not"
+        ctx = _DefaultContext(visitor, node)
+    if isinstance(value, PartialCallValue):
+        runtime_val = replace_fallback(value.runtime_value)
+        if isinstance(runtime_val, TypedValue):
+            if is_typing_name(runtime_val.typ, "TypeVar"):
+                name, default = _extract_common_type_param_args(value, ctx)
+                if name is None:
+                    return None
+                tv = TypeVar(name)
+                if value.arguments["bound"] is NO_ARG_SENTINEL:
+                    bound = None
+                else:
+                    bound = type_from_value(value.arguments["bound"], ctx=ctx)
+                if (
+                    isinstance(value.arguments["constraints"], SequenceValue)
+                    and value.arguments["constraints"].members
+                ):
+                    constraints = [
+                        type_from_value(constraint, ctx=ctx)
+                        for constraint in (
+                            value.arguments["constraints"].get_member_sequence() or ()
+                        )
+                    ]
+                else:
+                    constraints = None
+                infer_variance = _extract_boolean_arg(value, "infer_variance")
+                covariant = _extract_boolean_arg(value, "covariant")
+                contravariant = _extract_boolean_arg(value, "contravariant")
+                if covariant is None or contravariant is None:
+                    return None
+                match (infer_variance, covariant, contravariant):
+                    case (True, _, _):
+                        variance = Variance.INFERRED
+                    case (_, True, _):
+                        variance = Variance.COVARIANT
+                    case (_, _, True):
+                        variance = Variance.CONTRAVARIANT
+                    case _:
+                        variance = Variance.INVARIANT
+                return TypeVarParam(
+                    tv,
+                    bound=bound,
+                    constraints=tuple(constraints) if constraints is not None else (),
+                    variance=variance,
+                    default=default,
+                )
+            elif is_typing_name(runtime_val.typ, "ParamSpec"):
+                name, default = _extract_common_type_param_args(value, ctx)
+                if name is None:
+                    return None
+                ps = ParamSpec(name)
+                return ParamSpecParam(ps, default=default)
+            elif is_typing_name(runtime_val.typ, "TypeVarTuple"):
+                name, default = _extract_common_type_param_args(value, ctx)
+                if name is None:
+                    return None
+                tvt = typing_extensions.TypeVarTuple(name)
+                return TypeVarTupleParam(tvt, default=default)
+    value = replace_fallback(value)
+    if isinstance(value, KnownValue) and is_typevarlike(value.val):
+        return make_type_param(value.val, ctx=ctx)
+    return None
+
+
+def _extract_boolean_arg(pcv: PartialCallValue, arg_name: str) -> bool | None:
+    arg_val = pcv.arguments.get(arg_name, NO_ARG_SENTINEL)
+    if arg_val is NO_ARG_SENTINEL:
+        return None
+    if isinstance(arg_val, KnownValue) and isinstance(arg_val.val, bool):
+        return arg_val.val
+    return None
+
+
+def _extract_common_type_param_args(
+    pcv: PartialCallValue, ctx: Context
+) -> tuple[str | None, Value | None]:
+    name_val = pcv.arguments["name"]
+    if isinstance(name_val, KnownValue) and isinstance(name_val.val, str):
+        name = name_val.val
+    else:
+        name = None
+    default_val = pcv.arguments.get("default", NO_ARG_SENTINEL)
+    if default_val is NO_ARG_SENTINEL:
+        default = None
+    else:
+        default = type_from_value(default_val, ctx=ctx)
+    return name, default
 
 
 def make_type_param(
