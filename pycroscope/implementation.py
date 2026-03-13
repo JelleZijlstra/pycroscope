@@ -2726,10 +2726,11 @@ def _typevar_impl(ctx: CallContext) -> Value:
             ErrorCode.incompatible_call,
             node=ctx.node,
         )
-    if ctx.vars["default"] is NO_ARG_SENTINEL:
+    default_arg = ctx.vars.get("default", NO_ARG_SENTINEL)
+    if default_arg is NO_ARG_SENTINEL:
         default = None
     else:
-        default = _type_from_typeform_arg(ctx.vars["default"], ctx, "default")
+        default = _type_from_typeform_arg(default_arg, ctx, "default")
 
     if bound is not None and default is not None:
         if not is_assignable(bound, default, ctx.visitor):

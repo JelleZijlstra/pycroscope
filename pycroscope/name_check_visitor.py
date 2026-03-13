@@ -286,6 +286,7 @@ from .value import (
     TypeVarParam,
     TypeVarTupleParam,
     TypeVarTupleValue,
+    TypeVarType,
     TypeVarValue,
     UnboundMethodValue,
     Value,
@@ -13800,7 +13801,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             if sys.version_info >= (3, 13):
                 if node.default_value is not None:
                     default = self._type_from_pep695_type_param_expr(node.default_value)
-            tv = TypeVar(node.name)
+            tv = typing.cast(TypeVarType, TypeVar(node.name))
             typevar = TypeVarValue(
                 TypeVarParam(
                     tv,
@@ -17545,16 +17546,18 @@ def _type_param_uses_infer_variance(type_param: TypeParam) -> bool:
     return bool(safe_getattr(type_param.typevar, "__infer_variance__", False))
 
 
-def is_typing_object(value: Value, typing_name: str) -> bool:
+def is_typing_object(value: object, typing_name: str) -> bool:
     if isinstance(value, PartialCallValue):
         runtime_val = replace_fallback(value.runtime_value)
         return isinstance(runtime_val, TypedValue) and is_typing_name(
             runtime_val.typ, typing_name
         )
-    value = replace_fallback(value)
-    if isinstance(value, KnownValue):
-        return is_instance_of_typing_name(value.val, typing_name)
-    return False
+    if isinstance(value, Value):
+        value = replace_fallback(value)
+        if isinstance(value, KnownValue):
+            return is_instance_of_typing_name(value.val, typing_name)
+        return False
+    return is_instance_of_typing_name(value, typing_name)
 
 
 def _is_variance_declaration_arg(arg: Value) -> bool:

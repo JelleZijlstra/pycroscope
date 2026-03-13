@@ -15,7 +15,7 @@ from collections.abc import Callable, Generator, Iterable, Iterator, Sequence
 from contextlib import AbstractContextManager, contextmanager
 from dataclasses import InitVar, dataclass, field
 from dataclasses import replace as dataclass_replace
-from typing import TypeVar
+from typing import TypeVar, cast
 
 from typing_extensions import assert_never
 
@@ -96,6 +96,7 @@ from .value import (
     TypeVarLike,
     TypeVarParam,
     TypeVarTupleValue,
+    TypeVarType,
     TypeVarValue,
     UnboundMethodValue,
     Value,
@@ -1168,7 +1169,7 @@ class Checker:
             if isinstance(class_type, type)
             else class_type.rsplit(".", maxsplit=1)[-1]
         )
-        typevar = TypeVar(f"_Ctor_{class_name}_T", *constraints)
+        typevar = cast(TypeVarType, TypeVar(f"_Ctor_{class_name}_T", *constraints))
         tv_value = TypeVarValue(TypeVarParam(typevar))
         generic_param = SigParameter(
             first_param.name,

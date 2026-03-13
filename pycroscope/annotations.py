@@ -114,6 +114,7 @@ from .value import (
     ParameterTypeGuardExtension,
     ParamSpecArgsValue,
     ParamSpecKwargsValue,
+    ParamSpecLike,
     ParamSpecParam,
     PartialCallValue,
     PartialValue,
@@ -135,8 +136,10 @@ from .value import (
     TypeParam,
     TypeVarLike,
     TypeVarParam,
+    TypeVarTupleLike,
     TypeVarTupleParam,
     TypeVarTupleValue,
+    TypeVarType,
     TypeVarValue,
     Value,
     Variance,
@@ -162,7 +165,9 @@ _SUBSCRIPT_RUNTIME_TYPE = TypedValue(type(list[int]))
 _UNION_RUNTIME_TYPE = TypedValue(type(int | str))
 _UNPACK_RUNTIME_TYPE = TypedValue(type(typing_extensions.Unpack[int]))
 _ENUM_TYPE = getattr(enum, "EnumType", enum.EnumMeta)
-_PARTIAL_CALL_TYPE_PARAM_CACHE: WeakKeyDictionary[ast.AST, object] = WeakKeyDictionary()
+_PARTIAL_CALL_TYPE_PARAM_CACHE: WeakKeyDictionary[ast.AST, TypeVarLike] = (
+    WeakKeyDictionary()
+)
 
 
 def _is_valid_pep586_literal_value(value: object) -> bool:
@@ -848,8 +853,11 @@ def make_type_param_from_value(
                 name, default = _extract_common_type_param_args(value, ctx)
                 if name is None:
                     return None
-                tv = _synthetic_type_param_for_partial_call(
-                    value, name, lambda name: TypeVar(name)
+                tv = typing.cast(
+                    TypeVarType,
+                    _synthetic_type_param_for_partial_call(
+                        value, name, lambda name: TypeVar(name)
+                    ),
                 )
                 if value.arguments["bound"] is NO_ARG_SENTINEL:
                     bound = None
@@ -892,16 +900,22 @@ def make_type_param_from_value(
                 name, default = _extract_common_type_param_args(value, ctx)
                 if name is None:
                     return None
-                ps = _synthetic_type_param_for_partial_call(
-                    value, name, lambda name: ParamSpec(name)
+                ps = typing.cast(
+                    ParamSpecLike,
+                    _synthetic_type_param_for_partial_call(
+                        value, name, lambda name: ParamSpec(name)
+                    ),
                 )
                 return ParamSpecParam(ps, default=default)
             elif is_typing_name(runtime_val.typ, "TypeVarTuple"):
                 name, default = _extract_common_type_param_args(value, ctx)
                 if name is None:
                     return None
-                tvt = _synthetic_type_param_for_partial_call(
-                    value, name, lambda name: typing_extensions.TypeVarTuple(name)
+                tvt = typing.cast(
+                    TypeVarTupleLike,
+                    _synthetic_type_param_for_partial_call(
+                        value, name, lambda name: typing_extensions.TypeVarTuple(name)
+                    ),
                 )
                 return TypeVarTupleParam(tvt, default=default)
     value = replace_fallback(value)
@@ -920,8 +934,8 @@ def _extract_boolean_arg(pcv: PartialCallValue, arg_name: str) -> bool | None:
 
 
 def _synthetic_type_param_for_partial_call(
-    pcv: PartialCallValue, name: str, factory: Callable[[str], object]
-) -> object:
+    pcv: PartialCallValue, name: str, factory: Callable[[str], TypeVarLike]
+) -> TypeVarLike:
     if pcv.node is None:
         return factory(name)
     cached = _PARTIAL_CALL_TYPE_PARAM_CACHE.get(pcv.node)
@@ -949,11 +963,17 @@ def _extract_common_type_param_args(
 
 def _type_param_component_from_runtime(val: object, ctx: Context) -> Value:
     if is_instance_of_typing_name(val, "TypeVar"):
-        return TypeVarValue(make_type_param(val, ctx=ctx))
+        type_param = make_type_param(val, ctx=ctx)
+        assert isinstance(type_param, TypeVarParam)
+        return TypeVarValue(type_param)
     if is_instance_of_typing_name(val, "TypeVarTuple"):
-        return TypeVarTupleValue(make_type_param(val, ctx=ctx))
+        type_param = make_type_param(val, ctx=ctx)
+        assert isinstance(type_param, TypeVarTupleParam)
+        return TypeVarTupleValue(type_param)
     if is_instance_of_typing_name(val, "ParamSpec"):
-        return InputSigValue(make_type_param(val, ctx=ctx))
+        type_param = make_type_param(val, ctx=ctx)
+        assert isinstance(type_param, ParamSpecParam)
+        return InputSigValue(type_param)
     if isinstance(val, tuple):
         return SequenceValue(
             tuple,
@@ -2714,9 +2734,12 @@ class _Visitor(ast.NodeVisitor):
                 kwargs = {"covariant": covariant, "contravariant": contravariant}
                 if infer_variance:
                     kwargs_with_infer = {**kwargs, "infer_variance": True}
-                    tv = typing_extensions.TypeVar(name_val.val, **kwargs_with_infer)
+                    tv = typing.cast(
+                        TypeVarType,
+                        typing_extensions.TypeVar(name_val.val, **kwargs_with_infer),
+                    )
                 else:
-                    tv = TypeVar(name_val.val, **kwargs)
+                    tv = typing.cast(TypeVarType, TypeVar(name_val.val, **kwargs))
             except Exception as e:
                 self.ctx.show_error(str(e), node=node)
                 return None
