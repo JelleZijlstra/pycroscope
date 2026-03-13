@@ -45,6 +45,7 @@ from typing import (
     get_args,
     get_origin,
 )
+from weakref import WeakKeyDictionary
 
 import typing_extensions
 from typing_extensions import (
@@ -160,6 +161,7 @@ _SUBSCRIPT_RUNTIME_TYPE = TypedValue(type(list[int]))
 _UNION_RUNTIME_TYPE = TypedValue(type(int | str))
 _UNPACK_RUNTIME_TYPE = TypedValue(type(typing_extensions.Unpack[int]))
 _ENUM_TYPE = getattr(enum, "EnumType", enum.EnumMeta)
+_PARTIAL_CALL_TYPE_PARAM_CACHE: WeakKeyDictionary[ast.AST, object] = WeakKeyDictionary()
 
 
 def _is_valid_pep586_literal_value(value: object) -> bool:
@@ -802,7 +804,9 @@ def make_type_param_from_value(
                 name, default = _extract_common_type_param_args(value, ctx)
                 if name is None:
                     return None
-                tv = TypeVar(name)
+                tv = _synthetic_type_param_for_partial_call(
+                    value, name, lambda name: TypeVar(name)
+                )
                 if value.arguments["bound"] is NO_ARG_SENTINEL:
                     bound = None
                 else:
@@ -844,13 +848,17 @@ def make_type_param_from_value(
                 name, default = _extract_common_type_param_args(value, ctx)
                 if name is None:
                     return None
-                ps = ParamSpec(name)
+                ps = _synthetic_type_param_for_partial_call(
+                    value, name, lambda name: ParamSpec(name)
+                )
                 return ParamSpecParam(ps, default=default)
             elif is_typing_name(runtime_val.typ, "TypeVarTuple"):
                 name, default = _extract_common_type_param_args(value, ctx)
                 if name is None:
                     return None
-                tvt = typing_extensions.TypeVarTuple(name)
+                tvt = _synthetic_type_param_for_partial_call(
+                    value, name, lambda name: typing_extensions.TypeVarTuple(name)
+                )
                 return TypeVarTupleParam(tvt, default=default)
     value = replace_fallback(value)
     if isinstance(value, KnownValue) and is_typevarlike(value.val):
@@ -865,6 +873,18 @@ def _extract_boolean_arg(pcv: PartialCallValue, arg_name: str) -> bool | None:
     if isinstance(arg_val, KnownValue) and isinstance(arg_val.val, bool):
         return arg_val.val
     return None
+
+
+def _synthetic_type_param_for_partial_call(
+    pcv: PartialCallValue, name: str, factory: Callable[[str], object]
+) -> object:
+    if pcv.node is None:
+        return factory(name)
+    cached = _PARTIAL_CALL_TYPE_PARAM_CACHE.get(pcv.node)
+    if cached is None:
+        cached = factory(name)
+        _PARTIAL_CALL_TYPE_PARAM_CACHE[pcv.node] = cached
+    return cached
 
 
 def _extract_common_type_param_args(
