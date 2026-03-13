@@ -496,8 +496,8 @@ class TestTypeVar(TestNameCheckVisitorBase):
         Base = TypeVar("Base", int, str)
         TypeVar("GoodConstraint", int, str, bool, default=Base)
         TypeVar(
-            "BadConstraintTypeVar", bool, complex, default=Base
-        )  # E: incompatible_call
+            "BadConstraintTypeVar", bool, complex, default=Base  # E: incompatible_call
+        )
 
     @assert_passes()
     def test_typevar_default_is_not_used_as_fallback(self):

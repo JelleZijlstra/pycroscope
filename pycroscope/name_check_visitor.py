@@ -6386,8 +6386,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         *,
         polarity: int,
     ) -> None:
-        if isinstance(value, TypeVarValue):
-            used_polarities = type_param_polarities.get(value.typevar_param.typevar)
+        type_param = _type_param_value_from_value(value, self)
+        if isinstance(type_param, TypeVarParam):
+            used_polarities = type_param_polarities.get(type_param.typevar)
             if used_polarities is not None:
                 _record_variance_polarity(used_polarities, polarity)
             return
@@ -6653,13 +6654,12 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         for analyzed_base in analyzed_bases:
             for subval in flatten_values(analyzed_base):
                 for walked in self._walk_values_for_variance_typevar_collection(subval):
-                    if not isinstance(walked, TypeVarValue):
+                    type_param = _type_param_value_from_value(walked, self)
+                    if not isinstance(type_param, TypeVarParam):
                         continue
-                    if not is_instance_of_typing_name(
-                        walked.typevar_param.typevar, "TypeVar"
-                    ):
+                    if not is_instance_of_typing_name(type_param.typevar, "TypeVar"):
                         continue
-                    typevars_to_check.add(walked.typevar_param.typevar)
+                    typevars_to_check.add(type_param.typevar)
         if not typevars_to_check:
             return
 
@@ -17549,8 +17549,12 @@ def is_typing_object(value: Value, typing_name: str) -> bool:
 
 
 def _is_variance_declaration_arg(arg: Value) -> bool:
+    if isinstance(arg, TypeVarValue):
+        return True
+    if isinstance(arg, TypeVarTupleValue):
+        return True
     if isinstance(arg, InputSigValue):
-        return False
+        return isinstance(arg.input_sig, ParamSpecParam)
     return (
         is_typing_object(arg, "TypeVar")
         or is_typing_object(arg, "TypeVarTuple")
