@@ -60,7 +60,13 @@ from .signature import (
 )
 from .stacked_scopes import Composite
 from .suggested_type import CallableTracker
-from .type_object import TypeObject, get_mro, lookup_declared_symbol
+from .type_object import (
+    TypeObject,
+    _add_runtime_declared_symbols,
+    _add_synthetic_declared_symbols,
+    get_mro,
+    lookup_declared_symbol,
+)
 from .typeshed import TypeshedFinder
 from .value import (
     NO_RETURN_VALUE,
@@ -162,33 +168,46 @@ def _class_keys_match(left: type | str, right: type | str) -> bool:
 
 
 def _iter_base_type_values(
-    value: Value, arg_spec_cache: ArgSpecCache | None
+    value: Value,
+    arg_spec_cache: ArgSpecCache | None,
+    seen_known_bases: frozenset[int] = frozenset(),
 ) -> Iterator[TypedValue]:
     value = replace_fallback(value)
     if isinstance(value, MultiValuedValue):
         for subval in value.vals:
-            yield from _iter_base_type_values(subval, arg_spec_cache)
+            yield from _iter_base_type_values(subval, arg_spec_cache, seen_known_bases)
         return
     if isinstance(value, IntersectionValue):
         for subval in value.vals:
-            yield from _iter_base_type_values(subval, arg_spec_cache)
+            yield from _iter_base_type_values(subval, arg_spec_cache, seen_known_bases)
         return
-    yield from _iter_base_type_values_from_simple(value, arg_spec_cache)
+    yield from _iter_base_type_values_from_simple(
+        value, arg_spec_cache, seen_known_bases
+    )
 
 
 def _iter_base_type_values_from_simple(
-    value: SimpleType, arg_spec_cache: ArgSpecCache | None
+    value: SimpleType,
+    arg_spec_cache: ArgSpecCache | None,
+    seen_known_bases: frozenset[int],
 ) -> Iterator[TypedValue]:
     if isinstance(value, KnownValue):
         if arg_spec_cache is not None:
+            base_id = id(value.val)
+            if base_id in seen_known_bases:
+                return
             yield from _iter_base_type_values(
-                arg_spec_cache._type_from_base(value.val), arg_spec_cache
+                arg_spec_cache._type_from_base(value.val),
+                arg_spec_cache,
+                seen_known_bases | {base_id},
             )
         elif isinstance(value.val, type):
             yield TypedValue(value.val)
         return
     if isinstance(value, SyntheticClassObjectValue):
-        yield from _iter_base_type_values(value.class_type, arg_spec_cache)
+        yield from _iter_base_type_values(
+            value.class_type, arg_spec_cache, seen_known_bases
+        )
         return
     if isinstance(value, TypedValue):
         if isinstance(value.typ, (type, str)):
@@ -472,6 +491,12 @@ class Checker:
     )
     vnv_map: dict[str, VariableNameValue] = field(default_factory=dict)
     type_alias_cache: dict[object, TypeAlias] = field(default_factory=dict)
+    runtime_callable_self_annotation_cache: dict[object, bool] = field(
+        default_factory=dict, init=False, repr=False
+    )
+    runtime_class_self_annotation_cache: dict[type, bool] = field(
+        default_factory=dict, init=False, repr=False
+    )
     _should_exclude_any: bool = False
 
     def __post_init__(self, raw_options: Options | None) -> None:
@@ -530,14 +555,48 @@ class Checker:
         if in_cache:
             return self.type_object_cache[typ]
         type_object = self._build_type_object(typ)
+        self._sync_synthetic_class_type_object(typ, type_object)
         self.type_object_cache[typ] = type_object
         return type_object
+
+    def _sync_synthetic_class_type_object(
+        self, typ: type | super | str, type_object: TypeObject
+    ) -> None:
+        if not isinstance(typ, (type, str)):
+            return
+        synthetic_class = self.get_synthetic_class(typ)
+        if synthetic_class is None:
+            return
+        shared_declared_symbols = None
+        class_type = synthetic_class.class_type
+        if isinstance(class_type, TypedValue):
+            for key in self._iter_generic_override_keys(class_type.typ):
+                cached = self.type_object_cache.get(key)
+                if cached is not None and cached is not type_object:
+                    shared_declared_symbols = cached.declared_symbols
+                    break
+        if shared_declared_symbols is None:
+            shared_declared_symbols = type_object.declared_symbols
+        object.__setattr__(type_object, "declared_symbols", shared_declared_symbols)
+        object.__setattr__(synthetic_class, "declared_symbols", shared_declared_symbols)
+
+    def _build_direct_declared_symbols(self, typ: type | str) -> dict[str, ClassSymbol]:
+        direct_symbols: dict[str, ClassSymbol] = {}
+        if isinstance(typ, type):
+            _add_runtime_declared_symbols(typ, direct_symbols)
+        synthetic_class = self.get_synthetic_class(typ)
+        if synthetic_class is not None:
+            _add_synthetic_declared_symbols(
+                synthetic_class.declared_symbols, direct_symbols
+            )
+        return direct_symbols
 
     def _build_type_object(self, typ: type | super | str) -> TypeObject:
         if isinstance(typ, str):
             # Synthetic type
             bases = self._get_typeshed_bases(typ)
             synthetic_class = self.get_synthetic_class(typ)
+            direct_symbols = self._build_direct_declared_symbols(typ)
             if synthetic_class is not None:
                 bases |= self._get_type_bases_from_synthetic_class(synthetic_class)
             is_protocol = any(is_typing_name(base, "Protocol") for base in bases)
@@ -553,6 +612,7 @@ class Checker:
                 is_protocol=is_protocol,
                 protocol_members=protocol_members,
                 is_final=self.ts_finder.is_final(typ),
+                declared_symbols=direct_symbols,
             )
         elif isinstance(typ, super):
             return TypeObject(typ, self.get_additional_bases(typ))
@@ -560,6 +620,7 @@ class Checker:
             plugin_bases = self.get_additional_bases(typ)
             typeshed_bases = self._get_recursive_typeshed_bases(typ)
             additional_bases = plugin_bases | typeshed_bases
+            direct_symbols = self._build_direct_declared_symbols(typ)
             # Is it marked as a protocol in stubs? If so, use the stub definition.
             if self.ts_finder.is_protocol(typ):
                 return TypeObject(
@@ -567,6 +628,7 @@ class Checker:
                     additional_bases,
                     is_protocol=True,
                     protocol_members=self._get_protocol_members(typeshed_bases),
+                    declared_symbols=direct_symbols,
                 )
             # Is it a protocol at runtime?
             if is_instance_of_typing_name(typ, "_ProtocolMeta") and safe_getattr(
@@ -580,11 +642,20 @@ class Checker:
                 )
                 members |= self._get_synthetic_protocol_members(typ)
                 return TypeObject(
-                    typ, additional_bases, is_protocol=True, protocol_members=members
+                    typ,
+                    additional_bases,
+                    is_protocol=True,
+                    protocol_members=members,
+                    declared_symbols=direct_symbols,
                 )
 
             is_final = self.ts_finder.is_final(typ)
-            return TypeObject(typ, additional_bases, is_final=is_final)
+            return TypeObject(
+                typ,
+                additional_bases,
+                is_final=is_final,
+                declared_symbols=direct_symbols,
+            )
 
     def _get_recursive_typeshed_bases(self, typ: type | str) -> set[type | str]:
         seen = set()
@@ -691,6 +762,11 @@ class Checker:
         for key in self._iter_generic_override_keys(typ):
             self.synthetic_classes[key] = synthetic_class
             self.type_object_cache.pop(key, None)
+        for key in self._iter_generic_override_keys(typ):
+            type_object = self.make_type_object(key)
+            object.__setattr__(
+                synthetic_class, "declared_symbols", type_object.declared_symbols
+            )
 
     def get_synthetic_class(self, typ: type | str) -> SyntheticClassObjectValue | None:
         for key in self._iter_generic_override_keys(typ):

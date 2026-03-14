@@ -116,12 +116,10 @@ class TypeObject:
     is_final: bool = False
     is_protocol: bool = False
     protocol_members: set[str] = field(default_factory=set)
+    declared_symbols: dict[str, ClassSymbol] = field(default_factory=dict, repr=False)
     is_thrift_enum: bool = field(init=False)
     is_universally_assignable: bool = field(init=False)
     artificial_bases: set[type] = field(default_factory=set, init=False)
-    _declared_symbols: dict[str, ClassSymbol] | None = field(
-        default=None, init=False, repr=False
-    )
     _protocol_positive_cache: dict[tuple[Value, Value], BoundsMap] = field(
         default_factory=dict, repr=False
     )
@@ -148,30 +146,10 @@ class TypeObject:
     def get_declared_symbol(
         self, name: str, ctx: CanAssignContext
     ) -> ClassSymbol | None:
-        return self.get_declared_symbols(ctx).get(name)
+        return self.declared_symbols.get(name)
 
     def get_declared_symbols(self, ctx: CanAssignContext) -> dict[str, ClassSymbol]:
-        if self._should_cache_declared_symbols(ctx):
-            if self._declared_symbols is None:
-                self._declared_symbols = self._build_declared_symbols(ctx)
-            return self._declared_symbols
-        return self._build_declared_symbols(ctx)
-
-    def _should_cache_declared_symbols(self, ctx: CanAssignContext) -> bool:
-        if isinstance(self.typ, (str, super)):
-            return False
-        return _get_synthetic_class_for_key(self.typ, ctx) is None
-
-    def _build_declared_symbols(self, ctx: CanAssignContext) -> dict[str, ClassSymbol]:
-        symbols: dict[str, ClassSymbol] = {}
-        synthetic: SyntheticClassObjectValue | None = None
-        if isinstance(self.typ, (type, str)):
-            synthetic = _get_synthetic_class_for_key(self.typ, ctx)
-        if isinstance(self.typ, type):
-            _add_runtime_declared_symbols(self.typ, symbols)
-        if synthetic is not None:
-            _add_synthetic_declared_symbols(synthetic, symbols)
-        return symbols
+        return self.declared_symbols
 
     def is_assignable_to_type(self, typ: type) -> bool:
         for base in self.base_classes:
@@ -846,9 +824,9 @@ def _add_runtime_declared_symbols(typ: type, symbols: dict[str, ClassSymbol]) ->
 
 
 def _add_synthetic_declared_symbols(
-    synthetic: SyntheticClassObjectValue, symbols: dict[str, ClassSymbol]
+    declared_symbols: Mapping[str, ClassSymbol], symbols: dict[str, ClassSymbol]
 ) -> None:
-    for name, symbol in synthetic.declared_symbols.items():
+    for name, symbol in declared_symbols.items():
         symbols[name] = merge_declared_symbol(symbols.get(name), symbol)
 
 
