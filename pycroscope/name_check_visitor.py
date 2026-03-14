@@ -55,6 +55,7 @@ from typing_extensions import Protocol, assert_never, is_typeddict
 from pycroscope.input_sig import ActualArguments, InputSigValue
 
 from . import attributes, format_strings, importer, node_visitor, type_evaluation
+from . import dataclass as dataclass_helpers
 from .analysis_lib import (
     get_attribute_path,
     get_subclasses_recursively,
@@ -3882,7 +3883,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                         ),
                     )
                 if dataclass_transform_info is not None:
-                    _set_synthetic_dataclass_transform_info(
+                    dataclass_helpers.set_synthetic_dataclass_transform_info(
                         synthetic_class, dataclass_transform_info
                     )
                 for method_name, (
@@ -3909,7 +3910,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                                 member_value=member_value,
                             ),
                         )
-                _set_synthetic_dataclass_info(synthetic_class, dataclass_semantics)
+                dataclass_helpers.set_synthetic_dataclass_info(
+                    synthetic_class, dataclass_semantics
+                )
                 self._synthetic_classes_by_name[synthetic_fq_name] = synthetic_class
                 self.checker.register_synthetic_class(synthetic_class)
                 dataclass_metadata_class = synthetic_class
@@ -3940,10 +3943,12 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                         dataclass_transform_info=dataclass_transform_info,
                     )
                     self.checker.register_synthetic_class(existing)
-                _set_synthetic_dataclass_transform_info(
+                dataclass_helpers.set_synthetic_dataclass_transform_info(
                     existing, dataclass_transform_info
                 )
-                _set_synthetic_dataclass_info(existing, dataclass_semantics)
+                dataclass_helpers.set_synthetic_dataclass_info(
+                    existing, dataclass_semantics
+                )
                 dataclass_metadata_class = existing
             generic_class_key = (
                 class_scope_object
@@ -4391,17 +4396,14 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                                     member_value=member_value,
                                 ),
                             )
-                    self._apply_dataclass_slots_semantics(
-                        synthetic_class, dataclass_semantics
-                    )
-                    self._apply_dataclass_init_semantics(
-                        synthetic_class, dataclass_semantics
-                    )
-                    self._apply_dataclass_match_args_semantics(
-                        synthetic_class, dataclass_semantics
-                    )
-                    self._apply_dataclass_hash_semantics(
-                        synthetic_class, dataclass_semantics
+                    dataclass_helpers.apply_synthetic_attributes(
+                        synthetic_class,
+                        dataclass_semantics,
+                        merge_declared_symbol=self._merge_synthetic_declared_symbol,
+                        get_slot_names=self._dataclass_slot_names_from_synthetic_class,
+                        get_field_parameters=(
+                            self.checker.get_synthetic_dataclass_field_parameters
+                        ),
                     )
                     self._apply_synthetic_enum_semantics(
                         node, synthetic_class, class_key
@@ -4457,17 +4459,14 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                                 member_value=member_value,
                             ),
                         )
-                self._apply_dataclass_slots_semantics(
-                    dataclass_metadata_class, dataclass_semantics
-                )
-                self._apply_dataclass_init_semantics(
-                    dataclass_metadata_class, dataclass_semantics
-                )
-                self._apply_dataclass_match_args_semantics(
-                    dataclass_metadata_class, dataclass_semantics
-                )
-                self._apply_dataclass_hash_semantics(
-                    dataclass_metadata_class, dataclass_semantics
+                dataclass_helpers.apply_synthetic_attributes(
+                    dataclass_metadata_class,
+                    dataclass_semantics,
+                    merge_declared_symbol=self._merge_synthetic_declared_symbol,
+                    get_slot_names=self._dataclass_slot_names_from_synthetic_class,
+                    get_field_parameters=(
+                        self.checker.get_synthetic_dataclass_field_parameters
+                    ),
                 )
                 self.checker.register_synthetic_class(dataclass_metadata_class)
                 if dataclass_semantics is not None:
@@ -5570,63 +5569,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
 
         return final_info
 
-    def _apply_dataclass_hash_semantics(
-        self,
-        synthetic_class: SyntheticClassObjectValue,
-        semantics: DataclassInfo | None,
-    ) -> None:
-        if semantics is None:
-            return
-        if get_synthetic_member_value(synthetic_class, "__hash__") is not None:
-            return
-        synthesized_hash = _synthesize_dataclass_hash_attribute(semantics)
-        if synthesized_hash is not None:
-            self._merge_synthetic_declared_symbol(
-                synthetic_class,
-                "__hash__",
-                ClassSymbol(
-                    synthesized_hash, is_method=True, member_value=synthesized_hash
-                ),
-            )
-
-    def _apply_dataclass_init_semantics(
-        self,
-        synthetic_class: SyntheticClassObjectValue,
-        semantics: DataclassInfo | None,
-    ) -> None:
-        if semantics is None:
-            return
-        if get_synthetic_member_value(synthetic_class, "__init__") is not None:
-            return
-        init_value = self.checker.get_synthetic_dataclass_init_value(synthetic_class)
-        if init_value is None:
-            return
-        self._merge_synthetic_declared_symbol(
-            synthetic_class,
-            "__init__",
-            ClassSymbol(init_value, is_method=True, member_value=init_value),
-        )
-
-    def _apply_dataclass_match_args_semantics(
-        self,
-        synthetic_class: SyntheticClassObjectValue,
-        semantics: DataclassInfo | None,
-    ) -> None:
-        if semantics is None:
-            return
-        if get_synthetic_member_value(synthetic_class, "__match_args__") is not None:
-            return
-        match_args_value = self.checker.get_synthetic_dataclass_match_args_value(
-            synthetic_class
-        )
-        if match_args_value is None:
-            return
-        self._merge_synthetic_declared_symbol(
-            synthetic_class,
-            "__match_args__",
-            ClassSymbol(match_args_value, member_value=match_args_value),
-        )
-
     def _check_dataclass_slots_definition(
         self, node: ast.ClassDef, semantics: DataclassInfo
     ) -> None:
@@ -5638,28 +5580,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             node,
             "Class cannot define __slots__ when dataclass slots=True",
             error_code=ErrorCode.invalid_annotation,
-        )
-
-    def _apply_dataclass_slots_semantics(
-        self,
-        synthetic_class: SyntheticClassObjectValue,
-        semantics: DataclassInfo | None,
-    ) -> None:
-        if semantics is None:
-            return
-        _set_synthetic_dataclass_info(synthetic_class, semantics)
-        if semantics.slots is not True:
-            return
-        if get_synthetic_member_value(synthetic_class, "__slots__") is not None:
-            return
-        slot_names = self._dataclass_slot_names_from_synthetic_class(synthetic_class)
-        if slot_names is None:
-            return
-        slot_value = KnownValue(slot_names)
-        self._merge_synthetic_declared_symbol(
-            synthetic_class,
-            "__slots__",
-            ClassSymbol(slot_value, member_value=slot_value),
         )
 
     def _dataclass_slot_names_from_synthetic_class(
@@ -14710,7 +14630,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         synthetic_class = self.checker.get_synthetic_class(class_key)
         if synthetic_class is None or not synthetic_class.is_dataclass:
             return None
-        return self.checker.get_synthetic_dataclass_converter_input_type(
+        return dataclass_helpers.get_synthetic_dataclass_converter_input_type(
             synthetic_class, field_name
         )
 
@@ -16982,26 +16902,6 @@ def _merge_dataclass_transform_infos(
     )
 
 
-def _synthesize_dataclass_hash_attribute(
-    semantics: DataclassInfo | None,
-) -> Value | None:
-    if semantics is None:
-        return None
-    if semantics.unsafe_hash is True:
-        return AnyValue(AnySource.inference)
-    if semantics.eq is False:
-        return AnyValue(AnySource.inference)
-    if (
-        semantics.eq is True
-        and semantics.frozen is False
-        and semantics.unsafe_hash is False
-    ):
-        return KnownValue(None)
-    if semantics.eq is True and semantics.frozen is True:
-        return AnyValue(AnySource.inference)
-    return None
-
-
 def _class_body_defines_slots(node: ast.ClassDef) -> bool:
     for statement in node.body:
         if isinstance(statement, ast.Assign):
@@ -17089,18 +16989,6 @@ def _normalize_slot_names(raw_names: Iterable[str]) -> tuple[tuple[str, ...], bo
             continue
         names.append(name)
     return tuple(names), has_dict
-
-
-def _set_synthetic_dataclass_info(
-    synthetic_class: SyntheticClassObjectValue, semantics: DataclassInfo | None
-) -> None:
-    object.__setattr__(synthetic_class, "dataclass_info", semantics)
-
-
-def _set_synthetic_dataclass_transform_info(
-    synthetic_class: SyntheticClassObjectValue, info: DataclassTransformInfo | None
-) -> None:
-    object.__setattr__(synthetic_class, "dataclass_transform_info", info)
 
 
 def _set_synthetic_runtime_class(

@@ -19,6 +19,7 @@ from typing import TypeVar, cast
 
 from typing_extensions import assert_never
 
+from . import dataclass as dataclass_helpers
 from .annotations import type_from_runtime, type_from_value
 from .arg_spec import ArgSpecCache, GenericBases
 from .attributes import (
@@ -46,7 +47,6 @@ from .signature import (
     BoundMethodSignature,
     CallContext,
     ConcreteSignature,
-    InvalidSignature,
     MaybeSignature,
     OverloadedSignature,
     ParameterKind,
@@ -455,18 +455,6 @@ def _extract_generic_args_from_self_annotation(
     if isinstance(root, GenericValue) and _class_keys_match(root.typ, class_type):
         return tuple(root.args)
     return None
-
-
-def _synthetic_dataclass_init_enabled(value: SyntheticClassObjectValue) -> bool:
-    if value.dataclass_info is None:
-        return True
-    return value.dataclass_info.init
-
-
-def _synthetic_dataclass_match_args_enabled(value: SyntheticClassObjectValue) -> bool:
-    if value.dataclass_info is None:
-        return True
-    return value.dataclass_info.match_args
 
 
 def _synthetic_dataclass_converter_input_types(
@@ -2117,7 +2105,7 @@ class Checker:
         init_symbol = value.declared_symbols.get("__init__")
         has_direct_new = new_symbol is not None and new_symbol.is_method
         has_direct_init = init_symbol is not None and init_symbol.is_method
-        dataclass_init_enabled = _synthetic_dataclass_init_enabled(value)
+        dataclass_init_enabled = dataclass_helpers.dataclass_init_enabled(value)
 
         metaclass_call = self._get_synthetic_metaclass_call_signature(
             value,
@@ -2150,8 +2138,10 @@ class Checker:
         if has_direct_new and not has_direct_init:
             init_sig = None
         if value.is_dataclass and dataclass_init_enabled and not has_direct_init:
-            dataclass_sig = self._get_synthetic_dataclass_constructor_signature(
-                value, instance_type
+            dataclass_sig = dataclass_helpers.get_synthetic_constructor_signature(
+                value,
+                instance_type,
+                get_field_parameters=self.get_synthetic_dataclass_field_parameters,
             )
             if dataclass_sig is None:
                 dataclass_sig = Signature.make([], instance_type)
@@ -2166,8 +2156,10 @@ class Checker:
         if init_sig is not None:
             return init_sig
         if value.is_dataclass and dataclass_init_enabled:
-            dataclass_sig = self._get_synthetic_dataclass_constructor_signature(
-                value, instance_type
+            dataclass_sig = dataclass_helpers.get_synthetic_constructor_signature(
+                value,
+                instance_type,
+                get_field_parameters=self.get_synthetic_dataclass_field_parameters,
             )
             if dataclass_sig is not None:
                 return dataclass_sig
@@ -2189,59 +2181,7 @@ class Checker:
                 return concrete
         return Signature.make([], instance_type)
 
-    def _get_synthetic_dataclass_constructor_signature(
-        self, value: SyntheticClassObjectValue, instance_type: Value
-    ) -> Signature | None:
-        params = self._get_synthetic_dataclass_field_parameters(value)
-        if not params and value.dataclass_info is None:
-            return None
-        try:
-            return Signature.make(params, instance_type)
-        except InvalidSignature:
-            return Signature.make([ELLIPSIS_PARAM], instance_type)
-
-    def get_synthetic_dataclass_init_value(
-        self, value: SyntheticClassObjectValue
-    ) -> Value | None:
-        if not _synthetic_dataclass_init_enabled(value):
-            return None
-        params = self._get_synthetic_dataclass_field_parameters(value)
-        try:
-            signature = Signature.make(
-                [
-                    SigParameter(
-                        "self",
-                        ParameterKind.POSITIONAL_OR_KEYWORD,
-                        annotation=AnyValue(AnySource.inference),
-                    ),
-                    *params,
-                ],
-                KnownValue(None),
-            )
-        except InvalidSignature:
-            return AnyValue(AnySource.inference)
-        return CallableValue(signature)
-
-    def get_synthetic_dataclass_match_args_value(
-        self, value: SyntheticClassObjectValue
-    ) -> Value | None:
-        if not _synthetic_dataclass_match_args_enabled(value):
-            return None
-        params = self._get_synthetic_dataclass_field_parameters(value)
-        return KnownValue(
-            tuple(
-                param.name
-                for param in params
-                if param.kind is not ParameterKind.KEYWORD_ONLY
-            )
-        )
-
-    def get_synthetic_dataclass_converter_input_type(
-        self, value: SyntheticClassObjectValue, field_name: str
-    ) -> Value | None:
-        return _synthetic_dataclass_converter_input_types(value).get(field_name)
-
-    def _get_synthetic_dataclass_field_parameters(
+    def get_synthetic_dataclass_field_parameters(
         self,
         value: SyntheticClassObjectValue,
         *,

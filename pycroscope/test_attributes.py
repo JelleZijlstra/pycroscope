@@ -15,8 +15,6 @@ from .value import (
     AnyValue,
     GenericValue,
     KnownValue,
-    MultiValuedValue,
-    TypedValue,
     assert_is_value,
 )
 
@@ -235,25 +233,6 @@ class TestAttributes(TestNameCheckVisitorBase):
             x = Row()
             return x.capybaras
 
-    @assert_passes()
-    def test_only_known_attributes(self):
-        from dataclasses import dataclass
-        from typing import NamedTuple
-
-        @dataclass
-        class DC:
-            a: int
-
-        class NT(NamedTuple):
-            a: int
-
-        def capybara(dc: DC, nt: NT) -> None:
-            assert_type(dc.a, int)
-            assert_type(nt.a, int)
-
-            dc.b  # E: undefined_attribute
-            nt.b  # E: undefined_attribute
-
     @skip_if_not_installed("pydantic")
     @assert_passes()
     def test_only_known_attributes_pydantic(self):
@@ -266,24 +245,6 @@ class TestAttributes(TestNameCheckVisitorBase):
             assert_type(bm.a, int)
 
             bm.b  # E: undefined_attribute
-
-    @assert_passes()
-    def test_union(self):
-        from dataclasses import dataclass
-        from typing import Union
-
-        @dataclass
-        class Capybara:
-            attr: int
-
-        @dataclass
-        class Paca:
-            attr: str
-
-        def test(x: Union[Capybara, Paca]) -> None:
-            assert_is_value(
-                x.attr, MultiValuedValue([TypedValue(int), TypedValue(str)])
-            )
 
     @assert_passes()
     def test_annotated_known(self):

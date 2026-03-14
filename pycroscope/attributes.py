@@ -21,6 +21,7 @@ if sys.version_info >= (3, 14):
 else:
     from inspect import get_annotations
 
+from . import dataclass as dataclass_helpers
 from .annotated_types import EnumName
 from .annotations import (
     _RuntimeAnnotationsContext,
@@ -494,12 +495,13 @@ def _get_attribute_from_synthetic_type(
             synthetic_class, ctx.attr, ctx
         )
         if result is not UNINITIALIZED_VALUE:
-            result = _maybe_resolve_synthetic_dataclass_descriptor_attribute(
-                synthetic_class, ctx.attr, result, ctx, on_class=False
-            )
-        if result is UNINITIALIZED_VALUE:
-            result = _get_synthetic_dataclass_attribute(
-                synthetic_class, ctx, on_class=False
+            result = dataclass_helpers.maybe_resolve_synthetic_descriptor_attribute(
+                synthetic_class,
+                ctx.attr,
+                result,
+                ctx,
+                on_class=False,
+                descriptor_get_type=_synthetic_descriptor_get_type,
             )
         if result is not UNINITIALIZED_VALUE:
             result = _maybe_resolve_synthetic_property_attribute(result, ctx)
@@ -595,15 +597,17 @@ def _get_attribute_from_synthetic_class_inner(
 ) -> Value:
     direct = _get_direct_attribute_from_synthetic_class(self_value, ctx.attr, ctx)
     if direct is not UNINITIALIZED_VALUE:
-        direct = _maybe_resolve_synthetic_dataclass_descriptor_attribute(
-            self_value, ctx.attr, direct, ctx, on_class=True
+        direct = dataclass_helpers.maybe_resolve_synthetic_descriptor_attribute(
+            self_value,
+            ctx.attr,
+            direct,
+            ctx,
+            on_class=True,
+            descriptor_get_type=_synthetic_descriptor_get_type,
         )
         return direct
     if _is_instance_only_enum_attr(self_value.class_type, ctx.attr):
         return UNINITIALIZED_VALUE
-    dataclass_attr = _get_synthetic_dataclass_attribute(self_value, ctx, on_class=True)
-    if dataclass_attr is not UNINITIALIZED_VALUE:
-        return dataclass_attr
 
     for base in self_value.base_classes:
         result = _get_attribute_from_synthetic_base(base, self_value, ctx, seen=seen)
@@ -792,37 +796,6 @@ def _signature_accepts_args(
     return True
 
 
-def _maybe_resolve_synthetic_dataclass_descriptor_attribute(
-    synthetic_class: SyntheticClassObjectValue,
-    attr_name: str,
-    value: Value,
-    ctx: AttrContext,
-    *,
-    on_class: bool,
-) -> Value:
-    if (
-        not synthetic_class.is_dataclass
-        or (
-            synthetic_class.declared_symbols.get(attr_name) is not None
-            and synthetic_class.declared_symbols[attr_name].is_method
-        )
-        or (attr_name.startswith("__") and attr_name.endswith("__"))
-    ):
-        return value
-    descriptor_get_type = _synthetic_descriptor_get_type(
-        value, on_class=on_class, instance_value=ctx.get_self_value(), ctx=ctx
-    )
-    if descriptor_get_type is not None:
-        return descriptor_get_type
-    if not on_class and isinstance(value, AnnotatedValue):
-        inner_value = replace_fallback(value.value)
-        if isinstance(inner_value, KnownValue):
-            return annotate_value(TypedValue(type(inner_value.val)), value.metadata)
-    if not on_class and isinstance(value, KnownValue):
-        return TypedValue(type(value.val))
-    return value
-
-
 def _maybe_resolve_synthetic_property_attribute(
     value: Value, ctx: AttrContext
 ) -> Value:
@@ -834,16 +807,6 @@ def _maybe_resolve_synthetic_property_attribute(
     if isinstance(candidate, KnownValue) and isinstance(candidate.val, property):
         return ctx.get_property_type_from_argspec(candidate.val)
     return value
-
-
-def _get_synthetic_dataclass_attribute(
-    synthetic_class: SyntheticClassObjectValue, ctx: AttrContext, *, on_class: bool
-) -> Value:
-    if not synthetic_class.is_dataclass:
-        return UNINITIALIZED_VALUE
-    if ctx.attr == "__dataclass_fields__":
-        return GenericValue(dict, [TypedValue(str), AnyValue(AnySource.explicit)])
-    return UNINITIALIZED_VALUE
 
 
 def _is_synthetic_initvar_attribute(
@@ -1144,12 +1107,15 @@ def _get_attribute_from_typed(
             synthetic_class, ctx.attr, ctx
         )
         if synthetic_result is not UNINITIALIZED_VALUE:
-            synthetic_result = _maybe_resolve_synthetic_dataclass_descriptor_attribute(
-                synthetic_class, ctx.attr, synthetic_result, ctx, on_class=False
-            )
-        if synthetic_result is UNINITIALIZED_VALUE:
-            synthetic_result = _get_synthetic_dataclass_attribute(
-                synthetic_class, ctx, on_class=False
+            synthetic_result = (
+                dataclass_helpers.maybe_resolve_synthetic_descriptor_attribute(
+                    synthetic_class,
+                    ctx.attr,
+                    synthetic_result,
+                    ctx,
+                    on_class=False,
+                    descriptor_get_type=_synthetic_descriptor_get_type,
+                )
             )
         if synthetic_result is not UNINITIALIZED_VALUE:
             synthetic_result = _maybe_resolve_synthetic_property_attribute(
@@ -1256,13 +1222,7 @@ def _get_runtime_attribute_from_synthetic_dataclass(
             else:
                 direct = _unwrap_value_from_typed(direct, typ, ctx)
             return set_self(direct, ctx.get_self_value())
-
-    dataclass_attr = _get_synthetic_dataclass_attribute(
-        synthetic_class, ctx, on_class=on_class
-    )
-    if dataclass_attr is UNINITIALIZED_VALUE:
-        return UNINITIALIZED_VALUE
-    return set_self(dataclass_attr, ctx.get_self_value())
+    return UNINITIALIZED_VALUE
 
 
 def _enum_member_value_type(typ: type[Enum]) -> Value | None:
