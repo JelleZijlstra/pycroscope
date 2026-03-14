@@ -496,7 +496,6 @@ class Checker:
     runtime_class_self_annotation_cache: dict[type, bool] = field(
         default_factory=dict, init=False, repr=False
     )
-    _should_exclude_any: bool = False
 
     def __post_init__(self, raw_options: Options | None) -> None:
         if raw_options is None:

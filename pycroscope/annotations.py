@@ -57,6 +57,7 @@ from typing_extensions import (
     runtime_checkable,
 )
 
+import pycroscope
 from pycroscope.annotated_types import get_annotated_types_extension
 from pycroscope.input_sig import FullSignature, InputSigValue
 from pycroscope.relations import HashableProtoValue, Relation, has_relation
@@ -151,6 +152,10 @@ from .value import (
     replace_known_sequence_value,
     unite_values,
 )
+
+if TYPE_CHECKING:
+    from .name_check_visitor import NameCheckVisitor
+
 
 CONTEXT_MANAGER_TYPES = (typing.ContextManager, contextlib.AbstractContextManager)
 ASYNC_CONTEXT_MANAGER_TYPES = (

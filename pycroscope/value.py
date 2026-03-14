@@ -45,7 +45,7 @@ from types import FunctionType, ModuleType
 from typing import Any, Optional, TypeVar, Union
 
 import typing_extensions
-from typing_extensions import Protocol, assert_never
+from typing_extensions import NoDefault, Protocol, assert_never
 
 import pycroscope
 from pycroscope.error_code import Error
@@ -600,6 +600,9 @@ def _type_param_to_string(
     return str(typevar)
 
 
+_NO_DEFAULT = object()
+
+
 @dataclass(frozen=True)
 class TypeVarParam:
     typevar: TypeVarType
@@ -697,6 +700,38 @@ class TypeVarTupleParam:
 
 
 TypeParam = TypeVarParam | ParamSpecParam | TypeVarTupleParam
+
+
+def _value_from_runtime_type_param_component(component: object) -> Value:
+    if isinstance(component, Value):
+        return component
+    if is_instance_of_typing_name(component, "TypeVar"):
+        return TypeVarValue(TypeVarParam(component))
+    if is_instance_of_typing_name(component, "TypeVarTuple"):
+        return TypeVarTupleValue(component)
+    if is_instance_of_typing_name(component, "ParamSpec"):
+        from pycroscope.input_sig import InputSigValue
+
+        return InputSigValue(ParamSpecParam(component))
+    if isinstance(component, tuple):
+        return SequenceValue(
+            tuple,
+            [
+                (False, _value_from_runtime_type_param_component(member))
+                for member in component
+            ],
+        )
+    if isinstance(component, list):
+        return SequenceValue(
+            list,
+            [
+                (False, _value_from_runtime_type_param_component(member))
+                for member in component
+            ],
+        )
+    if isinstance(component, type):
+        return TypedValue(component)
+    return KnownValue(component)
 
 
 def type_param_to_value(type_param: TypeParam) -> Value:

@@ -113,6 +113,13 @@ ignored_unused_attribute_paths = [
   "pycroscope.signature.CallContext.sig",
   "pycroscope.checker.Checker.resolve_name",
   "pycroscope.value.CanAssignContext.resolve_name",
+  "pycroscope.value.DataclassFieldInfo.substitute_typevars",
+  "pycroscope.value.DataclassFieldInfo.walk_values",
+  "pycroscope.value.PropertyInfo.substitute_typevars",
+  "pycroscope.value.PropertyInfo.walk_values",
+  "pycroscope.value.TypeVarParam.get_fallback_value",
+  "pycroscope.value.TypeVarParam.substitute_typevars",
+  "pycroscope.value.TypeVarParam.walk_values",
 ]
 
 possibly_undefined_name = true
