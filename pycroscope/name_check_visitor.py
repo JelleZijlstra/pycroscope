@@ -9631,7 +9631,12 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     def _visit_annotation(self, node: ast.AST) -> Value:
         with override(self, "in_annotation", True):
             if _contains_unpack_annotation_syntax(node):
+                if self.annotate:
+                    with self.catch_errors():
+                        self.visit(node)
                 val = value_from_ast(node, visitor=self)
+                if self.annotate:
+                    node.inferred_value = val
             else:
                 val = self.visit(node)
             if self._is_invalid_generic_annotation_node(node):

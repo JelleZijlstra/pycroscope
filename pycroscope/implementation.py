@@ -991,8 +991,10 @@ def _sequence_common_getitem_impl(ctx: CallContext, typ: type) -> ImplReturn:
             elif tobj.is_assignable_to_type(slice):
                 if from_tuple_subtype:
                     return TypedValue(tuple)
-                if generated_tuple_sequence:
-                    return GenericValue(typ, self_value.args)
+                if generated_tuple_sequence and isinstance(
+                    original_self_value, GenericValue
+                ):
+                    return GenericValue(typ, original_self_value.args)
                 return self_value
             else:
                 ctx.show_error(f"Invalid {typ.__name__} key {key}")

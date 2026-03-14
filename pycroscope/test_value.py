@@ -797,7 +797,7 @@ def test_tuple_subclass_with_custom_iter_is_not_unpacked_as_exact_tuple() -> Non
     class Weird(tuple[int, str]):
         pass
 
-    def _iter(self) -> collections.abc.Iterator[int | str]:
+    def _iter(self: Weird) -> collections.abc.Iterator[int | str]:
         yield self[1]
         yield self[0]
 

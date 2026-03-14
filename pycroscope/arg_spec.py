@@ -1568,11 +1568,12 @@ class ArgSpecCache:
                     args = ()
                 generic_bases.update(self.get_generic_bases(base.typ, args))
                 if isinstance(base, SequenceValue) and base.typ is tuple:
-                    tuple_type_params = self.get_type_parameters(tuple)
+                    tuple_type: type = tuple
+                    tuple_type_params = self.get_type_parameters(tuple_type)
                     if len(tuple_type_params) == 1:
-                        generic_bases.setdefault(tuple, {})[
-                            tuple_type_params[0].typevar
-                        ] = base
+                        tuple_generic_bases = dict(generic_bases.get(tuple_type, {}))
+                        tuple_generic_bases[tuple_type_params[0].typevar] = base
+                        generic_bases[tuple_type] = tuple_generic_bases
             elif isinstance(base, AnyValue):
                 # Runtime bases can contain `typing.Any` (e.g. `class C(Any): ...`).
                 # Treat this as an unknown base instead of failing extraction.

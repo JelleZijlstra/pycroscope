@@ -9,6 +9,7 @@ import inspect
 import sys
 from collections.abc import Container, Mapping, Sequence
 from dataclasses import dataclass, field, replace
+from typing import TYPE_CHECKING, Literal
 from unittest import mock
 
 from typing_extensions import assert_never
@@ -17,6 +18,9 @@ if sys.version_info >= (3, 14):
     from annotationlib import Format, get_annotations
 else:
     from inspect import get_annotations
+
+if TYPE_CHECKING:
+    from .relations import Relation
 
 from pycroscope.relations import (
     infer_positional_generic_typevar_map,
@@ -181,7 +185,7 @@ class TypeObject:
         other_val: KnownValue | TypedValue | SubclassValue | AnnotatedValue,
         ctx: CanAssignContext,
         *,
-        relation: object | None = None,
+        relation: "Literal[Relation.SUBTYPE, Relation.ASSIGNABLE] | None" = None,
     ) -> CanAssign:
         from .relations import Relation, _compare_tuple_sequences
 
