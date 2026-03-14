@@ -6,6 +6,7 @@ from .test_node_visitor import assert_passes
 from .type_object import (
     TypeObject,
     _class_key_from_value,
+    _is_readonly_instance_member,
     _iter_base_keys,
     _should_use_permissive_dunder_hash,
     lookup_declared_symbol,
@@ -21,6 +22,7 @@ from .value import (
     IntersectionValue,
     KnownValue,
     MultiValuedValue,
+    NamedTupleInfo,
     SubclassValue,
     SyntheticClassObjectValue,
     TypedValue,
@@ -118,6 +120,28 @@ def test_runtime_declared_symbol_uses_annotation_expr_parsing() -> None:
     assert symbol.is_readonly
     assert not symbol.is_instance_only
     assert symbol.typ == AnnotatedValue(TypedValue(int), [KnownValue("meta")])
+
+
+def test_synthetic_namedtuple_field_is_readonly_without_runtime_class() -> None:
+    checker = Checker()
+    synthetic = SyntheticClassObjectValue(
+        "Point",
+        TypedValue("mod.Point"),
+        base_classes=(TypedValue(tuple),),
+        namedtuple_info=NamedTupleInfo(
+            field_names=("x",), default_fields=(), has_namedtuple_marker_base=True
+        ),
+    )
+    synthetic.declared_symbols["x"] = ClassSymbol(
+        TypedValue(int), is_instance_only=True, member_value=TypedValue(int)
+    )
+    synthetic.declared_symbols["helper"] = ClassSymbol(
+        KnownValue(len), is_method=True, member_value=KnownValue(len)
+    )
+    checker.register_synthetic_class(synthetic)
+
+    assert _is_readonly_instance_member("mod.Point", "x", checker)
+    assert not _is_readonly_instance_member("mod.Point", "helper", checker)
 
 
 def test_synthetic_declared_symbol_overrides_raw_attribute_value() -> None:

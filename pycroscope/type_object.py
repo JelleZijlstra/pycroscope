@@ -71,6 +71,7 @@ from .value import (
     freshen_typevars_for_inference,
     get_synthetic_member_value,
     get_tv_map,
+    ordered_namedtuple_fields_from_synthetic,
     replace_fallback,
     stringify_object,
     unify_bounds_maps,
@@ -1146,12 +1147,7 @@ def _is_readonly_instance_member(
     synthetic = _get_synthetic_class_for_key(class_key, ctx)
     if synthetic is not None:
         if synthetic.namedtuple_info is not None:
-            symbol = synthetic.declared_symbols.get(member)
-            if symbol is not None and symbol.is_instance_only:
-                return True
-            if get_synthetic_member_value(synthetic, member) is not None and not (
-                symbol is not None and symbol.is_method
-            ):
+            if member in ordered_namedtuple_fields_from_synthetic(synthetic):
                 return True
     if synthetic is not None and synthetic.dataclass_frozen is True:
         return True
