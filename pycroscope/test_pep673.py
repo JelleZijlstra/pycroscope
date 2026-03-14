@@ -48,6 +48,28 @@ class TestPEP673(TestNameCheckVisitorBase):
             assert_type(Y.from_config(), Y)
 
     @assert_passes()
+    def test_self_annotated_receiver_attribute_assignment(self):
+        from typing_extensions import Self
+
+        class Box:
+            def set_value(self: Self, value: int) -> None:
+                self.value = value
+
+        def capybara(box: Box):
+            assert_type(box.value, int)
+
+    @assert_passes()
+    def test_self_annotated_receiver_setattr(self):
+        from typing_extensions import Self
+
+        class Box:
+            def set_value(self: Self, value: int) -> None:
+                setattr(self, "value", value)
+
+        def capybara(box: Box):
+            assert_type(box.value, int)
+
+    @assert_passes()
     def test_invalid_self_return(self):
         from typing_extensions import Self
 

@@ -14726,30 +14726,10 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     composite.get_varname(), self.being_assigned, node, self.state
                 )
 
-            if isinstance(root_composite.value, TypedValue):
-                typ = root_composite.value.typ
-                if isinstance(typ, type):
-                    if should_record_type_attr_set:
-                        self._record_type_attr_set(
-                            typ, node.attr, node, self.being_assigned
-                        )
-            elif isinstance(root_composite.value, GenericValue):
-                typ = root_composite.value.typ
-                if isinstance(typ, type):
-                    if should_record_type_attr_set:
-                        self._record_type_attr_set(
-                            typ, node.attr, node, self.being_assigned
-                        )
-            elif isinstance(root_composite.value, KnownValue) and not isinstance(
-                root_composite.value.val, type
-            ):
-                if should_record_type_attr_set:
-                    self._record_type_attr_set(
-                        type(root_composite.value.val),
-                        node.attr,
-                        node,
-                        self.being_assigned,
-                    )
+            if should_record_type_attr_set:
+                self._record_type_attr_set_for_value(
+                    root_composite.value, node.attr, node, self.being_assigned
+                )
             return Composite(self.being_assigned, composite, node)
         elif self._is_read_ctx(node.ctx):
             root_composite = self._get_locally_narrowed_composite(root_composite, node)
@@ -16448,6 +16428,45 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     ) -> None:
         if self.attribute_checker is not None:
             self.attribute_checker.record_attribute_set(typ, attr_name, node, value)
+
+    def _attribute_write_types_for_value(self, value: Value) -> set[type]:
+        if isinstance(value, AnnotatedValue):
+            return self._attribute_write_types_for_value(value.value)
+        if isinstance(value, KnownValueWithTypeVars) and SelfT in value.typevars:
+            return self._attribute_write_types_for_value(value.typevars[SelfT])
+        if isinstance(value, TypeVarValue):
+            if value.typevar_param.typevar is SelfT and isinstance(
+                self.current_class, type
+            ):
+                return {self.current_class}
+            bound = value.typevar_param.bound
+            if bound is None:
+                return set()
+            return self._attribute_write_types_for_value(bound)
+        value = replace_fallback(value)
+        if isinstance(value, (MultiValuedValue, IntersectionValue)):
+            return {
+                typ
+                for subval in value.vals
+                for typ in self._attribute_write_types_for_value(subval)
+            }
+        if isinstance(value, TypedValue):
+            return {value.typ} if isinstance(value.typ, type) else set()
+        if isinstance(value, GenericValue):
+            return {value.typ} if isinstance(value.typ, type) else set()
+        if isinstance(value, KnownValue) and not isinstance(value.val, type):
+            return {type(value.val)}
+        return set()
+
+    def _record_type_attr_set_for_value(
+        self, root_value: Value, attr_name: str, node: ast.AST, value: Value
+    ) -> None:
+        for typ in self._attribute_write_types_for_value(root_value):
+            self._record_type_attr_set(typ, attr_name, node, value)
+
+    def _record_type_has_dynamic_attrs_for_value(self, root_value: Value) -> None:
+        for typ in self._attribute_write_types_for_value(root_value):
+            self._record_type_has_dynamic_attrs(typ)
 
     def _record_synthetic_attr_set(
         self, node: ast.Attribute, root_value: Value
