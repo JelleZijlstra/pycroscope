@@ -4397,6 +4397,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     self._apply_dataclass_init_semantics(
                         synthetic_class, dataclass_semantics
                     )
+                    self._apply_dataclass_match_args_semantics(
+                        synthetic_class, dataclass_semantics
+                    )
                     self._apply_dataclass_hash_semantics(
                         synthetic_class, dataclass_semantics
                     )
@@ -4458,6 +4461,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     dataclass_metadata_class, dataclass_semantics
                 )
                 self._apply_dataclass_init_semantics(
+                    dataclass_metadata_class, dataclass_semantics
+                )
+                self._apply_dataclass_match_args_semantics(
                     dataclass_metadata_class, dataclass_semantics
                 )
                 self._apply_dataclass_hash_semantics(
@@ -5599,6 +5605,26 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             synthetic_class,
             "__init__",
             ClassSymbol(init_value, is_method=True, member_value=init_value),
+        )
+
+    def _apply_dataclass_match_args_semantics(
+        self,
+        synthetic_class: SyntheticClassObjectValue,
+        semantics: DataclassInfo | None,
+    ) -> None:
+        if semantics is None:
+            return
+        if get_synthetic_member_value(synthetic_class, "__match_args__") is not None:
+            return
+        match_args_value = self.checker.get_synthetic_dataclass_match_args_value(
+            synthetic_class
+        )
+        if match_args_value is None:
+            return
+        self._merge_synthetic_declared_symbol(
+            synthetic_class,
+            "__match_args__",
+            ClassSymbol(match_args_value, member_value=match_args_value),
         )
 
     def _check_dataclass_slots_definition(

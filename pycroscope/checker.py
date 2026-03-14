@@ -23,8 +23,6 @@ from .annotations import type_from_runtime, type_from_value
 from .arg_spec import ArgSpecCache, GenericBases
 from .attributes import (
     AttrContext,
-    _synthetic_dataclass_converter_input_types,
-    _synthetic_dataclass_parameter_annotation_for_field,
     get_attribute,
     normalize_synthetic_descriptor_attribute,
 )
@@ -463,6 +461,72 @@ def _synthetic_dataclass_init_enabled(value: SyntheticClassObjectValue) -> bool:
     if value.dataclass_info is None:
         return True
     return value.dataclass_info.init
+
+
+def _synthetic_dataclass_match_args_enabled(value: SyntheticClassObjectValue) -> bool:
+    if value.dataclass_info is None:
+        return True
+    return value.dataclass_info.match_args
+
+
+def _synthetic_dataclass_converter_input_types(
+    synthetic_class: SyntheticClassObjectValue,
+) -> dict[str, Value]:
+    converter_input_types: dict[str, Value] = {}
+    for field_name, symbol in synthetic_class.declared_symbols.items():
+        field = symbol.dataclass_field
+        if field is None or field.converter_input_type is None:
+            continue
+        converter_input_types[field_name] = field.converter_input_type
+    return converter_input_types
+
+
+def _signature_from_synthetic_attribute(
+    value: Value, ctx: AttrContext
+) -> Signature | OverloadedSignature | None:
+    signature = ctx.signature_from_value(value)
+    if signature is None and isinstance(value, KnownValue):
+        signature = ctx.get_signature(value.val)
+    can_assign_ctx = ctx.get_can_assign_context()
+    if isinstance(signature, BoundMethodSignature):
+        if can_assign_ctx is None:
+            return None
+        signature = signature.get_signature(ctx=can_assign_ctx)
+    if isinstance(signature, (Signature, OverloadedSignature)):
+        return signature
+    return None
+
+
+def _synthetic_descriptor_set_type(descriptor: Value, ctx: AttrContext) -> Value | None:
+    descriptor = replace_fallback(descriptor)
+    if isinstance(descriptor, AnnotatedValue):
+        return _synthetic_descriptor_set_type(descriptor.value, ctx)
+    if not isinstance(
+        descriptor, (KnownValue, TypedValue, GenericValue, SyntheticClassObjectValue)
+    ):
+        return None
+    method_ctx = ctx.clone_for_attribute_lookup(Composite(descriptor), "__set__")
+    method_value = get_attribute(method_ctx)
+    if method_value is UNINITIALIZED_VALUE:
+        return None
+    signature = _signature_from_synthetic_attribute(method_value, method_ctx)
+    if signature is None:
+        return None
+    signatures = (
+        [signature] if isinstance(signature, Signature) else signature.signatures
+    )
+    for set_signature in signatures:
+        positional_params = [
+            parameter
+            for parameter in set_signature.parameters.values()
+            if parameter.kind
+            in (ParameterKind.POSITIONAL_ONLY, ParameterKind.POSITIONAL_OR_KEYWORD)
+        ]
+        if len(positional_params) >= 3:
+            return positional_params[2].annotation
+        if len(positional_params) >= 2:
+            return positional_params[1].annotation
+    return None
 
 
 @dataclass
@@ -2158,6 +2222,20 @@ class Checker:
             return AnyValue(AnySource.inference)
         return CallableValue(signature)
 
+    def get_synthetic_dataclass_match_args_value(
+        self, value: SyntheticClassObjectValue
+    ) -> Value | None:
+        if not _synthetic_dataclass_match_args_enabled(value):
+            return None
+        params = self._get_synthetic_dataclass_field_parameters(value)
+        return KnownValue(
+            tuple(
+                param.name
+                for param in params
+                if param.kind is not ParameterKind.KEYWORD_ONLY
+            )
+        )
+
     def _get_synthetic_dataclass_field_parameters(
         self,
         value: SyntheticClassObjectValue,
@@ -2285,7 +2363,12 @@ class Checker:
             prefer_typeshed=False,
             checker=self,
         )
-        return _synthetic_dataclass_parameter_annotation_for_field(attr, ctx)
+        descriptor_set_type = _synthetic_descriptor_set_type(attr, ctx)
+        if descriptor_set_type is not None:
+            return descriptor_set_type
+        if isinstance(attr, KnownValue):
+            return TypedValue(type(attr.val))
+        return attr
 
     def _get_synthetic_namedtuple_constructor_signature(
         self, value: SyntheticClassObjectValue

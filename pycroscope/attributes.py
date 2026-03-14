@@ -49,7 +49,6 @@ from .signature import (
     OverloadedSignature,
     ParameterKind,
     Signature,
-    SigParameter,
     make_bound_method,
 )
 from .stacked_scopes import Composite
@@ -92,7 +91,6 @@ from .value import (
     annotate_value,
     get_synthetic_member_value,
     has_any_base_value,
-    iter_synthetic_dataclass_field_candidates,
     replace_fallback,
     set_self,
     stringify_object,
@@ -678,164 +676,6 @@ def _is_synthetic_method_attribute(
     return symbol is not None and symbol.is_method
 
 
-def _synthetic_dataclass_match_args_enabled(
-    self_value: SyntheticClassObjectValue,
-) -> bool:
-    if self_value.dataclass_info is None:
-        return True
-    return self_value.dataclass_info.match_args
-
-
-def _iter_synthetic_dataclass_base_init_parameters(
-    base: Value, ctx: AttrContext, *, seen: set[int]
-) -> list[SigParameter]:
-    base = replace_fallback(base)
-    synthetic_base: SyntheticClassObjectValue | None = None
-    if isinstance(base, SyntheticClassObjectValue):
-        synthetic_base = base
-    elif isinstance(base, GenericValue):
-        if isinstance(base.typ, (type, str)):
-            synthetic_base = ctx.get_synthetic_class(base.typ)
-    elif isinstance(base, TypedValue):
-        if isinstance(base.typ, (type, str)):
-            synthetic_base = ctx.get_synthetic_class(base.typ)
-    elif isinstance(base, KnownValue) and isinstance(base.val, type):
-        synthetic_base = ctx.get_synthetic_class(base.val)
-    if synthetic_base is None or not synthetic_base.is_dataclass:
-        return []
-    return _get_synthetic_dataclass_init_parameters(
-        synthetic_base, ctx, include_inherited=True, seen=seen
-    )
-
-
-def _synthetic_dataclass_converter_input_types(
-    synthetic_class: SyntheticClassObjectValue,
-) -> dict[str, Value]:
-    converter_input_types: dict[str, Value] = {}
-    for field_name, symbol in synthetic_class.declared_symbols.items():
-        field = symbol.dataclass_field
-        if field is None or field.converter_input_type is None:
-            continue
-        converter_input_types[field_name] = field.converter_input_type
-    return converter_input_types
-
-
-def _get_synthetic_dataclass_init_parameters(
-    synthetic_class: SyntheticClassObjectValue,
-    ctx: AttrContext,
-    *,
-    include_inherited: bool,
-    seen: set[int] | None,
-) -> list[SigParameter]:
-    if seen is None:
-        seen = set()
-    synthetic_id = id(synthetic_class)
-    if synthetic_id in seen:
-        return []
-    seen.add(synthetic_id)
-
-    params_by_field: dict[str, SigParameter] = {}
-    field_order: list[str] = []
-    if include_inherited:
-        for base in synthetic_class.base_classes:
-            for inherited in _iter_synthetic_dataclass_base_init_parameters(
-                base, ctx, seen=seen
-            ):
-                if inherited.name not in params_by_field:
-                    field_order.append(inherited.name)
-                params_by_field[inherited.name] = inherited
-
-    converter_input_types = _synthetic_dataclass_converter_input_types(synthetic_class)
-    for (
-        field_name,
-        attr,
-        symbol,
-        field_info,
-    ) in iter_synthetic_dataclass_field_candidates(synthetic_class):
-        excluded = (
-            attr is UNINITIALIZED_VALUE
-            or symbol is not None
-            and (symbol.is_method or symbol.is_classvar)
-            or field_info is not None
-            and not field_info.init
-        )
-        if excluded:
-            params_by_field.pop(field_name, None)
-            continue
-
-        parameter_name = (
-            field_info.alias
-            if field_info is not None and field_info.alias is not None
-            else field_name
-        )
-        annotation = converter_input_types.get(field_name)
-        if annotation is None:
-            annotation = _synthetic_dataclass_parameter_annotation_for_field(attr, ctx)
-
-        parameter = SigParameter(
-            parameter_name,
-            (
-                ParameterKind.KEYWORD_ONLY
-                if field_info is not None and field_info.kw_only
-                else ParameterKind.POSITIONAL_OR_KEYWORD
-            ),
-            default=(
-                KnownValue(...)
-                if field_info is not None and field_info.has_default
-                else None
-            ),
-            annotation=annotation,
-        )
-        if field_name not in field_order:
-            field_order.append(field_name)
-        params_by_field[field_name] = parameter
-
-    params = [params_by_field[name] for name in field_order if name in params_by_field]
-    positional_params = [
-        parameter
-        for parameter in params
-        if parameter.kind is not ParameterKind.KEYWORD_ONLY
-    ]
-    kw_only_params = [
-        parameter
-        for parameter in params
-        if parameter.kind is ParameterKind.KEYWORD_ONLY
-    ]
-    return [*positional_params, *kw_only_params]
-
-
-def _synthetic_dataclass_parameter_annotation_for_field(
-    attr: Value, ctx: AttrContext
-) -> Value:
-    descriptor_set_type = _synthetic_descriptor_set_type(attr, ctx)
-    if descriptor_set_type is not None:
-        return descriptor_set_type
-    if isinstance(attr, KnownValue):
-        return TypedValue(type(attr.val))
-    return attr
-
-
-def _synthetic_descriptor_set_type(descriptor: Value, ctx: AttrContext) -> Value | None:
-    signature = _synthetic_descriptor_method_signature_any(descriptor, "__set__", ctx)
-    if signature is None:
-        return None
-    signatures = (
-        [signature] if isinstance(signature, Signature) else signature.signatures
-    )
-    for set_signature in signatures:
-        positional_params = [
-            parameter
-            for parameter in set_signature.parameters.values()
-            if parameter.kind
-            in (ParameterKind.POSITIONAL_ONLY, ParameterKind.POSITIONAL_OR_KEYWORD)
-        ]
-        if len(positional_params) >= 3:
-            return positional_params[2].annotation
-        if len(positional_params) >= 2:
-            return positional_params[1].annotation
-    return None
-
-
 def _synthetic_descriptor_get_type(
     descriptor: Value, *, on_class: bool, instance_value: Value, ctx: AttrContext
 ) -> Value | None:
@@ -1001,19 +841,6 @@ def _get_synthetic_dataclass_attribute(
 ) -> Value:
     if not synthetic_class.is_dataclass:
         return UNINITIALIZED_VALUE
-    if ctx.attr == "__match_args__":
-        if not _synthetic_dataclass_match_args_enabled(synthetic_class):
-            return UNINITIALIZED_VALUE
-        init_parameters = _get_synthetic_dataclass_init_parameters(
-            synthetic_class, ctx, include_inherited=True, seen=None
-        )
-        return KnownValue(
-            tuple(
-                param.name
-                for param in init_parameters
-                if param.kind is not ParameterKind.KEYWORD_ONLY
-            )
-        )
     if ctx.attr == "__dataclass_fields__":
         return GenericValue(dict, [TypedValue(str), AnyValue(AnySource.explicit)])
     return UNINITIALIZED_VALUE
