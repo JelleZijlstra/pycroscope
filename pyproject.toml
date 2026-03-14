@@ -121,6 +121,10 @@ ignored_unused_attribute_paths = [
   "pycroscope.value.TypeVarParam.get_fallback_value",
   "pycroscope.value.TypeVarParam.substitute_typevars",
   "pycroscope.value.TypeVarParam.walk_values",
+  # Only used on Python 3.12+ code paths.
+  "pycroscope.name_check_visitor.NameCheckVisitor._check_pep695_type_parameter_base_compatibility",
+  "pycroscope.name_check_visitor.NameCheckVisitor._check_typevar_default_constraints",
+  "pycroscope.stacked_scopes.ScopeType.annotation_scope",
 ]
 
 possibly_undefined_name = true
