@@ -860,6 +860,16 @@ def _has_relation(
     if isinstance(left, SequenceValue):
         if isinstance(right, SequenceValue):
             return _has_relation_sequence(left, right, relation, ctx)
+        if (
+            left.typ is tuple
+            and isinstance(
+                right, (KnownValue, TypedValue, SubclassValue, AnnotatedValue)
+            )
+            and tuple_members_from_value(right, ctx) is not None
+        ):
+            return left.get_type_object(ctx).can_assign(
+                left, right, ctx, relation=relation
+            )
         if relation is Relation.SUBTYPE:
             return CanAssignError(f"{right} is not {relation.description} {left}")
         if (
@@ -2400,7 +2410,7 @@ def _predicate_implies(stronger: PredicateCheck, weaker: PredicateCheck) -> bool
 
 
 def _intersect_len_predicate(
-    predicate: MinLen | MaxLen, value: SimpleType
+    predicate: MinLen | MaxLen, value: SimpleType, ctx: CanAssignContext
 ) -> TypeOrIrreducible:
     if not isinstance(predicate.value, int):
         return Irreducible
@@ -2472,7 +2482,7 @@ def _intersect_predicate(
     if isinstance(right, PredicateValue):
         return _intersect_predicate_predicate(left, right)
     if isinstance(left.predicate, (MinLen, MaxLen)):
-        return _intersect_len_predicate(left.predicate, right)
+        return _intersect_len_predicate(left.predicate, right, ctx)
     if isinstance(right, KnownValue):
         can_assign = left.predicate.can_assign(right, ctx)
         if isinstance(can_assign, CanAssignError):

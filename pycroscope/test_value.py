@@ -787,10 +787,6 @@ def test_exact_tuple_subclass_members_from_runtime_bases() -> None:
         pass
 
     checker = Checker()
-    assert TypedValue(NotANT).get_generic_args_for_type(tuple, checker) == [
-        TypedValue(int),
-        TypedValue(str),
-    ]
     assert value.tuple_members_from_value(TypedValue(NotANT), checker) == (
         (False, TypedValue(int)),
         (False, TypedValue(str)),

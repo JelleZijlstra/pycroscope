@@ -1278,30 +1278,8 @@ class ArgSpecCache:
         generic_bases = self._get_generic_bases_cached(typ)
         if typ not in generic_bases:
             return generic_bases
-        namedtuple_fields = _namedtuple_field_names(typ)
         type_params = tuple(self.get_type_parameters(typ))
         if not type_params:
-            if namedtuple_fields:
-                tuple_type_params = self.get_type_parameters(tuple)
-                if len(tuple_type_params) == 1:
-                    generic_bases = {
-                        base: dict(args) for base, args in generic_bases.items()
-                    }
-                    generic_bases.setdefault(tuple, {})[
-                        tuple_type_params[0].typevar
-                    ] = SequenceValue(
-                        tuple,
-                        [
-                            (
-                                False,
-                                type_from_runtime(
-                                    get_namedtuple_field_annotation(typ, field_name),
-                                    ctx=self.default_context,
-                                ),
-                            )
-                            for field_name in namedtuple_fields
-                        ],
-                    )
             return generic_bases
         tv_map: dict[TypeVarLike, Value] = {}
         paramspec_generic_arg_map: dict[
@@ -1328,33 +1306,10 @@ class ArgSpecCache:
                 return paramspec_generic_arg_map[value.input_sig.param_spec]
             return value.substitute_typevars(tv_map)
 
-        substituted = {
+        return {
             base: {tv: _substitute_base_arg(value) for tv, value in args.items()}
             for base, args in generic_bases.items()
         }
-        if namedtuple_fields:
-            tuple_type_params = self.get_type_parameters(tuple)
-            if len(tuple_type_params) == 1:
-                substituted.setdefault(tuple, {})[tuple_type_params[0].typevar] = (
-                    SequenceValue(
-                        tuple,
-                        [
-                            (
-                                False,
-                                _substitute_base_arg(
-                                    type_from_runtime(
-                                        get_namedtuple_field_annotation(
-                                            typ, field_name
-                                        ),
-                                        ctx=self.default_context,
-                                    )
-                                ),
-                            )
-                            for field_name in namedtuple_fields
-                        ],
-                    )
-                )
-        return substituted
 
     def _specialize_generic_type_params(
         self,
@@ -1640,15 +1595,6 @@ def _is_qcore_decorator(obj: object) -> TypeGuard[Any]:
     except Exception:
         # black.Line has an is_decorator attribute but it is not a method
         return False
-
-
-def _namedtuple_field_names(typ: type | str) -> tuple[str, ...]:
-    if not isinstance(typ, type) or not is_namedtuple_class(typ):
-        return ()
-    fields_obj = safe_getattr(typ, "_fields", None)
-    if not isinstance(fields_obj, tuple):
-        return ()
-    return tuple(name for name in fields_obj if isinstance(name, str))
 
 
 def _get_class_name(obj: object) -> str | None:

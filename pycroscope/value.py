@@ -1447,14 +1447,6 @@ class TypedValue(Value):
             raw_args = list(generic_bases[params_key].values())
             assert all(isinstance(raw_arg, Value) for raw_arg in raw_args), raw_args
             if (
-                typ is tuple
-                and len(raw_args) == 1
-                and isinstance(raw_args[0], SequenceValue)
-                and raw_args[0].typ is tuple
-                and all(not is_many for is_many, _ in raw_args[0].members)
-            ):
-                return [member for _, member in raw_args[0].members]
-            if (
                 not raw_args
                 and isinstance(self, GenericValue)
                 and _is_same_synthetic_class_key(params_key, self.typ)
@@ -4104,6 +4096,8 @@ def tuple_members_from_value(
         args: Sequence[Value] | None,
     ) -> tuple[tuple[bool, Value], ...] | None:
         if args is None:
+            return None
+        if not args:
             return None
         if len(args) == 1:
             arg = replace_known_sequence_value(args[0])

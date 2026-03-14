@@ -441,6 +441,28 @@ class TestTypeAliasType(TestNameCheckVisitorBase):
             allow_import_failures=True,
         )
 
+    def test_implicit_alias_base_specialization(self):
+        self.assert_passes(
+            """
+            from typing import Generic, TypeVar
+
+            T = TypeVar("T")
+            S = TypeVar("S")
+
+            class Box(Generic[T]):
+                pass
+
+            Alias = Box[T]
+
+            class Child(Alias[int]):
+                pass
+
+            class Nested(Alias[Alias[S]]):
+                pass
+        """,
+            run_in_both_module_modes=True,
+        )
+
     @skip_before((3, 12))
     def test_312_reject_old_typevars(self):
         self.assert_passes("""

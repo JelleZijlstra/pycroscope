@@ -90,15 +90,6 @@ def _as_concrete_signature(
     return sig
 
 
-def _is_plain_tuple_value(value: Value) -> bool:
-    value = replace_fallback(value)
-    if isinstance(value, AnnotatedValue):
-        return _is_plain_tuple_value(value.value)
-    if isinstance(value, SequenceValue) and value.typ is tuple:
-        return True
-    return isinstance(value, KnownValue) and type(value.val) is tuple
-
-
 @dataclass(frozen=True)
 class _ResolvedMemberAccess:
     value: Value
@@ -199,7 +190,7 @@ class TypeObject:
         other_basic = replace_fallback(other_val)
         if not isinstance(other_basic, (KnownValue, TypedValue, SubclassValue)):
             return CanAssignError(f"Cannot assign {other_val} to {self}")
-        if _is_plain_tuple_value(self_val):
+        if self.typ is tuple:
             self_tuple_members = tuple_members_from_value(self_val, ctx)
             other_tuple_members = tuple_members_from_value(other_val, ctx)
             if self_tuple_members is not None and other_tuple_members is not None:

@@ -599,6 +599,20 @@ def _contains_unpack_annotation_value(value: Value) -> bool:
     return False
 
 
+def _contains_unpack_annotation_syntax(node: ast.AST) -> bool:
+    for subnode in ast.walk(node):
+        if isinstance(subnode, ast.Starred):
+            return True
+        if isinstance(subnode, ast.Subscript) and (
+            isinstance(subnode.value, ast.Name)
+            and subnode.value.id == "Unpack"
+            or isinstance(subnode.value, ast.Attribute)
+            and subnode.value.attr == "Unpack"
+        ):
+            return True
+    return False
+
+
 def _is_typevartuple_annotation_value(value: Value) -> bool:
     if isinstance(value, TypeVarTupleValue):
         return True
@@ -2314,7 +2328,14 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
 
         else:
             declared_type = current_scope.get_declared_type(varname)
-            if declared_type is not None and value is not None:
+            if (
+                declared_type is not None
+                and value is not None
+                and not (
+                    self.in_type_alias_definition
+                    and isinstance(declared_type, TypeAliasValue)
+                )
+            ):
                 can_assign = has_relation(
                     declared_type, value, Relation.ASSIGNABLE, self
                 )
@@ -9074,6 +9095,8 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         )
 
     def _maybe_replace_tuple_subtype_with_tuple_sequence(self, value: Value) -> Value:
+        if isinstance(value, TypeAliasValue):
+            return value
         root_value = replace_fallback(value)
         if isinstance(root_value, SyntheticClassObjectValue):
             return value
@@ -9596,6 +9619,8 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     def value_of_annotation(self, node: ast.expr) -> Value:
         expr = self.expr_of_annotation(node)
         val, _ = expr.unqualify()
+        if isinstance(val, TypeAliasValue):
+            return val.get_value()
         return val
 
     def expr_of_annotation(self, node: ast.expr) -> AnnotationExpr:
@@ -9605,7 +9630,10 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
 
     def _visit_annotation(self, node: ast.AST) -> Value:
         with override(self, "in_annotation", True):
-            val = self.visit(node)
+            if _contains_unpack_annotation_syntax(node):
+                val = value_from_ast(node, visitor=self)
+            else:
+                val = self.visit(node)
             if self._is_invalid_generic_annotation_node(node):
                 self._show_error_if_checking(
                     node,
@@ -12115,6 +12143,22 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         implicit_type_alias_assignment_value = (
             self._make_implicit_type_alias_assignment_value(node)
         )
+        looks_like_implicit_type_alias = (
+            len(node.targets) == 1
+            and isinstance(node.targets[0], ast.Name)
+            and self.current_synthetic_typeddict is None
+            and self.current_enum_members is None
+            and self.scopes.scope_type()
+            in (ScopeType.module_scope, ScopeType.class_scope)
+            and not isinstance(node.value, ast.Call)
+            and not (
+                isinstance(node.value, ast.JoinedStr)
+                or isinstance(node.value, ast.Constant)
+                and isinstance(node.value.value, str)
+            )
+            and _looks_like_implicit_type_alias_expr(node.value)
+            and _contains_implicit_type_alias_syntax(node.value)
+        )
         runtime_type_alias_value = self._make_runtime_type_alias_assignment_value(node)
         if runtime_type_alias_value is not None:
             if self.annotate:
@@ -12132,14 +12176,21 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         ):
             value = KnownValue(self.current_enum_members.by_name[node.value.id])
         else:
-            if implicit_type_alias_assignment_value is not None:
-                with override(self, "in_type_alias_definition", True):
-                    value = self.visit(node.value)
+            if looks_like_implicit_type_alias:
+                with self.catch_errors():
+                    with override(self, "in_type_alias_definition", True):
+                        value = self.visit(node.value)
             else:
                 value = self.visit(node.value)
 
         with (
             override(self, "being_assigned", value),
+            override(
+                self,
+                "in_type_alias_definition",
+                self.in_type_alias_definition
+                or implicit_type_alias_assignment_value is not None,
+            ),
             self.yield_checker.check_yield_result_assignment(is_yield),
         ):
             # syntax like 'x = y = 0' results in multiple targets
@@ -12172,7 +12223,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     self.current_enum_members.by_name[name] = value.val
                     self.current_enum_members.by_value.setdefault(value.val, name)
 
-        if implicit_type_alias_assignment_value is not None and self._is_checking():
+        if implicit_type_alias_assignment_value is not None:
             name, alias_value = implicit_type_alias_assignment_value
             self.scopes.current_scope().set_declared_type(
                 name, alias_value, False, node
@@ -13563,15 +13614,28 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                         stripped_value, root_composite.varname, root_composite.node
                     )
                 )
-                if not self.in_annotation and isinstance(
-                    stripped_root.value, TypeAliasValue
-                ):
-                    # Explicit TypeAlias values should report invalid specialization
-                    # arity even when used in runtime-value positions.
-                    type_from_value(
+                runtime_type_alias: TypeAliasValue | None = None
+                if not self.in_annotation:
+                    if isinstance(stripped_root.value, TypeAliasValue):
+                        runtime_type_alias = stripped_root.value
+                    elif isinstance(node.value, ast.Name):
+                        _, defining_scope, _ = self.scopes.get_with_scope(
+                            node.value.id, node.value, self.state, can_assign_ctx=self
+                        )
+                        if defining_scope is not None:
+                            declared_type = defining_scope.get_declared_type(
+                                node.value.id
+                            )
+                            if isinstance(declared_type, TypeAliasValue):
+                                runtime_type_alias = declared_type
+                if runtime_type_alias is not None:
+                    # Value-position specialization of a declared type alias should
+                    # use the recorded alias metadata rather than the raw runtime
+                    # GenericAlias object, which may not support further specialization.
+                    return type_from_value(
                         PartialValue(
                             PartialValueOperation.SUBSCRIPT,
-                            stripped_root.value,
+                            runtime_type_alias,
                             node,
                             self._maybe_unpack_tuple(index, node),
                             TypedValue(types.GenericAlias),
@@ -16370,7 +16434,19 @@ def _is_newtype_base_value(base_value: Value) -> bool:
 def _is_type_alias_base_value(base_value: Value) -> bool:
     for subval in flatten_values(base_value, unwrap_annotated=True):
         if isinstance(subval, TypeAliasValue):
+            if subval.uses_type_alias_object_semantics:
+                return True
+            continue
+        if isinstance(subval, KnownValue) and (
+            is_typing_name(subval.val, "TypeAliasType")
+            or is_instance_of_typing_name(subval.val, "TypeAliasType")
+        ):
             return True
+        subval = replace_fallback(subval)
+        if isinstance(subval, TypeAliasValue):
+            if subval.uses_type_alias_object_semantics:
+                return True
+            continue
         if isinstance(subval, KnownValue) and (
             is_typing_name(subval.val, "TypeAliasType")
             or is_instance_of_typing_name(subval.val, "TypeAliasType")

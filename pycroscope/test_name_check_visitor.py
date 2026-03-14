@@ -1146,6 +1146,33 @@ class TestImportFailureHandlingCodeSamples(TestNameCheckVisitorBase):
             assert_type(units4, str)
 
     @assert_passes(run_in_both_module_modes=True)
+    def test_namedtuple_is_assignable_to_exact_tuple(self):
+        from typing import NamedTuple
+
+        class Point(NamedTuple):
+            x: int
+            y: int
+            units: str = "meters"
+
+        def capybara(p: Point) -> tuple[int, int, str]:
+            exact: tuple[int, int, str] = p
+            return exact
+
+    @assert_passes()
+    def test_len_narrowing_on_tuple_union(self):
+        from typing import TypeAlias
+
+        from typing_extensions import Unpack, assert_type
+
+        FuncInput: TypeAlias = (
+            tuple[int] | tuple[str, str] | tuple[int, Unpack[tuple[str, ...]], int]
+        )
+
+        def capybara(val: FuncInput) -> None:
+            if len(val) == 3:
+                assert_type(val, tuple[int, str, int])
+
+    @assert_passes(run_in_both_module_modes=True)
     def test_inherited_string_annotation_accessed_through_cls(self):
         from typing_extensions import assert_type
 
