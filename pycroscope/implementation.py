@@ -640,14 +640,8 @@ def _record_attr_set(val: Value, name: str, ctx: CallContext) -> None:
         for subval in val.vals:
             _record_attr_set(subval, name, ctx)
         return
-    elif isinstance(val, TypedValue):
-        typ = val.typ
-    elif isinstance(val, KnownValue):
-        typ = type(val.val)
-    else:
-        return
-    ctx.visitor._record_type_attr_set(
-        typ, name, ctx.node, AnyValue(AnySource.inference)
+    ctx.visitor._record_type_attr_set_for_value(
+        val, name, ctx.node, AnyValue(AnySource.inference)
     )
 
 
@@ -679,14 +673,12 @@ def _setattr_impl(ctx: CallContext) -> Value:
     # don't say the attribute is undefined
     obj = ctx.vars["object"]
     name = ctx.vars["name"]
-    if isinstance(obj, TypedValue):
-        typ = obj.typ
-        if isinstance(name, KnownValue):
-            ctx.visitor._record_type_attr_set(
-                typ, name.val, ctx.node, ctx.vars["value"]
-            )
-        else:
-            ctx.visitor._record_type_has_dynamic_attrs(typ)
+    if isinstance(name, KnownValue):
+        ctx.visitor._record_type_attr_set_for_value(
+            obj, name.val, ctx.node, ctx.vars["value"]
+        )
+    else:
+        ctx.visitor._record_type_has_dynamic_attrs_for_value(obj)
     return KnownValue(None)
 
 
