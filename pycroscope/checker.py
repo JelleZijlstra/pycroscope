@@ -824,6 +824,25 @@ class Checker:
         for key in self._iter_generic_override_keys(typ):
             self.type_object_cache.pop(key, None)
 
+    def register_synthetic_protocol_members(
+        self, typ: type | str, members: set[str]
+    ) -> None:
+        cleaned_members = {
+            member
+            for member in members
+            if member not in EXCLUDED_PROTOCOL_MEMBERS and member != "__slots__"
+        }
+        synthetic_class = self.get_synthetic_class(typ)
+        if synthetic_class is None:
+            return
+        for member in cleaned_members:
+            existing = synthetic_class.declared_symbols.get(member)
+            if existing is None:
+                synthetic_class.declared_symbols[member] = ClassSymbol(
+                    AnyValue(AnySource.inference),
+                    member_value=AnyValue(AnySource.inference),
+                )
+
     def _iter_generic_override_keys(self, typ: type | str) -> Iterator[type | str]:
         yield typ
         if isinstance(typ, type):

@@ -94,6 +94,7 @@ ignored_unused_attribute_paths = [
   "pycroscope.format_strings.ReplacementField.index_attribute",
   "pycroscope.analysis_lib._FakeLoader.get_source",
   "pycroscope.analysis_lib.Sentinel.name",
+  "pycroscope.format_strings.PercentFormatString.is_bytes",
   "pycroscope.value.CustomMapping.keys",
   "pycroscope.value.OrBound.bounds",
   "pycroscope.node_visitor._PatchWithDescription.render_range",
