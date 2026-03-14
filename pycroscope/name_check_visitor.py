@@ -713,7 +713,7 @@ class _AttrContext(CheckerAttrContext):
             return super().bind_synthetic_instance_attribute(attr_name, value)
         synthetic_class = self.checker.get_synthetic_class(synthetic_typ)
         symbol = (
-            lookup_declared_symbol(synthetic_typ, attr_name, self)
+            lookup_declared_symbol(synthetic_typ, attr_name, self.visitor)
             if synthetic_class is not None
             else None
         )
