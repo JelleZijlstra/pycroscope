@@ -159,6 +159,20 @@ def test_synthetic_declared_symbols_are_cached_until_invalidation() -> None:
     assert "extra" in refreshed
 
 
+def test_direct_synthetic_declared_symbol_mutation_refreshes_type_object_view() -> None:
+    checker = Checker()
+    synthetic = SyntheticClassObjectValue("Impl", TypedValue("mod.Impl"))
+    checker.register_synthetic_class(synthetic)
+
+    type_object = checker.make_type_object("mod.Impl")
+    assert type_object.get_declared_symbol("attr", checker) is None
+
+    synthetic.declared_symbols["attr"] = ClassSymbol(TypedValue(int))
+    symbol = type_object.get_declared_symbol("attr", checker)
+    assert symbol is not None
+    assert symbol.typ == TypedValue(int)
+
+
 def test_inherited_symbol_lookup_respects_shadowing() -> None:
     from typing import ClassVar
 
