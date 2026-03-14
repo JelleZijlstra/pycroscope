@@ -2236,6 +2236,11 @@ class Checker:
             )
         )
 
+    def get_synthetic_dataclass_converter_input_type(
+        self, value: SyntheticClassObjectValue, field_name: str
+    ) -> Value | None:
+        return _synthetic_dataclass_converter_input_types(value).get(field_name)
+
     def _get_synthetic_dataclass_field_parameters(
         self,
         value: SyntheticClassObjectValue,

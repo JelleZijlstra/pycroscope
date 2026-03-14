@@ -14710,9 +14710,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         synthetic_class = self.checker.get_synthetic_class(class_key)
         if synthetic_class is None or not synthetic_class.is_dataclass:
             return None
-        return attributes._synthetic_dataclass_converter_input_types(
-            synthetic_class
-        ).get(field_name)
+        return self.checker.get_synthetic_dataclass_converter_input_type(
+            synthetic_class, field_name
+        )
 
     def _check_attribute_assignment_type(
         self, node: ast.Attribute, root_composite: Composite
