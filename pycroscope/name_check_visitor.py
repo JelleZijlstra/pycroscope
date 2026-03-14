@@ -3250,8 +3250,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                                     base_class, base_class_value
                                 )
                                 if isinstance(base_class, str)
-                                else self.checker.get_synthetic_class(base_class)
-                                or TypedValue(base_class)
+                                else TypedValue(base_class)
                             )
                         elif isinstance(base_class_value, KnownValue) and isinstance(
                             base_class_value.val, type
@@ -3285,9 +3284,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     base_class, TypedValue(base_class)
                 )
             else:
-                base_class_value = self.checker.get_synthetic_class(
-                    base_class
-                ) or TypedValue(base_class)
+                base_class_value = TypedValue(base_class)
             ctx = _AttrContext(
                 Composite(base_class_value),
                 None,

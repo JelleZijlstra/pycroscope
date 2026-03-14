@@ -140,7 +140,7 @@ def test_synthetic_declared_symbol_overrides_raw_attribute_value() -> None:
     assert symbol.member_value == TypedValue(str)
 
 
-def test_synthetic_declared_symbols_are_cached_until_invalidation() -> None:
+def test_type_object_declared_symbols_are_canonical_for_synthetic_class() -> None:
     checker = Checker()
     synthetic = SyntheticClassObjectValue(
         "Impl",
@@ -153,13 +153,14 @@ def test_synthetic_declared_symbols_are_cached_until_invalidation() -> None:
     first = type_object.get_declared_symbols(checker)
     second = type_object.get_declared_symbols(checker)
     assert first is second
+    assert synthetic.declared_symbols is first
 
     checker.register_synthetic_protocol_members("mod.Impl", {"extra"})
-    refreshed = checker.make_type_object("mod.Impl").get_declared_symbols(checker)
-    assert "extra" in refreshed
+    assert "extra" in first
+    assert synthetic.declared_symbols is type_object.get_declared_symbols(checker)
 
 
-def test_direct_synthetic_declared_symbol_mutation_refreshes_type_object_view() -> None:
+def test_direct_synthetic_declared_symbol_mutation_updates_type_object_view() -> None:
     checker = Checker()
     synthetic = SyntheticClassObjectValue("Impl", TypedValue("mod.Impl"))
     checker.register_synthetic_class(synthetic)

@@ -62,7 +62,8 @@ from .stacked_scopes import Composite
 from .suggested_type import CallableTracker
 from .type_object import (
     TypeObject,
-    _coerce_tracked_declared_symbols,
+    _add_runtime_declared_symbols,
+    _add_synthetic_declared_symbols,
     get_mro,
     lookup_declared_symbol,
 )
@@ -541,20 +542,41 @@ class Checker:
         if in_cache:
             return self.type_object_cache[typ]
         type_object = self._build_type_object(typ)
+        self._sync_synthetic_class_type_object(typ, type_object)
         self.type_object_cache[typ] = type_object
         return type_object
+
+    def _sync_synthetic_class_type_object(
+        self, typ: type | super | str, type_object: TypeObject
+    ) -> None:
+        if not isinstance(typ, (type, str)):
+            return
+        synthetic_class = self.get_synthetic_class(typ)
+        if synthetic_class is None:
+            return
+        object.__setattr__(
+            synthetic_class, "declared_symbols", type_object.declared_symbols
+        )
+
+    def _build_direct_declared_symbols(self, typ: type | str) -> dict[str, ClassSymbol]:
+        direct_symbols: dict[str, ClassSymbol] = {}
+        if isinstance(typ, type):
+            _add_runtime_declared_symbols(typ, direct_symbols)
+        synthetic_class = self.get_synthetic_class(typ)
+        if synthetic_class is not None:
+            _add_synthetic_declared_symbols(
+                synthetic_class.declared_symbols, direct_symbols
+            )
+        return direct_symbols
 
     def _build_type_object(self, typ: type | super | str) -> TypeObject:
         if isinstance(typ, str):
             # Synthetic type
             bases = self._get_typeshed_bases(typ)
             synthetic_class = self.get_synthetic_class(typ)
-            synthetic_declared_symbols = None
+            direct_symbols = self._build_direct_declared_symbols(typ)
             if synthetic_class is not None:
                 bases |= self._get_type_bases_from_synthetic_class(synthetic_class)
-                synthetic_declared_symbols = _coerce_tracked_declared_symbols(
-                    synthetic_class.declared_symbols
-                )
             is_protocol = any(is_typing_name(base, "Protocol") for base in bases)
             if is_protocol:
                 protocol_members = self._get_protocol_members(
@@ -568,7 +590,7 @@ class Checker:
                 is_protocol=is_protocol,
                 protocol_members=protocol_members,
                 is_final=self.ts_finder.is_final(typ),
-                synthetic_declared_symbols=synthetic_declared_symbols,
+                declared_symbols=direct_symbols,
             )
         elif isinstance(typ, super):
             return TypeObject(typ, self.get_additional_bases(typ))
@@ -576,12 +598,7 @@ class Checker:
             plugin_bases = self.get_additional_bases(typ)
             typeshed_bases = self._get_recursive_typeshed_bases(typ)
             additional_bases = plugin_bases | typeshed_bases
-            synthetic_class = self.get_synthetic_class(typ)
-            synthetic_declared_symbols = None
-            if synthetic_class is not None:
-                synthetic_declared_symbols = _coerce_tracked_declared_symbols(
-                    synthetic_class.declared_symbols
-                )
+            direct_symbols = self._build_direct_declared_symbols(typ)
             # Is it marked as a protocol in stubs? If so, use the stub definition.
             if self.ts_finder.is_protocol(typ):
                 return TypeObject(
@@ -589,7 +606,7 @@ class Checker:
                     additional_bases,
                     is_protocol=True,
                     protocol_members=self._get_protocol_members(typeshed_bases),
-                    synthetic_declared_symbols=synthetic_declared_symbols,
+                    declared_symbols=direct_symbols,
                 )
             # Is it a protocol at runtime?
             if is_instance_of_typing_name(typ, "_ProtocolMeta") and safe_getattr(
@@ -607,7 +624,7 @@ class Checker:
                     additional_bases,
                     is_protocol=True,
                     protocol_members=members,
-                    synthetic_declared_symbols=synthetic_declared_symbols,
+                    declared_symbols=direct_symbols,
                 )
 
             is_final = self.ts_finder.is_final(typ)
@@ -615,7 +632,7 @@ class Checker:
                 typ,
                 additional_bases,
                 is_final=is_final,
-                synthetic_declared_symbols=synthetic_declared_symbols,
+                declared_symbols=direct_symbols,
             )
 
     def _get_recursive_typeshed_bases(self, typ: type | str) -> set[type | str]:
@@ -725,12 +742,9 @@ class Checker:
             self.type_object_cache.pop(key, None)
         for key in self._iter_generic_override_keys(typ):
             type_object = self.make_type_object(key)
-            if type_object.synthetic_declared_symbols is not None:
-                object.__setattr__(
-                    synthetic_class,
-                    "declared_symbols",
-                    type_object.synthetic_declared_symbols,
-                )
+            object.__setattr__(
+                synthetic_class, "declared_symbols", type_object.declared_symbols
+            )
 
     def get_synthetic_class(self, typ: type | str) -> SyntheticClassObjectValue | None:
         for key in self._iter_generic_override_keys(typ):

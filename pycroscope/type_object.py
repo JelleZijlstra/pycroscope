@@ -7,7 +7,7 @@ An object that represents a type.
 import collections.abc
 import inspect
 import sys
-from collections.abc import Callable, Container, Mapping, MutableMapping, Sequence
+from collections.abc import Callable, Container, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from unittest import mock
 
@@ -97,47 +97,6 @@ class _ResolvedMemberAccess:
     property_has_setter: bool
 
 
-_MISSING = object()
-
-
-class _TrackedDeclaredSymbols(MutableMapping[str, ClassSymbol]):
-    """Mutable mapping that tracks updates for TypeObject declared-symbol caches."""
-
-    def __init__(self, initial: Mapping[str, ClassSymbol] | None = None) -> None:
-        self._data = {} if initial is None else dict(initial)
-        self.version = 0
-
-    def __getitem__(self, key: str) -> ClassSymbol:
-        return self._data[key]
-
-    def __setitem__(self, key: str, value: ClassSymbol) -> None:
-        existing = self._data.get(key, _MISSING)
-        if existing != value:
-            self.version += 1
-        self._data[key] = value
-
-    def __delitem__(self, key: str) -> None:
-        del self._data[key]
-        self.version += 1
-
-    def __iter__(self) -> collections.abc.Iterator[str]:
-        return iter(self._data)
-
-    def __len__(self) -> int:
-        return len(self._data)
-
-    def __repr__(self) -> str:
-        return repr(self._data)
-
-
-def _coerce_tracked_declared_symbols(
-    declared_symbols: MutableMapping[str, ClassSymbol],
-) -> _TrackedDeclaredSymbols:
-    if isinstance(declared_symbols, _TrackedDeclaredSymbols):
-        return declared_symbols
-    return _TrackedDeclaredSymbols(declared_symbols)
-
-
 def get_mro(typ: type | super) -> Sequence[type]:
     if isinstance(typ, super):
         typ_for_mro = typ.__thisclass__
@@ -157,16 +116,10 @@ class TypeObject:
     is_final: bool = False
     is_protocol: bool = False
     protocol_members: set[str] = field(default_factory=set)
+    declared_symbols: dict[str, ClassSymbol] = field(default_factory=dict, repr=False)
     is_thrift_enum: bool = field(init=False)
     is_universally_assignable: bool = field(init=False)
     artificial_bases: set[type] = field(default_factory=set, init=False)
-    synthetic_declared_symbols: _TrackedDeclaredSymbols | None = field(
-        default=None, repr=False
-    )
-    _declared_symbols: dict[str, ClassSymbol] | None = field(
-        default=None, init=False, repr=False
-    )
-    _declared_symbols_cache_key: object = field(default=None, init=False, repr=False)
     _protocol_positive_cache: dict[tuple[Value, Value], BoundsMap] = field(
         default_factory=dict, repr=False
     )
@@ -193,32 +146,10 @@ class TypeObject:
     def get_declared_symbol(
         self, name: str, ctx: CanAssignContext
     ) -> ClassSymbol | None:
-        return self.get_declared_symbols(ctx).get(name)
+        return self.declared_symbols.get(name)
 
     def get_declared_symbols(self, ctx: CanAssignContext) -> dict[str, ClassSymbol]:
-        cache_key = self._get_declared_symbols_cache_key(ctx)
-        if (
-            self._declared_symbols is None
-            or self._declared_symbols_cache_key != cache_key
-        ):
-            self._declared_symbols = self._build_declared_symbols(ctx)
-            self._declared_symbols_cache_key = cache_key
-        return self._declared_symbols
-
-    def _get_declared_symbols_cache_key(self, ctx: CanAssignContext) -> object:
-        if isinstance(self.typ, super):
-            return id(ctx)
-        if self.synthetic_declared_symbols is not None:
-            return (id(ctx), self.synthetic_declared_symbols.version)
-        return id(ctx)
-
-    def _build_declared_symbols(self, ctx: CanAssignContext) -> dict[str, ClassSymbol]:
-        symbols: dict[str, ClassSymbol] = {}
-        if isinstance(self.typ, type):
-            _add_runtime_declared_symbols(self.typ, symbols)
-        if self.synthetic_declared_symbols is not None:
-            _add_synthetic_declared_symbols(self.synthetic_declared_symbols, symbols)
-        return symbols
+        return self.declared_symbols
 
     def is_assignable_to_type(self, typ: type) -> bool:
         for base in self.base_classes:
