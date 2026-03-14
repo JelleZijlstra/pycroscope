@@ -4355,6 +4355,10 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     self.checker.register_synthetic_class(value)
             elif synthetic_class is not None:
                 if class_scope_values is None:
+                    # In importable mode we may have populated the synthetic class
+                    # incrementally while visiting method bodies. Refresh the cached
+                    # TypeObject views now that class analysis is complete.
+                    self.checker.register_synthetic_class(synthetic_class)
                     value = synthetic_class
                 else:
                     class_attributes = {

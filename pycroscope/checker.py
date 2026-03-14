@@ -567,9 +567,18 @@ class Checker:
         synthetic_class = self.get_synthetic_class(typ)
         if synthetic_class is None:
             return
-        object.__setattr__(
-            synthetic_class, "declared_symbols", type_object.declared_symbols
-        )
+        shared_declared_symbols = None
+        class_type = synthetic_class.class_type
+        if isinstance(class_type, TypedValue):
+            for key in self._iter_generic_override_keys(class_type.typ):
+                cached = self.type_object_cache.get(key)
+                if cached is not None and cached is not type_object:
+                    shared_declared_symbols = cached.declared_symbols
+                    break
+        if shared_declared_symbols is None:
+            shared_declared_symbols = type_object.declared_symbols
+        object.__setattr__(type_object, "declared_symbols", shared_declared_symbols)
+        object.__setattr__(synthetic_class, "declared_symbols", shared_declared_symbols)
 
     def _build_direct_declared_symbols(self, typ: type | str) -> dict[str, ClassSymbol]:
         direct_symbols: dict[str, ClassSymbol] = {}

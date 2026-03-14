@@ -174,6 +174,29 @@ def test_direct_synthetic_declared_symbol_mutation_updates_type_object_view() ->
     assert symbol.typ == TypedValue(int)
 
 
+def test_runtime_and_string_type_objects_share_declared_symbols() -> None:
+    class Impl:
+        pass
+
+    checker = Checker()
+    synthetic = SyntheticClassObjectValue(
+        "Impl",
+        TypedValue(Impl),
+        declared_symbols={"attr": ClassSymbol(TypedValue(int))},
+    )
+    checker.register_synthetic_class(synthetic)
+
+    runtime_type_object = checker.make_type_object(Impl)
+    string_type_object = checker.make_type_object(
+        f"{Impl.__module__}.{Impl.__qualname__}"
+    )
+
+    assert runtime_type_object.get_declared_symbols(
+        checker
+    ) is string_type_object.get_declared_symbols(checker)
+    assert runtime_type_object.get_declared_symbol("attr", checker) is not None
+
+
 def test_inherited_symbol_lookup_respects_shadowing() -> None:
     from typing import ClassVar
 

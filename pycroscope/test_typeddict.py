@@ -1,6 +1,6 @@
 # static analysis: ignore
 from .test_name_check_visitor import TestNameCheckVisitorBase
-from .test_node_visitor import assert_passes, skip_if_not_installed
+from .test_node_visitor import assert_passes, skip_before, skip_if_not_installed
 from .value import (
     AnySource,
     AnyValue,
@@ -362,6 +362,7 @@ class TestTypedDict(TestNameCheckVisitorBase):
         def capybara(movie: Movie) -> str:
             return movie["director"]["name"]
 
+    @skip_before((3, 11))
     @assert_passes(run_in_both_module_modes=True)
     def test_stdlib_typeddict_class_syntax_and_newtype_base(self):
         from typing import Generic, NewType, TypedDict, TypeVar
