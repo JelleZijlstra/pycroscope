@@ -1326,6 +1326,10 @@ class TestSequenceGetItem(TestNameCheckVisitorBase):
             )
             assert_is_value(known[unannotated], AnyValue(AnySource.from_another))
 
+        def pacarana(nested: Tuple[Tuple[bool, int], ...]) -> None:
+            assert_type(nested[0], tuple[bool, int])
+            assert_type(nested[0][1], int)
+
     @assert_passes()
     def test_list_index(self):
         from typing_extensions import Literal

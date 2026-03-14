@@ -1462,7 +1462,8 @@ class TypedValue(Value):
                     if isinstance(declared_param, TypeVarTupleParam):
                         normalized_arg = replace_known_sequence_value(raw_arg)
                         if (
-                            isinstance(normalized_arg, SequenceValue)
+                            params_key is not tuple
+                            and isinstance(normalized_arg, SequenceValue)
                             and normalized_arg.typ is tuple
                             and all(
                                 not is_many for is_many, _ in normalized_arg.members
@@ -4140,6 +4141,10 @@ def tuple_members_from_value(
         return None
     if isinstance(normalized, SequenceValue) and normalized.typ is tuple:
         return normalized.members
+    if isinstance(normalized, GenericValue) and normalized.typ is tuple:
+        if len(normalized.args) == 1:
+            return ((True, normalized.args[0]),)
+        return tuple((False, arg) for arg in normalized.args)
     if (
         _can_use_generic_bases()
         and isinstance(normalized, GenericValue)
