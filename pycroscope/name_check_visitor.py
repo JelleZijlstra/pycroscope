@@ -7540,6 +7540,12 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         return False
 
     def _runtime_callable_contains_self_annotations(self, value: object) -> bool:
+        try:
+            return self.checker.runtime_callable_self_annotation_cache[value]
+        except KeyError:
+            pass
+        except TypeError:
+            pass
         annotations = safe_getattr(value, "__annotations__", None)
         if not isinstance(annotations, dict):
             return False
@@ -7550,7 +7556,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             maybe_globals = safe_getattr(module, "__dict__", None)
             if isinstance(maybe_globals, Mapping):
                 globals = maybe_globals
-        return any(
+        result = any(
             _value_contains_self(
                 annotation_expr_from_runtime(
                     annotation, visitor=self, globals=globals, suppress_errors=True
@@ -7558,8 +7564,15 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             )
             for annotation in annotations.values()
         )
+        try:
+            self.checker.runtime_callable_self_annotation_cache[value] = result
+        except TypeError:
+            pass
+        return result
 
     def _runtime_class_or_bases_use_self_annotations(self, typ: type) -> bool:
+        if typ in self.checker.runtime_class_self_annotation_cache:
+            return self.checker.runtime_class_self_annotation_cache[typ]
         for base in typ.__mro__:
             globals = None
             module_name = safe_getattr(base, "__module__", None)
@@ -7577,6 +7590,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 )
                 for annotation in annotations.values()
             ):
+                self.checker.runtime_class_self_annotation_cache[typ] = True
                 return True
             for value in safe_getattr(base, "__dict__", {}).values():
                 if isinstance(value, property):
@@ -7585,12 +7599,16 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                         and self._runtime_callable_contains_self_annotations(func)
                         for func in (value.fget, value.fset, value.fdel)
                     ):
+                        self.checker.runtime_class_self_annotation_cache[typ] = True
                         return True
                 elif isinstance(value, (classmethod, staticmethod)):
                     if self._runtime_callable_contains_self_annotations(value.__func__):
+                        self.checker.runtime_class_self_annotation_cache[typ] = True
                         return True
                 elif self._runtime_callable_contains_self_annotations(value):
+                    self.checker.runtime_class_self_annotation_cache[typ] = True
                     return True
+        self.checker.runtime_class_self_annotation_cache[typ] = False
         return False
 
     def _synthetic_class_or_bases_use_self_annotations(self, typ: str) -> bool:

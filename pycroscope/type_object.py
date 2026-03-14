@@ -122,6 +122,7 @@ class TypeObject:
     _declared_symbols: dict[str, ClassSymbol] | None = field(
         default=None, init=False, repr=False
     )
+    _declared_symbols_cache_key: object = field(default=None, init=False, repr=False)
     _protocol_positive_cache: dict[tuple[Value, Value], BoundsMap] = field(
         default_factory=dict, repr=False
     )
@@ -151,16 +152,22 @@ class TypeObject:
         return self.get_declared_symbols(ctx).get(name)
 
     def get_declared_symbols(self, ctx: CanAssignContext) -> dict[str, ClassSymbol]:
-        if self._should_cache_declared_symbols(ctx):
-            if self._declared_symbols is None:
-                self._declared_symbols = self._build_declared_symbols(ctx)
-            return self._declared_symbols
-        return self._build_declared_symbols(ctx)
+        cache_key = self._get_declared_symbols_cache_key(ctx)
+        if (
+            self._declared_symbols is None
+            or self._declared_symbols_cache_key != cache_key
+        ):
+            self._declared_symbols = self._build_declared_symbols(ctx)
+            self._declared_symbols_cache_key = cache_key
+        return self._declared_symbols
 
-    def _should_cache_declared_symbols(self, ctx: CanAssignContext) -> bool:
-        if isinstance(self.typ, (str, super)):
-            return False
-        return _get_synthetic_class_for_key(self.typ, ctx) is None
+    def _get_declared_symbols_cache_key(self, ctx: CanAssignContext) -> object:
+        if isinstance(self.typ, super):
+            return id(ctx)
+        if isinstance(self.typ, (type, str)):
+            synthetic = _get_synthetic_class_for_key(self.typ, ctx)
+            return (id(ctx), id(synthetic) if synthetic is not None else None)
+        return id(ctx)
 
     def _build_declared_symbols(self, ctx: CanAssignContext) -> dict[str, ClassSymbol]:
         symbols: dict[str, ClassSymbol] = {}

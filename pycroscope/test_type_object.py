@@ -140,6 +140,25 @@ def test_synthetic_declared_symbol_overrides_raw_attribute_value() -> None:
     assert symbol.member_value == TypedValue(str)
 
 
+def test_synthetic_declared_symbols_are_cached_until_invalidation() -> None:
+    checker = Checker()
+    synthetic = SyntheticClassObjectValue(
+        "Impl",
+        TypedValue("mod.Impl"),
+        declared_symbols={"attr": ClassSymbol(TypedValue(int))},
+    )
+    checker.register_synthetic_class(synthetic)
+
+    type_object = checker.make_type_object("mod.Impl")
+    first = type_object.get_declared_symbols(checker)
+    second = type_object.get_declared_symbols(checker)
+    assert first is second
+
+    checker.register_synthetic_protocol_members("mod.Impl", {"extra"})
+    refreshed = checker.make_type_object("mod.Impl").get_declared_symbols(checker)
+    assert "extra" in refreshed
+
+
 def test_inherited_symbol_lookup_respects_shadowing() -> None:
     from typing import ClassVar
 
