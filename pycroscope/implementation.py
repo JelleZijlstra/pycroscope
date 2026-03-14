@@ -889,12 +889,21 @@ def _typing_special_form_getitem_impl(ctx: CallContext) -> Value:
 
 def _sequence_common_getitem_impl(ctx: CallContext, typ: type) -> ImplReturn:
     def inner(key: Value) -> Value:
-        self_value = replace_known_sequence_value(ctx.vars["self"])
+        original_self_value = replace_known_sequence_value(ctx.vars["self"])
+        self_value = original_self_value
+        from_tuple_subtype = False
+        generated_tuple_sequence = False
         if not isinstance(self_value, TypedValue):
             return AnyValue(AnySource.error)  # shouldn't happen
         if typ is tuple and not isinstance(self_value, SequenceValue):
             tuple_members = tuple_members_from_value(self_value, ctx.visitor)
             if tuple_members is not None:
+                generated_tuple_sequence = True
+                if not (
+                    isinstance(original_self_value, TypedValue)
+                    and original_self_value.typ is tuple
+                ):
+                    from_tuple_subtype = True
                 self_value = SequenceValue(tuple, tuple_members)
         type_arg = self_value.get_generic_arg_for_type(typ, ctx.visitor, 0)
         key = replace_known_sequence_value(key)
@@ -951,6 +960,8 @@ def _sequence_common_getitem_impl(ctx: CallContext, typ: type) -> ImplReturn:
                 if isinstance(self_value, SequenceValue):
                     members = self_value.get_member_sequence()
                     if members is not None:
+                        if from_tuple_subtype:
+                            return TypedValue(tuple)
                         return SequenceValue.make_or_known(
                             typ, [(False, m) for m in members[key.val]]
                         )
@@ -960,6 +971,8 @@ def _sequence_common_getitem_impl(ctx: CallContext, typ: type) -> ImplReturn:
                         return GenericValue(typ, self_value.args)
                 elif self_value.typ in (list, tuple, collections.abc.Sequence):
                     # For generics of exactly list/tuple, return the self type.
+                    if from_tuple_subtype:
+                        return TypedValue(tuple)
                     return self_value
                 else:
                     # slicing a subclass of list or tuple returns a list
@@ -976,7 +989,10 @@ def _sequence_common_getitem_impl(ctx: CallContext, typ: type) -> ImplReturn:
             if tobj.is_assignable_to_type(int):
                 return type_arg
             elif tobj.is_assignable_to_type(slice):
-                # TODO if it's a SequenceValue, we shouldn't return the exact type back
+                if from_tuple_subtype:
+                    return TypedValue(tuple)
+                if generated_tuple_sequence:
+                    return GenericValue(typ, self_value.args)
                 return self_value
             else:
                 ctx.show_error(f"Invalid {typ.__name__} key {key}")

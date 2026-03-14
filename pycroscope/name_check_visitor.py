@@ -13563,7 +13563,8 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     ) -> Value:
         value = root_composite.value
         index = index_composite.value
-        value = self._maybe_replace_tuple_subtype_with_tuple_sequence(value)
+        if not TypedValue(slice).is_assignable(index, self):
+            value = self._maybe_replace_tuple_subtype_with_tuple_sequence(value)
         root_composite = Composite(value, root_composite.varname, root_composite.node)
 
         if isinstance(node.ctx, ast.Store):
