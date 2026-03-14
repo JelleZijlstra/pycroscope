@@ -50,7 +50,6 @@ from typing import (
 from unittest.mock import ANY
 
 import typeshed_client
-import typing_extensions
 from typing_extensions import Protocol, assert_never, is_typeddict
 
 from pycroscope.input_sig import ActualArguments, InputSigValue
@@ -389,7 +388,6 @@ AwaitableValue = GenericValue(
 KnownNone = KnownValue(None)
 ExceptionValue = TypedValue(BaseException) | SubclassValue(TypedValue(BaseException))
 ExceptionOrNone = ExceptionValue | KnownNone
-_RUNTIME_TYPEVAR_TUPLE = getattr(typing_extensions, "TypeVarTuple", None)
 
 
 def _runtime_type_generic_alias(typ: type) -> str:
@@ -13816,8 +13814,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             return typevar
 
         def visit_TypeVarTuple(self, node: ast.TypeVarTuple) -> Value:
-            assert _RUNTIME_TYPEVAR_TUPLE is not None
-            tv = _RUNTIME_TYPEVAR_TUPLE(node.name)
+            tv = typing.cast(Any, getattr(typing, "TypeVarTuple"))(node.name)
             typevar = TypeVarTupleValue(TypeVarTupleParam(tv))
             self._set_name_in_scope(node.name, node, typevar)
             return typevar
