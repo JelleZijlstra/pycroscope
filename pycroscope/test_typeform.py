@@ -102,6 +102,36 @@ class TestTypeForm(TestNameCheckVisitorBase):
         x2 = TypeForm("list[int]")
         assert_type(x2, TypeForm[list[int]])
 
+    @assert_passes(run_in_both_module_modes=True)
+    def test_quoted_forward_ref_assignment(self):
+        from typing_extensions import TypeForm
+
+        X: TypeForm[object] = "Foo"
+        Y = TypeForm("Foo")
+
+        class Foo: ...
+
+        X
+        Y
+
+    @assert_passes(run_in_both_module_modes=True)
+    def test_quoted_forward_ref_assignment_uses_later_type(self):
+        from typing_extensions import TypeForm
+
+        X: TypeForm[int] = "Foo"  # E: incompatible_assignment
+
+        class Foo: ...
+
+        X
+
+    @assert_passes(run_in_both_module_modes=True)
+    def test_quoted_forward_ref_assignment_undefined(self):
+        from typing_extensions import TypeForm
+
+        X: TypeForm[object] = "NoSuchType"  # E: undefined_name
+
+        X
+
     @assert_passes()
     def test_assignability_examples(self):
         from typing import Any, Literal, Optional

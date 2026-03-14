@@ -14,7 +14,7 @@ from collections.abc import Container, Iterable, Sequence
 from contextlib import AbstractContextManager
 from dataclasses import dataclass, replace
 from itertools import zip_longest
-from typing import TypeAlias, TypeVar
+from typing import TypeAlias, TypeVar, cast
 
 from typing_extensions import Protocol
 
@@ -58,6 +58,7 @@ from .value import (
     TypeParam,
     TypeVarParam,
     TypeVarTupleValue,
+    TypeVarType,
     TypeVarValue,
     Value,
     annotate_value,
@@ -543,7 +544,9 @@ def compute_parameters(
                     error_code=ErrorCode.missing_parameter_annotation,
                 )
             if isinstance(node, ast.Lambda):
-                value = InferenceVarValue(TypeVarParam(TypeVar(f"T{tv_index}")))
+                value = InferenceVarValue(
+                    TypeVarParam(cast(TypeVarType, TypeVar(f"T{tv_index}")))
+                )
                 tv_index += 1
             else:
                 value = AnyValue(AnySource.unannotated)

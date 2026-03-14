@@ -899,7 +899,12 @@ def test_typevar_intersection_preserves_typevar() -> None:
 
 
 def test_constrained_typevar_intersection_simplifies() -> None:
-    anystr_value = TypeVarValue(TypeVarParam(typing.TypeVar("AnyStr", str, bytes)))
+    anystr_value = TypeVarValue(
+        TypeVarParam(
+            typing.TypeVar("AnyStr", str, bytes),
+            constraints=(TypedValue(str), TypedValue(bytes)),
+        )
+    )
 
     class StrSub(str):
         pass

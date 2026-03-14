@@ -3,6 +3,7 @@ import collections
 import collections.abc
 import inspect
 import re
+import sys
 import typing
 from collections.abc import Callable, Iterable, Sequence
 from itertools import product
@@ -13,9 +14,8 @@ import typing_extensions
 import pycroscope
 
 from . import runtime
-from .analysis_lib import Sentinel
 from .annotated_types import MaxLen, MinLen
-from .annotations import annotation_expr_from_value, type_from_value
+from .annotations import annotation_expr_from_value, is_typevarlike, type_from_value
 from .error_code import ErrorCode
 from .extensions import assert_type, reveal_locals, reveal_type
 from .format_strings import parse_format_string
@@ -26,6 +26,8 @@ from .relations import (
     check_hashability,
     has_relation,
     intersect_values,
+    is_assignable,
+    is_equivalent,
     is_equivalent_with_reason,
 )
 from .safe import (
@@ -39,6 +41,7 @@ from .safe import (
 )
 from .signature import (
     ANY_SIGNATURE,
+    NO_ARG_SENTINEL,
     CallContext,
     ConcreteSignature,
     ImplReturn,
@@ -105,8 +108,6 @@ from .value import (
     unite_values,
     unpack_values,
 )
-
-_NO_ARG_SENTINEL = KnownValue(Sentinel("no argument given"))
 
 
 def clean_up_implementation_fn_return(return_value: Value | ImplReturn) -> ImplReturn:
@@ -692,7 +693,7 @@ def _setattr_impl(ctx: CallContext) -> Value:
 def _super_impl(ctx: CallContext) -> Value:
     typ = ctx.vars["type"]
     obj = ctx.vars["obj"]
-    if typ is _NO_ARG_SENTINEL:
+    if typ is NO_ARG_SENTINEL:
         # Zero-argument super()
         if ctx.visitor.in_comprehension_body:
             ctx.show_error(
@@ -791,7 +792,7 @@ def _set_impl(ctx: CallContext) -> ImplReturn:
 
 def _sequence_impl(typ: type, ctx: CallContext) -> ImplReturn:
     iterable = ctx.vars["iterable"]
-    if iterable is _NO_ARG_SENTINEL:
+    if iterable is NO_ARG_SENTINEL:
         return ImplReturn(KnownValue(typ()))
 
     def inner(iterable: Value) -> Value:
@@ -1425,7 +1426,7 @@ def _dict_pop_impl(ctx: CallContext) -> ImplReturn:
         else:
             no_return_unless = NULL_CONSTRAINT
         if not is_present:
-            if default is _NO_ARG_SENTINEL:
+            if default is NO_ARG_SENTINEL:
                 ctx.show_error(
                     f"Key {key} does not exist in dictionary {self_value}",
                     error_code=ErrorCode.incompatible_argument,
@@ -1542,7 +1543,7 @@ def _dict_popitem_impl(ctx: CallContext) -> ImplReturn:
 
 
 def _maybe_unite(value: Value, default: Value) -> Value:
-    if default is _NO_ARG_SENTINEL:
+    if default is NO_ARG_SENTINEL:
         return value
     return unite_values(value, default)
 
@@ -1762,7 +1763,7 @@ def _dict_update_impl(ctx: CallContext) -> ImplReturn:
     def inner(self_val: Value, m_val: Value, kwargs_val: Value) -> ImplReturn:
         pairs = []
         # The second argument must be either a mapping or an iterable of key-value pairs.
-        if m_val is not _NO_ARG_SENTINEL:
+        if m_val is not NO_ARG_SENTINEL:
             m_pairs = kv_pairs_from_mapping(m_val, ctx.visitor)
             if isinstance(m_pairs, CanAssignError):
                 # Try an iterable of pairs instead
@@ -2104,9 +2105,21 @@ def _cast_impl(ctx: CallContext) -> Value:
     return type_from_value(typ, visitor=ctx.visitor, node=ctx.node)
 
 
+def _type_from_typeform_arg(
+    value: Value, ctx: CallContext, arg: str | None = None
+) -> Value:
+    allow_undefined_names = isinstance(value, KnownValue) and isinstance(value.val, str)
+    return type_from_value(
+        value,
+        visitor=ctx.visitor,
+        node=ctx.ast_for_arg(arg) if arg is not None else ctx.node,
+        allow_undefined_names=allow_undefined_names,
+    )
+
+
 def _typeform_impl(ctx: CallContext) -> Value:
     typ = ctx.vars["typ"]
-    type_form = type_from_value(typ, visitor=ctx.visitor, node=ctx.node)
+    type_form = _type_from_typeform_arg(typ, ctx)
     if type_form == AnyValue(AnySource.error):
         return AnyValue(AnySource.error)
     return TypeFormValue(type_form)
@@ -2207,7 +2220,7 @@ def _len_impl(ctx: CallContext) -> ImplReturn:
 
 
 def _bool_impl(ctx: CallContext) -> Value:
-    if ctx.vars["o"] is _NO_ARG_SENTINEL:
+    if ctx.vars["o"] is NO_ARG_SENTINEL:
         return KnownValue(False)
 
     # Maybe we should check boolability here too? But it seems fair to
@@ -2253,15 +2266,15 @@ def _typeddict_synthetic_value(
     if not (isinstance(typename, KnownValue) and isinstance(typename.val, str)):
         return None
 
-    total_var = replace_fallback(ctx.vars.get("total", _NO_ARG_SENTINEL))
-    if total_var is _NO_ARG_SENTINEL:
+    total_var = replace_fallback(ctx.vars.get("total", NO_ARG_SENTINEL))
+    if total_var is NO_ARG_SENTINEL:
         total_var = KnownValue(True)
     total = (
         total_var.val
         if isinstance(total_var, KnownValue) and isinstance(total_var.val, bool)
         else True
     )
-    closed_var = replace_fallback(ctx.vars.get("closed", _NO_ARG_SENTINEL))
+    closed_var = replace_fallback(ctx.vars.get("closed", NO_ARG_SENTINEL))
     closed = (
         closed_var.val
         if isinstance(closed_var, KnownValue) and isinstance(closed_var.val, bool)
@@ -2269,8 +2282,8 @@ def _typeddict_synthetic_value(
     )
 
     extra_keys: Value | None = None
-    extra_items = replace_fallback(ctx.vars.get("extra_items", _NO_ARG_SENTINEL))
-    if extra_items is not _NO_ARG_SENTINEL:
+    extra_items = replace_fallback(ctx.vars.get("extra_items", NO_ARG_SENTINEL))
+    if extra_items is not NO_ARG_SENTINEL:
         extra_keys = type_from_value(
             extra_items, ctx.visitor, ctx.ast_for_arg("extra_items")
         )
@@ -2330,7 +2343,7 @@ def _typeddict_entry_from_field_value(
 def _typeddict_impl(ctx: CallContext) -> Value:
     fields = ctx.vars["fields"]
     kwargs = ctx.vars["kwargs"]
-    has_fields = fields is not _NO_ARG_SENTINEL and fields != KnownValue(None)
+    has_fields = fields is not NO_ARG_SENTINEL and fields != KnownValue(None)
     has_qualifying_error = False
 
     keyword_field_names = [
@@ -2404,11 +2417,7 @@ def _newtype_contains_typevar(value: Value) -> bool:
     if isinstance(value, AnyValue):
         return value.source is AnySource.generic_argument
     if isinstance(value, KnownValue):
-        return (
-            is_instance_of_typing_name(value.val, "TypeVar")
-            or is_instance_of_typing_name(value.val, "TypeVarTuple")
-            or is_instance_of_typing_name(value.val, "ParamSpec")
-        )
+        return is_typevarlike(value.val)
     if isinstance(value, TypeVarValue):
         return True
     if isinstance(value, TypeFormValue):
@@ -2600,7 +2609,7 @@ def _newtype_impl(ctx: CallContext) -> Value:
 def _namedtuple_impl(ctx: CallContext) -> Value:
     has_kwargs = bool(_get_known_kwargs_entries(ctx.vars["kwargs"]))
     # Mirrors the runtime logic in typing.NamedTuple in 3.13
-    if ctx.vars["fields"] is _NO_ARG_SENTINEL:
+    if ctx.vars["fields"] is NO_ARG_SENTINEL:
         if has_kwargs:
             ctx.show_error(
                 'Creating "NamedTuple" classes using keyword arguments'
@@ -2686,6 +2695,73 @@ def _dataclass_transform_impl(ctx: CallContext) -> Value:
         )
     )
     return AnnotatedValue(TypedValue(_IdentityCallable), [extension])
+
+
+def _typevar_impl(ctx: CallContext) -> Value:
+    if isinstance(ctx.vars["name"], KnownValue) and isinstance(
+        ctx.vars["name"].val, str
+    ):
+        # We special case TypeVar to avoid having to deal with the fact that it
+        # is a generic function at runtime. This allows us to give better
+        # error messages for unsupported arguments and to support using TypeVar
+        # in annotations without needing to import it from typing_extensions.
+        pass
+    if ctx.vars["bound"] is NO_ARG_SENTINEL:
+        bound = None
+    else:
+        bound = _type_from_typeform_arg(ctx.vars["bound"], ctx, "bound")
+    if (
+        isinstance(ctx.vars["constraints"], SequenceValue)
+        and ctx.vars["constraints"].members
+    ):
+        constraints = [
+            _type_from_typeform_arg(constraint, ctx, "constraints")
+            for constraint in ctx.vars["constraints"].get_member_sequence() or ()
+        ]
+    else:
+        constraints = None
+    if bound is not None and constraints is not None:
+        ctx.show_error(
+            "TypeVar cannot have both bound and constraints",
+            ErrorCode.incompatible_call,
+            node=ctx.node,
+        )
+    default_arg = ctx.vars.get("default", NO_ARG_SENTINEL)
+    if default_arg is NO_ARG_SENTINEL:
+        default = None
+    else:
+        default = _type_from_typeform_arg(default_arg, ctx, "default")
+
+    if bound is not None and default is not None:
+        if not is_assignable(bound, default, ctx.visitor):
+            ctx.show_error(
+                "TypeVar default must be assignable to its bound",
+                ErrorCode.incompatible_call,
+                arg="default",
+            )
+    if constraints is not None and default is not None:
+        if isinstance(default, TypeVarValue) and default.typevar_param.constraints:
+            default_constraints = default.typevar_param.constraints
+            default_matches_constraints = all(
+                any(
+                    is_equivalent(constraint, default_constraint, ctx.visitor)
+                    for constraint in constraints
+                )
+                for default_constraint in default_constraints
+            )
+        else:
+            default_matches_constraints = any(
+                is_equivalent(constraint, default, ctx.visitor)
+                for constraint in constraints
+            )
+        if not default_matches_constraints:
+            ctx.show_error(
+                "TypeVar default must be one of its constraints",
+                ErrorCode.incompatible_call,
+                arg="default",
+            )
+
+    return ctx.inferred_return_value
 
 
 _POS_ONLY = ParameterKind.POSITIONAL_ONLY
@@ -2817,7 +2893,7 @@ def get_default_argspecs() -> dict[object, Signature]:
             [
                 SigParameter("object", _POS_ONLY),
                 SigParameter("name", _POS_ONLY, annotation=TypedValue(str)),
-                SigParameter("default", _POS_ONLY, default=_NO_ARG_SENTINEL),
+                SigParameter("default", _POS_ONLY, default=NO_ARG_SENTINEL),
             ],
             return_annotation=AnyValue(AnySource.inference),
             callable=getattr,
@@ -2852,27 +2928,27 @@ def get_default_argspecs() -> dict[object, Signature]:
         ),
         Signature.make(
             [
-                SigParameter("type", _POS_ONLY, default=_NO_ARG_SENTINEL),
-                SigParameter("obj", _POS_ONLY, default=_NO_ARG_SENTINEL),
+                SigParameter("type", _POS_ONLY, default=NO_ARG_SENTINEL),
+                SigParameter("obj", _POS_ONLY, default=NO_ARG_SENTINEL),
             ],
             impl=_super_impl,
             callable=super,
             return_annotation=TypedValue(super),
         ),
         Signature.make(
-            [SigParameter("iterable", _POS_ONLY, default=_NO_ARG_SENTINEL)],
+            [SigParameter("iterable", _POS_ONLY, default=NO_ARG_SENTINEL)],
             impl=_tuple_impl,
             callable=tuple,
             return_annotation=TypedValue(tuple),
         ),
         Signature.make(
-            [SigParameter("iterable", _POS_ONLY, default=_NO_ARG_SENTINEL)],
+            [SigParameter("iterable", _POS_ONLY, default=NO_ARG_SENTINEL)],
             impl=_list_impl,
             callable=list,
             return_annotation=TypedValue(list),
         ),
         Signature.make(
-            [SigParameter("iterable", _POS_ONLY, default=_NO_ARG_SENTINEL)],
+            [SigParameter("iterable", _POS_ONLY, default=NO_ARG_SENTINEL)],
             impl=_set_impl,
             callable=set,
             return_annotation=TypedValue(set),
@@ -3007,7 +3083,7 @@ def get_default_argspecs() -> dict[object, Signature]:
             [
                 SigParameter("self", _POS_ONLY, annotation=TypedValue(dict)),
                 SigParameter("key", _POS_ONLY),
-                SigParameter("default", _POS_ONLY, default=_NO_ARG_SENTINEL),
+                SigParameter("default", _POS_ONLY, default=NO_ARG_SENTINEL),
             ],
             callable=dict.pop,
             impl=_dict_pop_impl,
@@ -3037,7 +3113,7 @@ def get_default_argspecs() -> dict[object, Signature]:
         Signature.make(
             [
                 SigParameter("self", _POS_ONLY, annotation=TypedValue(dict)),
-                SigParameter("m", _POS_ONLY, default=_NO_ARG_SENTINEL),
+                SigParameter("m", _POS_ONLY, default=NO_ARG_SENTINEL),
                 SigParameter("kwargs", ParameterKind.VAR_KEYWORD),
             ],
             return_annotation=KnownValue(None),
@@ -3169,11 +3245,7 @@ def get_default_argspecs() -> dict[object, Signature]:
             return_annotation=TypedValue(int),
         ),
         Signature.make(
-            [
-                SigParameter(
-                    "o", ParameterKind.POSITIONAL_ONLY, default=_NO_ARG_SENTINEL
-                )
-            ],
+            [SigParameter("o", ParameterKind.POSITIONAL_ONLY, default=NO_ARG_SENTINEL)],
             callable=bool,
             impl=_bool_impl,
             return_annotation=TypedValue(bool),
@@ -3240,6 +3312,65 @@ def get_default_argspecs() -> dict[object, Signature]:
         ]
     for mod in typing, typing_extensions:
         try:
+            typevar_class = getattr(mod, "TypeVar")
+        except AttributeError:
+            pass
+        else:
+            typevar_params = [
+                SigParameter("name", _POS_ONLY, annotation=TypedValue(str)),
+                SigParameter(
+                    "constraints",
+                    ParameterKind.VAR_POSITIONAL,
+                    annotation=GenericValue(tuple, [TypeFormValue(TypedValue(object))]),
+                ),
+                SigParameter(
+                    "bound",
+                    ParameterKind.KEYWORD_ONLY,
+                    default=NO_ARG_SENTINEL,
+                    annotation=TypeFormValue(TypedValue(object)),
+                ),
+                SigParameter(
+                    "covariant",
+                    ParameterKind.KEYWORD_ONLY,
+                    default=KnownValue(False),
+                    annotation=TypedValue(bool),
+                ),
+                SigParameter(
+                    "contravariant",
+                    ParameterKind.KEYWORD_ONLY,
+                    default=KnownValue(False),
+                    annotation=TypedValue(bool),
+                ),
+            ]
+            if sys.version_info >= (3, 11) or mod is typing_extensions:
+                typevar_params.append(
+                    SigParameter(
+                        "infer_variance",
+                        ParameterKind.KEYWORD_ONLY,
+                        default=KnownValue(False),
+                        annotation=TypedValue(bool),
+                    )
+                )
+            if sys.version_info >= (3, 12) or mod is typing_extensions:
+                typevar_params.append(
+                    SigParameter(
+                        "default",
+                        ParameterKind.KEYWORD_ONLY,
+                        default=NO_ARG_SENTINEL,
+                        annotation=TypeFormValue(TypedValue(object)),
+                    )
+                )
+            sig = Signature.make(
+                typevar_params,
+                return_annotation=TypedValue(typevar_class),
+                callable=typevar_class,
+                impl=_typevar_impl,
+                allow_call=True,
+                allow_partial_call=True,
+            )
+            signatures.append(sig)
+
+        try:
             typeform_func = getattr(mod, "TypeForm")
         except AttributeError:
             pass
@@ -3295,7 +3426,7 @@ def get_default_argspecs() -> dict[object, Signature]:
                     "fields",
                     _POS_ONLY,
                     annotation=AnyValue(AnySource.explicit) | KnownValue(None),
-                    default=_NO_ARG_SENTINEL,
+                    default=NO_ARG_SENTINEL,
                 ),
                 SigParameter(
                     "total",
@@ -3304,10 +3435,10 @@ def get_default_argspecs() -> dict[object, Signature]:
                     default=KnownValue(True),
                 ),
                 SigParameter(
-                    "closed", ParameterKind.KEYWORD_ONLY, default=_NO_ARG_SENTINEL
+                    "closed", ParameterKind.KEYWORD_ONLY, default=NO_ARG_SENTINEL
                 ),
                 SigParameter(
-                    "extra_items", ParameterKind.KEYWORD_ONLY, default=_NO_ARG_SENTINEL
+                    "extra_items", ParameterKind.KEYWORD_ONLY, default=NO_ARG_SENTINEL
                 ),
                 SigParameter("kwargs", ParameterKind.VAR_KEYWORD),
             ]
@@ -3342,7 +3473,7 @@ def get_default_argspecs() -> dict[object, Signature]:
                             ],
                         )
                         | KnownValue(None),
-                        default=_NO_ARG_SENTINEL,
+                        default=NO_ARG_SENTINEL,
                     ),
                     SigParameter("kwargs", ParameterKind.VAR_KEYWORD),
                 ],

@@ -928,6 +928,7 @@ class ModuleScope(Scope):
     """Module scope with per-usage definition tracking across collect/check passes."""
 
     _preexisting_names: set[Varname]
+    _future_values: dict[Varname, Value]
     _usage_is_defined: dict[tuple[Node, Varname], bool]
     _names_bound_in_check: set[Varname]
 
@@ -947,6 +948,7 @@ class ModuleScope(Scope):
             simplification_limit=simplification_limit,
         )
         self._preexisting_names = set(variables)
+        self._future_values = {}
         self._usage_is_defined = {}
         self._names_bound_in_check = set()
 
@@ -955,6 +957,9 @@ class ModuleScope(Scope):
 
     def mark_name_bound_in_check(self, varname: Varname) -> None:
         self._names_bound_in_check.add(varname)
+
+    def set_future_value(self, varname: Varname, value: Value) -> None:
+        self._future_values[varname] = value
 
     def set(
         self, varname: Varname, value: Value, node: Node, state: VisitorState
@@ -975,6 +980,8 @@ class ModuleScope(Scope):
         can_assign_ctx: CanAssignContext,
     ) -> tuple[Value, VarnameOrigin]:
         if not isinstance(node, AST):
+            if varname not in self.variables and varname in self._future_values:
+                return self._future_values[varname], EMPTY_ORIGIN
             return super().get_local(
                 varname,
                 node,

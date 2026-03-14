@@ -45,7 +45,7 @@ from types import FunctionType, ModuleType
 from typing import Any, Optional, TypeVar, Union
 
 import typing_extensions
-from typing_extensions import NoDefault, Protocol, assert_never
+from typing_extensions import Protocol, assert_never
 
 import pycroscope
 from pycroscope.error_code import Error
@@ -92,13 +92,10 @@ class Variance(enum.Enum):
     COVARIANT = 1
     CONTRAVARIANT = 2
     INVARIANT = 3
+    INFERRED = 4
 
     def display_name(self) -> str:
-        if self is Variance.COVARIANT:
-            return "covariant"
-        if self is Variance.CONTRAVARIANT:
-            return "contravariant"
-        return "invariant"
+        return self.name.lower()
 
 
 def get_typevar_variance(typevar: TypeVarLike) -> Variance:
@@ -486,6 +483,15 @@ class AnyValue(Value):
         return None  # always overlaps
 
 
+UNRESOLVED_VALUE = AnyValue(AnySource.default)
+"""The default instance of :class:`AnyValue`.
+
+In the future, this should be replaced with instances of
+`AnyValue` with a specific source.
+
+"""
+
+
 class PartialValueOperation(enum.Enum):
     """Kinds of partially evaluated operations represented by :class:`PartialValue`."""
 
@@ -542,13 +548,40 @@ class PartialValue(Value):
         yield from self.runtime_value.walk_values()
 
 
-UNRESOLVED_VALUE = AnyValue(AnySource.default)
-"""The default instance of :class:`AnyValue`.
+@dataclass(frozen=True)
+class PartialCallValue(Value):
+    """Represents a partially evaluated call expression, where the function is known but
+    the arguments are not."""
 
-In the future, this should be replaced with instances of
-`AnyValue` with a specific source.
+    callee: object | None
+    arguments: dict[str, Value]
+    runtime_value: Value
+    node: ast.AST | None = field(compare=False, hash=False)
 
-"""
+    def __str__(self) -> str:
+        return f"{self.runtime_value} (call with arguments {self.arguments})"
+
+    def get_fallback_value(self) -> Value:
+        return self.runtime_value
+
+    def get_type_value(self) -> Value:
+        return self.runtime_value.get_type_value()
+
+    def substitute_typevars(self, typevars: TypeVarMap) -> Value:
+        return PartialCallValue(
+            callee=self.callee,
+            arguments={
+                k: v.substitute_typevars(typevars) for k, v in self.arguments.items()
+            },
+            runtime_value=self.runtime_value.substitute_typevars(typevars),
+            node=self.node,
+        )
+
+    def walk_values(self) -> Iterable[Value]:
+        yield self
+        for argument in self.arguments.values():
+            yield from argument.walk_values()
+        yield from self.runtime_value.walk_values()
 
 
 @dataclass(frozen=True)
@@ -586,37 +619,6 @@ class TypeVarParam:
     default: Value | None = None
     constraints: Sequence[Value] = ()
     variance: Variance = Variance.INVARIANT
-
-    def __post_init__(self) -> None:
-        if self.bound is None:
-            runtime_bound = safe_getattr(self.typevar, "__bound__", None)
-            if runtime_bound is not None:
-                object.__setattr__(
-                    self,
-                    "bound",
-                    _value_from_runtime_type_param_component(runtime_bound),
-                )
-        if not self.constraints:
-            runtime_constraints = safe_getattr(self.typevar, "__constraints__", ())
-            if runtime_constraints:
-                object.__setattr__(
-                    self,
-                    "constraints",
-                    tuple(
-                        _value_from_runtime_type_param_component(constraint)
-                        for constraint in runtime_constraints
-                    ),
-                )
-        if self.default is None:
-            runtime_default = safe_getattr(self.typevar, "__default__", _NO_DEFAULT)
-            if runtime_default is not _NO_DEFAULT and runtime_default is not NoDefault:
-                object.__setattr__(
-                    self,
-                    "default",
-                    _value_from_runtime_type_param_component(runtime_default),
-                )
-        if self.variance is Variance.INVARIANT:
-            object.__setattr__(self, "variance", get_typevar_variance(self.typevar))
 
     def substitute_typevars(self, typevars: TypeVarMap) -> Value:
         if self.typevar in typevars:
@@ -691,38 +693,6 @@ class TypeVarTupleParam:
 
 
 TypeParam = TypeVarParam | ParamSpecParam | TypeVarTupleParam
-
-
-def _value_from_runtime_type_param_component(component: object) -> Value:
-    if isinstance(component, Value):
-        return component
-    if is_instance_of_typing_name(component, "TypeVar"):
-        return TypeVarValue(TypeVarParam(component))
-    if is_instance_of_typing_name(component, "TypeVarTuple"):
-        return TypeVarTupleValue(component)
-    if is_instance_of_typing_name(component, "ParamSpec"):
-        from pycroscope.input_sig import InputSigValue
-
-        return InputSigValue(ParamSpecParam(component))
-    if isinstance(component, tuple):
-        return SequenceValue(
-            tuple,
-            [
-                (False, _value_from_runtime_type_param_component(member))
-                for member in component
-            ],
-        )
-    if isinstance(component, list):
-        return SequenceValue(
-            list,
-            [
-                (False, _value_from_runtime_type_param_component(member))
-                for member in component
-            ],
-        )
-    if isinstance(component, type):
-        return TypedValue(component)
-    return KnownValue(component)
 
 
 def type_param_to_value(type_param: TypeParam) -> Value:
@@ -806,9 +776,6 @@ class TypeAlias:
 
     def get_fallback_value(self) -> Value:
         return self.get_value()
-
-
-_NO_DEFAULT = object()
 
 
 def _default_value_for_type_param(type_param: "TypeParam") -> Value:
@@ -2742,20 +2709,9 @@ class InferenceVarValue(TypeVarValue):
         return bounds_map
 
 
-@dataclass(frozen=True, init=False)
+@dataclass(frozen=True)
 class TypeVarTupleValue(Value):
     typevar_tuple_param: TypeVarTupleParam
-
-    def __init__(
-        self, typevar_tuple_param: TypeVarTupleParam | TypeVarTupleLike
-    ) -> None:
-        if isinstance(typevar_tuple_param, TypeVarTupleParam):
-            param = typevar_tuple_param
-        else:
-            if not is_instance_of_typing_name(typevar_tuple_param, "TypeVarTuple"):
-                raise TypeError(f"Expected TypeVarTuple, got {typevar_tuple_param!r}")
-            param = TypeVarTupleParam(typevar_tuple_param)
-        object.__setattr__(self, "typevar_tuple_param", param)
 
     @property
     def typevar(self) -> TypeVarTupleLike:
@@ -3488,6 +3444,7 @@ GradualType: typing_extensions.TypeAlias = (
     | ParamSpecKwargsValue
     | AnnotatedValue
     | PartialValue
+    | PartialCallValue
 )
 
 GRADUAL_TYPE = GradualType.__args__

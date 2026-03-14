@@ -45,6 +45,7 @@ from typing import (
     get_args,
     get_origin,
 )
+from weakref import WeakKeyDictionary
 
 import typing_extensions
 from typing_extensions import (
@@ -82,6 +83,7 @@ from .safe import is_instance_of_typing_name, is_typing_name, is_union, safe_get
 from .signature import (
     ANY_SIGNATURE,
     ELLIPSIS_PARAM,
+    NO_ARG_SENTINEL,
     InvalidSignature,
     ParameterKind,
     Signature,
@@ -89,6 +91,7 @@ from .signature import (
 )
 from .value import (
     NO_RETURN_VALUE,
+    UNINITIALIZED_VALUE,
     AnnotatedValue,
     AnnotationExpr,
     AnySource,
@@ -111,7 +114,9 @@ from .value import (
     ParameterTypeGuardExtension,
     ParamSpecArgsValue,
     ParamSpecKwargsValue,
+    ParamSpecLike,
     ParamSpecParam,
+    PartialCallValue,
     PartialValue,
     PartialValueOperation,
     Qualifier,
@@ -131,8 +136,10 @@ from .value import (
     TypeParam,
     TypeVarLike,
     TypeVarParam,
+    TypeVarTupleLike,
     TypeVarTupleParam,
     TypeVarTupleValue,
+    TypeVarType,
     TypeVarValue,
     Value,
     Variance,
@@ -140,6 +147,7 @@ from .value import (
     get_typevar_variance,
     iter_type_params_in_value,
     match_typevar_arguments,
+    replace_fallback,
     replace_known_sequence_value,
     unite_values,
 )
@@ -157,6 +165,9 @@ _SUBSCRIPT_RUNTIME_TYPE = TypedValue(type(list[int]))
 _UNION_RUNTIME_TYPE = TypedValue(type(int | str))
 _UNPACK_RUNTIME_TYPE = TypedValue(type(typing_extensions.Unpack[int]))
 _ENUM_TYPE = getattr(enum, "EnumType", enum.EnumMeta)
+_PARTIAL_CALL_TYPE_PARAM_CACHE: WeakKeyDictionary[ast.AST, TypeVarLike] = (
+    WeakKeyDictionary()
+)
 
 
 def _is_valid_pep586_literal_value(value: object) -> bool:
@@ -196,6 +207,8 @@ class Context:
 
     should_suppress_errors: bool = field(default=False, init=False)
     """While this is True, no annotation errors are emitted."""
+    should_allow_undefined_names: bool = field(default=False, init=False)
+    """While this is True, unresolved names may evaluate to an unknown type."""
     _being_evaluated: dict[int, Value] = field(default_factory=dict, init=False)
     _invalid_self_nodes: set[int] = field(default_factory=set, init=False)
     visitor: AnnotationVisitor | None = field(default=None, kw_only=True)
@@ -204,6 +217,10 @@ class Context:
     def suppress_errors(self) -> AbstractContextManager[None]:
         """Temporarily suppress all annotation-evaluation errors."""
         return override(self, "should_suppress_errors", True)
+
+    def allow_undefined_names(self) -> AbstractContextManager[None]:
+        """Temporarily treat undefined annotation names as unknown types."""
+        return override(self, "should_allow_undefined_names", True)
 
     def is_being_evaluted(self, obj: object) -> Value | None:
         return self._being_evaluated.get(id(obj))
@@ -262,6 +279,11 @@ class Context:
         self.show_error(message, ErrorCode.invalid_annotation, node=node)
 
     def handle_undefined_name(self, name: str) -> Value:
+        if self.should_allow_undefined_names and not self.should_suppress_errors:
+            self.show_error(
+                f"Undefined name {name!r} used in annotation", ErrorCode.undefined_name
+            )
+            return AnyValue(AnySource.error)
         if self.should_suppress_errors:
             return AnyValue(AnySource.inference)
         self.show_error(
@@ -442,6 +464,7 @@ def type_from_runtime(
     globals: Mapping[str, object] | None = None,
     ctx: Context | None = None,
     suppress_errors: bool = False,
+    allow_undefined_names: bool = False,
 ) -> Value:
     """Given a runtime annotation object, return a
     :class:`pycroscope.value.Value`.
@@ -465,8 +488,15 @@ def type_from_runtime(
 
     if ctx is None:
         ctx = _DefaultContext(visitor, node, globals)
+    if suppress_errors and allow_undefined_names:
+        with ctx.suppress_errors():
+            with ctx.allow_undefined_names():
+                return _type_from_runtime(val, ctx)
     if suppress_errors:
         with ctx.suppress_errors():
+            return _type_from_runtime(val, ctx)
+    if allow_undefined_names:
+        with ctx.allow_undefined_names():
             return _type_from_runtime(val, ctx)
     return _type_from_runtime(val, ctx)
 
@@ -479,11 +509,19 @@ def annotation_expr_from_runtime(
     globals: Mapping[str, object] | None = None,
     ctx: Context | None = None,
     suppress_errors: bool = False,
+    allow_undefined_names: bool = False,
 ) -> AnnotationExpr:
     if ctx is None:
         ctx = _DefaultContext(visitor, node, globals)
+    if suppress_errors and allow_undefined_names:
+        with ctx.suppress_errors():
+            with ctx.allow_undefined_names():
+                return _annotation_expr_from_runtime(val, ctx)
     if suppress_errors:
         with ctx.suppress_errors():
+            return _annotation_expr_from_runtime(val, ctx)
+    if allow_undefined_names:
+        with ctx.allow_undefined_names():
             return _annotation_expr_from_runtime(val, ctx)
     return _annotation_expr_from_runtime(val, ctx)
 
@@ -494,6 +532,7 @@ def type_from_value(
     node: ast.AST | None = None,
     ctx: Context | None = None,
     suppress_errors: bool = False,
+    allow_undefined_names: bool = False,
 ) -> Value:
     """Given a :class:`pycroscope.value.Value` representing an annotation,
     return a :class:`pycroscope.value.Value` representing the type.
@@ -517,8 +556,15 @@ def type_from_value(
     """
     if ctx is None:
         ctx = _DefaultContext(visitor, node)
+    if suppress_errors and allow_undefined_names:
+        with ctx.suppress_errors():
+            with ctx.allow_undefined_names():
+                return _type_from_value(value, ctx)
     if suppress_errors:
         with ctx.suppress_errors():
+            return _type_from_value(value, ctx)
+    if allow_undefined_names:
+        with ctx.allow_undefined_names():
             return _type_from_value(value, ctx)
     return _type_from_value(value, ctx)
 
@@ -530,11 +576,19 @@ def annotation_expr_from_value(
     node: ast.AST | None = None,
     ctx: Context | None = None,
     suppress_errors: bool = False,
+    allow_undefined_names: bool = False,
 ) -> AnnotationExpr:
     if ctx is None:
         ctx = _DefaultContext(visitor, node)
+    if suppress_errors and allow_undefined_names:
+        with ctx.suppress_errors():
+            with ctx.allow_undefined_names():
+                return _annotation_expr_from_value(value, ctx)
     if suppress_errors:
         with ctx.suppress_errors():
+            return _annotation_expr_from_value(value, ctx)
+    if allow_undefined_names:
+        with ctx.allow_undefined_names():
             return _annotation_expr_from_value(value, ctx)
     return _annotation_expr_from_value(value, ctx)
 
@@ -782,6 +836,163 @@ def _type_from_runtime(val: Any, ctx: Context) -> Value:
         return AnyValue(AnySource.error)
 
 
+def make_type_param_from_value(
+    value: Value,
+    ctx: Context | None = None,
+    *,
+    visitor: "NameCheckVisitor | None" = None,
+    node: ast.AST | None = None,
+) -> TypeParam | None:
+    if ctx is None:
+        assert visitor is not None, "visitor must be provided if ctx is not"
+        ctx = _DefaultContext(visitor, node)
+    if isinstance(value, PartialCallValue):
+        runtime_val = replace_fallback(value.runtime_value)
+        if isinstance(runtime_val, TypedValue):
+            if is_typing_name(runtime_val.typ, "TypeVar"):
+                name, default = _extract_common_type_param_args(value, ctx)
+                if name is None:
+                    return None
+                tv = typing.cast(
+                    TypeVarType,
+                    _synthetic_type_param_for_partial_call(
+                        value, name, lambda name: TypeVar(name)
+                    ),
+                )
+                if value.arguments["bound"] is NO_ARG_SENTINEL:
+                    bound = None
+                else:
+                    bound = type_from_value(value.arguments["bound"], ctx=ctx)
+                if (
+                    isinstance(value.arguments["constraints"], SequenceValue)
+                    and value.arguments["constraints"].members
+                ):
+                    constraints = [
+                        type_from_value(constraint, ctx=ctx)
+                        for constraint in (
+                            value.arguments["constraints"].get_member_sequence() or ()
+                        )
+                    ]
+                else:
+                    constraints = None
+                infer_variance = _extract_boolean_arg(value, "infer_variance")
+                covariant = _extract_boolean_arg(value, "covariant")
+                contravariant = _extract_boolean_arg(value, "contravariant")
+                if covariant is None or contravariant is None:
+                    return None
+                match (infer_variance, covariant, contravariant):
+                    case (True, _, _):
+                        variance = Variance.INFERRED
+                    case (_, True, _):
+                        variance = Variance.COVARIANT
+                    case (_, _, True):
+                        variance = Variance.CONTRAVARIANT
+                    case _:
+                        variance = Variance.INVARIANT
+                return TypeVarParam(
+                    tv,
+                    bound=bound,
+                    constraints=tuple(constraints) if constraints is not None else (),
+                    variance=variance,
+                    default=default,
+                )
+            elif is_typing_name(runtime_val.typ, "ParamSpec"):
+                name, default = _extract_common_type_param_args(value, ctx)
+                if name is None:
+                    return None
+                ps = typing.cast(
+                    ParamSpecLike,
+                    _synthetic_type_param_for_partial_call(
+                        value, name, lambda name: ParamSpec(name)
+                    ),
+                )
+                return ParamSpecParam(ps, default=default)
+            elif is_typing_name(runtime_val.typ, "TypeVarTuple"):
+                name, default = _extract_common_type_param_args(value, ctx)
+                if name is None:
+                    return None
+                tvt = typing.cast(
+                    TypeVarTupleLike,
+                    _synthetic_type_param_for_partial_call(
+                        value, name, lambda name: typing_extensions.TypeVarTuple(name)
+                    ),
+                )
+                return TypeVarTupleParam(tvt, default=default)
+    value = replace_fallback(value)
+    if isinstance(value, KnownValue) and is_typevarlike(value.val):
+        return make_type_param(value.val, ctx=ctx)
+    return None
+
+
+def _extract_boolean_arg(pcv: PartialCallValue, arg_name: str) -> bool | None:
+    arg_val = pcv.arguments.get(arg_name, NO_ARG_SENTINEL)
+    if arg_val is NO_ARG_SENTINEL:
+        return None
+    if isinstance(arg_val, KnownValue) and isinstance(arg_val.val, bool):
+        return arg_val.val
+    return None
+
+
+def _synthetic_type_param_for_partial_call(
+    pcv: PartialCallValue, name: str, factory: Callable[[str], TypeVarLike]
+) -> TypeVarLike:
+    if pcv.node is None:
+        return factory(name)
+    cached = _PARTIAL_CALL_TYPE_PARAM_CACHE.get(pcv.node)
+    if cached is None:
+        cached = factory(name)
+        _PARTIAL_CALL_TYPE_PARAM_CACHE[pcv.node] = cached
+    return cached
+
+
+def _extract_common_type_param_args(
+    pcv: PartialCallValue, ctx: Context
+) -> tuple[str | None, Value | None]:
+    name_val = pcv.arguments["name"]
+    if isinstance(name_val, KnownValue) and isinstance(name_val.val, str):
+        name = name_val.val
+    else:
+        name = None
+    default_val = pcv.arguments.get("default", NO_ARG_SENTINEL)
+    if default_val is NO_ARG_SENTINEL:
+        default = None
+    else:
+        default = type_from_value(default_val, ctx=ctx)
+    return name, default
+
+
+def _type_param_component_from_runtime(val: object, ctx: Context) -> Value:
+    if is_instance_of_typing_name(val, "TypeVar"):
+        type_param = make_type_param(val, ctx=ctx)
+        assert isinstance(type_param, TypeVarParam)
+        return TypeVarValue(type_param)
+    if is_instance_of_typing_name(val, "TypeVarTuple"):
+        type_param = make_type_param(val, ctx=ctx)
+        assert isinstance(type_param, TypeVarTupleParam)
+        return TypeVarTupleValue(type_param)
+    if is_instance_of_typing_name(val, "ParamSpec"):
+        type_param = make_type_param(val, ctx=ctx)
+        assert isinstance(type_param, ParamSpecParam)
+        return InputSigValue(type_param)
+    if isinstance(val, tuple):
+        return SequenceValue(
+            tuple,
+            [
+                (False, _type_param_component_from_runtime(member, ctx))
+                for member in val
+            ],
+        )
+    if isinstance(val, list):
+        return SequenceValue(
+            list,
+            [
+                (False, _type_param_component_from_runtime(member, ctx))
+                for member in val
+            ],
+        )
+    return _type_from_runtime(val, ctx)
+
+
 def make_type_param(
     tv: TypeVarLike,
     ctx: Context | None = None,
@@ -794,7 +1005,7 @@ def make_type_param(
         ctx = _DefaultContext(visitor, node)
     runtime_default = getattr(tv, "__default__", NoDefault)
     if runtime_default is not NoDefault:
-        default = _type_from_runtime(runtime_default, ctx)
+        default = _type_param_component_from_runtime(runtime_default, ctx)
     else:
         default = None
     if isinstance(tv, (TypeVar, typing_extensions.TypeVar)):
@@ -1611,6 +1822,16 @@ def _type_from_value(value: Value, ctx: Context) -> Value:
         if value.operation is PartialValueOperation.BITOR:
             return _type_from_bitor_value(value.root, value.members, ctx)
         return value.get_fallback_value()
+    elif isinstance(value, PartialCallValue):
+        type_param = make_type_param_from_value(value, ctx=ctx)
+        if isinstance(type_param, TypeVarParam):
+            return TypeVarValue(type_param)
+        if isinstance(type_param, TypeVarTupleParam):
+            return TypeVarTupleValue(type_param)
+        if isinstance(type_param, ParamSpecParam):
+            return InputSigValue(type_param)
+        ctx.show_error(f"Unrecognized annotation {value}")
+        return AnyValue(AnySource.error)
     elif isinstance(value, AnyValue):
         return value
     elif isinstance(value, InputSigValue):
@@ -2182,7 +2403,9 @@ class _DefaultContext(Context):
         error_code: Error = ErrorCode.invalid_annotation,
         node: ast.AST | None = None,
     ) -> None:
-        if self.should_suppress_errors:
+        if self.should_suppress_errors and not (
+            self.should_allow_undefined_names and error_code is ErrorCode.undefined_name
+        ):
             return
         if node is None:
             node = self.node
@@ -2194,11 +2417,37 @@ class _DefaultContext(Context):
 
     def get_name(self, node: ast.Name) -> Value:
         if self.visitor is not None:
+            if self.should_allow_undefined_names:
+                val, defining_scope, _ = self.visitor.scopes.get_with_scope(
+                    node.id, None, self.visitor.state, can_assign_ctx=self.visitor
+                )
+                if val is UNINITIALIZED_VALUE:
+                    if self.visitor._is_collecting():
+                        return AnyValue(AnySource.inference)
+                    self.show_error(
+                        f"Undefined name {node.id!r} used in annotation",
+                        ErrorCode.undefined_name,
+                        node=node,
+                    )
+                    return AnyValue(AnySource.error)
+                if self.visitor.in_annotation and defining_scope is not None:
+                    declared_type = defining_scope.get_declared_type(node.id)
+                    if isinstance(declared_type, TypeAliasValue):
+                        val = declared_type
+                if _is_self_annotation_value(val):
+                    self.maybe_show_invalid_self_annotation()
+                return val
             val, _ = self.visitor.resolve_name(
                 node,
                 error_node=node if self.use_name_node_for_error else self.node,
-                suppress_errors=self.should_suppress_errors,
+                suppress_errors=(
+                    self.should_suppress_errors or self.should_allow_undefined_names
+                ),
             )
+            if self.should_allow_undefined_names and val == AnyValue(AnySource.error):
+                # Allow unresolved forward refs without suppressing other
+                # annotation errors.
+                val = AnyValue(AnySource.inference)
             if _is_self_annotation_value(val):
                 self.maybe_show_invalid_self_annotation()
             return val
@@ -2213,6 +2462,13 @@ class _DefaultContext(Context):
                 if _is_self_annotation_value(val):
                     self.maybe_show_invalid_self_annotation()
                 return val
+        if self.should_allow_undefined_names and not self.should_suppress_errors:
+            self.show_error(
+                f"Undefined name {node.id!r} used in annotation",
+                ErrorCode.undefined_name,
+                node=node,
+            )
+            return AnyValue(AnySource.error)
         if self.should_suppress_errors:
             return AnyValue(AnySource.inference)
         self.show_error(
@@ -2256,7 +2512,9 @@ class _RuntimeAnnotationsContext(Context):
         error_code: Error = ErrorCode.invalid_annotation,
         node: ast.AST | None = None,
     ) -> None:
-        if self.should_suppress_errors:
+        if self.should_suppress_errors and not (
+            self.should_allow_undefined_names and error_code is ErrorCode.undefined_name
+        ):
             return
         error_node = node or self.node
         if self.visitor is not None and error_node is not None:
@@ -2436,11 +2694,11 @@ class _Visitor(ast.NodeVisitor):
             def _typevar_arg_to_type(arg_value: Value) -> Value:
                 # String bounds/constraints may contain forward refs to names that
                 # are defined later in the file.
-                suppress_errors = isinstance(arg_value, KnownValue) and isinstance(
-                    arg_value.val, str
-                )
+                allow_undefined_names = isinstance(
+                    arg_value, KnownValue
+                ) and isinstance(arg_value.val, str)
                 return type_from_value(
-                    arg_value, ctx=self.ctx, suppress_errors=suppress_errors
+                    arg_value, ctx=self.ctx, allow_undefined_names=allow_undefined_names
                 )
 
             constraints = []
@@ -2476,9 +2734,12 @@ class _Visitor(ast.NodeVisitor):
                 kwargs = {"covariant": covariant, "contravariant": contravariant}
                 if infer_variance:
                     kwargs_with_infer = {**kwargs, "infer_variance": True}
-                    tv = typing_extensions.TypeVar(name_val.val, **kwargs_with_infer)
+                    tv = typing.cast(
+                        TypeVarType,
+                        typing_extensions.TypeVar(name_val.val, **kwargs_with_infer),
+                    )
                 else:
-                    tv = TypeVar(name_val.val, **kwargs)
+                    tv = typing.cast(TypeVarType, TypeVar(name_val.val, **kwargs))
             except Exception as e:
                 self.ctx.show_error(str(e), node=node)
                 return None

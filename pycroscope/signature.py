@@ -87,6 +87,7 @@ from .value import (
     ParamSpecArgsValue,
     ParamSpecKwargsValue,
     ParamSpecParam,
+    PartialCallValue,
     PartialValue,
     PartialValueOperation,
     PredicateValue,
@@ -132,6 +133,7 @@ EMPTY = inspect.Parameter.empty
 UNANNOTATED = AnyValue(AnySource.unannotated)
 ELLIPSIS = Sentinel("ellipsis")
 ELLIPSIS_COMPOSITE = Composite(AnyValue(AnySource.ellipsis_callable))
+NO_ARG_SENTINEL = KnownValue(Sentinel("no argument given"))
 
 
 def _is_staticmethod_callable(func: FunctionType) -> bool:
@@ -634,6 +636,9 @@ class Signature:
     has_return_annotation: bool = True
     allow_call: bool = False
     """Whether type checking can call the actual function to retrieve a precise return value."""
+    allow_partial_call: bool = False
+    """Whether the type checker should create a PartialCallValue if not all arguments are
+    fully known."""
     evaluator: Evaluator | None = None
     """Type evaluator for this function."""
     deprecated: str | None = None
@@ -692,6 +697,7 @@ class Signature:
                 self.is_asynq,
                 self.has_return_annotation,
                 self.allow_call,
+                self.allow_partial_call,
                 self.evaluator,
             )
         )
@@ -1760,6 +1766,27 @@ class Signature:
                     )
                 else:
                     return_value = runtime_return
+        else:
+            runtime_return = None
+        if self.allow_partial_call and runtime_return is None and not had_error:
+            partial_return = PartialCallValue(
+                callee=self.callable,
+                arguments=variables,
+                runtime_value=(
+                    return_value.return_value
+                    if isinstance(return_value, ImplReturn)
+                    else return_value
+                ),
+                node=ctx.node if isinstance(ctx, _VisitorBasedContext) else None,
+            )
+            if isinstance(return_value, ImplReturn):
+                return_value = ImplReturn(
+                    partial_return,
+                    return_value.constraint,
+                    return_value.no_return_unless,
+                )
+            else:
+                return_value = partial_return
         ret = self._apply_annotated_constraints(return_value, composites, ctx)
         return CallReturn(
             ret,
@@ -2132,6 +2159,7 @@ class Signature:
         has_return_annotation: bool = True,
         is_asynq: bool = False,
         allow_call: bool = False,
+        allow_partial_call: bool = False,
         evaluator: Evaluator | None = None,
         deprecated: str | None = None,
     ) -> "Signature":
@@ -2175,6 +2203,7 @@ class Signature:
             has_return_annotation=has_return_annotation,
             is_asynq=is_asynq,
             allow_call=allow_call,
+            allow_partial_call=allow_partial_call,
             evaluator=evaluator,
             deprecated=deprecated,
         )

@@ -475,15 +475,29 @@ class TestTypeVar(TestNameCheckVisitorBase):
             assert_type(dictget(d, key, 1), str | Literal[1])
 
     @assert_passes()
+    def test_constrained_typevar_assignability(self):
+        from typing import TypeVar
+
+        T = TypeVar("T", int, str)
+
+        def f(x: int) -> None:
+            pass
+
+        def capybara(x: T) -> T:
+            f(x)  # E: incompatible_argument
+            return x
+
+    @assert_passes()
     def test_typevar_default_must_match_bound_and_constraints(self):
         from typing_extensions import TypeVar
 
-        TypeVar("BadBound", bound=str, default=int)  # E: invalid_annotation
-        TypeVar("BadConstraint", float, str, default=int)  # E: invalid_annotation
+        TypeVar("BadBound", bound=str, default=int)  # E: incompatible_call
+        TypeVar("BadConstraint", float, str, default=int)  # E: incompatible_call
         Base = TypeVar("Base", int, str)
         TypeVar("GoodConstraint", int, str, bool, default=Base)
-        # E: invalid_annotation
-        TypeVar("BadConstraintTypeVar", bool, complex, default=Base)
+        TypeVar(
+            "BadConstraintTypeVar", bool, complex, default=Base  # E: incompatible_call
+        )
 
     @assert_passes()
     def test_typevar_default_is_not_used_as_fallback(self):
@@ -1362,3 +1376,12 @@ class TestIntegration(TestNameCheckVisitorBase):
 
         def capybara(a: A[int]) -> None:
             assert_type(a.meth(1), B[int, Literal[1]])
+
+    @assert_passes()
+    def test_impl(self):
+        from typing_extensions import TypeVar
+
+        T = TypeVar("T")
+        U = TypeVar("U", default=42)  # E: incompatible_argument
+        V = TypeVar("V", bound=int, default=str)  # E: incompatible_call
+        W = TypeVar("W", int, str, default=bool)  # E: incompatible_call
