@@ -143,6 +143,7 @@ from .relations import (
     has_relation,
     intersect_multi,
     is_assignable,
+    is_equivalent,
     is_subtype,
 )
 from .safe import (
@@ -5791,7 +5792,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         if self.current_dataclass_info is None:
             return False
         return any(
-            _value_matches_dataclass_field_specifier(callee, field_specifier)
+            is_equivalent(callee, field_specifier, self)
             for field_specifier in self.current_dataclass_info.field_specifiers
         )
 
@@ -8063,13 +8064,11 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                         )
                     )
                 )
+                is_implicit_classmethod = (
+                    isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+                    and node.name in IMPLICIT_CLASSMETHODS
+                )
                 if uses_self_annotation:
-                    is_named_method = isinstance(
-                        node, (ast.FunctionDef, ast.AsyncFunctionDef)
-                    )
-                    is_implicit_classmethod = (
-                        is_named_method and node.name in IMPLICIT_CLASSMETHODS
-                    )
                     if (
                         return_annotation is not None
                         and FunctionDecorator.classmethod not in decorator_kinds
@@ -8104,12 +8103,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                         ],
                     ]
                 else:
-                    is_named_method = isinstance(
-                        node, (ast.FunctionDef, ast.AsyncFunctionDef)
-                    )
-                    is_implicit_classmethod = (
-                        is_named_method and node.name in IMPLICIT_CLASSMETHODS
-                    )
                     if (
                         FunctionDecorator.classmethod in decorator_kinds
                         or is_implicit_classmethod
@@ -17221,34 +17214,6 @@ def _is_dataclass_kw_only_marker_value(value: Value) -> bool:
     if isinstance(value, MultiValuedValue):
         return any(_is_dataclass_kw_only_marker_value(subval) for subval in value.vals)
     return isinstance(value, KnownValue) and value.val is marker
-
-
-def _value_matches_dataclass_field_specifier(
-    value: Value, field_specifier: Value
-) -> bool:
-    value = replace_fallback(value)
-    field_specifier = replace_fallback(field_specifier)
-    if isinstance(value, AnnotatedValue):
-        return _value_matches_dataclass_field_specifier(value.value, field_specifier)
-    if isinstance(field_specifier, AnnotatedValue):
-        return _value_matches_dataclass_field_specifier(value, field_specifier.value)
-    if isinstance(value, MultiValuedValue):
-        return any(
-            _value_matches_dataclass_field_specifier(subval, field_specifier)
-            for subval in value.vals
-        )
-    if isinstance(field_specifier, MultiValuedValue):
-        return any(
-            _value_matches_dataclass_field_specifier(value, subval)
-            for subval in field_specifier.vals
-        )
-    if isinstance(value, KnownValue) and isinstance(field_specifier, KnownValue):
-        return value.val is field_specifier.val
-    if isinstance(value, SyntheticClassObjectValue) and isinstance(
-        field_specifier, SyntheticClassObjectValue
-    ):
-        return value.class_type == field_specifier.class_type
-    return value == field_specifier
 
 
 def _arguments_from_call_composites(
