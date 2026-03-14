@@ -33,7 +33,7 @@ from collections.abc import Callable, Container, Generator, Iterable, Mapping, S
 from contextlib import AbstractContextManager
 from dataclasses import dataclass, replace
 from dataclasses import field as dataclass_field
-from functools import lru_cache, partial
+from functools import partial
 from itertools import chain
 from pathlib import Path
 from types import GenericAlias
@@ -286,7 +286,6 @@ from .value import (
     TypeVarParam,
     TypeVarTupleParam,
     TypeVarTupleValue,
-    TypeVarType,
     TypeVarValue,
     UnboundMethodValue,
     Value,
@@ -390,15 +389,11 @@ AwaitableValue = GenericValue(
 KnownNone = KnownValue(None)
 ExceptionValue = TypedValue(BaseException) | SubclassValue(TypedValue(BaseException))
 ExceptionOrNone = ExceptionValue | KnownNone
+_RUNTIME_TYPEVAR_TUPLE = getattr(typing_extensions, "TypeVarTuple", None)
 
 
 def _runtime_type_generic_alias(typ: type) -> str:
     return f"{typ.__module__}.{typ.__qualname__}"
-
-
-@lru_cache(maxsize=1)
-def _runtime_type_param_default_context() -> Context:
-    return Checker().arg_spec_cache.default_context
 
 
 class _SupportsDescriptorGet(Protocol):
@@ -13801,7 +13796,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             if sys.version_info >= (3, 13):
                 if node.default_value is not None:
                     default = self._type_from_pep695_type_param_expr(node.default_value)
-            tv = typing.cast(TypeVarType, TypeVar(node.name))
+            tv = typing.cast(Any, TypeVar(node.name))
             typevar = TypeVarValue(
                 TypeVarParam(
                     tv,
@@ -13821,7 +13816,8 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             return typevar
 
         def visit_TypeVarTuple(self, node: ast.TypeVarTuple) -> Value:
-            tv = typing_extensions.TypeVarTuple(node.name)
+            assert _RUNTIME_TYPEVAR_TUPLE is not None
+            tv = _RUNTIME_TYPEVAR_TUPLE(node.name)
             typevar = TypeVarTupleValue(TypeVarTupleParam(tv))
             self._set_name_in_scope(node.name, node, typevar)
             return typevar

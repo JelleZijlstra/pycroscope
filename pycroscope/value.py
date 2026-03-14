@@ -778,9 +778,6 @@ class TypeAlias:
         return self.get_value()
 
 
-_NO_DEFAULT = object()
-
-
 def _default_value_for_type_param(type_param: "TypeParam") -> Value:
     if type_param.default is not None:
         return type_param.default
