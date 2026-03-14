@@ -1866,32 +1866,6 @@ class Signature:
         """
         return signatures_have_relation(self, other, Relation.ASSIGNABLE, ctx)
 
-    def can_assign_through_check_call(
-        self, other: "Signature", ctx: CanAssignContext
-    ) -> CanAssign:
-        left = self._expand_typed_dict_kwargs()
-        right = other._expand_typed_dict_kwargs()
-        args = [param.to_argument() for param in left.parameters.values()]
-        check_ctx = _CanAssignBasedContext(ctx)
-        actual_args = preprocess_args(args, check_ctx)
-        if actual_args is None:
-            return CanAssignError(
-                "Invalid callable", [CanAssignError(e) for e in check_ctx.errors]
-            )
-        return_value = right.check_call_preprocessed(actual_args, check_ctx)
-        if check_ctx.errors:
-            return CanAssignError(
-                "Incompatible callable", [CanAssignError(e) for e in check_ctx.errors]
-            )
-        return_tv_map = has_relation(
-            left.return_value, return_value.return_value, Relation.ASSIGNABLE, ctx
-        )
-        if isinstance(return_tv_map, CanAssignError):
-            return CanAssignError(
-                "Return annotation is not compatible", [return_tv_map]
-            )
-        return return_tv_map
-
     def _expand_typed_dict_kwargs(self) -> "Signature":
         params: list[SigParameter] = []
         expanded = False

@@ -1936,9 +1936,6 @@ class TypedDictValue(GenericValue):
     def num_required_keys(self) -> int:
         return sum(1 for entry in self.items.values() if entry.required)
 
-    def all_keys_required(self) -> bool:
-        return all(entry.required for entry in self.items.values())
-
     def can_overlap(
         self, other: Value, ctx: CanAssignContext, mode: OverlapMode
     ) -> CanAssignError | None:
@@ -2466,9 +2463,6 @@ class MultiValuedValue(Value):
     raw_vals: InitVar[Iterable[Value]]
     vals: tuple[Value, ...] = field(init=False)
     """The underlying values of the union."""
-    _known_subvals: tuple[set[tuple[object, type]], Sequence[Value]] | None = field(
-        init=False, repr=False, hash=False, compare=False
-    )
 
     def __post_init__(self, raw_vals: Iterable[Value]) -> None:
         object.__setattr__(
@@ -2476,30 +2470,6 @@ class MultiValuedValue(Value):
             "vals",
             tuple(chain.from_iterable(flatten_values(val) for val in raw_vals)),
         )
-        object.__setattr__(self, "_known_subvals", self._get_known_subvals())
-
-    def _get_known_subvals(
-        self,
-    ) -> tuple[set[tuple[object, type]], Sequence[Value]] | None:
-        # Not worth it for small unions
-        if len(self.vals) < 10:
-            return None
-        # Optimization for comparing Unions containing large unions of literals.
-        try:
-            # Include the type to avoid e.g. 1 and True matching
-            known_values = {
-                (subval.val, type(subval.val))
-                for subval in self.vals
-                if isinstance(subval, KnownValue)
-            }
-        except TypeError:
-            return None  # not hashable
-        else:
-            # Make remaining check not consider the KnownValues again
-            remaining_vals = [
-                subval for subval in self.vals if not isinstance(subval, KnownValue)
-            ]
-            return known_values, remaining_vals
 
     def substitute_typevars(self, typevars: TypeVarMap) -> Value:
         if not self.vals or not typevars:
@@ -2716,18 +2686,6 @@ class TypeVarTupleValue(Value):
     @property
     def typevar(self) -> TypeVarTupleLike:
         return self.typevar_tuple_param.typevar
-
-    @property
-    def default(self) -> Value | None:
-        return self.typevar_tuple_param.default
-
-    @property
-    def bound(self) -> Value | None:
-        return None
-
-    @property
-    def constraints(self) -> Sequence[Value]:
-        return ()
 
     def substitute_typevars(self, typevars: TypeVarMap) -> Value:
         return typevars.get(self.typevar, self)
@@ -4430,13 +4388,6 @@ class ClassSymbol:
     @property
     def is_property(self) -> bool:
         return self.property_info is not None
-
-    @property
-    def property_has_setter(self) -> bool:
-        return (
-            self.property_info is not None
-            and self.property_info.setter_type is not None
-        )
 
 
 def get_synthetic_member_value(

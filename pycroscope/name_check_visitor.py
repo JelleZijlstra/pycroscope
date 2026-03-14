@@ -3630,9 +3630,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     return new_mvv, origin
         return value, origin
 
-    def _get_first_import_node(self) -> ast.stmt:
-        return min(self.import_name_to_node.values(), key=lambda node: node.lineno)
-
     def _generic_visit_list(self, lst: Iterable[ast.AST]) -> list[Value]:
         return [self.visit(node) for node in lst]
 
@@ -5374,16 +5371,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 if isinstance(typed_dict_type, TypedDictValue):
                     return typed_dict_type
         return None
-
-    def _is_dataclass_decorator_target(self, target: ast.expr) -> bool:
-        if isinstance(target, ast.Attribute):
-            return target.attr == "dataclass"
-        if not isinstance(target, ast.Name):
-            return False
-        if target.id == "dataclass":
-            return True
-        value = self.scopes.get(target.id, target, self.state, can_assign_ctx=self)
-        return _is_known_decorator(value, dataclasses.dataclass)
 
     def _get_dataclass_decorator_options(
         self, decorator_values: DecoratorValues
@@ -12590,67 +12577,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     and self._is_current_method_receiver_node(target.value)
                 ):
                     self._check_declared_enum_value_type(enum_value_type, value, node)
-
-    def _make_implicit_runtime_type_alias_assignment_value(
-        self, node: ast.Assign, assigned_value: Value
-    ) -> TypeAliasValue | None:
-        if len(node.targets) != 1 or not isinstance(node.targets[0], ast.Name):
-            return None
-
-        runtime_type_params: tuple[TypeParam, ...] | None = None
-        if isinstance(assigned_value, KnownValue):
-            maybe_runtime_type_params = safe_getattr(
-                assigned_value.val, "__parameters__", ()
-            )
-            if (
-                isinstance(maybe_runtime_type_params, tuple)
-                and maybe_runtime_type_params
-            ):
-                runtime_type_params = tuple(
-                    make_type_param(param, visitor=self, node=node)
-                    for param in maybe_runtime_type_params
-                )
-
-        if runtime_type_params is None and not (
-            isinstance(assigned_value, PartialValue)
-            and assigned_value.operation is PartialValueOperation.SUBSCRIPT
-        ):
-            return None
-
-        alias_expr = annotation_expr_from_value(
-            assigned_value,
-            visitor=self,
-            node=node.value,
-            suppress_errors=self._is_collecting(),
-        )
-        alias_value, _ = alias_expr.maybe_unqualify(set(Qualifier))
-        if alias_value is None:
-            return None
-
-        if runtime_type_params is None:
-            inferred_type_params: list[TypeParam] = []
-            seen_type_params: set[object] = set()
-            for extracted in iter_type_params_in_value(alias_value):
-                identity = extracted.typevar
-                if identity in seen_type_params:
-                    continue
-                seen_type_params.add(identity)
-                inferred_type_params.append(extracted)
-            if inferred_type_params:
-                runtime_type_params = tuple(inferred_type_params)
-            else:
-                return None
-
-        alias_name = node.targets[0].id
-        return TypeAliasValue(
-            alias_name,
-            self.module.__name__ if self.module is not None else "",
-            TypeAlias(
-                lambda alias_value=alias_value: alias_value,
-                lambda runtime_type_params=runtime_type_params: runtime_type_params,
-            ),
-            runtime_allows_value_call=True,
-        )
 
     def _validate_runtime_type_expression(self, node: ast.AST) -> None:
         if self.in_type_alias_definition:

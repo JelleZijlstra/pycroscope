@@ -826,31 +826,6 @@ class Checker:
         for key in self._iter_generic_override_keys(typ):
             self.type_object_cache.pop(key, None)
 
-    def register_synthetic_protocol_members(
-        self, typ: type | str, members: set[str]
-    ) -> None:
-        cleaned_members = {
-            member
-            for member in members
-            if member not in EXCLUDED_PROTOCOL_MEMBERS and member != "__slots__"
-        }
-        synthetic_class = self.get_synthetic_class(typ)
-        if synthetic_class is None:
-            return
-        for member in cleaned_members:
-            existing = synthetic_class.declared_symbols.get(member)
-            if existing is None:
-                synthetic_class.declared_symbols[member] = ClassSymbol(
-                    AnyValue(AnySource.inference),
-                    member_value=AnyValue(AnySource.inference),
-                )
-            elif existing.member_value is None:
-                synthetic_class.declared_symbols[member] = dataclass_replace(
-                    existing, member_value=AnyValue(AnySource.inference)
-                )
-        for key in self._iter_generic_override_keys(typ):
-            self.type_object_cache.pop(key, None)
-
     def _iter_generic_override_keys(self, typ: type | str) -> Iterator[type | str]:
         yield typ
         if isinstance(typ, type):
@@ -2425,73 +2400,6 @@ class Checker:
                 synthetic_base, include_inherited=True, seen=seen
             )
         return []
-
-    def _iter_synthetic_dataclass_base_field_parameters(
-        self, base: Value, *, seen: set[int]
-    ) -> list[SigParameter]:
-        return [
-            entry.parameter
-            for entry in self._iter_synthetic_dataclass_base_field_entries(
-                base, seen=seen
-            )
-        ]
-
-    def _augment_dataclass_constructor_signature_with_local_fields(
-        self, init_sig: ConcreteSignature, value: SyntheticClassObjectValue
-    ) -> ConcreteSignature:
-        extra_params = self._get_synthetic_dataclass_field_parameters(
-            value, include_inherited=False
-        )
-        if not extra_params:
-            return init_sig
-
-        def _augment(signature: Signature) -> Signature | None:
-            existing = list(signature.parameters.values())
-            existing_names = {param.name for param in existing}
-            extras = [
-                param for param in extra_params if param.name not in existing_names
-            ]
-            if not extras:
-                return signature
-            first_non_positional = next(
-                (
-                    i
-                    for i, param in enumerate(existing)
-                    if param.kind
-                    not in {
-                        ParameterKind.POSITIONAL_ONLY,
-                        ParameterKind.POSITIONAL_OR_KEYWORD,
-                    }
-                ),
-                len(existing),
-            )
-            new_params = [
-                *existing[:first_non_positional],
-                *extras,
-                *existing[first_non_positional:],
-            ]
-            try:
-                return dataclass_replace(
-                    signature, parameters={param.name: param for param in new_params}
-                )
-            except InvalidSignature:
-                return None
-
-        if isinstance(init_sig, OverloadedSignature):
-            augmented = [
-                new_sig
-                for signature in init_sig.signatures
-                if (new_sig := _augment(signature)) is not None
-            ]
-            if not augmented:
-                return init_sig
-            if len(augmented) == 1:
-                return augmented[0]
-            return OverloadedSignature(augmented)
-        augmented_sig = _augment(init_sig)
-        if augmented_sig is None:
-            return init_sig
-        return augmented_sig
 
     def signature_from_value(
         self,
