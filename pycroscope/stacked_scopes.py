@@ -28,6 +28,7 @@ from collections import OrderedDict, defaultdict
 from collections.abc import Callable, Generator, Iterable, Sequence
 from contextlib import AbstractContextManager
 from dataclasses import dataclass, field, replace
+from functools import cached_property
 from itertools import chain
 from types import ModuleType
 from typing import Any, NamedTuple, Optional, TypeVar
@@ -562,10 +563,19 @@ class EquivalentConstraint(AbstractConstraint):
     constraints: tuple[AbstractConstraint, ...]
 
     def apply(self) -> Iterable["Constraint"]:
-        for cons in self.constraints:
-            yield from cons.apply()
+        return self._applied_constraints
 
     def invert(self) -> "EquivalentConstraint":
+        return self._inverted_constraint
+
+    @cached_property
+    def _applied_constraints(self) -> tuple["Constraint", ...]:
+        return tuple(
+            constraint for cons in self.constraints for constraint in cons.apply()
+        )
+
+    @cached_property
+    def _inverted_constraint(self) -> "EquivalentConstraint":
         # ~(A == B) -> ~A == ~B
         return EquivalentConstraint(tuple(cons.invert() for cons in self.constraints))
 
@@ -598,10 +608,19 @@ class AndConstraint(AbstractConstraint):
     constraints: tuple[AbstractConstraint, ...]
 
     def apply(self) -> Iterable["Constraint"]:
-        for cons in self.constraints:
-            yield from cons.apply()
+        return self._applied_constraints
 
     def invert(self) -> "OrConstraint":
+        return self._inverted_constraint
+
+    @cached_property
+    def _applied_constraints(self) -> tuple["Constraint", ...]:
+        return tuple(
+            constraint for cons in self.constraints for constraint in cons.apply()
+        )
+
+    @cached_property
+    def _inverted_constraint(self) -> "OrConstraint":
         # ~(A and B) -> ~A or ~B
         return OrConstraint(tuple(cons.invert() for cons in self.constraints))
 
@@ -642,22 +661,7 @@ class OrConstraint(AbstractConstraint):
     constraints: tuple[AbstractConstraint, ...]
 
     def apply(self) -> Iterable[Constraint]:
-        grouped = [self._group_constraints(cons) for cons in self.constraints]
-        left, *rest = grouped
-        for varname, constraints in left.items():
-            # Produce one_of constraints if the same variable name
-            # applies on both the left and the right side.
-            if all(varname in group for group in rest):
-                constraints = [
-                    self._constraint_from_list(varname, constraints),
-                    *[
-                        self._constraint_from_list(varname, group[varname])
-                        for group in rest
-                    ],
-                ]
-                yield Constraint(
-                    varname, ConstraintType.one_of, True, list(set(constraints))
-                )
+        return self._applied_constraints
 
     def _constraint_from_list(
         self, varname: VarnameWithOrigin, constraints: Sequence[Constraint]
@@ -676,6 +680,38 @@ class OrConstraint(AbstractConstraint):
         return by_varname
 
     def invert(self) -> AndConstraint:
+        return self._inverted_constraint
+
+    @cached_property
+    def _applied_constraints(self) -> tuple[Constraint, ...]:
+        grouped = tuple(self._group_constraints(cons) for cons in self.constraints)
+        if not grouped:
+            return ()
+        left, *rest = grouped
+        concrete_constraints = []
+        for varname, constraints in left.items():
+            # Produce one_of constraints if the same variable name
+            # applies on both the left and the right side.
+            if all(varname in group for group in rest):
+                constraints = [
+                    self._constraint_from_list(varname, constraints),
+                    *[
+                        self._constraint_from_list(varname, group[varname])
+                        for group in rest
+                    ],
+                ]
+                concrete_constraints.append(
+                    Constraint(
+                        varname,
+                        ConstraintType.one_of,
+                        True,
+                        list(OrderedDict.fromkeys(constraints)),
+                    )
+                )
+        return tuple(concrete_constraints)
+
+    @cached_property
+    def _inverted_constraint(self) -> AndConstraint:
         # ~(A or B) -> ~A and ~B
         return AndConstraint(tuple(cons.invert() for cons in self.constraints))
 
