@@ -12,6 +12,29 @@
 - Changelog entries should be single bullets in plain language that explain the user-visible effect (not internal refactors).
 - Bugfixes for bugs that were not in any release do not need changelog entries.
 
+## Architecture
+
+- Major files include:
+  - `name_check_visitor.py` contains the core visitor that walks over code being type checked. It should visit
+    every AST node exactly twice (in the collect and check phases).
+  - `value.py` contains the core data structures representing types.
+  - `relations.py` performs basic operations on types, such as subtyping, assignability, and intersections.
+  - `type_object.py` contains rich data about classes.
+  - `annotations.py` contains code for understanding annotations and typing-related objects and parsing them into pycroscope's internal
+    data structures.
+  - `arg_spec.py` parses callable objects and extracts their callable signatures.
+  - `signature.py` contains representations of callable signatures and operations on them, such as type checking calls.
+  - `checker.py` orchestrates type checking across multiple files and maintains caches that span across files.
+  - `implementation.py` contains callbacks ("impls") that perform more precise checks or type inference on specific callables.
+  - `stacked_scopes.py` contains logic for tracking which names are in scope and for local narrowing.
+  - `attributes.py` retrieves attributes on objects.
+- Techniques for keeping `name_check_visitor.py` clean include:
+  - Collect short-lived data in attributes on the `NameCheckVisitor`, then aggregate it later. For example, to determine whether
+    a function is a generator, set some marker when visiting `yield` expressions, and read the result at the end of visiting the
+    `FunctionDef`. To handle nesting, stash any existing state when entering a new `FunctionDef`.
+  - Make canonical internal representations (such as `Value` and `TypeObject` objects) rich enough to store the state you need;
+    avoid creating additional complex objects internal to `name_check_visitor.py`.
+
 ## Testing
 
 - Before finishing, run the linting/tests relevant to the files you changed.
