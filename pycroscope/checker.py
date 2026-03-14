@@ -168,33 +168,46 @@ def _class_keys_match(left: type | str, right: type | str) -> bool:
 
 
 def _iter_base_type_values(
-    value: Value, arg_spec_cache: ArgSpecCache | None
+    value: Value,
+    arg_spec_cache: ArgSpecCache | None,
+    seen_known_bases: frozenset[int] = frozenset(),
 ) -> Iterator[TypedValue]:
     value = replace_fallback(value)
     if isinstance(value, MultiValuedValue):
         for subval in value.vals:
-            yield from _iter_base_type_values(subval, arg_spec_cache)
+            yield from _iter_base_type_values(subval, arg_spec_cache, seen_known_bases)
         return
     if isinstance(value, IntersectionValue):
         for subval in value.vals:
-            yield from _iter_base_type_values(subval, arg_spec_cache)
+            yield from _iter_base_type_values(subval, arg_spec_cache, seen_known_bases)
         return
-    yield from _iter_base_type_values_from_simple(value, arg_spec_cache)
+    yield from _iter_base_type_values_from_simple(
+        value, arg_spec_cache, seen_known_bases
+    )
 
 
 def _iter_base_type_values_from_simple(
-    value: SimpleType, arg_spec_cache: ArgSpecCache | None
+    value: SimpleType,
+    arg_spec_cache: ArgSpecCache | None,
+    seen_known_bases: frozenset[int],
 ) -> Iterator[TypedValue]:
     if isinstance(value, KnownValue):
         if arg_spec_cache is not None:
+            base_id = id(value.val)
+            if base_id in seen_known_bases:
+                return
             yield from _iter_base_type_values(
-                arg_spec_cache._type_from_base(value.val), arg_spec_cache
+                arg_spec_cache._type_from_base(value.val),
+                arg_spec_cache,
+                seen_known_bases | {base_id},
             )
         elif isinstance(value.val, type):
             yield TypedValue(value.val)
         return
     if isinstance(value, SyntheticClassObjectValue):
-        yield from _iter_base_type_values(value.class_type, arg_spec_cache)
+        yield from _iter_base_type_values(
+            value.class_type, arg_spec_cache, seen_known_bases
+        )
         return
     if isinstance(value, TypedValue):
         if isinstance(value.typ, (type, str)):

@@ -362,6 +362,28 @@ class TestTypedDict(TestNameCheckVisitorBase):
         def capybara(movie: Movie) -> str:
             return movie["director"]["name"]
 
+    @assert_passes(run_in_both_module_modes=True)
+    def test_stdlib_typeddict_class_syntax_and_newtype_base(self):
+        from typing import Generic, NewType, TypedDict, TypeVar
+
+        class Movie(TypedDict):
+            director: "Person"
+
+        class Person(TypedDict):
+            name: str
+
+        T = TypeVar("T")
+
+        class GenericMovie(TypedDict, Generic[T]):
+            value: T
+
+        BadMovieId = NewType("BadMovieId", Movie)  # E: incompatible_call
+
+        def capybara(movie: Movie, generic_movie: GenericMovie[int]) -> str:
+            print(BadMovieId)
+            print(generic_movie)
+            return movie["director"]["name"]
+
     @assert_passes()
     def test_functional_syntax_keyword_fields(self):
         from typing_extensions import TypedDict
