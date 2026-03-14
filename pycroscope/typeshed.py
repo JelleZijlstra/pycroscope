@@ -23,7 +23,6 @@ from typing import Any, Generic, TypeVar
 import typeshed_client
 from typing_extensions import Protocol
 
-from pycroscope import node_visitor
 from pycroscope.functions import translate_vararg_type
 
 from .analysis_lib import is_positional_only_arg_name
@@ -38,7 +37,6 @@ from .error_code import Error, ErrorCode
 from .extensions import deprecated as deprecated_decorator
 from .extensions import evaluated, overload, real_overload
 from .input_sig import InputSigValue
-from .node_visitor import Failure
 from .options import (
     InvalidConfigOption,
     OptionalPathOption,
@@ -162,22 +160,6 @@ class _AnnotationContext(Context):
         elif isinstance(root_value, SyntheticModuleValue):
             return self.finder.resolve_name(".".join(root_value.module_path), node.attr)
         return super().get_attribute(root_value, node)
-
-
-class _DummyErrorContext:
-    all_failures: list[Failure] = []
-
-    def show_error(
-        self,
-        node: ast.AST,
-        e: str,
-        error_code: node_visitor.ErrorCodeInstance,
-        *,
-        detail: str | None = None,
-        save: bool = True,
-        extra_metadata: dict[str, Any] | None = None,
-    ) -> Failure | None:
-        return None
 
 
 class StubPath(PathSequenceOption):
