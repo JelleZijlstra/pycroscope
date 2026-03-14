@@ -3773,8 +3773,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             synthetic_typeddict = self._make_synthetic_typeddict_context(
                 node, base_values, keyword_values
             )
-            fallback_runtime_class: type | None = None
-            synthetic_enum_runtime_class: type | None = None
+            runtime_enum_fallback_class: type | None = None
             is_namedtuple_synthetic = any(
                 _is_namedtuple_like_base_value(base_value) for base_value in base_values
             )
@@ -3784,20 +3783,12 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 and self._is_checking()
                 and not node.keywords
             ):
-                fallback_runtime_class = self._make_dataclass_related_fallback_class(
-                    node, base_values, decorator_values
-                )
-                if fallback_runtime_class is None and is_namedtuple_synthetic:
+                if is_namedtuple_synthetic:
                     self._validate_namedtuple_related_fallback_class(node, base_values)
-                if fallback_runtime_class is None and not is_namedtuple_synthetic:
-                    fallback_runtime_class = self._make_enum_related_fallback_class(
-                        node, base_values
+                if not is_namedtuple_synthetic:
+                    runtime_enum_fallback_class = (
+                        self._make_enum_related_fallback_class(node, base_values)
                     )
-                if fallback_runtime_class is not None:
-                    if safe_issubclass(fallback_runtime_class, enum.Enum):
-                        synthetic_enum_runtime_class = fallback_runtime_class
-                    else:
-                        class_obj = fallback_runtime_class
             synthetic_class = None
             synthetic_fq_name: str | None = None
             class_scope_object: type | str | None = class_obj
@@ -3853,11 +3844,11 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 self._validate_typeddict_class_syntax(node)
             elif class_obj is None or is_namedtuple_synthetic:
                 synthetic_fq_name = self._get_synthetic_class_fq_name(node)
-                if synthetic_enum_runtime_class is not None:
+                if runtime_enum_fallback_class is not None:
                     synthetic_class_type: TypedValue = TypedValue(
-                        synthetic_enum_runtime_class
+                        runtime_enum_fallback_class
                     )
-                    class_scope_object = synthetic_enum_runtime_class
+                    class_scope_object = runtime_enum_fallback_class
                 elif class_obj is not None:
                     synthetic_class_type = TypedValue(class_obj)
                     class_scope_object = class_obj
@@ -4004,10 +3995,8 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     for type_param in recovered_type_param_values
                 )
                 if not should_use_recovered_type_params:
-                    # Constructor-only fallback classes still rely on legacy
-                    # type-erasure behavior for conformance. Recovering type
-                    # parameters here is still important for classes that expose
-                    # non-constructor generic methods.
+                    # Recovering type parameters here is still important for
+                    # classes that expose non-constructor generic methods.
                     should_use_recovered_type_params = any(
                         isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef))
                         and statement.name not in {"__init__", "__new__"}
@@ -4316,9 +4305,12 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 self._check_protocol_type_param_variances(
                     node, declared_type_params, base_values, class_scope_object
                 )
-            if fallback_runtime_class is not None and class_scope_values is not None:
-                _populate_fallback_runtime_class(
-                    fallback_runtime_class, class_scope_values
+            if (
+                runtime_enum_fallback_class is not None
+                and class_scope_values is not None
+            ):
+                _populate_runtime_enum_fallback_class(
+                    runtime_enum_fallback_class, class_scope_values
                 )
             metaclass_value = next(
                 (
@@ -4783,86 +4775,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         if has_namedtuple_marker_base and has_namedtuple_field_error:
             return
 
-    def _make_dataclass_related_fallback_class(
-        self,
-        node: ast.ClassDef,
-        base_values: Sequence[Value],
-        decorator_values: DecoratorValues,
-    ) -> type | None:
-        options = self._get_dataclass_decorator_options(decorator_values)
-        if options is None:
-            return None
-        if not self._should_build_dataclass_kw_only_fallback(node, options):
-            return None
-
-        runtime_bases = []
-        for base_value in base_values:
-            runtime_base = self._runtime_base_from_value(
-                base_value, allow_synthetic_class_base=True
-            )
-            if runtime_base is None:
-                return None
-            runtime_bases.append(runtime_base)
-
-        annotations: dict[str, object] = {}
-        defaults: dict[str, object] = {}
-        marker = getattr(dataclasses, "KW_ONLY", None)
-        for statement in node.body:
-            if not (
-                isinstance(statement, ast.AnnAssign)
-                and isinstance(statement.target, ast.Name)
-                and statement.simple
-            ):
-                continue
-            field_name = statement.target.id
-            if marker is not None and self._is_dataclass_kw_only_marker_annotation(
-                statement.annotation
-            ):
-                annotations[field_name] = marker
-                continue
-            annotation_expr = annotation_expr_from_ast(
-                statement.annotation, visitor=self, suppress_errors=True
-            )
-            field_type, _ = annotation_expr.unqualify(
-                {
-                    Qualifier.ClassVar,
-                    Qualifier.Final,
-                    Qualifier.InitVar,
-                    Qualifier.ReadOnly,
-                    Qualifier.Required,
-                    Qualifier.NotRequired,
-                },
-                mutually_exclusive_qualifiers=(
-                    (Qualifier.Required, Qualifier.NotRequired),
-                ),
-            )
-            annotations[field_name] = self._runtime_annotation_from_value(field_type)
-            if statement.value is not None:
-                defaults[field_name] = self._runtime_dataclass_default_from_expr(
-                    statement.value
-                )
-
-        module_name = self.module.__name__ if self.module is not None else self.filename
-        qualname = self._get_class_qualname_from_name(node.name)
-
-        def exec_body(ns: dict[str, object]) -> None:
-            ns["__module__"] = module_name
-            ns["__qualname__"] = qualname
-            ns["__annotations__"] = annotations
-            for name, default in defaults.items():
-                ns[name] = default
-
-        try:
-            runtime_class = types.new_class(
-                node.name, tuple(runtime_bases), {}, exec_body
-            )
-            return dataclass(**options)(runtime_class)
-        except Exception:
-            self.log(
-                logging.INFO, "unable to synthesize dataclass runtime class", node.name
-            )
-            return None
-
     def _make_enum_related_fallback_class(
         self, node: ast.ClassDef, base_values: Sequence[Value]
     ) -> type | None:
@@ -5016,42 +4928,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     return typing.Any
             return result
         return typing.Any
-
-    def _runtime_default_from_expr(self, expr: ast.expr) -> object:
-        value = self.visit(expr)
-        if isinstance(value, KnownValue):
-            return value.val
-        return object()
-
-    def _maybe_make_runtime_dataclass_field_default(
-        self, expr: ast.expr
-    ) -> object | None:
-        if not isinstance(expr, ast.Call):
-            return None
-        callee = self.visit(expr.func)
-        if not (isinstance(callee, KnownValue) and callee.val is dataclass_field):
-            return None
-        if expr.args:
-            return None
-        kwargs: dict[str, Any] = {}
-        for kw in expr.keywords:
-            if kw.arg is None:
-                return None
-            value = self.visit(kw.value)
-            if not isinstance(value, KnownValue):
-                return None
-            kwargs[kw.arg] = value.val
-        try:
-            return dataclass_field(**kwargs)
-        except Exception:
-            return None
-
-    def _runtime_dataclass_default_from_expr(self, expr: ast.expr) -> object:
-        if (
-            field_default := self._maybe_make_runtime_dataclass_field_default(expr)
-        ) is not None:
-            return field_default
-        return self._runtime_default_from_expr(expr)
 
     def _apply_synthetic_enum_semantics(
         self,
@@ -5606,23 +5482,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             )
         )
 
-    def _is_dataclass_kw_only_marker_annotation(self, node: ast.expr) -> bool:
-        if isinstance(node, ast.Name):
-            value = self.scopes.get(node.id, node, self.state, can_assign_ctx=self)
-            return _is_dataclass_kw_only_marker_value(value)
-        if isinstance(node, ast.Attribute):
-            with self.catch_errors():
-                value = self.visit(node)
-            return _is_dataclass_kw_only_marker_value(value)
-        return False
-
-    def _is_dataclass_field_call(self, expr: ast.expr) -> bool:
-        if not isinstance(expr, ast.Call):
-            return False
-        with self.catch_errors():
-            callee = self.visit(expr.func)
-        return self._is_dataclass_field_callee(callee)
-
     def _is_dataclass_field_callee(self, callee: Value) -> bool:
         if isinstance(callee, KnownValue) and callee.val is dataclass_field:
             return True
@@ -5754,25 +5613,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             converter_value=converter_value,
             converter_input_type=converter_input_type,
         )
-
-    def _should_build_dataclass_kw_only_fallback(
-        self, node: ast.ClassDef, options: Mapping[str, bool]
-    ) -> bool:
-        if options.get("kw_only", False):
-            return True
-        for statement in node.body:
-            if not isinstance(statement, ast.AnnAssign):
-                continue
-            if self._is_dataclass_kw_only_marker_annotation(statement.annotation):
-                return True
-            value_expr = statement.value
-            if (
-                isinstance(value_expr, ast.Call)
-                and self._is_dataclass_field_call(value_expr)
-                and any(kw.arg == "kw_only" for kw in value_expr.keywords)
-            ):
-                return True
-        return False
 
     def _slot_state_for_synthetic_class(
         self,
@@ -16619,7 +16459,7 @@ def _namedtuple_base_fields_from_base_values(base_values: Sequence[Value]) -> se
     return fields
 
 
-def _populate_fallback_runtime_class(
+def _populate_runtime_enum_fallback_class(
     runtime_class: type, class_scope_values: Mapping[str, Value]
 ) -> None:
     for name, value in class_scope_values.items():
