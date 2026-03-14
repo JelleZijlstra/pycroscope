@@ -86,6 +86,7 @@ from .value import (
     PartialValueOperation,
     PredicateValue,
     SelfT,
+    SequenceValue,
     SimpleType,
     SubclassValue,
     SyntheticClassObjectValue,
@@ -97,6 +98,7 @@ from .value import (
     TypeFormValue,
     TypeParam,
     TypeVarLike,
+    TypeVarMap,
     TypeVarParam,
     TypeVarTupleValue,
     TypeVarType,
@@ -641,6 +643,26 @@ class Checker:
             )
         return direct_symbols
 
+    def _namedtuple_field_value_for_type(
+        self, typ: type | str, field_name: str
+    ) -> Value:
+        synthetic_class = self.get_synthetic_class(typ)
+        if synthetic_class is not None:
+            field_value = get_namedtuple_field_value_from_synthetic(
+                synthetic_class, field_name, self
+            )
+            if field_value is not None:
+                return field_value
+        if isinstance(typ, type):
+            from .value import get_namedtuple_field_annotation
+
+            return type_from_runtime(
+                get_namedtuple_field_annotation(typ, field_name),
+                visitor=self,
+                suppress_errors=True,
+            )
+        return AnyValue(AnySource.inference)
+
     def _build_type_object(self, typ: type | super | str) -> TypeObject:
         if isinstance(typ, str):
             # Synthetic type
@@ -754,11 +776,11 @@ class Checker:
     ) -> GenericBases:
         generic_bases = self.arg_spec_cache.get_generic_bases(typ, generic_args)
         synthetic_bases = self._get_synthetic_generic_bases(typ)
-        if synthetic_bases is None:
-            return generic_bases
-
         substitution_map: dict[TypeVarLike, Value] = {}
-        declared_type_params = self._get_synthetic_declared_type_params(typ)
+        if synthetic_bases is None:
+            declared_type_params = tuple(self.get_type_parameters(typ))
+        else:
+            declared_type_params = self._get_synthetic_declared_type_params(typ)
         specialized_args = self.arg_spec_cache._specialize_generic_type_params(
             declared_type_params, generic_args
         )
@@ -772,6 +794,10 @@ class Checker:
         merged: _SyntheticGenericBases = {
             base: dict(tv_map) for base, tv_map in generic_bases.items()
         }
+        if synthetic_bases is None:
+            self._augment_namedtuple_generic_bases(typ, merged, substitution_map)
+            return merged
+
         if declared_type_params:
             if typ not in merged:
                 merged[typ] = {}
@@ -789,6 +815,7 @@ class Checker:
                 merged[base] = {}
             base_map: dict[TypeVarLike, Value] = merged[base]
             base_map.update(substituted_tv_map)
+        self._augment_namedtuple_generic_bases(typ, merged, substitution_map)
         return merged
 
     def get_type_parameters(self, typ: type | str) -> list[TypeParam]:
@@ -856,9 +883,12 @@ class Checker:
                 # richer generic mapping for them (common for local synthetic
                 # classes with no typeshed entry).
                 merged_generic_bases.setdefault(base_typ, {})
-                generic_args = (
-                    converted.args if isinstance(converted, GenericValue) else ()
-                )
+                if isinstance(converted, SequenceValue) and converted.typ is tuple:
+                    generic_args = (converted,)
+                else:
+                    generic_args = (
+                        converted.args if isinstance(converted, GenericValue) else ()
+                    )
                 for gb_typ, tv_map in self.get_generic_bases(
                     base_typ, generic_args
                 ).items():
@@ -914,6 +944,129 @@ class Checker:
         if synthetic_class.declared_type_params:
             return {}
         return None
+
+    def _augment_namedtuple_generic_bases(
+        self,
+        typ: type | str,
+        generic_bases: _SyntheticGenericBases,
+        substitution_map: TypeVarMap,
+    ) -> None:
+        tuple_base = self._namedtuple_tuple_base(typ)
+        if tuple_base is None:
+            return
+        if substitution_map:
+            tuple_base = tuple_base.substitute_typevars(substitution_map)
+            assert isinstance(tuple_base, SequenceValue)
+        tuple_type_params = self.arg_spec_cache.get_type_parameters(tuple)
+        if len(tuple_type_params) != 1:
+            return
+        generic_bases.setdefault(tuple, {})[tuple_type_params[0].typevar] = tuple_base
+
+    def _namedtuple_tuple_base(self, typ: type | str) -> SequenceValue | None:
+        synthetic_class = self.get_synthetic_class(typ)
+        if synthetic_class is not None and self._synthetic_class_is_namedtuple_like(
+            synthetic_class
+        ):
+            field_names = self._namedtuple_tuple_field_names_from_synthetic(
+                synthetic_class
+            )
+        elif isinstance(typ, type) and is_namedtuple_class(typ):
+            field_names = tuple(
+                field
+                for field in safe_getattr(typ, "_fields", ())
+                if isinstance(field, str)
+            )
+        else:
+            field_names = ()
+        if not field_names:
+            return None
+        members = [
+            (False, self._namedtuple_field_value_for_type(typ, field_name))
+            for field_name in field_names
+        ]
+        return SequenceValue(tuple, members)
+
+    def _namedtuple_tuple_field_names_from_synthetic(
+        self,
+        synthetic_class: SyntheticClassObjectValue,
+        *,
+        seen: frozenset[type | str] = frozenset(),
+    ) -> tuple[str, ...]:
+        class_type = synthetic_class.class_type
+        if not (
+            isinstance(class_type, TypedValue)
+            and isinstance(class_type.typ, (type, str))
+        ):
+            return ()
+        class_key = class_type.typ
+        if class_key in seen:
+            return ()
+        seen = seen | {class_key}
+        if synthetic_class.namedtuple_info is not None:
+            return ordered_namedtuple_fields_from_synthetic(synthetic_class)
+        runtime_class = synthetic_class.runtime_class
+        if (
+            isinstance(runtime_class, KnownValue)
+            and isinstance(runtime_class.val, type)
+            and is_namedtuple_class(runtime_class.val)
+        ):
+            return tuple(
+                field
+                for field in safe_getattr(runtime_class.val, "_fields", ())
+                if isinstance(field, str)
+            )
+
+        inherited_fields: list[str] = []
+        for base in synthetic_class.base_classes:
+            for base_value in _iter_base_type_values(base, self.arg_spec_cache):
+                if isinstance(base_value.typ, type) and is_namedtuple_class(
+                    base_value.typ
+                ):
+                    inherited_fields.extend(
+                        field
+                        for field in safe_getattr(base_value.typ, "_fields", ())
+                        if isinstance(field, str) and field not in inherited_fields
+                    )
+                elif isinstance(base_value.typ, str):
+                    base_synthetic = self.get_synthetic_class(base_value.typ)
+                    if (
+                        base_synthetic is not None
+                        and self._synthetic_class_is_namedtuple_like(base_synthetic)
+                    ):
+                        for field in self._namedtuple_tuple_field_names_from_synthetic(
+                            base_synthetic, seen=seen
+                        ):
+                            if field not in inherited_fields:
+                                inherited_fields.append(field)
+        return tuple(inherited_fields)
+
+    def _synthetic_class_is_namedtuple_like(
+        self, synthetic_class: SyntheticClassObjectValue
+    ) -> bool:
+        if synthetic_class.namedtuple_info is not None:
+            return True
+        runtime_class = synthetic_class.runtime_class
+        if (
+            isinstance(runtime_class, KnownValue)
+            and isinstance(runtime_class.val, type)
+            and is_namedtuple_class(runtime_class.val)
+        ):
+            return True
+        for base in synthetic_class.base_classes:
+            for base_value in _iter_base_type_values(base, self.arg_spec_cache):
+                if isinstance(base_value.typ, type) and is_namedtuple_class(
+                    base_value.typ
+                ):
+                    return True
+                if isinstance(base_value.typ, str):
+                    base_synthetic = self.get_synthetic_class(base_value.typ)
+                    if (
+                        base_synthetic is not None
+                        and base_synthetic is not synthetic_class
+                        and self._synthetic_class_is_namedtuple_like(base_synthetic)
+                    ):
+                        return True
+        return False
 
     def _get_synthetic_declared_type_params(
         self, typ: type | str

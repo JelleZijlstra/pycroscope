@@ -23,6 +23,7 @@ from .value import (
     KnownValue,
     MultiValuedValue,
     NamedTupleInfo,
+    Qualifier,
     SubclassValue,
     SyntheticClassObjectValue,
     TypedValue,
@@ -133,7 +134,10 @@ def test_synthetic_namedtuple_field_is_readonly_without_runtime_class() -> None:
         ),
     )
     synthetic.declared_symbols["x"] = ClassSymbol(
-        TypedValue(int), is_instance_only=True, member_value=TypedValue(int)
+        TypedValue(int),
+        frozenset({Qualifier.ReadOnly}),
+        is_instance_only=True,
+        member_value=TypedValue(int),
     )
     synthetic.declared_symbols["helper"] = ClassSymbol(
         KnownValue(len), is_method=True, member_value=KnownValue(len)
@@ -142,6 +146,18 @@ def test_synthetic_namedtuple_field_is_readonly_without_runtime_class() -> None:
 
     assert _is_readonly_instance_member("mod.Point", "x", checker)
     assert not _is_readonly_instance_member("mod.Point", "helper", checker)
+
+
+def test_runtime_namedtuple_field_is_readonly() -> None:
+    from typing import NamedTuple
+
+    class Point(NamedTuple):
+        x: int
+
+    checker = Checker()
+    symbol = checker.make_type_object(Point).get_declared_symbol("x", checker)
+    assert symbol is not None
+    assert symbol.is_readonly
 
 
 def test_synthetic_declared_symbol_overrides_raw_attribute_value() -> None:

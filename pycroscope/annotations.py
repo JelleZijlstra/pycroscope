@@ -1292,6 +1292,12 @@ def _type_from_value_type_alias_arg(
             ):
                 return unpacked_members[0][1]
             return SequenceValue(tuple, list(unpacked_members))
+    return _type_from_alias_argument_value(arg, ctx)
+
+
+def _type_from_alias_argument_value(arg: Value, ctx: Context) -> Value:
+    if type(arg) is TypedValue:
+        return arg
     return _type_from_value(arg, ctx)
 
 
@@ -1431,7 +1437,7 @@ def _normalize_generic_unpack_members(
                 continue
             for is_many, unpacked_member in unpacked_members:
                 normalized_members.append(
-                    (is_many, _type_from_value(unpacked_member, ctx))
+                    (is_many, _type_from_alias_argument_value(unpacked_member, ctx))
                 )
             continue
         normalized_members.append((False, _type_from_value(member, ctx)))
@@ -1466,6 +1472,16 @@ def _pack_typevartuple_args_from_unpack_members(
         return None
 
     variadic_index = variadic_indexes[0]
+    if len(normalized_members) == 1 and normalized_members[0][0]:
+        repeated_member = normalized_members[0][1]
+        return [
+            (
+                SequenceValue(tuple, [(True, repeated_member)])
+                if i == variadic_index
+                else repeated_member
+            )
+            for i in range(len(type_params))
+        ]
     minimum_args = len(type_params) - 1
     if len(normalized_members) < minimum_args:
         return None
@@ -2092,7 +2108,8 @@ def _type_from_subscripted_value(
                 ]
             else:
                 args_vals = [
-                    _type_from_value(member, ctx) for member in unpacked_members
+                    _type_from_alias_argument_value(member, ctx)
+                    for member in unpacked_members
                 ]
         elif len(members) == len(type_params):
             args_vals = [
@@ -2100,7 +2117,9 @@ def _type_from_subscripted_value(
                 for member, type_param in zip(members, type_params)
             ]
         else:
-            args_vals = [_type_from_value(member, ctx) for member in members]
+            args_vals = [
+                _type_from_alias_argument_value(member, ctx) for member in members
+            ]
         if has_unbounded_unpack and packed_variadic_members is None:
             ctx.show_error("Unpacked TypeVarTuple cannot specialize this type alias")
         args_vals = _validate_type_alias_arg_values(type_params, args_vals, ctx)

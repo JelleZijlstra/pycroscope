@@ -1462,7 +1462,8 @@ class TypedValue(Value):
                     if isinstance(declared_param, TypeVarTupleParam):
                         normalized_arg = replace_known_sequence_value(raw_arg)
                         if (
-                            isinstance(normalized_arg, SequenceValue)
+                            params_key is not tuple
+                            and isinstance(normalized_arg, SequenceValue)
                             and normalized_arg.typ is tuple
                             and all(
                                 not is_many for is_many, _ in normalized_arg.members
@@ -3922,8 +3923,11 @@ def unpack_values(
             )
         return [unite_values(*vals) for vals in zip(*good_subvals)]
     value = replace_known_sequence_value(value)
-    if (namedtuple_members := namedtuple_members_from_value(value, ctx)) is not None:
-        value = SequenceValue(tuple, namedtuple_members)
+    if (
+        _can_unpack_tuple_members_from_value(value, ctx)
+        and (tuple_members := tuple_members_from_value(value, ctx)) is not None
+    ):
+        value = SequenceValue(tuple, tuple_members)
 
     # We treat the different sequence types differently here.
     # - Tuples are  immutable so we can always unpack and show
@@ -3961,16 +3965,6 @@ def is_iterable(value: Value, ctx: CanAssignContext) -> CanAssignError | Value:
     if isinstance(tv_map, CanAssignError):
         return tv_map
     return tv_map.get(T, AnyValue(AnySource.generic_argument))
-
-
-def _class_keys_match(left: type | str, right: type | str) -> bool:
-    if left == right:
-        return True
-    if isinstance(left, type) and isinstance(right, str):
-        return f"{left.__module__}.{left.__qualname__}" == right
-    if isinstance(left, str) and isinstance(right, type):
-        return left == f"{right.__module__}.{right.__qualname__}"
-    return False
 
 
 def ordered_namedtuple_fields_from_synthetic(
@@ -4096,112 +4090,109 @@ def get_namedtuple_field_value_from_synthetic(
     return None
 
 
-def namedtuple_members_from_value(
-    value: Value, ctx: CanAssignContext | None = None
+def tuple_members_from_value(
+    value: Value, ctx: CanAssignContext
 ) -> tuple[tuple[bool, Value], ...] | None:
-    from .annotations import type_from_runtime
-
-    def _get_synthetic_class(class_key: type | str) -> SyntheticClassObjectValue | None:
-        if ctx is None:
-            return None
-        checker_ctx = safe_getattr(ctx, "checker", ctx)
-        get_synthetic_class = safe_getattr(checker_ctx, "get_synthetic_class", None)
-        if not callable(get_synthetic_class):
-            return None
-        synthetic = get_synthetic_class(class_key)
-        if isinstance(synthetic, SyntheticClassObjectValue):
-            return synthetic
-        return None
-
-    def _get_typevar_substitutions(
-        class_key: type | str, generic_args: Sequence[Value]
-    ) -> TypeVarMap:
-        if not generic_args:
-            return {}
-        if ctx is None:
-            if not isinstance(class_key, type):
-                return {}
-            return {
-                typevar: arg
-                for typevar, arg in zip(
-                    getattr(class_key, "__parameters__", ()), generic_args
-                )
-            }
-        substitutions: dict[TypeVarLike, Value] = {}
-        for type_param, arg in zip(ctx.get_type_parameters(class_key), generic_args):
-            substitutions[type_param.typevar] = arg
-        return substitutions
-
-    def _namedtuple_members_for_class(
-        class_key: type | str, generic_args: Sequence[Value], seen: set[type | str]
+    def _from_tuple_args(
+        args: Sequence[Value] | None,
     ) -> tuple[tuple[bool, Value], ...] | None:
-        if class_key in seen:
+        if args is None:
             return None
-        seen.add(class_key)
+        if not args:
+            return None
+        if len(args) == 1:
+            arg = replace_known_sequence_value(args[0])
+            if isinstance(arg, SequenceValue) and arg.typ is tuple:
+                return arg.members
+            return ((True, args[0]),)
+        return tuple((False, arg) for arg in args)
 
-        tv_map = _get_typevar_substitutions(class_key, generic_args)
-        if isinstance(class_key, type) and is_namedtuple_class(class_key):
-            fields_obj = safe_getattr(class_key, "_fields", None)
-            if not isinstance(fields_obj, tuple):
-                return None
+    def _can_use_generic_bases() -> bool:
+        checker_ctx = safe_getattr(ctx, "checker", ctx)
+        return safe_getattr(checker_ctx, "_arg_spec_cache", None) is not None
 
-            members: list[tuple[bool, Value]] = []
-            for field_name in fields_obj:
-                annotation = get_namedtuple_field_annotation(class_key, field_name)
-                field_type = type_from_runtime(
-                    annotation, visitor=ctx, suppress_errors=True
+    def _normalize_for_tuple_bases(value: Value) -> Value | None:
+        normalized = replace_fallback(value)
+        if isinstance(normalized, AnnotatedValue):
+            return _normalize_for_tuple_bases(normalized.value)
+        if isinstance(normalized, SequenceValue) and normalized.typ is tuple:
+            return normalized
+        if (
+            isinstance(normalized, GenericValue)
+            and normalized.typ is tuple
+            and len(normalized.args) == 1
+        ):
+            return normalized
+        if isinstance(normalized, KnownValue) and isinstance(normalized.val, tuple):
+            if type(normalized.val) is tuple:
+                return SequenceValue(
+                    tuple,
+                    tuple((False, KnownValue(member)) for member in normalized.val),
                 )
-                members.append((False, field_type.substitute_typevars(tv_map)))
-            return tuple(members)
+            return TypedValue(type(normalized.val))
+        if isinstance(normalized, SyntheticClassObjectValue):
+            return normalized.class_type
+        if isinstance(normalized, SubclassValue):
+            return _normalize_for_tuple_bases(normalized.typ)
+        return normalized
 
-        synthetic = _get_synthetic_class(class_key)
-        if synthetic is None:
-            return None
-
-        if synthetic.namedtuple_info is not None:
-            field_names = ordered_namedtuple_fields_from_synthetic(synthetic)
-            if not field_names:
-                return None
-            assert ctx is not None
-
-            tuple_members: list[tuple[bool, Value]] = []
-            for field_name in field_names:
-                field_value = get_namedtuple_field_value_from_synthetic(
-                    synthetic, field_name, ctx
-                )
-                if field_value is None:
-                    continue
-                tuple_members.append((False, field_value.substitute_typevars(tv_map)))
-            if tuple_members:
-                return tuple(tuple_members)
-            return None
-
-        if ctx is None:
-            return None
-        generic_bases = ctx.get_generic_bases(class_key, generic_args)
-        for base_typ, base_tv_map in generic_bases.items():
-            if _class_keys_match(base_typ, class_key):
-                continue
-            base_args = []
-            for type_param in ctx.get_type_parameters(base_typ):
-                base_args.append(
-                    base_tv_map.get(type_param.typevar, type_param_to_value(type_param))
-                )
-            base_members = _namedtuple_members_for_class(base_typ, base_args, seen)
-            if base_members is not None:
-                return base_members
+    normalized = _normalize_for_tuple_bases(value)
+    if normalized is None:
         return None
+    if isinstance(normalized, SequenceValue) and normalized.typ is tuple:
+        return normalized.members
+    if isinstance(normalized, GenericValue) and normalized.typ is tuple:
+        if len(normalized.args) == 1:
+            return ((True, normalized.args[0]),)
+        return tuple((False, arg) for arg in normalized.args)
+    if (
+        _can_use_generic_bases()
+        and isinstance(normalized, GenericValue)
+        and isinstance(normalized.typ, (type, str))
+    ):
+        return _from_tuple_args(normalized.get_generic_args_for_type(tuple, ctx))
+    if (
+        _can_use_generic_bases()
+        and isinstance(normalized, TypedValue)
+        and isinstance(normalized.typ, (type, str))
+    ):
+        return _from_tuple_args(normalized.get_generic_args_for_type(tuple, ctx))
+    return None
 
+
+def _can_unpack_tuple_members_from_value(value: Value, ctx: CanAssignContext) -> bool:
+    from .type_object import lookup_declared_symbol_with_owner
+
+    class_key = _class_key_for_tuple_members(value)
+    if class_key is None:
+        return True
+    iter_method = lookup_declared_symbol_with_owner(class_key, "__iter__", ctx)
+    return iter_method is None or iter_method[0] is tuple
+
+
+def _class_key_for_tuple_members(value: Value) -> type | str | None:
     value = replace_fallback(value)
     if isinstance(value, AnnotatedValue):
-        value = value.value
-
-    if isinstance(value, KnownValue) and isinstance(value.val, tuple):
-        return _namedtuple_members_for_class(type(value.val), (), set())
-    if isinstance(value, GenericValue) and isinstance(value.typ, (type, str)):
-        return _namedtuple_members_for_class(value.typ, value.args, set())
-    if isinstance(value, TypedValue) and isinstance(value.typ, (type, str)):
-        return _namedtuple_members_for_class(value.typ, (), set())
+        return _class_key_for_tuple_members(value.value)
+    if isinstance(value, SequenceValue) and value.typ is tuple:
+        return None
+    if isinstance(value, SyntheticClassObjectValue):
+        class_type = value.class_type
+        if isinstance(class_type, TypedValue) and isinstance(
+            class_type.typ, (type, str)
+        ):
+            return class_type.typ
+        return None
+    if isinstance(value, SubclassValue):
+        return _class_key_for_tuple_members(value.typ)
+    if isinstance(value, KnownValue):
+        if isinstance(value.val, tuple) and type(value.val) is not tuple:
+            return type(value.val)
+        return None
+    if isinstance(value, (GenericValue, TypedValue)) and isinstance(
+        value.typ, (type, str)
+    ):
+        return value.typ
     return None
 
 
@@ -4303,7 +4294,9 @@ def _unpack_sequence_value(
             return [*head, SequenceValue(list, remaining_members), *reversed(tail)]
 
 
-def replace_known_sequence_value(value: Value) -> BasicType:
+def replace_known_sequence_value(
+    value: Value, ctx: CanAssignContext | None = None
+) -> BasicType:
     """Simplify a Value in a way that is easier to handle for most typechecking use cases.
 
     Does the following:
@@ -4316,15 +4309,19 @@ def replace_known_sequence_value(value: Value) -> BasicType:
     """
     value = replace_fallback(value)
     if isinstance(value, KnownValue):
-        return typify_literal(value)
+        return typify_literal(value, ctx)
     return value
 
 
-def typify_literal(value: KnownValue) -> KnownValue | TypedValue:
+def typify_literal(
+    value: KnownValue, ctx: CanAssignContext | None = None
+) -> KnownValue | TypedValue:
     if isinstance(value.val, tuple):
-        if (namedtuple_members := namedtuple_members_from_value(value)) is not None:
-            return SequenceValue(tuple, namedtuple_members)
-    if isinstance(value.val, (list, tuple, set)):
+        if type(value.val) is tuple:
+            return SequenceValue(tuple, [(False, KnownValue(elt)) for elt in value.val])
+        if ctx is not None:
+            return TypedValue(type(value.val))
+    if isinstance(value.val, (list, set)):
         return SequenceValue(
             type(value.val), [(False, KnownValue(elt)) for elt in value.val]
         )
