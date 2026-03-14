@@ -3220,7 +3220,9 @@ class PropertyInfo:
 
 @dataclass(frozen=True)
 class NamedTupleInfo:
+    field_names: tuple[str, ...] = ()
     default_fields: tuple[str, ...] = ()
+    has_namedtuple_marker_base: bool = False
 
     def walk_values(self) -> Iterable[Value]:
         yield from ()
@@ -3974,30 +3976,6 @@ def _class_keys_match(left: type | str, right: type | str) -> bool:
 def ordered_namedtuple_fields_from_synthetic(
     synthetic: SyntheticClassObjectValue,
 ) -> tuple[str, ...]:
-    has_namedtuple_marker_base = any(
-        isinstance(base, KnownValue) and is_typing_name(base.val, "NamedTuple")
-        for base in synthetic.base_classes
-    )
-    runtime_class_value = synthetic.runtime_class
-    if (
-        isinstance(runtime_class_value, KnownValue)
-        and isinstance(runtime_class_value.val, type)
-        and is_namedtuple_class(runtime_class_value.val)
-    ):
-        fields_obj = safe_getattr(runtime_class_value.val, "_fields", None)
-        if isinstance(fields_obj, tuple) and all(
-            isinstance(field, str) for field in fields_obj
-        ):
-            return fields_obj
-
-    allowed_names: set[str] = set()
-    allowed_names.update(
-        name
-        for name, symbol in synthetic.declared_symbols.items()
-        if symbol.is_instance_only and not symbol.is_classvar and not symbol.is_initvar
-    )
-    if synthetic.namedtuple_info is not None:
-        allowed_names.update(synthetic.namedtuple_info.default_fields)
     inherited: list[str] = []
     for base in synthetic.base_classes:
         for subval in flatten_values(replace_fallback(base)):
@@ -4016,21 +3994,43 @@ def ordered_namedtuple_fields_from_synthetic(
                         field for field in fields_obj if isinstance(field, str)
                     )
     local_fields: list[str] = []
-    if has_namedtuple_marker_base or not inherited:
-        local_fields = [
-            name
-            for name, _ in iter_synthetic_member_values(synthetic)
-            if not (
-                synthetic.declared_symbols.get(name) is not None
-                and synthetic.declared_symbols[name].is_method
+    if synthetic.namedtuple_info is not None and synthetic.namedtuple_info.field_names:
+        if synthetic.namedtuple_info.has_namedtuple_marker_base or not inherited:
+            local_fields.extend(synthetic.namedtuple_info.field_names)
+    else:
+        runtime_class_value = synthetic.runtime_class
+        if (
+            isinstance(runtime_class_value, KnownValue)
+            and isinstance(runtime_class_value.val, type)
+            and is_namedtuple_class(runtime_class_value.val)
+        ):
+            fields_obj = safe_getattr(runtime_class_value.val, "_fields", None)
+            if isinstance(fields_obj, tuple):
+                local_fields.extend(
+                    field for field in fields_obj if isinstance(field, str)
+                )
+        else:
+            allowed_names = {
+                name
+                for name, symbol in synthetic.declared_symbols.items()
+                if symbol.is_instance_only
+                and not symbol.is_classvar
+                and not symbol.is_initvar
+            }
+            local_fields.extend(
+                name
+                for name, _ in iter_synthetic_member_values(synthetic)
+                if not (
+                    synthetic.declared_symbols.get(name) is not None
+                    and synthetic.declared_symbols[name].is_method
+                )
+                and (not allowed_names or name in allowed_names)
             )
-            and (not allowed_names or name in allowed_names)
-        ]
-        for name in allowed_names:
-            symbol = synthetic.declared_symbols.get(name)
-            if symbol is None or symbol.is_method or name in local_fields:
-                continue
-            local_fields.append(name)
+            for name in allowed_names:
+                symbol = synthetic.declared_symbols.get(name)
+                if symbol is None or symbol.is_method or name in local_fields:
+                    continue
+                local_fields.append(name)
     ordered_fields: list[str] = []
     for name in [*inherited, *local_fields]:
         if name not in ordered_fields:
@@ -4051,8 +4051,21 @@ def get_namedtuple_field_value_from_synthetic(
 ) -> Value | None:
     from .annotations import type_from_runtime
 
+    symbol = synthetic_class.declared_symbols.get(field_name)
+    if (
+        synthetic_class.namedtuple_info is not None
+        and symbol is not None
+        and not symbol.is_classvar
+        and not symbol.is_initvar
+        and not symbol.is_method
+    ):
+        return symbol.typ
     field_value = get_synthetic_member_value(synthetic_class, field_name)
-    if field_value is not None:
+    if field_value is not None and not (
+        synthetic_class.namedtuple_info is not None
+        and symbol is not None
+        and not symbol.is_method
+    ):
         return field_value
     runtime_class_value = synthetic_class.runtime_class
     if (

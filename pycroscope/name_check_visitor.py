@@ -3807,8 +3807,10 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 node, base_values, keyword_values
             )
             fallback_runtime_class: type | None = None
-            fallback_is_namedtuple = False
             synthetic_enum_runtime_class: type | None = None
+            is_namedtuple_synthetic = any(
+                _is_namedtuple_like_base_value(base_value) for base_value in base_values
+            )
             if (
                 class_obj is None
                 and synthetic_typeddict is None
@@ -3818,12 +3820,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 fallback_runtime_class = self._make_dataclass_related_fallback_class(
                     node, base_values, decorator_values
                 )
-                if fallback_runtime_class is None:
-                    fallback_runtime_class = (
-                        self._make_namedtuple_related_fallback_class(node, base_values)
-                    )
-                    fallback_is_namedtuple = fallback_runtime_class is not None
-                if fallback_runtime_class is None:
+                if fallback_runtime_class is None and is_namedtuple_synthetic:
+                    self._validate_namedtuple_related_fallback_class(node, base_values)
+                if fallback_runtime_class is None and not is_namedtuple_synthetic:
                     fallback_runtime_class = self._make_enum_related_fallback_class(
                         node, base_values
                     )
@@ -3837,15 +3836,22 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             class_scope_object: type | str | None = class_obj
             dataclass_metadata_class: SyntheticClassObjectValue | None = None
             dataclass_check_class: SyntheticClassObjectValue | None = None
-            is_namedtuple_synthetic = any(
-                _is_namedtuple_like_base_value(base_value) for base_value in base_values
-            )
             namedtuple_base_fields = (
                 _namedtuple_base_fields_from_base_values(base_values)
                 if self.module is None
                 else set()
             )
-            namedtuple_default_fields = frozenset(
+            has_namedtuple_marker_base = any(
+                _is_namedtuple_marker_base(base_value) for base_value in base_values
+            )
+            namedtuple_field_names = tuple(
+                statement.target.id
+                for statement in node.body
+                if isinstance(statement, ast.AnnAssign)
+                and isinstance(statement.target, ast.Name)
+                and statement.simple
+            )
+            namedtuple_default_fields = tuple(
                 statement.target.id
                 for statement in node.body
                 if isinstance(statement, ast.AnnAssign)
@@ -3903,7 +3909,11 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 if is_namedtuple_synthetic:
                     _set_synthetic_namedtuple_info(
                         synthetic_class,
-                        NamedTupleInfo(default_fields=tuple(namedtuple_default_fields)),
+                        NamedTupleInfo(
+                            field_names=namedtuple_field_names,
+                            default_fields=namedtuple_default_fields,
+                            has_namedtuple_marker_base=has_namedtuple_marker_base,
+                        ),
                     )
                 if dataclass_transform_info is not None:
                     _set_synthetic_dataclass_transform_info(
@@ -4382,7 +4392,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                         _set_synthetic_namedtuple_info(
                             synthetic_class,
                             NamedTupleInfo(
-                                default_fields=tuple(namedtuple_default_fields)
+                                field_names=namedtuple_field_names,
+                                default_fields=namedtuple_default_fields,
+                                has_namedtuple_marker_base=has_namedtuple_marker_base,
                             ),
                         )
                     else:
@@ -4498,16 +4510,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             and _synthetic_class_is_namedtuple_like(synthetic_class)
         ):
             value_to_store = synthetic_class
-        if (
-            self._is_checking()
-            and fallback_is_namedtuple
-            and isinstance(class_obj, type)
-        ):
-            synthetic_namedtuple = self.checker.get_synthetic_class(class_obj)
-            if synthetic_namedtuple is not None and self.checker.get_type_parameters(
-                class_obj
-            ):
-                value_to_store = synthetic_namedtuple
         if (
             class_obj is None
             and self._is_collecting()
@@ -4727,11 +4729,10 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             return origin is not None and is_typing_name(origin, "Generic")
         return False
 
-    def _make_namedtuple_related_fallback_class(
+    def _validate_namedtuple_related_fallback_class(
         self, node: ast.ClassDef, base_values: Sequence[Value]
-    ) -> type | None:
+    ) -> None:
         has_namedtuple_marker_base = False
-        runtime_bases: list[object] = []
         namedtuple_base_fields: set[str] = set()
         invalid_non_generic_bases: list[ast.expr] = []
         for base_node, base_value in zip(node.bases, base_values):
@@ -4749,22 +4750,16 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 namedtuple_base_fields.update(
                     ordered_namedtuple_fields_from_synthetic(base)
                 )
-            if isinstance(base, KnownValue):
-                runtime_base = base.val
-            else:
-                runtime_base = self._runtime_annotation_from_value(base_value)
-                if runtime_base is typing.Any:
-                    return None
-            if isinstance(runtime_base, type) and is_namedtuple_class(runtime_base):
-                namedtuple_base_fields.update(runtime_base._fields)
+            if isinstance(base, KnownValue) and isinstance(base.val, type):
+                if is_namedtuple_class(base.val):
+                    namedtuple_base_fields.update(base.val._fields)
             if has_namedtuple_marker_base and not self._is_namedtuple_generic_base(
                 base_value
             ):
                 invalid_non_generic_bases.append(base_node)
-            runtime_bases.append(runtime_base)
 
         if not has_namedtuple_marker_base and not namedtuple_base_fields:
-            return None
+            return
 
         if invalid_non_generic_bases:
             for base_node in invalid_non_generic_bases:
@@ -4773,10 +4768,8 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     "NamedTuple classes may only inherit from NamedTuple and Generic",
                     error_code=ErrorCode.invalid_base,
                 )
-            return None
+            return
 
-        annotations: dict[str, object] = {}
-        defaults: dict[str, object] = {}
         saw_default = False
         has_namedtuple_field_error = False
         for statement in node.body:
@@ -4787,26 +4780,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             ):
                 continue
             field_name = statement.target.id
-            annotation_expr = annotation_expr_from_ast(
-                statement.annotation, visitor=self
-            )
-            field_type, _ = annotation_expr.unqualify(
-                {
-                    Qualifier.ClassVar,
-                    Qualifier.Final,
-                    Qualifier.InitVar,
-                    Qualifier.ReadOnly,
-                    Qualifier.Required,
-                    Qualifier.NotRequired,
-                },
-                mutually_exclusive_qualifiers=(
-                    (Qualifier.Required, Qualifier.NotRequired),
-                ),
-            )
-            annotations[field_name] = self._runtime_annotation_from_value(field_type)
-            if statement.value is not None:
-                defaults[field_name] = self._runtime_default_from_expr(statement.value)
-
             if has_namedtuple_marker_base:
                 if field_name.startswith("_"):
                     has_namedtuple_field_error = True
@@ -4830,80 +4803,8 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     f"Field {field_name!r} conflicts with base NamedTuple field",
                     error_code=ErrorCode.incompatible_override,
                 )
-
         if has_namedtuple_marker_base and has_namedtuple_field_error:
-            return None
-
-        module_name = self.module.__name__ if self.module is not None else self.filename
-        qualname = self._get_class_qualname_from_name(node.name)
-
-        if has_namedtuple_marker_base:
-            field_names = tuple(annotations.keys())
-            default_values = tuple(
-                defaults[field_name]
-                for field_name in field_names
-                if field_name in defaults
-            )
-            namedtuple_defaults: tuple[object, ...] | None = (
-                default_values if default_values else None
-            )
-            try:
-                namedtuple_base = collections.namedtuple(
-                    node.name,
-                    field_names,
-                    defaults=namedtuple_defaults,
-                    module=module_name,
-                )
-            except Exception:
-                self.log(
-                    logging.INFO,
-                    "unable to synthesize namedtuple runtime base",
-                    node.name,
-                )
-                return None
-            try:
-                namedtuple_base.__qualname__ = qualname
-                if annotations:
-                    namedtuple_base.__annotations__ = annotations
-            except Exception:
-                pass
-
-            if not runtime_bases:
-                return namedtuple_base
-
-            def exec_namedtuple_body(ns: dict[str, object]) -> None:
-                ns["__module__"] = module_name
-                ns["__qualname__"] = qualname
-                if annotations:
-                    ns["__annotations__"] = annotations
-
-            try:
-                return types.new_class(
-                    node.name,
-                    (namedtuple_base, *tuple(runtime_bases)),
-                    {},
-                    exec_namedtuple_body,
-                )
-            except Exception:
-                self.log(
-                    logging.INFO,
-                    "unable to synthesize generic namedtuple runtime class",
-                    node.name,
-                )
-                return None
-
-        def exec_body(ns: dict[str, object]) -> None:
-            ns["__module__"] = module_name
-            ns["__qualname__"] = qualname
-            if annotations:
-                ns["__annotations__"] = annotations
-            ns.update(defaults)
-
-        try:
-            return types.new_class(node.name, tuple(runtime_bases), {}, exec_body)
-        except Exception:
-            self.log(logging.INFO, "unable to synthesize runtime class", node.name)
-            return None
+            return
 
     def _make_dataclass_related_fallback_class(
         self,

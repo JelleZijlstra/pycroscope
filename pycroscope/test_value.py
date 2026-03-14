@@ -27,14 +27,17 @@ from .value import (
     BoundsMap,
     CallableValue,
     CanAssignError,
+    ClassSymbol,
     GenericValue,
     KnownValue,
     KVPair,
     MultiValuedValue,
+    NamedTupleInfo,
     OverlapMode,
     OverlappingValue,
     SequenceValue,
     SubclassValue,
+    SyntheticClassObjectValue,
     TypedValue,
     TypeVarParam,
     TypeVarValue,
@@ -750,6 +753,33 @@ def test_synthetic_class_object_value_unresolved_nominal_class() -> None:
     assert_can_assign(SubclassValue(TypedValue("mod.X")), unresolved_cls)
     assert_cannot_assign(SubclassValue(TypedValue("mod.Y")), unresolved_cls)
     assert_cannot_assign(unresolved_cls, other_cls)
+
+
+def test_synthetic_namedtuple_members_without_runtime_class() -> None:
+    checker = Checker()
+    point = SyntheticClassObjectValue(
+        "Point",
+        TypedValue("mod.Point"),
+        base_classes=(TypedValue(tuple),),
+        namedtuple_info=NamedTupleInfo(
+            field_names=("x", "label"),
+            default_fields=("label",),
+            has_namedtuple_marker_base=True,
+        ),
+    )
+    point.declared_symbols["x"] = ClassSymbol(
+        TypedValue(int), is_instance_only=True, member_value=TypedValue(int)
+    )
+    point.declared_symbols["label"] = ClassSymbol(
+        TypedValue(str), is_instance_only=True, member_value=TypedValue(str)
+    )
+    checker.register_synthetic_class(point)
+
+    assert value.ordered_namedtuple_fields_from_synthetic(point) == ("x", "label")
+    assert value.namedtuple_members_from_value(TypedValue("mod.Point"), checker) == (
+        (False, TypedValue(int)),
+        (False, TypedValue(str)),
+    )
 
 
 class Capybara(enum.IntEnum):

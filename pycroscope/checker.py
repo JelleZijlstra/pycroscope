@@ -2313,9 +2313,7 @@ class Checker:
 
             if synthetic.namedtuple_info is not None:
                 for name in synthetic.namedtuple_info.default_fields:
-                    collected[name] = get_synthetic_member_value(
-                        synthetic, name
-                    ) or KnownValue(...)
+                    collected[name] = KnownValue(...)
             return collected
 
         has_namedtuple_marker_base = any(
