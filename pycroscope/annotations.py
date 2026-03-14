@@ -152,10 +152,6 @@ from .value import (
     unite_values,
 )
 
-if TYPE_CHECKING:
-    from .name_check_visitor import NameCheckVisitor
-
-
 CONTEXT_MANAGER_TYPES = (typing.ContextManager, contextlib.AbstractContextManager)
 ASYNC_CONTEXT_MANAGER_TYPES = (
     typing.AsyncContextManager,
@@ -368,7 +364,7 @@ class SyntheticEvaluator(type_evaluation.Evaluator):
     def from_visitor(
         cls,
         node: FunctionDefNode,
-        visitor: "NameCheckVisitor",
+        visitor: "pycroscope.name_check_visitor.NameCheckVisitor",
         return_annotation: Value,
     ) -> "SyntheticEvaluator":
         return cls(
@@ -382,7 +378,7 @@ class SyntheticEvaluator(type_evaluation.Evaluator):
 @used  # part of an API
 def type_from_ast(
     ast_node: ast.AST,
-    visitor: Optional["NameCheckVisitor"] = None,
+    visitor: Optional["pycroscope.name_check_visitor.NameCheckVisitor"] = None,
     ctx: Context | None = None,
 ) -> Value:
     """Given an AST node representing an annotation, return a
@@ -405,7 +401,7 @@ def type_from_ast(
 @used  # part of an API
 def annotation_expr_from_ast(
     ast_node: ast.AST,
-    visitor: Optional["NameCheckVisitor"] = None,
+    visitor: Optional["pycroscope.name_check_visitor.NameCheckVisitor"] = None,
     ctx: Context | None = None,
     suppress_errors: bool = False,
 ) -> AnnotationExpr:
@@ -504,7 +500,7 @@ def type_from_runtime(
 def annotation_expr_from_runtime(
     val: object,
     *,
-    visitor: Optional["NameCheckVisitor"] = None,
+    visitor: Optional["pycroscope.name_check_visitor.NameCheckVisitor"] = None,
     node: ast.AST | None = None,
     globals: Mapping[str, object] | None = None,
     ctx: Context | None = None,
@@ -572,7 +568,7 @@ def type_from_value(
 def annotation_expr_from_value(
     value: Value,
     *,
-    visitor: Optional["NameCheckVisitor"] = None,
+    visitor: Optional["pycroscope.name_check_visitor.NameCheckVisitor"] = None,
     node: ast.AST | None = None,
     ctx: Context | None = None,
     suppress_errors: bool = False,
@@ -597,7 +593,7 @@ def value_from_ast(
     ast_node: ast.AST,
     ctx: Context | None = None,
     *,
-    visitor: Optional["NameCheckVisitor"] = None,
+    visitor: Optional["pycroscope.name_check_visitor.NameCheckVisitor"] = None,
     error_on_unrecognized: bool = True,
 ) -> Value:
     if ctx is None:
@@ -997,7 +993,7 @@ def make_type_param(
     tv: TypeVarLike,
     ctx: Context | None = None,
     *,
-    visitor: "NameCheckVisitor | None" = None,
+    visitor: "pycroscope.name_check_visitor.NameCheckVisitor | None" = None,
     node: ast.AST | None = None,
 ) -> TypeParam:
     if ctx is None:

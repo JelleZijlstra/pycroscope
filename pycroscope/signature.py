@@ -15,10 +15,11 @@ import warnings
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, field, replace
 from types import FunctionType, MethodType
-from typing import TYPE_CHECKING, Any, ClassVar, Literal, NamedTuple, TypeVar
+from typing import Any, ClassVar, Literal, NamedTuple, TypeVar
 
 from typing_extensions import Protocol, Self, assert_never
 
+import pycroscope
 from pycroscope import relations
 
 from .analysis_lib import Sentinel
@@ -125,9 +126,6 @@ from .value import (
     unify_bounds_maps,
     unite_values,
 )
-
-if TYPE_CHECKING:
-    from .name_check_visitor import NameCheckVisitor
 
 EMPTY = inspect.Parameter.empty
 UNANNOTATED = AnyValue(AnySource.unannotated)
@@ -270,7 +268,7 @@ BoundArgs = dict[str, tuple[Position, Composite]]
 
 class CheckCallContext(Protocol):
     @property
-    def visitor(self) -> "NameCheckVisitor | None":
+    def visitor(self) -> "pycroscope.name_check_visitor.NameCheckVisitor | None":
         raise NotImplementedError
 
     def on_error(
@@ -292,7 +290,7 @@ class CheckCallContext(Protocol):
 @dataclass
 class _CanAssignBasedContext:
     can_assign_ctx: CanAssignContext
-    visitor: "NameCheckVisitor | None" = None
+    visitor: "pycroscope.name_check_visitor.NameCheckVisitor | None" = None
     errors: list[str] = field(default_factory=list)
 
     def on_error(
@@ -310,7 +308,7 @@ class _CanAssignBasedContext:
 
 @dataclass
 class _VisitorBasedContext:
-    visitor: "NameCheckVisitor"
+    visitor: "pycroscope.name_check_visitor.NameCheckVisitor"
     node: ast.AST | None
 
     @property
@@ -388,7 +386,7 @@ class CallContext:
 
     vars: dict[str, Value]
     """Dictionary of variable names passed to the function."""
-    visitor: "NameCheckVisitor"
+    visitor: "pycroscope.name_check_visitor.NameCheckVisitor"
     """Using the visitor can allow various kinds of advanced logic
     in impl functions."""
     composites: dict[str, Composite]
@@ -511,29 +509,6 @@ class SigParameter:
     """The default for the parameter, or None if there is no default."""
     annotation: Value = AnyValue(AnySource.unannotated)
     """Type annotation for the parameter."""
-
-    # For compatibility
-    empty: ClassVar[Literal[EMPTY]] = EMPTY
-    POSITIONAL_ONLY: ClassVar[Literal[ParameterKind.POSITIONAL_ONLY]] = (
-        ParameterKind.POSITIONAL_ONLY
-    )
-    POSITIONAL_OR_KEYWORD: ClassVar[Literal[ParameterKind.POSITIONAL_OR_KEYWORD]] = (
-        ParameterKind.POSITIONAL_OR_KEYWORD
-    )
-    VAR_POSITIONAL: ClassVar[Literal[ParameterKind.VAR_POSITIONAL]] = (
-        ParameterKind.VAR_POSITIONAL
-    )
-    KEYWORD_ONLY: ClassVar[Literal[ParameterKind.KEYWORD_ONLY]] = (
-        ParameterKind.KEYWORD_ONLY
-    )
-    VAR_KEYWORD: ClassVar[Literal[ParameterKind.VAR_KEYWORD]] = (
-        ParameterKind.VAR_KEYWORD
-    )
-
-    def __post_init__(self) -> None:
-        # backward compatibility
-        if self.default is EMPTY:  # static analysis: ignore[unsafe_comparison]
-            object.__setattr__(self, "default", None)
 
     def substitute_typevars(self, typevars: TypeVarMap) -> "SigParameter":
         return SigParameter(
@@ -1447,7 +1422,7 @@ class Signature:
     def check_call(
         self,
         args: Iterable[Argument],
-        visitor: "NameCheckVisitor",
+        visitor: "pycroscope.name_check_visitor.NameCheckVisitor",
         node: ast.AST | None,
     ) -> Value:
         """Type check a call to this Signature with the given arguments.
@@ -2676,7 +2651,7 @@ class OverloadedSignature:
     def check_call(
         self,
         args: Iterable[Argument],
-        visitor: "NameCheckVisitor",
+        visitor: "pycroscope.name_check_visitor.NameCheckVisitor",
         node: ast.AST | None,
     ) -> Value:
         """Check a call to an overloaded function.
@@ -2853,7 +2828,7 @@ class OverloadedSignature:
         union_rets: Sequence[CallReturn],
         clean_ret: CallReturn | None = None,
         *,
-        visitor: "NameCheckVisitor",
+        visitor: "pycroscope.name_check_visitor.NameCheckVisitor",
         node: ast.AST | None,
     ) -> Value:
         if any_rets or union_and_any_rets:
@@ -3032,7 +3007,7 @@ class BoundMethodSignature:
     def check_call(
         self,
         args: Iterable[Argument],
-        visitor: "NameCheckVisitor",
+        visitor: "pycroscope.name_check_visitor.NameCheckVisitor",
         node: ast.AST | None,
     ) -> Value:
         self_composite = self.self_composite

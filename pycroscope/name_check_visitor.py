@@ -1208,7 +1208,7 @@ class ClassAttributeChecker:
             self.attributes_read[serialized].append((attr_name, node, visitor.filename))
 
     def record_attribute_set(
-        self, typ: type, attr_name: str, node: ast.AST, value: Value
+        self, typ: type | str, attr_name: str, node: ast.AST | None, value: Value
     ) -> None:
         """Records that attribute attr_name was set on type typ."""
         serialized = self.serialize_type(typ)
@@ -1238,7 +1238,7 @@ class ClassAttributeChecker:
         else:
             scope[attr_name] = unite_values(scope[attr_name], value)
 
-    def record_type_has_dynamic_attrs(self, typ: type) -> None:
+    def record_type_has_dynamic_attrs(self, typ: type | str) -> None:
         serialized = self.serialize_type(typ)
         if serialized is not None:
             self.types_with_dynamic_attrs.add(serialized)
@@ -1261,7 +1261,7 @@ class ClassAttributeChecker:
             return
         self.protocol_implementations[serialized_protocol].add(serialized_implementer)
 
-    def serialize_type(self, typ: type) -> object:
+    def serialize_type(self, typ: type | str) -> object:
         """Serialize a type so it is pickleable.
 
         We do this to make it possible to pass ClassAttributeChecker objects around
@@ -10131,16 +10131,17 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     name, node, ReferencingValue(defining_scope, name)
                 )
 
-    def check_deprecation(self, node: ast.AST, value: Value) -> bool:
+    def check_deprecation(self, node: ast.AST | None, value: Value) -> bool:
         if isinstance(value, AnnotatedValue):
             if value.has_metadata_of_type(SkipDeprecatedExtension):
                 return False
             for metadata in value.get_metadata_of_type(DeprecatedExtension):
-                self._show_error_if_checking(
-                    node,
-                    f"{value} is deprecated: {metadata.deprecation_message}",
-                    error_code=ErrorCode.deprecated,
-                )
+                if node is not None:
+                    self._show_error_if_checking(
+                        node,
+                        f"{value} is deprecated: {metadata.deprecation_message}",
+                        error_code=ErrorCode.deprecated,
+                    )
                 return True
             return self.check_deprecation(node, value.value)
         if isinstance(value, InputSigValue):
@@ -14309,7 +14310,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             GenericValue(synthetic_typ, specialized_members),
         )
 
-    def _get_dunder(self, node: ast.AST, callee_val: Value, method_name: str) -> Value:
+    def _get_dunder(
+        self, node: ast.AST | None, callee_val: Value, method_name: str
+    ) -> Value:
         synthetic_lookup_val = callee_val
         if isinstance(callee_val, AnnotatedValue):
             is_dunder = method_name.startswith("__") and method_name.endswith("__")
@@ -14427,7 +14430,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
 
     def _check_dunder_call(
         self,
-        node: ast.AST,
+        node: ast.AST | None,
         callee_composite: Composite,
         method_name: str,
         args: Iterable[Composite],
@@ -14461,7 +14464,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
 
     def _check_dunder_call_no_mvv(
         self,
-        node: ast.AST,
+        node: ast.AST | None,
         callee_composite: Composite,
         method_name: str,
         args: Iterable[Composite],
@@ -15336,7 +15339,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         composite = self.composite_from_node(node)
         return composite.varname
 
-    def varname_for_self_constraint(self, node: ast.AST) -> VarnameWithOrigin | None:
+    def varname_for_self_constraint(
+        self, node: ast.AST | None
+    ) -> VarnameWithOrigin | None:
         """Helper for constraints on self from method calls.
 
         Given an ``ast.Call`` node representing a method call, return the variable name
@@ -16350,12 +16355,12 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         for attr_name in _class_body_attribute_names(node):
             self.attribute_checker.record_class_body_attribute(cls, attr_name)
 
-    def _record_type_has_dynamic_attrs(self, typ: type) -> None:
+    def _record_type_has_dynamic_attrs(self, typ: type | str) -> None:
         if self.attribute_checker is not None:
             self.attribute_checker.record_type_has_dynamic_attrs(typ)
 
     def _record_type_attr_set(
-        self, typ: type, attr_name: str, node: ast.AST, value: Value
+        self, typ: type | str, attr_name: str, node: ast.AST | None, value: Value
     ) -> None:
         if self.attribute_checker is not None:
             self.attribute_checker.record_attribute_set(typ, attr_name, node, value)
