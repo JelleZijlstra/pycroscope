@@ -16390,7 +16390,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         return set()
 
     def _record_type_attr_set_for_value(
-        self, root_value: Value, attr_name: str, node: ast.AST, value: Value
+        self, root_value: Value, attr_name: str, node: ast.AST | None, value: Value
     ) -> None:
         for typ in self._attribute_write_types_for_value(root_value):
             self._record_type_attr_set(typ, attr_name, node, value)
