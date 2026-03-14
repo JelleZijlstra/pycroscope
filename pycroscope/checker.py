@@ -2136,6 +2136,28 @@ class Checker:
         except InvalidSignature:
             return Signature.make([ELLIPSIS_PARAM], instance_type)
 
+    def get_synthetic_dataclass_init_value(
+        self, value: SyntheticClassObjectValue
+    ) -> Value | None:
+        if not _synthetic_dataclass_init_enabled(value):
+            return None
+        params = self._get_synthetic_dataclass_field_parameters(value)
+        try:
+            signature = Signature.make(
+                [
+                    SigParameter(
+                        "self",
+                        ParameterKind.POSITIONAL_OR_KEYWORD,
+                        annotation=AnyValue(AnySource.inference),
+                    ),
+                    *params,
+                ],
+                KnownValue(None),
+            )
+        except InvalidSignature:
+            return AnyValue(AnySource.inference)
+        return CallableValue(signature)
+
     def _get_synthetic_dataclass_field_parameters(
         self,
         value: SyntheticClassObjectValue,

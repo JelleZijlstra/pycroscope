@@ -45,7 +45,6 @@ from .safe import (
 )
 from .signature import (
     BoundMethodSignature,
-    InvalidSignature,
     MaybeSignature,
     OverloadedSignature,
     ParameterKind,
@@ -676,19 +675,7 @@ def _is_synthetic_method_attribute(
 ) -> bool:
     selected_name = _select_synthetic_attribute_name(self_value, attr_name)
     symbol = self_value.declared_symbols.get(selected_name)
-    if symbol is not None and symbol.is_method:
-        return True
-    return (
-        self_value.is_dataclass
-        and selected_name == "__init__"
-        and _synthetic_dataclass_init_enabled(self_value)
-    )
-
-
-def _synthetic_dataclass_init_enabled(self_value: SyntheticClassObjectValue) -> bool:
-    if self_value.dataclass_info is None:
-        return True
-    return self_value.dataclass_info.init
+    return symbol is not None and symbol.is_method
 
 
 def _synthetic_dataclass_match_args_enabled(
@@ -815,28 +802,6 @@ def _get_synthetic_dataclass_init_parameters(
         if parameter.kind is ParameterKind.KEYWORD_ONLY
     ]
     return [*positional_params, *kw_only_params]
-
-
-def _synthetic_dataclass_init_callable_value(
-    synthetic_class: SyntheticClassObjectValue, ctx: AttrContext, *, on_class: bool
-) -> Value:
-    parameters = _get_synthetic_dataclass_init_parameters(
-        synthetic_class, ctx, include_inherited=True, seen=None
-    )
-    if on_class:
-        parameters = [
-            SigParameter(
-                "self",
-                ParameterKind.POSITIONAL_OR_KEYWORD,
-                annotation=AnyValue(AnySource.inference),
-            ),
-            *parameters,
-        ]
-    try:
-        signature = Signature.make(parameters, KnownValue(None))
-    except InvalidSignature:
-        return AnyValue(AnySource.inference)
-    return CallableValue(signature)
 
 
 def _synthetic_dataclass_parameter_annotation_for_field(
@@ -1036,12 +1001,6 @@ def _get_synthetic_dataclass_attribute(
 ) -> Value:
     if not synthetic_class.is_dataclass:
         return UNINITIALIZED_VALUE
-    if ctx.attr == "__init__":
-        if not _synthetic_dataclass_init_enabled(synthetic_class):
-            return UNINITIALIZED_VALUE
-        return _synthetic_dataclass_init_callable_value(
-            synthetic_class, ctx, on_class=on_class
-        )
     if ctx.attr == "__match_args__":
         if not _synthetic_dataclass_match_args_enabled(synthetic_class):
             return UNINITIALIZED_VALUE

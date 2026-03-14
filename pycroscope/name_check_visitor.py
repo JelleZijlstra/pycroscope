@@ -687,37 +687,6 @@ class _AttrContext(CheckerAttrContext):
     def should_ignore_none_attributes(self) -> bool:
         return self.ignore_none
 
-    def _synthetic_instance_attr_is_method(
-        self,
-        synthetic_class: SyntheticClassObjectValue,
-        attr_name: str,
-        *,
-        seen: set[int],
-    ) -> bool:
-        synthetic_id = id(synthetic_class)
-        if synthetic_id in seen:
-            return False
-        seen.add(synthetic_id)
-        symbol = synthetic_class.declared_symbols.get(attr_name)
-        if symbol is not None and symbol.is_method:
-            return True
-        for base in synthetic_class.base_classes:
-            base = replace_fallback(base)
-            synthetic_base: SyntheticClassObjectValue | None = None
-            if isinstance(base, SyntheticClassObjectValue):
-                synthetic_base = base
-            elif isinstance(base, GenericValue) and isinstance(base.typ, (type, str)):
-                synthetic_base = self.checker.get_synthetic_class(base.typ)
-            elif isinstance(base, TypedValue) and isinstance(base.typ, (type, str)):
-                synthetic_base = self.checker.get_synthetic_class(base.typ)
-            elif isinstance(base, KnownValue) and isinstance(base.val, type):
-                synthetic_base = self.checker.get_synthetic_class(base.val)
-            if synthetic_base is not None and self._synthetic_instance_attr_is_method(
-                synthetic_base, attr_name, seen=seen
-            ):
-                return True
-        return False
-
     def bind_synthetic_instance_attribute(self, attr_name: str, value: Value) -> Value:
         # Treat synthetic instance methods like bound methods in both expression
         # and relation contexts. Callable fields that aren't methods should
@@ -743,15 +712,12 @@ class _AttrContext(CheckerAttrContext):
         if synthetic_typ is None:
             return super().bind_synthetic_instance_attribute(attr_name, value)
         synthetic_class = self.checker.get_synthetic_class(synthetic_typ)
-        is_dunder = attr_name.startswith("__") and attr_name.endswith("__")
-        if is_dunder and attr_name != "__init__":
-            return super().bind_synthetic_instance_attribute(attr_name, value)
-        should_bind = (
-            synthetic_class is not None
-            and self._synthetic_instance_attr_is_method(
-                synthetic_class, attr_name, seen=set()
-            )
+        symbol = (
+            lookup_declared_symbol(synthetic_typ, attr_name, self.visitor)
+            if synthetic_class is not None
+            else None
         )
+        should_bind = symbol is not None and symbol.is_method
         if not should_bind:
             return super().bind_synthetic_instance_attribute(attr_name, value)
         if synthetic_class is not None:
@@ -4428,6 +4394,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     self._apply_dataclass_slots_semantics(
                         synthetic_class, dataclass_semantics
                     )
+                    self._apply_dataclass_init_semantics(
+                        synthetic_class, dataclass_semantics
+                    )
                     self._apply_dataclass_hash_semantics(
                         synthetic_class, dataclass_semantics
                     )
@@ -4486,6 +4455,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                             ),
                         )
                 self._apply_dataclass_slots_semantics(
+                    dataclass_metadata_class, dataclass_semantics
+                )
+                self._apply_dataclass_init_semantics(
                     dataclass_metadata_class, dataclass_semantics
                 )
                 self._apply_dataclass_hash_semantics(
@@ -5610,6 +5582,24 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     synthesized_hash, is_method=True, member_value=synthesized_hash
                 ),
             )
+
+    def _apply_dataclass_init_semantics(
+        self,
+        synthetic_class: SyntheticClassObjectValue,
+        semantics: DataclassInfo | None,
+    ) -> None:
+        if semantics is None:
+            return
+        if get_synthetic_member_value(synthetic_class, "__init__") is not None:
+            return
+        init_value = self.checker.get_synthetic_dataclass_init_value(synthetic_class)
+        if init_value is None:
+            return
+        self._merge_synthetic_declared_symbol(
+            synthetic_class,
+            "__init__",
+            ClassSymbol(init_value, is_method=True, member_value=init_value),
+        )
 
     def _check_dataclass_slots_definition(
         self, node: ast.ClassDef, semantics: DataclassInfo
