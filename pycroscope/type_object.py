@@ -166,7 +166,17 @@ class TypeObject:
             return id(ctx)
         if isinstance(self.typ, (type, str)):
             synthetic = _get_synthetic_class_for_key(self.typ, ctx)
-            return (id(ctx), id(synthetic) if synthetic is not None else None)
+            synthetic_key = None
+            if synthetic is not None:
+                synthetic_key = tuple(
+                    (name, id(symbol))
+                    for name, symbol in synthetic.declared_symbols.items()
+                )
+            return (
+                id(ctx),
+                id(synthetic) if synthetic is not None else None,
+                synthetic_key,
+            )
         return id(ctx)
 
     def _build_declared_symbols(self, ctx: CanAssignContext) -> dict[str, ClassSymbol]:
