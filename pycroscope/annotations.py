@@ -57,6 +57,7 @@ from typing_extensions import (
     runtime_checkable,
 )
 
+import pycroscope
 from pycroscope.annotated_types import get_annotated_types_extension
 from pycroscope.input_sig import FullSignature, InputSigValue
 from pycroscope.relations import HashableProtoValue, Relation, has_relation
@@ -326,7 +327,6 @@ class Context:
 @dataclass
 class RuntimeEvaluator(type_evaluation.Evaluator, Context):
     globals: Mapping[str, object] = field(repr=False)
-    func: typing.Callable[..., Any]
 
     def evaluate_type(self, node: ast.AST) -> Value:
         return type_from_ast(node, ctx=self)
@@ -341,16 +341,7 @@ class RuntimeEvaluator(type_evaluation.Evaluator, Context):
 
 @dataclass
 class SyntheticEvaluator(type_evaluation.Evaluator):
-    error_ctx: ErrorContext
     annotations_context: Context
-
-    def show_error(
-        self,
-        message: str,
-        error_code: Error = ErrorCode.invalid_annotation,
-        node: ast.AST | None = None,
-    ) -> None:
-        self.error_ctx.show_error(node or self.node, message, error_code=error_code)
 
     def evaluate_type(self, node: ast.AST) -> Value:
         return type_from_ast(node, ctx=self.annotations_context)
@@ -360,21 +351,16 @@ class SyntheticEvaluator(type_evaluation.Evaluator):
             node, ctx=self.annotations_context, error_on_unrecognized=False
         )
 
-    def get_name(self, node: ast.Name) -> Value:
-        """Return the :class:`pycroscope.value.Value` corresponding to a name."""
-        return self.annotations_context.get_name(node)
-
     @classmethod
     def from_visitor(
         cls,
         node: FunctionDefNode,
-        visitor: "NameCheckVisitor",
+        visitor: "pycroscope.name_check_visitor.NameCheckVisitor",
         return_annotation: Value,
     ) -> "SyntheticEvaluator":
         return cls(
             node,
             return_annotation,
-            visitor,
             _DefaultContext(visitor, node, use_name_node_for_error=True),
         )
 
@@ -382,7 +368,7 @@ class SyntheticEvaluator(type_evaluation.Evaluator):
 @used  # part of an API
 def type_from_ast(
     ast_node: ast.AST,
-    visitor: Optional["NameCheckVisitor"] = None,
+    visitor: Optional["pycroscope.name_check_visitor.NameCheckVisitor"] = None,
     ctx: Context | None = None,
 ) -> Value:
     """Given an AST node representing an annotation, return a
@@ -405,7 +391,7 @@ def type_from_ast(
 @used  # part of an API
 def annotation_expr_from_ast(
     ast_node: ast.AST,
-    visitor: Optional["NameCheckVisitor"] = None,
+    visitor: Optional["pycroscope.name_check_visitor.NameCheckVisitor"] = None,
     ctx: Context | None = None,
     suppress_errors: bool = False,
 ) -> AnnotationExpr:
@@ -504,7 +490,7 @@ def type_from_runtime(
 def annotation_expr_from_runtime(
     val: object,
     *,
-    visitor: Optional["NameCheckVisitor"] = None,
+    visitor: Optional["pycroscope.name_check_visitor.NameCheckVisitor"] = None,
     node: ast.AST | None = None,
     globals: Mapping[str, object] | None = None,
     ctx: Context | None = None,
@@ -572,7 +558,7 @@ def type_from_value(
 def annotation_expr_from_value(
     value: Value,
     *,
-    visitor: Optional["NameCheckVisitor"] = None,
+    visitor: Optional["pycroscope.name_check_visitor.NameCheckVisitor"] = None,
     node: ast.AST | None = None,
     ctx: Context | None = None,
     suppress_errors: bool = False,
@@ -597,7 +583,7 @@ def value_from_ast(
     ast_node: ast.AST,
     ctx: Context | None = None,
     *,
-    visitor: Optional["NameCheckVisitor"] = None,
+    visitor: Optional["pycroscope.name_check_visitor.NameCheckVisitor"] = None,
     error_on_unrecognized: bool = True,
 ) -> Value:
     if ctx is None:
@@ -997,7 +983,7 @@ def make_type_param(
     tv: TypeVarLike,
     ctx: Context | None = None,
     *,
-    visitor: "NameCheckVisitor | None" = None,
+    visitor: "pycroscope.name_check_visitor.NameCheckVisitor | None" = None,
     node: ast.AST | None = None,
 ) -> TypeParam:
     if ctx is None:
@@ -2179,7 +2165,7 @@ def _type_from_subscripted_value(
                 error_code=ErrorCode.invalid_literal,
             )
             return AnyValue(AnySource.error)
-        known_members = members
+        known_members = [elt for elt in members if isinstance(elt, KnownValue)]
         invalid_members = [
             elt for elt in known_members if not _is_valid_pep586_literal_value(elt.val)
         ]

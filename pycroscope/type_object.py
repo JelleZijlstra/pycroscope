@@ -7,7 +7,7 @@ An object that represents a type.
 import collections.abc
 import inspect
 import sys
-from collections.abc import Callable, Container, Mapping, Sequence
+from collections.abc import Container, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from unittest import mock
 
@@ -583,9 +583,6 @@ class TypeObject:
         if not isinstance(self.typ, type):
             return False
         return self.typ in types
-
-    def can_be_unbound_method(self) -> bool:
-        return self.is_exactly({Callable, collections.abc.Callable, object})
 
     def is_metatype_of(self, other: "TypeObject") -> bool:
         if isinstance(self.typ, type) and isinstance(other.typ, type):

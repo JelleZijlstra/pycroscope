@@ -800,9 +800,6 @@ class BaseNodeVisitor(ast.NodeVisitor):
             raise VisitorError(message, error_code)
         return error
 
-    def _get_attribute_path(self, node: ast.AST) -> list[str] | None:
-        return analysis_lib.get_attribute_path(node)
-
     @classmethod
     def _run(
         cls, profile: bool = False, num_iterations: int = 1, **kwargs: Any

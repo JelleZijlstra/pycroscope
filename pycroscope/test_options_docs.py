@@ -10,6 +10,7 @@ def test_render_config_options_markdown() -> None:
     )
     lines = rendered.splitlines()
     assert any(line.startswith("- `enforce_no_unused`") for line in lines)
+    assert any(line.startswith("- `enforce_no_unused_attributes`") for line in lines)
     assert not any(line.startswith("- `add_import`") for line in lines)
     assert not any(line.startswith("- `paths`") for line in lines)
     assert not any(line.startswith("- `import_paths`") for line in lines)

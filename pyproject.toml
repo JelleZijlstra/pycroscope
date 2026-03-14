@@ -83,10 +83,48 @@ exclude = '''
 paths = ["pycroscope"]
 import_paths = ["."]
 enforce_no_unused = true
+enforce_no_unused_attributes = true
 ignore_unused = ["pycroscope.relations._ignore_unused_sizeof_pyobject"]
 ignore_unused_attribute_predicates = [
   "pycroscope.name_check_visitor._ignore_unused_ast_visit_methods",
   "pycroscope.name_check_visitor._ignore_unused_test_helper_attributes",
+]
+ignored_unused_attribute_paths = [
+  "pycroscope.format_strings.ReplacementField.conversion",
+  "pycroscope.format_strings.ReplacementField.index_attribute",
+  "pycroscope.analysis_lib._FakeLoader.get_source",
+  "pycroscope.analysis_lib.Sentinel.name",
+  "pycroscope.format_strings.PercentFormatString.is_bytes",
+  "pycroscope.value.CustomMapping.keys",
+  "pycroscope.value.OrBound.bounds",
+  "pycroscope.node_visitor._PatchWithDescription.render_range",
+  "pycroscope.node_visitor._Query.generate_patches",
+  "pycroscope.find_unused.UnusedObject.value",
+  "pycroscope.node_visitor.BaseNodeVisitor.had_failure",
+  "pycroscope.node_visitor.Replacement.error_str",
+  "pycroscope.stacked_scopes._LookupContext.node",
+  # Called in a lambda
+  "pycroscope.options.ConfigOption.sort_key",
+  # Called through an Any
+  "pycroscope.checker.Checker.perform_final_checks",
+  # Used dynamically, not convinced this one is not used
+  "pycroscope.name_check_visitor.NameCheckVisitor.get_synthetic_class",
+  "pycroscope.arg_spec.AnnotationsContext.arg_spec_cache",
+  "pycroscope.checker.Checker.resolve_name",
+  "pycroscope.signature.CallContext.sig",
+  "pycroscope.checker.Checker.resolve_name",
+  "pycroscope.value.CanAssignContext.resolve_name",
+  "pycroscope.value.DataclassFieldInfo.substitute_typevars",
+  "pycroscope.value.DataclassFieldInfo.walk_values",
+  "pycroscope.value.PropertyInfo.substitute_typevars",
+  "pycroscope.value.PropertyInfo.walk_values",
+  "pycroscope.value.TypeVarParam.get_fallback_value",
+  "pycroscope.value.TypeVarParam.substitute_typevars",
+  "pycroscope.value.TypeVarParam.walk_values",
+  # Only used on Python 3.12+ code paths.
+  "pycroscope.name_check_visitor.NameCheckVisitor._check_pep695_type_parameter_base_compatibility",
+  "pycroscope.name_check_visitor.NameCheckVisitor._check_typevar_default_constraints",
+  "pycroscope.stacked_scopes.ScopeType.annotation_scope",
 ]
 
 possibly_undefined_name = true

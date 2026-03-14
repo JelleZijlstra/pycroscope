@@ -15,10 +15,11 @@ import warnings
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, field, replace
 from types import FunctionType, MethodType
-from typing import TYPE_CHECKING, Any, ClassVar, Literal, NamedTuple, TypeVar
+from typing import Any, ClassVar, Literal, NamedTuple, TypeVar
 
 from typing_extensions import Protocol, Self, assert_never
 
+import pycroscope
 from pycroscope import relations
 
 from .analysis_lib import Sentinel
@@ -126,10 +127,6 @@ from .value import (
     unite_values,
 )
 
-if TYPE_CHECKING:
-    from .name_check_visitor import NameCheckVisitor
-
-EMPTY = inspect.Parameter.empty
 UNANNOTATED = AnyValue(AnySource.unannotated)
 ELLIPSIS = Sentinel("ellipsis")
 ELLIPSIS_COMPOSITE = Composite(AnyValue(AnySource.ellipsis_callable))
@@ -270,7 +267,7 @@ BoundArgs = dict[str, tuple[Position, Composite]]
 
 class CheckCallContext(Protocol):
     @property
-    def visitor(self) -> "NameCheckVisitor | None":
+    def visitor(self) -> "pycroscope.name_check_visitor.NameCheckVisitor | None":
         raise NotImplementedError
 
     def on_error(
@@ -292,7 +289,7 @@ class CheckCallContext(Protocol):
 @dataclass
 class _CanAssignBasedContext:
     can_assign_ctx: CanAssignContext
-    visitor: "NameCheckVisitor | None" = None
+    visitor: "pycroscope.name_check_visitor.NameCheckVisitor | None" = None
     errors: list[str] = field(default_factory=list)
 
     def on_error(
@@ -310,7 +307,7 @@ class _CanAssignBasedContext:
 
 @dataclass
 class _VisitorBasedContext:
-    visitor: "NameCheckVisitor"
+    visitor: "pycroscope.name_check_visitor.NameCheckVisitor"
     node: ast.AST | None
 
     @property
@@ -388,7 +385,7 @@ class CallContext:
 
     vars: dict[str, Value]
     """Dictionary of variable names passed to the function."""
-    visitor: "NameCheckVisitor"
+    visitor: "pycroscope.name_check_visitor.NameCheckVisitor"
     """Using the visitor can allow various kinds of advanced logic
     in impl functions."""
     composites: dict[str, Composite]
@@ -512,29 +509,6 @@ class SigParameter:
     annotation: Value = AnyValue(AnySource.unannotated)
     """Type annotation for the parameter."""
 
-    # For compatibility
-    empty: ClassVar[Literal[EMPTY]] = EMPTY
-    POSITIONAL_ONLY: ClassVar[Literal[ParameterKind.POSITIONAL_ONLY]] = (
-        ParameterKind.POSITIONAL_ONLY
-    )
-    POSITIONAL_OR_KEYWORD: ClassVar[Literal[ParameterKind.POSITIONAL_OR_KEYWORD]] = (
-        ParameterKind.POSITIONAL_OR_KEYWORD
-    )
-    VAR_POSITIONAL: ClassVar[Literal[ParameterKind.VAR_POSITIONAL]] = (
-        ParameterKind.VAR_POSITIONAL
-    )
-    KEYWORD_ONLY: ClassVar[Literal[ParameterKind.KEYWORD_ONLY]] = (
-        ParameterKind.KEYWORD_ONLY
-    )
-    VAR_KEYWORD: ClassVar[Literal[ParameterKind.VAR_KEYWORD]] = (
-        ParameterKind.VAR_KEYWORD
-    )
-
-    def __post_init__(self) -> None:
-        # backward compatibility
-        if self.default is EMPTY:  # static analysis: ignore[unsafe_comparison]
-            object.__setattr__(self, "default", None)
-
     def substitute_typevars(self, typevars: TypeVarMap) -> "SigParameter":
         return SigParameter(
             name=self.name,
@@ -575,31 +549,6 @@ class SigParameter:
             formatted = "**" + formatted
 
         return formatted
-
-    def to_argument(self) -> Argument:
-        val = Composite(self.annotation)
-        if self.kind is ParameterKind.ELLIPSIS:
-            return val, ELLIPSIS
-        elif self.kind is ParameterKind.PARAM_SPEC:
-            assert isinstance(self.annotation, InputSigValue) and isinstance(
-                self.annotation.input_sig, ParamSpecParam
-            )
-            return val, self.annotation.input_sig
-        elif self.kind is ParameterKind.VAR_KEYWORD:
-            return val, KWARGS
-        elif self.kind is ParameterKind.VAR_POSITIONAL:
-            return val, ARGS
-        elif self.kind is ParameterKind.POSITIONAL_ONLY:
-            return val, PossibleArg(None) if self.default is not None else None
-        elif self.kind is ParameterKind.KEYWORD_ONLY:
-            return (
-                val,
-                PossibleArg(self.name) if self.default is not None else self.name,
-            )
-        elif self.kind is ParameterKind.POSITIONAL_OR_KEYWORD:
-            return val, PosOrKeyword(self.name, self.default is None)
-        else:
-            assert False, self.kind
 
 
 def _has_decomposable_argument(args: Sequence[Argument]) -> bool:
@@ -1447,7 +1396,7 @@ class Signature:
     def check_call(
         self,
         args: Iterable[Argument],
-        visitor: "NameCheckVisitor",
+        visitor: "pycroscope.name_check_visitor.NameCheckVisitor",
         node: ast.AST | None,
     ) -> Value:
         """Type check a call to this Signature with the given arguments.
@@ -1865,32 +1814,6 @@ class Signature:
         whether another ``Signature`` is compatible with this ``Signature``.
         """
         return signatures_have_relation(self, other, Relation.ASSIGNABLE, ctx)
-
-    def can_assign_through_check_call(
-        self, other: "Signature", ctx: CanAssignContext
-    ) -> CanAssign:
-        left = self._expand_typed_dict_kwargs()
-        right = other._expand_typed_dict_kwargs()
-        args = [param.to_argument() for param in left.parameters.values()]
-        check_ctx = _CanAssignBasedContext(ctx)
-        actual_args = preprocess_args(args, check_ctx)
-        if actual_args is None:
-            return CanAssignError(
-                "Invalid callable", [CanAssignError(e) for e in check_ctx.errors]
-            )
-        return_value = right.check_call_preprocessed(actual_args, check_ctx)
-        if check_ctx.errors:
-            return CanAssignError(
-                "Incompatible callable", [CanAssignError(e) for e in check_ctx.errors]
-            )
-        return_tv_map = has_relation(
-            left.return_value, return_value.return_value, Relation.ASSIGNABLE, ctx
-        )
-        if isinstance(return_tv_map, CanAssignError):
-            return CanAssignError(
-                "Return annotation is not compatible", [return_tv_map]
-            )
-        return return_tv_map
 
     def _expand_typed_dict_kwargs(self) -> "Signature":
         params: list[SigParameter] = []
@@ -2702,7 +2625,7 @@ class OverloadedSignature:
     def check_call(
         self,
         args: Iterable[Argument],
-        visitor: "NameCheckVisitor",
+        visitor: "pycroscope.name_check_visitor.NameCheckVisitor",
         node: ast.AST | None,
     ) -> Value:
         """Check a call to an overloaded function.
@@ -2879,7 +2802,7 @@ class OverloadedSignature:
         union_rets: Sequence[CallReturn],
         clean_ret: CallReturn | None = None,
         *,
-        visitor: "NameCheckVisitor",
+        visitor: "pycroscope.name_check_visitor.NameCheckVisitor",
         node: ast.AST | None,
     ) -> Value:
         if any_rets or union_and_any_rets:
@@ -3058,7 +2981,7 @@ class BoundMethodSignature:
     def check_call(
         self,
         args: Iterable[Argument],
-        visitor: "NameCheckVisitor",
+        visitor: "pycroscope.name_check_visitor.NameCheckVisitor",
         node: ast.AST | None,
     ) -> Value:
         self_composite = self.self_composite

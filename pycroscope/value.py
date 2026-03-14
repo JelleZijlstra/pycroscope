@@ -45,7 +45,7 @@ from types import FunctionType, ModuleType
 from typing import Any, Optional, TypeVar, Union
 
 import typing_extensions
-from typing_extensions import Protocol, assert_never
+from typing_extensions import NoDefault, Protocol, assert_never
 
 import pycroscope
 from pycroscope.error_code import Error
@@ -302,10 +302,6 @@ class CanAssignContext(Protocol):
         """Resolve a name for annotation evaluation."""
         return AnyValue(AnySource.inference), node.id
 
-    def get_type_alias_cache(self) -> MutableMapping[object, "TypeAlias"] | None:
-        """Return cache storage for evaluated type aliases, if supported."""
-        return None
-
     def can_assume_compatibility(
         self,
         left: "pycroscope.type_object.TypeObject",
@@ -345,14 +341,6 @@ class CanAssignContext(Protocol):
         self, protocol: type[object], implementing_class: type[object]
     ) -> None:
         """Record that implementing_class was shown assignable to protocol."""
-
-    def set_exclude_any(self) -> AbstractContextManager[None]:
-        """Within this context, `Any` is compatible only with itself."""
-        return contextlib.nullcontext()
-
-    def should_exclude_any(self) -> bool:
-        """Whether Any should be compatible only with itself."""
-        return False
 
     def display_value(self, value: Value) -> str:
         """Provide a pretty, user-readable display of this value."""
@@ -612,6 +600,9 @@ def _type_param_to_string(
     return str(typevar)
 
 
+_NO_DEFAULT = object()
+
+
 @dataclass(frozen=True)
 class TypeVarParam:
     typevar: TypeVarType
@@ -619,6 +610,37 @@ class TypeVarParam:
     default: Value | None = None
     constraints: Sequence[Value] = ()
     variance: Variance = Variance.INVARIANT
+
+    def __post_init__(self) -> None:
+        if self.bound is None:
+            runtime_bound = safe_getattr(self.typevar, "__bound__", None)
+            if runtime_bound is not None:
+                object.__setattr__(
+                    self,
+                    "bound",
+                    _value_from_runtime_type_param_component(runtime_bound),
+                )
+        if not self.constraints:
+            runtime_constraints = safe_getattr(self.typevar, "__constraints__", ())
+            if runtime_constraints:
+                object.__setattr__(
+                    self,
+                    "constraints",
+                    tuple(
+                        _value_from_runtime_type_param_component(constraint)
+                        for constraint in runtime_constraints
+                    ),
+                )
+        if self.default is None:
+            runtime_default = safe_getattr(self.typevar, "__default__", _NO_DEFAULT)
+            if runtime_default is not _NO_DEFAULT and runtime_default is not NoDefault:
+                object.__setattr__(
+                    self,
+                    "default",
+                    _value_from_runtime_type_param_component(runtime_default),
+                )
+        if self.variance is Variance.INVARIANT:
+            object.__setattr__(self, "variance", get_typevar_variance(self.typevar))
 
     def substitute_typevars(self, typevars: TypeVarMap) -> Value:
         if self.typevar in typevars:
@@ -659,9 +681,6 @@ class ParamSpecParam:
         if self.default is not None:
             yield from self.default.walk_values()
 
-    def get_fallback_value(self) -> None:
-        return None
-
     def __str__(self) -> str:
         return str(self.param_spec)
 
@@ -676,23 +695,43 @@ class TypeVarTupleParam:
     def typevar(self) -> TypeVarTupleLike:
         return self.typevar_tuple
 
-    def substitute_typevars(self, typevars: TypeVarMap) -> Value:
-        if self.typevar in typevars:
-            return typevars[self.typevar]
-        return type_param_to_value(self)
-
-    def walk_values(self) -> Iterable[Value]:
-        if self.default is not None:
-            yield from self.default.walk_values()
-
-    def get_fallback_value(self) -> None:
-        return None
-
     def __str__(self) -> str:
         return str(self.typevar)
 
 
 TypeParam = TypeVarParam | ParamSpecParam | TypeVarTupleParam
+
+
+def _value_from_runtime_type_param_component(component: object) -> Value:
+    if isinstance(component, Value):
+        return component
+    if is_instance_of_typing_name(component, "TypeVar"):
+        return TypeVarValue(TypeVarParam(component))
+    if is_instance_of_typing_name(component, "TypeVarTuple"):
+        return TypeVarTupleValue(component)
+    if is_instance_of_typing_name(component, "ParamSpec"):
+        from pycroscope.input_sig import InputSigValue
+
+        return InputSigValue(ParamSpecParam(component))
+    if isinstance(component, tuple):
+        return SequenceValue(
+            tuple,
+            [
+                (False, _value_from_runtime_type_param_component(member))
+                for member in component
+            ],
+        )
+    if isinstance(component, list):
+        return SequenceValue(
+            list,
+            [
+                (False, _value_from_runtime_type_param_component(member))
+                for member in component
+            ],
+        )
+    if isinstance(component, type):
+        return TypedValue(component)
+    return KnownValue(component)
 
 
 def type_param_to_value(type_param: TypeParam) -> Value:
@@ -773,9 +812,6 @@ class TypeAlias:
         if self.type_params is None:
             self.type_params = tuple(self.evaluate_type_params())
         return self.type_params
-
-    def get_fallback_value(self) -> Value:
-        return self.get_value()
 
 
 def _default_value_for_type_param(type_param: "TypeParam") -> Value:
@@ -1284,7 +1320,7 @@ class TypedValue(Value):
         return ctx.make_type_object(self.typ)
 
     def can_assign_thrift_enum(self, other: Value, ctx: CanAssignContext) -> CanAssign:
-        if isinstance(other, AnyValue) and not ctx.should_exclude_any():
+        if isinstance(other, AnyValue):
             ctx.record_any_used()
             return {}
         elif isinstance(other, TypeVarValue):
@@ -1936,9 +1972,6 @@ class TypedDictValue(GenericValue):
     def num_required_keys(self) -> int:
         return sum(1 for entry in self.items.values() if entry.required)
 
-    def all_keys_required(self) -> bool:
-        return all(entry.required for entry in self.items.values())
-
     def can_overlap(
         self, other: Value, ctx: CanAssignContext, mode: OverlapMode
     ) -> CanAssignError | None:
@@ -2200,16 +2233,8 @@ class SyntheticEnumMember:
         self._value_ = value
 
     @property
-    def name(self) -> str:
-        return self.member_name
-
-    @property
     def value(self) -> object:
         return self._value_
-
-    @property
-    def _name_(self) -> str:
-        return self.member_name
 
     def __repr__(self) -> str:
         return f"<{self.enum_name}.{self.member_name}: {self._value_!r}>"
@@ -2466,9 +2491,6 @@ class MultiValuedValue(Value):
     raw_vals: InitVar[Iterable[Value]]
     vals: tuple[Value, ...] = field(init=False)
     """The underlying values of the union."""
-    _known_subvals: tuple[set[tuple[object, type]], Sequence[Value]] | None = field(
-        init=False, repr=False, hash=False, compare=False
-    )
 
     def __post_init__(self, raw_vals: Iterable[Value]) -> None:
         object.__setattr__(
@@ -2476,30 +2498,6 @@ class MultiValuedValue(Value):
             "vals",
             tuple(chain.from_iterable(flatten_values(val) for val in raw_vals)),
         )
-        object.__setattr__(self, "_known_subvals", self._get_known_subvals())
-
-    def _get_known_subvals(
-        self,
-    ) -> tuple[set[tuple[object, type]], Sequence[Value]] | None:
-        # Not worth it for small unions
-        if len(self.vals) < 10:
-            return None
-        # Optimization for comparing Unions containing large unions of literals.
-        try:
-            # Include the type to avoid e.g. 1 and True matching
-            known_values = {
-                (subval.val, type(subval.val))
-                for subval in self.vals
-                if isinstance(subval, KnownValue)
-            }
-        except TypeError:
-            return None  # not hashable
-        else:
-            # Make remaining check not consider the KnownValues again
-            remaining_vals = [
-                subval for subval in self.vals if not isinstance(subval, KnownValue)
-            ]
-            return known_values, remaining_vals
 
     def substitute_typevars(self, typevars: TypeVarMap) -> Value:
         if not self.vals or not typevars:
@@ -2607,18 +2605,10 @@ class Bound:
 
 
 @dataclass(frozen=True)
-class _TypeParamBound(Bound):
-    type_param: TypeParam
-
-    @property
-    def typevar(self) -> TypeVarLike:
-        return self.type_param.typevar
-
-
-@dataclass(frozen=True)
-class LowerBound(_TypeParamBound):
+class LowerBound(Bound):
     """LowerBound(T, V) means V must be assignable to the value of T."""
 
+    type_param: TypeParam
     value: Value
 
     def __str__(self) -> str:
@@ -2626,9 +2616,10 @@ class LowerBound(_TypeParamBound):
 
 
 @dataclass(frozen=True)
-class UpperBound(_TypeParamBound):
+class UpperBound(Bound):
     """UpperBound(T, V) means the value of T must be assignable to V."""
 
+    type_param: TypeParam
     value: Value
 
     def __str__(self) -> str:
@@ -2643,7 +2634,8 @@ class OrBound(Bound):
 
 
 @dataclass(frozen=True)
-class IsOneOf(_TypeParamBound):
+class IsOneOf(Bound):
+    type_param: TypeParam
     constraints: Sequence[Value]
 
 
@@ -2716,18 +2708,6 @@ class TypeVarTupleValue(Value):
     @property
     def typevar(self) -> TypeVarTupleLike:
         return self.typevar_tuple_param.typevar
-
-    @property
-    def default(self) -> Value | None:
-        return self.typevar_tuple_param.default
-
-    @property
-    def bound(self) -> Value | None:
-        return None
-
-    @property
-    def constraints(self) -> Sequence[Value]:
-        return ()
 
     def substitute_typevars(self, typevars: TypeVarMap) -> Value:
         return typevars.get(self.typevar, self)
@@ -3241,9 +3221,6 @@ class PropertyInfo:
 @dataclass(frozen=True)
 class NamedTupleInfo:
     default_fields: tuple[str, ...] = ()
-
-    def substitute_typevars(self, typevars: TypeVarMap) -> "NamedTupleInfo":
-        return self
 
     def walk_values(self) -> Iterable[Value]:
         yield from ()
@@ -4430,13 +4407,6 @@ class ClassSymbol:
     @property
     def is_property(self) -> bool:
         return self.property_info is not None
-
-    @property
-    def property_has_setter(self) -> bool:
-        return (
-            self.property_info is not None
-            and self.property_info.setter_type is not None
-        )
 
 
 def get_synthetic_member_value(

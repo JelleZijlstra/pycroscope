@@ -12,14 +12,13 @@ import itertools
 import sys
 import types
 from collections.abc import Callable, Generator, Iterable, Iterator, Sequence
-from contextlib import AbstractContextManager, contextmanager
+from contextlib import contextmanager
 from dataclasses import InitVar, dataclass, field
 from dataclasses import replace as dataclass_replace
 from typing import TypeVar, cast
 
 from typing_extensions import assert_never
 
-from .analysis_lib import override
 from .annotations import type_from_runtime, type_from_value
 from .arg_spec import ArgSpecCache, GenericBases
 from .attributes import (
@@ -497,7 +496,6 @@ class Checker:
     runtime_class_self_annotation_cache: dict[type, bool] = field(
         default_factory=dict, init=False, repr=False
     )
-    _should_exclude_any: bool = False
 
     def __post_init__(self, raw_options: Options | None) -> None:
         if raw_options is None:
@@ -844,12 +842,6 @@ class Checker:
                     AnyValue(AnySource.inference),
                     member_value=AnyValue(AnySource.inference),
                 )
-            elif existing.member_value is None:
-                synthetic_class.declared_symbols[member] = dataclass_replace(
-                    existing, member_value=AnyValue(AnySource.inference)
-                )
-        for key in self._iter_generic_override_keys(typ):
-            self.type_object_cache.pop(key, None)
 
     def _iter_generic_override_keys(self, typ: type | str) -> Iterator[type | str]:
         yield typ
@@ -962,14 +954,6 @@ class Checker:
     ) -> None:
         """Record that implementing_class was shown assignable to protocol."""
         pass
-
-    def set_exclude_any(self) -> AbstractContextManager[None]:
-        """Within this context, `Any` is compatible only with itself."""
-        return override(self, "_should_exclude_any", True)
-
-    def should_exclude_any(self) -> bool:
-        """Whether Any should be compatible only with itself."""
-        return self._should_exclude_any
 
     def _get_runtime_overloaded_method_signature(
         self, typ: type, attr: str
@@ -2426,73 +2410,6 @@ class Checker:
             )
         return []
 
-    def _iter_synthetic_dataclass_base_field_parameters(
-        self, base: Value, *, seen: set[int]
-    ) -> list[SigParameter]:
-        return [
-            entry.parameter
-            for entry in self._iter_synthetic_dataclass_base_field_entries(
-                base, seen=seen
-            )
-        ]
-
-    def _augment_dataclass_constructor_signature_with_local_fields(
-        self, init_sig: ConcreteSignature, value: SyntheticClassObjectValue
-    ) -> ConcreteSignature:
-        extra_params = self._get_synthetic_dataclass_field_parameters(
-            value, include_inherited=False
-        )
-        if not extra_params:
-            return init_sig
-
-        def _augment(signature: Signature) -> Signature | None:
-            existing = list(signature.parameters.values())
-            existing_names = {param.name for param in existing}
-            extras = [
-                param for param in extra_params if param.name not in existing_names
-            ]
-            if not extras:
-                return signature
-            first_non_positional = next(
-                (
-                    i
-                    for i, param in enumerate(existing)
-                    if param.kind
-                    not in {
-                        ParameterKind.POSITIONAL_ONLY,
-                        ParameterKind.POSITIONAL_OR_KEYWORD,
-                    }
-                ),
-                len(existing),
-            )
-            new_params = [
-                *existing[:first_non_positional],
-                *extras,
-                *existing[first_non_positional:],
-            ]
-            try:
-                return dataclass_replace(
-                    signature, parameters={param.name: param for param in new_params}
-                )
-            except InvalidSignature:
-                return None
-
-        if isinstance(init_sig, OverloadedSignature):
-            augmented = [
-                new_sig
-                for signature in init_sig.signatures
-                if (new_sig := _augment(signature)) is not None
-            ]
-            if not augmented:
-                return init_sig
-            if len(augmented) == 1:
-                return augmented[0]
-            return OverloadedSignature(augmented)
-        augmented_sig = _augment(init_sig)
-        if augmented_sig is None:
-            return init_sig
-        return augmented_sig
-
     def signature_from_value(
         self,
         value: Value,
@@ -3468,9 +3385,6 @@ class CheckerAttrContext(AttrContext):
         self, typ: type | str, generic_args: Sequence[Value]
     ) -> GenericBases:
         return self.checker.get_generic_bases(typ, generic_args)
-
-    def get_type_parameters(self, typ: type | str) -> list[TypeParam]:
-        return self.checker.get_type_parameters(typ)
 
     def get_synthetic_class(self, typ: type | str) -> SyntheticClassObjectValue | None:
         return self.checker.get_synthetic_class(typ)

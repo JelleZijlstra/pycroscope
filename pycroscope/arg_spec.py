@@ -764,10 +764,7 @@ class ArgSpecCache:
             if not isinstance(evaluator_node, ast.FunctionDef):
                 return None
             evaluator = RuntimeEvaluator(
-                evaluator_node,
-                sig.return_value,
-                evaluation_func.__globals__,
-                evaluation_func,
+                evaluator_node, sig.return_value, evaluation_func.__globals__
             )
             sigs.append(replace(sig, evaluator=evaluator))
         if len(sigs) == 1:

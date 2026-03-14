@@ -156,7 +156,12 @@ from .safe import (
     safe_issubclass,
     should_disable_runtime_call_for_namedtuple_class,
 )
-from .shared_options import EnforceNoUnused, ImportPaths, Paths
+from .shared_options import (
+    EnforceNoUnused,
+    EnforceNoUnusedAttributes,
+    ImportPaths,
+    Paths,
+)
 from .signature import (
     ANY_SIGNATURE,
     ARGS,
@@ -1001,6 +1006,17 @@ class IgnoredUnusedAttributes(StringSequenceOption):
     ]
 
 
+class IgnoredUnusedAttributePaths(StringSequenceOption):
+    """Fully-qualified attribute paths to suppress in unused-attribute results.
+
+    Each entry should look like ``package.module.ClassName.attribute``.
+
+    """
+
+    name = "ignored_unused_attribute_paths"
+    default_value = []
+
+
 class IgnoredUnusedClassAttributes(ConcatenatedOption[tuple[type, set[str]]]):
     """List of pairs of (class, set of attribute names). When these attribute names are seen as
     unused on a child or base class of the class, they are not listed."""
@@ -1099,7 +1115,9 @@ def should_check_for_duplicate_values(cls: object, options: Options) -> bool:
 
 
 def _ignore_unused_ast_visit_methods(typ: type, attr_name: str) -> bool:
-    return attr_name.startswith("visit_") and safe_issubclass(typ, ast.NodeVisitor)
+    return (
+        attr_name == "generic_visit" or attr_name.startswith("visit_")
+    ) and safe_issubclass(typ, ast.NodeVisitor)
 
 
 def _ignore_unused_test_helper_attributes(typ: type, attr_name: str) -> bool:
@@ -1203,7 +1221,7 @@ class ClassAttributeChecker:
             self.attributes_read[serialized].append((attr_name, node, visitor.filename))
 
     def record_attribute_set(
-        self, typ: type, attr_name: str, node: ast.AST, value: Value
+        self, typ: type | str, attr_name: str, node: ast.AST | None, value: Value
     ) -> None:
         """Records that attribute attr_name was set on type typ."""
         serialized = self.serialize_type(typ)
@@ -1233,7 +1251,7 @@ class ClassAttributeChecker:
         else:
             scope[attr_name] = unite_values(scope[attr_name], value)
 
-    def record_type_has_dynamic_attrs(self, typ: type) -> None:
+    def record_type_has_dynamic_attrs(self, typ: type | str) -> None:
         serialized = self.serialize_type(typ)
         if serialized is not None:
             self.types_with_dynamic_attrs.add(serialized)
@@ -1256,7 +1274,7 @@ class ClassAttributeChecker:
             return
         self.protocol_implementations[serialized_protocol].add(serialized_implementer)
 
-    def serialize_type(self, typ: type) -> object:
+    def serialize_type(self, typ: type | str) -> object:
         """Serialize a type so it is pickleable.
 
         We do this to make it possible to pass ClassAttributeChecker objects around
@@ -1477,6 +1495,12 @@ class ClassAttributeChecker:
             return True
         if is_typeddict(typ):
             return True
+        if _is_runtime_initvar_attribute(typ, attr_name):
+            return True
+        if _unused_attribute_path(typ, attr_name) in self.options.get_value_for(
+            IgnoredUnusedAttributePaths
+        ):
+            return True
         if attr_name in {
             "__annotations__",
             "__dict__",
@@ -1688,15 +1712,6 @@ class StackedContexts:
                 return node
         return None
 
-    @contextlib.contextmanager
-    def add(self, value: ast.AST) -> Generator[None]:
-        """Context manager to add a context to the stack."""
-        self.contexts.append(value)
-        try:
-            yield
-        finally:
-            self.contexts.pop()
-
 
 @dataclass(frozen=True)
 class _PendingOverload:
@@ -1821,7 +1836,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     _type_alias_unguarded_refs_by_scope: dict[int, dict[str, set[str]]]
     _method_cache: dict[type[ast.AST], Callable[[Any], Value | None]]
     _name_node_to_statement: dict[ast.AST, ast.AST | None] | None
-    _should_exclude_any: bool
     _statement_types: set[type[ast.AST]]
     ann_assign_type: tuple[Value | None, bool] | None
     annotate: bool
@@ -1965,7 +1979,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         )
         self.node_context = StackedContexts()
         self.asynq_checker = AsynqChecker(
-            self.options, self.module, self.show_error, self.log, self.replace_node
+            self.options, self.show_error, self.replace_node
         )
         self.yield_checker = YieldChecker(self)
         self.current_function = None
@@ -1998,7 +2012,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         self._type_alias_unguarded_refs_by_scope = {}
         self._method_cache = {}
         self._statement_types = set()
-        self._should_exclude_any = False
         self.final_class_keys = set()
         self.final_member_names_by_class = {}
         self.final_members_initialized_in_init = {}
@@ -2059,14 +2072,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             self.attribute_checker.record_protocol_implementation(
                 protocol, implementing_class
             )
-
-    def set_exclude_any(self) -> AbstractContextManager[None]:
-        """Within this context, `Any` is compatible only with itself."""
-        return override(self, "_should_exclude_any", True)
-
-    def should_exclude_any(self) -> bool:
-        """Whether Any should be compatible only with itself."""
-        return self._should_exclude_any
 
     def get_generic_bases(
         self, typ: type | str, generic_args: Sequence[Value] = ()
@@ -3624,9 +3629,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 else:
                     return new_mvv, origin
         return value, origin
-
-    def _get_first_import_node(self) -> ast.stmt:
-        return min(self.import_name_to_node.values(), key=lambda node: node.lineno)
 
     def _generic_visit_list(self, lst: Iterable[ast.AST]) -> list[Value]:
         return [self.visit(node) for node in lst]
@@ -5369,16 +5371,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 if isinstance(typed_dict_type, TypedDictValue):
                     return typed_dict_type
         return None
-
-    def _is_dataclass_decorator_target(self, target: ast.expr) -> bool:
-        if isinstance(target, ast.Attribute):
-            return target.attr == "dataclass"
-        if not isinstance(target, ast.Name):
-            return False
-        if target.id == "dataclass":
-            return True
-        value = self.scopes.get(target.id, target, self.state, can_assign_ctx=self)
-        return _is_known_decorator(value, dataclasses.dataclass)
 
     def _get_dataclass_decorator_options(
         self, decorator_values: DecoratorValues
@@ -9742,11 +9734,11 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         if is_collecting and not self.scopes.contains_scope_of_type(
             ScopeType.function_scope
         ):
-            return FunctionResult(parameters=params)
+            return FunctionResult()
 
         if FunctionDecorator.evaluated in function_info.decorator_kinds:
             if self._is_collecting() or isinstance(node, ast.Lambda):
-                return FunctionResult(parameters=params)
+                return FunctionResult()
             with self.scopes.allow_only_module_scope():
                 # The return annotation doesn't actually matter for validation.
                 evaluator = SyntheticEvaluator.from_visitor(
@@ -9770,7 +9762,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                         ),
                     ):
                         self._generic_visit_list(node.body)
-            return FunctionResult(parameters=params)
+            return FunctionResult()
 
         # We pass in the node to add_scope() and visit the body once in collecting
         # mode if in a nested function, so that constraints on nonlocals in the outer
@@ -9816,7 +9808,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     self._generic_visit_list(node.body)
                 scope.get_local(LEAVES_SCOPE, node, self.state, can_assign_ctx=self)
             if is_collecting:
-                return FunctionResult(is_generator=self.is_generator, parameters=params)
+                return FunctionResult(is_generator=self.is_generator)
 
             # otherwise we may end up using results from the last yield (generated during the
             # collect state) to evaluate the first one visited during the check state
@@ -9867,7 +9859,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             assert False, return_set
         # if the return value was never set, the function returns None
         if not return_values:
-            return FunctionResult(KnownNone, params, has_return, self.is_generator)
+            return FunctionResult(
+                KnownNone, has_return=has_return, is_generator=self.is_generator
+            )
         # None is added to return_values if the function raises an error.
         return_values = [val for val in return_values if val is not None]
         # If it only ever raises an error, we don't know what it returns. Strictly
@@ -9878,16 +9872,8 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             ret = AnyValue(AnySource.inference)
         else:
             ret = unite_values(*return_values)
-        if isinstance(node, ast.Lambda):
-            has_return_annotation = False
-        else:
-            has_return_annotation = node.returns is not None
         return FunctionResult(
-            ret,
-            params,
-            has_return=has_return,
-            is_generator=self.is_generator,
-            has_return_annotation=has_return_annotation,
+            ret, has_return=has_return, is_generator=self.is_generator
         )
 
     def _check_function_unused_vars(
@@ -10139,16 +10125,17 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     name, node, ReferencingValue(defining_scope, name)
                 )
 
-    def check_deprecation(self, node: ast.AST, value: Value) -> bool:
+    def check_deprecation(self, node: ast.AST | None, value: Value) -> bool:
         if isinstance(value, AnnotatedValue):
             if value.has_metadata_of_type(SkipDeprecatedExtension):
                 return False
             for metadata in value.get_metadata_of_type(DeprecatedExtension):
-                self._show_error_if_checking(
-                    node,
-                    f"{value} is deprecated: {metadata.deprecation_message}",
-                    error_code=ErrorCode.deprecated,
-                )
+                if node is not None:
+                    self._show_error_if_checking(
+                        node,
+                        f"{value} is deprecated: {metadata.deprecation_message}",
+                        error_code=ErrorCode.deprecated,
+                    )
                 return True
             return self.check_deprecation(node, value.value)
         if isinstance(value, InputSigValue):
@@ -10174,11 +10161,12 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         if not safe_isinstance(deprecated, str):
             # happens with Mock objects
             return False
-        self._show_error_if_checking(
-            node,
-            f"{value} is deprecated: {deprecated}",
-            error_code=ErrorCode.deprecated,
-        )
+        if node is not None:
+            self._show_error_if_checking(
+                node,
+                f"{value} is deprecated: {deprecated}",
+                error_code=ErrorCode.deprecated,
+            )
         return True
 
     # Imports
@@ -12586,67 +12574,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 ):
                     self._check_declared_enum_value_type(enum_value_type, value, node)
 
-    def _make_implicit_runtime_type_alias_assignment_value(
-        self, node: ast.Assign, assigned_value: Value
-    ) -> TypeAliasValue | None:
-        if len(node.targets) != 1 or not isinstance(node.targets[0], ast.Name):
-            return None
-
-        runtime_type_params: tuple[TypeParam, ...] | None = None
-        if isinstance(assigned_value, KnownValue):
-            maybe_runtime_type_params = safe_getattr(
-                assigned_value.val, "__parameters__", ()
-            )
-            if (
-                isinstance(maybe_runtime_type_params, tuple)
-                and maybe_runtime_type_params
-            ):
-                runtime_type_params = tuple(
-                    make_type_param(param, visitor=self, node=node)
-                    for param in maybe_runtime_type_params
-                )
-
-        if runtime_type_params is None and not (
-            isinstance(assigned_value, PartialValue)
-            and assigned_value.operation is PartialValueOperation.SUBSCRIPT
-        ):
-            return None
-
-        alias_expr = annotation_expr_from_value(
-            assigned_value,
-            visitor=self,
-            node=node.value,
-            suppress_errors=self._is_collecting(),
-        )
-        alias_value, _ = alias_expr.maybe_unqualify(set(Qualifier))
-        if alias_value is None:
-            return None
-
-        if runtime_type_params is None:
-            inferred_type_params: list[TypeParam] = []
-            seen_type_params: set[object] = set()
-            for extracted in iter_type_params_in_value(alias_value):
-                identity = extracted.typevar
-                if identity in seen_type_params:
-                    continue
-                seen_type_params.add(identity)
-                inferred_type_params.append(extracted)
-            if inferred_type_params:
-                runtime_type_params = tuple(inferred_type_params)
-            else:
-                return None
-
-        alias_name = node.targets[0].id
-        return TypeAliasValue(
-            alias_name,
-            self.module.__name__ if self.module is not None else "",
-            TypeAlias(
-                lambda alias_value=alias_value: alias_value,
-                lambda runtime_type_params=runtime_type_params: runtime_type_params,
-            ),
-            runtime_allows_value_call=True,
-        )
-
     def _validate_runtime_type_expression(self, node: ast.AST) -> None:
         if self.in_type_alias_definition:
             return
@@ -14378,7 +14305,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             GenericValue(synthetic_typ, specialized_members),
         )
 
-    def _get_dunder(self, node: ast.AST, callee_val: Value, method_name: str) -> Value:
+    def _get_dunder(
+        self, node: ast.AST | None, callee_val: Value, method_name: str
+    ) -> Value:
         synthetic_lookup_val = callee_val
         if isinstance(callee_val, AnnotatedValue):
             is_dunder = method_name.startswith("__") and method_name.endswith("__")
@@ -14496,7 +14425,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
 
     def _check_dunder_call(
         self,
-        node: ast.AST,
+        node: ast.AST | None,
         callee_composite: Composite,
         method_name: str,
         args: Iterable[Composite],
@@ -14530,7 +14459,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
 
     def _check_dunder_call_no_mvv(
         self,
-        node: ast.AST,
+        node: ast.AST | None,
         callee_composite: Composite,
         method_name: str,
         args: Iterable[Composite],
@@ -15405,7 +15334,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         composite = self.composite_from_node(node)
         return composite.varname
 
-    def varname_for_self_constraint(self, node: ast.AST) -> VarnameWithOrigin | None:
+    def varname_for_self_constraint(
+        self, node: ast.AST | None
+    ) -> VarnameWithOrigin | None:
         """Helper for constraints on self from method calls.
 
         Given an ``ast.Call`` node representing a method call, return the variable name
@@ -16419,12 +16350,12 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         for attr_name in _class_body_attribute_names(node):
             self.attribute_checker.record_class_body_attribute(cls, attr_name)
 
-    def _record_type_has_dynamic_attrs(self, typ: type) -> None:
+    def _record_type_has_dynamic_attrs(self, typ: type | str) -> None:
         if self.attribute_checker is not None:
             self.attribute_checker.record_type_has_dynamic_attrs(typ)
 
     def _record_type_attr_set(
-        self, typ: type, attr_name: str, node: ast.AST, value: Value
+        self, typ: type | str, attr_name: str, node: ast.AST | None, value: Value
     ) -> None:
         if self.attribute_checker is not None:
             self.attribute_checker.record_attribute_set(typ, attr_name, node, value)
@@ -16459,7 +16390,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         return set()
 
     def _record_type_attr_set_for_value(
-        self, root_value: Value, attr_name: str, node: ast.AST, value: Value
+        self, root_value: Value, attr_name: str, node: ast.AST | None, value: Value
     ) -> None:
         for typ in self._attribute_write_types_for_value(root_value):
             self._record_type_attr_set(typ, attr_name, node, value)
@@ -16537,21 +16468,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             symbol = synthetic.declared_symbols.get(attr_name)
             if symbol is not None and symbol.is_initvar:
                 return True
-        try:
-            annotations = typ.__annotations__
-        except Exception:
-            return False
-        annotation = annotations.get(attr_name)
-        if annotation is None:
-            return False
-        if annotation is dataclasses.InitVar:
-            return True
-        origin = get_origin(annotation)
-        if origin is dataclasses.InitVar:
-            return True
-        if isinstance(annotation, str):
-            return "InitVar" in annotation
-        return False
+        return _is_runtime_initvar_attribute(typ, attr_name)
 
     # Finding unused objects
 
@@ -16681,10 +16598,14 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         attribute_checker_enabled = checker.options.is_error_code_enabled_anywhere(
             ErrorCode.attribute_is_never_set
         )
+        should_check_unused_attributes = (
+            find_unused_attributes
+            or checker.options.get_value_for(EnforceNoUnusedAttributes)
+        )
         if attribute_checker is None:
             inner_attribute_checker_obj = attribute_checker = ClassAttributeChecker(
-                enabled=attribute_checker_enabled,
-                should_check_unused_attributes=find_unused_attributes,
+                enabled=attribute_checker_enabled or should_check_unused_attributes,
+                should_check_unused_attributes=should_check_unused_attributes,
                 should_serialize=kwargs.get("parallel", False),
                 options=checker.options,
                 ts_finder=checker.ts_finder,
@@ -18191,6 +18112,30 @@ def _has_annotation_for_attr(typ: type, attr: str) -> bool:
     except Exception:
         # __annotations__ doesn't exist or isn't a dict
         return False
+
+
+def _unused_attribute_path(typ: type, attr_name: str) -> str:
+    return f"{typ.__module__}.{typ.__qualname__}.{attr_name}"
+
+
+def _is_runtime_initvar_attribute(typ: type, attr_name: str) -> bool:
+    try:
+        annotations = typ.__annotations__
+    except Exception:
+        return False
+    annotation = annotations.get(attr_name)
+    if annotation is None:
+        return False
+    if annotation is dataclasses.InitVar:
+        return True
+    if isinstance(annotation, dataclasses.InitVar):
+        return True
+    origin = get_origin(annotation)
+    if origin is dataclasses.InitVar:
+        return True
+    if isinstance(annotation, str):
+        return "InitVar" in annotation
+    return False
 
 
 def _is_typing_alias_value(value: object) -> bool:

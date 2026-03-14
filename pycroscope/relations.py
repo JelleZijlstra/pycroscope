@@ -147,14 +147,9 @@ def _relation_key_piece(value: object) -> tuple[str, object]:
 
 
 def _make_relation_cache_key(
-    left: Value, right: Value, relation: Relation, ctx: CanAssignContext
-) -> tuple[tuple[str, object], tuple[str, object], Relation, bool]:
-    return (
-        _relation_key_piece(left),
-        _relation_key_piece(right),
-        relation,
-        ctx.should_exclude_any(),
-    )
+    left: Value, right: Value, relation: Relation
+) -> tuple[tuple[str, object], tuple[str, object], Relation]:
+    return (_relation_key_piece(left), _relation_key_piece(right), relation)
 
 
 def _get_cached_relation_result(
@@ -257,7 +252,7 @@ def has_relation(
     cache = _get_relation_cache(ctx)
     key = None
     if cache is not None:
-        key = _make_relation_cache_key(left, right, relation, ctx)
+        key = _make_relation_cache_key(left, right, relation)
         cached = _get_cached_relation_result(cache, key)
         if cached is not None:
             return cached
