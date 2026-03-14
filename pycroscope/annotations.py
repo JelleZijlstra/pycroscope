@@ -322,7 +322,6 @@ class Context:
 @dataclass
 class RuntimeEvaluator(type_evaluation.Evaluator, Context):
     globals: Mapping[str, object] = field(repr=False)
-    func: typing.Callable[..., Any]
 
     def evaluate_type(self, node: ast.AST) -> Value:
         return type_from_ast(node, ctx=self)
@@ -337,16 +336,7 @@ class RuntimeEvaluator(type_evaluation.Evaluator, Context):
 
 @dataclass
 class SyntheticEvaluator(type_evaluation.Evaluator):
-    error_ctx: ErrorContext
     annotations_context: Context
-
-    def show_error(
-        self,
-        message: str,
-        error_code: Error = ErrorCode.invalid_annotation,
-        node: ast.AST | None = None,
-    ) -> None:
-        self.error_ctx.show_error(node or self.node, message, error_code=error_code)
 
     def evaluate_type(self, node: ast.AST) -> Value:
         return type_from_ast(node, ctx=self.annotations_context)
@@ -355,10 +345,6 @@ class SyntheticEvaluator(type_evaluation.Evaluator):
         return value_from_ast(
             node, ctx=self.annotations_context, error_on_unrecognized=False
         )
-
-    def get_name(self, node: ast.Name) -> Value:
-        """Return the :class:`pycroscope.value.Value` corresponding to a name."""
-        return self.annotations_context.get_name(node)
 
     @classmethod
     def from_visitor(
@@ -370,7 +356,6 @@ class SyntheticEvaluator(type_evaluation.Evaluator):
         return cls(
             node,
             return_annotation,
-            visitor,
             _DefaultContext(visitor, node, use_name_node_for_error=True),
         )
 

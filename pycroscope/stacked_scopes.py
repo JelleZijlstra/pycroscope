@@ -878,9 +878,6 @@ class Scope:
                 self.variables[varname] = unite_values(existing, value)
         return EMPTY_ORIGIN
 
-    def items(self) -> Iterable[tuple[Varname, Value]]:
-        return self.variables.items()
-
     def all_variables(self) -> Iterable[Varname]:
         return self.variables
 
@@ -1562,9 +1559,6 @@ class FunctionScope(Scope):
                         varname.varname, varname.attributes[:i]
                     )
                     self.name_to_composites[composite].add(varname)
-
-    def items(self) -> Iterable[tuple[Varname, Value]]:
-        raise NotImplementedError
 
     def all_variables(self) -> Iterable[Varname]:
         yield from self.name_to_current_definition_nodes

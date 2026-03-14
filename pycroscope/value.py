@@ -778,9 +778,6 @@ class TypeAlias:
             self.type_params = tuple(self.evaluate_type_params())
         return self.type_params
 
-    def get_fallback_value(self) -> Value:
-        return self.get_value()
-
 
 def _default_value_for_type_param(type_param: "TypeParam") -> Value:
     if type_param.default is not None:
@@ -2201,16 +2198,8 @@ class SyntheticEnumMember:
         self._value_ = value
 
     @property
-    def name(self) -> str:
-        return self.member_name
-
-    @property
     def value(self) -> object:
         return self._value_
-
-    @property
-    def _name_(self) -> str:
-        return self.member_name
 
     def __repr__(self) -> str:
         return f"<{self.enum_name}.{self.member_name}: {self._value_!r}>"

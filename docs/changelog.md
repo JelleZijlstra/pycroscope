@@ -7,6 +7,7 @@
 - Speed up repeated declared-symbol lookups for synthetic and runtime-backed classes, reducing checker overhead on large modules and self-check runs.
 - Improve `--find-unused-attributes` so it now reports unused non-method attributes too, handles inheritance and overrides more accurately for polymorphic attribute access, treats concrete classes proven compatible with protocols as implementations of those protocols, skips `TypedDict` fields and framework-generated members, and supports config hooks to ignore patterns like `visit_*` methods on AST visitors and helper classes in test-only modules.
 - Reduce `--find-unused-attributes` false positives by ignoring `dataclasses.InitVar` pseudo-fields and `generic_visit()` methods on AST visitor classes.
+- Add an `ignored_unused_attribute_paths` option so individual unused-attribute findings can be suppressed by fully-qualified path, for example `pycroscope.analysis_lib.Sentinel.name`.
 - Restore the self-check's unused-object enforcement so repo-wide self-checks once again fail on genuinely unused module-level objects.
 - Add an `enforce_no_unused_attributes` option so repo and self-check runs can fail on unused class attributes without needing `--find-unused-attributes`.
 - Add PEP 767 `ReadOnly` attribute support for classes and protocols, including assignment/deletion errors for readonly members, protocol matching for readonly attributes, and `Final`-attribute deletion errors.

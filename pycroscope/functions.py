@@ -217,7 +217,6 @@ class FunctionResult:
     """Computed after visiting a function."""
 
     return_value: Value = AnyValue(AnySource.inference)
-    parameters: Sequence[SigParameter] = ()
     has_return: bool = False
     is_generator: bool = False
 

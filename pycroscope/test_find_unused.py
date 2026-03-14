@@ -4,6 +4,7 @@ import textwrap
 
 from .error_code import DISABLED_IN_TESTS, ErrorCode
 from .name_check_visitor import (
+    IgnoredUnusedAttributePaths,
     IgnoreUnusedAttributePredicates,
     _ignore_unused_ast_visit_methods,
     _ignore_unused_test_helper_attributes,
@@ -16,13 +17,16 @@ from .test_name_check_visitor import (
 
 
 class TestFindUnused(TestNameCheckVisitorBase):
-    def assert_unused_attributes(self, code_str, expected_unused, extra_options=()):
+    def assert_unused_attributes(
+        self, code_str, expected_unused, extra_options=(), module=None
+    ):
         code_str = textwrap.dedent(code_str)
         tree = ast.parse(code_str, "<test input>")
         settings = {code: code not in DISABLED_IN_TESTS for code in ErrorCode}
         kwargs = self.visitor_cls.prepare_constructor_kwargs(
             {"settings": settings}, extra_options=extra_options
         )
+        module = _make_module(code_str) if module is None else module
         with ClassAttributeChecker(
             enabled=True,
             should_check_unused_attributes=True,
@@ -32,7 +36,7 @@ class TestFindUnused(TestNameCheckVisitorBase):
                 "<test input>",
                 code_str,
                 tree,
-                module=_make_module(code_str),
+                module=module,
                 attribute_checker=attribute_checker,
                 **kwargs,
             )
@@ -256,6 +260,26 @@ class TestFindUnused(TestNameCheckVisitorBase):
                     [_ignore_unused_ast_visit_methods], from_command_line=True
                 ),
             ),
+        )
+
+    def test_unused_attribute_can_be_ignored_by_full_path(self):
+        code = """
+            class Config:
+                enabled = True
+
+                def __init__(self) -> None:
+                    self.cache = 0
+            """
+        module = _make_module(textwrap.dedent(code))
+        self.assert_unused_attributes(
+            code,
+            {("Config", "enabled", False)},
+            extra_options=(
+                IgnoredUnusedAttributePaths(
+                    [f"{module.__name__}.Config.cache"], from_command_line=True
+                ),
+            ),
+            module=module,
         )
 
     def test_test_helper_modules_can_be_ignored_by_predicate(self):

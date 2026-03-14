@@ -1006,6 +1006,17 @@ class IgnoredUnusedAttributes(StringSequenceOption):
     ]
 
 
+class IgnoredUnusedAttributePaths(StringSequenceOption):
+    """Fully-qualified attribute paths to suppress in unused-attribute results.
+
+    Each entry should look like ``package.module.ClassName.attribute``.
+
+    """
+
+    name = "ignored_unused_attribute_paths"
+    default_value = []
+
+
 class IgnoredUnusedClassAttributes(ConcatenatedOption[tuple[type, set[str]]]):
     """List of pairs of (class, set of attribute names). When these attribute names are seen as
     unused on a child or base class of the class, they are not listed."""
@@ -1486,6 +1497,10 @@ class ClassAttributeChecker:
             return True
         if _is_runtime_initvar_attribute(typ, attr_name):
             return True
+        if _unused_attribute_path(typ, attr_name) in self.options.get_value_for(
+            IgnoredUnusedAttributePaths
+        ):
+            return True
         if attr_name in {
             "__annotations__",
             "__dict__",
@@ -1696,15 +1711,6 @@ class StackedContexts:
             if isinstance(node, typ):
                 return node
         return None
-
-    @contextlib.contextmanager
-    def add(self, value: ast.AST) -> Generator[None]:
-        """Context manager to add a context to the stack."""
-        self.contexts.append(value)
-        try:
-            yield
-        finally:
-            self.contexts.pop()
 
 
 @dataclass(frozen=True)
@@ -9728,11 +9734,11 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         if is_collecting and not self.scopes.contains_scope_of_type(
             ScopeType.function_scope
         ):
-            return FunctionResult(parameters=params)
+            return FunctionResult()
 
         if FunctionDecorator.evaluated in function_info.decorator_kinds:
             if self._is_collecting() or isinstance(node, ast.Lambda):
-                return FunctionResult(parameters=params)
+                return FunctionResult()
             with self.scopes.allow_only_module_scope():
                 # The return annotation doesn't actually matter for validation.
                 evaluator = SyntheticEvaluator.from_visitor(
@@ -9756,7 +9762,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                         ),
                     ):
                         self._generic_visit_list(node.body)
-            return FunctionResult(parameters=params)
+            return FunctionResult()
 
         # We pass in the node to add_scope() and visit the body once in collecting
         # mode if in a nested function, so that constraints on nonlocals in the outer
@@ -9802,7 +9808,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     self._generic_visit_list(node.body)
                 scope.get_local(LEAVES_SCOPE, node, self.state, can_assign_ctx=self)
             if is_collecting:
-                return FunctionResult(is_generator=self.is_generator, parameters=params)
+                return FunctionResult(is_generator=self.is_generator)
 
             # otherwise we may end up using results from the last yield (generated during the
             # collect state) to evaluate the first one visited during the check state
@@ -9853,7 +9859,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             assert False, return_set
         # if the return value was never set, the function returns None
         if not return_values:
-            return FunctionResult(KnownNone, params, has_return, self.is_generator)
+            return FunctionResult(
+                KnownNone, has_return=has_return, is_generator=self.is_generator
+            )
         # None is added to return_values if the function raises an error.
         return_values = [val for val in return_values if val is not None]
         # If it only ever raises an error, we don't know what it returns. Strictly
@@ -9864,12 +9872,8 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             ret = AnyValue(AnySource.inference)
         else:
             ret = unite_values(*return_values)
-        if isinstance(node, ast.Lambda):
-            has_return_annotation = False
-        else:
-            has_return_annotation = node.returns is not None
         return FunctionResult(
-            ret, params, has_return=has_return, is_generator=self.is_generator
+            ret, has_return=has_return, is_generator=self.is_generator
         )
 
     def _check_function_unused_vars(
@@ -18108,6 +18112,10 @@ def _has_annotation_for_attr(typ: type, attr: str) -> bool:
     except Exception:
         # __annotations__ doesn't exist or isn't a dict
         return False
+
+
+def _unused_attribute_path(typ: type, attr_name: str) -> str:
+    return f"{typ.__module__}.{typ.__qualname__}.{attr_name}"
 
 
 def _is_runtime_initvar_attribute(typ: type, attr_name: str) -> bool:

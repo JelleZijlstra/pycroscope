@@ -3368,9 +3368,6 @@ class CheckerAttrContext(AttrContext):
     ) -> GenericBases:
         return self.checker.get_generic_bases(typ, generic_args)
 
-    def get_type_parameters(self, typ: type | str) -> list[TypeParam]:
-        return self.checker.get_type_parameters(typ)
-
     def get_synthetic_class(self, typ: type | str) -> SyntheticClassObjectValue | None:
         return self.checker.get_synthetic_class(typ)
 

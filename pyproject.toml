@@ -89,6 +89,31 @@ ignore_unused_attribute_predicates = [
   "pycroscope.name_check_visitor._ignore_unused_ast_visit_methods",
   "pycroscope.name_check_visitor._ignore_unused_test_helper_attributes",
 ]
+ignored_unused_attribute_paths = [
+  "pycroscope.format_strings.ReplacementField.conversion",
+  "pycroscope.format_strings.ReplacementField.index_attribute",
+  "pycroscope.analysis_lib._FakeLoader.get_source",
+  "pycroscope.analysis_lib.Sentinel.name",
+  "pycroscope.value.CustomMapping.keys",
+  "pycroscope.value.OrBound.bounds",
+  "pycroscope.node_visitor._PatchWithDescription.render_range",
+  "pycroscope.node_visitor._Query.generate_patches",
+  "pycroscope.find_unused.UnusedObject.value",
+  "pycroscope.node_visitor.BaseNodeVisitor.had_failure",
+  "pycroscope.node_visitor.Replacement.error_str",
+  "pycroscope.stacked_scopes._LookupContext.node",
+  # Called in a lambda
+  "pycroscope.options.ConfigOption.sort_key",
+  # Called through an Any
+  "pycroscope.checker.Checker.perform_final_checks",
+  # Used dynamically, not convinced this one is not used
+  "pycroscope.name_check_visitor.NameCheckVisitor.get_synthetic_class",
+  "pycroscope.arg_spec.AnnotationsContext.arg_spec_cache",
+  "pycroscope.checker.Checker.resolve_name",
+  "pycroscope.signature.CallContext.sig",
+  "pycroscope.checker.Checker.resolve_name",
+  "pycroscope.value.CanAssignContext.resolve_name",
+]
 
 possibly_undefined_name = true
 use_fstrings = true
