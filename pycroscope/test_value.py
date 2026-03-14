@@ -776,10 +776,39 @@ def test_synthetic_namedtuple_members_without_runtime_class() -> None:
     checker.register_synthetic_class(point)
 
     assert value.ordered_namedtuple_fields_from_synthetic(point) == ("x", "label")
-    assert value.namedtuple_members_from_value(TypedValue("mod.Point"), checker) == (
+    assert value.tuple_members_from_value(TypedValue("mod.Point"), checker) == (
         (False, TypedValue(int)),
         (False, TypedValue(str)),
     )
+
+
+def test_exact_tuple_subclass_members_from_runtime_bases() -> None:
+    class NotANT(tuple[int, str]):
+        pass
+
+    checker = Checker()
+    assert TypedValue(NotANT).get_generic_args_for_type(tuple, checker) == [
+        TypedValue(int),
+        TypedValue(str),
+    ]
+    assert value.tuple_members_from_value(TypedValue(NotANT), checker) == (
+        (False, TypedValue(int)),
+        (False, TypedValue(str)),
+    )
+
+
+def test_tuple_subclass_with_custom_iter_is_not_unpacked_as_exact_tuple() -> None:
+    class Weird(tuple[int, str]):
+        pass
+
+    def _iter(self) -> collections.abc.Iterator[int | str]:
+        yield self[1]
+        yield self[0]
+
+    Weird.__iter__ = _iter
+
+    checker = Checker()
+    assert not value._can_unpack_tuple_members_from_value(TypedValue(Weird), checker)
 
 
 class Capybara(enum.IntEnum):

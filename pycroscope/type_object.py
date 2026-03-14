@@ -57,6 +57,7 @@ from .value import (
     PropertyInfo,
     Qualifier,
     SelfT,
+    SequenceValue,
     SimpleType,
     SubclassValue,
     SyntheticClassObjectValue,
@@ -69,11 +70,12 @@ from .value import (
     Value,
     flatten_values,
     freshen_typevars_for_inference,
+    get_namedtuple_field_annotation,
     get_synthetic_member_value,
     get_tv_map,
-    ordered_namedtuple_fields_from_synthetic,
     replace_fallback,
     stringify_object,
+    tuple_members_from_value,
     unify_bounds_maps,
     unite_values,
 )
@@ -86,6 +88,15 @@ def _as_concrete_signature(
     if isinstance(sig, BoundMethodSignature):
         return sig.get_signature(ctx=ctx)
     return sig
+
+
+def _is_plain_tuple_value(value: Value) -> bool:
+    value = replace_fallback(value)
+    if isinstance(value, AnnotatedValue):
+        return _is_plain_tuple_value(value.value)
+    if isinstance(value, SequenceValue) and value.typ is tuple:
+        return True
+    return isinstance(value, KnownValue) and type(value.val) is tuple
 
 
 @dataclass(frozen=True)
@@ -178,10 +189,26 @@ class TypeObject:
         self_val: Value,
         other_val: KnownValue | TypedValue | SubclassValue | AnnotatedValue,
         ctx: CanAssignContext,
+        *,
+        relation: object | None = None,
     ) -> CanAssign:
+        from .relations import Relation, _compare_tuple_sequences
+
+        if relation is None:
+            relation = Relation.ASSIGNABLE
         other_basic = replace_fallback(other_val)
         if not isinstance(other_basic, (KnownValue, TypedValue, SubclassValue)):
             return CanAssignError(f"Cannot assign {other_val} to {self}")
+        if _is_plain_tuple_value(self_val):
+            self_tuple_members = tuple_members_from_value(self_val, ctx)
+            other_tuple_members = tuple_members_from_value(other_val, ctx)
+            if self_tuple_members is not None and other_tuple_members is not None:
+                return _compare_tuple_sequences(
+                    SequenceValue(tuple, self_tuple_members),
+                    SequenceValue(tuple, other_tuple_members),
+                    relation,
+                    ctx,
+                )
         other = other_basic.get_type_object(ctx)
         if other.is_universally_assignable:
             return {}
@@ -771,8 +798,33 @@ def _runtime_declared_member_value(typ: type, name: str, raw_value: object) -> V
         return AnyValue(AnySource.inference)
 
 
+def _runtime_namedtuple_field_names(typ: type) -> tuple[str, ...]:
+    if not is_namedtuple_class(typ):
+        return ()
+    fields_obj = safe_getattr(typ, "_fields", None)
+    if not isinstance(fields_obj, tuple):
+        return ()
+    return tuple(name for name in fields_obj if isinstance(name, str))
+
+
 def _add_runtime_declared_symbols(typ: type, symbols: dict[str, ClassSymbol]) -> None:
     class_dict = safe_getattr(typ, "__dict__", None)
+    namedtuple_fields = frozenset(_runtime_namedtuple_field_names(typ))
+    for name in namedtuple_fields:
+        raw_value = class_dict.get(name) if isinstance(class_dict, Mapping) else None
+        symbols[name] = ClassSymbol(
+            _value_from_runtime_annotation(
+                get_namedtuple_field_annotation(typ, name), typ
+            ),
+            frozenset({Qualifier.ReadOnly}),
+            is_instance_only=True,
+            property_info=(
+                _runtime_property_info(raw_value, typ)
+                if isinstance(raw_value, property)
+                else None
+            ),
+            member_value=_runtime_declared_member_value(typ, name, raw_value),
+        )
     try:
         if sys.version_info >= (3, 14):
             annotations = get_annotations(typ, format=Format.FORWARDREF)
@@ -784,6 +836,8 @@ def _add_runtime_declared_symbols(typ: type, symbols: dict[str, ClassSymbol]) ->
         for name, annotation in annotations.items():
             if not isinstance(name, str):
                 continue
+            if name in namedtuple_fields:
+                continue
             symbol = _symbol_from_runtime_annotation(annotation, typ)
             is_instance_only = (
                 not symbol.is_classvar
@@ -794,6 +848,8 @@ def _add_runtime_declared_symbols(typ: type, symbols: dict[str, ClassSymbol]) ->
     if isinstance(class_dict, Mapping):
         for name, raw_value in class_dict.items():
             if not isinstance(name, str):
+                continue
+            if name in namedtuple_fields:
                 continue
             existing = symbols.get(name)
             is_property = isinstance(raw_value, property)
@@ -1134,10 +1190,6 @@ def _is_readonly_instance_member(
     class_key: type | str, member: str, ctx: CanAssignContext
 ) -> bool:
     if isinstance(class_key, type):
-        if is_namedtuple_class(class_key):
-            fields = safe_getattr(class_key, "_fields", None)
-            if isinstance(fields, tuple) and member in fields:
-                return True
         dataclass_params = safe_getattr(class_key, "__dataclass_params__", None)
         if safe_getattr(dataclass_params, "frozen", None) is True:
             return True
@@ -1145,10 +1197,6 @@ def _is_readonly_instance_member(
         return True
 
     synthetic = _get_synthetic_class_for_key(class_key, ctx)
-    if synthetic is not None:
-        if synthetic.namedtuple_info is not None:
-            if member in ordered_namedtuple_fields_from_synthetic(synthetic):
-                return True
     if synthetic is not None and synthetic.dataclass_frozen is True:
         return True
     return False

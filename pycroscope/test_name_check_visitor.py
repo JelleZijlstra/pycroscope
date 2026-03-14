@@ -959,8 +959,17 @@ class TestImportFailureHandlingCodeSamples(TestNameCheckVisitorBase):
         assert_type(child, Child)
         child.x + 1
         child.label.upper()
+        assert_type(child[0], int)
+        assert_type(child[1], int)
+
+        def g(value: Child) -> None:
+            x, y = value
+            assert_type(x, int)
+            assert_type(y, int)
 
         def f() -> None:
+            child[2]  # E: incompatible_call
+            _x, _y, _label = child  # E: bad_unpack
             Child("")  # E: incompatible_call
             Child(1, 2, 3)  # E: incompatible_call
 
@@ -1032,6 +1041,22 @@ class TestImportFailureHandlingCodeSamples(TestNameCheckVisitorBase):
             del p.x  # E: incompatible_assignment
 
     @assert_passes(run_in_both_module_modes=True)
+    def test_readonly_attribute_intersection_allows_write_if_one_side_is_writable(self):
+        from typing_extensions import ReadOnly
+
+        from pycroscope.extensions import Intersection
+
+        class Readonly:
+            x: ReadOnly[int]
+
+        class Mutable:
+            x: int
+
+        def mutate(p: Intersection[Readonly, Mutable]) -> None:
+            p.x = 2
+            del p.x
+
+    @assert_passes(run_in_both_module_modes=True)
     def test_namedtuple_attribute_is_immutable_after_import_failure(self):
         from typing import NamedTuple
 
@@ -1043,6 +1068,42 @@ class TestImportFailureHandlingCodeSamples(TestNameCheckVisitorBase):
         def capybara() -> None:
             p.x = 2  # E: incompatible_assignment
             del p.x  # E: incompatible_assignment
+
+    @assert_passes()
+    def test_namedtuple_attribute_is_immutable_for_unions(self):
+        from typing import NamedTuple
+
+        class Point(NamedTuple):
+            x: int
+
+        class Mutable:
+            x: int
+
+        def mutate(p: Point | Mutable) -> None:
+            p.x = 2  # E: incompatible_assignment
+            del p.x  # E: incompatible_assignment
+
+    @assert_passes()
+    def test_local_namedtuple_attribute_is_immutable(self):
+        import collections
+
+        def capybara() -> None:
+            Point = collections.namedtuple("Point", ["x"])
+            p = Point(1)
+            p.x = 2  # E: incompatible_assignment
+            del p.x  # E: incompatible_assignment
+
+    @assert_passes(run_in_both_module_modes=True)
+    def test_exact_tuple_subclass_operations(self):
+        from typing_extensions import assert_type
+
+        class NotANT(tuple[int, str]):
+            pass
+
+        def capybara(x: NotANT) -> None:
+            assert_type(x[0], int)
+            assert_type(x[1], str)
+            assert_type(x, tuple[int, str])  # E: inference_failure
 
     @assert_passes(run_in_both_module_modes=True)
     def test_namedtuple_tuple_operations(self):

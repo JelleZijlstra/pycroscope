@@ -81,6 +81,7 @@ from .annotations import (
     is_typing_name,
     make_type_param,
     make_type_param_from_value,
+    type_from_runtime,
     type_from_value,
     value_from_ast,
 )
@@ -299,6 +300,7 @@ from .value import (
     annotate_value,
     concrete_values_from_iterable,
     flatten_values,
+    get_namedtuple_field_annotation,
     get_synthetic_member_value,
     get_tv_map,
     get_typevar_variance,
@@ -310,12 +312,12 @@ from .value import (
     iter_type_params_in_value,
     kv_pairs_from_mapping,
     make_coro_type,
-    namedtuple_members_from_value,
     ordered_namedtuple_fields_from_synthetic,
     replace_fallback,
     replace_known_sequence_value,
     set_self,
     stringify_object,
+    tuple_members_from_value,
     type_param_to_value,
     unannotate_value,
     unite_and_simplify,
@@ -8867,17 +8869,32 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     ) -> bool:
         if self._is_allowed_readonly_attribute_initialization(node, root_value):
             return False
-        class_key = self._class_key_for_attribute_target(node, root_value)
-        return class_key is not None and is_readonly_annotated_member(
-            class_key, node.attr, self
-        )
+        return self._value_has_readonly_attribute(root_value, node.attr, node=node)
 
     def _is_deletion_of_readonly_attribute(
         self, node: ast.Attribute, root_value: Value
     ) -> bool:
+        return self._value_has_readonly_attribute(root_value, node.attr, node=node)
+
+    def _value_has_readonly_attribute(
+        self, root_value: Value, attr_name: str, *, node: ast.Attribute
+    ) -> bool:
+        value = replace_fallback(root_value)
+        if isinstance(value, AnnotatedValue):
+            return self._value_has_readonly_attribute(value.value, attr_name, node=node)
+        if isinstance(value, MultiValuedValue):
+            return bool(value.vals) and any(
+                self._value_has_readonly_attribute(subval, attr_name, node=node)
+                for subval in value.vals
+            )
+        if isinstance(value, IntersectionValue):
+            return bool(value.vals) and all(
+                self._value_has_readonly_attribute(subval, attr_name, node=node)
+                for subval in value.vals
+            )
         class_key = self._class_key_for_attribute_target(node, root_value)
         return class_key is not None and is_readonly_annotated_member(
-            class_key, node.attr, self
+            class_key, attr_name, self
         )
 
     def _is_class_object_attribute_root(self, value: Value) -> bool | None:
@@ -9056,83 +9073,18 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             class_key, attr_name
         )
 
-    def _namedtuple_fields_for_simple_attribute_root(
-        self, value: Value
-    ) -> set[str] | None:
-        value = replace_fallback(value)
-        if isinstance(value, AnnotatedValue):
-            return self._namedtuple_fields_for_simple_attribute_root(value.value)
-        if isinstance(value, (MultiValuedValue, IntersectionValue)):
-            return None
-        if isinstance(value, KnownValue):
-            if isinstance(value.val, type):
-                class_key = value.val
-            else:
-                class_key = type(value.val)
-        elif isinstance(value, GenericValue):
-            if not isinstance(value.typ, (type, str)):
-                return None
-            class_key = value.typ
-        elif isinstance(value, TypedValue):
-            if not isinstance(value.typ, (type, str)):
-                return None
-            class_key = value.typ
-        elif isinstance(
-            value,
-            (
-                AnyValue,
-                SyntheticClassObjectValue,
-                SyntheticModuleValue,
-                UnboundMethodValue,
-                SubclassValue,
-                TypeFormValue,
-                PredicateValue,
-            ),
-        ):
-            return None
-        else:
-            assert_never(value)
-        synthetic = self.checker.get_synthetic_class(class_key)
-        if synthetic is not None:
-            if synthetic.namedtuple_info is not None:
-                return set(ordered_namedtuple_fields_from_synthetic(synthetic))
-        if not isinstance(class_key, type) or not is_namedtuple_class(class_key):
-            return None
-        fields = safe_getattr(class_key, "_fields", None)
-        if not isinstance(fields, tuple):
-            return None
-        if not all(isinstance(field, str) for field in fields):
-            return None
-        return set(fields)
-
-    def _is_namedtuple_field_attribute(self, root_value: Value, attr_name: str) -> bool:
-        value = replace_fallback(root_value)
-        if isinstance(value, AnnotatedValue):
-            return self._is_namedtuple_field_attribute(value.value, attr_name)
-        if isinstance(value, (MultiValuedValue, IntersectionValue)):
-            if not value.vals:
-                return False
-            return all(
-                self._is_namedtuple_field_attribute(subval, attr_name)
-                for subval in value.vals
-            )
-        fields = self._namedtuple_fields_for_simple_attribute_root(value)
-        return fields is not None and attr_name in fields
-
-    def _show_namedtuple_attribute_mutation_error(self, node: ast.Attribute) -> None:
-        self._show_error_if_checking(
-            node,
-            f"Cannot mutate NamedTuple field {node.attr!r}",
-            error_code=ErrorCode.incompatible_assignment,
-        )
-
-    def _maybe_replace_namedtuple_with_tuple_sequence(self, value: Value) -> Value:
+    def _maybe_replace_tuple_subtype_with_tuple_sequence(self, value: Value) -> Value:
         root_value = replace_fallback(value)
         if isinstance(root_value, SyntheticClassObjectValue):
             return value
         if isinstance(root_value, KnownValue) and isinstance(root_value.val, type):
             return value
-        members = namedtuple_members_from_value(value, self)
+        class_key = self._base_class_key_from_value(root_value)
+        if class_key is not None:
+            getitem = lookup_declared_symbol_with_owner(class_key, "__getitem__", self)
+            if getitem is not None and getitem[0] is not tuple:
+                return value
+        members = tuple_members_from_value(value, self)
         if members is None:
             return value
         return SequenceValue(tuple, members)
@@ -12476,6 +12428,18 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 node.target
             ) and isinstance(node.target, ast.Attribute):
                 readonly_name = node.target.attr
+        if (
+            readonly_name is None
+            and self.scopes.scope_type() == ScopeType.class_scope
+            and isinstance(node.target, ast.Name)
+            and not has_classvar
+        ):
+            synthetic_class = self._get_synthetic_class_for_current_scope()
+            if (
+                synthetic_class is not None
+                and synthetic_class.namedtuple_info is not None
+            ):
+                readonly_name = node.target.id
         is_current_class_dataclass = self._is_current_class_dataclass()
         has_default = node.value is not None
         init = True
@@ -13548,7 +13512,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     ) -> Value:
         value = root_composite.value
         index = index_composite.value
-        value = self._maybe_replace_namedtuple_with_tuple_sequence(value)
+        value = self._maybe_replace_tuple_subtype_with_tuple_sequence(value)
         root_composite = Composite(value, root_composite.varname, root_composite.node)
 
         if isinstance(node.ctx, ast.Store):
@@ -14259,17 +14223,11 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     "Dataclass is frozen",
                     error_code=ErrorCode.incompatible_assignment,
                 )
-            is_namedtuple_field = self._is_namedtuple_field_attribute(
-                root_composite.value, node.attr
-            )
-            if is_namedtuple_field:
-                self._show_namedtuple_attribute_mutation_error(node)
             is_readonly_assignment = (
                 not is_final_assignment
                 and not is_classvar_instance_assignment
                 and not is_instance_member_class_assignment
                 and not is_frozen_dataclass_assignment
-                and not is_namedtuple_field
                 and self._is_assignment_to_readonly_attribute(
                     node, root_composite.value
                 )
@@ -14285,7 +14243,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 and not is_classvar_instance_assignment
                 and not is_instance_member_class_assignment
                 and not is_frozen_dataclass_assignment
-                and not is_namedtuple_field
                 and not is_readonly_assignment
                 and self._is_assignment_to_non_slot_attribute(
                     root_composite.value, node.attr
@@ -14302,7 +14259,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 and not is_classvar_instance_assignment
                 and not is_instance_member_class_assignment
                 and not is_frozen_dataclass_assignment
-                and not is_namedtuple_field
                 and not is_readonly_assignment
                 and not is_slots_assignment
             ):
@@ -14313,7 +14269,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 and not is_classvar_instance_assignment
                 and not is_instance_member_class_assignment
                 and not is_frozen_dataclass_assignment
-                and not is_namedtuple_field
                 and not is_readonly_assignment
                 and not is_slots_assignment
             )
@@ -14355,10 +14310,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                         f"Cannot delete final name {node.attr}",
                         error_code=ErrorCode.incompatible_assignment,
                     )
-                elif self._is_namedtuple_field_attribute(
-                    root_composite.value, node.attr
-                ):
-                    self._show_namedtuple_attribute_mutation_error(node)
                 elif self._is_deletion_of_readonly_attribute(
                     node, root_composite.value
                 ):
@@ -15899,6 +15850,16 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         runtime_class = return_value.val
         if not is_namedtuple_class(runtime_class):
             return return_value
+        fields = tuple(
+            field
+            for field in safe_getattr(runtime_class, "_fields", ())
+            if isinstance(field, str)
+        )
+        default_fields = tuple(
+            name
+            for name in safe_getattr(runtime_class, "_field_defaults", {})
+            if isinstance(name, str)
+        )
         synthetic = SyntheticClassObjectValue(
             runtime_class.__name__,
             TypedValue(
@@ -15907,8 +15868,25 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             base_classes=(TypedValue(tuple),),
         )
         _set_synthetic_runtime_class(synthetic, return_value)
-        for name, attr in runtime_class.__dict__.items():
-            if isinstance(attr, property):
+        if should_disable_runtime_call_for_namedtuple_class(runtime_class):
+            _set_synthetic_namedtuple_info(
+                synthetic,
+                NamedTupleInfo(field_names=fields, default_fields=default_fields),
+            )
+        for name, attr in tuple(runtime_class.__dict__.items()):
+            if name in fields:
+                field_value = type_from_runtime(
+                    get_namedtuple_field_annotation(runtime_class, name),
+                    visitor=self,
+                    suppress_errors=True,
+                )
+                synthetic.declared_symbols[name] = ClassSymbol(
+                    field_value,
+                    frozenset({Qualifier.ReadOnly}),
+                    is_instance_only=True,
+                    member_value=field_value,
+                )
+            elif isinstance(attr, property):
                 synthetic.declared_symbols[name] = ClassSymbol(
                     AnyValue(AnySource.inference),
                     property_info=PropertyInfo(

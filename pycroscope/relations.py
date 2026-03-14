@@ -86,10 +86,10 @@ from pycroscope.value import (
     get_typevar_variance,
     gradualize,
     intersect_bounds_maps,
-    namedtuple_members_from_value,
     replace_fallback,
     replace_known_sequence_value,
     stringify_object,
+    tuple_members_from_value,
     type_param_to_value,
     typify_literal,
     unify_bounds_maps,
@@ -310,9 +310,9 @@ def _has_relation(
     if original_left is None:
         original_left = left
     if isinstance(left, KnownValue):
-        left = replace_known_sequence_value(left)
+        left = replace_known_sequence_value(left, ctx)
     if isinstance(right, KnownValue):
-        right = replace_known_sequence_value(right)
+        right = replace_known_sequence_value(right, ctx)
 
     if isinstance(left, SyntheticClassObjectValue):
         if isinstance(right, SyntheticClassObjectValue) and left == right:
@@ -475,15 +475,6 @@ def _has_relation(
                 return custom_can_assign
             bounds_maps.append(custom_can_assign)
         return unify_bounds_maps(bounds_maps)
-
-    if _tuple_members_from_value(left, ctx) is not None:
-        if (members := namedtuple_members_from_value(right, ctx)) is not None:
-            right = SequenceValue(tuple, members)
-            original_right = right
-    if _tuple_members_from_value(right, ctx) is not None:
-        if (members := namedtuple_members_from_value(left, ctx)) is not None:
-            left = SequenceValue(tuple, members)
-            original_left = left
 
     # PredicateValue
     if isinstance(left, PredicateValue):
@@ -768,7 +759,9 @@ def _has_relation(
                 return CanAssignError(f"{right} is not {relation.description} {left}")
             elif isinstance(left.typ, TypedValue):
                 left_tobj = left.typ.get_type_object(ctx)
-                return left_tobj.can_assign(left, TypedValue(right.val), ctx)
+                return left_tobj.can_assign(
+                    left, TypedValue(right.val), ctx, relation=relation
+                )
             else:
                 assert_never(left.typ)
         elif isinstance(right, TypedValue):
@@ -800,7 +793,7 @@ def _has_relation(
             if left_tobj.is_assignable_to_type(type):
                 return {}
             if isinstance(right.typ, TypedValue):
-                return left_tobj.can_assign(left, right, ctx)
+                return left_tobj.can_assign(left, right, ctx, relation=relation)
             elif isinstance(right.typ, InferenceVarValue):
                 return {
                     right.typ.typevar_param.typevar: [
@@ -855,7 +848,7 @@ def _has_relation(
         )
 
     if isinstance(right, KnownValue):
-        right = typify_literal(right)
+        right = typify_literal(right, ctx)
 
     # TypedValue
     if (
@@ -1000,7 +993,9 @@ def _has_relation(
                 right_for_check = original_right
             else:
                 right_for_check = right
-            can_assign = left_tobj.can_assign(left, right_for_check, ctx)
+            can_assign = left_tobj.can_assign(
+                left, right_for_check, ctx, relation=relation
+            )
             if isinstance(can_assign, CanAssignError):
                 return can_assign
             if isinstance(left, GenericValue) and left_tobj.is_protocol:
@@ -1013,7 +1008,9 @@ def _has_relation(
                 right_for_check = original_right
             else:
                 right_for_check = right
-            can_assign = left_tobj.can_assign(left, right_for_check, ctx)
+            can_assign = left_tobj.can_assign(
+                left, right_for_check, ctx, relation=relation
+            )
             if isinstance(can_assign, CanAssignError):
                 if left_tobj.is_instance(right.val):
                     return {}
@@ -1373,7 +1370,7 @@ def _has_relation_thrift_enum(
         tobj = right.get_type_object(ctx)
         if tobj.is_assignable_to_type(int):
             return {}
-        return left.get_type_object(ctx).can_assign(left, right, ctx)
+        return left.get_type_object(ctx).can_assign(left, right, ctx, relation=relation)
     else:
         return CanAssignError(f"{right} is not {relation.description} {left}")
 
@@ -1744,13 +1741,24 @@ def _has_relation_sequence(
     relation: Literal[Relation.SUBTYPE, Relation.ASSIGNABLE],
     ctx: CanAssignContext,
 ) -> CanAssign:
-    can_assign = left.get_type_object(ctx).can_assign(left, right, ctx)
+    can_assign = left.get_type_object(ctx).can_assign(
+        left, right, ctx, relation=relation
+    )
     if isinstance(can_assign, CanAssignError):
         return CanAssignError(
             f"{stringify_object(right.typ)} is not {relation.description}"
             f" {stringify_object(left.typ)}"
         )
 
+    return _compare_tuple_sequences(left, right, relation, ctx)
+
+
+def _compare_tuple_sequences(
+    left: SequenceValue,
+    right: SequenceValue,
+    relation: Literal[Relation.SUBTYPE, Relation.ASSIGNABLE],
+    ctx: CanAssignContext,
+) -> CanAssign:
     captured_typevartuple = _try_capture_single_typevartuple_sequence(
         left, right, relation, ctx
     )
@@ -2208,18 +2216,6 @@ def _iter_compositions(total: int, parts: int) -> Iterable[tuple[int, ...]]:
             yield (first, *rest)
 
 
-def _tuple_members_from_value(
-    value: Value, ctx: CanAssignContext | None = None
-) -> tuple[tuple[bool, Value], ...] | None:
-    if isinstance(value, SequenceValue) and value.typ is tuple:
-        return value.members
-    if isinstance(value, GenericValue) and value.typ is tuple and len(value.args) == 1:
-        return ((True, value.args[0]),)
-    if ctx is not None:
-        return namedtuple_members_from_value(value, ctx)
-    return None
-
-
 def _expand_tuple_members_to_exact_len(
     members: tuple[tuple[bool, Value], ...], target_len: int
 ) -> list[tuple[tuple[bool, Value], ...]] | None:
@@ -2314,8 +2310,10 @@ def _expand_tuple_members_to_max_len(
     return deduped
 
 
-def _narrow_tuple_to_min_len(value: Value, target_len: int) -> GradualType | None:
-    members = _tuple_members_from_value(value)
+def _narrow_tuple_to_min_len(
+    value: Value, target_len: int, ctx: CanAssignContext
+) -> GradualType | None:
+    members = tuple_members_from_value(value, ctx)
     if members is None:
         return None
     expanded = _expand_tuple_members_to_min_len(members, target_len)
@@ -2328,8 +2326,10 @@ def _narrow_tuple_to_min_len(value: Value, target_len: int) -> GradualType | Non
     )
 
 
-def _narrow_tuple_to_max_len(value: Value, target_len: int) -> GradualType | None:
-    members = _tuple_members_from_value(value)
+def _narrow_tuple_to_max_len(
+    value: Value, target_len: int, ctx: CanAssignContext
+) -> GradualType | None:
+    members = tuple_members_from_value(value, ctx)
     if members is None:
         return None
     expanded = _expand_tuple_members_to_max_len(members, target_len)
@@ -2410,7 +2410,7 @@ def _intersect_len_predicate(
         return NO_RETURN_VALUE
     if isinstance(predicate, MinLen):
         target = predicate.value
-        tuple_narrowed = _narrow_tuple_to_min_len(value, target)
+        tuple_narrowed = _narrow_tuple_to_min_len(value, target, ctx)
         if tuple_narrowed is NO_RETURN_VALUE:
             return NO_RETURN_VALUE
         if tuple_narrowed is not None:
@@ -2422,7 +2422,7 @@ def _intersect_len_predicate(
         return Irreducible
     else:
         target = predicate.value
-        tuple_narrowed = _narrow_tuple_to_max_len(value, target)
+        tuple_narrowed = _narrow_tuple_to_max_len(value, target, ctx)
         if tuple_narrowed is NO_RETURN_VALUE:
             return NO_RETURN_VALUE
         if tuple_narrowed is not None:
