@@ -83,6 +83,7 @@ exclude = '''
 paths = ["pycroscope"]
 import_paths = ["."]
 enforce_no_unused = true
+enforce_no_unused_attributes = false
 ignore_unused = ["pycroscope.relations._ignore_unused_sizeof_pyobject"]
 ignore_unused_attribute_predicates = [
   "pycroscope.name_check_visitor._ignore_unused_ast_visit_methods",

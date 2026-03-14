@@ -156,7 +156,12 @@ from .safe import (
     safe_issubclass,
     should_disable_runtime_call_for_namedtuple_class,
 )
-from .shared_options import EnforceNoUnused, ImportPaths, Paths
+from .shared_options import (
+    EnforceNoUnused,
+    EnforceNoUnusedAttributes,
+    ImportPaths,
+    Paths,
+)
 from .signature import (
     ANY_SIGNATURE,
     ARGS,
@@ -16681,10 +16686,14 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         attribute_checker_enabled = checker.options.is_error_code_enabled_anywhere(
             ErrorCode.attribute_is_never_set
         )
+        should_check_unused_attributes = (
+            find_unused_attributes
+            or checker.options.get_value_for(EnforceNoUnusedAttributes)
+        )
         if attribute_checker is None:
             inner_attribute_checker_obj = attribute_checker = ClassAttributeChecker(
-                enabled=attribute_checker_enabled,
-                should_check_unused_attributes=find_unused_attributes,
+                enabled=attribute_checker_enabled or should_check_unused_attributes,
+                should_check_unused_attributes=should_check_unused_attributes,
                 should_serialize=kwargs.get("parallel", False),
                 options=checker.options,
                 ts_finder=checker.ts_finder,
