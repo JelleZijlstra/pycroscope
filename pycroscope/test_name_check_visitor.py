@@ -1308,6 +1308,7 @@ class TestImportFailureHandlingCodeSamples(TestNameCheckVisitorBase):
             ) -> None: ...
 
         item = InventoryItem("soap", 2.3)
+        InventoryItem.__init__(item, "soap", 2.3)
         init_proto: InventoryItemInitProto = item.__init__
         item.__repr__
         item.__eq__
@@ -1728,6 +1729,26 @@ class TestNameCheckVisitor(TestNameCheckVisitorBase):
             return Child
 
         assert_type(outer().base_method(), int)
+
+    @assert_passes()
+    def test_synthetic_instance_inherits_generic_base_method(self):
+        from typing import Generic, TypeVar
+
+        T = TypeVar("T")
+
+        def outer() -> None:
+            class Base(Generic[T]):
+                def identity(self, value: T) -> T:
+                    return value
+
+            class Child(Base[int]):
+                pass
+
+            child = Child()
+            assert_type(child.identity(1), int)
+            child.identity("x")  # E: incompatible_argument
+
+        outer()
 
     @assert_passes()
     def test_synthetic_class_inherits_runtime_base_attributes(self):
