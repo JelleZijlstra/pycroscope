@@ -630,7 +630,7 @@ class TestGetGenericBases:
         expected = {
             time.struct_time: [],
             "_typeshed.structseq": [AnyValue(AnySource.explicit) | TypedValue(int)],
-            tuple: [TypedValue(int)],
+            tuple: [SequenceValue(tuple, [(False, TypedValue(int))] * 9)],
             collections.abc.Collection: [TypedValue(int)],
             collections.abc.Reversible: [TypedValue(int)],
             collections.abc.Iterable: [TypedValue(int)],

@@ -1561,12 +1561,18 @@ class ArgSpecCache:
                 else:
                     assert base.typ is not typ, base
                 if isinstance(base, SequenceValue) and base.typ is tuple:
-                    args = (base,)
+                    args = base.args
                 elif isinstance(base, GenericValue):
                     args = base.args
                 else:
                     args = ()
                 generic_bases.update(self.get_generic_bases(base.typ, args))
+                if isinstance(base, SequenceValue) and base.typ is tuple:
+                    tuple_type_params = self.get_type_parameters(tuple)
+                    if len(tuple_type_params) == 1:
+                        generic_bases.setdefault(tuple, {})[
+                            tuple_type_params[0].typevar
+                        ] = base
             elif isinstance(base, AnyValue):
                 # Runtime bases can contain `typing.Any` (e.g. `class C(Any): ...`).
                 # Treat this as an unknown base instead of failing extraction.
