@@ -1104,7 +1104,9 @@ def should_check_for_duplicate_values(cls: object, options: Options) -> bool:
 
 
 def _ignore_unused_ast_visit_methods(typ: type, attr_name: str) -> bool:
-    return attr_name.startswith("visit_") and safe_issubclass(typ, ast.NodeVisitor)
+    return (
+        attr_name == "generic_visit" or attr_name.startswith("visit_")
+    ) and safe_issubclass(typ, ast.NodeVisitor)
 
 
 def _ignore_unused_test_helper_attributes(typ: type, attr_name: str) -> bool:
@@ -1481,6 +1483,8 @@ class ClassAttributeChecker:
         if attr_name.startswith("__") and attr_name.endswith("__"):
             return True
         if is_typeddict(typ):
+            return True
+        if _is_runtime_initvar_attribute(typ, attr_name):
             return True
         if attr_name in {
             "__annotations__",
@@ -1969,7 +1973,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         )
         self.node_context = StackedContexts()
         self.asynq_checker = AsynqChecker(
-            self.options, self.module, self.show_error, self.log, self.replace_node
+            self.options, self.show_error, self.replace_node
         )
         self.yield_checker = YieldChecker(self)
         self.current_function = None
@@ -9865,11 +9869,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         else:
             has_return_annotation = node.returns is not None
         return FunctionResult(
-            ret,
-            params,
-            has_return=has_return,
-            is_generator=self.is_generator,
-            has_return_annotation=has_return_annotation,
+            ret, params, has_return=has_return, is_generator=self.is_generator
         )
 
     def _check_function_unused_vars(
@@ -16464,21 +16464,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             symbol = synthetic.declared_symbols.get(attr_name)
             if symbol is not None and symbol.is_initvar:
                 return True
-        try:
-            annotations = typ.__annotations__
-        except Exception:
-            return False
-        annotation = annotations.get(attr_name)
-        if annotation is None:
-            return False
-        if annotation is dataclasses.InitVar:
-            return True
-        origin = get_origin(annotation)
-        if origin is dataclasses.InitVar:
-            return True
-        if isinstance(annotation, str):
-            return "InitVar" in annotation
-        return False
+        return _is_runtime_initvar_attribute(typ, attr_name)
 
     # Finding unused objects
 
@@ -18122,6 +18108,26 @@ def _has_annotation_for_attr(typ: type, attr: str) -> bool:
     except Exception:
         # __annotations__ doesn't exist or isn't a dict
         return False
+
+
+def _is_runtime_initvar_attribute(typ: type, attr_name: str) -> bool:
+    try:
+        annotations = typ.__annotations__
+    except Exception:
+        return False
+    annotation = annotations.get(attr_name)
+    if annotation is None:
+        return False
+    if annotation is dataclasses.InitVar:
+        return True
+    if isinstance(annotation, dataclasses.InitVar):
+        return True
+    origin = get_origin(annotation)
+    if origin is dataclasses.InitVar:
+        return True
+    if isinstance(annotation, str):
+        return "InitVar" in annotation
+    return False
 
 
 def _is_typing_alias_value(value: object) -> bool:

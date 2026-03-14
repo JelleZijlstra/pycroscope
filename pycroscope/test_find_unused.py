@@ -212,6 +212,18 @@ class TestFindUnused(TestNameCheckVisitorBase):
             set(),
         )
 
+    def test_unused_initvar_fields_are_ignored(self):
+        self.assert_unused_attributes(
+            """
+            from dataclasses import InitVar, dataclass
+
+            @dataclass
+            class Config:
+                raw_vals: InitVar[list[int]]
+            """,
+            set(),
+        )
+
     def test_visit_methods_can_be_ignored_by_predicate(self):
         self.assert_unused_attributes(
             """
@@ -219,6 +231,23 @@ class TestFindUnused(TestNameCheckVisitorBase):
 
             class Visitor(ast.NodeVisitor):
                 def visit_Name(self, node: ast.Name) -> None:
+                    pass
+            """,
+            set(),
+            extra_options=(
+                IgnoreUnusedAttributePredicates(
+                    [_ignore_unused_ast_visit_methods], from_command_line=True
+                ),
+            ),
+        )
+
+    def test_generic_visit_can_be_ignored_by_predicate(self):
+        self.assert_unused_attributes(
+            """
+            import ast
+
+            class Visitor(ast.NodeVisitor):
+                def generic_visit(self, node: ast.AST) -> None:
                     pass
             """,
             set(),

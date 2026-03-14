@@ -63,9 +63,7 @@ class MethodsNotCheckedForAsynq(StringSequenceOption):
 @dataclass
 class AsynqChecker:
     options: Options
-    module: types.ModuleType | None
     on_error: Callable[..., Any]
-    log: Callable[..., Any]
     replace_node: Callable[..., Any]
     current_func_name: str | None = field(init=False, default=None)
     current_class: type | None = field(init=False, default=None)

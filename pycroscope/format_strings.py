@@ -211,7 +211,6 @@ class PercentFormatString:
     """
 
     pattern: bytes | str
-    is_bytes: bool = False
     specifiers: Sequence[ConversionSpecifier] = ()
     raw_pieces: Sequence[bytes] | Sequence[str] = ()
 
@@ -232,9 +231,7 @@ class PercentFormatString:
         if pattern.endswith("\n"):
             # due to a quirk in the re module, the final newline otherwise gets removed
             raw_pieces[-1] += "\n"
-        return cls(
-            pattern, is_bytes=False, specifiers=specifiers, raw_pieces=tuple(raw_pieces)
-        )
+        return cls(pattern, specifiers=specifiers, raw_pieces=tuple(raw_pieces))
 
     @classmethod
     def from_bytes_pattern(cls, pattern: bytes) -> "PercentFormatString":
@@ -251,9 +248,7 @@ class PercentFormatString:
         if pattern.endswith(b"\n"):
             # due to a quirk in the re module, the final newline otherwise gets removed
             raw_pieces[-1] += b"\n"
-        return cls(
-            pattern, is_bytes=True, specifiers=specifiers, raw_pieces=tuple(raw_pieces)
-        )
+        return cls(pattern, specifiers=specifiers, raw_pieces=tuple(raw_pieces))
 
     def needs_mapping(self) -> bool:
         """Returns whether this format string requires a mapping as an argument."""

@@ -220,7 +220,6 @@ class FunctionResult:
     parameters: Sequence[SigParameter] = ()
     has_return: bool = False
     is_generator: bool = False
-    has_return_annotation: bool = False
 
 
 class Context(ErrorContext, CanAssignContext, Protocol):

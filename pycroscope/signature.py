@@ -550,31 +550,6 @@ class SigParameter:
 
         return formatted
 
-    def to_argument(self) -> Argument:
-        val = Composite(self.annotation)
-        if self.kind is ParameterKind.ELLIPSIS:
-            return val, ELLIPSIS
-        elif self.kind is ParameterKind.PARAM_SPEC:
-            assert isinstance(self.annotation, InputSigValue) and isinstance(
-                self.annotation.input_sig, ParamSpecParam
-            )
-            return val, self.annotation.input_sig
-        elif self.kind is ParameterKind.VAR_KEYWORD:
-            return val, KWARGS
-        elif self.kind is ParameterKind.VAR_POSITIONAL:
-            return val, ARGS
-        elif self.kind is ParameterKind.POSITIONAL_ONLY:
-            return val, PossibleArg(None) if self.default is not None else None
-        elif self.kind is ParameterKind.KEYWORD_ONLY:
-            return (
-                val,
-                PossibleArg(self.name) if self.default is not None else self.name,
-            )
-        elif self.kind is ParameterKind.POSITIONAL_OR_KEYWORD:
-            return val, PosOrKeyword(self.name, self.default is None)
-        else:
-            assert False, self.kind
-
 
 def _has_decomposable_argument(args: Sequence[Argument]) -> bool:
     for composite, _ in args:

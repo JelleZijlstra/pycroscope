@@ -302,10 +302,6 @@ class CanAssignContext(Protocol):
         """Resolve a name for annotation evaluation."""
         return AnyValue(AnySource.inference), node.id
 
-    def get_type_alias_cache(self) -> MutableMapping[object, "TypeAlias"] | None:
-        """Return cache storage for evaluated type aliases, if supported."""
-        return None
-
     def can_assume_compatibility(
         self,
         left: "pycroscope.type_object.TypeObject",
@@ -612,6 +608,37 @@ class TypeVarParam:
     constraints: Sequence[Value] = ()
     variance: Variance = Variance.INVARIANT
 
+    def __post_init__(self) -> None:
+        if self.bound is None:
+            runtime_bound = safe_getattr(self.typevar, "__bound__", None)
+            if runtime_bound is not None:
+                object.__setattr__(
+                    self,
+                    "bound",
+                    _value_from_runtime_type_param_component(runtime_bound),
+                )
+        if not self.constraints:
+            runtime_constraints = safe_getattr(self.typevar, "__constraints__", ())
+            if runtime_constraints:
+                object.__setattr__(
+                    self,
+                    "constraints",
+                    tuple(
+                        _value_from_runtime_type_param_component(constraint)
+                        for constraint in runtime_constraints
+                    ),
+                )
+        if self.default is None:
+            runtime_default = safe_getattr(self.typevar, "__default__", _NO_DEFAULT)
+            if runtime_default is not _NO_DEFAULT and runtime_default is not NoDefault:
+                object.__setattr__(
+                    self,
+                    "default",
+                    _value_from_runtime_type_param_component(runtime_default),
+                )
+        if self.variance is Variance.INVARIANT:
+            object.__setattr__(self, "variance", get_typevar_variance(self.typevar))
+
     def substitute_typevars(self, typevars: TypeVarMap) -> Value:
         if self.typevar in typevars:
             return typevars[self.typevar]
@@ -651,9 +678,6 @@ class ParamSpecParam:
         if self.default is not None:
             yield from self.default.walk_values()
 
-    def get_fallback_value(self) -> None:
-        return None
-
     def __str__(self) -> str:
         return str(self.param_spec)
 
@@ -667,18 +691,6 @@ class TypeVarTupleParam:
     @property
     def typevar(self) -> TypeVarTupleLike:
         return self.typevar_tuple
-
-    def substitute_typevars(self, typevars: TypeVarMap) -> Value:
-        if self.typevar in typevars:
-            return typevars[self.typevar]
-        return type_param_to_value(self)
-
-    def walk_values(self) -> Iterable[Value]:
-        if self.default is not None:
-            yield from self.default.walk_values()
-
-    def get_fallback_value(self) -> None:
-        return None
 
     def __str__(self) -> str:
         return str(self.typevar)
@@ -2569,18 +2581,10 @@ class Bound:
 
 
 @dataclass(frozen=True)
-class _TypeParamBound(Bound):
-    type_param: TypeParam
-
-    @property
-    def typevar(self) -> TypeVarLike:
-        return self.type_param.typevar
-
-
-@dataclass(frozen=True)
-class LowerBound(_TypeParamBound):
+class LowerBound(Bound):
     """LowerBound(T, V) means V must be assignable to the value of T."""
 
+    type_param: TypeParam
     value: Value
 
     def __str__(self) -> str:
@@ -2588,9 +2592,10 @@ class LowerBound(_TypeParamBound):
 
 
 @dataclass(frozen=True)
-class UpperBound(_TypeParamBound):
+class UpperBound(Bound):
     """UpperBound(T, V) means the value of T must be assignable to V."""
 
+    type_param: TypeParam
     value: Value
 
     def __str__(self) -> str:
@@ -2605,7 +2610,8 @@ class OrBound(Bound):
 
 
 @dataclass(frozen=True)
-class IsOneOf(_TypeParamBound):
+class IsOneOf(Bound):
+    type_param: TypeParam
     constraints: Sequence[Value]
 
 
@@ -3191,9 +3197,6 @@ class PropertyInfo:
 @dataclass(frozen=True)
 class NamedTupleInfo:
     default_fields: tuple[str, ...] = ()
-
-    def substitute_typevars(self, typevars: TypeVarMap) -> "NamedTupleInfo":
-        return self
 
     def walk_values(self) -> Iterable[Value]:
         yield from ()
