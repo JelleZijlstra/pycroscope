@@ -346,14 +346,6 @@ class CanAssignContext(Protocol):
     ) -> None:
         """Record that implementing_class was shown assignable to protocol."""
 
-    def set_exclude_any(self) -> AbstractContextManager[None]:
-        """Within this context, `Any` is compatible only with itself."""
-        return contextlib.nullcontext()
-
-    def should_exclude_any(self) -> bool:
-        """Whether Any should be compatible only with itself."""
-        return False
-
     def display_value(self, value: Value) -> str:
         """Provide a pretty, user-readable display of this value."""
         return str(value)
@@ -1284,7 +1276,7 @@ class TypedValue(Value):
         return ctx.make_type_object(self.typ)
 
     def can_assign_thrift_enum(self, other: Value, ctx: CanAssignContext) -> CanAssign:
-        if isinstance(other, AnyValue) and not ctx.should_exclude_any():
+        if isinstance(other, AnyValue):
             ctx.record_any_used()
             return {}
         elif isinstance(other, TypeVarValue):

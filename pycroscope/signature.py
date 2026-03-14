@@ -127,7 +127,6 @@ from .value import (
     unite_values,
 )
 
-EMPTY = inspect.Parameter.empty
 UNANNOTATED = AnyValue(AnySource.unannotated)
 ELLIPSIS = Sentinel("ellipsis")
 ELLIPSIS_COMPOSITE = Composite(AnyValue(AnySource.ellipsis_callable))

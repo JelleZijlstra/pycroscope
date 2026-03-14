@@ -12,14 +12,13 @@ import itertools
 import sys
 import types
 from collections.abc import Callable, Generator, Iterable, Iterator, Sequence
-from contextlib import AbstractContextManager, contextmanager
+from contextlib import contextmanager
 from dataclasses import InitVar, dataclass, field
 from dataclasses import replace as dataclass_replace
 from typing import TypeVar, cast
 
 from typing_extensions import assert_never
 
-from .analysis_lib import override
 from .annotations import type_from_runtime, type_from_value
 from .arg_spec import ArgSpecCache, GenericBases
 from .attributes import (
@@ -937,14 +936,6 @@ class Checker:
     ) -> None:
         """Record that implementing_class was shown assignable to protocol."""
         pass
-
-    def set_exclude_any(self) -> AbstractContextManager[None]:
-        """Within this context, `Any` is compatible only with itself."""
-        return override(self, "_should_exclude_any", True)
-
-    def should_exclude_any(self) -> bool:
-        """Whether Any should be compatible only with itself."""
-        return self._should_exclude_any
 
     def _get_runtime_overloaded_method_signature(
         self, typ: type, attr: str

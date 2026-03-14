@@ -2175,7 +2175,7 @@ def _type_from_subscripted_value(
                 error_code=ErrorCode.invalid_literal,
             )
             return AnyValue(AnySource.error)
-        known_members = members
+        known_members = [elt for elt in members if isinstance(elt, KnownValue)]
         invalid_members = [
             elt for elt in known_members if not _is_valid_pep586_literal_value(elt.val)
         ]

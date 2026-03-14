@@ -1826,7 +1826,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     _type_alias_unguarded_refs_by_scope: dict[int, dict[str, set[str]]]
     _method_cache: dict[type[ast.AST], Callable[[Any], Value | None]]
     _name_node_to_statement: dict[ast.AST, ast.AST | None] | None
-    _should_exclude_any: bool
     _statement_types: set[type[ast.AST]]
     ann_assign_type: tuple[Value | None, bool] | None
     annotate: bool
@@ -2003,7 +2002,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         self._type_alias_unguarded_refs_by_scope = {}
         self._method_cache = {}
         self._statement_types = set()
-        self._should_exclude_any = False
         self.final_class_keys = set()
         self.final_member_names_by_class = {}
         self.final_members_initialized_in_init = {}
@@ -2064,14 +2062,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             self.attribute_checker.record_protocol_implementation(
                 protocol, implementing_class
             )
-
-    def set_exclude_any(self) -> AbstractContextManager[None]:
-        """Within this context, `Any` is compatible only with itself."""
-        return override(self, "_should_exclude_any", True)
-
-    def should_exclude_any(self) -> bool:
-        """Whether Any should be compatible only with itself."""
-        return self._should_exclude_any
 
     def get_generic_bases(
         self, typ: type | str, generic_args: Sequence[Value] = ()
@@ -10167,11 +10157,12 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         if not safe_isinstance(deprecated, str):
             # happens with Mock objects
             return False
-        self._show_error_if_checking(
-            node,
-            f"{value} is deprecated: {deprecated}",
-            error_code=ErrorCode.deprecated,
-        )
+        if node is not None:
+            self._show_error_if_checking(
+                node,
+                f"{value} is deprecated: {deprecated}",
+                error_code=ErrorCode.deprecated,
+            )
         return True
 
     # Imports

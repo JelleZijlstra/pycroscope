@@ -920,13 +920,13 @@ class Scope:
 
     # no real subscopes in non-function scopes, just dummy implementations
     @contextlib.contextmanager
-    def subscope(self) -> Generator[None]:
-        yield
+    def subscope(self) -> Generator[SubScope]:
+        yield {}
 
     @contextlib.contextmanager
-    def loop_scope(self) -> Generator[None]:
+    def loop_scope(self) -> Generator[list[SubScope]]:
         # Context manager for the subscope associated with a loop.
-        yield
+        yield []
 
     def combine_subscopes(
         self, scopes: Iterable[SubScope], *, ignore_leaves_scope: bool = False
@@ -1598,7 +1598,7 @@ class StackedScopes:
         self.simplification_limit = simplification_limit
         module_scope_vars: dict[Varname, Value] = {}
         module_scope_vars.update(module_vars)
-        self.scopes = [
+        self.scopes: list[Scope] = [
             self._builtin_scope,
             ModuleScope(
                 module_scope_vars,
@@ -1742,15 +1742,18 @@ class StackedScopes:
         self.scopes[-1].set(varname, value, node, state)
 
     def suppressing_subscope(self) -> AbstractContextManager[SubScope]:
-        return self.scopes[-1].suppressing_subscope()
+        current_scope = self.scopes[-1]
+        return current_scope.suppressing_subscope()
 
     def subscope(self) -> AbstractContextManager[SubScope]:
         """Creates a new subscope (see the :class:`FunctionScope` docstring)."""
-        return self.scopes[-1].subscope()
+        current_scope = self.scopes[-1]
+        return current_scope.subscope()
 
     def loop_scope(self) -> AbstractContextManager[list[SubScope]]:
         """Creates a new loop scope (see the :class:`FunctionScope` docstring)."""
-        return self.scopes[-1].loop_scope()
+        current_scope = self.scopes[-1]
+        return current_scope.loop_scope()
 
     def combine_subscopes(
         self, scopes: Iterable[SubScope], *, ignore_leaves_scope: bool = False
