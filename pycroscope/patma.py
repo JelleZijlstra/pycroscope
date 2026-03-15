@@ -356,11 +356,10 @@ class PatmaVisitor(ast.NodeVisitor):
         self.check_impossible_pattern(node, matched_type)
         constraint = self.make_constraint(
             ConstraintType.predicate,
-            # TODO figure out when to turn off positive_only
             IsAssignablePredicate(
                 matched_type,
                 self.visitor,
-                positive_only=not node.patterns and not node.kwd_patterns,
+                positive_only=bool(node.patterns or node.kwd_patterns),
             ),
         )
         subject = constrain_value(
