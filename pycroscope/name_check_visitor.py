@@ -15983,9 +15983,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                         self.add_constraint(case.guard, guard_constraint)
                         constraints.append(guard_constraint)
 
-                    constraints_to_apply.append(
-                        AndConstraint.make(constraints).invert()
-                    )
+                    case_constraint = AndConstraint.make(constraints)
+                    self.add_constraint(case, case_constraint)
+                    constraints_to_apply.append(case_constraint.invert())
                     self._generic_visit_list(case.body)
                     subscopes.append(case_scope)
 
@@ -15999,9 +15999,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 )
             )
 
-            if self.match_subject.value is NO_RETURN_VALUE:
-                self._set_name_in_scope(LEAVES_SCOPE, node, NO_RETURN_VALUE)
-            else:
+            if self.match_subject.value is not NO_RETURN_VALUE:
                 with self.scopes.subscope() as else_scope:
                     for constraint in constraints_to_apply:
                         self.add_constraint(node, constraint)

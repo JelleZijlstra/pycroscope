@@ -236,3 +236,42 @@ class TestPatma(TestNameCheckVisitorBase):
             match (x,):
                 case (int() as x,):
                     assert_type(x, int)
+
+    @assert_passes()
+    def test_match_body_narrows_after_prior_case(self):
+        class E:
+            pass
+
+        def capybara(result: int | E) -> list[tuple[bool, int]]:
+            match result:
+                case E():
+                    return []
+                case _:
+                    assert_type(result, int)
+                    return [(True, result)]
+
+    @assert_passes()
+    def test_exhaustive_match_does_not_leave_scope(self):
+        def capybara(x: object | None) -> int:
+            if x is not None:
+                match x:
+                    case int():
+                        val = 1
+                    case _:
+                        val = 2
+            else:
+                val = 3
+            return val
+
+    @assert_passes()
+    def test_class_pattern_with_subpatterns_does_not_negatively_narrow(self):
+        class E:
+            x: int
+
+        def capybara(v: int | E) -> int:
+            match v:
+                case E(x=1):
+                    return 0
+                case _:
+                    assert_type(v, int | E)
+                    return 1
