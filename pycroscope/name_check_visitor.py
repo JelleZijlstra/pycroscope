@@ -327,6 +327,15 @@ from .value import (
 from .yield_checker import YieldChecker
 
 _AST_TYPE_ALIAS = getattr(ast, "TypeAlias", None)
+_TYPE_PARAM_AST_NODE_TYPES = tuple(
+    typ
+    for typ in (
+        safe_getattr(ast, "TypeVar", None),
+        safe_getattr(ast, "ParamSpec", None),
+        safe_getattr(ast, "TypeVarTuple", None),
+    )
+    if isinstance(typ, type)
+)
 
 if sys.version_info >= (3, 11):
     TryNode = ast.Try | ast.TryStar
@@ -1783,6 +1792,187 @@ class _DataclassFieldInferenceCallContext:
         self.errors.append(message)
 
 
+@dataclass
+class _LegacyTypeParamPolicy:
+    allowed_identities: set[object]
+    message: str
+    report_in_collecting: bool = True
+    triggered: bool = False
+
+
+@dataclass
+class _VarianceCollectionContext:
+    type_param_polarities: dict[object, set[int]]
+    polarity: int
+
+
+class ActiveTypeParams:
+    def __init__(self, visitor: "NameCheckVisitor") -> None:
+        self.visitor = visitor
+        self._annotation_allowed_identities: list[set[object]] = []
+        self._active_pep695_identities: list[set[object]] = []
+        self._disallowed_identities: list[set[object]] = []
+        self._legacy_policies: list[_LegacyTypeParamPolicy] = []
+        self._variance_collections: list[_VarianceCollectionContext] = []
+
+    def current_annotation_identities(self) -> set[object]:
+        identities: set[object] = set()
+        for allowed in self._annotation_allowed_identities:
+            identities.update(allowed)
+        for allowed in self._active_pep695_identities:
+            identities.update(allowed)
+        return identities
+
+    def current_pep695_identities(self) -> set[object]:
+        identities: set[object] = set()
+        for allowed in self._active_pep695_identities:
+            identities.update(allowed)
+        return identities
+
+    @contextlib.contextmanager
+    def allow_in_annotations(self, identities: Iterable[object]) -> Generator[None]:
+        identities = set(identities)
+        if not identities:
+            yield
+            return
+        self._annotation_allowed_identities.append(identities)
+        try:
+            yield
+        finally:
+            self._annotation_allowed_identities.pop()
+
+    @contextlib.contextmanager
+    def push_pep695_scope(self, type_params: Sequence[TypeParam]) -> Generator[None]:
+        identities = {type_param.typevar for type_param in type_params}
+        if not identities:
+            yield
+            return
+        self._active_pep695_identities.append(identities)
+        try:
+            yield
+        finally:
+            self._active_pep695_identities.pop()
+
+    @contextlib.contextmanager
+    def disallow(self, identities: Iterable[object]) -> Generator[None]:
+        identities = set(identities)
+        if not identities:
+            yield
+            return
+        self._disallowed_identities.append(identities)
+        try:
+            yield
+        finally:
+            self._disallowed_identities.pop()
+
+    @contextlib.contextmanager
+    def reject_legacy_type_params(
+        self,
+        message: str,
+        *,
+        include_active_pep695: bool = True,
+        report_in_collecting: bool = True,
+    ) -> Generator[set[object]]:
+        allowed_identities = (
+            self.current_pep695_identities() if include_active_pep695 else set()
+        )
+        policy = _LegacyTypeParamPolicy(
+            allowed_identities, message, report_in_collecting=report_in_collecting
+        )
+        self._legacy_policies.append(policy)
+        try:
+            yield allowed_identities
+        finally:
+            self._legacy_policies.pop()
+
+    @contextlib.contextmanager
+    def collect_variance(
+        self, type_param_polarities: dict[object, set[int]], *, polarity: int
+    ) -> Generator[None]:
+        self._variance_collections.append(
+            _VarianceCollectionContext(type_param_polarities, polarity)
+        )
+        try:
+            yield
+        finally:
+            self._variance_collections.pop()
+
+    def observe_value(self, node: ast.AST, value: Value) -> None:
+        if not (
+            self._legacy_policies
+            or self._disallowed_identities
+            or self.visitor.in_annotation
+            or self._variance_collections
+        ):
+            return
+        if _is_type_param_declaration_node(node):
+            return
+
+        type_param = _type_param_value_from_value(value, self.visitor)
+        if type_param is not None:
+            self._check_direct_type_param_usage(node, type_param)
+            if isinstance(type_param, TypeVarParam) and self._variance_collections:
+                for context in self._variance_collections:
+                    used_polarities = context.type_param_polarities.get(
+                        type_param.typevar
+                    )
+                    if used_polarities is None:
+                        used_polarities = context.type_param_polarities.setdefault(
+                            type_param.typevar, set()
+                        )
+                    _record_variance_polarity(used_polarities, context.polarity)
+
+    def _show_error(
+        self,
+        node: ast.AST,
+        message: str,
+        *,
+        error_code: Error,
+        report_in_collecting: bool,
+    ) -> None:
+        if report_in_collecting and self.visitor._is_collecting():
+            self.visitor.show_error(node, message, error_code=error_code)
+        else:
+            self.visitor._show_error_if_checking(node, message, error_code=error_code)
+
+    def _check_direct_type_param_usage(
+        self, error_node: ast.AST, type_param: TypeParam
+    ) -> None:
+        identity = type_param.typevar
+        for policy in self._legacy_policies:
+            if policy.triggered:
+                continue
+            if identity in policy.allowed_identities:
+                continue
+            policy.triggered = True
+            self._show_error(
+                error_node,
+                policy.message,
+                error_code=ErrorCode.invalid_annotation,
+                report_in_collecting=policy.report_in_collecting,
+            )
+            break
+
+        if not isinstance(type_param, TypeVarParam) or identity is SelfT:
+            return
+        if any(identity in disallowed for disallowed in self._disallowed_identities):
+            self.visitor._show_error_if_checking(
+                error_node,
+                "Type parameter is not valid in this annotation context",
+                error_code=ErrorCode.invalid_annotation,
+            )
+            return
+        if self.visitor.in_type_alias_definition or not self.visitor.in_annotation:
+            return
+        if identity in self.current_annotation_identities():
+            return
+        self.visitor._show_error_if_checking(
+            error_node,
+            "Type parameter is not valid in this annotation context",
+            error_code=ErrorCode.invalid_annotation,
+        )
+
+
 @used  # exposed as an API
 class CallSiteCollector:
     """Class to record function calls with their origin."""
@@ -1835,10 +2025,8 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     current_dataclass_kw_only_active: bool
     current_class_key: type | str | None
     current_class_type_params: Sequence[TypeParam] | None
-    current_class_declared_type_param_identities: set[object] | None
-    disallowed_type_param_identities: set[object] | None
+    active_type_params: ActiveTypeParams
     in_type_alias_definition: bool
-    _active_pep695_type_params: list[set[object]]
     current_enum_members: _EnumMemberTracker | None
     current_function: object | None
     current_function_info: FunctionInfo | None
@@ -1915,10 +2103,8 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         self.current_dataclass_kw_only_active = False
         self.current_class_key = None
         self.current_class_type_params = None
-        self.current_class_declared_type_param_identities = None
-        self.disallowed_type_param_identities = None
+        self.active_type_params = ActiveTypeParams(self)
         self.in_type_alias_definition = False
-        self._active_pep695_type_params = []
         self.current_synthetic_typeddict = None
         self.current_function_name = None
         self.current_function_info = None
@@ -2966,8 +3152,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 return True
         return False
 
-    def _bound_type_param_identities_for_current_function(self) -> set[object]:
-        info = self.current_function_info
+    def _bound_type_param_identities_for_function(
+        self, info: FunctionInfo | None
+    ) -> set[object]:
         if info is None:
             return set()
         identities: set[object] = {
@@ -3002,51 +3189,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             identities.add(identity)
         return identities
 
-    def _allowed_type_param_identities_in_current_annotation_context(
-        self,
-    ) -> set[object]:
-        identities = self._bound_type_param_identities_for_current_function()
-        if self.current_class_type_params is not None:
-            identities.update(
-                type_param.typevar for type_param in self.current_class_type_params
-            )
-        if self.current_class_declared_type_param_identities is not None:
-            identities.update(self.current_class_declared_type_param_identities)
-        identities.update(chain.from_iterable(self._active_pep695_type_params))
-        return identities
-
-    def _check_invalid_type_parameter_usage(
-        self, value: Value, error_node: ast.AST
-    ) -> None:
-        type_param = _type_param_value_from_value(value, self)
-        if not isinstance(type_param, TypeVarParam) or type_param.typevar is SelfT:
-            return
-        identity = type_param.typevar
-        if (
-            self.disallowed_type_param_identities is not None
-            and identity in self.disallowed_type_param_identities
-        ):
-            self._show_error_if_checking(
-                error_node,
-                "Type parameter is not valid in this annotation context",
-                error_code=ErrorCode.invalid_annotation,
-            )
-            return
-        if self.in_type_alias_definition:
-            return
-        if not self.in_annotation:
-            return
-        if (
-            identity
-            in self._allowed_type_param_identities_in_current_annotation_context()
-        ):
-            return
-        self._show_error_if_checking(
-            error_node,
-            "Type parameter is not valid in this annotation context",
-            error_code=ErrorCode.invalid_annotation,
-        )
-
     def _node_contains_type_param_reference(self, node: ast.AST) -> bool:
         for subnode in ast.walk(node):
             if not isinstance(subnode, ast.Name) or not isinstance(
@@ -3064,28 +3206,12 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     return True
         return False
 
-    def _outer_type_param_identities_for_nested_class(self) -> set[object]:
-        identities = self._bound_type_param_identities_for_current_function()
-        if self.current_class_type_params is not None:
-            identities.update(
-                type_param.typevar for type_param in self.current_class_type_params
-            )
-        if self.current_class_declared_type_param_identities is not None:
-            identities.update(self.current_class_declared_type_param_identities)
-        return identities
-
     def _class_body_type_alias_disallowed_type_param_identities(
         self,
     ) -> set[object] | None:
         if self.scopes.scope_type() != ScopeType.class_scope:
             return None
-        identities: set[object] = set()
-        if self.current_class_type_params is not None:
-            identities.update(
-                type_param.typevar for type_param in self.current_class_type_params
-            )
-        if self.current_class_declared_type_param_identities is not None:
-            identities.update(self.current_class_declared_type_param_identities)
+        identities = self.active_type_params.current_annotation_identities()
         return identities or None
 
     def _evaluate_type_alias_node(
@@ -3098,11 +3224,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         with (
             override(self, "in_annotation", True),
             override(self, "in_type_alias_definition", True),
-            override(
-                self,
-                "disallowed_type_param_identities",
-                disallowed_type_param_identities,
-            ),
+            self.active_type_params.disallow(disallowed_type_param_identities or ()),
         ):
             return annotation_expr_from_ast(
                 value_node, visitor=self, suppress_errors=suppress_errors
@@ -3584,8 +3706,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     error_node, f"Undefined name: {node.id}", ErrorCode.undefined_name
                 )
             return AnyValue(AnySource.error), origin
-        if self.in_annotation or self.disallowed_type_param_identities is not None:
-            self._check_invalid_type_parameter_usage(value, error_node)
+        self.active_type_params.observe_value(error_node, value)
         assert not isinstance(value, (TypeVarParam, ParamSpecParam, TypeVarTupleParam))
         if isinstance(value, InputSigValue):
             # ParamSpecs are stored as InputSigValues and cannot be converted to a
@@ -3690,37 +3811,33 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         else:
             ctx = contextlib.nullcontext()
         with ctx:
-            if sys.version_info >= (3, 12) and node.type_params:
-                declared_type_params = node.type_params
-                type_param_values = list(
-                    self.visit_type_param_values(declared_type_params)
-                )
-            else:
-                type_param_values = []
-                declared_type_params = []
-            if self._is_checking() and type_param_values:
-                legacy_typevars = self._legacy_typevars_in_nodes(
-                    [
-                        *declared_type_params,
-                        *node.bases,
-                        *(kw.value for kw in node.keywords),
-                    ],
-                    type_param_values,
-                )
-                if legacy_typevars:
-                    self._show_error_if_checking(
-                        node,
-                        "Class definition cannot combine old-style TypeVar declarations"
-                        " with type parameter syntax",
-                        error_code=ErrorCode.invalid_annotation,
-                    )
-            disallowed_type_params = (
-                self._outer_type_param_identities_for_nested_class()
+            legacy_type_param_ctx: AbstractContextManager[set[object] | None] = (
+                contextlib.nullcontext(None)
             )
-            with override(
-                self, "disallowed_type_param_identities", disallowed_type_params or None
-            ):
-                base_values = self._generic_visit_list(node.bases)
+            if self._is_checking() and sys.version_info >= (3, 12) and node.type_params:
+                legacy_type_param_ctx = (
+                    self.active_type_params.reject_legacy_type_params(
+                        "Class definition cannot combine old-style TypeVar declarations"
+                        " with type parameter syntax"
+                    )
+                )
+            with legacy_type_param_ctx as allowed_legacy_identities:
+                if sys.version_info >= (3, 12) and node.type_params:
+                    declared_type_params = node.type_params
+                    type_param_values = list(
+                        self.visit_type_param_values(
+                            declared_type_params,
+                            legacy_allowed_identities=allowed_legacy_identities,
+                        )
+                    )
+                else:
+                    type_param_values = []
+                    declared_type_params = []
+                disallowed_type_params = (
+                    self.active_type_params.current_annotation_identities()
+                )
+                with self.active_type_params.disallow(disallowed_type_params):
+                    base_values = self._generic_visit_list(node.bases)
             if self._is_checking():
                 self._check_typevartuple_usage_in_type_parameter_bases(
                     node, base_values
@@ -3766,9 +3883,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             ):
                 self.enum_class_keys.add(class_key)
             self._check_for_final_base_classes(node, base_values)
-            with override(
-                self, "disallowed_type_param_identities", disallowed_type_params or None
-            ):
+            with self.active_type_params.disallow(disallowed_type_params):
                 keyword_values = [(kw, self.visit(kw.value)) for kw in node.keywords]
             if self._is_checking():
                 self._check_generic_metaclass_keyword(keyword_values)
@@ -4204,8 +4319,18 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 )
             if isinstance(class_scope_object, type):
                 self._record_class_body_attributes(node, class_scope_object)
+            class_annotation_identities = {
+                type_param.typevar for type_param in method_type_param_values
+            }
+            class_annotation_identities.update(
+                type_param.typevar for type_param in type_param_values
+            )
             with (
-                self._active_pep695_type_param_scope(type_param_values),
+                self.active_type_params.push_pep695_scope(type_param_values),
+                self.active_type_params.allow_in_annotations(
+                    class_annotation_identities
+                ),
+                self.active_type_params.disallow(disallowed_type_params),
                 override(self, "current_synthetic_typeddict", synthetic_typeddict),
                 override(self, "current_class_key", class_key),
                 override(self, "current_dataclass_info", dataclass_semantics),
@@ -4217,11 +4342,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                         if dataclass_semantics is not None
                         else False
                     ),
-                ),
-                override(
-                    self,
-                    "current_class_declared_type_param_identities",
-                    {type_param.typevar for type_param in type_param_values},
                 ),
                 override(
                     self, "current_class_type_params", tuple(method_type_param_values)
@@ -7651,76 +7771,82 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         else:
             ctx = contextlib.nullcontext()
         with ctx:
+            legacy_type_param_ctx: AbstractContextManager[set[object] | None] = (
+                contextlib.nullcontext(None)
+            )
             if (
-                sys.version_info >= (3, 12)
+                self._is_checking()
+                and sys.version_info >= (3, 12)
                 and not isinstance(node, ast.Lambda)
                 and node.type_params
             ):
-                declared_type_params = node.type_params
-                type_params = self.visit_type_param_values(declared_type_params)
-            else:
-                type_params = []
-                declared_type_params = []
-            if type_params and not isinstance(node, ast.Lambda):
-                annotation_nodes: list[ast.AST] = [*declared_type_params]
-                annotation_nodes.extend(
-                    arg.annotation
-                    for arg in (
-                        *node.args.posonlyargs,
-                        *node.args.args,
-                        *node.args.kwonlyargs,
-                    )
-                    if arg.annotation is not None
-                )
-                if (
-                    node.args.vararg is not None
-                    and node.args.vararg.annotation is not None
-                ):
-                    annotation_nodes.append(node.args.vararg.annotation)
-                if (
-                    node.args.kwarg is not None
-                    and node.args.kwarg.annotation is not None
-                ):
-                    annotation_nodes.append(node.args.kwarg.annotation)
-                if node.returns is not None:
-                    annotation_nodes.append(node.returns)
-                legacy_typevars = self._legacy_typevars_in_nodes(
-                    annotation_nodes, type_params
-                )
-                if legacy_typevars:
-                    self._show_error_if_checking(
-                        node,
+                legacy_type_param_ctx = (
+                    self.active_type_params.reject_legacy_type_params(
                         "Function definition cannot combine old-style TypeVar"
-                        " declarations with type parameter syntax",
-                        error_code=ErrorCode.invalid_annotation,
+                        " declarations with type parameter syntax"
                     )
-            params = compute_parameters(
-                node,
-                enclosing_class,
-                self,
-                is_nested_in_class=is_nested_in_class,
-                is_classmethod=FunctionDecorator.classmethod in decorator_kinds,
-                is_staticmethod=FunctionDecorator.staticmethod in decorator_kinds,
-                declared_type_params=type_params,
+                )
+            with legacy_type_param_ctx as allowed_legacy_identities:
+                if (
+                    sys.version_info >= (3, 12)
+                    and not isinstance(node, ast.Lambda)
+                    and node.type_params
+                ):
+                    declared_type_params = node.type_params
+                    type_params = self.visit_type_param_values(
+                        declared_type_params,
+                        legacy_allowed_identities=allowed_legacy_identities,
+                    )
+                else:
+                    type_params = []
+                    declared_type_params = []
+            legacy_annotation_ctx: AbstractContextManager[set[object] | None] = (
+                contextlib.nullcontext(None)
             )
-            if isinstance(node, ast.Lambda) or node.returns is None:
-                return_annotation = None
-            else:
-                return_annotation = self.value_of_annotation(node.returns)
-                if isinstance(return_annotation, InputSigValue):
-                    if isinstance(return_annotation.input_sig, ParamSpecParam):
-                        self.show_error(
-                            node.returns,
-                            "ParamSpec cannot be used in this annotation context",
-                            error_code=ErrorCode.invalid_annotation,
-                        )
-                    else:
-                        self.show_error(
-                            node.returns,
-                            f"Unrecognized annotation {return_annotation}",
-                            error_code=ErrorCode.invalid_annotation,
-                        )
-                    return_annotation = AnyValue(AnySource.error)
+            if (
+                self._is_checking()
+                and sys.version_info >= (3, 12)
+                and not isinstance(node, ast.Lambda)
+                and node.type_params
+            ):
+                legacy_annotation_ctx = (
+                    self.active_type_params.reject_legacy_type_params(
+                        "Function definition cannot combine old-style TypeVar"
+                        " declarations with type parameter syntax"
+                    )
+                )
+            with legacy_annotation_ctx as allowed_legacy_identities:
+                if allowed_legacy_identities is not None:
+                    allowed_legacy_identities.update(
+                        type_param.typevar for type_param in type_params
+                    )
+                params = compute_parameters(
+                    node,
+                    enclosing_class,
+                    self,
+                    is_nested_in_class=is_nested_in_class,
+                    is_classmethod=FunctionDecorator.classmethod in decorator_kinds,
+                    is_staticmethod=FunctionDecorator.staticmethod in decorator_kinds,
+                    declared_type_params=type_params,
+                )
+                if isinstance(node, ast.Lambda) or node.returns is None:
+                    return_annotation = None
+                else:
+                    return_annotation = self.value_of_annotation(node.returns)
+                    if isinstance(return_annotation, InputSigValue):
+                        if isinstance(return_annotation.input_sig, ParamSpecParam):
+                            self.show_error(
+                                node.returns,
+                                "ParamSpec cannot be used in this annotation context",
+                                error_code=ErrorCode.invalid_annotation,
+                            )
+                        else:
+                            self.show_error(
+                                node.returns,
+                                f"Unrecognized annotation {return_annotation}",
+                                error_code=ErrorCode.invalid_annotation,
+                            )
+                        return_annotation = AnyValue(AnySource.error)
             runtime_current_class = (
                 self.current_class if isinstance(self.current_class, type) else None
             )
@@ -7993,6 +8119,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 expected_return, _ = unannotate_value(
                     expected_return, TypeGuardExtension
                 )
+            function_annotation_identities = (
+                self._bound_type_param_identities_for_function(info)
+            )
 
             with (
                 self.asynq_checker.set_func_name(
@@ -8001,7 +8130,10 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     is_classmethod=FunctionDecorator.classmethod
                     in info.decorator_kinds,
                 ),
-                self._active_pep695_type_param_scope(info.type_params),
+                self.active_type_params.push_pep695_scope(info.type_params),
+                self.active_type_params.allow_in_annotations(
+                    function_annotation_identities
+                ),
                 override(self, "yield_checker", YieldChecker(self)),
                 override(self, "is_async_def", isinstance(node, ast.AsyncFunctionDef)),
                 override(self, "current_function_name", node.name),
@@ -12354,9 +12486,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             with (
                 override(self, "in_annotation", True),
                 override(self, "in_type_alias_definition", True),
-                override(
-                    self, "disallowed_type_param_identities", disallowed_type_params
-                ),
+                self.active_type_params.disallow(disallowed_type_params or ()),
             ):
                 alias_expr = annotation_expr_from_ast(
                     node.value, self, suppress_errors=self._is_collecting()
@@ -12839,7 +12969,10 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             self.visit(node.target)
 
     def visit_type_param_values(
-        self, type_params: Sequence[ast.AST]
+        self,
+        type_params: Sequence[ast.AST],
+        *,
+        legacy_allowed_identities: set[object] | None = None,
     ) -> Sequence[TypeParam]:
         type_param_values = []
         for param in type_params:
@@ -12848,24 +12981,12 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             if extracted is None:
                 assert False, f"unexpected type parameter value: {value!r}"
             type_param_values.append(extracted)
+            if legacy_allowed_identities is not None:
+                legacy_allowed_identities.add(extracted.typevar)
         return type_param_values
 
     def _current_scope_key(self) -> int:
         return id(self.scopes.current_scope())
-
-    @contextlib.contextmanager
-    def _active_pep695_type_param_scope(
-        self, type_params: Sequence[TypeParam]
-    ) -> Generator[None]:
-        if not type_params:
-            yield
-            return
-        type_param_identities = {param.typevar for param in type_params}
-        self._active_pep695_type_params.append(type_param_identities)
-        try:
-            yield
-        finally:
-            self._active_pep695_type_params.pop()
 
     def _record_type_alias_structure(
         self, name: str, alias_node: ast.AST, value_node: ast.AST
@@ -12904,42 +13025,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         return any(
             dep in scope_refs and reaches_target(dep)
             for dep in scope_refs.get(name, ())
-        )
-
-    def _legacy_typevars_in_nodes(
-        self,
-        nodes: Iterable[ast.AST],
-        declared_type_params: Sequence[TypeParam],
-        *,
-        include_active_type_params: bool = True,
-    ) -> set[str]:
-        declared = {param.typevar for param in declared_type_params}
-        if include_active_type_params:
-            declared.update(chain.from_iterable(self._active_pep695_type_params))
-        legacy: set[str] = set()
-        for node in nodes:
-            for subnode in ast.walk(node):
-                if not isinstance(subnode, ast.Name) or not isinstance(
-                    subnode.ctx, ast.Load
-                ):
-                    continue
-                resolved, _ = self.resolve_name(
-                    subnode, error_node=subnode, suppress_errors=True
-                )
-                for subval in flatten_values(resolved, unwrap_annotated=True):
-                    identity = _type_param_identity(subval, self)
-                    if identity is None:
-                        continue
-                    if identity not in declared:
-                        legacy.add(subnode.id)
-                    break
-        return legacy
-
-    def _legacy_typevars_in_alias_expr(
-        self, value_node: ast.AST, declared_type_params: Sequence[TypeParam]
-    ) -> set[str]:
-        return self._legacy_typevars_in_nodes(
-            [value_node], declared_type_params, include_active_type_params=False
         )
 
     def _infer_type_alias_type_params(
@@ -13104,9 +13189,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             with (
                 override(self, "in_annotation", True),
                 override(self, "in_type_alias_definition", True),
-                override(
-                    self, "disallowed_type_param_identities", disallowed_type_params
-                ),
+                self.active_type_params.disallow(disallowed_type_params or ()),
             ):
                 alias_expr = annotation_expr_from_ast(
                     node.value, visitor=self, suppress_errors=False
@@ -13124,7 +13207,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 self._is_checking()
                 and _looks_like_implicit_type_alias_expr(node.value)
                 and _contains_implicit_type_alias_syntax(node.value)
-                and bool(self._legacy_typevars_in_alias_expr(node.value, ()))
             ):
                 self.show_caught_errors(invalid_annotation_errors)
             return None
@@ -13213,27 +13295,31 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     f"Type alias {name} has a circular definition",
                     error_code=ErrorCode.invalid_annotation,
                 )
-            legacy_typevars = self._legacy_typevars_in_nodes(
-                [value_node], declared_type_params
-            )
-            if legacy_typevars:
-                if type_params:
-                    message = (
-                        "Type alias cannot combine old-style TypeVar declarations"
-                        " with type statement parameters"
-                    )
-                else:
-                    message = (
-                        "Type alias must declare type parameters in the"
-                        " type statement"
-                    )
-                self._show_error_if_checking(
-                    node, message, error_code=ErrorCode.invalid_annotation
+        legacy_type_param_ctx: AbstractContextManager[set[object] | None] = (
+            contextlib.nullcontext(None)
+        )
+        if self._is_checking():
+            if type_params:
+                legacy_message = (
+                    "Type alias cannot combine old-style TypeVar declarations"
+                    " with type statement parameters"
                 )
+            else:
+                legacy_message = (
+                    "Type alias must declare type parameters in the" " type statement"
+                )
+            legacy_type_param_ctx = self.active_type_params.reject_legacy_type_params(
+                legacy_message, include_active_pep695=False
+            )
         with (
             override(self, "in_annotation", True),
             override(self, "in_type_alias_definition", True),
+            legacy_type_param_ctx as allowed_legacy_identities,
         ):
+            if allowed_legacy_identities is not None:
+                allowed_legacy_identities.update(
+                    type_param.typevar for type_param in declared_type_params
+                )
             annotation_expr_from_ast(
                 value_node,
                 visitor=self,
@@ -13329,43 +13415,47 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                         f"Type alias {name} has a circular definition",
                         error_code=ErrorCode.invalid_annotation,
                     )
+                legacy_type_param_ctx: AbstractContextManager[set[object] | None] = (
+                    contextlib.nullcontext(None)
+                )
+                if node.type_params:
+                    legacy_type_param_ctx = (
+                        self.active_type_params.reject_legacy_type_params(
+                            "Type alias cannot combine old-style TypeVar declarations"
+                            " with type statement parameters",
+                            include_active_pep695=False,
+                        )
+                    )
+                else:
+                    legacy_type_param_ctx = (
+                        self.active_type_params.reject_legacy_type_params(
+                            "Type alias must declare type parameters in the"
+                            " type statement",
+                            include_active_pep695=False,
+                        )
+                    )
                 with self.scopes.add_scope(
                     ScopeType.annotation_scope, scope_node=node, scope_object=alias_obj
                 ):
-                    if node.type_params:
-                        type_param_values = self.visit_type_param_values(
-                            node.type_params
-                        )
-                        with self.scopes.add_scope(
-                            ScopeType.annotation_scope,
-                            scope_node=node,
-                            scope_object=alias_obj,
-                        ):
+                    with legacy_type_param_ctx as allowed_legacy_identities:
+                        if node.type_params:
+                            type_param_values = self.visit_type_param_values(
+                                node.type_params,
+                                legacy_allowed_identities=allowed_legacy_identities,
+                            )
+                            with self.scopes.add_scope(
+                                ScopeType.annotation_scope,
+                                scope_node=node,
+                                scope_object=alias_obj,
+                            ):
+                                value = self.visit(node.value)
+                        else:
                             value = self.visit(node.value)
-                    else:
-                        value = self.visit(node.value)
                 if _value_contains_self(value):
                     self._show_error_if_checking(
                         node.value,
                         self._self_error_message("cannot be used in type aliases"),
                         error_code=ErrorCode.invalid_annotation,
-                    )
-                legacy_typevars = self._legacy_typevars_in_alias_expr(
-                    node.value, type_param_values
-                )
-                if legacy_typevars:
-                    if node.type_params:
-                        message = (
-                            "Type alias cannot combine old-style TypeVar declarations"
-                            " with type statement parameters"
-                        )
-                    else:
-                        message = (
-                            "Type alias must declare type parameters in the"
-                            " type statement"
-                        )
-                    self._show_error_if_checking(
-                        node, message, error_code=ErrorCode.invalid_annotation
                     )
             else:
                 value = None
@@ -17230,6 +17320,12 @@ def _type_param_value_from_value(
     if isinstance(value, InputSigValue) and isinstance(value.input_sig, ParamSpecParam):
         return value.input_sig
     return make_type_param_from_value(value, visitor=visitor)
+
+
+def _is_type_param_declaration_node(node: ast.AST) -> bool:
+    return bool(_TYPE_PARAM_AST_NODE_TYPES) and isinstance(
+        node, _TYPE_PARAM_AST_NODE_TYPES
+    )
 
 
 def _count_starred_type_param_args(slice_node: ast.AST) -> int:
