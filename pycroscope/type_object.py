@@ -7,7 +7,7 @@ An object that represents a type.
 import collections.abc
 import inspect
 import sys
-from collections.abc import Container, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Literal
 from unittest import mock
@@ -606,11 +606,6 @@ class TypeObject:
     def is_instance(self, obj: object) -> bool:
         """Whether obj is an instance of this type."""
         return safe_isinstance(obj, self.typ)
-
-    def is_exactly(self, types: Container[type]) -> bool:
-        if not isinstance(self.typ, type):
-            return False
-        return self.typ in types
 
     def is_metatype_of(self, other: "TypeObject") -> bool:
         if isinstance(self.typ, type) and isinstance(other.typ, type):
