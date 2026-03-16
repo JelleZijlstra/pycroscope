@@ -43,12 +43,17 @@ from . import (
     yield_checker,
 )
 from .find_unused import used as used
-from .value import assert_is_value as assert_is_value, dump_value as dump_value
+from .value import (
+    assert_is_value as assert_is_value,
+    dump_value as dump_value,
+    get_mro as get_mro,
+)
 
 # Exposed as APIs
 used(ast_annotator)
 used(assert_is_value)
 used(dump_value)
+used(get_mro)
 used(extensions.LiteralOnly)
 used(extensions.NoAny)
 used(extensions.overload)

@@ -7,7 +7,7 @@ An object that represents a type.
 import collections.abc
 import inspect
 import sys
-from collections.abc import Container, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Literal
 from unittest import mock
@@ -68,6 +68,7 @@ from .value import (
     SyntheticModuleValue,
     TypedValue,
     TypeFormValue,
+    TypeParam,
     TypeVarLike,
     TypeVarValue,
     UnboundMethodValue,
@@ -119,7 +120,11 @@ def get_mro(typ: type | super) -> Sequence[type]:
 @dataclass
 class TypeObject:
     typ: type | super | str
+    mro: tuple[Value, ...]
     base_classes: set[type | str] = field(default_factory=set)
+    declared_type_params: tuple[TypeParam, ...] = field(
+        default_factory=tuple, repr=False
+    )
     is_final: bool = False
     is_protocol: bool = False
     protocol_members: set[str] = field(default_factory=set)
@@ -601,11 +606,6 @@ class TypeObject:
     def is_instance(self, obj: object) -> bool:
         """Whether obj is an instance of this type."""
         return safe_isinstance(obj, self.typ)
-
-    def is_exactly(self, types: Container[type]) -> bool:
-        if not isinstance(self.typ, type):
-            return False
-        return self.typ in types
 
     def is_metatype_of(self, other: "TypeObject") -> bool:
         if isinstance(self.typ, type) and isinstance(other.typ, type):

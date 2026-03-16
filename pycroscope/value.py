@@ -23,6 +23,7 @@ import ast
 import collections.abc
 import contextlib
 import enum
+import inspect
 import sys
 import textwrap
 import types
@@ -417,6 +418,18 @@ def dump_value(value: T) -> T:
 
     """
     return value
+
+
+def get_mro(typ: object) -> tuple[type, ...]:
+    """Return the runtime MRO for a class-like object.
+
+    During static analysis, pycroscope replaces this with a value-level MRO that
+    preserves generic specialization for synthetic and runtime classes.
+
+    """
+    if isinstance(typ, type):
+        return inspect.getmro(typ)
+    return ()
 
 
 class AnySource(enum.Enum):
@@ -1085,17 +1098,15 @@ class KnownValue(Value):
     """The Python object that this ``KnownValue`` represents."""
 
     def is_type(self, typ: type) -> bool:
-        return self.get_type_object().is_assignable_to_type(typ)
+        return safe_isinstance(self.val, typ)
 
     def get_type(self) -> type:
         return type(self.val)
 
     def get_type_object(
-        self, ctx: CanAssignContext | None = None
+        self, ctx: CanAssignContext
     ) -> "pycroscope.type_object.TypeObject":
-        if ctx is not None:
-            return ctx.make_type_object(type(self.val))
-        return pycroscope.type_object.TypeObject(type(self.val))
+        return ctx.make_type_object(type(self.val))
 
     def get_type_value(self) -> Value:
         return KnownValue(type(self.val))
@@ -1302,18 +1313,10 @@ class TypedValue(Value):
     """The underlying type, or a fully qualified reference to one."""
     literal_only: bool = False
     """True if this is LiteralString (PEP 675)."""
-    _type_object: Optional["pycroscope.type_object.TypeObject"] = field(
-        init=False, repr=False, hash=False, compare=False, default=None
-    )
 
     def get_type_object(
-        self, ctx: CanAssignContext | None = None
+        self, ctx: CanAssignContext
     ) -> "pycroscope.type_object.TypeObject":
-        if ctx is None:
-            if self._type_object is None:
-                # TODO: remove this behavior and make ctx required.
-                self._type_object = pycroscope.type_object.TypeObject(self.typ)
-            return self._type_object
         # `TypeObject` instances are checker-specific (they include checker-
         # specific synthetic bases/protocol members and protocol caches), so do
         # not cache them on Value instances that can outlive a single checker.
@@ -1493,7 +1496,7 @@ class TypedValue(Value):
         return AnyValue(AnySource.generic_argument)
 
     def is_type(self, typ: type) -> bool:
-        return self.get_type_object().is_assignable_to_type(typ)
+        return isinstance(self.typ, type) and safe_issubclass(self.typ, typ)
 
     def get_type(self) -> type | None:
         if isinstance(self.typ, str):
@@ -1508,11 +1511,10 @@ class TypedValue(Value):
     def decompose(self) -> Iterable[Value] | None:
         if self.typ is bool:
             return [KnownValue(True), KnownValue(False)]
-        type_object = self.get_type_object()
         if (
             isinstance(self.typ, type)
-            and type_object.is_assignable_to_type(enum.Enum)
-            and not type_object.is_assignable_to_type(enum.Flag)
+            and safe_issubclass(self.typ, enum.Enum)
+            and not safe_issubclass(self.typ, enum.Flag)
         ):
             # Decompose enum into its members
             assert issubclass(self.typ, enum.Enum)
@@ -1527,8 +1529,6 @@ class TypedValue(Value):
             suffix = " (literal only)"
         else:
             suffix = ""
-        if self._type_object is not None:
-            return f"{self._type_object}{suffix}"
         return stringify_object(self.typ) + suffix
 
 
@@ -2369,7 +2369,7 @@ class SubclassValue(Value):
         if isinstance(self.typ, TypedValue) and safe_isinstance(self.typ.typ, type):
             return ctx.make_type_object(type(self.typ.typ))
         # TODO synthetic types
-        return pycroscope.type_object.TypeObject(object)
+        return ctx.make_type_object(object)
 
     def walk_values(self) -> Iterable["Value"]:
         yield self
