@@ -61,6 +61,7 @@ from .stacked_scopes import (
     VarnameWithOrigin,
     annotate_with_constraint,
 )
+from .type_object import _class_key_from_value
 from .value import (
     NO_RETURN_VALUE,
     UNINITIALIZED_VALUE,
@@ -100,6 +101,7 @@ from .value import (
     concrete_values_from_iterable,
     dump_value,
     flatten_values,
+    get_mro,
     kv_pairs_from_mapping,
     len_of_value,
     replace_fallback,
@@ -2026,6 +2028,17 @@ def _dump_value_impl(ctx: CallContext) -> Value:
     return value
 
 
+def _get_mro_impl(ctx: CallContext) -> Value:
+    typ = replace_fallback(ctx.vars["typ"])
+    checker = ctx.visitor.checker
+    class_key = _class_key_from_value(typ)
+    if class_key is None:
+        return ctx.inferred_return_value
+    return SequenceValue(
+        tuple, [(False, value) for value in checker.make_type_object(class_key).mro]
+    )
+
+
 def _str_format_impl(ctx: CallContext) -> Value:
     self = ctx.vars["self"]
     if not isinstance(self, KnownValue):
@@ -2861,6 +2874,12 @@ def get_default_argspecs() -> dict[object, Signature]:
             return_annotation=TypeVarValue(TypeVarParam(T)),
             impl=_dump_value_impl,
             callable=dump_value,
+        ),
+        Signature.make(
+            [SigParameter("typ", _POS_ONLY)],
+            return_annotation=GenericValue(tuple, [TypedValue(type)]),
+            impl=_get_mro_impl,
+            callable=get_mro,
         ),
         # builtins
         Signature.make(

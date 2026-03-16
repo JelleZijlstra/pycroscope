@@ -68,6 +68,7 @@ from .value import (
     SyntheticModuleValue,
     TypedValue,
     TypeFormValue,
+    TypeParam,
     TypeVarLike,
     TypeVarValue,
     UnboundMethodValue,
@@ -119,7 +120,11 @@ def get_mro(typ: type | super) -> Sequence[type]:
 @dataclass
 class TypeObject:
     typ: type | super | str
+    mro: tuple[Value, ...]
     base_classes: set[type | str] = field(default_factory=set)
+    declared_type_params: tuple[TypeParam, ...] = field(
+        default_factory=tuple, repr=False
+    )
     is_final: bool = False
     is_protocol: bool = False
     protocol_members: set[str] = field(default_factory=set)

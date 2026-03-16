@@ -1,5 +1,7 @@
 # static analysis: ignore
 
+from typing import TypeVar
+
 from .checker import Checker
 from .test_name_check_visitor import TestNameCheckVisitorBase
 from .test_node_visitor import assert_passes
@@ -9,6 +11,7 @@ from .type_object import (
     _is_readonly_instance_member,
     _iter_base_keys,
     _should_use_permissive_dunder_hash,
+    get_mro,
     lookup_declared_symbol,
     lookup_declared_symbol_with_owner,
 )
@@ -24,11 +27,16 @@ from .value import (
     MultiValuedValue,
     NamedTupleInfo,
     Qualifier,
+    SequenceValue,
     SubclassValue,
     SyntheticClassObjectValue,
     TypedValue,
+    TypeVarParam,
+    TypeVarValue,
     assert_is_value,
 )
+
+T = TypeVar("T")
 
 
 def test_protocol_member_str_order_is_deterministic() -> None:
@@ -39,11 +47,19 @@ def test_protocol_member_str_order_is_deterministic() -> None:
 
         def m(self) -> int: ...
 
-    type_object = TypeObject(HasMembers, is_protocol=True, protocol_members={"m", "f"})
+    type_object = TypeObject(
+        HasMembers,
+        tuple(TypedValue(base) for base in get_mro(HasMembers)),
+        is_protocol=True,
+        protocol_members={"m", "f"},
+    )
     assert str(type_object).endswith("(Protocol with members 'f', 'm')")
 
     synthetic_protocol = TypeObject(
-        "synthetic.Protocol", is_protocol=True, protocol_members={"m", "f"}
+        "synthetic.Protocol",
+        (TypedValue("synthetic.Protocol"), TypedValue(object)),
+        is_protocol=True,
+        protocol_members={"m", "f"},
     )
     assert (
         str(synthetic_protocol) == "synthetic.Protocol (Protocol with members 'f', 'm')"
@@ -198,6 +214,96 @@ def test_type_object_declared_symbols_are_canonical_for_synthetic_class() -> Non
     checker.register_synthetic_protocol_members("mod.Impl", {"extra"})
     assert "extra" in first
     assert synthetic.declared_symbols is type_object.get_declared_symbols(checker)
+
+
+def test_runtime_type_object_tracks_declared_type_params_and_specialized_mro() -> None:
+    from typing import Generic
+
+    class Base(Generic[T]):
+        pass
+
+    class Child(Base[int]):
+        pass
+
+    checker = Checker()
+    base_object = checker.make_type_object(Base)
+    child_object = checker.make_type_object(Child)
+
+    assert base_object.declared_type_params == tuple(checker.get_type_parameters(Base))
+    assert base_object.mro == (
+        GenericValue(Base, [TypeVarValue(TypeVarParam(T))]),
+        TypedValue(Generic),
+        TypedValue(object),
+    )
+    assert child_object.declared_type_params == ()
+    assert child_object.mro == (
+        GenericValue(Base, [TypedValue(int)]),
+        TypedValue(Generic),
+        TypedValue(object),
+    )
+
+
+def test_synthetic_type_object_tracks_declared_type_params_and_specialized_mro() -> (
+    None
+):
+    checker = Checker()
+    base = "test.Base"
+    child = "test.Child"
+    grandchild = "test.GrandChild"
+    type_param = TypeVarParam(T)
+    checker.register_synthetic_type_bases(base, [], declared_type_params=[type_param])
+    checker.register_synthetic_type_bases(
+        child,
+        [GenericValue(base, [GenericValue(list, [TypeVarValue(type_param)])])],
+        declared_type_params=[type_param],
+    )
+    checker.register_synthetic_type_bases(
+        grandchild, [GenericValue(child, [TypedValue(int)])]
+    )
+
+    base_object = checker.make_type_object(base)
+    grandchild_object = checker.make_type_object(grandchild)
+
+    assert base_object.declared_type_params == (type_param,)
+    assert base_object.mro == (
+        GenericValue(base, [TypeVarValue(type_param)]),
+        TypedValue(object),
+    )
+    assert grandchild_object.mro == (
+        GenericValue(child, [TypedValue(int)]),
+        GenericValue(base, [GenericValue(list, [TypedValue(int)])]),
+        TypedValue(object),
+    )
+
+
+def test_synthetic_namedtuple_type_object_uses_specialized_tuple_mro() -> None:
+    checker = Checker()
+    synthetic = SyntheticClassObjectValue(
+        "Point",
+        TypedValue("mod.Point"),
+        base_classes=(TypedValue(tuple),),
+        namedtuple_info=NamedTupleInfo(
+            field_names=("x", "y"), default_fields=(), has_namedtuple_marker_base=True
+        ),
+    )
+    synthetic.declared_symbols["x"] = ClassSymbol(
+        TypedValue(int),
+        frozenset({Qualifier.ReadOnly}),
+        is_instance_only=True,
+        member_value=TypedValue(int),
+    )
+    synthetic.declared_symbols["y"] = ClassSymbol(
+        TypedValue(str),
+        frozenset({Qualifier.ReadOnly}),
+        is_instance_only=True,
+        member_value=TypedValue(str),
+    )
+    checker.register_synthetic_class(synthetic)
+
+    assert checker.make_type_object("mod.Point").mro == (
+        SequenceValue(tuple, [(False, TypedValue(int)), (False, TypedValue(str))]),
+        TypedValue(object),
+    )
 
 
 def test_direct_synthetic_declared_symbol_mutation_updates_type_object_view() -> None:
