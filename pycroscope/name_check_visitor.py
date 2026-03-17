@@ -53,7 +53,6 @@ import typeshed_client
 from typing_extensions import Protocol, assert_never, is_typeddict
 
 from pycroscope.input_sig import ActualArguments, InputSigValue
-from pycroscope.type_object_builder import compute_type_object_mro
 
 from . import attributes, format_strings, importer, node_visitor, type_evaluation
 from . import dataclass as dataclass_helpers
@@ -4220,6 +4219,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     synthetic_class, dataclass_semantics
                 )
                 self._synthetic_classes_by_name[synthetic_fq_name] = synthetic_class
+                self.checker.refresh_synthetic_type_object_metadata(
+                    synthetic_class_type.typ
+                )
                 dataclass_metadata_class = synthetic_class
                 if self._is_checking():
                     self._synthetic_abstract_methods[synthetic_fq_name] = set()
@@ -4227,11 +4229,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     # like "return C.attr" or string annotations mentioning C
                     # resolve even when no runtime class object exists.
                     self.scopes.set(node.name, synthetic_class, node, self.state)
-
-                type_object = self.checker.make_type_object(synthetic_class_type.typ)
-                type_object.mro = compute_type_object_mro(
-                    self.checker, synthetic_class_type.typ
-                )
             elif (
                 dataclass_semantics is not None or dataclass_transform_info is not None
             ):
@@ -4250,6 +4247,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 dataclass_helpers.set_synthetic_dataclass_info(
                     existing, dataclass_semantics
                 )
+                self.checker.refresh_synthetic_type_object_metadata(class_obj)
                 dataclass_metadata_class = existing
             generic_class_key = (
                 class_scope_object
@@ -16259,14 +16257,21 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             for name in safe_getattr(runtime_class, "_field_defaults", {})
             if isinstance(name, str)
         )
-        synthetic = SyntheticClassObjectValue(
-            runtime_class.__name__,
-            TypedValue(
-                self._get_synthetic_class_fq_name_from_name(runtime_class.__name__)
-            ),
-            base_classes=(TypedValue(tuple),),
+        synthetic_name = self._get_synthetic_class_fq_name_from_name(
+            runtime_class.__name__
         )
+        synthetic = self.checker.get_synthetic_class(synthetic_name)
+        if synthetic is None:
+            synthetic = SyntheticClassObjectValue(
+                runtime_class.__name__,
+                TypedValue(synthetic_name),
+                base_classes=(TypedValue(tuple),),
+            )
+            self.checker.register_synthetic_class(synthetic)
+        synthetic.base_classes = (TypedValue(tuple),)
         _set_synthetic_runtime_class(synthetic, return_value)
+        _set_synthetic_namedtuple_info(synthetic, None)
+        synthetic.declared_symbols.clear()
         if should_disable_runtime_call_for_namedtuple_class(runtime_class):
             _set_synthetic_namedtuple_info(
                 synthetic,
@@ -16312,7 +16317,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 synthetic.declared_symbols[name] = ClassSymbol(
                     KnownValue(attr), member_value=KnownValue(attr)
                 )
-        self.checker.register_synthetic_class(synthetic)
+        self.checker.refresh_synthetic_type_object_metadata(synthetic_name)
         return synthetic
 
     def signature_from_value(

@@ -522,8 +522,47 @@ class Checker:
         synthetic_class = self.get_synthetic_class(typ)
         if synthetic_class is None:
             return
-        shared_declared_symbols = type_object.declared_symbols
+        shared_declared_symbols = None
+        class_type = synthetic_class.class_type
+        if isinstance(class_type, TypedValue):
+            for key in self._iter_generic_override_keys(class_type.typ):
+                cached = self.type_object_cache.get(key)
+                if cached is not None and cached is not type_object:
+                    shared_declared_symbols = cached.declared_symbols
+                    break
+        if shared_declared_symbols is None:
+            shared_declared_symbols = type_object.declared_symbols
+        object.__setattr__(type_object, "declared_symbols", shared_declared_symbols)
         object.__setattr__(synthetic_class, "declared_symbols", shared_declared_symbols)
+
+    def refresh_synthetic_type_object_metadata(self, typ: type | str) -> None:
+        synthetic_class = self.get_synthetic_class(typ)
+        keys: tuple[type | str, ...]
+        if synthetic_class is None:
+            keys = (typ,)
+        else:
+            class_type = synthetic_class.class_type
+            if isinstance(class_type, TypedValue):
+                keys = tuple(self._iter_generic_override_keys(class_type.typ))
+            else:
+                keys = (typ,)
+        for key in keys:
+            cached = self.type_object_cache.get(key)
+            if cached is None:
+                continue
+            rebuilt = pycroscope.type_object_builder.build_type_object(self, key)
+            self._sync_synthetic_class_type_object(key, rebuilt)
+            cached.mro = rebuilt.mro
+            cached.base_classes = rebuilt.base_classes
+            cached.declared_type_params = rebuilt.declared_type_params
+            cached.is_final = rebuilt.is_final
+            cached.is_protocol = rebuilt.is_protocol
+            cached.protocol_members = rebuilt.protocol_members
+            cached.declared_symbols = rebuilt.declared_symbols
+            cached.virtual_bases = rebuilt.virtual_bases
+            cached.is_thrift_enum = rebuilt.is_thrift_enum
+            cached.is_universally_assignable = rebuilt.is_universally_assignable
+            cached._protocol_positive_cache.clear()
 
     def _namedtuple_field_value_for_type(
         self, typ: type | str, field_name: str
@@ -620,9 +659,7 @@ class Checker:
                     f" {self.synthetic_classes[key]} vs {synthetic_class}"
                 )
             self.synthetic_classes[key] = synthetic_class
-        for key in self._iter_generic_override_keys(typ):
-            type_object = self.make_type_object(key)
-            synthetic_class.declared_symbols = type_object.declared_symbols
+        self.refresh_synthetic_type_object_metadata(typ)
 
     def get_synthetic_class(self, typ: type | str) -> SyntheticClassObjectValue | None:
         for key in self._iter_generic_override_keys(typ):
@@ -684,6 +721,7 @@ class Checker:
         object.__setattr__(
             synthetic_class, "declared_type_params", tuple(declared_type_params)
         )
+        self.refresh_synthetic_type_object_metadata(typ)
 
     def register_synthetic_protocol_members(
         self, typ: type | str, members: set[str]

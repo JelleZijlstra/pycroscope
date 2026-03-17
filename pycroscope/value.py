@@ -2058,7 +2058,7 @@ class TypedDictValue(GenericValue):
             yield from entry.typ.walk_values()
 
 
-@dataclass
+@dataclass(unsafe_hash=True)
 class SyntheticClassObjectValue(Value):
     """Represents a singleton class object that exists but has no runtime object."""
 
@@ -2092,14 +2092,6 @@ class SyntheticClassObjectValue(Value):
     dataclass_field_order: tuple[str, ...] = field(
         default_factory=tuple, compare=False, hash=False, repr=False
     )
-
-    def __hash__(self) -> int:
-        return hash(self.class_type)
-
-    def __eq__(self, value: object) -> bool:
-        if not isinstance(value, SyntheticClassObjectValue):
-            return NotImplemented
-        return self.class_type == value.class_type
 
     def substitute_typevars(self, typevars: TypeVarMap) -> "SyntheticClassObjectValue":
         substituted = self.class_type.substitute_typevars(typevars)
