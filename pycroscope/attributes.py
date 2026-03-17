@@ -90,7 +90,7 @@ from .value import (
     UnboundMethodValue,
     Value,
     annotate_value,
-    get_synthetic_member_value,
+    get_synthetic_member_initializer,
     has_any_base_value,
     replace_fallback,
     set_self,
@@ -628,7 +628,7 @@ def _get_direct_attribute_from_synthetic_class(
     selected_name = _select_synthetic_attribute_name(self_value, attr_name)
     if _is_synthetic_initvar_attribute(self_value, selected_name):
         return UNINITIALIZED_VALUE
-    raw_value = get_synthetic_member_value(self_value, selected_name)
+    raw_value = get_synthetic_member_initializer(self_value, selected_name)
     if raw_value is None:
         return UNINITIALIZED_VALUE
     result = _normalize_synthetic_class_attribute(

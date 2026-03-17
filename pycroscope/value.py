@@ -2144,9 +2144,9 @@ class SyntheticClassObjectValue(Value):
                         if symbol.property_info is not None
                         else None
                     ),
-                    member_value=(
-                        symbol.member_value.substitute_typevars(typevars)
-                        if symbol.member_value is not None
+                    initializer=(
+                        symbol.initializer.substitute_typevars(typevars)
+                        if symbol.initializer is not None
                         else None
                     ),
                     dataclass_field=(
@@ -2198,8 +2198,8 @@ class SyntheticClassObjectValue(Value):
             yield from symbol.typ.walk_values()
             if symbol.property_info is not None:
                 yield from symbol.property_info.walk_values()
-            if symbol.member_value is not None:
-                yield from symbol.member_value.walk_values()
+            if symbol.initializer is not None:
+                yield from symbol.initializer.walk_values()
             if symbol.dataclass_field is not None:
                 yield from symbol.dataclass_field.walk_values()
 
@@ -4018,7 +4018,7 @@ def ordered_namedtuple_fields_from_synthetic(
             }
             local_fields.extend(
                 name
-                for name, _ in iter_synthetic_member_values(synthetic)
+                for name, _ in iter_synthetic_member_initializers(synthetic)
                 if not (
                     synthetic.declared_symbols.get(name) is not None
                     and synthetic.declared_symbols[name].is_method
@@ -4059,7 +4059,7 @@ def get_namedtuple_field_value_from_synthetic(
         and not symbol.is_method
     ):
         return symbol.typ
-    field_value = get_synthetic_member_value(synthetic_class, field_name)
+    field_value = get_synthetic_member_initializer(synthetic_class, field_name)
     if field_value is not None and not (
         synthetic_class.namedtuple_info is not None
         and symbol is not None
@@ -4396,7 +4396,7 @@ class Qualifier(enum.Enum):
 
 @dataclass(frozen=True)
 class ClassSymbol:
-    typ: "Value"
+    typ: Value
     qualifiers: frozenset[Qualifier] = frozenset()
     is_instance_only: bool = False
     is_method: bool = False
@@ -4404,8 +4404,26 @@ class ClassSymbol:
     is_staticmethod: bool = False
     returns_self_on_class_access: bool = False
     property_info: PropertyInfo | None = None
-    member_value: "Value | None" = None
+    initializer: Value | None = None
     dataclass_field: DataclassFieldInfo | None = None
+
+    def __post_init__(self) -> None:
+        if self.is_classmethod or self.is_staticmethod:
+            assert self.is_method
+        if self.returns_self_on_class_access:
+            assert self.is_method
+        if self.property_info is not None:
+            assert not self.is_method
+            assert not self.is_classmethod
+            assert not self.is_staticmethod
+            assert not self.returns_self_on_class_access
+            assert self.initializer is None or _is_property_initializer(
+                self.initializer
+            )
+        if self.is_method:
+            assert self.initializer is not None
+            assert self.property_info is None
+            assert self.typ == self.initializer
 
     @property
     def is_classvar(self) -> bool:
@@ -4424,28 +4442,38 @@ class ClassSymbol:
         return self.property_info is not None
 
 
-def get_synthetic_member_value(
+def _is_property_initializer(value: Value) -> bool:
+    value = replace_fallback(value)
+    return (
+        isinstance(value, KnownValue)
+        and isinstance(value.val, property)
+        or isinstance(value, (TypedValue, GenericValue))
+        and value.typ is property
+    )
+
+
+def get_synthetic_member_initializer(
     synthetic_class: SyntheticClassObjectValue, name: str
 ) -> Value | None:
     symbol = synthetic_class.declared_symbols.get(name)
     if symbol is None:
         return None
-    return symbol.member_value
+    return symbol.initializer
 
 
-def iter_synthetic_member_values(
+def iter_synthetic_member_initializers(
     synthetic_class: SyntheticClassObjectValue,
 ) -> Iterator[tuple[str, Value]]:
     for name, symbol in synthetic_class.declared_symbols.items():
-        if symbol.member_value is None:
+        if symbol.initializer is None:
             continue
-        yield name, symbol.member_value
+        yield name, symbol.initializer
 
 
 def iter_synthetic_member_names(
     synthetic_class: SyntheticClassObjectValue,
 ) -> Iterator[str]:
-    for name, _ in iter_synthetic_member_values(synthetic_class):
+    for name, _ in iter_synthetic_member_initializers(synthetic_class):
         yield name
 
 
@@ -4463,7 +4491,10 @@ def iter_synthetic_dataclass_field_candidates(
         ]
     )
     for name in field_names:
-        attr = get_synthetic_member_value(synthetic_class, name) or UNINITIALIZED_VALUE
+        attr = (
+            get_synthetic_member_initializer(synthetic_class, name)
+            or UNINITIALIZED_VALUE
+        )
         symbol = synthetic_class.declared_symbols.get(name)
         field = symbol.dataclass_field if symbol is not None else None
         yield name, attr, symbol, field

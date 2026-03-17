@@ -302,7 +302,7 @@ from .value import (
     concrete_values_from_iterable,
     flatten_values,
     get_namedtuple_field_annotation,
-    get_synthetic_member_value,
+    get_synthetic_member_initializer,
     get_tv_map,
     get_typevar_variance,
     has_any_base_value,
@@ -751,7 +751,7 @@ class _AttrContext(CheckerAttrContext):
                 # synthetic attribute normalization; binding again drops one
                 # real parameter.
                 return super().bind_synthetic_instance_attribute(attr_name, value)
-            raw_attr = get_synthetic_member_value(synthetic_class, attr_name)
+            raw_attr = get_synthetic_member_initializer(synthetic_class, attr_name)
             if raw_attr is not None:
                 raw_attr = replace_fallback(raw_attr)
                 if (
@@ -2848,7 +2848,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         is_staticmethod: bool | None = None,
         returns_self_on_class_access: bool | None = None,
         property_info: PropertyInfo | None = None,
-        member_value: Value | None = None,
+        initializer: Value | None = None,
     ) -> None:
         synthetic_class = self._ensure_synthetic_class_for_current_scope()
         if synthetic_class is None:
@@ -2901,10 +2901,10 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 if property_info is not None
                 else existing.property_info if existing is not None else None
             ),
-            member_value=(
-                member_value
-                if member_value is not None
-                else existing.member_value if existing is not None else None
+            initializer=(
+                initializer
+                if initializer is not None
+                else existing.initializer if existing is not None else None
             ),
             dataclass_field=existing.dataclass_field if existing is not None else None,
         )
@@ -2958,7 +2958,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 if property_info is not None
                 else existing.property_info if existing is not None else None
             ),
-            member_value=value,
+            initializer=value,
             dataclass_field=existing.dataclass_field if existing is not None else None,
         )
 
@@ -3422,7 +3422,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 existing.returns_self_on_class_access if existing is not None else False
             ),
             property_info=existing.property_info if existing is not None else None,
-            member_value=existing.member_value if existing is not None else None,
+            initializer=existing.initializer if existing is not None else None,
             dataclass_field=DataclassFieldInfo(
                 has_default=has_default,
                 init=init,
@@ -4196,7 +4196,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     is_staticmethod,
                     returns_self_on_class_access,
                 ) in self._get_synthetic_method_symbol_flags(node).items():
-                    member_value = get_synthetic_member_value(
+                    initializer = get_synthetic_member_initializer(
                         synthetic_class, method_name
                     ) or AnyValue(AnySource.from_another)
                     existing = synthetic_class.declared_symbols.get(method_name)
@@ -4205,14 +4205,14 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                             synthetic_class,
                             method_name,
                             ClassSymbol(
-                                member_value,
+                                initializer,
                                 is_method=True,
                                 is_classmethod=is_classmethod,
                                 is_staticmethod=is_staticmethod,
                                 returns_self_on_class_access=(
                                     returns_self_on_class_access
                                 ),
-                                member_value=member_value,
+                                initializer=initializer,
                             ),
                         )
                 dataclass_helpers.set_synthetic_dataclass_info(
@@ -4704,22 +4704,25 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                         returns_self_on_class_access,
                     ) in method_symbol_flags.items():
                         existing = synthetic_class.declared_symbols.get(method_name)
-                        member_value = get_synthetic_member_value(
+                        initializer = get_synthetic_member_initializer(
                             synthetic_class, method_name
                         )
                         if existing is None or not existing.is_property:
+                            method_initializer = initializer or AnyValue(
+                                AnySource.from_another
+                            )
                             self._merge_synthetic_declared_symbol(
                                 synthetic_class,
                                 method_name,
                                 ClassSymbol(
-                                    member_value or AnyValue(AnySource.from_another),
+                                    method_initializer,
                                     is_method=True,
                                     is_classmethod=is_classmethod,
                                     is_staticmethod=is_staticmethod,
                                     returns_self_on_class_access=(
                                         returns_self_on_class_access
                                     ),
-                                    member_value=member_value,
+                                    initializer=method_initializer,
                                 ),
                             )
                     dataclass_helpers.apply_synthetic_attributes(
@@ -4767,22 +4770,25 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     existing = dataclass_metadata_class.declared_symbols.get(
                         method_name
                     )
-                    member_value = get_synthetic_member_value(
+                    initializer = get_synthetic_member_initializer(
                         dataclass_metadata_class, method_name
                     )
                     if existing is None or not existing.is_property:
+                        method_initializer = initializer or AnyValue(
+                            AnySource.from_another
+                        )
                         self._merge_synthetic_declared_symbol(
                             dataclass_metadata_class,
                             method_name,
                             ClassSymbol(
-                                member_value or AnyValue(AnySource.from_another),
+                                method_initializer,
                                 is_method=True,
                                 is_classmethod=is_classmethod,
                                 is_staticmethod=is_staticmethod,
                                 returns_self_on_class_access=(
                                     returns_self_on_class_access
                                 ),
-                                member_value=member_value,
+                                initializer=method_initializer,
                             ),
                         )
                 dataclass_helpers.apply_synthetic_attributes(
@@ -5137,7 +5143,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 if member_name.startswith("_"):
                     continue
                 with self.catch_errors() as errors:
-                    member_value = self.visit(statement.value)
+                    initializer = self.visit(statement.value)
                 if errors:
                     return None
             elif isinstance(statement, ast.AnnAssign):
@@ -5151,14 +5157,14 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 if member_name.startswith("_"):
                     continue
                 with self.catch_errors() as errors:
-                    member_value = self.visit(statement.value)
+                    initializer = self.visit(statement.value)
                 if errors:
                     return None
             else:
                 return None
-            if not isinstance(member_value, KnownValue):
+            if not isinstance(initializer, KnownValue):
                 return None
-            members[member_name] = member_value.val
+            members[member_name] = initializer.val
 
         if not members:
             return None
@@ -5274,7 +5280,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
 
         enum_value_type = self.enum_value_type_by_class.get(class_key)
         ignore_names = _enum_ignore_names(
-            get_synthetic_member_value(synthetic_class, "_ignore_")
+            get_synthetic_member_initializer(synthetic_class, "_ignore_")
         )
         member_literal_values: dict[str, object] = {}
         member_order: list[str] = []
@@ -5284,7 +5290,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             stmt_forced_member, stmt_forced_nonmember = (
                 _enum_statement_member_decorators(statement)
             )
-            value = get_synthetic_member_value(synthetic_class, member_name)
+            value = get_synthetic_member_initializer(synthetic_class, member_name)
             if value is None:
                 value = missing
             if value is missing:
@@ -5361,7 +5367,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
 
         for attr_name in list(synthetic_class.declared_symbols):
             symbol = synthetic_class.declared_symbols.get(attr_name)
-            if symbol is None or symbol.member_value is None:
+            if symbol is None or symbol.initializer is None:
                 continue
             mangled = _mangle_private_enum_name(node.name, attr_name)
             if mangled is None:
@@ -5378,9 +5384,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         object.__setattr__(synthetic_class, "class_type", TypedValue(runtime_enum))
         for member_name in member_order:
             try:
-                member_value = KnownValue(getattr(runtime_enum, member_name))
+                initializer = KnownValue(getattr(runtime_enum, member_name))
                 self._set_synthetic_member_on_class(
-                    synthetic_class, member_name, member_value
+                    synthetic_class, member_name, initializer
                 )
             except Exception:
                 continue
@@ -5963,7 +5969,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
 
         slot_names: set[str] = set()
         has_dict = False
-        slot_value = get_synthetic_member_value(synthetic_class, "__slots__")
+        slot_value = get_synthetic_member_initializer(synthetic_class, "__slots__")
         if slot_value is not None:
             names = _known_string_sequence_values(slot_value)
             if names is None:
@@ -6271,7 +6277,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         post_init_node = _get_dataclass_post_init_node(node)
         if post_init_node is None:
             return
-        post_init_value = get_synthetic_member_value(dataclass_class, "__post_init__")
+        post_init_value = get_synthetic_member_initializer(
+            dataclass_class, "__post_init__"
+        )
         if post_init_value is None:
             return
         post_init_params = self.checker.get_synthetic_dataclass_post_init_parameters(
@@ -7416,8 +7424,8 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             if any(
                 _value_contains_self(symbol.typ)
                 or (
-                    symbol.member_value is not None
-                    and _value_contains_self(symbol.member_value)
+                    symbol.initializer is not None
+                    and _value_contains_self(symbol.initializer)
                 )
                 for symbol in synthetic_class.declared_symbols.values()
             ):
@@ -9235,7 +9243,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         return SequenceValue(tuple, members)
 
     def _is_final_member(
-        self, class_key: type | str, member_name: str, member_value: Value | None = None
+        self, class_key: type | str, member_name: str, initializer: Value | None = None
     ) -> bool:
         if member_name in self.final_member_names_by_class.get(class_key, set()):
             return True
@@ -9245,8 +9253,8 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 runtime_member = class_dict.get(member_name)
                 if getattr(runtime_member, "__final__", False):
                     return True
-        if isinstance(member_value, KnownValue) and getattr(
-            member_value.val, "__final__", False
+        if isinstance(initializer, KnownValue) and getattr(
+            initializer.val, "__final__", False
         ):
             return True
         if isinstance(class_key, str):
@@ -10492,10 +10500,10 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             )
 
         with override(self, "in_comprehension_body", True):
-            member_value = self.visit(node.elt)
+            initializer = self.visit(node.elt)
 
             if typ is set:
-                hashability = check_hashability(member_value, self)
+                hashability = check_hashability(initializer, self)
                 if isinstance(hashability, CanAssignError):
                     self._show_error_if_checking(
                         node.elt,
@@ -10503,13 +10511,13 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                         ErrorCode.unhashable_key,
                         detail=str(hashability),
                     )
-                    member_value = AnyValue(AnySource.error)
+                    initializer = AnyValue(AnySource.error)
 
         if typ is types.GeneratorType:
-            return GenericValue(typ, [member_value, KnownValue(None), KnownValue(None)])
+            return GenericValue(typ, [initializer, KnownValue(None), KnownValue(None)])
         # Returning a SequenceValue here instead of a GenericValue allows
         # later code to modify this container.
-        return SequenceValue(typ, [(True, member_value)])
+        return SequenceValue(typ, [(True, initializer)])
 
     # Literals and displays
 
@@ -11623,8 +11631,8 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 ]
                 return SequenceValue.make_or_known(value.typ, values)
             elif isinstance(value, GenericValue):
-                member_value = self._unwrap_yield_result(node, value.get_arg(0))
-                return GenericValue(value.typ, [member_value])
+                initializer = self._unwrap_yield_result(node, value.get_arg(0))
+                return GenericValue(value.typ, [initializer])
             else:
                 return TypedValue(value.typ)
         elif isinstance(value, TypedValue) and value.typ is dict:
@@ -14225,7 +14233,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             )
         has_explicit_class_getitem = (
             synthetic_class is not None
-            and get_synthetic_member_value(synthetic_class, "__class_getitem__")
+            and get_synthetic_member_initializer(synthetic_class, "__class_getitem__")
             is not None
         )
         if (
@@ -14971,7 +14979,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             return None
         class_name = class_key.rsplit(".", maxsplit=1)[-1]
         for candidate in self._property_attr_candidates(attr_name, class_name):
-            member = get_synthetic_member_value(synthetic_class, candidate)
+            member = get_synthetic_member_initializer(synthetic_class, candidate)
             if member is None:
                 continue
             message = self._deprecation_message_from_value(member)
@@ -16288,7 +16296,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     field_value,
                     frozenset({Qualifier.ReadOnly}),
                     is_instance_only=True,
-                    member_value=field_value,
+                    initializer=field_value,
                 )
             elif isinstance(attr, property):
                 synthetic.declared_symbols[name] = ClassSymbol(
@@ -16301,7 +16309,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                             else None
                         ),
                     ),
-                    member_value=KnownValue(attr),
+                    initializer=KnownValue(attr),
                 )
             elif callable(attr) or isinstance(attr, (staticmethod, classmethod)):
                 is_staticmethod = isinstance(attr, staticmethod)
@@ -16311,11 +16319,11 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     is_method=True,
                     is_classmethod=is_classmethod,
                     is_staticmethod=is_staticmethod,
-                    member_value=KnownValue(attr),
+                    initializer=KnownValue(attr),
                 )
             else:
                 synthetic.declared_symbols[name] = ClassSymbol(
-                    KnownValue(attr), member_value=KnownValue(attr)
+                    KnownValue(attr), initializer=KnownValue(attr)
                 )
         self.checker.refresh_synthetic_type_object_metadata(synthetic_name)
         return synthetic
@@ -16477,7 +16485,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         self._merge_synthetic_declared_symbol(
             synthetic_class,
             node.attr,
-            ClassSymbol(self.being_assigned, member_value=self.being_assigned),
+            ClassSymbol(self.being_assigned, initializer=self.being_assigned),
         )
 
     def _record_type_attr_read(self, typ: type, attr_name: str, node: ast.AST) -> None:
@@ -17033,7 +17041,7 @@ def _runtime_object_for_enum_member(value: Value) -> object:
             _runtime_object_for_enum_member(subval) for subval in value.vals
         ]
         first_value = member_values[0]
-        if all(member_value is first_value for member_value in member_values):
+        if all(initializer is first_value for initializer in member_values):
             return first_value
         return object()
     if isinstance(value, IntersectionValue):
@@ -17041,7 +17049,7 @@ def _runtime_object_for_enum_member(value: Value) -> object:
             _runtime_object_for_enum_member(subval) for subval in value.vals
         ]
         first_value = member_values[0]
-        if all(member_value is first_value for member_value in member_values):
+        if all(initializer is first_value for initializer in member_values):
             return first_value
         return object()
     if isinstance(value, KnownValue):

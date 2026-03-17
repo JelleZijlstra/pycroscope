@@ -137,6 +137,7 @@ def test_runtime_declared_symbol_uses_annotation_expr_parsing() -> None:
     assert symbol.is_readonly
     assert not symbol.is_instance_only
     assert symbol.typ == AnnotatedValue(TypedValue(int), [KnownValue("meta")])
+    assert symbol.initializer is None
 
 
 def test_synthetic_namedtuple_field_is_readonly_without_runtime_class() -> None:
@@ -153,10 +154,10 @@ def test_synthetic_namedtuple_field_is_readonly_without_runtime_class() -> None:
         TypedValue(int),
         frozenset({Qualifier.ReadOnly}),
         is_instance_only=True,
-        member_value=TypedValue(int),
+        initializer=TypedValue(int),
     )
     synthetic.declared_symbols["helper"] = ClassSymbol(
-        KnownValue(len), is_method=True, member_value=KnownValue(len)
+        KnownValue(len), is_method=True, initializer=KnownValue(len)
     )
     checker.register_synthetic_class(synthetic)
 
@@ -183,7 +184,7 @@ def test_synthetic_declared_symbol_overrides_raw_attribute_value() -> None:
         TypedValue("mod.Impl"),
         declared_symbols={
             "attr": ClassSymbol(
-                TypedValue(object), is_instance_only=True, member_value=TypedValue(str)
+                TypedValue(object), is_instance_only=True, initializer=TypedValue(str)
             )
         },
     )
@@ -193,7 +194,7 @@ def test_synthetic_declared_symbol_overrides_raw_attribute_value() -> None:
     assert symbol is not None
     assert symbol.is_instance_only
     assert symbol.typ == TypedValue(object)
-    assert symbol.member_value == TypedValue(str)
+    assert symbol.initializer == TypedValue(str)
 
 
 def test_type_object_declared_symbols_are_canonical_for_synthetic_class() -> None:
@@ -290,13 +291,13 @@ def test_synthetic_namedtuple_type_object_uses_specialized_tuple_mro() -> None:
         TypedValue(int),
         frozenset({Qualifier.ReadOnly}),
         is_instance_only=True,
-        member_value=TypedValue(int),
+        initializer=TypedValue(int),
     )
     synthetic.declared_symbols["y"] = ClassSymbol(
         TypedValue(str),
         frozenset({Qualifier.ReadOnly}),
         is_instance_only=True,
-        member_value=TypedValue(str),
+        initializer=TypedValue(str),
     )
     checker.register_synthetic_class(synthetic)
 
@@ -387,7 +388,7 @@ def test_runtime_declared_symbol_includes_plain_class_dict_entry() -> None:
     assert not symbol.is_method
     assert not symbol.is_property
     assert symbol.typ == KnownValue(1)
-    assert symbol.member_value == KnownValue(1)
+    assert symbol.initializer == KnownValue(1)
 
 
 class TestNumerics(TestNameCheckVisitorBase):

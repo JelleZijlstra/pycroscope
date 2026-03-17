@@ -101,12 +101,12 @@ from .value import (
     annotate_value,
     flatten_values,
     get_namedtuple_field_value_from_synthetic,
-    get_synthetic_member_value,
+    get_synthetic_member_initializer,
     get_tv_map,
     has_any_base_value,
     is_union,
     iter_synthetic_dataclass_field_candidates,
-    iter_synthetic_member_values,
+    iter_synthetic_member_initializers,
     iter_type_params_in_value,
     ordered_namedtuple_fields_from_synthetic,
     replace_fallback,
@@ -739,7 +739,7 @@ class Checker:
             if existing is None:
                 synthetic_class.declared_symbols[member] = ClassSymbol(
                     AnyValue(AnySource.inference),
-                    member_value=AnyValue(AnySource.inference),
+                    initializer=AnyValue(AnySource.inference),
                 )
 
     def _iter_generic_override_keys(self, typ: type | str) -> Iterator[type | str]:
@@ -1612,7 +1612,7 @@ class Checker:
         has_direct_new = new_symbol is not None and new_symbol.is_method
         if has_direct_new:
             method = (
-                get_synthetic_member_value(synthetic_class, "__new__")
+                get_synthetic_member_initializer(synthetic_class, "__new__")
                 or UNINITIALIZED_VALUE
             )
             if not isinstance(method, Value):
@@ -1712,7 +1712,7 @@ class Checker:
             return ()
         class_type = value.class_type.typ
         for method_name in ("__new__", "__init__"):
-            method_value = get_synthetic_member_value(value, method_name)
+            method_value = get_synthetic_member_initializer(value, method_name)
             if not isinstance(method_value, CallableValue):
                 continue
             signatures = (
@@ -1763,7 +1763,7 @@ class Checker:
 
         for base in value.base_classes:
             _record_type_params(base)
-        for _, attr in iter_synthetic_member_values(value):
+        for _, attr in iter_synthetic_member_initializers(value):
             _record_type_params(attr)
         return tuple(inferred)
 
@@ -1800,7 +1800,8 @@ class Checker:
     ) -> ConcreteSignature | None:
         if use_direct_method:
             method = (
-                get_synthetic_member_value(value, method_name) or UNINITIALIZED_VALUE
+                get_synthetic_member_initializer(value, method_name)
+                or UNINITIALIZED_VALUE
             )
             if not isinstance(method, Value):
                 return None
@@ -1971,7 +1972,8 @@ class Checker:
         if isinstance(metaclass, SyntheticClassObjectValue):
             # Ignore the default metaclass call behavior; only use an explicit override.
             meta_call = (
-                get_synthetic_member_value(metaclass, "__call__") or UNINITIALIZED_VALUE
+                get_synthetic_member_initializer(metaclass, "__call__")
+                or UNINITIALIZED_VALUE
             )
             if meta_call is UNINITIALIZED_VALUE:
                 return None
@@ -2721,7 +2723,7 @@ class Checker:
                 value.class_type.typ, allow_synthetic_type=True
             )
             if argspec is None:
-                init_attr = get_synthetic_member_value(value, "__init__")
+                init_attr = get_synthetic_member_initializer(value, "__init__")
                 if init_attr is not None:
                     init_sig = self.signature_from_value(init_attr)
                     if isinstance(init_sig, BoundMethodSignature):
@@ -2746,7 +2748,7 @@ class Checker:
             if isinstance(typ, str):
                 synthetic_class = self.get_synthetic_class(typ)
                 if synthetic_class is not None:
-                    synthetic_call = get_synthetic_member_value(
+                    synthetic_call = get_synthetic_member_initializer(
                         synthetic_class, "__call__"
                     )
                     call_symbol = synthetic_class.declared_symbols.get("__call__")
@@ -3128,7 +3130,7 @@ class Checker:
                     ),
                 ),
             )
-            for name, attr in iter_synthetic_member_values(value)
+            for name, attr in iter_synthetic_member_initializers(value)
             if not (
                 value.declared_symbols.get(name) is not None
                 and value.declared_symbols[name].is_initvar
@@ -3381,7 +3383,7 @@ class CheckerAttrContext(AttrContext):
         if symbol is None or not symbol.is_method:
             return value
         if symbol.is_staticmethod or symbol.is_classmethod:
-            raw_attr = get_synthetic_member_value(synthetic_root, attr_name)
+            raw_attr = get_synthetic_member_initializer(synthetic_root, attr_name)
             if raw_attr is not None and isinstance(value, CallableValue):
                 return self.checker._specialize_synthetic_classmethod(
                     raw_attr, value, self_annotation_value=root_value

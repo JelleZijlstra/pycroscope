@@ -707,7 +707,7 @@ def _has_relation(
                 synthetic_class = get_synthetic_class(right.typ)
                 if synthetic_class is not None:
                     symbol = synthetic_class.declared_symbols.get("__hash__")
-                    if symbol is not None and symbol.member_value == KnownValue(None):
+                    if symbol is not None and symbol.initializer == KnownValue(None):
                         return CanAssignError(f"{right} is not hashable")
             if isinstance(right.typ, type):
                 try:

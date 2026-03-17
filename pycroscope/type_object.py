@@ -76,7 +76,7 @@ from .value import (
     flatten_values,
     freshen_typevars_for_inference,
     get_namedtuple_field_annotation,
-    get_synthetic_member_value,
+    get_synthetic_member_initializer,
     get_tv_map,
     replace_fallback,
     stringify_object,
@@ -424,7 +424,7 @@ class TypeObject:
                 )
                 expected = expected.substitute_typevars({SelfT: other_val})
                 if other_type_obj is not None and other_type_obj.is_protocol:
-                    actual = _get_protocol_call_member_value(
+                    actual = _get_protocol_call_member_initializer(
                         other_type_obj.typ, other_val, ctx
                     )
                     if actual is UNINITIALIZED_VALUE:
@@ -502,11 +502,11 @@ class TypeObject:
                 can_assign = CanAssignError(f"{other_val} has no attribute {member!r}")
             else:
                 if _is_callable_member_value(expected, ctx):
-                    expected = _normalize_protocol_member_value_for_relation(
+                    expected = _normalize_protocol_initializer_for_relation(
                         expected, ctx, receiver=self_val
                     )
                 if _is_callable_member_value(actual, ctx):
-                    actual = _normalize_protocol_member_value_for_relation(
+                    actual = _normalize_protocol_initializer_for_relation(
                         actual, ctx, receiver=other_val
                     )
                 if not use_descriptor_rules:
@@ -591,13 +591,13 @@ class TypeObject:
                             )
                             if _is_callable_member_value(expected_for_relation, ctx):
                                 expected_for_relation = (
-                                    _normalize_protocol_member_value_for_relation(
+                                    _normalize_protocol_initializer_for_relation(
                                         expected_for_relation, ctx, receiver=self_val
                                     )
                                 )
                             if _is_callable_member_value(actual_for_relation, ctx):
                                 actual_for_relation = (
-                                    _normalize_protocol_member_value_for_relation(
+                                    _normalize_protocol_initializer_for_relation(
                                         actual_for_relation, ctx, receiver=other_val
                                     )
                                 )
@@ -778,7 +778,7 @@ def _prefer_existing_symbol_type(existing: Value, new: Value) -> bool:
     return isinstance(new, AnyValue) and new.source is AnySource.inference
 
 
-def _merge_symbol_member_value(
+def _merge_symbol_initializer(
     existing: Value | None, new: Value | None
 ) -> Value | None:
     if new is None:
@@ -803,7 +803,7 @@ def _merge_property_info(
             if _prefer_existing_symbol_type(existing.getter_type, new.getter_type)
             else new.getter_type
         ),
-        setter_type=_merge_symbol_member_value(existing.setter_type, new.setter_type),
+        setter_type=_merge_symbol_initializer(existing.setter_type, new.setter_type),
         getter_deprecation=new.getter_deprecation or existing.getter_deprecation,
         setter_deprecation=new.setter_deprecation or existing.setter_deprecation,
     )
@@ -829,9 +829,7 @@ def merge_declared_symbol(
             existing.returns_self_on_class_access or new.returns_self_on_class_access
         ),
         property_info=_merge_property_info(existing.property_info, new.property_info),
-        member_value=_merge_symbol_member_value(
-            existing.member_value, new.member_value
-        ),
+        initializer=_merge_symbol_initializer(existing.initializer, new.initializer),
         dataclass_field=(
             new.dataclass_field
             if new.dataclass_field is not None
@@ -839,10 +837,7 @@ def merge_declared_symbol(
         ),
     )
 
-
-def _runtime_declared_member_value(typ: type, name: str, raw_value: object) -> Value:
-    if isinstance(raw_value, property):
-        return KnownValue(raw_value)
+def _runtime_declared_initializer(typ: type, name: str, raw_value: object) -> Value:
     try:
         return KnownValue(getattr(typ, name))
     except Exception:
@@ -874,7 +869,7 @@ def _add_runtime_declared_symbols(typ: type, symbols: dict[str, ClassSymbol]) ->
                 if isinstance(raw_value, property)
                 else None
             ),
-            member_value=_runtime_declared_member_value(typ, name, raw_value),
+            initializer=_runtime_declared_initializer(typ, name, raw_value),
         )
     try:
         if sys.version_info >= (3, 14):
@@ -903,19 +898,29 @@ def _add_runtime_declared_symbols(typ: type, symbols: dict[str, ClassSymbol]) ->
             if name in namedtuple_fields:
                 continue
             existing = symbols.get(name)
-            is_property = isinstance(raw_value, property)
-            is_staticmethod = isinstance(raw_value, staticmethod)
-            is_classmethod = isinstance(raw_value, classmethod)
-            is_method = (
-                (not is_property and (is_staticmethod or is_classmethod))
-                or inspect.isfunction(raw_value)
-                or inspect.ismethoddescriptor(raw_value)
-            )
+            if (
+                existing is not None
+                and not existing.is_classvar
+                and not existing.is_initvar
+            ):
+                is_property = existing.property_info is not None
+                is_staticmethod = existing.is_staticmethod
+                is_classmethod = existing.is_classmethod
+                is_method = existing.is_method
+            else:
+                is_property = isinstance(raw_value, property)
+                is_staticmethod = isinstance(raw_value, staticmethod)
+                is_classmethod = isinstance(raw_value, classmethod)
+                is_method = (
+                    (not is_property and (is_staticmethod or is_classmethod))
+                    or inspect.isfunction(raw_value)
+                    or inspect.ismethoddescriptor(raw_value)
+                )
             symbols[name] = ClassSymbol(
                 (
                     existing.typ
                     if existing is not None
-                    else _runtime_declared_member_value(typ, name, raw_value)
+                    else _runtime_declared_initializer(typ, name, raw_value)
                 ),
                 existing.qualifiers if existing is not None else frozenset(),
                 is_method=is_method,
@@ -924,7 +929,7 @@ def _add_runtime_declared_symbols(typ: type, symbols: dict[str, ClassSymbol]) ->
                 property_info=(
                     _runtime_property_info(raw_value, typ) if is_property else None
                 ),
-                member_value=_runtime_declared_member_value(typ, name, raw_value),
+                initializer=_runtime_declared_initializer(typ, name, raw_value),
             )
 
 
@@ -980,7 +985,17 @@ def _resolve_member_access(
     is_method = not is_property and symbol is not None and symbol.is_method
     if class_object_access and is_declared_property:
         is_method = False
-    value = property_getter if property_getter is not None else resolved_value
+    if (
+        not class_object_access
+        and symbol is not None
+        and not symbol.is_classvar
+        and not is_property
+        and not is_method
+        and (symbol.initializer is None or symbol.typ != symbol.initializer)
+    ):
+        value = symbol.typ
+    else:
+        value = property_getter if property_getter is not None else resolved_value
     if (
         class_object_access
         and is_declared_property
@@ -1270,7 +1285,7 @@ def _is_callable_member_value(value: Value, ctx: CanAssignContext) -> bool:
     return isinstance(signature, (Signature, OverloadedSignature, BoundMethodSignature))
 
 
-def _normalize_protocol_member_value_for_relation(
+def _normalize_protocol_initializer_for_relation(
     value: Value, ctx: CanAssignContext, *, receiver: Value | None = None
 ) -> Value:
     signature = ctx.signature_from_value(value)
@@ -1457,7 +1472,7 @@ def _bind_protocol_call_expected(
     return value
 
 
-def _get_protocol_call_member_value(
+def _get_protocol_call_member_initializer(
     protocol_typ: type | super | str, self_value: Value, ctx: CanAssignContext
 ) -> Value:
     call_member = UNINITIALIZED_VALUE
@@ -1532,7 +1547,7 @@ def _collect_protocol_self_typevar_map(
             raw_attr = (
                 symbol.typ
                 if symbol is not None and symbol.is_property
-                else get_synthetic_member_value(synthetic_class, member)
+                else get_synthetic_member_initializer(synthetic_class, member)
                 or UNINITIALIZED_VALUE
             )
             if raw_attr is UNINITIALIZED_VALUE:
