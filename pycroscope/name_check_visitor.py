@@ -298,6 +298,7 @@ from .value import (
     UnboundMethodValue,
     Value,
     Variance,
+    _is_property_initializer,
     annotate_value,
     concrete_values_from_iterable,
     flatten_values,
@@ -2856,6 +2857,63 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         existing = synthetic_class.declared_symbols.get(name)
         qualifiers = set(existing.qualifiers if existing is not None else ())
         qualifiers.update(add_qualifiers)
+        resolved_property_info = (
+            property_info
+            if property_info is not None
+            else existing.property_info if existing is not None else None
+        )
+        if resolved_property_info is not None:
+            resolved_is_method = False if is_method is None else is_method
+            resolved_is_classmethod = (
+                False if is_classmethod is None else is_classmethod
+            )
+            resolved_is_staticmethod = (
+                False if is_staticmethod is None else is_staticmethod
+            )
+            resolved_returns_self_on_class_access = (
+                False
+                if returns_self_on_class_access is None
+                else returns_self_on_class_access
+            )
+            resolved_initializer = (
+                initializer
+                if initializer is not None
+                else (
+                    existing.initializer
+                    if existing is not None and existing.property_info is not None
+                    else None
+                )
+            )
+        else:
+            resolved_is_method = (
+                (existing.is_method if existing is not None else False)
+                if is_method is None
+                else is_method
+            )
+            resolved_is_classmethod = (
+                (existing.is_classmethod if existing is not None else False)
+                if is_classmethod is None
+                else is_classmethod
+            )
+            resolved_is_staticmethod = (
+                (existing.is_staticmethod if existing is not None else False)
+                if is_staticmethod is None
+                else is_staticmethod
+            )
+            resolved_returns_self_on_class_access = (
+                (
+                    existing.returns_self_on_class_access
+                    if existing is not None
+                    else False
+                )
+                if returns_self_on_class_access is None
+                else returns_self_on_class_access
+            )
+            resolved_initializer = (
+                initializer
+                if initializer is not None
+                else existing.initializer if existing is not None else None
+            )
         synthetic_class.declared_symbols[name] = ClassSymbol(
             (
                 typ
@@ -2872,40 +2930,12 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 if is_instance_only is None
                 else is_instance_only
             ),
-            is_method=(
-                (existing.is_method if existing is not None else False)
-                if is_method is None
-                else is_method
-            ),
-            is_classmethod=(
-                (existing.is_classmethod if existing is not None else False)
-                if is_classmethod is None
-                else is_classmethod
-            ),
-            is_staticmethod=(
-                (existing.is_staticmethod if existing is not None else False)
-                if is_staticmethod is None
-                else is_staticmethod
-            ),
-            returns_self_on_class_access=(
-                (
-                    existing.returns_self_on_class_access
-                    if existing is not None
-                    else False
-                )
-                if returns_self_on_class_access is None
-                else returns_self_on_class_access
-            ),
-            property_info=(
-                property_info
-                if property_info is not None
-                else existing.property_info if existing is not None else None
-            ),
-            initializer=(
-                initializer
-                if initializer is not None
-                else existing.initializer if existing is not None else None
-            ),
+            is_method=resolved_is_method,
+            is_classmethod=resolved_is_classmethod,
+            is_staticmethod=resolved_is_staticmethod,
+            returns_self_on_class_access=resolved_returns_self_on_class_access,
+            property_info=resolved_property_info,
+            initializer=resolved_initializer,
             dataclass_field=existing.dataclass_field if existing is not None else None,
         )
 
@@ -2923,28 +2953,50 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         property_info: PropertyInfo | None = None,
     ) -> None:
         existing = synthetic_class.declared_symbols.get(name)
-        synthetic_class.declared_symbols[name] = ClassSymbol(
-            typ if typ is not None else existing.typ if existing is not None else value,
-            existing.qualifiers if existing is not None else frozenset(),
-            is_instance_only=(
-                existing.is_instance_only if existing is not None else False
-            ),
-            is_method=(
+        resolved_property_info = (
+            property_info
+            if property_info is not None
+            else existing.property_info if existing is not None else None
+        )
+        if resolved_property_info is not None:
+            resolved_is_method = False if is_method is None else is_method
+            resolved_is_classmethod = (
+                False if is_classmethod is None else is_classmethod
+            )
+            resolved_is_staticmethod = (
+                False if is_staticmethod is None else is_staticmethod
+            )
+            resolved_returns_self_on_class_access = (
+                False
+                if returns_self_on_class_access is None
+                else returns_self_on_class_access
+            )
+            resolved_initializer = (
+                value
+                if _is_property_initializer(value)
+                else (
+                    existing.initializer
+                    if existing is not None and existing.property_info is not None
+                    else None
+                )
+            )
+        else:
+            resolved_is_method = (
                 (existing.is_method if existing is not None else False)
                 if is_method is None
                 else is_method
-            ),
-            is_classmethod=(
+            )
+            resolved_is_classmethod = (
                 (existing.is_classmethod if existing is not None else False)
                 if is_classmethod is None
                 else is_classmethod
-            ),
-            is_staticmethod=(
+            )
+            resolved_is_staticmethod = (
                 (existing.is_staticmethod if existing is not None else False)
                 if is_staticmethod is None
                 else is_staticmethod
-            ),
-            returns_self_on_class_access=(
+            )
+            resolved_returns_self_on_class_access = (
                 (
                     existing.returns_self_on_class_access
                     if existing is not None
@@ -2952,13 +3004,20 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 )
                 if returns_self_on_class_access is None
                 else returns_self_on_class_access
+            )
+            resolved_initializer = value
+        synthetic_class.declared_symbols[name] = ClassSymbol(
+            typ if typ is not None else existing.typ if existing is not None else value,
+            existing.qualifiers if existing is not None else frozenset(),
+            is_instance_only=(
+                existing.is_instance_only if existing is not None else False
             ),
-            property_info=(
-                property_info
-                if property_info is not None
-                else existing.property_info if existing is not None else None
-            ),
-            initializer=value,
+            is_method=resolved_is_method,
+            is_classmethod=resolved_is_classmethod,
+            is_staticmethod=resolved_is_staticmethod,
+            returns_self_on_class_access=resolved_returns_self_on_class_access,
+            property_info=resolved_property_info,
+            initializer=resolved_initializer,
             dataclass_field=existing.dataclass_field if existing is not None else None,
         )
 
@@ -2997,6 +3056,11 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                         or TypedValue(self.current_class)
                     )
         if not synthetic_name.startswith("%"):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and (
+                self._is_property_decorated_function(node)
+            ):
+                self._discard_synthetic_instance_only_annotation_name(synthetic_name)
+                return
             declared_type = value
             if self.ann_assign_type is not None and self.ann_assign_type[0] is not None:
                 declared_type = self.ann_assign_type[0]
@@ -3023,6 +3087,20 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             raise AssertionError(
                 f"unexpected synthetic class metadata attribute {synthetic_name!r}"
             )
+
+    def _is_property_decorated_function(
+        self, node: ast.FunctionDef | ast.AsyncFunctionDef
+    ) -> bool:
+        for decorator in node.decorator_list:
+            if isinstance(decorator, ast.Name) and decorator.id == "property":
+                return True
+            if (
+                isinstance(decorator, ast.Attribute)
+                and decorator.attr in {"setter", "deleter"}
+                and isinstance(decorator.value, ast.Name)
+            ):
+                return True
+        return False
 
     def _merge_synthetic_declared_symbol(
         self, synthetic_class: SyntheticClassObjectValue, name: str, symbol: ClassSymbol

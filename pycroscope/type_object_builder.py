@@ -1,29 +1,40 @@
 """Responsible for creating TypeObject objects."""
 
+import inspect
 import itertools
 import sys
-from collections.abc import Iterable, Iterator, Sequence
+from collections.abc import Iterable, Iterator, Mapping, Sequence
+from dataclasses import replace
 
 from typing_extensions import assert_never
 
 from pycroscope.checker import Checker
 from pycroscope.type_object import TypeObject
 
-from .annotations import type_from_runtime
+from .annotations import (
+    _RuntimeAnnotationsContext,
+    annotation_expr_from_runtime,
+    type_from_runtime,
+)
 from .arg_spec import ArgSpecCache, GenericBases
 from .input_sig import coerce_paramspec_specialization_to_input_sig
-from .safe import is_instance_of_typing_name, is_typing_name, safe_getattr
+from .safe import (
+    is_instance_of_typing_name,
+    is_namedtuple_class,
+    is_typing_name,
+    safe_getattr,
+)
 from .type_object import (
     EXCLUDED_PROTOCOL_MEMBERS,
     MroValue,
     TypeObject,
-    _add_runtime_declared_symbols,
-    _add_synthetic_declared_symbols,
     _class_key_from_value,
     class_keys_match,
     get_mro,
+    merge_declared_symbol,
 )
 from .value import (
+    AnySource,
     AnyValue,
     ClassSymbol,
     GenericValue,
@@ -32,6 +43,8 @@ from .value import (
     MultiValuedValue,
     ParamSpecParam,
     PredicateValue,
+    PropertyInfo,
+    Qualifier,
     SequenceValue,
     SimpleType,
     SubclassValue,
@@ -43,6 +56,7 @@ from .value import (
     TypeVarLike,
     UnboundMethodValue,
     Value,
+    get_namedtuple_field_annotation,
     replace_fallback,
     type_param_to_value,
 )
@@ -539,3 +553,154 @@ def _default_type_argument_for_param(
             )
         return default.substitute_typevars(substitutions)
     return type_param_to_value(type_param)
+
+
+def _add_runtime_declared_symbols(typ: type, symbols: dict[str, ClassSymbol]) -> None:
+    class_dict = safe_getattr(typ, "__dict__", None)
+    namedtuple_fields = frozenset(_runtime_namedtuple_field_names(typ))
+    for name in namedtuple_fields:
+        raw_value = (
+            KnownValue(class_dict[name])
+            if isinstance(class_dict, Mapping) and name in class_dict
+            else None
+        )
+        symbols[name] = ClassSymbol(
+            _value_from_runtime_annotation(
+                get_namedtuple_field_annotation(typ, name), typ
+            ),
+            frozenset({Qualifier.ReadOnly}),
+            is_instance_only=True,
+            property_info=(
+                _runtime_property_info(raw_value.val, typ)
+                if raw_value is not None and isinstance(raw_value.val, property)
+                else None
+            ),
+            initializer=raw_value,
+        )
+    try:
+        if sys.version_info >= (3, 14):
+            annotations = get_annotations(typ, format=Format.FORWARDREF)
+        else:
+            annotations = inspect.get_annotations(typ)
+    except Exception:
+        annotations = safe_getattr(typ, "__annotations__", None)
+    if isinstance(annotations, Mapping):
+        for name, annotation in annotations.items():
+            if not isinstance(name, str):
+                continue
+            if name in namedtuple_fields:
+                continue
+            symbol = _symbol_from_runtime_annotation(annotation, typ)
+            is_instance_only = (
+                not symbol.is_classvar
+                and not symbol.is_initvar
+                and (not isinstance(class_dict, Mapping) or name not in class_dict)
+            )
+            symbols[name] = replace(symbol, is_instance_only=is_instance_only)
+    if isinstance(class_dict, Mapping):
+        for name, raw_value in class_dict.items():
+            if not isinstance(name, str):
+                continue
+            if name in namedtuple_fields:
+                continue
+            existing = symbols.get(name)
+            if (
+                existing is not None
+                and not existing.is_classvar
+                and not existing.is_initvar
+            ):
+                is_property = existing.property_info is not None
+                is_staticmethod = existing.is_staticmethod
+                is_classmethod = existing.is_classmethod
+                is_method = existing.is_method
+            else:
+                is_property = isinstance(raw_value, property)
+                is_staticmethod = isinstance(raw_value, staticmethod)
+                is_classmethod = isinstance(raw_value, classmethod)
+                is_method = (
+                    (not is_property and (is_staticmethod or is_classmethod))
+                    or inspect.isfunction(raw_value)
+                    or inspect.ismethoddescriptor(raw_value)
+                )
+            symbols[name] = ClassSymbol(
+                (existing.typ if existing is not None else KnownValue(raw_value)),
+                existing.qualifiers if existing is not None else frozenset(),
+                is_method=is_method,
+                is_classmethod=is_classmethod,
+                is_staticmethod=is_staticmethod,
+                property_info=(
+                    _runtime_property_info(raw_value, typ) if is_property else None
+                ),
+                initializer=KnownValue(raw_value),
+            )
+
+
+def _add_synthetic_declared_symbols(
+    declared_symbols: Mapping[str, ClassSymbol], symbols: dict[str, ClassSymbol]
+) -> None:
+    for name, symbol in declared_symbols.items():
+        symbols[name] = merge_declared_symbol(symbols.get(name), symbol)
+
+
+def _runtime_property_info(raw_value: property, owner: type) -> PropertyInfo:
+    getter_type: Value
+    if raw_value.fget is None:
+        getter_type = AnyValue(AnySource.inference)
+    else:
+        getter_annotations = safe_getattr(raw_value.fget, "__annotations__", None)
+        if isinstance(getter_annotations, Mapping) and "return" in getter_annotations:
+            getter_type = _value_from_runtime_annotation(
+                getter_annotations["return"], owner
+            )
+        else:
+            getter_type = AnyValue(AnySource.unannotated)
+
+    setter_type: Value | None = None
+    if raw_value.fset is not None:
+        try:
+            parameters = list(inspect.signature(raw_value.fset).parameters.values())
+        except Exception:
+            setter_type = AnyValue(AnySource.inference)
+        else:
+            value_param = parameters[1] if len(parameters) >= 2 else None
+            if value_param is None or value_param.annotation is inspect.Parameter.empty:
+                setter_type = AnyValue(AnySource.unannotated)
+            else:
+                setter_type = _value_from_runtime_annotation(
+                    value_param.annotation, owner
+                )
+
+    return PropertyInfo(getter_type=getter_type, setter_type=setter_type)
+
+
+_CLASS_SYMBOL_ALLOWED_QUALIFIERS = frozenset(
+    {Qualifier.ClassVar, Qualifier.Final, Qualifier.ReadOnly, Qualifier.InitVar}
+)
+
+
+def _symbol_from_runtime_annotation(annotation: object, owner: type) -> ClassSymbol:
+    ctx = _RuntimeAnnotationsContext(owner)
+    with ctx.suppress_errors():
+        expr = annotation_expr_from_runtime(annotation, ctx=ctx)
+        typ, qualifiers = expr.maybe_unqualify(_CLASS_SYMBOL_ALLOWED_QUALIFIERS)
+    return ClassSymbol(
+        typ if typ is not None else AnyValue(AnySource.incomplete_annotation),
+        frozenset(qualifiers),
+    )
+
+
+def _value_from_runtime_annotation(annotation: object, owner: type) -> Value:
+    ctx = _RuntimeAnnotationsContext(owner)
+    with ctx.suppress_errors():
+        expr = annotation_expr_from_runtime(annotation, ctx=ctx)
+        typ, _ = expr.maybe_unqualify(set())
+    return typ if typ is not None else AnyValue(AnySource.incomplete_annotation)
+
+
+def _runtime_namedtuple_field_names(typ: type) -> tuple[str, ...]:
+    if not is_namedtuple_class(typ):
+        return ()
+    fields_obj = safe_getattr(typ, "_fields", None)
+    if not isinstance(fields_obj, tuple):
+        return ()
+    return tuple(name for name in fields_obj if isinstance(name, str))

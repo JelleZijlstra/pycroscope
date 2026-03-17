@@ -646,19 +646,10 @@ def _get_direct_attribute_from_synthetic_instance(
     self_value: SyntheticClassObjectValue, attr_name: str, ctx: AttrContext
 ) -> Value:
     selected_name = _select_synthetic_attribute_name(self_value, attr_name)
-    direct = _get_direct_attribute_from_synthetic_class(self_value, attr_name, ctx)
-    if direct is not UNINITIALIZED_VALUE:
-        direct_value = replace_fallback(direct)
-        if isinstance(direct_value, AnnotatedValue):
-            direct_value = replace_fallback(direct_value.value)
-        if isinstance(direct_value, KnownValue) and isinstance(
-            direct_value.val, property
-        ):
-            return direct
     symbol = self_value.declared_symbols.get(selected_name)
     if symbol is not None and symbol.property_info is not None:
         return symbol.property_info.getter_type
-    return direct
+    return _get_direct_attribute_from_synthetic_class(self_value, attr_name, ctx)
 
 
 def _select_synthetic_attribute_name(
