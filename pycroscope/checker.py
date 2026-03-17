@@ -522,17 +522,7 @@ class Checker:
         synthetic_class = self.get_synthetic_class(typ)
         if synthetic_class is None:
             return
-        shared_declared_symbols = None
-        class_type = synthetic_class.class_type
-        if isinstance(class_type, TypedValue):
-            for key in self._iter_generic_override_keys(class_type.typ):
-                cached = self.type_object_cache.get(key)
-                if cached is not None and cached is not type_object:
-                    shared_declared_symbols = cached.declared_symbols
-                    break
-        if shared_declared_symbols is None:
-            shared_declared_symbols = type_object.declared_symbols
-        object.__setattr__(type_object, "declared_symbols", shared_declared_symbols)
+        shared_declared_symbols = type_object.declared_symbols
         object.__setattr__(synthetic_class, "declared_symbols", shared_declared_symbols)
 
     def _namedtuple_field_value_for_type(
@@ -619,15 +609,20 @@ class Checker:
         class_type = synthetic_class.class_type
         if not isinstance(class_type, TypedValue):
             return
+        if isinstance(class_type, TypedDictValue):
+            return
         typ = class_type.typ
         for key in self._iter_generic_override_keys(typ):
+            if key in self.synthetic_classes:
+                assert self.synthetic_classes[key] is synthetic_class, (
+                    f"Conflicting synthetic classes for key {key} "
+                    f"(from {synthetic_class.class_type}):"
+                    f" {self.synthetic_classes[key]} vs {synthetic_class}"
+                )
             self.synthetic_classes[key] = synthetic_class
-            self.type_object_cache.pop(key, None)
         for key in self._iter_generic_override_keys(typ):
             type_object = self.make_type_object(key)
-            object.__setattr__(
-                synthetic_class, "declared_symbols", type_object.declared_symbols
-            )
+            synthetic_class.declared_symbols = type_object.declared_symbols
 
     def get_synthetic_class(self, typ: type | str) -> SyntheticClassObjectValue | None:
         for key in self._iter_generic_override_keys(typ):
@@ -689,8 +684,6 @@ class Checker:
         object.__setattr__(
             synthetic_class, "declared_type_params", tuple(declared_type_params)
         )
-        for key in self._iter_generic_override_keys(typ):
-            self.type_object_cache.pop(key, None)
 
     def register_synthetic_protocol_members(
         self, typ: type | str, members: set[str]

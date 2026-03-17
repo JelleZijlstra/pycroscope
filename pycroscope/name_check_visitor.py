@@ -53,6 +53,7 @@ import typeshed_client
 from typing_extensions import Protocol, assert_never, is_typeddict
 
 from pycroscope.input_sig import ActualArguments, InputSigValue
+from pycroscope.type_object_builder import compute_type_object_mro
 
 from . import attributes, format_strings, importer, node_visitor, type_evaluation
 from . import dataclass as dataclass_helpers
@@ -4156,9 +4157,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             elif class_obj is None or is_namedtuple_synthetic:
                 synthetic_fq_name = self._get_synthetic_class_fq_name(node)
                 if runtime_enum_fallback_class is not None:
-                    synthetic_class_type: TypedValue = TypedValue(
-                        runtime_enum_fallback_class
-                    )
+                    synthetic_class_type = TypedValue(runtime_enum_fallback_class)
                     class_scope_object = runtime_enum_fallback_class
                 elif class_obj is not None:
                     synthetic_class_type = TypedValue(class_obj)
@@ -4166,13 +4165,18 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 else:
                     synthetic_class_type = TypedValue(synthetic_fq_name)
                     class_scope_object = synthetic_fq_name
-                synthetic_class = SyntheticClassObjectValue(
-                    node.name,
-                    synthetic_class_type,
-                    base_classes=synthetic_base_values,
-                    dataclass_info=dataclass_semantics,
-                    dataclass_transform_info=dataclass_transform_info,
+                synthetic_class = self.checker.get_synthetic_class(
+                    synthetic_class_type.typ
                 )
+                if synthetic_class is None:
+                    synthetic_class = SyntheticClassObjectValue(
+                        node.name, synthetic_class_type
+                    )
+                    self.checker.register_synthetic_class(synthetic_class)
+                synthetic_class.base_classes = synthetic_base_values
+                synthetic_class.dataclass_info = dataclass_semantics
+                synthetic_class.dataclass_transform_info = dataclass_transform_info
+
                 if class_obj is not None:
                     _set_synthetic_runtime_class(synthetic_class, KnownValue(class_obj))
                 if is_namedtuple_synthetic:
@@ -4216,7 +4220,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     synthetic_class, dataclass_semantics
                 )
                 self._synthetic_classes_by_name[synthetic_fq_name] = synthetic_class
-                self.checker.register_synthetic_class(synthetic_class)
                 dataclass_metadata_class = synthetic_class
                 if self._is_checking():
                     self._synthetic_abstract_methods[synthetic_fq_name] = set()
@@ -4224,27 +4227,23 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     # like "return C.attr" or string annotations mentioning C
                     # resolve even when no runtime class object exists.
                     self.scopes.set(node.name, synthetic_class, node, self.state)
+
+                type_object = self.checker.make_type_object(synthetic_class_type.typ)
+                type_object.mro = compute_type_object_mro(
+                    self.checker, synthetic_class_type.typ
+                )
             elif (
                 dataclass_semantics is not None or dataclass_transform_info is not None
             ):
                 existing = self.checker.get_synthetic_class(class_obj)
                 if existing is None:
                     existing = SyntheticClassObjectValue(
-                        node.name,
-                        TypedValue(class_obj),
-                        base_classes=synthetic_base_values,
-                        dataclass_info=dataclass_semantics,
-                        dataclass_transform_info=dataclass_transform_info,
+                        node.name, TypedValue(class_obj)
                     )
                     self.checker.register_synthetic_class(existing)
-                else:
-                    existing = replace(
-                        existing,
-                        base_classes=synthetic_base_values,
-                        dataclass_info=dataclass_semantics,
-                        dataclass_transform_info=dataclass_transform_info,
-                    )
-                    self.checker.register_synthetic_class(existing)
+                existing.base_classes = synthetic_base_values
+                existing.dataclass_info = dataclass_semantics
+                existing.dataclass_transform_info = dataclass_transform_info
                 dataclass_helpers.set_synthetic_dataclass_transform_info(
                     existing, dataclass_transform_info
                 )

@@ -61,7 +61,7 @@ def build_type_object(checker: Checker, typ: type | super | str) -> TypeObject:
             mro = ()
         else:
             declared_type_params = tuple(checker.get_type_parameters(typ))
-            mro = _compute_type_object_mro(checker, typ)
+            mro = compute_type_object_mro(checker, typ)
         if synthetic_class is not None:
             bases |= _get_type_bases_from_synthetic_class(checker, synthetic_class)
         is_protocol = any(is_typing_name(base, "Protocol") for base in bases)
@@ -97,7 +97,7 @@ def build_type_object(checker: Checker, typ: type | super | str) -> TypeObject:
             mro = ()
         else:
             declared_type_params = tuple(checker.get_type_parameters(typ))
-            mro = _compute_type_object_mro(checker, typ)
+            mro = compute_type_object_mro(checker, typ)
         # Is it marked as a protocol in stubs? If so, use the stub definition.
         if checker.ts_finder.is_protocol(typ):
             return TypeObject(
@@ -226,7 +226,7 @@ def _get_typeshed_bases(checker: Checker, typ: type | str) -> set[type | str]:
     }
 
 
-def _compute_type_object_mro(
+def compute_type_object_mro(
     checker: Checker, typ: type | str, *, seen: frozenset[type | str] = frozenset()
 ) -> tuple[MroValue, ...]:
     if typ in seen:
@@ -238,7 +238,6 @@ def _compute_type_object_mro(
     if not direct_base_keys:
         return (
             _self_mro_value(
-                checker,
                 typ,
                 declared_type_params=declared_type_params,
                 direct_base_values=(),
@@ -254,7 +253,7 @@ def _compute_type_object_mro(
     sequences: list[tuple[MroValue, ...]] = [tuple(direct_base_values)]
     next_seen = seen | {typ}
     for base_key, base_value in zip(direct_base_keys, direct_base_values):
-        base_mro = _compute_type_object_mro(checker, base_key, seen=next_seen)
+        base_mro = compute_type_object_mro(checker, base_key, seen=next_seen)
         if base_mro:
             tail = _specialize_mro_tail_for_base(
                 checker, base_value, checker.get_type_parameters(base_key), base_mro[1:]
@@ -264,7 +263,6 @@ def _compute_type_object_mro(
         sequences.append((base_value, *tail))
     merged = _merge_mro_value_sequences(checker, sequences)
     self_value = _self_mro_value(
-        checker,
         typ,
         declared_type_params=declared_type_params,
         direct_base_values=direct_base_values,
@@ -332,7 +330,6 @@ def _specialize_mro_base_value(
 
 
 def _self_mro_value(
-    checker: Checker,
     typ: type | str,
     *,
     declared_type_params: Sequence[TypeParam],
