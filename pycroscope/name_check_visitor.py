@@ -3985,8 +3985,8 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                         " with type parameter syntax"
                     )
                 )
-            with legacy_type_param_ctx as allowed_legacy_identities:
-                if sys.version_info >= (3, 12) and node.type_params:
+            if sys.version_info >= (3, 12) and node.type_params:
+                with legacy_type_param_ctx as allowed_legacy_identities:
                     declared_type_params = node.type_params
                     type_param_values = list(
                         self.visit_type_param_values(
@@ -3994,7 +3994,8 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                             legacy_allowed_identities=allowed_legacy_identities,
                         )
                     )
-                else:
+            else:
+                with legacy_type_param_ctx:
                     type_param_values = []
                     declared_type_params = []
                 disallowed_type_params = (
@@ -7776,18 +7777,19 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                         " declarations with type parameter syntax"
                     )
                 )
-            with legacy_type_param_ctx as allowed_legacy_identities:
-                if (
-                    sys.version_info >= (3, 12)
-                    and not isinstance(node, ast.Lambda)
-                    and node.type_params
-                ):
+            if (
+                sys.version_info >= (3, 12)
+                and not isinstance(node, ast.Lambda)
+                and node.type_params
+            ):
+                with legacy_type_param_ctx as allowed_legacy_identities:
                     declared_type_params = node.type_params
                     type_params = self.visit_type_param_values(
                         declared_type_params,
                         legacy_allowed_identities=allowed_legacy_identities,
                     )
-                else:
+            else:
+                with legacy_type_param_ctx:
                     type_params = []
             legacy_annotation_ctx: AbstractContextManager[set[object] | None] = (
                 contextlib.nullcontext(None)
