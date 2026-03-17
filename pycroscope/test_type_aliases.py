@@ -226,6 +226,17 @@ class TestRecursion(TestNameCheckVisitorBase):
             allow_import_failures=True,
         )
 
+    @assert_passes()
+    def test_runtime_bitor_assignments_are_not_implicit_aliases(self):
+        import re
+
+        first = 1
+        second = 2
+        combined = first | second
+        flags = re.VERBOSE | re.DOTALL
+
+        print(combined, flags)
+
 
 class TestTypeAliasType(TestNameCheckVisitorBase):
     @assert_passes()
