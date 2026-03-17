@@ -85,6 +85,56 @@ from .value import (
     unite_values,
 )
 
+EXCLUDED_PROTOCOL_MEMBERS: set[str] = {
+    "__abstractmethods__",
+    "__annotate__",
+    "__annotate_func__",
+    "__annotations__",
+    "__annotations_cache__",
+    "__dict__",
+    "__doc__",
+    "__init__",
+    "__new__",
+    "__module__",
+    "__parameters__",
+    "__slots__",
+    "__subclasshook__",
+    "__weakref__",
+    "_abc_impl",
+    "_abc_cache",
+    "_is_protocol",
+    "__next_in_mro__",
+    "_abc_generic_negative_cache_version",
+    "__orig_bases__",
+    "__args__",
+    "_abc_registry",
+    "__extra__",
+    "_abc_generic_negative_cache",
+    "__origin__",
+    "__tree_hash__",
+    "_gorg",
+    "_is_runtime_protocol",
+    "__protocol_attrs__",
+    "__callable_proto_members_only__",
+    "__non_callable_proto_members__",
+    "__static_attributes__",
+    "__firstlineno__",
+}
+
+
+def runtime_type_generic_alias(typ: type) -> str:
+    return f"{typ.__module__}.{typ.__qualname__}"
+
+
+def class_keys_match(left: type | str, right: type | str) -> bool:
+    if left == right:
+        return True
+    if isinstance(left, type) and isinstance(right, str):
+        return runtime_type_generic_alias(left) == right
+    if isinstance(left, str) and isinstance(right, type):
+        return left == runtime_type_generic_alias(right)
+    return False
+
 
 def _as_concrete_signature(
     sig: Signature | BoundMethodSignature | OverloadedSignature | None,
@@ -117,10 +167,15 @@ def get_mro(typ: type | super) -> Sequence[type]:
         return []
 
 
-@dataclass
+MroValue = TypedValue | AnyValue
+
+
+@dataclass(kw_only=True)
 class TypeObject:
     typ: type | super | str
-    mro: tuple[Value, ...]
+    mro: tuple[MroValue, ...]
+    """Types that we consider the type to inherit from for purposes of subtyping, but that
+    are not actual bases."""
     base_classes: set[type | str] = field(default_factory=set)
     declared_type_params: tuple[TypeParam, ...] = field(
         default_factory=tuple, repr=False
@@ -129,9 +184,9 @@ class TypeObject:
     is_protocol: bool = False
     protocol_members: set[str] = field(default_factory=set)
     declared_symbols: dict[str, ClassSymbol] = field(default_factory=dict, repr=False)
+    virtual_bases: list[MroValue] = field(default_factory=list)
     is_thrift_enum: bool = field(init=False)
     is_universally_assignable: bool = field(init=False)
-    artificial_bases: set[type] = field(default_factory=set, init=False)
     _protocol_positive_cache: dict[tuple[Value, Value], BoundsMap] = field(
         default_factory=dict, repr=False
     )
@@ -152,8 +207,8 @@ class TypeObject:
         self.is_thrift_enum = hasattr(self.typ, "_VALUES_TO_NAMES")
         self.base_classes |= set(get_mro(self.typ))
         if self.is_thrift_enum:
-            self.artificial_bases.add(int)
-        self.base_classes |= self.artificial_bases
+            self.base_classes.add(int)
+            self.virtual_bases.append(TypedValue(int))
 
     def get_declared_symbol(
         self, name: str, ctx: CanAssignContext
@@ -255,10 +310,11 @@ class TypeObject:
                 return {}
             with ctx.assume_compatibility(self, other):
                 result = self._is_compatible_with_protocol(self_val, other_val, ctx)
-                if isinstance(result, CanAssignError) and other.artificial_bases:
-                    for base in other.artificial_bases:
+                if isinstance(result, CanAssignError) and other.virtual_bases:
+                    for base in other.virtual_bases:
+                        assert isinstance(base, TypedValue), (self, base)
                         subresult = self._is_compatible_with_protocol(
-                            self_val, TypedValue(base), ctx
+                            self_val, base, ctx
                         )
                         if not isinstance(subresult, CanAssignError):
                             result = subresult

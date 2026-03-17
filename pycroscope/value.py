@@ -483,6 +483,9 @@ class AnyValue(Value):
     ) -> CanAssignError | None:
         return None  # always overlaps
 
+    def substitute_typevars(self, typevars: TypeVarMap) -> "AnyValue":
+        return self
+
 
 UNRESOLVED_VALUE = AnyValue(AnySource.default)
 """The default instance of :class:`AnyValue`.
@@ -530,7 +533,7 @@ class PartialValue(Value):
     def get_type_value(self) -> Value:
         return self.runtime_value.get_type_value()
 
-    def substitute_typevars(self, typevars: TypeVarMap) -> Value:
+    def substitute_typevars(self, typevars: TypeVarMap) -> "PartialValue":
         return PartialValue(
             operation=self.operation,
             root=self.root.substitute_typevars(typevars),
@@ -568,7 +571,7 @@ class PartialCallValue(Value):
     def get_type_value(self) -> Value:
         return self.runtime_value.get_type_value()
 
-    def substitute_typevars(self, typevars: TypeVarMap) -> Value:
+    def substitute_typevars(self, typevars: TypeVarMap) -> "PartialCallValue":
         return PartialCallValue(
             callee=self.callee,
             arguments={
@@ -1283,7 +1286,7 @@ class UnboundMethodValue(Value):
             signature = signature.get_signature(ctx=ctx)
         return signature
 
-    def substitute_typevars(self, typevars: TypeVarMap) -> "Value":
+    def substitute_typevars(self, typevars: TypeVarMap) -> "UnboundMethodValue":
         return UnboundMethodValue(
             self.attr_name,
             self.composite.substitute_typevars(typevars),
@@ -1522,6 +1525,9 @@ class TypedValue(Value):
         else:
             return None
 
+    def substitute_typevars(self, typevars: TypeVarMap) -> "TypedValue":
+        return self
+
     def __str__(self) -> str:
         if self.literal_only:
             if self.typ is str:
@@ -1620,7 +1626,7 @@ class GenericValue(TypedValue):
         for arg in self.args:
             yield from arg.walk_values()
 
-    def substitute_typevars(self, typevars: TypeVarMap) -> Value:
+    def substitute_typevars(self, typevars: TypeVarMap) -> "GenericValue":
         new_args: list[Value] = []
         for arg in self.args:
             substituted = arg.substitute_typevars(typevars)
@@ -1734,7 +1740,7 @@ class SequenceValue(GenericValue):
             # Probably an unhashable object in a set.
             return SequenceValue(typ, members)
 
-    def substitute_typevars(self, typevars: TypeVarMap) -> Value:
+    def substitute_typevars(self, typevars: TypeVarMap) -> "SequenceValue":
         new_members: list[tuple[bool, Value]] = []
         for is_many, member in self.members:
             substituted = member.substitute_typevars(typevars)
@@ -1869,7 +1875,7 @@ class DictIncompleteValue(GenericValue):
             yield from pair.key.walk_values()
             yield from pair.value.walk_values()
 
-    def substitute_typevars(self, typevars: TypeVarMap) -> Value:
+    def substitute_typevars(self, typevars: TypeVarMap) -> "DictIncompleteValue":
         return DictIncompleteValue(
             self.typ, [pair.substitute_typevars(typevars) for pair in self.kv_pairs]
         )
@@ -2087,9 +2093,8 @@ class SyntheticClassObjectValue(Value):
         default_factory=tuple, compare=False, hash=False, repr=False
     )
 
-    def substitute_typevars(self, typevars: TypeVarMap) -> Value:
+    def substitute_typevars(self, typevars: TypeVarMap) -> "SyntheticClassObjectValue":
         substituted = self.class_type.substitute_typevars(typevars)
-        assert isinstance(substituted, (TypedValue, TypedDictValue))
         return SyntheticClassObjectValue(
             self.name,
             substituted,
@@ -2256,7 +2261,7 @@ class AsyncTaskIncompleteValue(GenericValue):
         super().__init__(typ, (value,))
         self.value = value
 
-    def substitute_typevars(self, typevars: TypeVarMap) -> Value:
+    def substitute_typevars(self, typevars: TypeVarMap) -> "AsyncTaskIncompleteValue":
         return AsyncTaskIncompleteValue(
             self.typ, self.value.substitute_typevars(typevars)
         )
@@ -2284,7 +2289,7 @@ class CallableValue(TypedValue):
         super().__init__(fallback)
         self.signature = signature
 
-    def substitute_typevars(self, typevars: TypeVarMap) -> Value:
+    def substitute_typevars(self, typevars: TypeVarMap) -> "CallableValue":
         from .signature import keep_inferable_typevars_from_params
 
         return CallableValue(

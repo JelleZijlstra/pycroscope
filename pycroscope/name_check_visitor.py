@@ -220,6 +220,7 @@ from .suggested_type import (
 )
 from .type_object import (
     TypeObject,
+    class_keys_match,
     get_mro,
     is_readonly_annotated_member,
     lookup_declared_symbol,
@@ -406,10 +407,6 @@ AwaitableValue = GenericValue(
 KnownNone = KnownValue(None)
 ExceptionValue = TypedValue(BaseException) | SubclassValue(TypedValue(BaseException))
 ExceptionOrNone = ExceptionValue | KnownNone
-
-
-def _runtime_type_generic_alias(typ: type) -> str:
-    return f"{typ.__module__}.{typ.__qualname__}"
 
 
 class _SupportsDescriptorGet(Protocol):
@@ -3204,17 +3201,8 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             return any(
                 self._is_classvar_member(base_key, attr_name)
                 for base_key in self._direct_base_class_keys(class_key)
-                if not self._class_keys_match(base_key, class_key)
+                if not class_keys_match(base_key, class_key)
             )
-        return False
-
-    def _class_keys_match(self, left: type | str, right: type | str) -> bool:
-        if left == right:
-            return True
-        if isinstance(left, type) and isinstance(right, str):
-            return _runtime_type_generic_alias(left) == right
-        if isinstance(left, str) and isinstance(right, type):
-            return left == _runtime_type_generic_alias(right)
         return False
 
     def _get_direct_declared_symbol(
@@ -3256,7 +3244,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         self, class_key: type | str, attr_name: str, node: ast.AST | None = None
     ) -> Value:
         def _apply_owner_substitutions(owner: type | str, value: Value) -> Value:
-            if self._class_keys_match(owner, class_key):
+            if class_keys_match(owner, class_key):
                 return value
             substitutions = self.checker.get_generic_bases(class_key).get(owner)
             if not substitutions:
@@ -3540,7 +3528,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                             root_value = TypedValue(base_class)
                         else:
                             continue
-                        if self._class_keys_match(base_class, current_class):
+                        if class_keys_match(base_class, current_class):
                             continue
                         ctx = _AttrContext(
                             Composite(root_value),
@@ -3558,7 +3546,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         for base_class, base_typevar_map in self.checker.get_generic_bases(
             current_class
         ).items():
-            if self._class_keys_match(base_class, current_class):
+            if class_keys_match(base_class, current_class):
                 continue
             if isinstance(base_class, str):
                 base_class_value: Value = self._synthetic_classes_by_name.get(
@@ -14260,7 +14248,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             (
                 base_typ
                 for base_typ in generic_bases
-                if self._class_keys_match(base_typ, synthetic_typ)
+                if class_keys_match(base_typ, synthetic_typ)
             ),
             None,
         )
@@ -14272,7 +14260,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             and synthetic_base_key is not None
         ):
             has_fully_specialized_generic_base = any(
-                not self._class_keys_match(base_typ, synthetic_typ)
+                not class_keys_match(base_typ, synthetic_typ)
                 and isinstance(base_typ, str)
                 and tv_map
                 and all(

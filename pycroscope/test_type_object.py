@@ -48,16 +48,16 @@ def test_protocol_member_str_order_is_deterministic() -> None:
         def m(self) -> int: ...
 
     type_object = TypeObject(
-        HasMembers,
-        tuple(TypedValue(base) for base in get_mro(HasMembers)),
+        typ=HasMembers,
+        mro=tuple(TypedValue(base) for base in get_mro(HasMembers)),
         is_protocol=True,
         protocol_members={"m", "f"},
     )
     assert str(type_object).endswith("(Protocol with members 'f', 'm')")
 
     synthetic_protocol = TypeObject(
-        "synthetic.Protocol",
-        (TypedValue("synthetic.Protocol"), TypedValue(object)),
+        typ="synthetic.Protocol",
+        mro=(TypedValue("synthetic.Protocol"), TypedValue(object)),
         is_protocol=True,
         protocol_members={"m", "f"},
     )
