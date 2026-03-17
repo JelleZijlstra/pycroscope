@@ -327,6 +327,15 @@ from .value import (
 from .yield_checker import YieldChecker
 
 _AST_TYPE_ALIAS = getattr(ast, "TypeAlias", None)
+_TYPE_PARAM_AST_NODE_TYPES = tuple(
+    typ
+    for typ in (
+        safe_getattr(ast, "TypeVar", None),
+        safe_getattr(ast, "ParamSpec", None),
+        safe_getattr(ast, "TypeVarTuple", None),
+    )
+    if isinstance(typ, type)
+)
 
 if sys.version_info >= (3, 11):
     TryNode = ast.Try | ast.TryStar
@@ -1783,6 +1792,345 @@ class _DataclassFieldInferenceCallContext:
         self.errors.append(message)
 
 
+@dataclass
+class _LegacyTypeParamPolicy:
+    allowed_identities: set[object]
+    message: str
+    report_in_collecting: bool = True
+    triggered: bool = False
+
+
+@dataclass
+class _VarianceCollectionContext:
+    type_param_polarities: dict[object, set[int]]
+    polarity: int
+
+
+@dataclass(frozen=True)
+class _BaseTypeParamVarianceInfo:
+    type_param_polarities: dict[object, set[int]]
+    is_variance_declaration_base: bool
+
+
+class ActiveTypeParams:
+    def __init__(self, visitor: "NameCheckVisitor") -> None:
+        self.visitor = visitor
+        self._annotation_allowed_identities: list[set[object]] = []
+        self._active_pep695_identities: list[set[object]] = []
+        self._current_class_type_params: Sequence[TypeParam] | None = None
+        self._disallowed_identities: list[set[object]] = []
+        self._legacy_policies: list[_LegacyTypeParamPolicy] = []
+        self._variance_collections: list[_VarianceCollectionContext] = []
+        self._current_class_type_param_polarities: dict[object, set[int]] | None = None
+        self._current_is_protocol_class = False
+        self._variance_polarity_stack: list[int] = []
+        self._variance_is_suspended = 0
+        self._variance_outside_annotations = 0
+        self._subscript_arg_polarities: list[tuple[tuple[int, bool], ...]] = []
+
+    def current_annotation_identities(self) -> set[object]:
+        identities: set[object] = set()
+        for allowed in self._annotation_allowed_identities:
+            identities.update(allowed)
+        for allowed in self._active_pep695_identities:
+            identities.update(allowed)
+        return identities
+
+    def current_pep695_identities(self) -> set[object]:
+        identities: set[object] = set()
+        for allowed in self._active_pep695_identities:
+            identities.update(allowed)
+        return identities
+
+    def current_class_type_params(self) -> Sequence[TypeParam] | None:
+        return self._current_class_type_params
+
+    @contextlib.contextmanager
+    def allow_in_annotations(self, identities: Iterable[object]) -> Generator[None]:
+        identities = set(identities)
+        if not identities:
+            yield
+            return
+        self._annotation_allowed_identities.append(identities)
+        try:
+            yield
+        finally:
+            self._annotation_allowed_identities.pop()
+
+    @contextlib.contextmanager
+    def push_pep695_scope(self, type_params: Sequence[TypeParam]) -> Generator[None]:
+        identities = {type_param.typevar for type_param in type_params}
+        if not identities:
+            yield
+            return
+        self._active_pep695_identities.append(identities)
+        try:
+            yield
+        finally:
+            self._active_pep695_identities.pop()
+
+    @contextlib.contextmanager
+    def push_class_type_params(
+        self, type_params: Sequence[TypeParam] | None
+    ) -> Generator[None]:
+        with override(self, "_current_class_type_params", type_params):
+            yield
+
+    @contextlib.contextmanager
+    def disallow(self, identities: Iterable[object]) -> Generator[None]:
+        identities = set(identities)
+        if not identities:
+            yield
+            return
+        self._disallowed_identities.append(identities)
+        try:
+            yield
+        finally:
+            self._disallowed_identities.pop()
+
+    @contextlib.contextmanager
+    def reject_legacy_type_params(
+        self,
+        message: str,
+        *,
+        include_active_pep695: bool = True,
+        report_in_collecting: bool = True,
+    ) -> Generator[set[object]]:
+        allowed_identities = (
+            self.current_pep695_identities() if include_active_pep695 else set()
+        )
+        policy = _LegacyTypeParamPolicy(
+            allowed_identities, message, report_in_collecting=report_in_collecting
+        )
+        self._legacy_policies.append(policy)
+        try:
+            yield allowed_identities
+        finally:
+            self._legacy_policies.pop()
+
+    @contextlib.contextmanager
+    def collect_variance(
+        self, type_param_polarities: dict[object, set[int]], *, polarity: int
+    ) -> Generator[None]:
+        self._variance_collections.append(
+            _VarianceCollectionContext(type_param_polarities, polarity)
+        )
+        try:
+            yield
+        finally:
+            self._variance_collections.pop()
+
+    @contextlib.contextmanager
+    def compose_variance(self, polarity: int) -> Generator[None]:
+        self._variance_polarity_stack.append(polarity)
+        try:
+            yield
+        finally:
+            self._variance_polarity_stack.pop()
+
+    @contextlib.contextmanager
+    def suspend_variance(self) -> Generator[None]:
+        self._variance_is_suspended += 1
+        try:
+            yield
+        finally:
+            self._variance_is_suspended -= 1
+
+    @contextlib.contextmanager
+    def allow_variance_outside_annotations(self) -> Generator[None]:
+        self._variance_outside_annotations += 1
+        try:
+            yield
+        finally:
+            self._variance_outside_annotations -= 1
+
+    def has_variance_collection(self) -> bool:
+        return bool(self._variance_collections) and not self._variance_is_suspended
+
+    def current_class_type_param_polarities(self) -> dict[object, set[int]] | None:
+        return self._current_class_type_param_polarities
+
+    def current_variance_polarity(self, base_polarity: int) -> int:
+        polarity = base_polarity
+        for modifier in self._variance_polarity_stack:
+            polarity = _compose_observed_variance_polarity(polarity, modifier)
+        return polarity
+
+    @contextlib.contextmanager
+    def push_class_type_param_variance_collection(
+        self,
+        type_param_polarities: dict[object, set[int]] | None,
+        *,
+        is_protocol_class: bool,
+    ) -> Generator[None]:
+        with (
+            override(
+                self, "_current_class_type_param_polarities", type_param_polarities
+            ),
+            override(self, "_current_is_protocol_class", is_protocol_class),
+        ):
+            yield
+
+    @contextlib.contextmanager
+    def suspend_class_type_param_variance_collection(self) -> Generator[None]:
+        if self._current_class_type_param_polarities is None:
+            yield
+            return
+        with override(self, "_current_class_type_param_polarities", None):
+            yield
+
+    def function_param_type_param_variance_context(
+        self, *, parameter_index: int, is_staticmethod: bool
+    ) -> AbstractContextManager[None]:
+        if self._current_class_type_param_polarities is None:
+            return contextlib.nullcontext()
+        if (
+            self._current_is_protocol_class
+            and parameter_index == 0
+            and not is_staticmethod
+        ):
+            return self.suspend_variance()
+        return self.local_class_type_param_variance_context(polarity=-1)
+
+    def function_return_type_param_variance_context(
+        self,
+    ) -> AbstractContextManager[None]:
+        if self._current_class_type_param_polarities is None:
+            return contextlib.nullcontext()
+        return self.local_class_type_param_variance_context(polarity=1)
+
+    @contextlib.contextmanager
+    def local_class_type_param_variance_context(
+        self, *, polarity: int
+    ) -> Generator[None]:
+        target = self._current_class_type_param_polarities
+        if target is None:
+            yield
+            return
+        local_polarities: dict[object, set[int]] = {}
+        with (
+            self.collect_variance(local_polarities, polarity=1),
+            self.compose_variance(polarity),
+        ):
+            yield
+        self.visitor._merge_type_param_polarities(target, local_polarities, polarity=1)
+
+    @contextlib.contextmanager
+    def push_subscript_arg_polarities(
+        self, polarities: Sequence[tuple[int, bool]]
+    ) -> Generator[None]:
+        self._subscript_arg_polarities.append(tuple(polarities))
+        try:
+            yield
+        finally:
+            self._subscript_arg_polarities.pop()
+
+    @contextlib.contextmanager
+    def consume_subscript_arg_polarities(
+        self, arity: int
+    ) -> Generator[tuple[tuple[int, bool], ...] | None]:
+        polarities = (
+            self._subscript_arg_polarities.pop()
+            if self._subscript_arg_polarities
+            and len(self._subscript_arg_polarities[-1]) == arity
+            else None
+        )
+        try:
+            yield polarities
+        finally:
+            if polarities is not None:
+                self._subscript_arg_polarities.append(polarities)
+
+    def observe_value(self, node: ast.AST, value: Value) -> None:
+        if not (
+            self._legacy_policies
+            or self._disallowed_identities
+            or self.visitor.in_annotation
+            or self._variance_collections
+        ):
+            return
+        if self._variance_is_suspended and not (
+            self._legacy_policies or self._disallowed_identities
+        ):
+            return
+        if _is_type_param_declaration_node(node):
+            return
+
+        type_param = _type_param_value_from_value(value, self.visitor)
+        if type_param is not None:
+            self._check_direct_type_param_usage(node, type_param)
+            if (
+                isinstance(type_param, TypeVarParam)
+                and self._variance_collections
+                and not self._variance_is_suspended
+                and (
+                    self.visitor.in_annotation or self._variance_outside_annotations > 0
+                )
+            ):
+                for context in self._variance_collections:
+                    used_polarities = context.type_param_polarities.get(
+                        type_param.typevar
+                    )
+                    if used_polarities is None:
+                        used_polarities = context.type_param_polarities.setdefault(
+                            type_param.typevar, set()
+                        )
+                    _record_variance_polarity(
+                        used_polarities,
+                        self.current_variance_polarity(context.polarity),
+                    )
+
+    def _show_error(
+        self,
+        node: ast.AST,
+        message: str,
+        *,
+        error_code: Error,
+        report_in_collecting: bool,
+    ) -> None:
+        if report_in_collecting and self.visitor._is_collecting():
+            self.visitor.show_error(node, message, error_code=error_code)
+        else:
+            self.visitor._show_error_if_checking(node, message, error_code=error_code)
+
+    def _check_direct_type_param_usage(
+        self, error_node: ast.AST, type_param: TypeParam
+    ) -> None:
+        identity = type_param.typevar
+        for policy in self._legacy_policies:
+            if policy.triggered:
+                continue
+            if identity in policy.allowed_identities:
+                continue
+            policy.triggered = True
+            self._show_error(
+                error_node,
+                policy.message,
+                error_code=ErrorCode.invalid_annotation,
+                report_in_collecting=policy.report_in_collecting,
+            )
+            break
+
+        if not isinstance(type_param, TypeVarParam) or identity is SelfT:
+            return
+        if any(identity in disallowed for disallowed in self._disallowed_identities):
+            self.visitor._show_error_if_checking(
+                error_node,
+                "Type parameter is not valid in this annotation context",
+                error_code=ErrorCode.invalid_annotation,
+            )
+            return
+        if self.visitor.in_type_alias_definition or not self.visitor.in_annotation:
+            return
+        if identity in self.current_annotation_identities():
+            return
+        self.visitor._show_error_if_checking(
+            error_node,
+            "Type parameter is not valid in this annotation context",
+            error_code=ErrorCode.invalid_annotation,
+        )
+
+
 @used  # exposed as an API
 class CallSiteCollector:
     """Class to record function calls with their origin."""
@@ -1834,11 +2182,8 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     current_dataclass_info: DataclassInfo | None
     current_dataclass_kw_only_active: bool
     current_class_key: type | str | None
-    current_class_type_params: Sequence[TypeParam] | None
-    current_class_declared_type_param_identities: set[object] | None
-    disallowed_type_param_identities: set[object] | None
+    active_type_params: ActiveTypeParams
     in_type_alias_definition: bool
-    _active_pep695_type_params: list[set[object]]
     current_enum_members: _EnumMemberTracker | None
     current_function: object | None
     current_function_info: FunctionInfo | None
@@ -1914,11 +2259,8 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         self.current_dataclass_info = None
         self.current_dataclass_kw_only_active = False
         self.current_class_key = None
-        self.current_class_type_params = None
-        self.current_class_declared_type_param_identities = None
-        self.disallowed_type_param_identities = None
+        self.active_type_params = ActiveTypeParams(self)
         self.in_type_alias_definition = False
-        self._active_pep695_type_params = []
         self.current_synthetic_typeddict = None
         self.current_function_name = None
         self.current_function_info = None
@@ -2009,6 +2351,10 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         if sig is not saved_sig:
             return None
         return val
+
+    @property
+    def current_class_type_params(self) -> Sequence[TypeParam] | None:
+        return self.active_type_params.current_class_type_params()
 
     def get_synthetic_class(self, typ: type | str) -> SyntheticClassObjectValue | None:
         if isinstance(typ, type):
@@ -2966,8 +3312,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 return True
         return False
 
-    def _bound_type_param_identities_for_current_function(self) -> set[object]:
-        info = self.current_function_info
+    def _bound_type_param_identities_for_function(
+        self, info: FunctionInfo | None
+    ) -> set[object]:
         if info is None:
             return set()
         identities: set[object] = {
@@ -2992,7 +3339,10 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         for subval in value.walk_values():
             if isinstance(subval, TypeAliasValue):
                 continue
-            identity = _type_param_identity(subval, self)
+            type_param = _type_param_value_from_value(subval, self)
+            if type_param is None:
+                continue
+            identity = type_param.typevar
             if (
                 identity is None
                 or identity is SelfT
@@ -3001,51 +3351,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 continue
             identities.add(identity)
         return identities
-
-    def _allowed_type_param_identities_in_current_annotation_context(
-        self,
-    ) -> set[object]:
-        identities = self._bound_type_param_identities_for_current_function()
-        if self.current_class_type_params is not None:
-            identities.update(
-                type_param.typevar for type_param in self.current_class_type_params
-            )
-        if self.current_class_declared_type_param_identities is not None:
-            identities.update(self.current_class_declared_type_param_identities)
-        identities.update(chain.from_iterable(self._active_pep695_type_params))
-        return identities
-
-    def _check_invalid_type_parameter_usage(
-        self, value: Value, error_node: ast.AST
-    ) -> None:
-        type_param = _type_param_value_from_value(value, self)
-        if not isinstance(type_param, TypeVarParam) or type_param.typevar is SelfT:
-            return
-        identity = type_param.typevar
-        if (
-            self.disallowed_type_param_identities is not None
-            and identity in self.disallowed_type_param_identities
-        ):
-            self._show_error_if_checking(
-                error_node,
-                "Type parameter is not valid in this annotation context",
-                error_code=ErrorCode.invalid_annotation,
-            )
-            return
-        if self.in_type_alias_definition:
-            return
-        if not self.in_annotation:
-            return
-        if (
-            identity
-            in self._allowed_type_param_identities_in_current_annotation_context()
-        ):
-            return
-        self._show_error_if_checking(
-            error_node,
-            "Type parameter is not valid in this annotation context",
-            error_code=ErrorCode.invalid_annotation,
-        )
 
     def _node_contains_type_param_reference(self, node: ast.AST) -> bool:
         for subnode in ast.walk(node):
@@ -3064,28 +3369,12 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     return True
         return False
 
-    def _outer_type_param_identities_for_nested_class(self) -> set[object]:
-        identities = self._bound_type_param_identities_for_current_function()
-        if self.current_class_type_params is not None:
-            identities.update(
-                type_param.typevar for type_param in self.current_class_type_params
-            )
-        if self.current_class_declared_type_param_identities is not None:
-            identities.update(self.current_class_declared_type_param_identities)
-        return identities
-
     def _class_body_type_alias_disallowed_type_param_identities(
         self,
     ) -> set[object] | None:
         if self.scopes.scope_type() != ScopeType.class_scope:
             return None
-        identities: set[object] = set()
-        if self.current_class_type_params is not None:
-            identities.update(
-                type_param.typevar for type_param in self.current_class_type_params
-            )
-        if self.current_class_declared_type_param_identities is not None:
-            identities.update(self.current_class_declared_type_param_identities)
+        identities = self.active_type_params.current_annotation_identities()
         return identities or None
 
     def _evaluate_type_alias_node(
@@ -3098,11 +3387,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         with (
             override(self, "in_annotation", True),
             override(self, "in_type_alias_definition", True),
-            override(
-                self,
-                "disallowed_type_param_identities",
-                disallowed_type_param_identities,
-            ),
+            self.active_type_params.disallow(disallowed_type_param_identities or ()),
         ):
             return annotation_expr_from_ast(
                 value_node, visitor=self, suppress_errors=suppress_errors
@@ -3584,8 +3869,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     error_node, f"Undefined name: {node.id}", ErrorCode.undefined_name
                 )
             return AnyValue(AnySource.error), origin
-        if self.in_annotation or self.disallowed_type_param_identities is not None:
-            self._check_invalid_type_parameter_usage(value, error_node)
+        self.active_type_params.observe_value(error_node, value)
         assert not isinstance(value, (TypeVarParam, ParamSpecParam, TypeVarTupleParam))
         if isinstance(value, InputSigValue):
             # ParamSpecs are stored as InputSigValues and cannot be converted to a
@@ -3690,37 +3974,55 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         else:
             ctx = contextlib.nullcontext()
         with ctx:
-            if sys.version_info >= (3, 12) and node.type_params:
-                declared_type_params = node.type_params
-                type_param_values = list(
-                    self.visit_type_param_values(declared_type_params)
-                )
-            else:
-                type_param_values = []
-                declared_type_params = []
-            if self._is_checking() and type_param_values:
-                legacy_typevars = self._legacy_typevars_in_nodes(
-                    [
-                        *declared_type_params,
-                        *node.bases,
-                        *(kw.value for kw in node.keywords),
-                    ],
-                    type_param_values,
-                )
-                if legacy_typevars:
-                    self._show_error_if_checking(
-                        node,
-                        "Class definition cannot combine old-style TypeVar declarations"
-                        " with type parameter syntax",
-                        error_code=ErrorCode.invalid_annotation,
-                    )
-            disallowed_type_params = (
-                self._outer_type_param_identities_for_nested_class()
+            base_type_param_variance_infos: list[_BaseTypeParamVarianceInfo] = []
+            legacy_type_param_ctx: AbstractContextManager[set[object] | None] = (
+                contextlib.nullcontext(None)
             )
-            with override(
-                self, "disallowed_type_param_identities", disallowed_type_params or None
-            ):
-                base_values = self._generic_visit_list(node.bases)
+            if self._is_checking() and sys.version_info >= (3, 12) and node.type_params:
+                legacy_type_param_ctx = (
+                    self.active_type_params.reject_legacy_type_params(
+                        "Class definition cannot combine old-style TypeVar declarations"
+                        " with type parameter syntax"
+                    )
+                )
+            with legacy_type_param_ctx as allowed_legacy_identities:
+                if sys.version_info >= (3, 12) and node.type_params:
+                    declared_type_params = node.type_params
+                    type_param_values = list(
+                        self.visit_type_param_values(
+                            declared_type_params,
+                            legacy_allowed_identities=allowed_legacy_identities,
+                        )
+                    )
+                else:
+                    assert allowed_legacy_identities is None
+                    type_param_values = []
+                    declared_type_params = []
+
+                disallowed_type_params = (
+                    self.active_type_params.current_annotation_identities()
+                )
+                with self.active_type_params.disallow(disallowed_type_params):
+                    base_values = []
+                    for base_node in node.bases:
+                        local_type_param_polarities: dict[object, set[int]] = {}
+                        with (
+                            self.active_type_params.collect_variance(
+                                local_type_param_polarities, polarity=1
+                            ),
+                            self.active_type_params.allow_variance_outside_annotations(),
+                        ):
+                            base_value = self.visit(base_node)
+                        is_variance_declaration_base = self._is_type_parameter_base(
+                            base_value
+                        )
+                        base_values.append(base_value)
+                        base_type_param_variance_infos.append(
+                            _BaseTypeParamVarianceInfo(
+                                local_type_param_polarities,
+                                is_variance_declaration_base=is_variance_declaration_base,
+                            )
+                        )
             if self._is_checking():
                 self._check_typevartuple_usage_in_type_parameter_bases(
                     node, base_values
@@ -3766,9 +4068,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             ):
                 self.enum_class_keys.add(class_key)
             self._check_for_final_base_classes(node, base_values)
-            with override(
-                self, "disallowed_type_param_identities", disallowed_type_params or None
-            ):
+            with self.active_type_params.disallow(disallowed_type_params):
                 keyword_values = [(kw, self.visit(kw.value)) for kw in node.keywords]
             if self._is_checking():
                 self._check_generic_metaclass_keyword(keyword_values)
@@ -3973,13 +4273,23 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 class_scope_object if isinstance(class_scope_object, type) else None
             )
             is_protocol_class = self._is_protocol_class(base_values, class_scope_object)
+            analyzed_base_values = self._base_values_for_generic_analysis(
+                node, base_values
+            )
+            class_type_param_polarities: dict[object, set[int]] = {}
+            if not is_protocol_class:
+                for base_variance_info in base_type_param_variance_infos:
+                    if base_variance_info.is_variance_declaration_base:
+                        continue
+                    self._merge_type_param_polarities(
+                        class_type_param_polarities,
+                        base_variance_info.type_param_polarities,
+                        polarity=1,
+                    )
             effective_type_param_values = (
                 type_param_values
                 if type_param_values
                 else self._type_params_from_base_values(base_values)
-            )
-            analyzed_base_values = self._base_values_for_generic_analysis(
-                node, base_values
             )
             if (
                 not type_param_values
@@ -4204,8 +4514,18 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 )
             if isinstance(class_scope_object, type):
                 self._record_class_body_attributes(node, class_scope_object)
+            class_annotation_identities = {
+                type_param.typevar for type_param in method_type_param_values
+            }
+            class_annotation_identities.update(
+                type_param.typevar for type_param in type_param_values
+            )
             with (
-                self._active_pep695_type_param_scope(type_param_values),
+                self.active_type_params.push_pep695_scope(type_param_values),
+                self.active_type_params.allow_in_annotations(
+                    class_annotation_identities
+                ),
+                self.active_type_params.disallow(disallowed_type_params),
                 override(self, "current_synthetic_typeddict", synthetic_typeddict),
                 override(self, "current_class_key", class_key),
                 override(self, "current_dataclass_info", dataclass_semantics),
@@ -4218,13 +4538,11 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                         else False
                     ),
                 ),
-                override(
-                    self,
-                    "current_class_declared_type_param_identities",
-                    {type_param.typevar for type_param in type_param_values},
+                self.active_type_params.push_class_type_params(
+                    tuple(method_type_param_values)
                 ),
-                override(
-                    self, "current_class_type_params", tuple(method_type_param_values)
+                self.active_type_params.push_class_type_param_variance_collection(
+                    class_type_param_polarities, is_protocol_class=is_protocol_class
                 ),
             ):
                 value, class_scope_values = self._visit_class_and_get_value(
@@ -4234,22 +4552,22 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 inferred_registration_type_params: Sequence[TypeParam] | None = None
                 if type_param_values:
                     inferred_registration_type_params = (
-                        self._infer_class_type_param_variances(
-                            node,
+                        self._infer_type_param_variances_from_polarities(
                             type_param_values,
-                            base_values,
-                            dataclass_semantics=dataclass_semantics,
+                            class_type_param_polarities,
+                            is_protocol=False,
                         )
                     )
                 elif any(
                     _type_param_uses_infer_variance(type_param)
                     for type_param in registered_type_param_values
                 ):
-                    inferred_type_params = self._infer_class_type_param_variances(
-                        node,
-                        registered_type_param_values,
-                        base_values,
-                        dataclass_semantics=dataclass_semantics,
+                    inferred_type_params = (
+                        self._infer_type_param_variances_from_polarities(
+                            registered_type_param_values,
+                            class_type_param_polarities,
+                            is_protocol=False,
+                        )
                     )
                     inferred_by_identity = {
                         type_param.typevar: type_param.variance
@@ -4323,10 +4641,18 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     declared_type_params = annotation_declared_type_params
                 self._check_class_type_param_default_rules(node, declared_type_params)
                 self._check_class_base_type_param_variances(
-                    node, declared_type_params, base_values, class_scope_object
+                    node,
+                    declared_type_params,
+                    base_values,
+                    class_scope_object,
+                    base_type_param_variance_infos,
                 )
                 self._check_protocol_type_param_variances(
-                    node, declared_type_params, base_values, class_scope_object
+                    node,
+                    declared_type_params,
+                    base_values,
+                    class_scope_object,
+                    class_type_param_polarities,
                 )
             if (
                 runtime_enum_fallback_class is not None
@@ -6076,215 +6402,13 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             return AnyValue(AnySource.inference)
         return value
 
-    def _collect_type_param_polarities_from_value(
-        self,
-        value: Value,
-        type_param_polarities: Mapping[object, set[int]],
-        *,
-        polarity: int,
-    ) -> None:
-        type_param = _type_param_value_from_value(value, self)
-        if isinstance(type_param, TypeVarParam):
-            used_polarities = type_param_polarities.get(type_param.typevar)
-            if used_polarities is not None:
-                _record_variance_polarity(used_polarities, polarity)
-            return
-        if isinstance(value, GenericValue):
-            type_parameters = self.get_type_parameters(value.typ)
-            if len(type_parameters) == len(value.args):
-                for arg, type_param in zip(value.args, type_parameters):
-                    self._collect_type_param_polarities_from_value(
-                        arg,
-                        type_param_polarities,
-                        polarity=_compose_variance_polarity(
-                            polarity, type_param.variance
-                        ),
-                    )
-            else:
-                synthetic_type_params = self._synthetic_type_params_for_variance(
-                    value.typ, len(value.args)
-                )
-                if synthetic_type_params is None:
-                    for arg in value.args:
-                        self._collect_type_param_polarities_from_value(
-                            arg, type_param_polarities, polarity=0
-                        )
-                else:
-                    for arg, type_param in zip(value.args, synthetic_type_params):
-                        self._collect_type_param_polarities_from_value(
-                            arg,
-                            type_param_polarities,
-                            polarity=_compose_variance_polarity(
-                                polarity, get_typevar_variance(type_param)
-                            ),
-                        )
-            return
-        if isinstance(value, AnnotatedValue):
-            self._collect_type_param_polarities_from_value(
-                value.value, type_param_polarities, polarity=polarity
-            )
-            return
-        if isinstance(value, MultiValuedValue):
-            for subval in value.vals:
-                self._collect_type_param_polarities_from_value(
-                    subval, type_param_polarities, polarity=polarity
-                )
-            return
-        if isinstance(value, TypeAliasValue):
-            alias_type_params = value.alias.get_type_params()
-            if value.type_arguments and len(alias_type_params) == len(
-                value.type_arguments
-            ):
-                for alias_type_param, type_argument in zip(
-                    alias_type_params, value.type_arguments
-                ):
-                    self._collect_type_param_polarities_from_value(
-                        type_argument,
-                        type_param_polarities,
-                        polarity=_compose_variance_polarity(
-                            polarity, alias_type_param.variance
-                        ),
-                    )
-                return
-            self._collect_type_param_polarities_from_value(
-                value.get_value(), type_param_polarities, polarity=polarity
-            )
-            return
-        if isinstance(value, SubclassValue):
-            self._collect_type_param_polarities_from_value(
-                value.typ, type_param_polarities, polarity=polarity
-            )
-            return
-        if isinstance(value, SequenceValue):
-            members = value.get_member_sequence()
-            if members is not None:
-                for member in members:
-                    self._collect_type_param_polarities_from_value(
-                        member, type_param_polarities, polarity=polarity
-                    )
-            return
-        if isinstance(value, CallableValue):
-            signature = value.signature
-            signatures = (
-                signature.signatures
-                if isinstance(signature, OverloadedSignature)
-                else [signature]
-            )
-            for sig in signatures:
-                if not isinstance(sig, Signature):
-                    continue
-                for param in sig.parameters.values():
-                    self._collect_type_param_polarities_from_value(
-                        param.annotation,
-                        type_param_polarities,
-                        polarity=-polarity if polarity else 0,
-                    )
-                self._collect_type_param_polarities_from_value(
-                    sig.return_value, type_param_polarities, polarity=polarity
-                )
-            return
-
-    def _infer_class_type_param_variances(
-        self,
-        node: ast.ClassDef,
-        type_params: Sequence[TypeParam],
-        base_values: Sequence[Value],
-        *,
-        is_protocol: bool = False,
-        dataclass_semantics: DataclassInfo | None = None,
-    ) -> Sequence[TypeParam]:
-        if not type_params:
-            return type_params
-        type_param_polarities = {tp.typevar: set() for tp in type_params}
-        for base_node in node.bases:
-            base = self._value_for_variance_annotation(base_node)
-            if _is_variance_declaration_base(base):
-                continue
-            if is_protocol and _is_protocol_base(base):
-                continue
-            self._collect_type_param_polarities_from_value(
-                base, type_param_polarities, polarity=1
-            )
-
-        frozen_dataclass = (
-            dataclass_semantics is not None and dataclass_semantics.frozen
-        )
-        for statement in node.body:
-            if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                if statement.name in {"__init__", "__new__"}:
-                    continue
-                decorator_kinds = self._function_decorator_kinds_by_node.get(
-                    statement, frozenset()
-                )
-                is_staticmethod = FunctionDecorator.staticmethod in decorator_kinds
-                all_args = [
-                    *statement.args.posonlyargs,
-                    *statement.args.args,
-                    *statement.args.kwonlyargs,
-                ]
-                if statement.args.vararg is not None:
-                    all_args.append(statement.args.vararg)
-                if statement.args.kwarg is not None:
-                    all_args.append(statement.args.kwarg)
-                for i, arg in enumerate(all_args):
-                    if is_protocol and i == 0 and not is_staticmethod:
-                        continue
-                    if arg.annotation is None:
-                        continue
-                    annotation_value = self._value_for_variance_annotation(
-                        arg.annotation
-                    )
-                    self._collect_type_param_polarities_from_value(
-                        annotation_value, type_param_polarities, polarity=-1
-                    )
-                if statement.returns is not None:
-                    return_value = self._value_for_variance_annotation(
-                        statement.returns
-                    )
-                    self._collect_type_param_polarities_from_value(
-                        return_value, type_param_polarities, polarity=1
-                    )
-            elif (
-                isinstance(statement, ast.AnnAssign)
-                and statement.annotation is not None
-            ):
-                if not isinstance(statement.target, ast.Name):
-                    continue
-                annotation_expr = self.expr_of_annotation(statement.annotation)
-                value, qualifiers = annotation_expr.maybe_unqualify(
-                    {Qualifier.ClassVar, Qualifier.Final, Qualifier.ReadOnly}
-                )
-                if value is None or Qualifier.ClassVar in qualifiers:
-                    continue
-                attribute_polarity = (
-                    1
-                    if frozen_dataclass
-                    or Qualifier.Final in qualifiers
-                    or Qualifier.ReadOnly in qualifiers
-                    else 0
-                )
-                self._collect_type_param_polarities_from_value(
-                    value, type_param_polarities, polarity=attribute_polarity
-                )
-
-        inferred_type_params = []
-        for type_param in type_params:
-            polarities = type_param_polarities[type_param.typevar]
-            if polarities == {1} or (is_protocol and not polarities):
-                variance = Variance.COVARIANT
-            elif polarities == {-1}:
-                variance = Variance.CONTRAVARIANT
-            else:
-                variance = Variance.INVARIANT
-            inferred_type_params.append(replace(type_param, variance=variance))
-        return inferred_type_params
-
     def _check_protocol_type_param_variances(
         self,
         node: ast.ClassDef,
         type_params: Sequence[TypeParam],
         base_values: Sequence[Value],
         class_scope_object: type | str | None,
+        type_param_polarities: Mapping[object, set[int]],
     ) -> None:
         if sys.version_info >= (3, 12) and node.type_params:
             # PEP 695 class type parameters infer variance, so explicit
@@ -6307,12 +6431,8 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         ]
         if not checked_type_params:
             return
-        inferred_type_params = self._infer_class_type_param_variances(
-            node,
-            checked_type_params,
-            base_values,
-            is_protocol=True,
-            dataclass_semantics=None,
+        inferred_type_params = self._infer_type_param_variances_from_polarities(
+            checked_type_params, type_param_polarities, is_protocol=True
         )
         for declared_type_param, inferred_type_param in zip(
             checked_type_params, inferred_type_params
@@ -6337,42 +6457,32 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         type_params: Sequence[TypeParam],
         base_values: Sequence[Value],
         class_scope_object: type | str | None,
+        base_type_param_variance_infos: Sequence[_BaseTypeParamVarianceInfo],
     ) -> None:
         if self._is_protocol_class(base_values, class_scope_object):
             return
-        analyzed_bases = [
-            self._value_for_variance_annotation(base_node) for base_node in node.bases
-        ]
         typevars_to_check = {
             type_param.typevar
             for type_param in type_params
             if isinstance(type_param, TypeVarParam)
         }
-        for analyzed_base in analyzed_bases:
-            for subval in flatten_values(analyzed_base):
-                for walked in self._walk_values_for_variance_typevar_collection(subval):
-                    type_param = _type_param_value_from_value(walked, self)
-                    if not isinstance(type_param, TypeVarParam):
-                        continue
-                    if not is_instance_of_typing_name(type_param.typevar, "TypeVar"):
-                        continue
-                    typevars_to_check.add(type_param.typevar)
+        for base_variance_info in base_type_param_variance_infos:
+            for typevar in base_variance_info.type_param_polarities:
+                if is_instance_of_typing_name(typevar, "TypeVar"):
+                    typevars_to_check.add(typevar)
         if not typevars_to_check:
             return
 
         sorted_typevars = sorted(typevars_to_check, key=str)
-        for base_node, analyzed_base in zip(node.bases, analyzed_bases):
-            if _is_variance_declaration_base(analyzed_base):
+        for base_node, base_variance_info in zip(
+            node.bases, base_type_param_variance_infos
+        ):
+            if base_variance_info.is_variance_declaration_base:
                 continue
-            type_param_polarities: dict[object, set[int]] = {
-                typevar: set() for typevar in sorted_typevars
-            }
-            for subval in flatten_values(analyzed_base):
-                self._collect_type_param_polarities_from_value(
-                    subval, type_param_polarities, polarity=1
-                )
             for typevar in sorted_typevars:
-                used_polarities = type_param_polarities[typevar]
+                used_polarities = base_variance_info.type_param_polarities.get(
+                    typevar, set()
+                )
                 variance = get_typevar_variance(typevar)
                 if _variance_is_compatible_with_usage(variance, used_polarities):
                     continue
@@ -6383,24 +6493,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     error_code=ErrorCode.invalid_base,
                 )
                 break
-
-    def _walk_values_for_variance_typevar_collection(
-        self, value: Value
-    ) -> Iterable[Value]:
-        if isinstance(value, TypeAliasValue):
-            yield value
-            for type_argument in value.type_arguments:
-                yield from self._walk_values_for_variance_typevar_collection(
-                    type_argument
-                )
-            return
-        for walked in value.walk_values():
-            if walked is value:
-                yield walked
-            elif isinstance(walked, TypeAliasValue):
-                yield from self._walk_values_for_variance_typevar_collection(walked)
-            else:
-                yield walked
 
     def _is_protocol_class(
         self, base_values: Sequence[Value], class_scope_object: type | str | None
@@ -7068,19 +7160,39 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         return self._get_synthetic_class_fq_name_from_name(node.name)
 
     def _get_synthetic_class_fq_name_from_name(self, name: str) -> str:
+        return self._get_synthetic_class_fq_name_from_name_and_contexts(
+            name, self.node_context.contexts
+        )
+
+    def _get_referenced_synthetic_class_fq_name(self, name: str) -> str:
+        contexts = list(self.node_context.contexts)
+        if self.scopes.scope_type() is not ScopeType.class_scope:
+            for i in range(len(contexts) - 1, -1, -1):
+                if isinstance(contexts[i], ast.ClassDef):
+                    del contexts[i]
+                    break
+        return self._get_synthetic_class_fq_name_from_name_and_contexts(name, contexts)
+
+    def _get_synthetic_class_fq_name_from_name_and_contexts(
+        self, name: str, contexts: Sequence[ast.AST]
+    ) -> str:
         if self.module is not None and hasattr(self.module, "__name__"):
             module_name = self.module.__name__
         else:
             module_name = self.filename
 
-        qualname = self._get_class_qualname_from_name(name)
+        qualname = self._get_class_qualname_from_name(name, contexts=contexts)
         if module_name:
             return ".".join((module_name, qualname))
         return qualname
 
-    def _get_class_qualname_from_name(self, name: str) -> str:
+    def _get_class_qualname_from_name(
+        self, name: str, *, contexts: Sequence[ast.AST] | None = None
+    ) -> str:
+        if contexts is None:
+            contexts = self.node_context.contexts
         qualname_parts = []
-        for context in self.node_context.contexts:
+        for context in contexts:
             if isinstance(context, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 qualname_parts.extend((context.name, "<locals>"))
             elif isinstance(context, ast.Lambda):
@@ -7651,76 +7763,83 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         else:
             ctx = contextlib.nullcontext()
         with ctx:
+            legacy_type_param_ctx: AbstractContextManager[set[object] | None] = (
+                contextlib.nullcontext(None)
+            )
             if (
-                sys.version_info >= (3, 12)
+                self._is_checking()
+                and sys.version_info >= (3, 12)
                 and not isinstance(node, ast.Lambda)
                 and node.type_params
             ):
-                declared_type_params = node.type_params
-                type_params = self.visit_type_param_values(declared_type_params)
-            else:
-                type_params = []
-                declared_type_params = []
-            if type_params and not isinstance(node, ast.Lambda):
-                annotation_nodes: list[ast.AST] = [*declared_type_params]
-                annotation_nodes.extend(
-                    arg.annotation
-                    for arg in (
-                        *node.args.posonlyargs,
-                        *node.args.args,
-                        *node.args.kwonlyargs,
-                    )
-                    if arg.annotation is not None
-                )
-                if (
-                    node.args.vararg is not None
-                    and node.args.vararg.annotation is not None
-                ):
-                    annotation_nodes.append(node.args.vararg.annotation)
-                if (
-                    node.args.kwarg is not None
-                    and node.args.kwarg.annotation is not None
-                ):
-                    annotation_nodes.append(node.args.kwarg.annotation)
-                if node.returns is not None:
-                    annotation_nodes.append(node.returns)
-                legacy_typevars = self._legacy_typevars_in_nodes(
-                    annotation_nodes, type_params
-                )
-                if legacy_typevars:
-                    self._show_error_if_checking(
-                        node,
+                legacy_type_param_ctx = (
+                    self.active_type_params.reject_legacy_type_params(
                         "Function definition cannot combine old-style TypeVar"
-                        " declarations with type parameter syntax",
-                        error_code=ErrorCode.invalid_annotation,
+                        " declarations with type parameter syntax"
                     )
-            params = compute_parameters(
-                node,
-                enclosing_class,
-                self,
-                is_nested_in_class=is_nested_in_class,
-                is_classmethod=FunctionDecorator.classmethod in decorator_kinds,
-                is_staticmethod=FunctionDecorator.staticmethod in decorator_kinds,
-                declared_type_params=type_params,
+                )
+            with legacy_type_param_ctx as allowed_legacy_identities:
+                if (
+                    sys.version_info >= (3, 12)
+                    and not isinstance(node, ast.Lambda)
+                    and node.type_params
+                ):
+                    declared_type_params = node.type_params
+                    type_params = self.visit_type_param_values(
+                        declared_type_params,
+                        legacy_allowed_identities=allowed_legacy_identities,
+                    )
+                else:
+                    assert allowed_legacy_identities is None
+                    type_params = []
+            legacy_annotation_ctx: AbstractContextManager[set[object] | None] = (
+                contextlib.nullcontext(None)
             )
-            if isinstance(node, ast.Lambda) or node.returns is None:
-                return_annotation = None
-            else:
-                return_annotation = self.value_of_annotation(node.returns)
-                if isinstance(return_annotation, InputSigValue):
-                    if isinstance(return_annotation.input_sig, ParamSpecParam):
-                        self.show_error(
-                            node.returns,
-                            "ParamSpec cannot be used in this annotation context",
-                            error_code=ErrorCode.invalid_annotation,
-                        )
-                    else:
-                        self.show_error(
-                            node.returns,
-                            f"Unrecognized annotation {return_annotation}",
-                            error_code=ErrorCode.invalid_annotation,
-                        )
-                    return_annotation = AnyValue(AnySource.error)
+            if (
+                self._is_checking()
+                and sys.version_info >= (3, 12)
+                and not isinstance(node, ast.Lambda)
+                and node.type_params
+            ):
+                legacy_annotation_ctx = (
+                    self.active_type_params.reject_legacy_type_params(
+                        "Function definition cannot combine old-style TypeVar"
+                        " declarations with type parameter syntax"
+                    )
+                )
+            with legacy_annotation_ctx as allowed_legacy_identities:
+                if allowed_legacy_identities is not None:
+                    allowed_legacy_identities.update(
+                        type_param.typevar for type_param in type_params
+                    )
+                params = compute_parameters(
+                    node,
+                    enclosing_class,
+                    self,
+                    is_nested_in_class=is_nested_in_class,
+                    is_classmethod=FunctionDecorator.classmethod in decorator_kinds,
+                    is_staticmethod=FunctionDecorator.staticmethod in decorator_kinds,
+                    declared_type_params=type_params,
+                )
+                if isinstance(node, ast.Lambda) or node.returns is None:
+                    return_annotation = None
+                else:
+                    with self.function_return_type_param_variance_context():
+                        return_annotation = self.value_of_annotation(node.returns)
+                    if isinstance(return_annotation, InputSigValue):
+                        if isinstance(return_annotation.input_sig, ParamSpecParam):
+                            self.show_error(
+                                node.returns,
+                                "ParamSpec cannot be used in this annotation context",
+                                error_code=ErrorCode.invalid_annotation,
+                            )
+                        else:
+                            self.show_error(
+                                node.returns,
+                                f"Unrecognized annotation {return_annotation}",
+                                error_code=ErrorCode.invalid_annotation,
+                            )
+                        return_annotation = AnyValue(AnySource.error)
             runtime_current_class = (
                 self.current_class if isinstance(self.current_class, type) else None
             )
@@ -7859,15 +7978,27 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
 
     def visit_FunctionDef(self, node: FunctionDefNode) -> Value:
         potential_function = self._get_potential_function(node)
-        with self.compute_function_info(
-            node,
-            # If we set the current_class in the collecting phase,
-            # the self argument of nested methods with an unannotated
-            # first argument is incorrectly inferred.
-            enclosing_class=self._get_enclosing_class_value_for_method(),
-            is_nested_in_class=self.node_context.includes(ast.ClassDef),
-            potential_function=potential_function,
-        ) as info:
+        variance_ctx: AbstractContextManager[None] = contextlib.nullcontext()
+        if (
+            self.active_type_params.current_class_type_param_polarities() is not None
+            and isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and node.name in {"__init__", "__new__"}
+        ):
+            variance_ctx = (
+                self.active_type_params.suspend_class_type_param_variance_collection()
+            )
+        with (
+            variance_ctx,
+            self.compute_function_info(
+                node,
+                # If we set the current_class in the collecting phase,
+                # the self argument of nested methods with an unannotated
+                # first argument is incorrectly inferred.
+                enclosing_class=self._get_enclosing_class_value_for_method(),
+                is_nested_in_class=self.node_context.includes(ast.ClassDef),
+                potential_function=potential_function,
+            ) as info,
+        ):
             self._function_decorator_kinds_by_node[node] = info.decorator_kinds
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 self._function_returns_self_by_node[node] = _value_contains_self(
@@ -7993,6 +8124,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 expected_return, _ = unannotate_value(
                     expected_return, TypeGuardExtension
                 )
+            function_annotation_identities = (
+                self._bound_type_param_identities_for_function(info)
+            )
 
             with (
                 self.asynq_checker.set_func_name(
@@ -8001,7 +8135,10 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     is_classmethod=FunctionDecorator.classmethod
                     in info.decorator_kinds,
                 ),
-                self._active_pep695_type_param_scope(info.type_params),
+                self.active_type_params.push_pep695_scope(info.type_params),
+                self.active_type_params.allow_in_annotations(
+                    function_annotation_identities
+                ),
                 override(self, "yield_checker", YieldChecker(self)),
                 override(self, "is_async_def", isinstance(node, ast.AsyncFunctionDef)),
                 override(self, "current_function_name", node.name),
@@ -9630,6 +9767,15 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
 
     def _visit_annotation(self, node: ast.AST) -> Value:
         with override(self, "in_annotation", True):
+            if self.active_type_params.has_variance_collection() and isinstance(
+                node, ast.Constant
+            ):
+                parsed_string_annotation = _parse_string_annotation_expr(
+                    node.value, node
+                )
+                if parsed_string_annotation is not None:
+                    with self.catch_errors():
+                        self.visit(parsed_string_annotation)
             if _contains_unpack_annotation_syntax(node):
                 if self.annotate:
                     with self.catch_errors():
@@ -9647,6 +9793,52 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 )
             self.check_for_missing_generic_params(node, val)
             return val
+
+    def function_param_type_param_variance_context(
+        self, *, parameter_index: int, is_staticmethod: bool
+    ) -> AbstractContextManager[None]:
+        return self.active_type_params.function_param_type_param_variance_context(
+            parameter_index=parameter_index, is_staticmethod=is_staticmethod
+        )
+
+    def function_return_type_param_variance_context(
+        self,
+    ) -> AbstractContextManager[None]:
+        return self.active_type_params.function_return_type_param_variance_context()
+
+    def _merge_type_param_polarities(
+        self,
+        target: dict[object, set[int]],
+        local_polarities: Mapping[object, set[int]],
+        *,
+        polarity: int,
+    ) -> None:
+        for typevar, local_used_polarities in local_polarities.items():
+            target_used_polarities = target.setdefault(typevar, set())
+            for local_used_polarity in local_used_polarities:
+                _record_variance_polarity(
+                    target_used_polarities,
+                    _compose_observed_variance_polarity(polarity, local_used_polarity),
+                )
+
+    def _infer_type_param_variances_from_polarities(
+        self,
+        type_params: Sequence[TypeParam],
+        type_param_polarities: Mapping[object, set[int]],
+        *,
+        is_protocol: bool,
+    ) -> Sequence[TypeParam]:
+        inferred_type_params = []
+        for type_param in type_params:
+            polarities = type_param_polarities.get(type_param.typevar, set())
+            if polarities == {1} or (is_protocol and not polarities):
+                variance = Variance.COVARIANT
+            elif polarities == {-1}:
+                variance = Variance.CONTRAVARIANT
+            else:
+                variance = Variance.INVARIANT
+            inferred_type_params.append(replace(type_param, variance=variance))
+        return inferred_type_params
 
     def _is_invalid_generic_annotation_node(self, node: ast.AST) -> bool:
         target = node.value if isinstance(node, ast.Subscript) else node
@@ -10613,14 +10805,33 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     def _visit_display_read(
         self, node: ast.Set | ast.List | ast.Tuple, typ: type
     ) -> Value:
-        if typ is tuple and self.in_annotation:
-            elts = []
-            for elt in node.elts:
-                val = self.visit(elt)
-                self.check_for_missing_generic_params(elt, val)
-                elts.append(val)
-        else:
-            elts = [self.visit(elt) for elt in node.elts]
+        with self.active_type_params.consume_subscript_arg_polarities(
+            len(node.elts)
+        ) as subscript_arg_polarities:
+            if subscript_arg_polarities is not None:
+                elts = []
+                for elt, (polarity, is_callable_arg_list) in zip(
+                    node.elts, subscript_arg_polarities
+                ):
+                    if is_callable_arg_list and isinstance(elt, (ast.List, ast.Tuple)):
+                        with self.active_type_params.push_subscript_arg_polarities(
+                            [(-1, False)] * len(elt.elts)
+                        ):
+                            val = self.visit(elt)
+                    else:
+                        with self.active_type_params.compose_variance(polarity):
+                            val = self.visit(elt)
+                    if typ is tuple:
+                        self.check_for_missing_generic_params(elt, val)
+                    elts.append(val)
+            elif self.in_annotation and typ is tuple:
+                elts = []
+                for elt in node.elts:
+                    val = self.visit(elt)
+                    self.check_for_missing_generic_params(elt, val)
+                    elts.append(val)
+            else:
+                elts = [self.visit(elt) for elt in node.elts]
         return self._maybe_make_sequence(typ, elts, node, elt_nodes=node.elts)
 
     def _maybe_make_sequence(
@@ -12287,8 +12498,24 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
 
     def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
         explicit_type_alias_assignment_value: TypeAliasValue | None = None
+        local_type_param_polarities: dict[object, set[int]] | None = None
+        class_type_param_polarities = (
+            self.active_type_params.current_class_type_param_polarities()
+        )
+        should_collect_class_annotation_variance = (
+            class_type_param_polarities is not None
+            and self.scopes.scope_type() is ScopeType.class_scope
+            and self.current_synthetic_typeddict is None
+        )
         if self.current_synthetic_typeddict is None:
-            annotation = self._visit_annotation(node.annotation)
+            if should_collect_class_annotation_variance:
+                local_type_param_polarities = {}
+                with self.active_type_params.collect_variance(
+                    local_type_param_polarities, polarity=1
+                ):
+                    annotation = self._visit_annotation(node.annotation)
+            else:
+                annotation = self._visit_annotation(node.annotation)
             if (
                 self._is_current_class_dataclass()
                 and _is_dataclass_kw_only_marker_value(annotation)
@@ -12336,6 +12563,32 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 allowed_qualifiers,
                 mutually_exclusive_qualifiers=((Qualifier.Final, Qualifier.ReadOnly),),
             )
+        if (
+            should_collect_class_annotation_variance
+            and local_type_param_polarities is not None
+            and class_type_param_polarities is not None
+        ):
+            if self.is_in_typeddict_definition():
+                attribute_polarity = 0
+            elif Qualifier.ClassVar in qualifiers:
+                attribute_polarity = None
+            else:
+                attribute_polarity = (
+                    1
+                    if (
+                        self.current_dataclass_info is not None
+                        and self.current_dataclass_info.frozen
+                    )
+                    or Qualifier.Final in qualifiers
+                    or Qualifier.ReadOnly in qualifiers
+                    else 0
+                )
+            if attribute_polarity is not None:
+                self._merge_type_param_polarities(
+                    class_type_param_polarities,
+                    local_type_param_polarities,
+                    polarity=attribute_polarity,
+                )
         if Qualifier.TypeAlias in qualifiers and node.value is not None:
             if isinstance(node.target, ast.Name):
                 if self._is_collecting():
@@ -12354,9 +12607,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             with (
                 override(self, "in_annotation", True),
                 override(self, "in_type_alias_definition", True),
-                override(
-                    self, "disallowed_type_param_identities", disallowed_type_params
-                ),
+                self.active_type_params.disallow(disallowed_type_params or ()),
             ):
                 alias_expr = annotation_expr_from_ast(
                     node.value, self, suppress_errors=self._is_collecting()
@@ -12839,7 +13090,10 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             self.visit(node.target)
 
     def visit_type_param_values(
-        self, type_params: Sequence[ast.AST]
+        self,
+        type_params: Sequence[ast.AST],
+        *,
+        legacy_allowed_identities: set[object] | None = None,
     ) -> Sequence[TypeParam]:
         type_param_values = []
         for param in type_params:
@@ -12848,24 +13102,12 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             if extracted is None:
                 assert False, f"unexpected type parameter value: {value!r}"
             type_param_values.append(extracted)
+            if legacy_allowed_identities is not None:
+                legacy_allowed_identities.add(extracted.typevar)
         return type_param_values
 
     def _current_scope_key(self) -> int:
         return id(self.scopes.current_scope())
-
-    @contextlib.contextmanager
-    def _active_pep695_type_param_scope(
-        self, type_params: Sequence[TypeParam]
-    ) -> Generator[None]:
-        if not type_params:
-            yield
-            return
-        type_param_identities = {param.typevar for param in type_params}
-        self._active_pep695_type_params.append(type_param_identities)
-        try:
-            yield
-        finally:
-            self._active_pep695_type_params.pop()
 
     def _record_type_alias_structure(
         self, name: str, alias_node: ast.AST, value_node: ast.AST
@@ -12904,42 +13146,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         return any(
             dep in scope_refs and reaches_target(dep)
             for dep in scope_refs.get(name, ())
-        )
-
-    def _legacy_typevars_in_nodes(
-        self,
-        nodes: Iterable[ast.AST],
-        declared_type_params: Sequence[TypeParam],
-        *,
-        include_active_type_params: bool = True,
-    ) -> set[str]:
-        declared = {param.typevar for param in declared_type_params}
-        if include_active_type_params:
-            declared.update(chain.from_iterable(self._active_pep695_type_params))
-        legacy: set[str] = set()
-        for node in nodes:
-            for subnode in ast.walk(node):
-                if not isinstance(subnode, ast.Name) or not isinstance(
-                    subnode.ctx, ast.Load
-                ):
-                    continue
-                resolved, _ = self.resolve_name(
-                    subnode, error_node=subnode, suppress_errors=True
-                )
-                for subval in flatten_values(resolved, unwrap_annotated=True):
-                    identity = _type_param_identity(subval, self)
-                    if identity is None:
-                        continue
-                    if identity not in declared:
-                        legacy.add(subnode.id)
-                    break
-        return legacy
-
-    def _legacy_typevars_in_alias_expr(
-        self, value_node: ast.AST, declared_type_params: Sequence[TypeParam]
-    ) -> set[str]:
-        return self._legacy_typevars_in_nodes(
-            [value_node], declared_type_params, include_active_type_params=False
         )
 
     def _infer_type_alias_type_params(
@@ -13104,9 +13310,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             with (
                 override(self, "in_annotation", True),
                 override(self, "in_type_alias_definition", True),
-                override(
-                    self, "disallowed_type_param_identities", disallowed_type_params
-                ),
+                self.active_type_params.disallow(disallowed_type_params or ()),
             ):
                 alias_expr = annotation_expr_from_ast(
                     node.value, visitor=self, suppress_errors=False
@@ -13120,11 +13324,15 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             if caught["error_code"] == ErrorCode.invalid_annotation
         ]
         if invalid_annotation_errors:
+            if alias_expr.qualifiers or _is_qualifier_like_implicit_type_alias_expr(
+                node.value, self
+            ):
+                return None
             if (
                 self._is_checking()
                 and _looks_like_implicit_type_alias_expr(node.value)
                 and _contains_implicit_type_alias_syntax(node.value)
-                and bool(self._legacy_typevars_in_alias_expr(node.value, ()))
+                and _implicit_type_alias_expr_could_be_type(node.value, self)
             ):
                 self.show_caught_errors(invalid_annotation_errors)
             return None
@@ -13213,27 +13421,31 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     f"Type alias {name} has a circular definition",
                     error_code=ErrorCode.invalid_annotation,
                 )
-            legacy_typevars = self._legacy_typevars_in_nodes(
-                [value_node], declared_type_params
-            )
-            if legacy_typevars:
-                if type_params:
-                    message = (
-                        "Type alias cannot combine old-style TypeVar declarations"
-                        " with type statement parameters"
-                    )
-                else:
-                    message = (
-                        "Type alias must declare type parameters in the"
-                        " type statement"
-                    )
-                self._show_error_if_checking(
-                    node, message, error_code=ErrorCode.invalid_annotation
+        legacy_type_param_ctx: AbstractContextManager[set[object] | None] = (
+            contextlib.nullcontext(None)
+        )
+        if self._is_checking():
+            if type_params:
+                legacy_message = (
+                    "Type alias cannot combine old-style TypeVar declarations"
+                    " with type statement parameters"
                 )
+            else:
+                legacy_message = (
+                    "Type alias must declare type parameters in the" " type statement"
+                )
+            legacy_type_param_ctx = self.active_type_params.reject_legacy_type_params(
+                legacy_message, include_active_pep695=False
+            )
         with (
             override(self, "in_annotation", True),
             override(self, "in_type_alias_definition", True),
+            legacy_type_param_ctx as allowed_legacy_identities,
         ):
+            if allowed_legacy_identities is not None:
+                allowed_legacy_identities.update(
+                    type_param.typevar for type_param in declared_type_params
+                )
             annotation_expr_from_ast(
                 value_node,
                 visitor=self,
@@ -13329,12 +13541,30 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                         f"Type alias {name} has a circular definition",
                         error_code=ErrorCode.invalid_annotation,
                     )
-                with self.scopes.add_scope(
-                    ScopeType.annotation_scope, scope_node=node, scope_object=alias_obj
+                if node.type_params:
+                    legacy_param_message = (
+                        "Type alias cannot combine old-style TypeVar declarations"
+                        " with type statement parameters"
+                    )
+                else:
+                    legacy_param_message = (
+                        "Type alias must declare type parameters in the"
+                        " type statement"
+                    )
+                with (
+                    self.scopes.add_scope(
+                        ScopeType.annotation_scope,
+                        scope_node=node,
+                        scope_object=alias_obj,
+                    ),
+                    self.active_type_params.reject_legacy_type_params(
+                        legacy_param_message, include_active_pep695=False
+                    ) as allowed_legacy_identities,
                 ):
                     if node.type_params:
                         type_param_values = self.visit_type_param_values(
-                            node.type_params
+                            node.type_params,
+                            legacy_allowed_identities=allowed_legacy_identities,
                         )
                         with self.scopes.add_scope(
                             ScopeType.annotation_scope,
@@ -13349,23 +13579,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                         node.value,
                         self._self_error_message("cannot be used in type aliases"),
                         error_code=ErrorCode.invalid_annotation,
-                    )
-                legacy_typevars = self._legacy_typevars_in_alias_expr(
-                    node.value, type_param_values
-                )
-                if legacy_typevars:
-                    if node.type_params:
-                        message = (
-                            "Type alias cannot combine old-style TypeVar declarations"
-                            " with type statement parameters"
-                        )
-                    else:
-                        message = (
-                            "Type alias must declare type parameters in the"
-                            " type statement"
-                        )
-                    self._show_error_if_checking(
-                        node, message, error_code=ErrorCode.invalid_annotation
                     )
             else:
                 value = None
@@ -13527,7 +13740,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         if self.annotate and not hasattr(node, "inferred_value"):
             node.inferred_value = AnyValue(AnySource.inference)
         root_composite = self.composite_from_node(node.value)
-        index_composite = self.composite_from_node(node.slice)
+        index_composite = self._composite_from_subscript_index(
+            node.value, node.slice, root_composite.value
+        )
         index = index_composite.value
         self.check_for_missing_generic_params(node.slice, index)
         if (
@@ -13557,6 +13772,134 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         if self.annotate:
             node.inferred_value = composite.value
         return composite
+
+    def _composite_from_subscript_index(
+        self, root_node: ast.expr, slice_node: ast.expr, root_value: Value
+    ) -> Composite:
+        if not self.active_type_params.has_variance_collection():
+            return self.composite_from_node(slice_node)
+        arg_polarities = self._get_subscript_argument_polarities(
+            root_node, root_value, slice_node
+        )
+        if arg_polarities is None:
+            return self.composite_from_node(slice_node)
+        if isinstance(slice_node, ast.Tuple):
+            with self.active_type_params.push_subscript_arg_polarities(arg_polarities):
+                return self.composite_from_node(slice_node)
+        if len(arg_polarities) != 1:
+            return self.composite_from_node(slice_node)
+        polarity, _ = arg_polarities[0]
+        with self.active_type_params.compose_variance(polarity):
+            return self.composite_from_node(slice_node)
+
+    def _get_subscript_argument_polarities(
+        self, root_node: ast.expr, root_value: Value, slice_node: ast.expr
+    ) -> Sequence[tuple[int, bool]] | None:
+        callable_polarities = self._get_callable_subscript_argument_polarities(
+            root_value, slice_node
+        )
+        if callable_polarities is not None:
+            return callable_polarities
+        type_params = self._type_params_for_variance_root(
+            root_node, root_value, slice_node
+        )
+        if type_params is None:
+            return None
+        return [
+            (_variance_to_observed_polarity(type_param.variance), False)
+            for type_param in type_params
+        ]
+
+    def _get_callable_subscript_argument_polarities(
+        self, root_value: Value, slice_node: ast.expr
+    ) -> Sequence[tuple[int, bool]] | None:
+        root_value = replace_fallback(root_value)
+        candidate: object | None = None
+        if isinstance(root_value, KnownValue):
+            candidate = root_value.val
+        elif isinstance(root_value, TypedValue):
+            candidate = root_value.typ
+        elif isinstance(root_value, GenericValue):
+            candidate = root_value.typ
+        if candidate is None:
+            return None
+        if not (
+            is_typing_name(candidate, "Callable")
+            or candidate is collections.abc.Callable
+        ):
+            return None
+        elements = (
+            list(slice_node.elts) if isinstance(slice_node, ast.Tuple) else [slice_node]
+        )
+        if len(elements) != 2:
+            return None
+        return [(-1, True), (1, False)]
+
+    def _type_params_for_variance_root(
+        self,
+        root_node: ast.expr,
+        root_value: Value,
+        slice_node: ast.expr,
+        *,
+        allow_ast_fallback: bool = True,
+    ) -> Sequence[TypeParam] | None:
+        arity = len(slice_node.elts) if isinstance(slice_node, ast.Tuple) else 1
+        if isinstance(root_value, TypeAliasValue):
+            type_params = root_value.alias.get_type_params()
+            return type_params if len(type_params) == arity else None
+        candidate = replace_fallback(root_value)
+        if isinstance(candidate, SyntheticClassObjectValue):
+            type_params = candidate.declared_type_params
+            if len(type_params) == arity:
+                return type_params
+            if isinstance(candidate.class_type, TypedValue):
+                type_params = self.get_type_parameters(candidate.class_type.typ)
+                return type_params if len(type_params) == arity else None
+            return None
+        if isinstance(candidate, SubclassValue):
+            return self._type_params_for_variance_root(
+                root_node,
+                candidate.typ,
+                slice_node,
+                allow_ast_fallback=allow_ast_fallback,
+            )
+        if isinstance(candidate, GenericValue):
+            type_params = self.get_type_parameters(candidate.typ)
+            if len(type_params) == arity:
+                return type_params
+            synthetic = self._synthetic_type_params_for_variance(candidate.typ, arity)
+            if synthetic is not None:
+                return [
+                    make_type_param(type_param, visitor=self)
+                    for type_param in synthetic
+                ]
+            return None
+        if isinstance(candidate, TypedValue):
+            type_params = self.get_type_parameters(candidate.typ)
+            return type_params if len(type_params) == arity else None
+        if isinstance(candidate, KnownValue):
+            known = candidate.val
+            if isinstance(known, (type, str)):
+                type_params = self.get_type_parameters(known)
+                return type_params if len(type_params) == arity else None
+            origin = typing.get_origin(known)
+            if isinstance(origin, (type, str)):
+                type_params = self.get_type_parameters(origin)
+                return type_params if len(type_params) == arity else None
+        if isinstance(root_node, ast.Name):
+            synthetic_name = self._get_referenced_synthetic_class_fq_name(root_node.id)
+            type_params = self.get_type_parameters(synthetic_name)
+            if len(type_params) == arity:
+                return type_params
+        if allow_ast_fallback:
+            fallback_root_value = value_from_ast(
+                root_node, visitor=self, error_on_unrecognized=False
+            )
+            if fallback_root_value != root_value:
+                return self._type_params_for_variance_root(
+                    root_node, fallback_root_value, slice_node, allow_ast_fallback=False
+                )
+        return None
 
     def _composite_from_subscript_no_mvv(
         self,
@@ -17128,12 +17471,18 @@ def _get_dataclass_post_init_node(
     return None
 
 
-def _compose_variance_polarity(polarity: int, variance: Variance) -> int:
-    if polarity == 0 or variance is Variance.INVARIANT or variance is Variance.INFERRED:
+def _compose_observed_variance_polarity(polarity: int, modifier: int) -> int:
+    if polarity == 0 or modifier == 0:
         return 0
+    return polarity * modifier
+
+
+def _variance_to_observed_polarity(variance: Variance) -> int:
     if variance is Variance.COVARIANT:
-        return polarity
-    return -polarity
+        return 1
+    if variance is Variance.CONTRAVARIANT:
+        return -1
+    return 0
 
 
 def _record_variance_polarity(used_polarities: set[int], polarity: int) -> None:
@@ -17179,47 +17528,6 @@ def is_typing_object(value: object, typing_name: str) -> bool:
     return is_instance_of_typing_name(value, typing_name)
 
 
-def _is_variance_declaration_arg(arg: Value) -> bool:
-    if isinstance(arg, TypeVarValue):
-        return True
-    if isinstance(arg, TypeVarTupleValue):
-        return True
-    if isinstance(arg, InputSigValue):
-        return isinstance(arg.input_sig, ParamSpecParam)
-    return (
-        is_typing_object(arg, "TypeVar")
-        or is_typing_object(arg, "TypeVarTuple")
-        or is_typing_object(arg, "ParamSpec")
-    )
-
-
-def _is_variance_declaration_base(base_value: Value) -> bool:
-    subvals = list(flatten_values(replace_fallback(base_value)))
-    if not subvals:
-        return False
-    for subval in subvals:
-        if isinstance(subval, SyntheticClassObjectValue):
-            subval = subval.class_type
-        if isinstance(subval, GenericValue):
-            typ: object = subval.typ
-            type_args: Sequence[Value] = subval.args
-        elif isinstance(subval, TypedValue):
-            typ = subval.typ
-            type_args = ()
-        elif isinstance(subval, KnownValue):
-            typ = subval.val
-            type_args = ()
-        else:
-            return False
-        if not (is_typing_name(typ, "Generic") or is_typing_name(typ, "Protocol")):
-            return False
-        if type_args and not all(
-            _is_variance_declaration_arg(arg) for arg in type_args
-        ):
-            return False
-    return True
-
-
 def _type_param_value_from_value(
     value: Value, visitor: NameCheckVisitor
 ) -> TypeParam | None:
@@ -17227,9 +17535,17 @@ def _type_param_value_from_value(
         return value.typevar_param
     if isinstance(value, TypeVarTupleValue):
         return value.typevar_tuple_param
-    if isinstance(value, InputSigValue) and isinstance(value.input_sig, ParamSpecParam):
-        return value.input_sig
+    if isinstance(value, InputSigValue):
+        if isinstance(value.input_sig, ParamSpecParam):
+            return value.input_sig
+        return None
     return make_type_param_from_value(value, visitor=visitor)
+
+
+def _is_type_param_declaration_node(node: ast.AST) -> bool:
+    return bool(_TYPE_PARAM_AST_NODE_TYPES) and isinstance(
+        node, _TYPE_PARAM_AST_NODE_TYPES
+    )
 
 
 def _count_starred_type_param_args(slice_node: ast.AST) -> int:
@@ -17505,6 +17821,23 @@ def _is_union_subscript_root(node: ast.expr) -> bool:
     )
 
 
+def _parse_string_annotation_expr(
+    value: object, error_node: ast.AST
+) -> ast.expr | None:
+    if not isinstance(value, str):
+        return None
+    parse_source = value
+    if "\n" in parse_source or "\r" in parse_source:
+        parse_source = f"({parse_source})"
+    try:
+        parsed = ast.parse(parse_source, mode="eval")
+    except SyntaxError:
+        return None
+    if hasattr(error_node, "lineno") and error_node.lineno > 1:
+        ast.increment_lineno(parsed, error_node.lineno - 1)
+    return parsed.body
+
+
 def _looks_like_implicit_type_alias_expr(node: ast.AST) -> bool:
     """Heuristic to avoid reporting alias-parse errors for non-type expressions."""
     if isinstance(node, ast.Name):
@@ -17530,6 +17863,75 @@ def _looks_like_implicit_type_alias_expr(node: ast.AST) -> bool:
     if isinstance(node, (ast.Tuple, ast.List)):
         return all(_looks_like_implicit_type_alias_expr(elt) for elt in node.elts)
     return False
+
+
+def _is_qualifier_like_implicit_type_alias_expr(
+    node: ast.AST, visitor: NameCheckVisitor
+) -> bool:
+    root_node = node.value if isinstance(node, ast.Subscript) else node
+    root_value = value_from_ast(root_node, visitor=visitor, error_on_unrecognized=False)
+    qualifier_names = {
+        "Required",
+        "NotRequired",
+        "ReadOnly",
+        "Final",
+        "ClassVar",
+        "InitVar",
+    }
+    for subval in flatten_values(root_value, unwrap_annotated=True):
+        candidate: object | None = None
+        if isinstance(subval, KnownValue):
+            candidate = subval.val
+        elif isinstance(subval, TypedValue):
+            candidate = subval.typ
+        elif isinstance(subval, GenericValue):
+            candidate = subval.typ
+        if candidate is dataclasses.InitVar:
+            return True
+        if candidate is not None and any(
+            is_typing_name(candidate, qualifier_name)
+            for qualifier_name in qualifier_names
+        ):
+            return True
+    return False
+
+
+def _implicit_type_alias_expr_could_be_type(
+    node: ast.AST, visitor: NameCheckVisitor
+) -> bool:
+    if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load):
+        resolved, _ = visitor.resolve_name(node, suppress_errors=True)
+        return isinstance(
+            resolved, AnyValue
+        ) or _is_valid_implicit_type_alias_ref_value(resolved, visitor)
+    if isinstance(node, ast.Attribute):
+        value = value_from_ast(node, visitor=visitor, error_on_unrecognized=False)
+        return isinstance(value, AnyValue) or _is_valid_implicit_type_alias_ref_value(
+            value, visitor
+        )
+    if isinstance(node, ast.Subscript):
+        return _implicit_type_alias_expr_could_be_type(
+            node.value, visitor
+        ) and _implicit_type_alias_expr_could_be_type(node.slice, visitor)
+    if isinstance(node, ast.Starred):
+        return _implicit_type_alias_expr_could_be_type(node.value, visitor)
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.BitOr):
+        return _implicit_type_alias_expr_could_be_type(
+            node.left, visitor
+        ) and _implicit_type_alias_expr_could_be_type(node.right, visitor)
+    if isinstance(node, (ast.Tuple, ast.List)):
+        return all(
+            _implicit_type_alias_expr_could_be_type(elt, visitor) for elt in node.elts
+        )
+    return True
+
+
+def _is_valid_implicit_type_alias_ref_value(
+    value: Value, visitor: NameCheckVisitor
+) -> bool:
+    return _is_valid_implicit_type_alias_name_value(value) or (
+        _type_param_identity(value, visitor) is not None
+    )
 
 
 def _contains_implicit_type_alias_syntax(node: ast.AST) -> bool:
@@ -17575,6 +17977,8 @@ def _is_valid_implicit_type_alias_name_value(value: Value) -> bool:
                 for member in value.members
             )
         return False
+    if isinstance(value, TypeAliasValue):
+        return True
     value = replace_fallback(value)
     if isinstance(value, MultiValuedValue):
         return all(
@@ -17585,14 +17989,7 @@ def _is_valid_implicit_type_alias_name_value(value: Value) -> bool:
             _is_valid_implicit_type_alias_name_value(subval) for subval in value.vals
         )
     if isinstance(
-        value,
-        (
-            SyntheticClassObjectValue,
-            TypeAliasValue,
-            TypeFormValue,
-            TypeVarValue,
-            SubclassValue,
-        ),
+        value, (SyntheticClassObjectValue, TypeFormValue, TypeVarValue, SubclassValue)
     ):
         return True
     if isinstance(value, TypedValue):
@@ -17647,13 +18044,7 @@ def _same_constrained_typevar_constraints(
 
 
 def _type_param_identity(value: Value, visitor: NameCheckVisitor) -> object | None:
-    if isinstance(value, TypeVarValue):
-        return value.typevar_param.typevar
-    if isinstance(value, TypeVarTupleValue):
-        return value.typevar
-    if isinstance(value, InputSigValue) and isinstance(value.input_sig, ParamSpecParam):
-        return value.input_sig.param_spec
-    type_param = make_type_param_from_value(value, visitor=visitor)
+    type_param = _type_param_value_from_value(value, visitor)
     if type_param is not None:
         return type_param.typevar
     return None

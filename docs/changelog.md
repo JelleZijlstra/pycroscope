@@ -3,6 +3,7 @@
 ## Unreleased
 
 - Add `pycroscope.get_mro()` and record value-level class MROs on type objects, so generic, tuple-subclass, namedtuple, and synthetic-class inheritance can now be inspected with preserved specialization.
+- Improve type-parameter scoping for nested classes, class-body aliases, and PEP 695 generic declarations, so out-of-scope or legacy type parameters are rejected more consistently without changing existing variance checks.
 - Improve tuple-subclass modeling so `NamedTuple` handling relies more on recorded class information, readonly-field enforcement stays consistent, and exact `tuple[...]` subclasses preserve tuple-style behavior more accurately.
 - Speed up self-checks and other constraint-heavy analysis by caching repeated composite-constraint inversion and application work in scope narrowing.
 - Fix `Self`-annotated receiver attribute writes so attributes assigned through `self: Self` or `setattr(self, ...)` are recognized on instances instead of later being reported as undefined.

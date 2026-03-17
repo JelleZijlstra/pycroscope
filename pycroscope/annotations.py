@@ -311,6 +311,13 @@ class Context:
                     f"{root_value.val!r} has no attribute {node.attr!r}", node=node
                 )
                 return AnyValue(AnySource.error)
+        elif self.visitor is not None:
+            with self.visitor.catch_errors():
+                value = self.visitor.get_attribute_from_value(root_value, node.attr)
+            if value != AnyValue(AnySource.error):
+                if _is_self_annotation_value(value):
+                    self.maybe_show_invalid_self_annotation()
+                return value
         elif not isinstance(root_value, AnyValue):
             self.show_error(f"Cannot resolve annotation {root_value}", node=node)
         return AnyValue(AnySource.error)
@@ -1298,6 +1305,14 @@ def _type_from_value_type_alias_arg(
 def _type_from_alias_argument_value(arg: Value, ctx: Context) -> Value:
     if type(arg) is TypedValue:
         return arg
+    if isinstance(arg, MultiValuedValue):
+        return unite_values(
+            *[_type_from_alias_argument_value(member, ctx) for member in arg.vals]
+        )
+    if isinstance(arg, IntersectionValue):
+        return IntersectionValue(
+            tuple(_type_from_alias_argument_value(member, ctx) for member in arg.vals)
+        )
     return _type_from_value(arg, ctx)
 
 

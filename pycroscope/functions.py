@@ -223,6 +223,7 @@ class FunctionResult:
 
 class Context(ErrorContext, CanAssignContext, Protocol):
     options: Options
+    current_class_type_params: Sequence[TypeParam] | None
 
     def visit_expression(self, node: ast.AST, /) -> Value:
         raise NotImplementedError
@@ -241,6 +242,11 @@ class Context(ErrorContext, CanAssignContext, Protocol):
         raise NotImplementedError
 
     def catch_errors(self) -> AbstractContextManager[list[Error]]:
+        raise NotImplementedError
+
+    def function_param_type_param_variance_context(
+        self, *, parameter_index: int, is_staticmethod: bool
+    ) -> AbstractContextManager[None]:
         raise NotImplementedError
 
 
@@ -432,7 +438,10 @@ def compute_parameters(
             and not isinstance(node, ast.Lambda)
         )
         if arg.annotation is not None:
-            value = ctx.expr_of_annotation(arg.annotation)
+            with ctx.function_param_type_param_variance_context(
+                parameter_index=idx, is_staticmethod=is_staticmethod
+            ):
+                value = ctx.expr_of_annotation(arg.annotation)
             inner_value, _ = value.maybe_unqualify(set(Qualifier))
             if (
                 inner_value is not None
