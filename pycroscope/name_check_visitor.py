@@ -9764,6 +9764,15 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
 
     def _visit_annotation(self, node: ast.AST) -> Value:
         with override(self, "in_annotation", True):
+            if self.active_type_params.has_variance_collection() and isinstance(
+                node, ast.Constant
+            ):
+                parsed_string_annotation = _parse_string_annotation_expr(
+                    node.value, node
+                )
+                if parsed_string_annotation is not None:
+                    with self.catch_errors():
+                        self.visit(parsed_string_annotation)
             if _contains_unpack_annotation_syntax(node):
                 if self.annotate:
                     with self.catch_errors():
@@ -10793,38 +10802,33 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     def _visit_display_read(
         self, node: ast.Set | ast.List | ast.Tuple, typ: type
     ) -> Value:
-        if self.in_annotation:
-            with self.active_type_params.consume_subscript_arg_polarities(
-                len(node.elts)
-            ) as subscript_arg_polarities:
-                if subscript_arg_polarities is not None:
-                    elts = []
-                    for elt, (polarity, is_callable_arg_list) in zip(
-                        node.elts, subscript_arg_polarities
-                    ):
-                        if is_callable_arg_list and isinstance(
-                            elt, (ast.List, ast.Tuple)
+        with self.active_type_params.consume_subscript_arg_polarities(
+            len(node.elts)
+        ) as subscript_arg_polarities:
+            if subscript_arg_polarities is not None:
+                elts = []
+                for elt, (polarity, is_callable_arg_list) in zip(
+                    node.elts, subscript_arg_polarities
+                ):
+                    if is_callable_arg_list and isinstance(elt, (ast.List, ast.Tuple)):
+                        with self.active_type_params.push_subscript_arg_polarities(
+                            [(-1, False)] * len(elt.elts)
                         ):
-                            with self.active_type_params.push_subscript_arg_polarities(
-                                [(-1, False)] * len(elt.elts)
-                            ):
-                                val = self.visit(elt)
-                        else:
-                            with self.active_type_params.compose_variance(polarity):
-                                val = self.visit(elt)
-                        if typ is tuple:
-                            self.check_for_missing_generic_params(elt, val)
-                        elts.append(val)
-                elif typ is tuple:
-                    elts = []
-                    for elt in node.elts:
-                        val = self.visit(elt)
+                            val = self.visit(elt)
+                    else:
+                        with self.active_type_params.compose_variance(polarity):
+                            val = self.visit(elt)
+                    if typ is tuple:
                         self.check_for_missing_generic_params(elt, val)
-                        elts.append(val)
-                else:
-                    elts = [self.visit(elt) for elt in node.elts]
-        else:
-            elts = [self.visit(elt) for elt in node.elts]
+                    elts.append(val)
+            elif self.in_annotation and typ is tuple:
+                elts = []
+                for elt in node.elts:
+                    val = self.visit(elt)
+                    self.check_for_missing_generic_params(elt, val)
+                    elts.append(val)
+            else:
+                elts = [self.visit(elt) for elt in node.elts]
         return self._maybe_make_sequence(typ, elts, node, elt_nodes=node.elts)
 
     def _maybe_make_sequence(
@@ -17812,6 +17816,23 @@ def _is_union_subscript_root(node: ast.expr) -> bool:
         or isinstance(node, ast.Attribute)
         and node.attr == "Union"
     )
+
+
+def _parse_string_annotation_expr(
+    value: object, error_node: ast.AST
+) -> ast.expr | None:
+    if not isinstance(value, str):
+        return None
+    parse_source = value
+    if "\n" in parse_source or "\r" in parse_source:
+        parse_source = f"({parse_source})"
+    try:
+        parsed = ast.parse(parse_source, mode="eval")
+    except SyntaxError:
+        return None
+    if hasattr(error_node, "lineno") and error_node.lineno > 1:
+        ast.increment_lineno(parsed, error_node.lineno - 1)
+    return parsed.body
 
 
 def _looks_like_implicit_type_alias_expr(node: ast.AST) -> bool:
