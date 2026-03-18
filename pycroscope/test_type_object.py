@@ -9,7 +9,6 @@ from .type_object import (
     DataclassFieldRecord,
     TypeObject,
     _class_key_from_value,
-    _is_readonly_instance_member,
     _iter_base_keys,
     _should_use_permissive_dunder_hash,
     get_mro,
@@ -205,31 +204,6 @@ def test_synthetic_type_object_tracks_dataclass_fields_without_initializers() ->
         DataclassFieldRecord("a", DataclassFieldInfo()),
         DataclassFieldRecord("b", DataclassFieldInfo()),
     )
-
-
-def test_synthetic_namedtuple_field_is_readonly_without_runtime_class() -> None:
-    checker = Checker()
-    synthetic = SyntheticClassObjectValue(
-        "Point",
-        TypedValue("mod.Point"),
-        base_classes=(TypedValue(tuple),),
-        namedtuple_info=NamedTupleInfo(
-            field_names=("x",), default_fields=(), has_namedtuple_marker_base=True
-        ),
-    )
-    synthetic.declared_symbols["x"] = ClassSymbol(
-        TypedValue(int),
-        frozenset({Qualifier.ReadOnly}),
-        is_instance_only=True,
-        initializer=TypedValue(int),
-    )
-    synthetic.declared_symbols["helper"] = ClassSymbol(
-        KnownValue(len), is_method=True, initializer=KnownValue(len)
-    )
-    checker.register_synthetic_class(synthetic)
-
-    assert _is_readonly_instance_member("mod.Point", "x", checker)
-    assert not _is_readonly_instance_member("mod.Point", "helper", checker)
 
 
 def test_runtime_namedtuple_field_is_readonly() -> None:
@@ -508,6 +482,16 @@ class TestNumerics(TestNameCheckVisitorBase):
 
 
 class TestSyntheticType(TestNameCheckVisitorBase):
+    @assert_passes(run_in_both_module_modes=True)
+    def test_synthetic_namedtuple_field_is_readonly_without_runtime_class() -> None:
+        from typing import NamedTuple
+
+        class Point(NamedTuple):
+            x: int
+
+        def capybara(p: Point) -> None:
+            p.x = 42  # E: incompatible_assignment
+
     @assert_passes(run_in_both_module_modes=True)
     def test_inherited_generic_property_specializes_in_protocol_check(self):
         from typing import Generic, Protocol, TypeVar

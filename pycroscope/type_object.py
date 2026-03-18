@@ -139,9 +139,7 @@ def _as_concrete_signature(
 @dataclass(frozen=True)
 class _ResolvedMemberAccess:
     value: Value
-    is_classvar: bool
-    is_readonly: bool
-    is_method: bool
+    symbol: ClassSymbol
     is_property: bool
     property_has_setter: bool
 
@@ -216,6 +214,7 @@ class TypeObject:
     def get_declared_symbols(self) -> dict[str, ClassSymbol]:
         return self.declared_symbols
 
+    # TODO: generic substitution; descriptors
     def get_declared_symbol_from_mro(
         self, name: str, ctx: CanAssignContext
     ) -> ClassSymbol | None:
@@ -371,10 +370,10 @@ class TypeObject:
         from .relations import Relation, has_relation
 
         other_basic = replace_fallback(other_val)
-        if isinstance(other_basic, (KnownValue, TypedValue, SubclassValue)):
-            other_type_obj = other_basic.get_type_object(ctx)
-        else:
-            other_type_obj = None
+        assert isinstance(
+            other_basic, (KnownValue, TypedValue, SubclassValue)
+        ), other_basic
+        other_type_obj = other_basic.get_type_object(ctx)
         other_type_key = _receiver_key_from_value(other_val)
 
         bounds_maps = []
@@ -518,33 +517,31 @@ class TypeObject:
                     )
                 else:
                     expected_access = _resolve_member_access(
-                        protocol_type_key,
-                        self_val,
-                        member,
-                        expected,
-                        ctx,
+                        self,
+                        member=member,
+                        resolved_value=expected,
+                        ctx=ctx,
                         class_object_access=False,
                     )
                     actual_access = _resolve_member_access(
-                        other_type_key,
-                        other_val,
-                        member,
-                        actual,
-                        ctx,
+                        other_type_obj,
+                        member=member,
+                        resolved_value=actual,
+                        ctx=ctx,
                         class_object_access=class_object_check,
                     )
-                    if class_object_check and expected_access.is_classvar:
+                    if class_object_check and expected_access.symbol.is_classvar:
                         can_assign = CanAssignError(
                             f"Protocol member {member!r} is a ClassVar"
                         )
                     elif (
                         class_object_check
-                        and not expected_access.is_classvar
-                        and not expected_access.is_method
+                        and not expected_access.symbol.is_classvar
+                        and not expected_access.symbol.is_method
                         and not expected_access.is_property
                         and not _is_callable_member_value(expected_access.value, ctx)
                         and other_type_key is not None
-                        and not actual_access.is_classvar
+                        and not actual_access.symbol.is_classvar
                         and not _is_member_from_metaclass(other_type_key, member, ctx)
                     ):
                         can_assign = CanAssignError(
@@ -553,7 +550,8 @@ class TypeObject:
                     elif (
                         not class_object_check
                         and not is_dunder_member
-                        and expected_access.is_classvar != actual_access.is_classvar
+                        and expected_access.symbol.is_classvar
+                        != actual_access.symbol.is_classvar
                     ):
                         can_assign = CanAssignError(
                             f"ClassVar status of protocol member {member!r} conflicts"
@@ -562,10 +560,10 @@ class TypeObject:
                         expected_for_relation = expected_access.value
                         actual_for_relation = actual_access.value
                         expected_is_writable_data_member = (
-                            not expected_access.is_method
+                            not expected_access.symbol.is_method
                             and not expected_access.is_property
-                            and not expected_access.is_classvar
-                            and not expected_access.is_readonly
+                            and not expected_access.symbol.is_classvar
+                            and not expected_access.symbol.is_readonly
                             and not _is_callable_member_value(
                                 expected_access.value, ctx
                             )
@@ -577,13 +575,7 @@ class TypeObject:
                         if class_object_check:
                             expected_requires_writable = False
                         if expected_requires_writable and not _is_writable_member(
-                            actual_access.is_classvar,
-                            actual_access.is_method,
-                            actual_access.is_property,
-                            actual_access.property_has_setter,
-                            other_type_key,
-                            member,
-                            ctx,
+                            actual_access, tobj=other_type_obj, ctx=ctx
                         ):
                             can_assign = CanAssignError(
                                 f"Protocol member {member!r} is not writable"
@@ -785,56 +777,44 @@ def merge_declared_symbol(
         ),
     )
 def _is_writable_member(
-    is_classvar: bool,
-    is_method: bool,
-    is_property: bool,
-    property_has_setter: bool,
-    class_key: type | str | None,
-    member: str,
-    ctx: CanAssignContext,
+    resolved_access: _ResolvedMemberAccess, tobj: TypeObject, ctx: CanAssignContext
 ) -> bool:
-    if is_classvar or is_method:
+    if resolved_access.symbol.is_classvar or resolved_access.symbol.is_method:
         return False
-    if is_property:
-        return property_has_setter
-    return class_key is None or not _is_readonly_instance_member(class_key, member, ctx)
+    if resolved_access.is_property:
+        return resolved_access.property_has_setter
+    return not resolved_access.symbol.is_readonly and not _is_frozen_dataclass(
+        tobj, ctx
+    )
 
 
 def _resolve_member_access(
-    class_key: type | str | None,
-    owner_value: Value,
+    tobj: TypeObject,
+    *,
     member: str,
     resolved_value: Value,
     ctx: CanAssignContext,
-    *,
     class_object_access: bool,
 ) -> _ResolvedMemberAccess:
-    symbol = (
-        lookup_declared_symbol(class_key, member, ctx)
-        if class_key is not None
-        else None
-    )
-    is_classvar = symbol is not None and symbol.is_classvar
-    is_readonly = symbol is not None and symbol.is_readonly
-    is_declared_property = symbol is not None and symbol.is_property
-    if class_object_access:
+    symbol = tobj.get_declared_symbol_from_mro(member, ctx)
+    # TODO: this should be OK if our symbol tables are correct
+    # assert symbol is not None, f"Member {member!r} not found on {tobj}"
+    if symbol is None:
+        symbol = ClassSymbol(typ=resolved_value)
+    if class_object_access or isinstance(tobj.typ, super):
         property_getter, property_has_setter = None, False
     else:
         property_getter, property_has_setter = _get_property_member_value(
-            class_key, member, resolved_value, ctx
+            tobj.typ, member, resolved_value, ctx
         )
     is_property = property_getter is not None
-    if class_object_access and is_declared_property:
+    if class_object_access and symbol.is_property:
         is_property = False
-    is_method = not is_property and symbol is not None and symbol.is_method
-    if class_object_access and is_declared_property:
-        is_method = False
     if (
         not class_object_access
-        and symbol is not None
         and not symbol.is_classvar
         and not is_property
-        and not is_method
+        and not symbol.is_method
         and (symbol.initializer is None or symbol.typ != symbol.initializer)
     ):
         value = symbol.typ
@@ -842,12 +822,12 @@ def _resolve_member_access(
         value = property_getter if property_getter is not None else resolved_value
     if (
         class_object_access
-        and is_declared_property
+        and symbol.is_property
         and not _is_property_marker_value(value)
     ):
         value = TypedValue(property)
     return _ResolvedMemberAccess(
-        value, is_classvar, is_readonly, is_method, is_property, property_has_setter
+        value, symbol, is_property=is_property, property_has_setter=property_has_setter
     )
 
 
@@ -1096,19 +1076,15 @@ def _get_property_member_value(
     return _specialize_declared_property_value(class_key, member, resolved_value, ctx)
 
 
-def _is_readonly_instance_member(
-    class_key: type | str, member: str, ctx: CanAssignContext
-) -> bool:
-    if isinstance(class_key, type):
-        dataclass_params = safe_getattr(class_key, "__dataclass_params__", None)
+def _is_frozen_dataclass(tobj: TypeObject, ctx: CanAssignContext) -> bool:
+    if isinstance(tobj.typ, type):
+        dataclass_params = safe_getattr(tobj.typ, "__dataclass_params__", None)
         if safe_getattr(dataclass_params, "frozen", None) is True:
             return True
-    if is_readonly_annotated_member(class_key, member, ctx):
-        return True
-
-    synthetic = _get_synthetic_class_for_key(class_key, ctx)
-    if synthetic is not None and synthetic.dataclass_frozen is True:
-        return True
+    elif isinstance(tobj.typ, str):
+        synthetic = _get_synthetic_class_for_key(tobj.typ, ctx)
+        if synthetic is not None and synthetic.dataclass_frozen is True:
+            return True
     return False
 
 
@@ -1366,7 +1342,7 @@ def _mark_protocol_call_signature_tail(
 
 
 def _collect_protocol_self_typevar_map(
-    tobj: TypeObject | None,
+    tobj: TypeObject,
     protocol_members: set[str],
     receiver_value: Value,
     ctx: CanAssignContext,
@@ -1375,7 +1351,7 @@ def _collect_protocol_self_typevar_map(
 
     This propagates `self: T` constraints across protocol members.
     """
-    if tobj is None or not isinstance(tobj.typ, (type, str)):
+    if not isinstance(tobj.typ, (type, str)):
         return {}
 
     tv_map: dict[TypeVarLike, Value] = {}
