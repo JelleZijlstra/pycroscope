@@ -785,11 +785,11 @@ def merge_declared_symbol(
 
 
 def _runtime_declared_member_value(typ: type, name: str, raw_value: object) -> Value:
+    if isinstance(raw_value, property):
+        return KnownValue(raw_value)
     try:
         return KnownValue(getattr(typ, name))
     except Exception:
-        if isinstance(raw_value, property):
-            return KnownValue(raw_value)
         return AnyValue(AnySource.inference)
 
 

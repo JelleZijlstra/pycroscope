@@ -1,4 +1,6 @@
 # static analysis: ignore
+import pytest
+
 from .test_name_check_visitor import TestNameCheckVisitorBase
 from .test_node_visitor import assert_passes, skip_before, skip_if_not_installed
 from .value import (
@@ -385,6 +387,14 @@ class TestTypedDict(TestNameCheckVisitorBase):
             print(generic_movie)
             return movie["director"]["name"]
 
+    @pytest.mark.filterwarnings(
+        "ignore:The kwargs-based syntax for TypedDict definitions is deprecated.*:"
+        "DeprecationWarning"
+    )
+    @pytest.mark.filterwarnings(
+        "ignore:Failing to pass a value for the 'fields' parameter is deprecated.*:"
+        "DeprecationWarning"
+    )
     @assert_passes()
     def test_functional_syntax_keyword_fields(self):
         from typing_extensions import TypedDict
@@ -416,6 +426,9 @@ class TestTypedDict(TestNameCheckVisitorBase):
         print(movie)
 
     @skip_if_not_installed("mypy_extensions")
+    @pytest.mark.filterwarnings(
+        "ignore:mypy_extensions.TypedDict is deprecated.*:DeprecationWarning"
+    )
     @assert_passes()
     def test_mypy_extensions(self):
         from mypy_extensions import TypedDict as METypedDict
