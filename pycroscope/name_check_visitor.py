@@ -310,7 +310,6 @@ from .value import (
     is_async_iterable,
     is_iterable,
     is_union,
-    iter_synthetic_member_names,
     iter_type_params_in_value,
     kv_pairs_from_mapping,
     make_coro_type,
@@ -5878,17 +5877,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         self, synthetic_class: SyntheticClassObjectValue
     ) -> tuple[str, ...] | None:
         local_names = synthetic_class.dataclass_field_order
-        if local_names is None or not local_names:
-            local_names = tuple(
-                name
-                for name in iter_synthetic_member_names(synthetic_class)
-                if not (name.startswith("__") and name.endswith("__"))
-                and (
-                    synthetic_class.declared_symbols.get(name) is None
-                    or not synthetic_class.declared_symbols[name].is_method
-                    and not synthetic_class.declared_symbols[name].is_classvar
-                )
-            )
         return tuple(
             name
             for name in local_names
@@ -8857,7 +8845,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             synthetic_class = self.checker.get_synthetic_class(class_key)
             if synthetic_class is None:
                 return set()
-            provided = set(iter_synthetic_member_names(synthetic_class))
+            provided = set(synthetic_class.declared_symbols)
             return provided - self._required_abstract_members_for_base(class_key)
 
         class_dict = safe_getattr(class_key, "__dict__", None)

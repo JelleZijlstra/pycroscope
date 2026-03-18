@@ -1752,8 +1752,6 @@ class Checker:
 
         for base in value.base_classes:
             _record_type_params(base)
-        for _, attr in iter_synthetic_member_initializers(value):
-            _record_type_params(attr)
         return tuple(inferred)
 
     def _make_synthetic_constructor_instance_value(

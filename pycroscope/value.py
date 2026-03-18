@@ -4018,12 +4018,8 @@ def ordered_namedtuple_fields_from_synthetic(
             }
             local_fields.extend(
                 name
-                for name, _ in iter_synthetic_member_initializers(synthetic)
-                if not (
-                    synthetic.declared_symbols.get(name) is not None
-                    and synthetic.declared_symbols[name].is_method
-                )
-                and (not allowed_names or name in allowed_names)
+                for name, symbol in synthetic.declared_symbols.items()
+                if not symbol.is_method and (not allowed_names or name in allowed_names)
             )
             for name in allowed_names:
                 symbol = synthetic.declared_symbols.get(name)
@@ -4468,13 +4464,6 @@ def iter_synthetic_member_initializers(
         if symbol.initializer is None:
             continue
         yield name, symbol.initializer
-
-
-def iter_synthetic_member_names(
-    synthetic_class: SyntheticClassObjectValue,
-) -> Iterator[str]:
-    for name, _ in iter_synthetic_member_initializers(synthetic_class):
-        yield name
 
 
 @dataclass(frozen=True)
