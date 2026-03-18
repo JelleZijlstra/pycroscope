@@ -1755,7 +1755,7 @@ class Checker:
         self, value: SyntheticClassObjectValue, *, apply_default_type_args: bool = True
     ) -> Value:
         if self._synthetic_class_has_any_base(value):
-            return self._make_synthetic_class_instance_value(value)
+            return value.class_type
         if isinstance(value.class_type, GenericValue):
             return value.class_type
         if isinstance(value.class_type, TypedValue):
@@ -1769,7 +1769,7 @@ class Checker:
                     else [type_param_to_value(type_param) for type_param in type_params]
                 )
                 return GenericValue(value.class_type.typ, args)
-        return self._make_synthetic_class_instance_value(value)
+        return value.class_type
 
     def _get_synthetic_constructor_method_signature(
         self,
@@ -2734,12 +2734,9 @@ class Checker:
                         )
                         if bound_init is not None:
                             return _replace_signature_return(
-                                bound_init,
-                                self._make_synthetic_class_instance_value(value),
+                                bound_init, value.class_type
                             )
-                return Signature.make(
-                    [ELLIPSIS_PARAM], self._make_synthetic_class_instance_value(value)
-                )
+                return Signature.make([ELLIPSIS_PARAM], value.class_type)
             return argspec
         elif isinstance(value, TypedValue):
             typ = value.typ
@@ -3109,14 +3106,6 @@ class Checker:
 
     def _synthetic_class_has_any_base(self, value: SyntheticClassObjectValue) -> bool:
         return any(has_any_base_value(base) for base in value.base_classes)
-
-    def _make_synthetic_class_instance_value(
-        self, value: SyntheticClassObjectValue
-    ) -> Value:
-        if self._synthetic_class_has_any_base(value):
-            return AnyValue(AnySource.from_another)
-        else:
-            return value.class_type
 
     def _make_any_base_attribute(
         self,

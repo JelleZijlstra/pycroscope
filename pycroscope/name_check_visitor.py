@@ -3028,6 +3028,8 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             return
         synthetic_name = name
         synthetic_value = value
+        enum_member_value: Value | None = None
+        enum_member_is_method = False
         if isinstance(self.current_class, (type, str)) and self._is_enum_class_key(
             self.current_class
         ):
@@ -3050,10 +3052,17 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     not forced_nonmember
                     and not _is_nonmember_enum_assignment_value(unwrapped, self)
                 ):
-                    synthetic_value = (
+                    enum_member_value = (
                         self._get_enclosing_class_value_for_method()
                         or TypedValue(self.current_class)
                     )
+                    synthetic_value = enum_member_value
+                    enum_member_is_method = isinstance(
+                        node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
+                    )
+                elif forced_nonmember:
+                    synthetic_value = unwrapped
+                    enum_member_value = unwrapped
         if not synthetic_name.startswith("%"):
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and (
                 self._is_property_decorated_function(node)
@@ -3063,7 +3072,11 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             declared_type = value
             if self.ann_assign_type is not None and self.ann_assign_type[0] is not None:
                 declared_type = self.ann_assign_type[0]
+            if enum_member_value is not None:
+                declared_type = enum_member_value
             is_method = isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+            if enum_member_is_method:
+                is_method = False
             is_classmethod = False
             is_staticmethod = False
             returns_self_on_class_access = False
@@ -5287,7 +5300,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         runtime_bases: list[type] = []
         has_enum_base = False
         for base_value in base_values:
-            runtime_base = self._runtime_enum_base_from_value(
+            runtime_base = self._runtime_base_from_value(
                 base_value, allow_synthetic_class_base=allow_synthetic_class_base
             )
             if runtime_base is None:
@@ -5298,13 +5311,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         if not has_enum_base:
             return None
         return runtime_bases
-
-    def _runtime_enum_base_from_value(
-        self, base_value: Value, *, allow_synthetic_class_base: bool
-    ) -> type | None:
-        return self._runtime_base_from_value(
-            base_value, allow_synthetic_class_base=allow_synthetic_class_base
-        )
 
     def _runtime_annotation_from_value(self, value: Value) -> object:
         if isinstance(value, AnnotatedValue):
@@ -5361,6 +5367,18 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         member_order: list[str] = []
         missing: Value | None = None
 
+        def _set_enum_declared_symbol(name: str, value: Value) -> None:
+            self._set_synthetic_member_on_class(
+                synthetic_class,
+                name,
+                value,
+                typ=value,
+                is_method=False,
+                is_classmethod=False,
+                is_staticmethod=False,
+                returns_self_on_class_access=False,
+            )
+
         for member_name, statement in _iter_enum_assignment_candidates(node):
             stmt_forced_member, stmt_forced_nonmember = (
                 _enum_statement_member_decorators(statement)
@@ -5406,11 +5424,13 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             ):
                 continue
             if forced_nonmember:
+                _set_enum_declared_symbol(member_name, unwrapped)
                 continue
             if not forced_member and _is_nonmember_enum_assignment_value(
                 unwrapped, self
             ):
                 continue
+            _set_enum_declared_symbol(member_name, synthetic_class.class_type)
             if isinstance(statement, ast.AnnAssign):
                 self._show_error_if_checking(
                     statement.target,
@@ -5460,9 +5480,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         for member_name in member_order:
             try:
                 initializer = KnownValue(getattr(runtime_enum, member_name))
-                self._set_synthetic_member_on_class(
-                    synthetic_class, member_name, initializer
-                )
+                _set_enum_declared_symbol(member_name, initializer)
             except Exception:
                 continue
 

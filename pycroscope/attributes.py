@@ -520,6 +520,9 @@ def _get_attribute_from_synthetic_type(
         result, provider = _get_attribute_from_synthetic_type_bases(
             fq_name, generic_args, ctx
         )
+    if result is UNINITIALIZED_VALUE and synthetic_class is not None:
+        if _synthetic_class_has_any_base(synthetic_class):
+            return AnyValue(AnySource.from_another)
     result = _substitute_typevars(fq_name, generic_args, result, provider, ctx)
     result = _maybe_resolve_synthetic_property_attribute(result, ctx)
     result = set_self(result, ctx.get_self_value())

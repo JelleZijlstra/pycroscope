@@ -396,6 +396,21 @@ class TestImportFailureHandling(TestNameCheckVisitorBase):
         y.nonexistent_attribute
         z.nonexistent_attribute
 
+    @assert_passes(allow_import_failures=True)
+    def test_any_base_class_preserves_declared_method_type_after_import_failure(self):
+        from typing import Any
+
+        from typing_extensions import assert_type
+
+        class ClassA(Any):
+            def method1(self) -> int:
+                return 1
+
+        a = ClassA()
+        assert_type(a.method1(), int)
+        assert_type(a.method2(), Any)
+        assert_type(ClassA.method3(), Any)
+
     @assert_passes(run_in_both_module_modes=True)
     def test_typevar_annotations_after_import_failure(self):
         from typing import TypeVar
