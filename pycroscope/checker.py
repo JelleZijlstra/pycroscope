@@ -75,7 +75,6 @@ from .value import (
     ClassSymbol,
     DataclassFieldInfo,
     GenericValue,
-    HasAttrExtension,
     KnownValue,
     KnownValueWithTypeVars,
     MultiValuedValue,
@@ -100,14 +99,12 @@ from .value import (
     UnboundMethodValue,
     Value,
     VariableNameValue,
-    annotate_value,
     flatten_values,
     get_namedtuple_field_value_from_synthetic,
     get_synthetic_member_initializer,
     get_tv_map,
     has_any_base_value,
     is_union,
-    iter_synthetic_member_initializers,
     iter_type_params_in_value,
     ordered_namedtuple_fields_from_synthetic,
     replace_fallback,
@@ -3116,36 +3113,10 @@ class Checker:
     def _make_synthetic_class_instance_value(
         self, value: SyntheticClassObjectValue
     ) -> Value:
-        metadata = [
-            HasAttrExtension(
-                KnownValue(name),
-                self._make_any_base_attribute(
-                    name,
-                    attr,
-                    self_annotation_value=value.class_type,
-                    is_staticmethod=(
-                        value.declared_symbols.get(name) is not None
-                        and value.declared_symbols[name].is_staticmethod
-                    ),
-                    is_classmethod=(
-                        value.declared_symbols.get(name) is not None
-                        and value.declared_symbols[name].is_classmethod
-                    ),
-                ),
-            )
-            for name, attr in iter_synthetic_member_initializers(value)
-            if not (
-                value.declared_symbols.get(name) is not None
-                and value.declared_symbols[name].is_initvar
-            )
-        ]
         if self._synthetic_class_has_any_base(value):
-            instance: Value = AnyValue(AnySource.from_another)
+            return AnyValue(AnySource.from_another)
         else:
-            instance = value.class_type
-        if metadata:
-            return annotate_value(instance, metadata)
-        return instance
+            return value.class_type
 
     def _make_any_base_attribute(
         self,

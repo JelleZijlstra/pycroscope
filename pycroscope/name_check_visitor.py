@@ -14279,9 +14279,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 return None
             synthetic_typ = class_type.typ
             root_for_partial = value
-        elif isinstance(value, TypedValue) and isinstance(value.typ, str):
-            synthetic_typ = value.typ
-            root_for_partial = value
         else:
             return None
 
