@@ -14782,10 +14782,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                         error_code=ErrorCode.incompatible_assignment,
                     )
             self._check_deprecated_property_getter(node, root_composite.value)
-            if not self.check_deprecation(node, value):
-                self._check_deprecated_method_attribute(
-                    node, root_composite.value, node.attr
-                )
+            self.check_deprecation(node, value)
             if self._should_use_varname_value(value):
                 varname_value = self.checker.maybe_get_variable_name_value(node.attr)
                 if varname_value is not None:
@@ -14980,19 +14977,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         self._show_error_if_checking(
             node,
             f"Property setter {node.attr!r} is deprecated: {message}",
-            error_code=ErrorCode.deprecated,
-        )
-
-    def _check_deprecated_method_attribute(
-        self, node: ast.Attribute, root_value: Value, attr_name: str
-    ) -> None:
-        return
-        message = self._method_deprecation_message(root_value, attr_name)
-        if message is None:
-            return
-        self._show_error_if_checking(
-            node,
-            f"Method {attr_name!r} is deprecated: {message}",
             error_code=ErrorCode.deprecated,
         )
 
