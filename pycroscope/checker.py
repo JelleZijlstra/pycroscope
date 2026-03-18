@@ -3203,13 +3203,6 @@ class Checker:
         inferred = {**inferred, SelfT: self_annotation_value}
         return CallableValue(normalized_attr.signature.substitute_typevars(inferred))
 
-    def is_synthetic_classmethod_attribute(
-        self, synthetic_class: SyntheticClassObjectValue, attr_name: str
-    ) -> bool:
-        return _is_synthetic_classmethod_attribute(
-            synthetic_class, attr_name, self, seen=set()
-        )
-
     def get_attribute_from_value(
         self, root_value: Value, attribute: str, *, prefer_typeshed: bool = False
     ) -> Value:
@@ -3243,27 +3236,6 @@ class Checker:
 
 def _is_dunder(name: str) -> bool:
     return name.startswith("__") and name.endswith("__")
-
-
-def _lookup_synthetic_declared_symbol(
-    synthetic_class: SyntheticClassObjectValue, attr_name: str, checker: Checker
-) -> ClassSymbol | None:
-    class_type = synthetic_class.class_type
-    if isinstance(class_type, TypedValue) and isinstance(class_type.typ, (type, str)):
-        return lookup_declared_symbol(class_type.typ, attr_name, checker)
-    return synthetic_class.declared_symbols.get(attr_name)
-
-
-def _is_synthetic_classmethod_attribute(
-    synthetic_class: SyntheticClassObjectValue,
-    attr_name: str,
-    checker: Checker,
-    *,
-    seen: set[int],
-) -> bool:
-    del seen
-    symbol = _lookup_synthetic_declared_symbol(synthetic_class, attr_name, checker)
-    return symbol is not None and symbol.is_classmethod
 
 
 @dataclass
@@ -3320,28 +3292,22 @@ class CheckerAttrContext(AttrContext):
 
     def bind_synthetic_instance_attribute(self, attr_name: str, value: Value) -> Value:
         root_value = replace_fallback(self.root_value)
-        synthetic_root: SyntheticClassObjectValue | None = None
-        if isinstance(root_value, GenericValue) and isinstance(
+        if isinstance(root_value, TypedValue) and isinstance(
             root_value.typ, (type, str)
         ):
-            synthetic_root = self.checker.get_synthetic_class(root_value.typ)
-        elif isinstance(root_value, TypedValue) and isinstance(
-            root_value.typ, (type, str)
-        ):
-            synthetic_root = self.checker.get_synthetic_class(root_value.typ)
+            class_key = root_value.typ
         elif isinstance(root_value, KnownValue) and not isinstance(
             root_value.val, type
         ):
-            synthetic_root = self.checker.get_synthetic_class(type(root_value.val))
-        if synthetic_root is None:
+            class_key = type(root_value.val)
+        else:
             return value
-        symbol = _lookup_synthetic_declared_symbol(
-            synthetic_root, attr_name, self.checker
-        )
+        tobj = self.checker.make_type_object(class_key)
+        symbol = tobj.get_declared_symbol_from_mro(attr_name, self.checker)
         if symbol is None or not symbol.is_method:
             return value
         if symbol.is_staticmethod or symbol.is_classmethod:
-            raw_attr = get_synthetic_member_initializer(synthetic_root, attr_name)
+            raw_attr = symbol.initializer
             if raw_attr is not None and isinstance(value, CallableValue):
                 return self.checker._specialize_synthetic_classmethod(
                     raw_attr, value, self_annotation_value=root_value

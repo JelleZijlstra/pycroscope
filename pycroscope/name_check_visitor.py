@@ -735,18 +735,13 @@ class _AttrContext(CheckerAttrContext):
         if synthetic_typ is None:
             return super().bind_synthetic_instance_attribute(attr_name, value)
         synthetic_class = self.checker.get_synthetic_class(synthetic_typ)
-        symbol = (
-            lookup_declared_symbol(synthetic_typ, attr_name, self.visitor)
-            if synthetic_class is not None
-            else None
-        )
+        tobj = self.checker.make_type_object(synthetic_typ)
+        symbol = tobj.get_declared_symbol_from_mro(attr_name, self.checker)
         should_bind = symbol is not None and symbol.is_method
         if not should_bind:
             return super().bind_synthetic_instance_attribute(attr_name, value)
         if synthetic_class is not None:
-            if self.checker.is_synthetic_classmethod_attribute(
-                synthetic_class, attr_name
-            ):
+            if symbol is not None and symbol.is_classmethod:
                 # classmethod attributes are already descriptor-adjusted by
                 # synthetic attribute normalization; binding again drops one
                 # real parameter.
