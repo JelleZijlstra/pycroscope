@@ -385,6 +385,55 @@ class TestAnnotatedTypesAnnotations(TestNameCheckVisitorBase):
 
     @skip_if_not_installed("annotated_types")
     @assert_passes()
+    def test_timezone_metadata_compatibility(self):
+        from datetime import datetime, timedelta, timezone
+
+        from annotated_types import Timezone
+        from typing_extensions import Annotated
+
+        plus_one = timezone(timedelta(hours=1))
+
+        def takes_aware(x: Annotated[datetime, Timezone(...)]) -> None:
+            pass
+
+        def takes_utc(x: Annotated[datetime, Timezone(timezone.utc)]) -> None:
+            pass
+
+        def capybara(
+            utc_dt: Annotated[datetime, Timezone(timezone.utc)],
+            plus_one_dt: Annotated[datetime, Timezone(plus_one)],
+            naive_dt: Annotated[datetime, Timezone(None)],
+        ) -> None:
+            takes_aware(utc_dt)
+            takes_aware(plus_one_dt)
+            takes_aware(naive_dt)  # E: incompatible_argument
+            takes_utc(utc_dt)
+            takes_utc(plus_one_dt)  # E: incompatible_argument
+
+    @skip_if_not_installed("annotated_types")
+    @assert_passes()
+    def test_object_timezone_metadata(self):
+        from datetime import datetime, timezone
+
+        from annotated_types import Timezone
+        from typing_extensions import Annotated
+
+        def takes_aware(x: Annotated[object, Timezone(...)]) -> None:
+            pass
+
+        def takes_named_timezone(x: Annotated[object, Timezone("UTC")]) -> None:
+            pass
+
+        aware = datetime.now(timezone.utc)
+
+        def capybara(unannotated) -> None:
+            takes_aware(aware)
+            takes_aware(1)  # E: incompatible_argument
+            takes_aware(unannotated)
+            takes_named_timezone(aware)  # E: incompatible_argument
+
+    @skip_if_not_installed("annotated_types")
+    @assert_passes()
     def test_predicate(self):
         from annotated_types import Predicate
         from typing_extensions import Annotated
