@@ -231,6 +231,39 @@ class TestPatma(TestNameCheckVisitorBase):
                     return 2
 
     @assert_passes()
+    def test_match_narrows_cases_and_guard_bindings(self):
+        from typing_extensions import assert_type
+
+        def capybara(x: int | str | None) -> None:
+            match x:
+                case int() as i if i > 0:
+                    assert_type(x, int)
+                    i.bit_length()
+                case str() as s:
+                    assert_type(x, str)
+                    assert_type(s, str)
+                case None:
+                    assert_type(x, None)
+
+    @assert_passes()
+    def test_match_sequence_and_mapping_patterns(self):
+        from typing_extensions import assert_type
+
+        def capybara(x: tuple[int, str] | dict[str, int]) -> None:
+            match x:
+                case (a, b):
+                    assert_type(x, tuple[int, str])
+                    assert_type(a, int)
+                    assert_type(b, str)
+                case {"count": count}:
+                    assert_type(x, dict[str, int])
+                    assert_type(count, int)
+                case _:
+                    # TODO: Narrow this fallback to dict[str, int] once match
+                    # fallthrough excludes the tuple branch here.
+                    print(x)
+
+    @assert_passes()
     def test_reassign_in_tuple(self):
         def f(x: int | str) -> None:
             match (x,):

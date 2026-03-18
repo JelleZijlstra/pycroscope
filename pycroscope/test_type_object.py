@@ -482,6 +482,51 @@ class TestSyntheticType(TestNameCheckVisitorBase):
         def capybara() -> None:
             takes(C)
 
+    @assert_passes(run_in_both_module_modes=True)
+    def test_protocol_self_typevar_map_handles_classmethod_and_staticmethod(self):
+        from typing import Protocol, TypeVar
+
+        from typing_extensions import Self
+
+        T_co = TypeVar("T_co", covariant=True)
+
+        class Proto(Protocol[T_co]):
+            def clone(self: T_co) -> T_co: ...
+
+            @classmethod
+            def make(cls: type[T_co]) -> T_co: ...
+
+            @staticmethod
+            def marker() -> None: ...
+
+        class Good:
+            def clone(self) -> Self:
+                return self
+
+            @classmethod
+            def make(cls) -> Self:
+                return cls()
+
+            @staticmethod
+            def marker() -> None:
+                pass
+
+        class BadClone:
+            def clone(self) -> int:
+                return 0
+
+            @classmethod
+            def make(cls) -> Self:
+                return cls()
+
+            @staticmethod
+            def marker() -> None:
+                pass
+
+        good: Proto[Good] = Good()
+        bad: Proto[BadClone] = BadClone()  # E: incompatible_assignment
+        print(good, bad)
+
     @assert_passes()
     def test_callable_protocol_nonstandard_receiver_name(self):
         from typing import Protocol
@@ -495,6 +540,36 @@ class TestSyntheticType(TestNameCheckVisitorBase):
         def capybara() -> None:
             fn: CallableProto = identity
             print(fn)
+
+    @assert_passes()
+    def test_protocol_class_object_call_member_with_annotated_receiver(self):
+        from typing import Protocol
+
+        class Concrete:
+            def __init__(self, x: int) -> None:
+                self.x = x
+
+        class Factory(Protocol):
+            def __call__(self: "type[Concrete]", x: int) -> Concrete: ...
+
+        factory: Factory = Concrete
+        created: Concrete = factory(1)  # E: not_callable
+        print(created)
+
+    @assert_passes()
+    def test_protocol_class_object_rejects_instance_property_data_member(self):
+        from typing import Protocol
+
+        class WantsValue(Protocol):
+            value: int
+
+        class Concrete:
+            @property
+            def value(self) -> int:
+                return 1
+
+        bad: WantsValue = Concrete  # E: incompatible_assignment
+        print(bad)
 
     @assert_passes()
     def test_dunder_protocol_nonstandard_receiver_name(self):
@@ -1003,6 +1078,143 @@ class TestSyntheticType(TestNameCheckVisitorBase):
         ok4: WantsReadOnlyData = CachedPropertyImpl()
         bad: WantsReadOnlyData = BadTypeImpl()  # E: incompatible_assignment
         print(ok1, ok2, ok3, ok4, bad)
+
+    @assert_passes()
+    def test_protocol_with_runtime_property_without_getter(self):
+        from typing import Protocol
+
+        class WantsSettable(Protocol):
+            @property
+            def value(self) -> int: ...
+
+            @value.setter
+            def value(self, new_value: int) -> None: ...
+
+        class WeirdProperty:
+            value = property(None, object())  # E: incompatible_argument
+
+        maybe_ok: WantsSettable = WeirdProperty()
+        print(maybe_ok)
+
+    @assert_passes()
+    def test_protocol_hash_method_accepts_class_object_metaclass_hash(self):
+        from typing import Protocol
+
+        class HashProto(Protocol):
+            def __hash__(self) -> int: ...
+
+        class Meta(type):
+            def __hash__(self, extra: int = 0) -> int:
+                return extra
+
+        class Concrete(metaclass=Meta):
+            pass
+
+        ok: HashProto = Concrete
+        print(ok)
+
+    @assert_passes()
+    def test_protocol_writable_data_member_rejects_method_member(self):
+        from typing import Protocol
+
+        class WantsWritable(Protocol):
+            value: int
+
+        class HasMethod:
+            def value(self) -> int:
+                return 1
+
+        bad: WantsWritable = HasMethod()  # E: incompatible_assignment
+        print(bad)
+
+    @assert_passes()
+    def test_runtime_type_object_skips_non_string_class_entries(self):
+        from typing import Protocol
+
+        class WantsX(Protocol):
+            x: int
+
+        class Weird:
+            locals()[1] = 2  # E: incompatible_argument
+            __annotations__ = {1: int, "x": int}
+            x = 1
+
+        ok: WantsX = Weird()
+        print(ok)
+
+    @assert_passes()
+    def test_runtime_type_object_falls_back_when_annotations_access_raises(self):
+        from typing import Protocol
+
+        class WantsX(Protocol):
+            x: int
+
+        class Meta(type):
+            @property
+            def __annotations__(self):
+                raise RuntimeError("boom")
+
+        class C(metaclass=Meta):
+            x = 1
+
+        ok: WantsX = C()
+        print(ok)
+
+    @assert_passes()
+    def test_protocol_accepts_property_subclass_that_raises_on_class_access(self):
+        from typing import Protocol
+
+        class WantsX(Protocol):
+            @property
+            def x(self) -> int: ...
+
+        class RaisingProperty(property):
+            def __get__(self, obj, objtype=None):
+                if obj is None:
+                    raise RuntimeError("boom")
+                return super().__get__(obj, objtype)
+
+        def get_x(self) -> int:
+            return 1
+
+        class C:
+            x = RaisingProperty(get_x)
+
+        ok: WantsX = C()
+        print(ok)
+
+    @assert_passes()
+    def test_protocol_accepts_annotated_runtime_property(self):
+        from typing import Protocol
+
+        class WantsX(Protocol):
+            @property
+            def x(self) -> int: ...
+
+        class C:
+            @property
+            def x(self) -> int:
+                return 1
+
+            __annotations__ = {"x": int}
+
+        ok: WantsX = C()
+        print(ok)
+
+    @assert_passes()
+    def test_namedtuple_with_non_tuple_fields_still_builds_type_object(self):
+        from typing import NamedTuple, Protocol
+
+        class WantsX(Protocol):
+            x: int
+
+        class Point(NamedTuple):
+            x: int
+
+        Point._fields = 1
+
+        ok: WantsX = Point(1)
+        print(ok)
 
     @assert_passes()
     def test_custom_subclasscheck(self):

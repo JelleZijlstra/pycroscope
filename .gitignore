@@ -7,3 +7,7 @@ build/
 .venv
 node_modules/
 tmp/
+.DS_Store
+.coverage
+coverage.json
+htmlcov/

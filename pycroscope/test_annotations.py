@@ -1469,6 +1469,33 @@ class TestTypeGuard(TestNameCheckVisitorBase):
             if Cls.is_int(x):
                 assert_type(x, int)
 
+    @assert_passes()
+    def test_callable_compatibility(self) -> None:
+        from typing import Callable
+
+        from typing_extensions import TypeGuard, TypeIs
+
+        def is_int(x: object) -> TypeGuard[int]:
+            return isinstance(x, int)
+
+        def is_str(x: object) -> TypeGuard[str]:
+            return isinstance(x, str)
+
+        def is_typeis_int(x: object) -> TypeIs[int]:
+            return isinstance(x, int)
+
+        def needs_object_guard(f: Callable[[object], TypeGuard[object]]) -> None:
+            pass
+
+        def needs_int_guard(f: Callable[[object], TypeGuard[int]]) -> None:
+            pass
+
+        def capybara() -> None:
+            needs_object_guard(is_int)
+            needs_int_guard(is_int)
+            needs_int_guard(is_str)  # E: incompatible_argument
+            needs_int_guard(is_typeis_int)  # E: incompatible_argument
+
 
 class TestCustomCheck(TestNameCheckVisitorBase):
     @assert_passes()

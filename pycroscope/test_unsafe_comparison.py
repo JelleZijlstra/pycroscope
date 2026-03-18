@@ -162,3 +162,35 @@ class TestOverrideEq(TestNameCheckVisitorBase):
             assert fe1 == y  # OK
             assert fe2 == y  # OK
             assert fe3 == y  # OK
+
+    @assert_passes()
+    def test_typed_dict_overlap(self):
+        from typing import TypedDict
+
+        class HasName(TypedDict):
+            name: str
+
+        class HasId(TypedDict):
+            id: int
+
+        class BadName(TypedDict):
+            name: int
+
+        def capybara(name: HasName, ident: HasId, bad: BadName):
+            assert name == ident  # E: unsafe_comparison
+            assert ident == name  # E: unsafe_comparison
+            assert name == bad  # E: unsafe_comparison
+            assert bad == name  # E: unsafe_comparison
+
+    @assert_passes()
+    def test_newtype_and_generic_overlap(self):
+        from typing import NewType
+
+        UserId = NewType("UserId", int)
+        GroupId = NewType("GroupId", int)
+
+        def capybara(
+            user_id: UserId, group_id: GroupId, ints: list[int], strs: list[str]
+        ):
+            assert user_id == group_id  # E: unsafe_comparison
+            assert ints == strs  # E: unsafe_comparison

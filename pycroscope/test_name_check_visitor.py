@@ -3965,6 +3965,73 @@ class TestAnnAssign(TestNameCheckVisitorBase):
         created: Concrete = factory(1)
 
     @assert_passes()
+    def test_callable_assignment_from_protocol_instance(self):
+        from collections.abc import Callable
+        from typing import Protocol
+
+        class GoodCallable(Protocol):
+            def __call__(self, x: int) -> str: ...
+
+        class BadCallable(Protocol):
+            @property
+            def __call__(self) -> int: ...
+
+        def wants_callable(fn: Callable[[int], str]) -> None:
+            pass
+
+        def capybara(good: GoodCallable, bad: BadCallable) -> None:
+            wants_callable(good)
+            wants_callable(bad)  # E: incompatible_argument
+
+    @assert_passes()
+    def test_collections_callable_assignment_from_protocol_instance(self):
+        from collections.abc import Callable
+        from typing import Protocol
+
+        class GoodCallable(Protocol):
+            def __call__(self, x: int) -> str: ...
+
+        class NarrowCallable(Protocol):
+            def __call__(self, x: int, y: int) -> str: ...
+
+        def capybara(good: GoodCallable, narrow: NarrowCallable) -> None:
+            generic_cb: Callable = good
+            specific_cb: Callable[[int], str] = good
+            bad_cb: Callable[[int], str] = narrow  # E: incompatible_assignment
+            print(generic_cb, specific_cb, bad_cb)
+
+    @assert_passes()
+    def test_protocol_class_object_metaclass_members(self):
+        from typing import Protocol
+
+        class Meta(type):
+            answer: int = 1
+
+        class WantsAnswer(Protocol):
+            answer: int
+
+        class Concrete(metaclass=Meta):
+            pass
+
+        good: WantsAnswer = Concrete
+        print(good)
+
+    @assert_passes()
+    def test_hashable_class_object_with_custom_metaclass_hash(self):
+        from collections.abc import Hashable
+
+        class Meta(type):
+            def __hash__(self, extra: int = 0) -> int:
+                return extra
+
+        class Concrete(metaclass=Meta):
+            pass
+
+        def capybara() -> None:
+            hashable: Hashable = Concrete
+            print(hashable)
+
+    @assert_passes()
     def test_type_protocol_constructor_call_allows_concrete_implementers(self):
         from typing import Protocol, cast
 
@@ -4257,6 +4324,262 @@ class TestWhile(TestNameCheckVisitorBase):
                     return 1
 
 
+class TestControlFlow(TestNameCheckVisitorBase):
+    @assert_passes()
+    def test_assert_message_uses_inverted_constraint(self):
+        from typing import Optional
+
+        from typing_extensions import assert_type
+
+        def describe_missing(x: None) -> str:
+            return "missing"
+
+        def capybara(x: Optional[int]) -> None:
+            assert x is not None, describe_missing(x)
+            assert_type(x, int)
+
+    @assert_passes()
+    def test_if_true_keeps_merged_assignment_type(self):
+        from typing_extensions import Literal, assert_type
+
+        def capybara() -> None:
+            if True:  # E: value_always_true
+                x = 1
+            else:
+                x = "x"
+            assert_type(x, Literal[1, "x"])
+
+    @assert_passes()
+    def test_if_false_keeps_merged_assignment_type(self):
+        from typing_extensions import Literal, assert_type
+
+        def capybara() -> None:
+            if False:
+                x = 1
+            else:
+                x = "x"
+            assert_type(x, Literal[1, "x"])
+
+    @assert_passes()
+    def test_ifexp_true_keeps_merged_assignment_type(self):
+        from typing_extensions import Literal, assert_type
+
+        def capybara() -> None:
+            x = 1 if True else "x"  # E: value_always_true
+            assert_type(x, Literal[1, "x"])
+
+    @assert_passes()
+    def test_ifexp_false_keeps_merged_assignment_type(self):
+        from typing_extensions import Literal, assert_type
+
+        def capybara() -> None:
+            x = 1 if False else "x"
+            assert_type(x, Literal[1, "x"])
+
+    @assert_passes()
+    def test_for_else_with_always_present_iterable_keeps_body_assignment(self):
+        from typing_extensions import Literal, assert_type
+
+        def capybara() -> None:
+            for x in (1,):
+                y = x
+            else:
+                assert_type(y, Literal[1])
+            assert_type(y, Literal[1])
+
+    @assert_passes()
+    def test_for_else_defines_name_for_maybe_empty_iterable(self):
+        from typing_extensions import assert_type
+
+        def capybara(xs: list[int]) -> None:
+            for x in xs:
+                y = x
+            else:
+                y = 0
+            assert_type(y, int)
+
+    @assert_passes()
+    def test_while_else_merges_body_and_else_assignments(self):
+        from typing_extensions import Literal, assert_type
+
+        def capybara(flag: bool) -> None:
+            while flag:
+                y = 1
+                flag = False
+            else:
+                y = 2
+            assert_type(y, Literal[1, 2])
+
+    @assert_passes()
+    def test_except_tuple_binding_type(self):
+        from typing_extensions import assert_type
+
+        def capybara(flag: bool) -> None:
+            try:
+                if flag:
+                    raise ValueError()
+                raise TypeError()
+            except (ValueError, TypeError) as exc:
+                assert_type(exc, ValueError | TypeError)
+
+    @assert_passes()
+    def test_except_nested_tuple_binding_type(self):
+        from typing_extensions import assert_type
+
+        def capybara() -> None:
+            try:
+                raise TypeError()
+            except (KeyError, (ValueError, TypeError)) as exc:
+                assert_type(exc, KeyError | ValueError | TypeError)
+
+    @assert_passes()
+    def test_except_conditional_handler_expression(self):
+        from typing_extensions import assert_type
+
+        def capybara(flag: bool) -> None:
+            try:
+                raise FileNotFoundError()
+            except FileNotFoundError if flag else FileExistsError as exc:
+                assert_type(exc, FileNotFoundError | FileExistsError)
+
+    @assert_passes()
+    def test_except_baseexception_subclass_binding_type(self):
+        from typing_extensions import assert_type
+
+        def capybara() -> None:
+            try:
+                raise GeneratorExit()
+            except GeneratorExit as exc:
+                assert_type(exc, GeneratorExit)
+
+    @assert_passes()
+    def test_except_rejects_non_exception_handler(self):
+        from typing_extensions import assert_type
+
+        class NotExc:
+            pass
+
+        def capybara() -> None:
+            try:
+                raise ValueError()
+            except NotExc as exc:  # E: bad_except_handler
+                assert_type(exc, BaseException)
+
+    @assert_passes()
+    def test_except_dynamic_handler_type_falls_back_to_baseexception(self):
+        from typing import Type
+
+        from typing_extensions import assert_type
+
+        def capybara(exc_type: Type[BaseException]) -> None:
+            try:
+                raise ValueError()
+            except exc_type as exc:
+                assert_type(exc, BaseException)
+
+    @assert_passes()
+    def test_try_else_refines_success_path_and_merges_result(self):
+        from typing_extensions import Literal, assert_type
+
+        def capybara(flag: bool) -> None:
+            try:
+                if flag:
+                    raise ValueError()
+                x = 1
+            except ValueError:
+                x = 2
+            else:
+                assert_type(x, Literal[1])
+                x = 3
+            assert_type(x, Literal[2, 3])
+
+    @assert_passes()
+    def test_try_else_does_not_see_except_only_bindings(self):
+        def capybara() -> None:
+            try:
+                pass
+            except ValueError:
+                x = 1  # E: unused_variable
+            else:
+                print(x)  # E: undefined_name
+
+    @assert_passes()
+    def test_try_finally_keeps_preinitialized_assignment(self):
+        from typing_extensions import Literal, assert_type
+
+        def capybara(flag: bool) -> None:
+            x = 0
+            try:
+                if flag:
+                    x = 1
+                else:
+                    raise ValueError()
+            except ValueError:
+                x = 2
+            finally:
+                assert_type(x, Literal[0, 1, 2])
+            assert_type(x, Literal[1, 2])
+
+    @assert_passes()
+    def test_try_finally_can_see_possibly_undefined_name(self):
+        def capybara(flag: bool) -> None:
+            try:
+                if flag:
+                    x = 1
+            finally:
+                print(x)  # E: possibly_undefined_name
+
+
+class TestForLoops(TestNameCheckVisitorBase):
+    @assert_passes()
+    def test_tuple_destructuring_target(self):
+        from typing_extensions import Literal, assert_type
+
+        def capybara() -> None:
+            for a, b in [(1, "x")]:
+                assert_type(a, Literal[1])
+                assert_type(b, Literal["x"])
+
+    @assert_passes()
+    def test_tuple_destructuring_target_after_loop(self):
+        from typing_extensions import Literal, assert_type
+
+        def capybara() -> None:
+            for a, b in [(1, "x")]:
+                pass
+            assert_type(a, Literal[1])
+            assert_type(b, Literal["x"])
+
+    @assert_passes()
+    def test_list_destructuring_target(self):
+        from typing_extensions import Literal, assert_type
+
+        def capybara() -> None:
+            for [a, b] in [(1, "x")]:
+                assert_type(a, Literal[1])
+                assert_type(b, Literal["x"])
+
+    @assert_passes()
+    def test_nested_destructuring_target(self):
+        from typing_extensions import Literal, assert_type
+
+        def capybara() -> None:
+            for a, (b, c) in [(1, ("x", True))]:
+                assert_type(a, Literal[1])
+                assert_type(b, Literal["x"])
+                assert_type(c, Literal[True])
+
+    @assert_passes()
+    def test_continue_narrows_remaining_loop_path(self):
+        from typing_extensions import Literal, assert_type
+
+        def capybara() -> None:
+            for x in (1, "x"):
+                if x == 1:
+                    continue
+                assert_type(x, Literal["x"])
+
+
 class TestWith(TestNameCheckVisitorBase):
     @assert_passes()
     def test_with(self) -> None:
@@ -4288,6 +4611,58 @@ class TestWith(TestNameCheckVisitorBase):
                 assert_type(e, int)
 
     @assert_passes()
+    def test_union_context_manager_assignment(self) -> None:
+        class IntCM:
+            def __enter__(self) -> int:
+                return 1
+
+            def __exit__(self, typ, value, tb) -> None:
+                pass
+
+        class StrCM:
+            def __enter__(self) -> str:
+                return "x"
+
+            def __exit__(self, typ, value, tb) -> None:
+                pass
+
+        def capybara(flag: bool) -> None:
+            cm: IntCM | StrCM = IntCM() if flag else StrCM()
+            with cm as value:
+                assert_type(value, int | str)
+
+    @assert_passes()
+    def test_tuple_destructuring_in_with_target(self) -> None:
+        class PairCM:
+            def __enter__(self) -> tuple[int, str]:
+                return (1, "x")
+
+            def __exit__(self, typ, value, tb) -> None:
+                pass
+
+        def capybara() -> None:
+            with PairCM() as (a, b):
+                assert_type(a, int)
+                assert_type(b, str)
+
+    @assert_passes()
+    def test_union_context_manager_with_invalid_member(self) -> None:
+        class GoodCM:
+            def __enter__(self) -> int:
+                return 1
+
+            def __exit__(self, typ, value, tb) -> None:
+                pass
+
+        class BadCM:
+            pass
+
+        def capybara(flag: bool) -> None:
+            cm: GoodCM | BadCM = GoodCM() if flag else BadCM()
+            with cm as value:  # E: invalid_context_manager
+                print(value)
+
+    @assert_passes()
     def test_async_with(self) -> None:
         class BadCM1:
             pass
@@ -4315,6 +4690,58 @@ class TestWith(TestNameCheckVisitorBase):
 
             async with GoodCM() as e:
                 assert_type(e, int)
+
+    @assert_passes()
+    def test_union_async_context_manager_assignment(self) -> None:
+        class IntCM:
+            async def __aenter__(self) -> int:
+                return 1
+
+            async def __aexit__(self, typ, value, tb) -> None:
+                pass
+
+        class StrCM:
+            async def __aenter__(self) -> str:
+                return "x"
+
+            async def __aexit__(self, typ, value, tb) -> None:
+                pass
+
+        async def capybara(flag: bool) -> None:
+            cm: IntCM | StrCM = IntCM() if flag else StrCM()
+            async with cm as value:
+                assert_type(value, int | str)
+
+    @assert_passes()
+    def test_tuple_destructuring_in_async_with_target(self) -> None:
+        class PairCM:
+            async def __aenter__(self) -> tuple[int, str]:
+                return (1, "x")
+
+            async def __aexit__(self, typ, value, tb) -> None:
+                pass
+
+        async def capybara() -> None:
+            async with PairCM() as (a, b):
+                assert_type(a, int)
+                assert_type(b, str)
+
+    @assert_passes()
+    def test_union_async_context_manager_with_invalid_member(self) -> None:
+        class GoodCM:
+            async def __aenter__(self) -> int:
+                return 1
+
+            async def __aexit__(self, typ, value, tb) -> None:
+                pass
+
+        class BadCM:
+            pass
+
+        async def capybara(flag: bool) -> None:
+            cm: GoodCM | BadCM = GoodCM() if flag else BadCM()
+            async with cm as value:  # E: invalid_context_manager
+                print(value)
 
 
 class HasGetattr(object):
@@ -4799,6 +5226,51 @@ class TestContextManagerWithSuppression(TestNameCheckVisitorBase):
             async with async_empty_contextlib_manager():
                 a = 3
             assert_type(a, Literal[3])
+
+
+class TestTryStar(TestNameCheckVisitorBase):
+    @skip_before((3, 11))
+    def test_exception_group_binding_type(self):
+        self.assert_passes("""
+            def capybara() -> None:
+                try:
+                    raise ExceptionGroup("boom", [ValueError()])
+                except* ValueError as eg:
+                    assert_type(eg, ExceptionGroup[ValueError])
+                print(eg)
+            """)
+
+    @skip_before((3, 11))
+    def test_exception_group_tuple_handler_type(self):
+        self.assert_passes("""
+            def capybara() -> None:
+                try:
+                    raise ExceptionGroup("boom", [ValueError(), TypeError()])
+                except* (ValueError, TypeError) as eg:
+                    assert_type(eg, ExceptionGroup[ValueError | TypeError])
+                print(eg)
+            """)
+
+    @skip_before((3, 11))
+    def test_base_exception_group_binding_type(self):
+        self.assert_passes("""
+            def capybara() -> None:
+                try:
+                    raise BaseExceptionGroup("boom", [KeyboardInterrupt()])
+                except* KeyboardInterrupt as eg:
+                    assert_type(eg, BaseExceptionGroup[KeyboardInterrupt])
+                print(eg)
+            """)
+
+    @skip_before((3, 11))
+    def test_except_star_rejects_exception_group_handler_type(self):
+        self.assert_passes("""
+            def capybara() -> None:
+                try:
+                    raise ExceptionGroup("boom", [ValueError()])
+                except* ExceptionGroup as eg:  # E: bad_except_handler
+                    print(eg)
+            """)
 
 
 class TestMustUse(TestNameCheckVisitorBase):
