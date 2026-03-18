@@ -147,3 +147,6 @@ class TestEnumName(TestNameCheckVisitorBase):
             capybara(r)  # E: incompatible_argument
             needs_str(r.name)  # OK
             capybara(r.name)
+            capybara("capybara")
+            capybara("agouti")
+            capybara("porcupine")  # E: incompatible_argument

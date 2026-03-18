@@ -41,7 +41,7 @@ from .value import (
 
 try:
     import annotated_types
-except ImportError:
+except ImportError:  # pragma: no cover
 
     def get_annotated_types_extension(obj: object) -> Iterable[CustomCheckExtension]:
         return []
@@ -121,14 +121,14 @@ class AnnotatedTypesCheck(PredicateCheck):
         return {}
 
     def predicate(self, value: Any) -> bool:
-        raise NotImplementedError
+        raise NotImplementedError  # pragma: no cover
 
     def is_compatible_metadata(self, metadata: PredicateCheck) -> bool:
         """Override this to allow metadata that is not exactly the same as the
         one in this object to match. For example, Gt(5) should accept Gt(4), as that
         is a strictly weaker condition.
         """
-        return False
+        return False  # pragma: no cover
 
     def can_assign_non_literal(self, value: Value) -> CanAssign:
         """Override this to allow some non-Literal values. For example, the
@@ -306,7 +306,9 @@ class Predicate(AnnotatedTypesCheck):
 
 def _min_len_of_value(val: Value) -> int | None:
     val = replace_fallback(val)
-    if isinstance(val, MultiValuedValue):
+    # Public assignability checks flatten top-level unions before they reach these
+    # helpers, but recursive IntersectionValue members can still include unions.
+    if isinstance(val, MultiValuedValue):  # pragma: no cover
         minima = [_min_len_of_value(subval) for subval in val.vals]
         if any(minimum is None for minimum in minima):
             return None
@@ -350,12 +352,14 @@ def _min_len_of_simple_value(val: SimpleType) -> int | None:
         ),
     ):
         return None
-    assert_never(val)
+    assert_never(val)  # pragma: no cover
 
 
 def _max_len_of_value(val: Value) -> int | None:
     val = replace_fallback(val)
-    if isinstance(val, MultiValuedValue):
+    # Public assignability checks flatten top-level unions before they reach these
+    # helpers, but recursive IntersectionValue members can still include unions.
+    if isinstance(val, MultiValuedValue):  # pragma: no cover
         maxima = [_max_len_of_value(subval) for subval in val.vals]
         if any(maximum is None for maximum in maxima):
             return None
@@ -413,4 +417,4 @@ def _max_len_of_simple_value(val: SimpleType) -> int | None:
         ),
     ):
         return None
-    assert_never(val)
+    assert_never(val)  # pragma: no cover

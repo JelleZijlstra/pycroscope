@@ -29,9 +29,20 @@ jobs:
           python-version: ${{ matrix.python-version }}
           allow-prereleases: true
       - name: install dependencies
+        if: matrix.python-version != '3.14'
         run: pip install .[tests,asynq,codemod] pytest
+      - name: install dependencies with coverage
+        if: matrix.python-version == '3.14'
+        run: pip install .[tests,asynq,codemod] pytest pytest-cov
       - name: test
+        if: matrix.python-version != '3.14'
         run: pytest pycroscope
+      - name: test with coverage
+        if: matrix.python-version == '3.14'
+        run: pytest --cov=pycroscope --cov-report=term-missing --cov-report=json:coverage.json pycroscope
+      - name: check pinned full coverage
+        if: matrix.python-version == '3.14'
+        run: python tools/check_full_coverage.py coverage.json tools/full_coverage_files.txt
 
   test-no-deps:
     runs-on: ubuntu-latest

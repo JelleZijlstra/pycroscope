@@ -1991,3 +1991,18 @@ class TestRegex(TestNameCheckVisitorBase):
         def capybara():
             f("x")
             f(r"[")  # E: invalid_regex
+
+    @assert_passes()
+    def test_extension_on_object_and_union(self):
+        from typing_extensions import Annotated, Literal
+
+        from pycroscope.extensions import ValidRegex
+
+        def f(x: Annotated[object, ValidRegex()]):
+            pass
+
+        def capybara(unannotated, bad: Literal["[", "("]):
+            f("x")
+            f(bad)  # E: invalid_regex
+            f(1)
+            f(unannotated)

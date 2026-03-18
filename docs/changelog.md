@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Run Python 3.14 CI tests with coverage reporting, and keep a pinned set of fully covered modules at 100% coverage so regressions in files like `annotated_types.py`, `regex_check.py`, and `type_evaluation.py` fail CI.
 - Add `pycroscope.get_mro()` and record value-level class MROs on type objects, so generic, tuple-subclass, namedtuple, and synthetic-class inheritance can now be inspected with preserved specialization.
 - Improve type-parameter scoping for nested classes, class-body aliases, and PEP 695 generic declarations, so out-of-scope or legacy type parameters are rejected more consistently without changing existing variance checks.
 - Improve tuple-subclass modeling so `NamedTuple` handling relies more on recorded class information, readonly-field enforcement stays consistent, and exact `tuple[...]` subclasses preserve tuple-style behavior more accurately.
