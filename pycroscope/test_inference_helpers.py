@@ -157,6 +157,52 @@ class TestAssertError(TestNameCheckVisitorBase):
             with assert_error():  # E: inference_failure
                 f(1)
 
+    @assert_passes()
+    def test_nested_control_flow(self) -> None:
+        from pycroscope.extensions import assert_error
+
+        def f(x: int) -> None:
+            pass
+
+        def capybara(flag: bool) -> None:
+            with assert_error():
+                if flag:
+                    f("x")
+                else:
+                    f("y")
+
+    @assert_passes()
+    def test_nested_with_block(self) -> None:
+        import contextlib
+
+        from typing_extensions import assert_type
+
+        from pycroscope.extensions import assert_error
+
+        def f(x: int) -> None:
+            pass
+
+        def capybara() -> None:
+            with assert_error():
+                with contextlib.nullcontext(None) as value:
+                    assert_type(value, None)
+                    f("x")
+
+    @assert_passes()
+    def test_multiple_errors_in_block(self) -> None:
+        from pycroscope.extensions import assert_error
+
+        def f(x: int) -> None:
+            pass
+
+        def g(x: str) -> None:
+            pass
+
+        def capybara() -> None:
+            with assert_error():
+                f("x")
+                g(1)
+
 
 class TestRevealLocals(TestNameCheckVisitorBase):
     @assert_passes()

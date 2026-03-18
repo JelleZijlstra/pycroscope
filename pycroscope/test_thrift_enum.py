@@ -84,3 +84,30 @@ class TestThriftEnum(TestNameCheckVisitorBase):
 
         def capybara(te: ThriftEnum):
             want_si(te)
+
+    @assert_passes()
+    def test_annotated_and_union_inputs(self):
+        from typing import Annotated
+
+        from typing_extensions import Literal
+
+        class ThriftEnum(object):
+            X = 0
+            Y = 1
+
+            _VALUES_TO_NAMES = {0: "X", 1: "Y"}
+            _NAMES_TO_VALUES = {"X": 0, "Y": 1}
+
+        def want_enum(e: ThriftEnum) -> None:
+            pass
+
+        def capybara(
+            i: int,
+            tagged: Annotated[int, "tag"],
+            maybe_good: Literal[0, 1],
+            maybe_bad: Literal[0, 2],
+        ) -> None:
+            want_enum(i)
+            want_enum(tagged)
+            want_enum(maybe_good)
+            want_enum(maybe_bad)  # E: incompatible_argument

@@ -267,6 +267,29 @@ class TestTypeIs(TestNameCheckVisitorBase):
                 assert_type(a, float)
 
     @assert_passes()
+    def testTypeIsCallableCompatibility(self):
+        from typing import Callable
+
+        from typing_extensions import TypeGuard, TypeIs
+
+        def is_int(a: object) -> TypeIs[int]:
+            return isinstance(a, int)
+
+        def is_str(a: object) -> TypeIs[str]:
+            return isinstance(a, str)
+
+        def is_guard_int(a: object) -> TypeGuard[int]:
+            return isinstance(a, int)
+
+        def needs_int_typeis(f: Callable[[object], TypeIs[int]]) -> None:
+            pass
+
+        def capybara() -> None:
+            needs_int_typeis(is_int)
+            needs_int_typeis(is_str)  # E: incompatible_argument
+            needs_int_typeis(is_guard_int)  # E: incompatible_argument
+
+    @assert_passes()
     def testTypeIsRequiresPositionalArgs(self):
         from typing_extensions import TypeIs, assert_type
 
