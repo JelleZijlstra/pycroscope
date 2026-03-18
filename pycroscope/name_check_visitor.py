@@ -728,6 +728,13 @@ class _AttrContext(CheckerAttrContext):
             root_value.typ, (type, str)
         ):
             synthetic_typ = root_value.typ
+        elif isinstance(root_value, TypeVarValue):
+            bound = replace_fallback(root_value.typevar_param.bound)
+            if isinstance(bound, GenericValue) and isinstance(bound.typ, (type, str)):
+                synthetic_typ = bound.typ
+                generic_args = bound.args
+            elif isinstance(bound, TypedValue) and isinstance(bound.typ, (type, str)):
+                synthetic_typ = bound.typ
         elif isinstance(root_value, KnownValue) and not isinstance(
             root_value.val, type
         ):
@@ -737,8 +744,7 @@ class _AttrContext(CheckerAttrContext):
         synthetic_class = self.checker.get_synthetic_class(synthetic_typ)
         tobj = self.checker.make_type_object(synthetic_typ)
         symbol = tobj.get_declared_symbol_from_mro(attr_name, self.checker)
-        should_bind = symbol is not None and symbol.is_method
-        if not should_bind:
+        if symbol is None or not symbol.is_method:
             return super().bind_synthetic_instance_attribute(attr_name, value)
         if synthetic_class is not None:
             if symbol is not None and symbol.is_classmethod:
@@ -746,9 +752,8 @@ class _AttrContext(CheckerAttrContext):
                 # synthetic attribute normalization; binding again drops one
                 # real parameter.
                 return super().bind_synthetic_instance_attribute(attr_name, value)
-            raw_attr = get_synthetic_member_initializer(synthetic_class, attr_name)
-            if raw_attr is not None:
-                raw_attr = replace_fallback(raw_attr)
+            if symbol is not None and symbol.initializer is not None:
+                raw_attr = replace_fallback(symbol.initializer)
                 if (
                     isinstance(raw_attr, GenericValue)
                     and raw_attr.typ in {classmethod, staticmethod}
@@ -14283,15 +14288,12 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             return None
         type_parameters = self.checker.get_type_parameters(synthetic_typ)
         synthetic_class = self.checker.get_synthetic_class(synthetic_typ)
+        tobj = self.checker.make_type_object(synthetic_typ)
         if not type_parameters and synthetic_class is not None:
             type_parameters = list(
                 self.checker._infer_synthetic_type_params(synthetic_class)
             )
-        has_explicit_class_getitem = (
-            synthetic_class is not None
-            and get_synthetic_member_initializer(synthetic_class, "__class_getitem__")
-            is not None
-        )
+        has_explicit_class_getitem = "__class_getitem__" in tobj.declared_symbols
         if (
             not type_parameters
             and not has_explicit_class_getitem
@@ -14984,6 +14986,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     def _check_deprecated_method_attribute(
         self, node: ast.Attribute, root_value: Value, attr_name: str
     ) -> None:
+        return
         message = self._method_deprecation_message(root_value, attr_name)
         if message is None:
             return

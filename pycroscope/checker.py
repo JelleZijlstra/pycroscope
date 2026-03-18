@@ -3291,15 +3291,16 @@ class CheckerAttrContext(AttrContext):
         return self.attr != "__call__"
 
     def bind_synthetic_instance_attribute(self, attr_name: str, value: Value) -> Value:
-        root_value = replace_fallback(self.root_value)
-        if isinstance(root_value, TypedValue) and isinstance(
-            root_value.typ, (type, str)
+        root_value = self.root_value
+        resolved_root_value = replace_fallback(root_value)
+        if isinstance(resolved_root_value, TypedValue) and isinstance(
+            resolved_root_value.typ, (type, str)
         ):
-            class_key = root_value.typ
-        elif isinstance(root_value, KnownValue) and not isinstance(
-            root_value.val, type
+            class_key = resolved_root_value.typ
+        elif isinstance(resolved_root_value, KnownValue) and not isinstance(
+            resolved_root_value.val, type
         ):
-            class_key = type(root_value.val)
+            class_key = type(resolved_root_value.val)
         else:
             return value
         tobj = self.checker.make_type_object(class_key)
@@ -3308,10 +3309,16 @@ class CheckerAttrContext(AttrContext):
             return value
         if symbol.is_staticmethod or symbol.is_classmethod:
             raw_attr = symbol.initializer
-            if raw_attr is not None and isinstance(value, CallableValue):
-                return self.checker._specialize_synthetic_classmethod(
-                    raw_attr, value, self_annotation_value=root_value
+            if raw_attr is not None:
+                normalized_attr = normalize_synthetic_descriptor_attribute(
+                    raw_attr,
+                    is_self_returning_classmethod=symbol.returns_self_on_class_access,
+                    unknown_descriptor_means_any=False,
                 )
+                if isinstance(normalized_attr, CallableValue):
+                    return self.checker._specialize_synthetic_classmethod(
+                        raw_attr, normalized_attr, self_annotation_value=root_value
+                    )
             return value
         signature = (
             value.signature
