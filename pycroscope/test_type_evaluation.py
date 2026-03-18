@@ -310,6 +310,38 @@ class TestTypeEvaluation(TestNameCheckVisitorBase):
         def capybara() -> None:
             linux_only()  # E: incompatible_call
 
+    @skip_if(sys.platform != "linux")
+    @assert_passes()
+    def test_platform_condition_error_details_on_linux(self):
+        import sys
+        from typing import Any
+
+        from pycroscope.extensions import evaluated, show_error
+
+        @evaluated
+        def linux_only():
+            if sys.platform == "linux":
+                show_error("linux only")
+                return Any
+            return int
+
+        @evaluated
+        def not_darwin():
+            if not (sys.platform == "darwin"):
+                show_error("not darwin")
+                return Any
+            return int
+
+        def linux_only():
+            raise NotImplementedError
+
+        def not_darwin():
+            raise NotImplementedError
+
+        def capybara() -> None:
+            linux_only()  # E: incompatible_call
+            not_darwin()  # E: incompatible_call
+
     @assert_passes()
     def test_version(self):
         import sys
