@@ -310,84 +310,6 @@ class TestTypeEvaluation(TestNameCheckVisitorBase):
         def capybara() -> None:
             linux_only()  # E: incompatible_call
 
-    @skip_if(sys.platform != "linux")
-    @assert_passes()
-    def test_platform_condition_error_details_on_linux(self):
-        import sys
-        from typing import Any
-
-        from pycroscope.extensions import evaluated, show_error
-
-        @evaluated
-        def linux_only():
-            if sys.platform == "linux":
-                show_error("linux only")
-                return Any
-            return int
-
-        @evaluated
-        def not_darwin():
-            if not (sys.platform == "darwin"):
-                show_error("not darwin")
-                return Any
-            return int
-
-        def linux_only():
-            raise NotImplementedError
-
-        def not_darwin():
-            raise NotImplementedError
-
-        def capybara() -> None:
-            linux_only()  # E: incompatible_call
-            not_darwin()  # E: incompatible_call
-
-    @assert_passes()
-    def test_platform_error(self):
-        import sys
-        from typing import Any
-
-        from pycroscope.extensions import evaluated, show_error
-
-        @evaluated
-        def not_on_mac():
-            if sys.platform == "darwin":
-                show_error("macOS unsupported")
-                return Any
-            return int
-
-        def not_on_mac():
-            raise NotImplementedError
-
-        def capybara() -> None:
-            if sys.platform == "darwin":
-                not_on_mac()  # E: incompatible_call
-            else:
-                assert_type(not_on_mac(), int)
-
-    @assert_passes()
-    def test_platform_detail_with_negation(self):
-        import sys
-        from typing import Any
-
-        from pycroscope.extensions import evaluated, show_error
-
-        @evaluated
-        def linux_only():
-            if not (sys.platform == "linux"):
-                show_error("linux only")
-                return Any
-            return int
-
-        def linux_only():
-            raise NotImplementedError
-
-        def capybara() -> None:
-            if sys.platform == "linux":
-                assert_type(linux_only(), int)
-            else:
-                linux_only()  # E: incompatible_call
-
     @assert_passes()
     def test_version(self):
         import sys
@@ -450,49 +372,6 @@ class TestTypeEvaluation(TestNameCheckVisitorBase):
 
         def capybara() -> None:
             no_new_python()  # E: incompatible_call
-
-    @assert_passes()
-    def test_version_detail_with_int_literal(self):
-        import sys
-        from typing import Any
-
-        from pycroscope.extensions import evaluated, show_error
-
-        @evaluated
-        def only_python_three():
-            if not (sys.version_info == 3):
-                show_error("python 3 only")
-                return Any
-            return int
-
-        def only_python_three():
-            raise NotImplementedError
-
-        def capybara() -> None:
-            only_python_three()  # E: incompatible_call
-
-    @assert_passes()
-    def test_version_error(self):
-        import sys
-        from typing import Any
-
-        from pycroscope.extensions import evaluated, show_error
-
-        @evaluated
-        def no_new_python():
-            if sys.version_info >= (3, 11):
-                show_error("Python too new")
-                return Any
-            return int
-
-        def no_new_python():
-            raise NotImplementedError
-
-        def capybara() -> None:
-            if sys.version_info >= (3, 11):
-                no_new_python()  # E: incompatible_call
-            else:
-                assert_type(no_new_python(), int)
 
     @assert_passes()
     def test_version_detail_with_int_literal(self):
