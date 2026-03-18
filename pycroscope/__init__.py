@@ -36,6 +36,7 @@ from . import (
     suggested_type,
     tests,
     type_object,
+    type_object_builder,
     typeshed,
     typevar,
     value,

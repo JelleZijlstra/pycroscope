@@ -25,7 +25,7 @@ from .value import (
     TypedValue,
     Value,
     annotate_value,
-    get_synthetic_member_value,
+    get_synthetic_member_initializer,
     replace_fallback,
 )
 
@@ -154,7 +154,7 @@ def apply_synthetic_attributes(
 
     if (
         semantics.slots is True
-        and get_synthetic_member_value(synthetic_class, "__slots__") is None
+        and get_synthetic_member_initializer(synthetic_class, "__slots__") is None
     ):
         slot_names = get_slot_names(synthetic_class)
         if slot_names is not None:
@@ -162,10 +162,13 @@ def apply_synthetic_attributes(
             merge_declared_symbol(
                 synthetic_class,
                 "__slots__",
-                ClassSymbol(slot_value, member_value=slot_value),
+                ClassSymbol(slot_value, initializer=slot_value),
             )
 
-    if get_synthetic_member_value(synthetic_class, "__dataclass_fields__") is None:
+    if (
+        get_synthetic_member_initializer(synthetic_class, "__dataclass_fields__")
+        is None
+    ):
         dataclass_fields_value = synthesize_dataclass_fields_attribute()
         merge_declared_symbol(
             synthetic_class,
@@ -173,11 +176,11 @@ def apply_synthetic_attributes(
             ClassSymbol(
                 dataclass_fields_value,
                 qualifiers=frozenset({Qualifier.ClassVar}),
-                member_value=dataclass_fields_value,
+                initializer=dataclass_fields_value,
             ),
         )
 
-    if get_synthetic_member_value(synthetic_class, "__init__") is None:
+    if get_synthetic_member_initializer(synthetic_class, "__init__") is None:
         init_value = get_synthetic_init_value(
             synthetic_class, get_field_parameters=get_field_parameters
         )
@@ -185,10 +188,10 @@ def apply_synthetic_attributes(
             merge_declared_symbol(
                 synthetic_class,
                 "__init__",
-                ClassSymbol(init_value, is_method=True, member_value=init_value),
+                ClassSymbol(init_value, is_method=True, initializer=init_value),
             )
 
-    if get_synthetic_member_value(synthetic_class, "__match_args__") is None:
+    if get_synthetic_member_initializer(synthetic_class, "__match_args__") is None:
         match_args_value = get_synthetic_match_args_value(
             synthetic_class, get_field_parameters=get_field_parameters
         )
@@ -196,16 +199,16 @@ def apply_synthetic_attributes(
             merge_declared_symbol(
                 synthetic_class,
                 "__match_args__",
-                ClassSymbol(match_args_value, member_value=match_args_value),
+                ClassSymbol(match_args_value, initializer=match_args_value),
             )
 
-    if get_synthetic_member_value(synthetic_class, "__hash__") is None:
+    if get_synthetic_member_initializer(synthetic_class, "__hash__") is None:
         hash_value = synthesize_dataclass_hash_attribute(semantics)
         if hash_value is not None:
             merge_declared_symbol(
                 synthetic_class,
                 "__hash__",
-                ClassSymbol(hash_value, is_method=True, member_value=hash_value),
+                ClassSymbol(hash_value, is_method=True, initializer=hash_value),
             )
 
 

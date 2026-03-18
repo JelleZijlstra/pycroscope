@@ -220,6 +220,21 @@ class TestAttributes(TestNameCheckVisitorBase):
         def use_it():
             assert_is_value(Unhashable().prop, AnyValue(AnySource.inference))
 
+    @assert_passes(run_in_both_module_modes=True)
+    def test_property_on_class_object(self):
+        from typing_extensions import assert_type
+
+        class Capybara:
+            @property
+            def p(self) -> int:
+                return 3
+
+        def use_it() -> None:
+            assert_type(Capybara().p, int)
+            prop: property = Capybara.p
+            prop2: int = Capybara.p  # E: incompatible_assignment
+            print(prop, prop2)
+
     @assert_passes()
     def test_tuple_subclass_with_getattr(self):
         # Inspired by pyspark.sql.types.Row

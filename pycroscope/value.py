@@ -483,6 +483,9 @@ class AnyValue(Value):
     ) -> CanAssignError | None:
         return None  # always overlaps
 
+    def substitute_typevars(self, typevars: TypeVarMap) -> "AnyValue":
+        return self
+
 
 UNRESOLVED_VALUE = AnyValue(AnySource.default)
 """The default instance of :class:`AnyValue`.
@@ -530,7 +533,7 @@ class PartialValue(Value):
     def get_type_value(self) -> Value:
         return self.runtime_value.get_type_value()
 
-    def substitute_typevars(self, typevars: TypeVarMap) -> Value:
+    def substitute_typevars(self, typevars: TypeVarMap) -> "PartialValue":
         return PartialValue(
             operation=self.operation,
             root=self.root.substitute_typevars(typevars),
@@ -568,7 +571,7 @@ class PartialCallValue(Value):
     def get_type_value(self) -> Value:
         return self.runtime_value.get_type_value()
 
-    def substitute_typevars(self, typevars: TypeVarMap) -> Value:
+    def substitute_typevars(self, typevars: TypeVarMap) -> "PartialCallValue":
         return PartialCallValue(
             callee=self.callee,
             arguments={
@@ -1283,7 +1286,7 @@ class UnboundMethodValue(Value):
             signature = signature.get_signature(ctx=ctx)
         return signature
 
-    def substitute_typevars(self, typevars: TypeVarMap) -> "Value":
+    def substitute_typevars(self, typevars: TypeVarMap) -> "UnboundMethodValue":
         return UnboundMethodValue(
             self.attr_name,
             self.composite.substitute_typevars(typevars),
@@ -1522,6 +1525,9 @@ class TypedValue(Value):
         else:
             return None
 
+    def substitute_typevars(self, typevars: TypeVarMap) -> "TypedValue":
+        return self
+
     def __str__(self) -> str:
         if self.literal_only:
             if self.typ is str:
@@ -1620,7 +1626,7 @@ class GenericValue(TypedValue):
         for arg in self.args:
             yield from arg.walk_values()
 
-    def substitute_typevars(self, typevars: TypeVarMap) -> Value:
+    def substitute_typevars(self, typevars: TypeVarMap) -> "GenericValue":
         new_args: list[Value] = []
         for arg in self.args:
             substituted = arg.substitute_typevars(typevars)
@@ -1734,7 +1740,7 @@ class SequenceValue(GenericValue):
             # Probably an unhashable object in a set.
             return SequenceValue(typ, members)
 
-    def substitute_typevars(self, typevars: TypeVarMap) -> Value:
+    def substitute_typevars(self, typevars: TypeVarMap) -> "SequenceValue":
         new_members: list[tuple[bool, Value]] = []
         for is_many, member in self.members:
             substituted = member.substitute_typevars(typevars)
@@ -1869,7 +1875,7 @@ class DictIncompleteValue(GenericValue):
             yield from pair.key.walk_values()
             yield from pair.value.walk_values()
 
-    def substitute_typevars(self, typevars: TypeVarMap) -> Value:
+    def substitute_typevars(self, typevars: TypeVarMap) -> "DictIncompleteValue":
         return DictIncompleteValue(
             self.typ, [pair.substitute_typevars(typevars) for pair in self.kv_pairs]
         )
@@ -2052,7 +2058,7 @@ class TypedDictValue(GenericValue):
             yield from entry.typ.walk_values()
 
 
-@dataclass(frozen=True)
+@dataclass(unsafe_hash=True)
 class SyntheticClassObjectValue(Value):
     """Represents a singleton class object that exists but has no runtime object."""
 
@@ -2087,9 +2093,8 @@ class SyntheticClassObjectValue(Value):
         default_factory=tuple, compare=False, hash=False, repr=False
     )
 
-    def substitute_typevars(self, typevars: TypeVarMap) -> Value:
+    def substitute_typevars(self, typevars: TypeVarMap) -> "SyntheticClassObjectValue":
         substituted = self.class_type.substitute_typevars(typevars)
-        assert isinstance(substituted, (TypedValue, TypedDictValue))
         return SyntheticClassObjectValue(
             self.name,
             substituted,
@@ -2139,9 +2144,9 @@ class SyntheticClassObjectValue(Value):
                         if symbol.property_info is not None
                         else None
                     ),
-                    member_value=(
-                        symbol.member_value.substitute_typevars(typevars)
-                        if symbol.member_value is not None
+                    initializer=(
+                        symbol.initializer.substitute_typevars(typevars)
+                        if symbol.initializer is not None
                         else None
                     ),
                     dataclass_field=(
@@ -2193,8 +2198,8 @@ class SyntheticClassObjectValue(Value):
             yield from symbol.typ.walk_values()
             if symbol.property_info is not None:
                 yield from symbol.property_info.walk_values()
-            if symbol.member_value is not None:
-                yield from symbol.member_value.walk_values()
+            if symbol.initializer is not None:
+                yield from symbol.initializer.walk_values()
             if symbol.dataclass_field is not None:
                 yield from symbol.dataclass_field.walk_values()
 
@@ -2256,7 +2261,7 @@ class AsyncTaskIncompleteValue(GenericValue):
         super().__init__(typ, (value,))
         self.value = value
 
-    def substitute_typevars(self, typevars: TypeVarMap) -> Value:
+    def substitute_typevars(self, typevars: TypeVarMap) -> "AsyncTaskIncompleteValue":
         return AsyncTaskIncompleteValue(
             self.typ, self.value.substitute_typevars(typevars)
         )
@@ -2284,7 +2289,7 @@ class CallableValue(TypedValue):
         super().__init__(fallback)
         self.signature = signature
 
-    def substitute_typevars(self, typevars: TypeVarMap) -> Value:
+    def substitute_typevars(self, typevars: TypeVarMap) -> "CallableValue":
         from .signature import keep_inferable_typevars_from_params
 
         return CallableValue(
@@ -4013,12 +4018,8 @@ def ordered_namedtuple_fields_from_synthetic(
             }
             local_fields.extend(
                 name
-                for name, _ in iter_synthetic_member_values(synthetic)
-                if not (
-                    synthetic.declared_symbols.get(name) is not None
-                    and synthetic.declared_symbols[name].is_method
-                )
-                and (not allowed_names or name in allowed_names)
+                for name, symbol in synthetic.declared_symbols.items()
+                if not symbol.is_method and (not allowed_names or name in allowed_names)
             )
             for name in allowed_names:
                 symbol = synthetic.declared_symbols.get(name)
@@ -4046,21 +4047,18 @@ def get_namedtuple_field_value_from_synthetic(
     from .annotations import type_from_runtime
 
     symbol = synthetic_class.declared_symbols.get(field_name)
-    if (
-        synthetic_class.namedtuple_info is not None
-        and symbol is not None
-        and not symbol.is_classvar
-        and not symbol.is_initvar
-        and not symbol.is_method
-    ):
-        return symbol.typ
-    field_value = get_synthetic_member_value(synthetic_class, field_name)
-    if field_value is not None and not (
-        synthetic_class.namedtuple_info is not None
-        and symbol is not None
-        and not symbol.is_method
-    ):
-        return field_value
+    if symbol is not None:
+        if (
+            synthetic_class.namedtuple_info is not None
+            and not symbol.is_classvar
+            and not symbol.is_initvar
+            and not symbol.is_method
+        ):
+            return symbol.typ
+        if symbol.initializer is not None and not (
+            synthetic_class.namedtuple_info is not None and not symbol.is_method
+        ):
+            return symbol.initializer
     runtime_class_value = synthetic_class.runtime_class
     if (
         isinstance(runtime_class_value, KnownValue)
@@ -4391,7 +4389,7 @@ class Qualifier(enum.Enum):
 
 @dataclass(frozen=True)
 class ClassSymbol:
-    typ: "Value"
+    typ: Value
     qualifiers: frozenset[Qualifier] = frozenset()
     is_instance_only: bool = False
     is_method: bool = False
@@ -4399,8 +4397,26 @@ class ClassSymbol:
     is_staticmethod: bool = False
     returns_self_on_class_access: bool = False
     property_info: PropertyInfo | None = None
-    member_value: "Value | None" = None
+    initializer: Value | None = None
     dataclass_field: DataclassFieldInfo | None = None
+
+    def __post_init__(self) -> None:
+        if self.is_classmethod or self.is_staticmethod:
+            assert self.is_method
+        if self.returns_self_on_class_access:
+            assert self.is_method
+        if self.property_info is not None:
+            assert not self.is_method
+            assert not self.is_classmethod
+            assert not self.is_staticmethod
+            assert not self.returns_self_on_class_access
+            assert self.initializer is None or _is_property_initializer(
+                self.initializer
+            )
+        if self.is_method:
+            assert self.initializer is not None
+            assert self.property_info is None
+            assert self.typ == self.initializer
 
     @property
     def is_classvar(self) -> bool:
@@ -4419,49 +4435,23 @@ class ClassSymbol:
         return self.property_info is not None
 
 
-def get_synthetic_member_value(
+def _is_property_initializer(value: Value) -> bool:
+    value = replace_fallback(value)
+    return (
+        isinstance(value, KnownValue)
+        and isinstance(value.val, property)
+        or isinstance(value, (TypedValue, GenericValue))
+        and value.typ is property
+    )
+
+
+def get_synthetic_member_initializer(
     synthetic_class: SyntheticClassObjectValue, name: str
 ) -> Value | None:
     symbol = synthetic_class.declared_symbols.get(name)
     if symbol is None:
         return None
-    return symbol.member_value
-
-
-def iter_synthetic_member_values(
-    synthetic_class: SyntheticClassObjectValue,
-) -> Iterator[tuple[str, Value]]:
-    for name, symbol in synthetic_class.declared_symbols.items():
-        if symbol.member_value is None:
-            continue
-        yield name, symbol.member_value
-
-
-def iter_synthetic_member_names(
-    synthetic_class: SyntheticClassObjectValue,
-) -> Iterator[str]:
-    for name, _ in iter_synthetic_member_values(synthetic_class):
-        yield name
-
-
-def iter_synthetic_dataclass_field_candidates(
-    synthetic_class: SyntheticClassObjectValue,
-) -> Iterator[tuple[str, Value, ClassSymbol | None, DataclassFieldInfo | None]]:
-    ordered_fields = list(synthetic_class.dataclass_field_order)
-    field_names = (
-        ordered_fields
-        if ordered_fields
-        else [
-            name
-            for name in iter_synthetic_member_names(synthetic_class)
-            if not (name.startswith("__") and name.endswith("__"))
-        ]
-    )
-    for name in field_names:
-        attr = get_synthetic_member_value(synthetic_class, name) or UNINITIALIZED_VALUE
-        symbol = synthetic_class.declared_symbols.get(name)
-        field = symbol.dataclass_field if symbol is not None else None
-        yield name, attr, symbol, field
+    return symbol.initializer
 
 
 @dataclass(frozen=True)

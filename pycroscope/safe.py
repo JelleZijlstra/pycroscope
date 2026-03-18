@@ -117,6 +117,7 @@ def is_namedtuple_class(value: object) -> typing_extensions.TypeIs[type]:
     )
 
 
+# TODO: why?
 def should_disable_runtime_call_for_namedtuple_class(value: type) -> bool:
     """Return whether runtime calls to this namedtuple class should be skipped."""
     annotations = safe_getattr(value, "__annotations__", None)

@@ -8,8 +8,6 @@ import ast
 import collections.abc
 import enum
 import inspect
-import itertools
-import sys
 import types
 from collections.abc import Callable, Generator, Iterable, Iterator, Sequence
 from contextlib import contextmanager
@@ -17,7 +15,7 @@ from dataclasses import InitVar, dataclass, field
 from dataclasses import replace as dataclass_replace
 from typing import TypeVar, cast
 
-from typing_extensions import assert_never
+import pycroscope
 
 from . import dataclass as dataclass_helpers
 from .annotations import type_from_runtime, type_from_value
@@ -33,7 +31,6 @@ from .node_visitor import Failure
 from .options import Options, PyObjectSequenceOption
 from .reexport import ImplicitReexportTracker
 from .safe import (
-    is_instance_of_typing_name,
     is_namedtuple_class,
     is_typing_name,
     safe_getattr,
@@ -58,12 +55,12 @@ from .signature import (
 from .stacked_scopes import Composite
 from .suggested_type import CallableTracker
 from .type_object import (
+    EXCLUDED_PROTOCOL_MEMBERS,
+    DataclassFieldRecord,
     TypeObject,
-    _add_runtime_declared_symbols,
-    _add_synthetic_declared_symbols,
-    _class_key_from_value,
-    get_mro,
+    class_keys_match,
     lookup_declared_symbol,
+    runtime_type_generic_alias,
 )
 from .typeshed import TypeshedFinder
 from .value import (
@@ -76,27 +73,22 @@ from .value import (
     CanAssignContext,
     CanAssignError,
     ClassSymbol,
+    DataclassFieldInfo,
     GenericValue,
-    HasAttrExtension,
-    IntersectionValue,
     KnownValue,
     KnownValueWithTypeVars,
     MultiValuedValue,
     ParamSpecParam,
     PartialValue,
     PartialValueOperation,
-    PredicateValue,
     SelfT,
     SequenceValue,
-    SimpleType,
     SubclassValue,
     SyntheticClassObjectValue,
-    SyntheticModuleValue,
     TypeAlias,
     TypeAliasValue,
     TypedDictValue,
     TypedValue,
-    TypeFormValue,
     TypeParam,
     TypeVarLike,
     TypeVarMap,
@@ -107,15 +99,12 @@ from .value import (
     UnboundMethodValue,
     Value,
     VariableNameValue,
-    annotate_value,
     flatten_values,
     get_namedtuple_field_value_from_synthetic,
-    get_synthetic_member_value,
+    get_synthetic_member_initializer,
     get_tv_map,
     has_any_base_value,
     is_union,
-    iter_synthetic_dataclass_field_candidates,
-    iter_synthetic_member_values,
     iter_type_params_in_value,
     ordered_namedtuple_fields_from_synthetic,
     replace_fallback,
@@ -148,93 +137,8 @@ class AdditionalBaseProviders(PyObjectSequenceOption[_BaseProvider]):
 
 @dataclass(frozen=True)
 class _DataclassFieldEntry:
-    field_name: str
     parameter: SigParameter
     is_initvar: bool
-
-
-def _runtime_type_generic_alias(typ: type) -> str:
-    return f"{typ.__module__}.{typ.__qualname__}"
-
-
-def _class_keys_match(left: type | str, right: type | str) -> bool:
-    if left == right:
-        return True
-    if isinstance(left, type) and isinstance(right, str):
-        return _runtime_type_generic_alias(left) == right
-    if isinstance(left, str) and isinstance(right, type):
-        return left == _runtime_type_generic_alias(right)
-    return False
-
-
-def _append_unique_class_key(keys: list[type | str], key: type | str) -> None:
-    if any(_class_keys_match(existing, key) for existing in keys):
-        return
-    keys.append(key)
-
-
-def _iter_base_type_values(
-    value: Value,
-    arg_spec_cache: ArgSpecCache | None,
-    seen_known_bases: frozenset[int] = frozenset(),
-) -> Iterator[TypedValue]:
-    value = replace_fallback(value)
-    if isinstance(value, MultiValuedValue):
-        for subval in value.vals:
-            yield from _iter_base_type_values(subval, arg_spec_cache, seen_known_bases)
-        return
-    if isinstance(value, IntersectionValue):
-        for subval in value.vals:
-            yield from _iter_base_type_values(subval, arg_spec_cache, seen_known_bases)
-        return
-    yield from _iter_base_type_values_from_simple(
-        value, arg_spec_cache, seen_known_bases
-    )
-
-
-def _iter_base_type_values_from_simple(
-    value: SimpleType,
-    arg_spec_cache: ArgSpecCache | None,
-    seen_known_bases: frozenset[int],
-) -> Iterator[TypedValue]:
-    if isinstance(value, KnownValue):
-        if arg_spec_cache is not None:
-            base_id = id(value.val)
-            if base_id in seen_known_bases:
-                return
-            yield from _iter_base_type_values(
-                arg_spec_cache._type_from_base(value.val),
-                arg_spec_cache,
-                seen_known_bases | {base_id},
-            )
-        elif isinstance(value.val, type):
-            yield TypedValue(value.val)
-        return
-    if isinstance(value, SyntheticClassObjectValue):
-        yield from _iter_base_type_values(
-            value.class_type, arg_spec_cache, seen_known_bases
-        )
-        return
-    if isinstance(value, TypedValue):
-        if isinstance(value.typ, (type, str)):
-            yield value
-        return
-    if isinstance(value, SubclassValue):
-        if isinstance(value.typ, TypedValue) and isinstance(value.typ.typ, (type, str)):
-            yield value.typ
-        return
-    if isinstance(
-        value,
-        (
-            AnyValue,
-            SyntheticModuleValue,
-            UnboundMethodValue,
-            TypeFormValue,
-            PredicateValue,
-        ),
-    ):
-        return
-    assert_never(value)
 
 
 def _replace_signature_return(
@@ -277,26 +181,15 @@ def _infer_type_params_from_signature(signature: MaybeSignature) -> list[TypePar
     return inferred
 
 
-def _default_type_argument_for_param(
-    type_param: TypeParam, substitutions: dict[TypeVarLike, Value], checker: "Checker"
-) -> Value:
-    if type_param.default is not None:
-        default = type_param.default
-        if isinstance(default, KnownValue):
-            default = type_from_runtime(
-                default.val, ctx=checker.arg_spec_cache.default_context
-            )
-        return default.substitute_typevars(substitutions)
-    return type_param_to_value(type_param)
-
-
 def _apply_type_parameter_defaults(
     type_params: Sequence[TypeParam], checker: "Checker"
 ) -> list[Value]:
     specialized: list[Value] = []
     substitutions: dict[TypeVarLike, Value] = {}
     for type_param in type_params:
-        value = _default_type_argument_for_param(type_param, substitutions, checker)
+        value = pycroscope.type_object_builder._default_type_argument_for_param(
+            type_param, substitutions, checker
+        )
         substitutions[type_param.typevar] = value
         specialized.append(value)
     return specialized
@@ -461,21 +354,9 @@ def _extract_generic_args_from_self_annotation(
     root = replace_fallback(annotation)
     if isinstance(root, SubclassValue):
         root = replace_fallback(root.typ)
-    if isinstance(root, GenericValue) and _class_keys_match(root.typ, class_type):
+    if isinstance(root, GenericValue) and class_keys_match(root.typ, class_type):
         return tuple(root.args)
     return None
-
-
-def _synthetic_dataclass_converter_input_types(
-    synthetic_class: SyntheticClassObjectValue,
-) -> dict[str, Value]:
-    converter_input_types: dict[str, Value] = {}
-    for field_name, symbol in synthetic_class.declared_symbols.items():
-        field = symbol.dataclass_field
-        if field is None or field.converter_input_type is None:
-            continue
-        converter_input_types[field_name] = field.converter_input_type
-    return converter_input_types
 
 
 def _signature_from_synthetic_attribute(
@@ -610,10 +491,10 @@ class Checker:
         try:
             in_cache = typ in self.type_object_cache
         except Exception:
-            return self._build_type_object(typ)
+            return pycroscope.type_object_builder.build_type_object(self, typ)
         if in_cache:
             return self.type_object_cache[typ]
-        type_object = self._build_type_object(typ)
+        type_object = pycroscope.type_object_builder.build_type_object(self, typ)
         self._sync_synthetic_class_type_object(typ, type_object)
         self.type_object_cache[typ] = type_object
         return type_object
@@ -639,16 +520,35 @@ class Checker:
         object.__setattr__(type_object, "declared_symbols", shared_declared_symbols)
         object.__setattr__(synthetic_class, "declared_symbols", shared_declared_symbols)
 
-    def _build_direct_declared_symbols(self, typ: type | str) -> dict[str, ClassSymbol]:
-        direct_symbols: dict[str, ClassSymbol] = {}
-        if isinstance(typ, type):
-            _add_runtime_declared_symbols(typ, direct_symbols)
+    def refresh_synthetic_type_object_metadata(self, typ: type | str) -> None:
         synthetic_class = self.get_synthetic_class(typ)
-        if synthetic_class is not None:
-            _add_synthetic_declared_symbols(
-                synthetic_class.declared_symbols, direct_symbols
-            )
-        return direct_symbols
+        keys: tuple[type | str, ...]
+        if synthetic_class is None:
+            keys = (typ,)
+        else:
+            class_type = synthetic_class.class_type
+            if isinstance(class_type, TypedValue):
+                keys = tuple(self._iter_generic_override_keys(class_type.typ))
+            else:
+                keys = (typ,)
+        for key in keys:
+            cached = self.type_object_cache.get(key)
+            if cached is None:
+                continue
+            rebuilt = pycroscope.type_object_builder.build_type_object(self, key)
+            self._sync_synthetic_class_type_object(key, rebuilt)
+            cached.mro = rebuilt.mro
+            cached.base_classes = rebuilt.base_classes
+            cached.declared_type_params = rebuilt.declared_type_params
+            cached.is_final = rebuilt.is_final
+            cached.is_protocol = rebuilt.is_protocol
+            cached.protocol_members = rebuilt.protocol_members
+            cached.declared_symbols = rebuilt.declared_symbols
+            cached.dataclass_fields = rebuilt.dataclass_fields
+            cached.virtual_bases = rebuilt.virtual_bases
+            cached.is_thrift_enum = rebuilt.is_thrift_enum
+            cached.is_universally_assignable = rebuilt.is_universally_assignable
+            cached._protocol_positive_cache.clear()
 
     def _namedtuple_field_value_for_type(
         self, typ: type | str, field_name: str
@@ -669,336 +569,6 @@ class Checker:
                 suppress_errors=True,
             )
         return AnyValue(AnySource.inference)
-
-    def _build_type_object(self, typ: type | super | str) -> TypeObject:
-        if isinstance(typ, str):
-            # Synthetic type
-            bases = self._get_typeshed_bases(typ)
-            synthetic_class = self.get_synthetic_class(typ)
-            direct_symbols = self._build_direct_declared_symbols(typ)
-            if self._arg_spec_cache is None:
-                declared_type_params = ()
-                mro = ()
-            else:
-                declared_type_params = tuple(self.get_type_parameters(typ))
-                mro = self._compute_type_object_mro(typ)
-            if synthetic_class is not None:
-                bases |= self._get_type_bases_from_synthetic_class(synthetic_class)
-            is_protocol = any(is_typing_name(base, "Protocol") for base in bases)
-            if is_protocol:
-                protocol_members = self._get_protocol_members(
-                    bases
-                ) | self._get_synthetic_protocol_members(typ)
-            else:
-                protocol_members = set()
-            return TypeObject(
-                typ,
-                mro,
-                bases,
-                declared_type_params=declared_type_params,
-                is_protocol=is_protocol,
-                protocol_members=protocol_members,
-                is_final=self.ts_finder.is_final(typ),
-                declared_symbols=direct_symbols,
-            )
-        elif isinstance(typ, super):
-            return TypeObject(
-                typ,
-                tuple(TypedValue(base) for base in get_mro(typ)),
-                self.get_additional_bases(typ),
-            )
-        else:
-            plugin_bases = self.get_additional_bases(typ)
-            typeshed_bases = self._get_recursive_typeshed_bases(typ)
-            additional_bases = plugin_bases | typeshed_bases
-            direct_symbols = self._build_direct_declared_symbols(typ)
-            if self._arg_spec_cache is None:
-                declared_type_params = ()
-                mro = ()
-            else:
-                declared_type_params = tuple(self.get_type_parameters(typ))
-                mro = self._compute_type_object_mro(typ)
-            # Is it marked as a protocol in stubs? If so, use the stub definition.
-            if self.ts_finder.is_protocol(typ):
-                return TypeObject(
-                    typ,
-                    mro,
-                    additional_bases,
-                    declared_type_params=declared_type_params,
-                    is_protocol=True,
-                    protocol_members=self._get_protocol_members(typeshed_bases),
-                    declared_symbols=direct_symbols,
-                )
-            # Is it a protocol at runtime?
-            if is_instance_of_typing_name(typ, "_ProtocolMeta") and safe_getattr(
-                typ, "_is_protocol", False
-            ):
-                bases = get_mro(typ)
-                members = set(
-                    itertools.chain.from_iterable(
-                        _extract_protocol_members(base) for base in bases
-                    )
-                )
-                members |= self._get_synthetic_protocol_members(typ)
-                return TypeObject(
-                    typ,
-                    mro,
-                    additional_bases,
-                    declared_type_params=declared_type_params,
-                    is_protocol=True,
-                    protocol_members=members,
-                    declared_symbols=direct_symbols,
-                )
-
-            is_final = self.ts_finder.is_final(typ)
-            return TypeObject(
-                typ,
-                mro,
-                additional_bases,
-                declared_type_params=declared_type_params,
-                is_final=is_final,
-                declared_symbols=direct_symbols,
-            )
-
-    def _get_recursive_typeshed_bases(self, typ: type | str) -> set[type | str]:
-        seen = set()
-        to_do = {typ}
-        result = set()
-        while to_do:
-            typ = to_do.pop()
-            if typ in seen:
-                continue
-            bases = self._get_typeshed_bases(typ)
-            result |= bases
-            to_do |= bases
-            seen.add(typ)
-        return result
-
-    def _get_typeshed_bases(self, typ: type | str) -> set[type | str]:
-        base_values = self.ts_finder.get_bases_recursively(typ)
-        return {
-            base_value.typ
-            for base in base_values
-            for base_value in _iter_base_type_values(base, self._arg_spec_cache)
-        }
-
-    def _get_protocol_members(self, bases: Iterable[type | str]) -> set[str]:
-        members = {
-            attr
-            for base in bases
-            for attr in self.ts_finder.get_all_attributes(base)
-            if attr != "__slots__"
-        }
-        for base in bases:
-            members |= self._get_synthetic_protocol_members(base)
-        return members
-
-    def _get_type_bases_from_synthetic_class(
-        self, synthetic_class: SyntheticClassObjectValue
-    ) -> set[type | str]:
-        return {
-            base_value.typ
-            for base in synthetic_class.base_classes
-            for base_value in _iter_base_type_values(base, self.arg_spec_cache)
-        }
-
-    def _get_direct_mro_base_keys(self, typ: type | str) -> list[type | str]:
-        direct_bases: list[type | str] = []
-        synthetic_class = self.get_synthetic_class(typ)
-        if synthetic_class is not None:
-            for base in synthetic_class.base_classes:
-                for base_value in _iter_base_type_values(base, self.arg_spec_cache):
-                    _append_unique_class_key(direct_bases, base_value.typ)
-        if not direct_bases and isinstance(typ, type):
-            for base in safe_getattr(typ, "__bases__", ()):
-                if isinstance(base, type):
-                    _append_unique_class_key(direct_bases, base)
-        elif synthetic_class is None:
-            stub_bases = self.ts_finder.get_bases_for_value(TypedValue(typ)) or []
-            for base in stub_bases:
-                for base_value in _iter_base_type_values(base, self.arg_spec_cache):
-                    _append_unique_class_key(direct_bases, base_value.typ)
-        if not direct_bases and typ is not object and typ != "builtins.object":
-            direct_bases.append(object)
-        return direct_bases
-
-    def _specialize_mro_base_value(
-        self,
-        base_key: type | str,
-        *,
-        generic_bases: GenericBases,
-        tuple_base: SequenceValue | None = None,
-    ) -> Value:
-        if tuple_base is not None and _class_keys_match(base_key, tuple):
-            return tuple_base
-        type_params = tuple(self.get_type_parameters(base_key))
-        if not type_params:
-            return TypedValue(base_key)
-        tv_map = generic_bases.get(base_key, {})
-        substitutions: dict[TypeVarLike, Value] = {}
-        args: list[Value] = []
-        for type_param in type_params:
-            arg = tv_map.get(type_param.typevar)
-            if arg is None:
-                arg = _default_type_argument_for_param(type_param, substitutions, self)
-            else:
-                arg = arg.substitute_typevars(substitutions)
-            if isinstance(type_param, ParamSpecParam):
-                arg = coerce_paramspec_specialization_to_input_sig(arg)
-            substitutions[type_param.typevar] = arg
-            args.append(arg)
-        if (
-            base_key is tuple
-            and len(args) == 1
-            and isinstance(args[0], SequenceValue)
-            and args[0].typ is tuple
-        ):
-            return args[0]
-        return GenericValue(base_key, args)
-
-    def _self_mro_value(
-        self,
-        typ: type | str,
-        *,
-        declared_type_params: Sequence[TypeParam],
-        direct_base_values: Sequence[Value],
-        tuple_base: SequenceValue | None,
-    ) -> Value:
-        if tuple_base is not None:
-            return tuple_base
-        if declared_type_params:
-            return GenericValue(
-                typ,
-                [
-                    type_param_to_value(type_param)
-                    for type_param in declared_type_params
-                ],
-            )
-        if len(direct_base_values) == 1 and isinstance(
-            direct_base_values[0], (GenericValue, SequenceValue)
-        ):
-            return direct_base_values[0]
-        return TypedValue(typ)
-
-    def _mro_substitution_map_for_base(
-        self, base_value: Value, type_params: Sequence[TypeParam]
-    ) -> dict[TypeVarLike, Value]:
-        if not type_params:
-            return {}
-        if isinstance(base_value, SequenceValue) and base_value.typ is tuple:
-            generic_args: Sequence[Value] = (base_value,)
-        elif isinstance(base_value, GenericValue):
-            generic_args = base_value.args
-        else:
-            generic_args = ()
-        specialized_args = self.arg_spec_cache._specialize_generic_type_params(
-            type_params, generic_args
-        )
-        substitutions: dict[TypeVarLike, Value] = {}
-        for type_param, arg in zip(type_params, specialized_args):
-            if isinstance(type_param, ParamSpecParam):
-                arg = coerce_paramspec_specialization_to_input_sig(arg)
-            substitutions[type_param.typevar] = arg.substitute_typevars(substitutions)
-        return substitutions
-
-    def _specialize_mro_tail_for_base(
-        self, base_value: Value, type_params: Sequence[TypeParam], tail: Sequence[Value]
-    ) -> tuple[Value, ...]:
-        substitutions = self._mro_substitution_map_for_base(base_value, type_params)
-        if not substitutions:
-            return tuple(tail)
-        return tuple(value.substitute_typevars(substitutions) for value in tail)
-
-    def _merge_mro_value_sequences(
-        self, sequences: Sequence[Sequence[Value]]
-    ) -> tuple[Value, ...]:
-        pending = [list(sequence) for sequence in sequences if sequence]
-        result: list[Value] = []
-        while pending:
-            candidate: Value | None = None
-            candidate_key: type | str | None = None
-            for sequence in pending:
-                head = sequence[0]
-                head_key = _class_key_from_value(head)
-                if head_key is None:
-                    continue
-                if any(
-                    any(
-                        tail_key is not None and _class_keys_match(head_key, tail_key)
-                        for tail_key in (
-                            _class_key_from_value(tail) for tail in other[1:]
-                        )
-                    )
-                    for other in pending
-                ):
-                    continue
-                candidate = head
-                candidate_key = head_key
-                break
-            if candidate is None:
-                candidate = pending[0][0]
-                candidate_key = _class_key_from_value(candidate)
-            result.append(candidate)
-            new_pending: list[list[Value]] = []
-            for sequence in pending:
-                if sequence and candidate_key is not None:
-                    head_key = _class_key_from_value(sequence[0])
-                    if head_key is not None and _class_keys_match(
-                        head_key, candidate_key
-                    ):
-                        sequence = sequence[1:]
-                elif sequence and sequence[0] == candidate:
-                    sequence = sequence[1:]
-                if sequence:
-                    new_pending.append(sequence)
-            pending = new_pending
-        return tuple(result)
-
-    def _compute_type_object_mro(
-        self, typ: type | str, *, seen: frozenset[type | str] = frozenset()
-    ) -> tuple[Value, ...]:
-        if typ in seen:
-            return ()
-        direct_base_keys = self._get_direct_mro_base_keys(typ)
-        declared_type_params = tuple(self.get_type_parameters(typ))
-        generic_bases = self._get_generic_bases_for_class_definition(typ)
-        tuple_base = self._namedtuple_tuple_base(typ)
-        if not direct_base_keys:
-            return (
-                self._self_mro_value(
-                    typ,
-                    declared_type_params=declared_type_params,
-                    direct_base_values=(),
-                    tuple_base=tuple_base,
-                ),
-            )
-        direct_base_values = [
-            self._specialize_mro_base_value(
-                base_key, generic_bases=generic_bases, tuple_base=tuple_base
-            )
-            for base_key in direct_base_keys
-        ]
-        sequences: list[tuple[Value, ...]] = [tuple(direct_base_values)]
-        next_seen = seen | {typ}
-        for base_key, base_value in zip(direct_base_keys, direct_base_values):
-            base_mro = self._compute_type_object_mro(base_key, seen=next_seen)
-            if base_mro:
-                tail = self._specialize_mro_tail_for_base(
-                    base_value, self.get_type_parameters(base_key), base_mro[1:]
-                )
-            else:
-                tail = ()
-            sequences.append((base_value, *tail))
-        merged = self._merge_mro_value_sequences(sequences)
-        self_value = self._self_mro_value(
-            typ,
-            declared_type_params=declared_type_params,
-            direct_base_values=direct_base_values,
-            tuple_base=tuple_base,
-        )
-        if merged and merged[0] == self_value:
-            return merged
-        return (self_value, *merged)
 
     def get_generic_bases(
         self, typ: type | str, generic_args: Sequence[Value] = ()
@@ -1047,37 +617,6 @@ class Checker:
         self._augment_namedtuple_generic_bases(typ, merged, substitution_map)
         return merged
 
-    def _get_generic_bases_for_class_definition(self, typ: type | str) -> GenericBases:
-        generic_bases = self.arg_spec_cache.get_generic_bases(typ, ())
-        synthetic_bases = self._get_synthetic_generic_bases(typ)
-        merged: _SyntheticGenericBases = {
-            base: dict(tv_map) for base, tv_map in generic_bases.items()
-        }
-        if synthetic_bases is None:
-            self._augment_namedtuple_generic_bases(typ, merged, {})
-            return merged
-
-        declared_type_params = self._get_synthetic_declared_type_params(typ)
-        substitution_map = {
-            type_param.typevar: type_param_to_value(type_param)
-            for type_param in declared_type_params
-        }
-        if declared_type_params:
-            merged.setdefault(typ, {})
-            direct_base_map: dict[TypeVarLike, Value] = merged[typ]
-            for type_param in declared_type_params:
-                direct_base_map[type_param.typevar] = substitution_map[
-                    type_param.typevar
-                ]
-        for base, tv_map in synthetic_bases.items():
-            substituted_tv_map = {
-                tv: value.substitute_typevars(substitution_map)
-                for tv, value in tv_map.items()
-            }
-            merged.setdefault(base, {}).update(substituted_tv_map)
-        self._augment_namedtuple_generic_bases(typ, merged, substitution_map)
-        return merged
-
     def get_type_parameters(self, typ: type | str) -> list[TypeParam]:
         declared_type_params = self._get_synthetic_declared_type_params(typ)
         if declared_type_params:
@@ -1095,15 +634,18 @@ class Checker:
         class_type = synthetic_class.class_type
         if not isinstance(class_type, TypedValue):
             return
+        if isinstance(class_type, TypedDictValue):
+            return
         typ = class_type.typ
         for key in self._iter_generic_override_keys(typ):
+            if key in self.synthetic_classes:
+                assert self.synthetic_classes[key] is synthetic_class, (
+                    f"Conflicting synthetic classes for key {key} "
+                    f"(from {synthetic_class.class_type}):"
+                    f" {self.synthetic_classes[key]} vs {synthetic_class}"
+                )
             self.synthetic_classes[key] = synthetic_class
-            self.type_object_cache.pop(key, None)
-        for key in self._iter_generic_override_keys(typ):
-            type_object = self.make_type_object(key)
-            object.__setattr__(
-                synthetic_class, "declared_symbols", type_object.declared_symbols
-            )
+        self.refresh_synthetic_type_object_metadata(typ)
 
     def get_synthetic_class(self, typ: type | str) -> SyntheticClassObjectValue | None:
         for key in self._iter_generic_override_keys(typ):
@@ -1137,7 +679,9 @@ class Checker:
     ) -> None:
         merged_generic_bases: _SyntheticGenericBases = {typ: {}}
         for base in base_values:
-            for converted in _iter_base_type_values(base, self.arg_spec_cache):
+            for converted in pycroscope.type_object_builder._iter_base_type_values(
+                base, self.arg_spec_cache
+            ):
                 base_typ = converted.typ
                 # Preserve direct synthetic bases even when we cannot infer a
                 # richer generic mapping for them (common for local synthetic
@@ -1163,8 +707,7 @@ class Checker:
         object.__setattr__(
             synthetic_class, "declared_type_params", tuple(declared_type_params)
         )
-        for key in self._iter_generic_override_keys(typ):
-            self.type_object_cache.pop(key, None)
+        self.refresh_synthetic_type_object_metadata(typ)
 
     def register_synthetic_protocol_members(
         self, typ: type | str, members: set[str]
@@ -1182,13 +725,13 @@ class Checker:
             if existing is None:
                 synthetic_class.declared_symbols[member] = ClassSymbol(
                     AnyValue(AnySource.inference),
-                    member_value=AnyValue(AnySource.inference),
+                    initializer=AnyValue(AnySource.inference),
                 )
 
     def _iter_generic_override_keys(self, typ: type | str) -> Iterator[type | str]:
         yield typ
         if isinstance(typ, type):
-            yield _runtime_type_generic_alias(typ)
+            yield runtime_type_generic_alias(typ)
 
     def _get_synthetic_generic_bases(
         self, typ: type | str
@@ -1278,7 +821,9 @@ class Checker:
 
         inherited_fields: list[str] = []
         for base in synthetic_class.base_classes:
-            for base_value in _iter_base_type_values(base, self.arg_spec_cache):
+            for base_value in pycroscope.type_object_builder._iter_base_type_values(
+                base, self.arg_spec_cache
+            ):
                 if isinstance(base_value.typ, type) and is_namedtuple_class(
                     base_value.typ
                 ):
@@ -1313,7 +858,9 @@ class Checker:
         ):
             return True
         for base in synthetic_class.base_classes:
-            for base_value in _iter_base_type_values(base, self.arg_spec_cache):
+            for base_value in pycroscope.type_object_builder._iter_base_type_values(
+                base, self.arg_spec_cache
+            ):
                 if isinstance(base_value.typ, type) and is_namedtuple_class(
                     base_value.typ
                 ):
@@ -1335,16 +882,6 @@ class Checker:
         if synthetic_class is not None and synthetic_class.declared_type_params:
             return tuple(synthetic_class.declared_type_params)
         return ()
-
-    def _get_synthetic_protocol_members(self, typ: type | str) -> set[str]:
-        synthetic_class = self.get_synthetic_class(typ)
-        if synthetic_class is None:
-            return set()
-        return {
-            member
-            for member in synthetic_class.declared_symbols
-            if member not in EXCLUDED_PROTOCOL_MEMBERS and member != "__slots__"
-        }
 
     def get_signature(
         self, obj: object, is_asynq: bool = False
@@ -2061,7 +1598,7 @@ class Checker:
         has_direct_new = new_symbol is not None and new_symbol.is_method
         if has_direct_new:
             method = (
-                get_synthetic_member_value(synthetic_class, "__new__")
+                get_synthetic_member_initializer(synthetic_class, "__new__")
                 or UNINITIALIZED_VALUE
             )
             if not isinstance(method, Value):
@@ -2161,7 +1698,7 @@ class Checker:
             return ()
         class_type = value.class_type.typ
         for method_name in ("__new__", "__init__"):
-            method_value = get_synthetic_member_value(value, method_name)
+            method_value = get_synthetic_member_initializer(value, method_name)
             if not isinstance(method_value, CallableValue):
                 continue
             signatures = (
@@ -2212,15 +1749,13 @@ class Checker:
 
         for base in value.base_classes:
             _record_type_params(base)
-        for _, attr in iter_synthetic_member_values(value):
-            _record_type_params(attr)
         return tuple(inferred)
 
     def _make_synthetic_constructor_instance_value(
         self, value: SyntheticClassObjectValue, *, apply_default_type_args: bool = True
     ) -> Value:
         if self._synthetic_class_has_any_base(value):
-            return self._make_synthetic_class_instance_value(value)
+            return value.class_type
         if isinstance(value.class_type, GenericValue):
             return value.class_type
         if isinstance(value.class_type, TypedValue):
@@ -2234,7 +1769,7 @@ class Checker:
                     else [type_param_to_value(type_param) for type_param in type_params]
                 )
                 return GenericValue(value.class_type.typ, args)
-        return self._make_synthetic_class_instance_value(value)
+        return value.class_type
 
     def _get_synthetic_constructor_method_signature(
         self,
@@ -2249,7 +1784,8 @@ class Checker:
     ) -> ConcreteSignature | None:
         if use_direct_method:
             method = (
-                get_synthetic_member_value(value, method_name) or UNINITIALIZED_VALUE
+                get_synthetic_member_initializer(value, method_name)
+                or UNINITIALIZED_VALUE
             )
             if not isinstance(method, Value):
                 return None
@@ -2345,7 +1881,7 @@ class Checker:
                     isinstance(return_value, TypedValue)
                     and return_value.typ == value.class_type.typ
                     and isinstance(bound_self_value, GenericValue)
-                    and _class_keys_match(bound_self_value.typ, value.class_type.typ)
+                    and class_keys_match(bound_self_value.typ, value.class_type.typ)
                     and any(
                         isinstance(arg, TypeVarValue) for arg in bound_self_value.args
                     )
@@ -2420,7 +1956,8 @@ class Checker:
         if isinstance(metaclass, SyntheticClassObjectValue):
             # Ignore the default metaclass call behavior; only use an explicit override.
             meta_call = (
-                get_synthetic_member_value(metaclass, "__call__") or UNINITIALIZED_VALUE
+                get_synthetic_member_initializer(metaclass, "__call__")
+                or UNINITIALIZED_VALUE
             )
             if meta_call is UNINITIALIZED_VALUE:
                 return None
@@ -2652,63 +2189,93 @@ class Checker:
             return []
         seen.add(value_id)
 
-        entries_by_field: dict[str, _DataclassFieldEntry] = {}
-        field_order: list[str] = []
-        if include_inherited:
-            for base in value.base_classes:
-                for inherited in self._iter_synthetic_dataclass_base_field_entries(
-                    base, seen=seen
-                ):
-                    if inherited.field_name not in entries_by_field:
-                        field_order.append(inherited.field_name)
-                    entries_by_field[inherited.field_name] = inherited
-
-        converter_input_types = _synthetic_dataclass_converter_input_types(value)
-        for name, attr, symbol, field_info in iter_synthetic_dataclass_field_candidates(
-            value
+        class_type = value.class_type
+        if not isinstance(class_type, TypedValue) or not isinstance(
+            class_type.typ, (type, str)
         ):
-            excluded = (
-                attr is UNINITIALIZED_VALUE
-                or symbol is not None
-                and (symbol.is_method or symbol.is_classvar)
-                or field_info is not None
-                and not field_info.init
-            )
-            if excluded:
-                entries_by_field.pop(name, None)
+            return []
+        field_records = self._get_ordered_synthetic_dataclass_field_records(
+            value, include_inherited=include_inherited
+        )
+
+        entries: list[_DataclassFieldEntry] = []
+        for record in field_records:
+            symbol = lookup_declared_symbol(class_type.typ, record.field_name, self)
+            if symbol is None:
                 continue
+            field_info = record.field_info
+            excluded = symbol.is_method or symbol.is_classvar or (not field_info.init)
+            if excluded:
+                continue
+            attr = symbol.initializer if symbol.initializer is not None else symbol.typ
             param_name = (
-                field_info.alias
-                if field_info is not None and field_info.alias is not None
-                else name
+                field_info.alias if field_info.alias is not None else record.field_name
             )
-            annotation = converter_input_types.get(name)
+            annotation = field_info.converter_input_type
             if annotation is None:
                 annotation = self._synthetic_dataclass_field_annotation(attr)
-            has_default = field_info is not None and field_info.has_default
+            has_default = field_info.has_default
             if isinstance(attr, KnownValue):
                 default: Value | None = attr if has_default else None
             else:
                 default = KnownValue(...) if has_default else None
-            if name not in field_order:
-                field_order.append(name)
-            entries_by_field[name] = _DataclassFieldEntry(
-                field_name=name,
-                parameter=SigParameter(
-                    param_name,
-                    (
-                        ParameterKind.KEYWORD_ONLY
-                        if field_info is not None and field_info.kw_only
-                        else ParameterKind.POSITIONAL_OR_KEYWORD
+            entries.append(
+                _DataclassFieldEntry(
+                    parameter=SigParameter(
+                        param_name,
+                        (
+                            ParameterKind.KEYWORD_ONLY
+                            if field_info.kw_only
+                            else ParameterKind.POSITIONAL_OR_KEYWORD
+                        ),
+                        default=default,
+                        annotation=annotation,
                     ),
-                    default=default,
-                    annotation=annotation,
-                ),
-                is_initvar=symbol is not None and symbol.is_initvar,
+                    is_initvar=symbol.is_initvar,
+                )
             )
-        return [
-            entries_by_field[name] for name in field_order if name in entries_by_field
-        ]
+        return entries
+
+    def _get_ordered_synthetic_dataclass_field_records(
+        self, value: SyntheticClassObjectValue, *, include_inherited: bool
+    ) -> tuple[DataclassFieldRecord, ...]:
+        ordered_names: list[str] = []
+        records_by_name: dict[str, DataclassFieldRecord] = {}
+        if include_inherited:
+            for base in value.base_classes:
+                for base_value in pycroscope.type_object_builder._iter_base_type_values(
+                    base, self.arg_spec_cache
+                ):
+                    for record in self.make_type_object(
+                        base_value.typ
+                    ).dataclass_fields:
+                        if record.field_name not in records_by_name:
+                            ordered_names.append(record.field_name)
+                        records_by_name[record.field_name] = record
+
+        local_field_names = value.dataclass_field_order
+        if not local_field_names:
+            local_field_names = tuple(
+                name
+                for name, symbol in value.declared_symbols.items()
+                if symbol.dataclass_field is not None
+            )
+        for field_name in local_field_names:
+            symbol = value.declared_symbols.get(field_name)
+            if symbol is None:
+                continue
+            record = DataclassFieldRecord(
+                field_name=field_name,
+                field_info=(
+                    symbol.dataclass_field
+                    if symbol.dataclass_field is not None
+                    else DataclassFieldInfo()
+                ),
+            )
+            if field_name not in records_by_name:
+                ordered_names.append(field_name)
+            records_by_name[field_name] = record
+        return tuple(records_by_name[name] for name in ordered_names)
 
     def _synthetic_dataclass_field_annotation(self, attr: Value) -> Value:
         ctx = CheckerAttrContext(
@@ -2858,18 +2425,6 @@ class Checker:
             ),
             impl=impl,
         )
-
-    def _iter_synthetic_dataclass_base_field_entries(
-        self, base: Value, *, seen: set[int]
-    ) -> list[_DataclassFieldEntry]:
-        for base_value in _iter_base_type_values(base, self.arg_spec_cache):
-            synthetic_base = self.get_synthetic_class(base_value.typ)
-            if synthetic_base is None or not synthetic_base.is_dataclass:
-                continue
-            return self._get_synthetic_dataclass_field_entries(
-                synthetic_base, include_inherited=True, seen=seen
-            )
-        return []
 
     def signature_from_value(
         self,
@@ -3168,7 +2723,7 @@ class Checker:
                 value.class_type.typ, allow_synthetic_type=True
             )
             if argspec is None:
-                init_attr = get_synthetic_member_value(value, "__init__")
+                init_attr = get_synthetic_member_initializer(value, "__init__")
                 if init_attr is not None:
                     init_sig = self.signature_from_value(init_attr)
                     if isinstance(init_sig, BoundMethodSignature):
@@ -3179,12 +2734,9 @@ class Checker:
                         )
                         if bound_init is not None:
                             return _replace_signature_return(
-                                bound_init,
-                                self._make_synthetic_class_instance_value(value),
+                                bound_init, value.class_type
                             )
-                return Signature.make(
-                    [ELLIPSIS_PARAM], self._make_synthetic_class_instance_value(value)
-                )
+                return Signature.make([ELLIPSIS_PARAM], value.class_type)
             return argspec
         elif isinstance(value, TypedValue):
             typ = value.typ
@@ -3193,7 +2745,7 @@ class Checker:
             if isinstance(typ, str):
                 synthetic_class = self.get_synthetic_class(typ)
                 if synthetic_class is not None:
-                    synthetic_call = get_synthetic_member_value(
+                    synthetic_call = get_synthetic_member_initializer(
                         synthetic_class, "__call__"
                     )
                     call_symbol = synthetic_class.declared_symbols.get("__call__")
@@ -3555,81 +3107,6 @@ class Checker:
     def _synthetic_class_has_any_base(self, value: SyntheticClassObjectValue) -> bool:
         return any(has_any_base_value(base) for base in value.base_classes)
 
-    def _make_synthetic_class_instance_value(
-        self, value: SyntheticClassObjectValue
-    ) -> Value:
-        metadata = [
-            HasAttrExtension(
-                KnownValue(name),
-                self._make_any_base_attribute(
-                    name,
-                    attr,
-                    self_annotation_value=value.class_type,
-                    is_staticmethod=(
-                        value.declared_symbols.get(name) is not None
-                        and value.declared_symbols[name].is_staticmethod
-                    ),
-                    is_classmethod=(
-                        value.declared_symbols.get(name) is not None
-                        and value.declared_symbols[name].is_classmethod
-                    ),
-                ),
-            )
-            for name, attr in iter_synthetic_member_values(value)
-            if not (
-                value.declared_symbols.get(name) is not None
-                and value.declared_symbols[name].is_initvar
-            )
-        ]
-        if self._synthetic_class_has_any_base(value):
-            instance: Value = AnyValue(AnySource.from_another)
-        else:
-            instance = value.class_type
-        if metadata:
-            return annotate_value(instance, metadata)
-        return instance
-
-    def _make_any_base_attribute(
-        self,
-        name: str,
-        attr: Value,
-        *,
-        self_annotation_value: Value | None = None,
-        is_staticmethod: bool = False,
-        is_classmethod: bool = False,
-    ) -> Value:
-        raw_attr = attr
-        attr = normalize_synthetic_descriptor_attribute(attr)
-        signature = (
-            attr.signature
-            if isinstance(attr, CallableValue)
-            else self.signature_from_value(attr)
-        )
-        if isinstance(signature, ConcreteSignature):
-            if is_staticmethod:
-                return (
-                    attr
-                    if isinstance(attr, CallableValue)
-                    else CallableValue(signature)
-                )
-            if is_classmethod:
-                return self._specialize_synthetic_classmethod(
-                    raw_attr,
-                    (
-                        attr
-                        if isinstance(attr, CallableValue)
-                        else CallableValue(signature)
-                    ),
-                    self_annotation_value=self_annotation_value,
-                )
-            maybe_bound = self._bind_synthetic_method(
-                signature, self_annotation_value=self_annotation_value
-            )
-            if maybe_bound is not None:
-                return CallableValue(maybe_bound)
-            return attr
-        return _normalize_synthetic_attribute(attr)
-
     def _bind_synthetic_method(
         self,
         signature: ConcreteSignature,
@@ -3675,13 +3152,6 @@ class Checker:
         inferred = {**inferred, SelfT: self_annotation_value}
         return CallableValue(normalized_attr.signature.substitute_typevars(inferred))
 
-    def is_synthetic_classmethod_attribute(
-        self, synthetic_class: SyntheticClassObjectValue, attr_name: str
-    ) -> bool:
-        return _is_synthetic_classmethod_attribute(
-            synthetic_class, attr_name, self, seen=set()
-        )
-
     def get_attribute_from_value(
         self, root_value: Value, attribute: str, *, prefer_typeshed: bool = False
     ) -> Value:
@@ -3715,92 +3185,6 @@ class Checker:
 
 def _is_dunder(name: str) -> bool:
     return name.startswith("__") and name.endswith("__")
-
-
-def _normalize_synthetic_attribute(attr: Value) -> Value:
-    if isinstance(attr, AnyValue) and attr.source is AnySource.explicit:
-        return AnyValue(AnySource.from_another)
-    if isinstance(attr, GenericValue):
-        new_args = tuple(_normalize_synthetic_attribute(arg) for arg in attr.args)
-        if new_args != attr.args:
-            return GenericValue(attr.typ, new_args)
-    if isinstance(attr, MultiValuedValue):
-        new_vals = tuple(_normalize_synthetic_attribute(val) for val in attr.vals)
-        if new_vals != tuple(attr.vals):
-            return unite_values(*new_vals)
-    return attr
-
-
-def _lookup_synthetic_declared_symbol(
-    synthetic_class: SyntheticClassObjectValue, attr_name: str, checker: Checker
-) -> ClassSymbol | None:
-    class_type = synthetic_class.class_type
-    if isinstance(class_type, TypedValue) and isinstance(class_type.typ, (type, str)):
-        return lookup_declared_symbol(class_type.typ, attr_name, checker)
-    return synthetic_class.declared_symbols.get(attr_name)
-
-
-def _is_synthetic_classmethod_attribute(
-    synthetic_class: SyntheticClassObjectValue,
-    attr_name: str,
-    checker: Checker,
-    *,
-    seen: set[int],
-) -> bool:
-    del seen
-    symbol = _lookup_synthetic_declared_symbol(synthetic_class, attr_name, checker)
-    return symbol is not None and symbol.is_classmethod
-
-
-EXCLUDED_PROTOCOL_MEMBERS: set[str] = {
-    "__abstractmethods__",
-    "__annotate__",
-    "__annotate_func__",
-    "__annotations__",
-    "__annotations_cache__",
-    "__dict__",
-    "__doc__",
-    "__init__",
-    "__new__",
-    "__module__",
-    "__parameters__",
-    "__slots__",
-    "__subclasshook__",
-    "__weakref__",
-    "_abc_impl",
-    "_abc_cache",
-    "_is_protocol",
-    "__next_in_mro__",
-    "_abc_generic_negative_cache_version",
-    "__orig_bases__",
-    "__args__",
-    "_abc_registry",
-    "__extra__",
-    "_abc_generic_negative_cache",
-    "__origin__",
-    "__tree_hash__",
-    "_gorg",
-    "_is_runtime_protocol",
-    "__protocol_attrs__",
-    "__callable_proto_members_only__",
-    "__non_callable_proto_members__",
-    "__static_attributes__",
-    "__firstlineno__",
-}
-
-
-def _extract_protocol_members(typ: type) -> set[str]:
-    if (
-        typ is object
-        or is_typing_name(typ, "Generic")
-        or is_typing_name(typ, "Protocol")
-    ):
-        return set()
-    members: set[str] = set(typ.__dict__) - EXCLUDED_PROTOCOL_MEMBERS
-    # Starting in 3.10 __annotations__ always exists on types
-    if sys.version_info >= (3, 10) or hasattr(typ, "__annotations__"):
-        members |= set(typ.__annotations__)
-    return members
 
 
 @dataclass
@@ -3856,34 +3240,34 @@ class CheckerAttrContext(AttrContext):
         return self.attr != "__call__"
 
     def bind_synthetic_instance_attribute(self, attr_name: str, value: Value) -> Value:
-        value = _normalize_synthetic_attribute(value)
-        root_value = replace_fallback(self.root_value)
-        synthetic_root: SyntheticClassObjectValue | None = None
-        if isinstance(root_value, GenericValue) and isinstance(
-            root_value.typ, (type, str)
+        root_value = self.root_value
+        resolved_root_value = replace_fallback(root_value)
+        if isinstance(resolved_root_value, TypedValue) and isinstance(
+            resolved_root_value.typ, (type, str)
         ):
-            synthetic_root = self.checker.get_synthetic_class(root_value.typ)
-        elif isinstance(root_value, TypedValue) and isinstance(
-            root_value.typ, (type, str)
+            class_key = resolved_root_value.typ
+        elif isinstance(resolved_root_value, KnownValue) and not isinstance(
+            resolved_root_value.val, type
         ):
-            synthetic_root = self.checker.get_synthetic_class(root_value.typ)
-        elif isinstance(root_value, KnownValue) and not isinstance(
-            root_value.val, type
-        ):
-            synthetic_root = self.checker.get_synthetic_class(type(root_value.val))
-        if synthetic_root is None:
+            class_key = type(resolved_root_value.val)
+        else:
             return value
-        symbol = _lookup_synthetic_declared_symbol(
-            synthetic_root, attr_name, self.checker
-        )
+        tobj = self.checker.make_type_object(class_key)
+        symbol = tobj.get_declared_symbol_from_mro(attr_name, self.checker)
         if symbol is None or not symbol.is_method:
             return value
         if symbol.is_staticmethod or symbol.is_classmethod:
-            raw_attr = get_synthetic_member_value(synthetic_root, attr_name)
-            if raw_attr is not None and isinstance(value, CallableValue):
-                return self.checker._specialize_synthetic_classmethod(
-                    raw_attr, value, self_annotation_value=root_value
+            raw_attr = symbol.initializer
+            if raw_attr is not None:
+                normalized_attr = normalize_synthetic_descriptor_attribute(
+                    raw_attr,
+                    is_self_returning_classmethod=symbol.returns_self_on_class_access,
+                    unknown_descriptor_means_any=False,
                 )
+                if isinstance(normalized_attr, CallableValue):
+                    return self.checker._specialize_synthetic_classmethod(
+                        raw_attr, normalized_attr, self_annotation_value=root_value
+                    )
             return value
         signature = (
             value.signature

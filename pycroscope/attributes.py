@@ -53,7 +53,11 @@ from .signature import (
     make_bound_method,
 )
 from .stacked_scopes import Composite
-from .type_object import lookup_declared_symbol, lookup_declared_symbol_with_owner
+from .type_object import (
+    _specialize_symbol_value_for_owner,
+    lookup_declared_symbol,
+    lookup_declared_symbol_with_owner,
+)
 from .value import (
     UNINITIALIZED_VALUE,
     AnnotatedValue,
@@ -90,7 +94,7 @@ from .value import (
     UnboundMethodValue,
     Value,
     annotate_value,
-    get_synthetic_member_value,
+    get_synthetic_member_initializer,
     has_any_base_value,
     replace_fallback,
     set_self,
@@ -520,6 +524,9 @@ def _get_attribute_from_synthetic_type(
         result, provider = _get_attribute_from_synthetic_type_bases(
             fq_name, generic_args, ctx
         )
+    if result is UNINITIALIZED_VALUE and synthetic_class is not None:
+        if _synthetic_class_has_any_base(synthetic_class):
+            return AnyValue(AnySource.from_another)
     result = _substitute_typevars(fq_name, generic_args, result, provider, ctx)
     result = _maybe_resolve_synthetic_property_attribute(result, ctx)
     result = set_self(result, ctx.get_self_value())
@@ -628,7 +635,7 @@ def _get_direct_attribute_from_synthetic_class(
     selected_name = _select_synthetic_attribute_name(self_value, attr_name)
     if _is_synthetic_initvar_attribute(self_value, selected_name):
         return UNINITIALIZED_VALUE
-    raw_value = get_synthetic_member_value(self_value, selected_name)
+    raw_value = get_synthetic_member_initializer(self_value, selected_name)
     if raw_value is None:
         return UNINITIALIZED_VALUE
     result = _normalize_synthetic_class_attribute(
@@ -646,19 +653,47 @@ def _get_direct_attribute_from_synthetic_instance(
     self_value: SyntheticClassObjectValue, attr_name: str, ctx: AttrContext
 ) -> Value:
     selected_name = _select_synthetic_attribute_name(self_value, attr_name)
-    direct = _get_direct_attribute_from_synthetic_class(self_value, attr_name, ctx)
-    if direct is not UNINITIALIZED_VALUE:
-        direct_value = replace_fallback(direct)
-        if isinstance(direct_value, AnnotatedValue):
-            direct_value = replace_fallback(direct_value.value)
-        if isinstance(direct_value, KnownValue) and isinstance(
-            direct_value.val, property
+    symbol = None
+    owner = None
+    class_type = self_value.class_type
+    can_assign_ctx = ctx.get_can_assign_context()
+    if (
+        can_assign_ctx is not None
+        and isinstance(class_type, TypedValue)
+        and isinstance(class_type.typ, (type, str))
+    ):
+        match = lookup_declared_symbol_with_owner(
+            class_type.typ, selected_name, can_assign_ctx
+        )
+        if match is not None:
+            owner, symbol = match
+    if symbol is None:
+        symbol = self_value.declared_symbols.get(selected_name)
+        if (
+            symbol is not None
+            and isinstance(class_type, TypedValue)
+            and isinstance(class_type.typ, (type, str))
         ):
-            return direct
-    symbol = self_value.declared_symbols.get(selected_name)
+            owner = class_type.typ
     if symbol is not None and symbol.property_info is not None:
         return symbol.property_info.getter_type
-    return direct
+    if (
+        symbol is not None
+        and symbol.is_instance_only
+        and not symbol.is_classvar
+        and not symbol.is_initvar
+        and not symbol.is_method
+    ):
+        if (
+            owner is not None
+            and isinstance(class_type, TypedValue)
+            and isinstance(class_type.typ, (type, str))
+        ):
+            return _specialize_symbol_value_for_owner(
+                class_type.typ, owner, symbol.typ, ctx
+            )
+        return symbol.typ
+    return _get_direct_attribute_from_synthetic_class(self_value, attr_name, ctx)
 
 
 def _select_synthetic_attribute_name(
@@ -1212,9 +1247,14 @@ def _get_runtime_attribute_from_synthetic_dataclass(
     selected_name = _select_synthetic_attribute_name(synthetic_class, ctx.attr)
     symbol = synthetic_class.declared_symbols.get(selected_name)
     if symbol is None or not symbol.is_method:
-        direct = _get_direct_attribute_from_synthetic_class(
-            synthetic_class, ctx.attr, ctx
-        )
+        if on_class:
+            direct = _get_direct_attribute_from_synthetic_class(
+                synthetic_class, ctx.attr, ctx
+            )
+        else:
+            direct = _get_direct_attribute_from_synthetic_instance(
+                synthetic_class, ctx.attr, ctx
+            )
         if direct is not UNINITIALIZED_VALUE:
             direct = _substitute_typevars(typ, generic_args, direct, typ, ctx)
             if on_class:

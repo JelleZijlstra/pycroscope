@@ -396,6 +396,21 @@ class TestImportFailureHandling(TestNameCheckVisitorBase):
         y.nonexistent_attribute
         z.nonexistent_attribute
 
+    @assert_passes(allow_import_failures=True)
+    def test_any_base_class_preserves_declared_method_type_after_import_failure(self):
+        from typing import Any
+
+        from typing_extensions import assert_type
+
+        class ClassA(Any):
+            def method1(self) -> int:
+                return 1
+
+        a = ClassA()
+        assert_type(a.method1(), int)
+        assert_type(a.method2(), Any)
+        assert_type(ClassA.method3(), Any)
+
     @assert_passes(run_in_both_module_modes=True)
     def test_typevar_annotations_after_import_failure(self):
         from typing import TypeVar
@@ -414,6 +429,37 @@ class TestImportFailureHandling(TestNameCheckVisitorBase):
         def capybara() -> None:
             assert_type(func3(TeamUser), TeamUser)
             type.unknown  # E: undefined_attribute
+
+    @assert_passes(allow_import_failures=True)
+    def test_forward_reference_to_later_dataclass_uses_instance_field_type(self):
+        from dataclasses import dataclass
+
+        from typing_extensions import assert_type
+
+        def f(symbol: "C") -> None:
+            assert_type(symbol.x, bool)
+            if not symbol.x:
+                pass
+
+        @dataclass(frozen=True)
+        class C:
+            x: bool = False
+
+    @assert_passes(allow_import_failures=True)
+    def test_forward_reference_to_later_dataclass_member_from_mapping(self):
+        from dataclasses import dataclass
+
+        from typing_extensions import assert_type
+
+        def f(symbols: dict[str, "C"]) -> None:
+            for symbol in symbols.values():
+                assert_type(symbol.is_method, bool)
+                if not symbol.is_method:
+                    pass
+
+        @dataclass(frozen=True)
+        class C:
+            is_method: bool = False
 
     @assert_passes()
     def test_generic_constructor_accepts_known_protocol_value(self):

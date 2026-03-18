@@ -1,6 +1,6 @@
 # static analysis: ignore
 from .test_name_check_visitor import TestNameCheckVisitorBase
-from .test_node_visitor import assert_passes
+from .test_node_visitor import assert_passes, skip_before
 from .value import AnySource, AnyValue, assert_is_value
 
 
@@ -64,6 +64,25 @@ class TestEnum(TestNameCheckVisitorBase):
         class Foo(enum.Enum):
             a = 1
             b = 1  # E: duplicate_enum_member
+
+    @skip_before((3, 11))
+    @assert_passes(run_in_both_module_modes=True)
+    def test_member_and_nonmember_helpers(self):
+        from enum import Enum, member, nonmember
+
+        from typing_extensions import Literal, assert_type
+
+        class Example(Enum):
+            a = member(1)
+            b = nonmember(2)
+
+            @member
+            def c(self) -> None:
+                raise NotImplementedError
+
+        assert_type(Example.a, Literal[Example.a])
+        x: int = Example.b
+        assert_type(Example.c, Literal[Example.c])
 
     @assert_passes()
     def test_value_assignment_with_nonstandard_receiver_name(self):

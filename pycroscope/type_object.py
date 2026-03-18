@@ -7,7 +7,7 @@ An object that represents a type.
 import collections.abc
 import inspect
 import sys
-from collections.abc import Mapping, Sequence
+from collections.abc import Sequence
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Literal
 from unittest import mock
@@ -15,9 +15,9 @@ from unittest import mock
 from typing_extensions import assert_never
 
 if sys.version_info >= (3, 14):
-    from annotationlib import Format, get_annotations
+    pass
 else:
-    from inspect import get_annotations
+    pass
 
 if TYPE_CHECKING:
     from .relations import Relation
@@ -34,14 +34,7 @@ from pycroscope.signature import (
     mark_ellipsis_style_any_tail_parameters,
 )
 
-from .annotations import _RuntimeAnnotationsContext, annotation_expr_from_runtime
-from .safe import (
-    is_namedtuple_class,
-    safe_getattr,
-    safe_in,
-    safe_isinstance,
-    safe_issubclass,
-)
+from .safe import safe_getattr, safe_in, safe_isinstance, safe_issubclass
 from .value import (
     UNINITIALIZED_VALUE,
     AnnotatedValue,
@@ -53,13 +46,13 @@ from .value import (
     CanAssignContext,
     CanAssignError,
     ClassSymbol,
+    DataclassFieldInfo,
     GenericValue,
     IntersectionValue,
     KnownValue,
     MultiValuedValue,
     PredicateValue,
     PropertyInfo,
-    Qualifier,
     SelfT,
     SequenceValue,
     SimpleType,
@@ -75,8 +68,6 @@ from .value import (
     Value,
     flatten_values,
     freshen_typevars_for_inference,
-    get_namedtuple_field_annotation,
-    get_synthetic_member_value,
     get_tv_map,
     replace_fallback,
     stringify_object,
@@ -84,6 +75,56 @@ from .value import (
     unify_bounds_maps,
     unite_values,
 )
+
+EXCLUDED_PROTOCOL_MEMBERS: set[str] = {
+    "__abstractmethods__",
+    "__annotate__",
+    "__annotate_func__",
+    "__annotations__",
+    "__annotations_cache__",
+    "__dict__",
+    "__doc__",
+    "__init__",
+    "__new__",
+    "__module__",
+    "__parameters__",
+    "__slots__",
+    "__subclasshook__",
+    "__weakref__",
+    "_abc_impl",
+    "_abc_cache",
+    "_is_protocol",
+    "__next_in_mro__",
+    "_abc_generic_negative_cache_version",
+    "__orig_bases__",
+    "__args__",
+    "_abc_registry",
+    "__extra__",
+    "_abc_generic_negative_cache",
+    "__origin__",
+    "__tree_hash__",
+    "_gorg",
+    "_is_runtime_protocol",
+    "__protocol_attrs__",
+    "__callable_proto_members_only__",
+    "__non_callable_proto_members__",
+    "__static_attributes__",
+    "__firstlineno__",
+}
+
+
+def runtime_type_generic_alias(typ: type) -> str:
+    return f"{typ.__module__}.{typ.__qualname__}"
+
+
+def class_keys_match(left: type | str, right: type | str) -> bool:
+    if left == right:
+        return True
+    if isinstance(left, type) and isinstance(right, str):
+        return runtime_type_generic_alias(left) == right
+    if isinstance(left, str) and isinstance(right, type):
+        return left == runtime_type_generic_alias(right)
+    return False
 
 
 def _as_concrete_signature(
@@ -98,9 +139,7 @@ def _as_concrete_signature(
 @dataclass(frozen=True)
 class _ResolvedMemberAccess:
     value: Value
-    is_classvar: bool
-    is_readonly: bool
-    is_method: bool
+    symbol: ClassSymbol
     is_property: bool
     property_has_setter: bool
 
@@ -117,10 +156,21 @@ def get_mro(typ: type | super) -> Sequence[type]:
         return []
 
 
-@dataclass
+MroValue = TypedValue | AnyValue
+
+
+@dataclass(frozen=True)
+class DataclassFieldRecord:
+    field_name: str
+    field_info: DataclassFieldInfo
+
+
+@dataclass(kw_only=True)
 class TypeObject:
     typ: type | super | str
-    mro: tuple[Value, ...]
+    mro: tuple[MroValue, ...]
+    """Types that we consider the type to inherit from for purposes of subtyping, but that
+    are not actual bases."""
     base_classes: set[type | str] = field(default_factory=set)
     declared_type_params: tuple[TypeParam, ...] = field(
         default_factory=tuple, repr=False
@@ -129,9 +179,12 @@ class TypeObject:
     is_protocol: bool = False
     protocol_members: set[str] = field(default_factory=set)
     declared_symbols: dict[str, ClassSymbol] = field(default_factory=dict, repr=False)
+    dataclass_fields: tuple[DataclassFieldRecord, ...] = field(
+        default_factory=tuple, repr=False
+    )
+    virtual_bases: list[MroValue] = field(default_factory=list)
     is_thrift_enum: bool = field(init=False)
     is_universally_assignable: bool = field(init=False)
-    artificial_bases: set[type] = field(default_factory=set, init=False)
     _protocol_positive_cache: dict[tuple[Value, Value], BoundsMap] = field(
         default_factory=dict, repr=False
     )
@@ -152,16 +205,30 @@ class TypeObject:
         self.is_thrift_enum = hasattr(self.typ, "_VALUES_TO_NAMES")
         self.base_classes |= set(get_mro(self.typ))
         if self.is_thrift_enum:
-            self.artificial_bases.add(int)
-        self.base_classes |= self.artificial_bases
+            self.base_classes.add(int)
+            self.virtual_bases.append(TypedValue(int))
 
-    def get_declared_symbol(
-        self, name: str, ctx: CanAssignContext
-    ) -> ClassSymbol | None:
+    def get_declared_symbol(self, name: str) -> ClassSymbol | None:
         return self.declared_symbols.get(name)
 
-    def get_declared_symbols(self, ctx: CanAssignContext) -> dict[str, ClassSymbol]:
+    def get_declared_symbols(self) -> dict[str, ClassSymbol]:
         return self.declared_symbols
+
+    # TODO: generic substitution; descriptors
+    def get_declared_symbol_from_mro(
+        self, name: str, ctx: CanAssignContext
+    ) -> ClassSymbol | None:
+        symbol = self.declared_symbols.get(name)
+        if symbol is not None:
+            return symbol
+        for mro_value in self.mro:
+            if isinstance(mro_value, AnyValue):
+                return None
+            type_obj = mro_value.get_type_object(ctx)
+            symbol = type_obj.declared_symbols.get(name)
+            if symbol is not None:
+                return symbol
+        return None
 
     def is_assignable_to_type(self, typ: type) -> bool:
         for base in self.base_classes:
@@ -255,10 +322,11 @@ class TypeObject:
                 return {}
             with ctx.assume_compatibility(self, other):
                 result = self._is_compatible_with_protocol(self_val, other_val, ctx)
-                if isinstance(result, CanAssignError) and other.artificial_bases:
-                    for base in other.artificial_bases:
+                if isinstance(result, CanAssignError) and other.virtual_bases:
+                    for base in other.virtual_bases:
+                        assert isinstance(base, TypedValue), (self, base)
                         subresult = self._is_compatible_with_protocol(
-                            self_val, TypedValue(base), ctx
+                            self_val, base, ctx
                         )
                         if not isinstance(subresult, CanAssignError):
                             result = subresult
@@ -305,10 +373,10 @@ class TypeObject:
         from .relations import Relation, has_relation
 
         other_basic = replace_fallback(other_val)
-        if isinstance(other_basic, (KnownValue, TypedValue, SubclassValue)):
-            other_type_obj = other_basic.get_type_object(ctx)
-        else:
-            other_type_obj = None
+        assert isinstance(
+            other_basic, (KnownValue, TypedValue, SubclassValue)
+        ), other_basic
+        other_type_obj = other_basic.get_type_object(ctx)
         other_type_key = _receiver_key_from_value(other_val)
 
         bounds_maps = []
@@ -319,10 +387,10 @@ class TypeObject:
             protocol_type_key = None
         if len(self.protocol_members) > 1:
             protocol_self_typevar_map = _collect_protocol_self_typevar_map(
-                protocol_type_key, self.protocol_members, other_val, ctx
+                self, self.protocol_members, other_val, ctx
             )
             actual_self_typevar_map = _collect_protocol_self_typevar_map(
-                other_type_key, self.protocol_members, other_val, ctx
+                other_type_obj, self.protocol_members, other_val, ctx
             )
         else:
             protocol_self_typevar_map = {}
@@ -341,16 +409,9 @@ class TypeObject:
             if member == "__call__":
                 expected = UNINITIALIZED_VALUE
                 if isinstance(self.typ, str):
-                    checker_ctx = safe_getattr(ctx, "checker", ctx)
-                    get_synthetic_class = safe_getattr(
-                        checker_ctx, "get_synthetic_class", None
-                    )
-                    if callable(get_synthetic_class):
-                        synthetic_class = get_synthetic_class(self.typ)
-                        if synthetic_class is not None:
-                            expected = ctx.get_attribute_from_value(
-                                synthetic_class, member
-                            )
+                    symbol = self.get_declared_symbol_from_mro(member, ctx)
+                    if symbol is not None:
+                        expected = symbol.typ
                 if expected is UNINITIALIZED_VALUE:
                     expected_signature = _as_concrete_signature(
                         ctx.signature_from_value(self_val), ctx
@@ -368,7 +429,7 @@ class TypeObject:
                 )
                 expected = expected.substitute_typevars({SelfT: other_val})
                 if other_type_obj is not None and other_type_obj.is_protocol:
-                    actual = _get_protocol_call_member_value(
+                    actual = _get_protocol_call_member_initializer(
                         other_type_obj.typ, other_val, ctx
                     )
                     if actual is UNINITIALIZED_VALUE:
@@ -446,11 +507,11 @@ class TypeObject:
                 can_assign = CanAssignError(f"{other_val} has no attribute {member!r}")
             else:
                 if _is_callable_member_value(expected, ctx):
-                    expected = _normalize_protocol_member_value_for_relation(
+                    expected = _normalize_protocol_initializer_for_relation(
                         expected, ctx, receiver=self_val
                     )
                 if _is_callable_member_value(actual, ctx):
-                    actual = _normalize_protocol_member_value_for_relation(
+                    actual = _normalize_protocol_initializer_for_relation(
                         actual, ctx, receiver=other_val
                     )
                 if not use_descriptor_rules:
@@ -458,34 +519,37 @@ class TypeObject:
                         expected, actual, Relation.ASSIGNABLE, ctx
                     )
                 else:
+                    actual_member_tobj = (
+                        ctx.make_type_object(other_type_key)
+                        if class_object_check and other_type_key is not None
+                        else other_type_obj
+                    )
                     expected_access = _resolve_member_access(
-                        protocol_type_key,
-                        self_val,
-                        member,
-                        expected,
-                        ctx,
+                        self,
+                        member=member,
+                        resolved_value=expected,
+                        ctx=ctx,
                         class_object_access=False,
                     )
                     actual_access = _resolve_member_access(
-                        other_type_key,
-                        other_val,
-                        member,
-                        actual,
-                        ctx,
+                        actual_member_tobj,
+                        member=member,
+                        resolved_value=actual,
+                        ctx=ctx,
                         class_object_access=class_object_check,
                     )
-                    if class_object_check and expected_access.is_classvar:
+                    if class_object_check and expected_access.symbol.is_classvar:
                         can_assign = CanAssignError(
                             f"Protocol member {member!r} is a ClassVar"
                         )
                     elif (
                         class_object_check
-                        and not expected_access.is_classvar
-                        and not expected_access.is_method
+                        and not expected_access.symbol.is_classvar
+                        and not expected_access.symbol.is_method
                         and not expected_access.is_property
                         and not _is_callable_member_value(expected_access.value, ctx)
                         and other_type_key is not None
-                        and not actual_access.is_classvar
+                        and not actual_access.symbol.is_classvar
                         and not _is_member_from_metaclass(other_type_key, member, ctx)
                     ):
                         can_assign = CanAssignError(
@@ -494,7 +558,8 @@ class TypeObject:
                     elif (
                         not class_object_check
                         and not is_dunder_member
-                        and expected_access.is_classvar != actual_access.is_classvar
+                        and expected_access.symbol.is_classvar
+                        != actual_access.symbol.is_classvar
                     ):
                         can_assign = CanAssignError(
                             f"ClassVar status of protocol member {member!r} conflicts"
@@ -503,10 +568,10 @@ class TypeObject:
                         expected_for_relation = expected_access.value
                         actual_for_relation = actual_access.value
                         expected_is_writable_data_member = (
-                            not expected_access.is_method
+                            not expected_access.symbol.is_method
                             and not expected_access.is_property
-                            and not expected_access.is_classvar
-                            and not expected_access.is_readonly
+                            and not expected_access.symbol.is_classvar
+                            and not expected_access.symbol.is_readonly
                             and not _is_callable_member_value(
                                 expected_access.value, ctx
                             )
@@ -518,13 +583,7 @@ class TypeObject:
                         if class_object_check:
                             expected_requires_writable = False
                         if expected_requires_writable and not _is_writable_member(
-                            actual_access.is_classvar,
-                            actual_access.is_method,
-                            actual_access.is_property,
-                            actual_access.property_has_setter,
-                            other_type_key,
-                            member,
-                            ctx,
+                            actual_access, tobj=other_type_obj, ctx=ctx
                         ):
                             can_assign = CanAssignError(
                                 f"Protocol member {member!r} is not writable"
@@ -535,13 +594,13 @@ class TypeObject:
                             )
                             if _is_callable_member_value(expected_for_relation, ctx):
                                 expected_for_relation = (
-                                    _normalize_protocol_member_value_for_relation(
+                                    _normalize_protocol_initializer_for_relation(
                                         expected_for_relation, ctx, receiver=self_val
                                     )
                                 )
                             if _is_callable_member_value(actual_for_relation, ctx):
                                 actual_for_relation = (
-                                    _normalize_protocol_member_value_for_relation(
+                                    _normalize_protocol_initializer_for_relation(
                                         actual_for_relation, ctx, receiver=other_val
                                     )
                                 )
@@ -663,66 +722,11 @@ class TypeObject:
         return [*members, *sorted(self.protocol_members - seen)]
 
 
-_CLASS_SYMBOL_ALLOWED_QUALIFIERS = frozenset(
-    {Qualifier.ClassVar, Qualifier.Final, Qualifier.ReadOnly, Qualifier.InitVar}
-)
-
-
-def _symbol_from_runtime_annotation(annotation: object, owner: type) -> ClassSymbol:
-    ctx = _RuntimeAnnotationsContext(owner)
-    with ctx.suppress_errors():
-        expr = annotation_expr_from_runtime(annotation, ctx=ctx)
-        typ, qualifiers = expr.maybe_unqualify(_CLASS_SYMBOL_ALLOWED_QUALIFIERS)
-    return ClassSymbol(
-        typ if typ is not None else AnyValue(AnySource.incomplete_annotation),
-        frozenset(qualifiers),
-    )
-
-
-def _value_from_runtime_annotation(annotation: object, owner: type) -> Value:
-    ctx = _RuntimeAnnotationsContext(owner)
-    with ctx.suppress_errors():
-        expr = annotation_expr_from_runtime(annotation, ctx=ctx)
-        typ, _ = expr.maybe_unqualify(set())
-    return typ if typ is not None else AnyValue(AnySource.incomplete_annotation)
-
-
-def _runtime_property_info(raw_value: property, owner: type) -> PropertyInfo:
-    getter_type: Value
-    if raw_value.fget is None:
-        getter_type = AnyValue(AnySource.inference)
-    else:
-        getter_annotations = safe_getattr(raw_value.fget, "__annotations__", None)
-        if isinstance(getter_annotations, Mapping) and "return" in getter_annotations:
-            getter_type = _value_from_runtime_annotation(
-                getter_annotations["return"], owner
-            )
-        else:
-            getter_type = AnyValue(AnySource.unannotated)
-
-    setter_type: Value | None = None
-    if raw_value.fset is not None:
-        try:
-            parameters = list(inspect.signature(raw_value.fset).parameters.values())
-        except Exception:
-            setter_type = AnyValue(AnySource.inference)
-        else:
-            value_param = parameters[1] if len(parameters) >= 2 else None
-            if value_param is None or value_param.annotation is inspect.Parameter.empty:
-                setter_type = AnyValue(AnySource.unannotated)
-            else:
-                setter_type = _value_from_runtime_annotation(
-                    value_param.annotation, owner
-                )
-
-    return PropertyInfo(getter_type=getter_type, setter_type=setter_type)
-
-
 def _prefer_existing_symbol_type(existing: Value, new: Value) -> bool:
     return isinstance(new, AnyValue) and new.source is AnySource.inference
 
 
-def _merge_symbol_member_value(
+def _merge_symbol_initializer(
     existing: Value | None, new: Value | None
 ) -> Value | None:
     if new is None:
@@ -747,7 +751,7 @@ def _merge_property_info(
             if _prefer_existing_symbol_type(existing.getter_type, new.getter_type)
             else new.getter_type
         ),
-        setter_type=_merge_symbol_member_value(existing.setter_type, new.setter_type),
+        setter_type=_merge_symbol_initializer(existing.setter_type, new.setter_type),
         getter_deprecation=new.getter_deprecation or existing.getter_deprecation,
         setter_deprecation=new.setter_deprecation or existing.setter_deprecation,
     )
@@ -773,9 +777,7 @@ def merge_declared_symbol(
             existing.returns_self_on_class_access or new.returns_self_on_class_access
         ),
         property_info=_merge_property_info(existing.property_info, new.property_info),
-        member_value=_merge_symbol_member_value(
-            existing.member_value, new.member_value
-        ),
+        initializer=_merge_symbol_initializer(existing.initializer, new.initializer),
         dataclass_field=(
             new.dataclass_field
             if new.dataclass_field is not None
@@ -784,155 +786,58 @@ def merge_declared_symbol(
     )
 
 
-def _runtime_declared_member_value(typ: type, name: str, raw_value: object) -> Value:
-    if isinstance(raw_value, property):
-        return KnownValue(raw_value)
-    try:
-        return KnownValue(getattr(typ, name))
-    except Exception:
-        return AnyValue(AnySource.inference)
-
-
-def _runtime_namedtuple_field_names(typ: type) -> tuple[str, ...]:
-    if not is_namedtuple_class(typ):
-        return ()
-    fields_obj = safe_getattr(typ, "_fields", None)
-    if not isinstance(fields_obj, tuple):
-        return ()
-    return tuple(name for name in fields_obj if isinstance(name, str))
-
-
-def _add_runtime_declared_symbols(typ: type, symbols: dict[str, ClassSymbol]) -> None:
-    class_dict = safe_getattr(typ, "__dict__", None)
-    namedtuple_fields = frozenset(_runtime_namedtuple_field_names(typ))
-    for name in namedtuple_fields:
-        raw_value = class_dict.get(name) if isinstance(class_dict, Mapping) else None
-        symbols[name] = ClassSymbol(
-            _value_from_runtime_annotation(
-                get_namedtuple_field_annotation(typ, name), typ
-            ),
-            frozenset({Qualifier.ReadOnly}),
-            is_instance_only=True,
-            property_info=(
-                _runtime_property_info(raw_value, typ)
-                if isinstance(raw_value, property)
-                else None
-            ),
-            member_value=_runtime_declared_member_value(typ, name, raw_value),
-        )
-    try:
-        if sys.version_info >= (3, 14):
-            annotations = get_annotations(typ, format=Format.FORWARDREF)
-        else:
-            annotations = get_annotations(typ)
-    except Exception:
-        annotations = safe_getattr(typ, "__annotations__", None)
-    if isinstance(annotations, Mapping):
-        for name, annotation in annotations.items():
-            if not isinstance(name, str):
-                continue
-            if name in namedtuple_fields:
-                continue
-            symbol = _symbol_from_runtime_annotation(annotation, typ)
-            is_instance_only = (
-                not symbol.is_classvar
-                and not symbol.is_initvar
-                and (not isinstance(class_dict, Mapping) or name not in class_dict)
-            )
-            symbols[name] = replace(symbol, is_instance_only=is_instance_only)
-    if isinstance(class_dict, Mapping):
-        for name, raw_value in class_dict.items():
-            if not isinstance(name, str):
-                continue
-            if name in namedtuple_fields:
-                continue
-            existing = symbols.get(name)
-            is_property = isinstance(raw_value, property)
-            is_staticmethod = isinstance(raw_value, staticmethod)
-            is_classmethod = isinstance(raw_value, classmethod)
-            is_method = (
-                (not is_property and (is_staticmethod or is_classmethod))
-                or inspect.isfunction(raw_value)
-                or inspect.ismethoddescriptor(raw_value)
-            )
-            symbols[name] = ClassSymbol(
-                (
-                    existing.typ
-                    if existing is not None
-                    else _runtime_declared_member_value(typ, name, raw_value)
-                ),
-                existing.qualifiers if existing is not None else frozenset(),
-                is_method=is_method,
-                is_classmethod=is_classmethod,
-                is_staticmethod=is_staticmethod,
-                property_info=(
-                    _runtime_property_info(raw_value, typ) if is_property else None
-                ),
-                member_value=_runtime_declared_member_value(typ, name, raw_value),
-            )
-
-
-def _add_synthetic_declared_symbols(
-    declared_symbols: Mapping[str, ClassSymbol], symbols: dict[str, ClassSymbol]
-) -> None:
-    for name, symbol in declared_symbols.items():
-        symbols[name] = merge_declared_symbol(symbols.get(name), symbol)
-
-
 def _is_writable_member(
-    is_classvar: bool,
-    is_method: bool,
-    is_property: bool,
-    property_has_setter: bool,
-    class_key: type | str | None,
-    member: str,
-    ctx: CanAssignContext,
+    resolved_access: _ResolvedMemberAccess, tobj: TypeObject, ctx: CanAssignContext
 ) -> bool:
-    if is_classvar or is_method:
+    if resolved_access.symbol.is_classvar or resolved_access.symbol.is_method:
         return False
-    if is_property:
-        return property_has_setter
-    return class_key is None or not _is_readonly_instance_member(class_key, member, ctx)
+    if resolved_access.is_property:
+        return resolved_access.property_has_setter
+    return not resolved_access.symbol.is_readonly and not _is_frozen_dataclass(
+        tobj, ctx
+    )
 
 
 def _resolve_member_access(
-    class_key: type | str | None,
-    owner_value: Value,
+    tobj: TypeObject,
+    *,
     member: str,
     resolved_value: Value,
     ctx: CanAssignContext,
-    *,
     class_object_access: bool,
 ) -> _ResolvedMemberAccess:
-    symbol = (
-        lookup_declared_symbol(class_key, member, ctx)
-        if class_key is not None
-        else None
-    )
-    is_classvar = symbol is not None and symbol.is_classvar
-    is_readonly = symbol is not None and symbol.is_readonly
-    is_declared_property = symbol is not None and symbol.is_property
-    if class_object_access:
+    symbol = tobj.get_declared_symbol_from_mro(member, ctx)
+    # TODO: this should be OK if our symbol tables are correct
+    # assert symbol is not None, f"Member {member!r} not found on {tobj}"
+    if symbol is None:
+        symbol = ClassSymbol(typ=resolved_value)
+    if class_object_access or isinstance(tobj.typ, super):
         property_getter, property_has_setter = None, False
     else:
         property_getter, property_has_setter = _get_property_member_value(
-            class_key, member, resolved_value, ctx
+            tobj.typ, member, resolved_value, ctx
         )
     is_property = property_getter is not None
-    if class_object_access and is_declared_property:
+    if class_object_access and symbol.is_property:
         is_property = False
-    is_method = not is_property and symbol is not None and symbol.is_method
-    if class_object_access and is_declared_property:
-        is_method = False
-    value = property_getter if property_getter is not None else resolved_value
+    if (
+        not class_object_access
+        and not symbol.is_classvar
+        and not is_property
+        and not symbol.is_method
+        and (symbol.initializer is None or symbol.typ != symbol.initializer)
+    ):
+        value = symbol.typ
+    else:
+        value = property_getter if property_getter is not None else resolved_value
     if (
         class_object_access
-        and is_declared_property
+        and symbol.is_property
         and not _is_property_marker_value(value)
     ):
         value = TypedValue(property)
     return _ResolvedMemberAccess(
-        value, is_classvar, is_readonly, is_method, is_property, property_has_setter
+        value, symbol, is_property=is_property, property_has_setter=property_has_setter
     )
 
 
@@ -995,25 +900,40 @@ def _typed_class_key(value: Value) -> list[type | str]:
     return []
 
 
-def _checker_ctx(ctx: CanAssignContext) -> object:
+def _checker_ctx(ctx: object) -> object:
     return safe_getattr(ctx, "checker", ctx)
 
 
 def _specialize_symbol_value_for_owner(
-    class_key: type | str, owner: type | str, value: Value, ctx: CanAssignContext
+    class_key: type | str, owner: type | str, value: Value, ctx: object
 ) -> Value:
+    def _get_substitutions(
+        get_generic_bases: object,
+    ) -> dict[TypeVarLike, Value] | None:
+        if not callable(get_generic_bases):
+            return None
+        try:
+            generic_bases = get_generic_bases(class_key)
+        except TypeError:
+            try:
+                generic_bases = get_generic_bases(class_key, ())
+            except Exception:
+                return None
+        except Exception:
+            return None
+        try:
+            return generic_bases.get(owner)
+        except Exception:
+            return None
+
     if owner == class_key:
         return value
-    get_generic_bases = safe_getattr(ctx, "get_generic_bases", None)
-    if not callable(get_generic_bases):
+    substitutions = _get_substitutions(safe_getattr(ctx, "get_generic_bases", None))
+    if substitutions is None:
         checker = _checker_ctx(ctx)
-        get_generic_bases = safe_getattr(checker, "get_generic_bases", None)
-    if not callable(get_generic_bases):
-        return value
-    try:
-        substitutions = get_generic_bases(class_key).get(owner)
-    except Exception:
-        return value
+        substitutions = _get_substitutions(
+            safe_getattr(checker, "get_generic_bases", None)
+        )
     if not substitutions:
         return value
     merged: dict[TypeVarLike, Value] = {}
@@ -1056,7 +976,7 @@ def _get_direct_symbol_for_class_key(
     type_object = _make_type_object_for_key(class_key, ctx)
     if type_object is None:
         return None
-    return type_object.get_declared_symbol(member, ctx)
+    return type_object.get_declared_symbol(member)
 
 
 def lookup_declared_symbol(
@@ -1181,19 +1101,15 @@ def _get_property_member_value(
     return _specialize_declared_property_value(class_key, member, resolved_value, ctx)
 
 
-def _is_readonly_instance_member(
-    class_key: type | str, member: str, ctx: CanAssignContext
-) -> bool:
-    if isinstance(class_key, type):
-        dataclass_params = safe_getattr(class_key, "__dataclass_params__", None)
+def _is_frozen_dataclass(tobj: TypeObject, ctx: CanAssignContext) -> bool:
+    if isinstance(tobj.typ, type):
+        dataclass_params = safe_getattr(tobj.typ, "__dataclass_params__", None)
         if safe_getattr(dataclass_params, "frozen", None) is True:
             return True
-    if is_readonly_annotated_member(class_key, member, ctx):
-        return True
-
-    synthetic = _get_synthetic_class_for_key(class_key, ctx)
-    if synthetic is not None and synthetic.dataclass_frozen is True:
-        return True
+    elif isinstance(tobj.typ, str):
+        synthetic = _get_synthetic_class_for_key(tobj.typ, ctx)
+        if synthetic is not None and synthetic.dataclass_frozen is True:
+            return True
     return False
 
 
@@ -1214,7 +1130,7 @@ def _is_callable_member_value(value: Value, ctx: CanAssignContext) -> bool:
     return isinstance(signature, (Signature, OverloadedSignature, BoundMethodSignature))
 
 
-def _normalize_protocol_member_value_for_relation(
+def _normalize_protocol_initializer_for_relation(
     value: Value, ctx: CanAssignContext, *, receiver: Value | None = None
 ) -> Value:
     signature = ctx.signature_from_value(value)
@@ -1401,7 +1317,7 @@ def _bind_protocol_call_expected(
     return value
 
 
-def _get_protocol_call_member_value(
+def _get_protocol_call_member_initializer(
     protocol_typ: type | super | str, self_value: Value, ctx: CanAssignContext
 ) -> Value:
     call_member = UNINITIALIZED_VALUE
@@ -1451,7 +1367,7 @@ def _mark_protocol_call_signature_tail(
 
 
 def _collect_protocol_self_typevar_map(
-    protocol_key: type | str | None,
+    tobj: TypeObject,
     protocol_members: set[str],
     receiver_value: Value,
     ctx: CanAssignContext,
@@ -1460,25 +1376,22 @@ def _collect_protocol_self_typevar_map(
 
     This propagates `self: T` constraints across protocol members.
     """
-    synthetic_class = None
-    if isinstance(protocol_key, str):
-        synthetic_class = _get_synthetic_class_for_key(protocol_key, ctx)
-        if synthetic_class is None:
-            return {}
-    elif not isinstance(protocol_key, type):
+    if not isinstance(tobj.typ, (type, str)):
         return {}
 
     tv_map: dict[TypeVarLike, Value] = {}
     for member in protocol_members:
         receiver_for_match = receiver_value
-        if synthetic_class is not None:
-            symbol = synthetic_class.declared_symbols.get(member)
-            raw_attr = (
-                symbol.typ
-                if symbol is not None and symbol.is_property
-                else get_synthetic_member_value(synthetic_class, member)
-                or UNINITIALIZED_VALUE
-            )
+        if isinstance(tobj.typ, str):
+            symbol = tobj.declared_symbols.get(member)
+            if symbol is None:
+                raw_attr = UNINITIALIZED_VALUE
+            elif symbol.is_property:
+                raw_attr = symbol.typ
+            elif symbol.initializer is not None:
+                raw_attr = symbol.initializer
+            else:
+                raw_attr = UNINITIALIZED_VALUE
             if raw_attr is UNINITIALIZED_VALUE:
                 continue
             raw_attr = replace_fallback(raw_attr)
@@ -1519,9 +1432,7 @@ def _collect_protocol_self_typevar_map(
                 if self_annotation is None:
                     continue
         else:
-            descriptor = inspect.getattr_static(
-                protocol_key, member, UNINITIALIZED_VALUE
-            )
+            descriptor = inspect.getattr_static(tobj.typ, member, UNINITIALIZED_VALUE)
             if descriptor is UNINITIALIZED_VALUE:
                 continue
             if isinstance(descriptor, property):

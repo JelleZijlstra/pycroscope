@@ -6,9 +6,9 @@ from .checker import Checker
 from .test_name_check_visitor import TestNameCheckVisitorBase
 from .test_node_visitor import assert_passes
 from .type_object import (
+    DataclassFieldRecord,
     TypeObject,
     _class_key_from_value,
-    _is_readonly_instance_member,
     _iter_base_keys,
     _should_use_permissive_dunder_hash,
     get_mro,
@@ -21,6 +21,8 @@ from .value import (
     AnyValue,
     CallableValue,
     ClassSymbol,
+    DataclassFieldInfo,
+    DataclassInfo,
     GenericValue,
     IntersectionValue,
     KnownValue,
@@ -48,16 +50,16 @@ def test_protocol_member_str_order_is_deterministic() -> None:
         def m(self) -> int: ...
 
     type_object = TypeObject(
-        HasMembers,
-        tuple(TypedValue(base) for base in get_mro(HasMembers)),
+        typ=HasMembers,
+        mro=tuple(TypedValue(base) for base in get_mro(HasMembers)),
         is_protocol=True,
         protocol_members={"m", "f"},
     )
     assert str(type_object).endswith("(Protocol with members 'f', 'm')")
 
     synthetic_protocol = TypeObject(
-        "synthetic.Protocol",
-        (TypedValue("synthetic.Protocol"), TypedValue(object)),
+        typ="synthetic.Protocol",
+        mro=(TypedValue("synthetic.Protocol"), TypedValue(object)),
         is_protocol=True,
         protocol_members={"m", "f"},
     )
@@ -131,37 +133,77 @@ def test_runtime_declared_symbol_uses_annotation_expr_parsing() -> None:
         attr: Annotated[ClassVar[ReadOnly[int]], "meta"]
 
     checker = Checker()
-    symbol = checker.make_type_object(Runtime).get_declared_symbol("attr", checker)
+    symbol = checker.make_type_object(Runtime).get_declared_symbol("attr")
     assert symbol is not None
     assert symbol.is_classvar
     assert symbol.is_readonly
     assert not symbol.is_instance_only
     assert symbol.typ == AnnotatedValue(TypedValue(int), [KnownValue("meta")])
+    assert symbol.initializer is None
 
 
-def test_synthetic_namedtuple_field_is_readonly_without_runtime_class() -> None:
+def test_runtime_type_object_tracks_dataclass_fields() -> None:
+    from dataclasses import InitVar, dataclass
+    from typing import ClassVar
+
+    @dataclass
+    class Base:
+        a: int
+
+    @dataclass
+    class Child(Base):
+        b: int
+        c: InitVar[str]
+        d: ClassVar[int] = 0
+
     checker = Checker()
-    synthetic = SyntheticClassObjectValue(
-        "Point",
-        TypedValue("mod.Point"),
-        base_classes=(TypedValue(tuple),),
-        namedtuple_info=NamedTupleInfo(
-            field_names=("x",), default_fields=(), has_namedtuple_marker_base=True
-        ),
+    assert checker.make_type_object(Child).dataclass_fields == (
+        DataclassFieldRecord("a", DataclassFieldInfo()),
+        DataclassFieldRecord("b", DataclassFieldInfo()),
+        DataclassFieldRecord("c", DataclassFieldInfo()),
+        DataclassFieldRecord("d", DataclassFieldInfo(has_default=True, kw_only=False)),
     )
-    synthetic.declared_symbols["x"] = ClassSymbol(
-        TypedValue(int),
-        frozenset({Qualifier.ReadOnly}),
-        is_instance_only=True,
-        member_value=TypedValue(int),
-    )
-    synthetic.declared_symbols["helper"] = ClassSymbol(
-        KnownValue(len), is_method=True, member_value=KnownValue(len)
-    )
-    checker.register_synthetic_class(synthetic)
 
-    assert _is_readonly_instance_member("mod.Point", "x", checker)
-    assert not _is_readonly_instance_member("mod.Point", "helper", checker)
+
+def test_synthetic_type_object_tracks_dataclass_fields_without_initializers() -> None:
+    checker = Checker()
+    dataclass_info = DataclassInfo(
+        init=True,
+        eq=True,
+        frozen=False,
+        unsafe_hash=False,
+        match_args=True,
+        order=False,
+        slots=False,
+        kw_only_default=False,
+        field_specifiers=(),
+    )
+    base = SyntheticClassObjectValue(
+        "Base",
+        TypedValue("mod.Base"),
+        dataclass_info=dataclass_info,
+        dataclass_field_order=("a",),
+        declared_symbols={
+            "a": ClassSymbol(TypedValue(int), dataclass_field=DataclassFieldInfo())
+        },
+    )
+    child = SyntheticClassObjectValue(
+        "Child",
+        TypedValue("mod.Child"),
+        base_classes=(TypedValue("mod.Base"),),
+        dataclass_info=dataclass_info,
+        dataclass_field_order=("b",),
+        declared_symbols={
+            "b": ClassSymbol(TypedValue(str), dataclass_field=DataclassFieldInfo())
+        },
+    )
+    checker.register_synthetic_class(base)
+    checker.register_synthetic_class(child)
+
+    assert checker.make_type_object("mod.Child").dataclass_fields == (
+        DataclassFieldRecord("a", DataclassFieldInfo()),
+        DataclassFieldRecord("b", DataclassFieldInfo()),
+    )
 
 
 def test_runtime_namedtuple_field_is_readonly() -> None:
@@ -171,7 +213,7 @@ def test_runtime_namedtuple_field_is_readonly() -> None:
         x: int
 
     checker = Checker()
-    symbol = checker.make_type_object(Point).get_declared_symbol("x", checker)
+    symbol = checker.make_type_object(Point).get_declared_symbol("x")
     assert symbol is not None
     assert symbol.is_readonly
 
@@ -183,17 +225,17 @@ def test_synthetic_declared_symbol_overrides_raw_attribute_value() -> None:
         TypedValue("mod.Impl"),
         declared_symbols={
             "attr": ClassSymbol(
-                TypedValue(object), is_instance_only=True, member_value=TypedValue(str)
+                TypedValue(object), is_instance_only=True, initializer=TypedValue(str)
             )
         },
     )
     checker.register_synthetic_class(synthetic)
 
-    symbol = checker.make_type_object("mod.Impl").get_declared_symbol("attr", checker)
+    symbol = checker.make_type_object("mod.Impl").get_declared_symbol("attr")
     assert symbol is not None
     assert symbol.is_instance_only
     assert symbol.typ == TypedValue(object)
-    assert symbol.member_value == TypedValue(str)
+    assert symbol.initializer == TypedValue(str)
 
 
 def test_type_object_declared_symbols_are_canonical_for_synthetic_class() -> None:
@@ -206,14 +248,14 @@ def test_type_object_declared_symbols_are_canonical_for_synthetic_class() -> Non
     checker.register_synthetic_class(synthetic)
 
     type_object = checker.make_type_object("mod.Impl")
-    first = type_object.get_declared_symbols(checker)
-    second = type_object.get_declared_symbols(checker)
+    first = type_object.get_declared_symbols()
+    second = type_object.get_declared_symbols()
     assert first is second
     assert synthetic.declared_symbols is first
 
     checker.register_synthetic_protocol_members("mod.Impl", {"extra"})
     assert "extra" in first
-    assert synthetic.declared_symbols is type_object.get_declared_symbols(checker)
+    assert synthetic.declared_symbols is type_object.get_declared_symbols()
 
 
 def test_runtime_type_object_tracks_declared_type_params_and_specialized_mro() -> None:
@@ -290,13 +332,13 @@ def test_synthetic_namedtuple_type_object_uses_specialized_tuple_mro() -> None:
         TypedValue(int),
         frozenset({Qualifier.ReadOnly}),
         is_instance_only=True,
-        member_value=TypedValue(int),
+        initializer=TypedValue(int),
     )
     synthetic.declared_symbols["y"] = ClassSymbol(
         TypedValue(str),
         frozenset({Qualifier.ReadOnly}),
         is_instance_only=True,
-        member_value=TypedValue(str),
+        initializer=TypedValue(str),
     )
     checker.register_synthetic_class(synthetic)
 
@@ -312,10 +354,10 @@ def test_direct_synthetic_declared_symbol_mutation_updates_type_object_view() ->
     checker.register_synthetic_class(synthetic)
 
     type_object = checker.make_type_object("mod.Impl")
-    assert type_object.get_declared_symbol("attr", checker) is None
+    assert type_object.get_declared_symbol("attr") is None
 
     synthetic.declared_symbols["attr"] = ClassSymbol(TypedValue(int))
-    symbol = type_object.get_declared_symbol("attr", checker)
+    symbol = type_object.get_declared_symbol("attr")
     assert symbol is not None
     assert symbol.typ == TypedValue(int)
 
@@ -337,10 +379,11 @@ def test_runtime_and_string_type_objects_share_declared_symbols() -> None:
         f"{Impl.__module__}.{Impl.__qualname__}"
     )
 
-    assert runtime_type_object.get_declared_symbols(
-        checker
-    ) is string_type_object.get_declared_symbols(checker)
-    assert runtime_type_object.get_declared_symbol("attr", checker) is not None
+    assert (
+        runtime_type_object.get_declared_symbols()
+        is string_type_object.get_declared_symbols()
+    )
+    assert runtime_type_object.get_declared_symbol("attr") is not None
 
 
 def test_inherited_symbol_lookup_respects_shadowing() -> None:
@@ -382,12 +425,12 @@ def test_runtime_declared_symbol_includes_plain_class_dict_entry() -> None:
         answer = 1
 
     checker = Checker()
-    symbol = checker.make_type_object(Meta).get_declared_symbol("answer", checker)
+    symbol = checker.make_type_object(Meta).get_declared_symbol("answer")
     assert symbol is not None
     assert not symbol.is_method
     assert not symbol.is_property
     assert symbol.typ == KnownValue(1)
-    assert symbol.member_value == KnownValue(1)
+    assert symbol.initializer == KnownValue(1)
 
 
 class TestNumerics(TestNameCheckVisitorBase):
@@ -439,6 +482,16 @@ class TestNumerics(TestNameCheckVisitorBase):
 
 
 class TestSyntheticType(TestNameCheckVisitorBase):
+    @assert_passes(run_in_both_module_modes=True)
+    def test_synthetic_namedtuple_field_is_readonly_without_runtime_class() -> None:
+        from typing import NamedTuple
+
+        class Point(NamedTuple):
+            x: int
+
+        def capybara(p: Point) -> None:
+            p.x = 42  # E: incompatible_assignment
+
     @assert_passes(run_in_both_module_modes=True)
     def test_inherited_generic_property_specializes_in_protocol_check(self):
         from typing import Generic, Protocol, TypeVar
