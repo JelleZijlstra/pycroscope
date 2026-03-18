@@ -3156,8 +3156,7 @@ class Checker:
             )
             if maybe_bound is not None:
                 return CallableValue(maybe_bound)
-            return attr
-        return _normalize_synthetic_attribute(attr)
+        return attr
 
     def _bind_synthetic_method(
         self,
@@ -3246,20 +3245,6 @@ def _is_dunder(name: str) -> bool:
     return name.startswith("__") and name.endswith("__")
 
 
-def _normalize_synthetic_attribute(attr: Value) -> Value:
-    if isinstance(attr, AnyValue) and attr.source is AnySource.explicit:
-        return AnyValue(AnySource.from_another)
-    if isinstance(attr, GenericValue):
-        new_args = tuple(_normalize_synthetic_attribute(arg) for arg in attr.args)
-        if new_args != attr.args:
-            return GenericValue(attr.typ, new_args)
-    if isinstance(attr, MultiValuedValue):
-        new_vals = tuple(_normalize_synthetic_attribute(val) for val in attr.vals)
-        if new_vals != tuple(attr.vals):
-            return unite_values(*new_vals)
-    return attr
-
-
 def _lookup_synthetic_declared_symbol(
     synthetic_class: SyntheticClassObjectValue, attr_name: str, checker: Checker
 ) -> ClassSymbol | None:
@@ -3334,7 +3319,6 @@ class CheckerAttrContext(AttrContext):
         return self.attr != "__call__"
 
     def bind_synthetic_instance_attribute(self, attr_name: str, value: Value) -> Value:
-        value = _normalize_synthetic_attribute(value)
         root_value = replace_fallback(self.root_value)
         synthetic_root: SyntheticClassObjectValue | None = None
         if isinstance(root_value, GenericValue) and isinstance(

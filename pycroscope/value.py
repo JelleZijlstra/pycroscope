@@ -4047,21 +4047,18 @@ def get_namedtuple_field_value_from_synthetic(
     from .annotations import type_from_runtime
 
     symbol = synthetic_class.declared_symbols.get(field_name)
-    if (
-        synthetic_class.namedtuple_info is not None
-        and symbol is not None
-        and not symbol.is_classvar
-        and not symbol.is_initvar
-        and not symbol.is_method
-    ):
-        return symbol.typ
-    field_value = get_synthetic_member_initializer(synthetic_class, field_name)
-    if field_value is not None and not (
-        synthetic_class.namedtuple_info is not None
-        and symbol is not None
-        and not symbol.is_method
-    ):
-        return field_value
+    if symbol is not None:
+        if (
+            synthetic_class.namedtuple_info is not None
+            and not symbol.is_classvar
+            and not symbol.is_initvar
+            and not symbol.is_method
+        ):
+            return symbol.typ
+        if symbol.initializer is not None and not (
+            synthetic_class.namedtuple_info is not None and not symbol.is_method
+        ):
+            return symbol.initializer
     runtime_class_value = synthetic_class.runtime_class
     if (
         isinstance(runtime_class_value, KnownValue)
@@ -4455,15 +4452,6 @@ def get_synthetic_member_initializer(
     if symbol is None:
         return None
     return symbol.initializer
-
-
-def iter_synthetic_member_initializers(
-    synthetic_class: SyntheticClassObjectValue,
-) -> Iterator[tuple[str, Value]]:
-    for name, symbol in synthetic_class.declared_symbols.items():
-        if symbol.initializer is None:
-            continue
-        yield name, symbol.initializer
 
 
 @dataclass(frozen=True)
