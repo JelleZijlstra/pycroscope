@@ -3286,9 +3286,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     def _get_direct_declared_symbol(
         self, class_key: type | str, attr_name: str
     ) -> ClassSymbol | None:
-        return self.checker.make_type_object(class_key).get_declared_symbol(
-            attr_name, self
-        )
+        return self.checker.make_type_object(class_key).get_declared_symbol(attr_name)
 
     def _is_direct_classvar_member(self, class_key: type | str, attr_name: str) -> bool:
         symbol = self._get_direct_declared_symbol(class_key, attr_name)
@@ -3344,7 +3342,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 attr_name, synthetic_class.name
             )
             for candidate in candidate_names:
-                symbol = direct_type_object.get_declared_symbol(candidate, self)
+                symbol = direct_type_object.get_declared_symbol(candidate)
                 if (
                     symbol is None
                     or not symbol.is_instance_only
@@ -16548,7 +16546,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         if self._is_class_object_attribute_root(root_value) is False:
             class_type = self.checker.make_type_object(class_key)
             if class_type.is_protocol:
-                if class_type.get_declared_symbol(node.attr, self) is None:
+                if class_type.get_declared_symbol(node.attr) is None:
                     self._show_error_if_checking(
                         node,
                         "Protocol members cannot be defined via assignment to self",

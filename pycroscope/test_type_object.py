@@ -134,7 +134,7 @@ def test_runtime_declared_symbol_uses_annotation_expr_parsing() -> None:
         attr: Annotated[ClassVar[ReadOnly[int]], "meta"]
 
     checker = Checker()
-    symbol = checker.make_type_object(Runtime).get_declared_symbol("attr", checker)
+    symbol = checker.make_type_object(Runtime).get_declared_symbol("attr")
     assert symbol is not None
     assert symbol.is_classvar
     assert symbol.is_readonly
@@ -239,7 +239,7 @@ def test_runtime_namedtuple_field_is_readonly() -> None:
         x: int
 
     checker = Checker()
-    symbol = checker.make_type_object(Point).get_declared_symbol("x", checker)
+    symbol = checker.make_type_object(Point).get_declared_symbol("x")
     assert symbol is not None
     assert symbol.is_readonly
 
@@ -257,7 +257,7 @@ def test_synthetic_declared_symbol_overrides_raw_attribute_value() -> None:
     )
     checker.register_synthetic_class(synthetic)
 
-    symbol = checker.make_type_object("mod.Impl").get_declared_symbol("attr", checker)
+    symbol = checker.make_type_object("mod.Impl").get_declared_symbol("attr")
     assert symbol is not None
     assert symbol.is_instance_only
     assert symbol.typ == TypedValue(object)
@@ -274,14 +274,14 @@ def test_type_object_declared_symbols_are_canonical_for_synthetic_class() -> Non
     checker.register_synthetic_class(synthetic)
 
     type_object = checker.make_type_object("mod.Impl")
-    first = type_object.get_declared_symbols(checker)
-    second = type_object.get_declared_symbols(checker)
+    first = type_object.get_declared_symbols()
+    second = type_object.get_declared_symbols()
     assert first is second
     assert synthetic.declared_symbols is first
 
     checker.register_synthetic_protocol_members("mod.Impl", {"extra"})
     assert "extra" in first
-    assert synthetic.declared_symbols is type_object.get_declared_symbols(checker)
+    assert synthetic.declared_symbols is type_object.get_declared_symbols()
 
 
 def test_runtime_type_object_tracks_declared_type_params_and_specialized_mro() -> None:
@@ -380,10 +380,10 @@ def test_direct_synthetic_declared_symbol_mutation_updates_type_object_view() ->
     checker.register_synthetic_class(synthetic)
 
     type_object = checker.make_type_object("mod.Impl")
-    assert type_object.get_declared_symbol("attr", checker) is None
+    assert type_object.get_declared_symbol("attr") is None
 
     synthetic.declared_symbols["attr"] = ClassSymbol(TypedValue(int))
-    symbol = type_object.get_declared_symbol("attr", checker)
+    symbol = type_object.get_declared_symbol("attr")
     assert symbol is not None
     assert symbol.typ == TypedValue(int)
 
@@ -405,10 +405,11 @@ def test_runtime_and_string_type_objects_share_declared_symbols() -> None:
         f"{Impl.__module__}.{Impl.__qualname__}"
     )
 
-    assert runtime_type_object.get_declared_symbols(
-        checker
-    ) is string_type_object.get_declared_symbols(checker)
-    assert runtime_type_object.get_declared_symbol("attr", checker) is not None
+    assert (
+        runtime_type_object.get_declared_symbols()
+        is string_type_object.get_declared_symbols()
+    )
+    assert runtime_type_object.get_declared_symbol("attr") is not None
 
 
 def test_inherited_symbol_lookup_respects_shadowing() -> None:
@@ -450,7 +451,7 @@ def test_runtime_declared_symbol_includes_plain_class_dict_entry() -> None:
         answer = 1
 
     checker = Checker()
-    symbol = checker.make_type_object(Meta).get_declared_symbol("answer", checker)
+    symbol = checker.make_type_object(Meta).get_declared_symbol("answer")
     assert symbol is not None
     assert not symbol.is_method
     assert not symbol.is_property

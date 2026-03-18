@@ -68,7 +68,6 @@ from .value import (
     Value,
     flatten_values,
     freshen_typevars_for_inference,
-    get_synthetic_member_initializer,
     get_tv_map,
     replace_fallback,
     stringify_object,
@@ -211,13 +210,23 @@ class TypeObject:
             self.base_classes.add(int)
             self.virtual_bases.append(TypedValue(int))
 
-    def get_declared_symbol(
-        self, name: str, ctx: CanAssignContext
-    ) -> ClassSymbol | None:
+    def get_declared_symbol(self, name: str) -> ClassSymbol | None:
         return self.declared_symbols.get(name)
 
-    def get_declared_symbols(self, ctx: CanAssignContext) -> dict[str, ClassSymbol]:
+    def get_declared_symbols(self) -> dict[str, ClassSymbol]:
         return self.declared_symbols
+
+    def get_declared_symbol_from_mro(
+        self, name: str, ctx: CanAssignContext
+    ) -> ClassSymbol | None:
+        for mro_value in self.mro:
+            if isinstance(mro_value, AnyValue):
+                return None
+            type_obj = mro_value.get_type_object(ctx)
+            symbol = type_obj.declared_symbols.get(name)
+            if symbol is not None:
+                return symbol
+        return None
 
     def is_assignable_to_type(self, typ: type) -> bool:
         for base in self.base_classes:
@@ -376,10 +385,10 @@ class TypeObject:
             protocol_type_key = None
         if len(self.protocol_members) > 1:
             protocol_self_typevar_map = _collect_protocol_self_typevar_map(
-                protocol_type_key, self.protocol_members, other_val, ctx
+                self, self.protocol_members, other_val, ctx
             )
             actual_self_typevar_map = _collect_protocol_self_typevar_map(
-                other_type_key, self.protocol_members, other_val, ctx
+                other_type_obj, self.protocol_members, other_val, ctx
             )
         else:
             protocol_self_typevar_map = {}
@@ -398,16 +407,9 @@ class TypeObject:
             if member == "__call__":
                 expected = UNINITIALIZED_VALUE
                 if isinstance(self.typ, str):
-                    checker_ctx = safe_getattr(ctx, "checker", ctx)
-                    get_synthetic_class = safe_getattr(
-                        checker_ctx, "get_synthetic_class", None
-                    )
-                    if callable(get_synthetic_class):
-                        synthetic_class = get_synthetic_class(self.typ)
-                        if synthetic_class is not None:
-                            expected = ctx.get_attribute_from_value(
-                                synthetic_class, member
-                            )
+                    symbol = self.get_declared_symbol_from_mro(member, ctx)
+                    if symbol is not None:
+                        expected = symbol.typ
                 if expected is UNINITIALIZED_VALUE:
                     expected_signature = _as_concrete_signature(
                         ctx.signature_from_value(self_val), ctx
@@ -969,7 +971,7 @@ def _get_direct_symbol_for_class_key(
     type_object = _make_type_object_for_key(class_key, ctx)
     if type_object is None:
         return None
-    return type_object.get_declared_symbol(member, ctx)
+    return type_object.get_declared_symbol(member)
 
 
 def lookup_declared_symbol(
@@ -1364,7 +1366,7 @@ def _mark_protocol_call_signature_tail(
 
 
 def _collect_protocol_self_typevar_map(
-    protocol_key: type | str | None,
+    tobj: TypeObject | None,
     protocol_members: set[str],
     receiver_value: Value,
     ctx: CanAssignContext,
@@ -1373,25 +1375,22 @@ def _collect_protocol_self_typevar_map(
 
     This propagates `self: T` constraints across protocol members.
     """
-    synthetic_class = None
-    if isinstance(protocol_key, str):
-        synthetic_class = _get_synthetic_class_for_key(protocol_key, ctx)
-        if synthetic_class is None:
-            return {}
-    elif not isinstance(protocol_key, type):
+    if tobj is None or not isinstance(tobj.typ, (type, str)):
         return {}
 
     tv_map: dict[TypeVarLike, Value] = {}
     for member in protocol_members:
         receiver_for_match = receiver_value
-        if synthetic_class is not None:
-            symbol = synthetic_class.declared_symbols.get(member)
-            raw_attr = (
-                symbol.typ
-                if symbol is not None and symbol.is_property
-                else get_synthetic_member_initializer(synthetic_class, member)
-                or UNINITIALIZED_VALUE
-            )
+        if isinstance(tobj.typ, str):
+            symbol = tobj.declared_symbols.get(member)
+            if symbol is None:
+                raw_attr = UNINITIALIZED_VALUE
+            elif symbol.is_property:
+                raw_attr = symbol.typ
+            elif symbol.initializer is not None:
+                raw_attr = symbol.initializer
+            else:
+                raw_attr = UNINITIALIZED_VALUE
             if raw_attr is UNINITIALIZED_VALUE:
                 continue
             raw_attr = replace_fallback(raw_attr)
@@ -1432,9 +1431,7 @@ def _collect_protocol_self_typevar_map(
                 if self_annotation is None:
                     continue
         else:
-            descriptor = inspect.getattr_static(
-                protocol_key, member, UNINITIALIZED_VALUE
-            )
+            descriptor = inspect.getattr_static(tobj.typ, member, UNINITIALIZED_VALUE)
             if descriptor is UNINITIALIZED_VALUE:
                 continue
             if isinstance(descriptor, property):
