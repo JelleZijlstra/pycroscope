@@ -218,6 +218,9 @@ class TypeObject:
     def get_declared_symbol_from_mro(
         self, name: str, ctx: CanAssignContext
     ) -> ClassSymbol | None:
+        symbol = self.declared_symbols.get(name)
+        if symbol is not None:
+            return symbol
         for mro_value in self.mro:
             if isinstance(mro_value, AnyValue):
                 return None
@@ -516,6 +519,11 @@ class TypeObject:
                         expected, actual, Relation.ASSIGNABLE, ctx
                     )
                 else:
+                    actual_member_tobj = (
+                        ctx.make_type_object(other_type_key)
+                        if class_object_check and other_type_key is not None
+                        else other_type_obj
+                    )
                     expected_access = _resolve_member_access(
                         self,
                         member=member,
@@ -524,7 +532,7 @@ class TypeObject:
                         class_object_access=False,
                     )
                     actual_access = _resolve_member_access(
-                        other_type_obj,
+                        actual_member_tobj,
                         member=member,
                         resolved_value=actual,
                         ctx=ctx,
