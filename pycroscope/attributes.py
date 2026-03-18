@@ -53,7 +53,11 @@ from .signature import (
     make_bound_method,
 )
 from .stacked_scopes import Composite
-from .type_object import lookup_declared_symbol, lookup_declared_symbol_with_owner
+from .type_object import (
+    _specialize_symbol_value_for_owner,
+    lookup_declared_symbol,
+    lookup_declared_symbol_with_owner,
+)
 from .value import (
     UNINITIALIZED_VALUE,
     AnnotatedValue,
@@ -650,6 +654,7 @@ def _get_direct_attribute_from_synthetic_instance(
 ) -> Value:
     selected_name = _select_synthetic_attribute_name(self_value, attr_name)
     symbol = None
+    owner = None
     class_type = self_value.class_type
     can_assign_ctx = ctx.get_can_assign_context()
     if (
@@ -657,9 +662,19 @@ def _get_direct_attribute_from_synthetic_instance(
         and isinstance(class_type, TypedValue)
         and isinstance(class_type.typ, (type, str))
     ):
-        symbol = lookup_declared_symbol(class_type.typ, selected_name, can_assign_ctx)
+        match = lookup_declared_symbol_with_owner(
+            class_type.typ, selected_name, can_assign_ctx
+        )
+        if match is not None:
+            owner, symbol = match
     if symbol is None:
         symbol = self_value.declared_symbols.get(selected_name)
+        if (
+            symbol is not None
+            and isinstance(class_type, TypedValue)
+            and isinstance(class_type.typ, (type, str))
+        ):
+            owner = class_type.typ
     if symbol is not None and symbol.property_info is not None:
         return symbol.property_info.getter_type
     if (
@@ -669,6 +684,14 @@ def _get_direct_attribute_from_synthetic_instance(
         and not symbol.is_initvar
         and not symbol.is_method
     ):
+        if (
+            owner is not None
+            and isinstance(class_type, TypedValue)
+            and isinstance(class_type.typ, (type, str))
+        ):
+            return _specialize_symbol_value_for_owner(
+                class_type.typ, owner, symbol.typ, ctx
+            )
         return symbol.typ
     return _get_direct_attribute_from_synthetic_class(self_value, attr_name, ctx)
 

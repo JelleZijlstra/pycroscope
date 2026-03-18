@@ -784,6 +784,8 @@ def merge_declared_symbol(
             else existing.dataclass_field
         ),
     )
+
+
 def _is_writable_member(
     resolved_access: _ResolvedMemberAccess, tobj: TypeObject, ctx: CanAssignContext
 ) -> bool:
@@ -905,18 +907,33 @@ def _checker_ctx(ctx: CanAssignContext) -> object:
 def _specialize_symbol_value_for_owner(
     class_key: type | str, owner: type | str, value: Value, ctx: CanAssignContext
 ) -> Value:
+    def _get_substitutions(
+        get_generic_bases: object,
+    ) -> dict[TypeVarLike, Value] | None:
+        if not callable(get_generic_bases):
+            return None
+        try:
+            generic_bases = get_generic_bases(class_key)
+        except TypeError:
+            try:
+                generic_bases = get_generic_bases(class_key, ())
+            except Exception:
+                return None
+        except Exception:
+            return None
+        try:
+            return generic_bases.get(owner)
+        except Exception:
+            return None
+
     if owner == class_key:
         return value
-    get_generic_bases = safe_getattr(ctx, "get_generic_bases", None)
-    if not callable(get_generic_bases):
+    substitutions = _get_substitutions(safe_getattr(ctx, "get_generic_bases", None))
+    if substitutions is None:
         checker = _checker_ctx(ctx)
-        get_generic_bases = safe_getattr(checker, "get_generic_bases", None)
-    if not callable(get_generic_bases):
-        return value
-    try:
-        substitutions = get_generic_bases(class_key).get(owner)
-    except Exception:
-        return value
+        substitutions = _get_substitutions(
+            safe_getattr(checker, "get_generic_bases", None)
+        )
     if not substitutions:
         return value
     merged: dict[TypeVarLike, Value] = {}
