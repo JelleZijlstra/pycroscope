@@ -149,6 +149,11 @@ implicit_any = true
 [tool.ruff]
 line-length = 100
 
+[tool.pytest.ini_options]
+filterwarnings = [
+  "error::DeprecationWarning",
+]
+
 [tool.ruff.lint]
 select = [
   "F",

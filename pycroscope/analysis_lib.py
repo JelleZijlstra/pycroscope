@@ -212,16 +212,14 @@ def object_from_string(object_reference: str) -> object:
         raise ValueError(f"Could not find object {object_reference}")
 
 
-def get_subclasses_recursively(cls: type[T]) -> set[type[T]]:
+def get_subclasses_recursively(cls: type[T]) -> tuple[type[T], ...]:
     """Returns all subclasses of a class recursively."""
-    all_subclasses = set()
+    all_subclasses_by_id: dict[int, type[T]] = {}
     for subcls in type.__subclasses__(cls):
-        try:
-            all_subclasses.add(subcls)
-        except TypeError:
-            pass  # Ignore unhashable classes
-        all_subclasses.update(get_subclasses_recursively(subcls))
-    return all_subclasses
+        all_subclasses_by_id.setdefault(id(subcls), subcls)
+        for nested_subcls in get_subclasses_recursively(subcls):
+            all_subclasses_by_id.setdefault(id(nested_subcls), nested_subcls)
+    return tuple(all_subclasses_by_id.values())
 
 
 def is_cython_class(cls: type[object]) -> bool:

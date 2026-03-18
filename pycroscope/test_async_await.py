@@ -1,4 +1,6 @@
 # static analysis: ignore
+import pytest
+
 from .test_name_check_visitor import TestNameCheckVisitorBase
 from .test_node_visitor import assert_passes, only_before
 from .tests import make_simple_sequence
@@ -10,6 +12,11 @@ from .value import (
     SequenceValue,
     TypedValue,
     assert_is_value,
+)
+
+_IGNORE_ASYNCIO_COROUTINE_WARNING = pytest.mark.filterwarnings(
+    'ignore:"@coroutine" decorator is deprecated since Python 3.8, use "async def" '
+    "instead:DeprecationWarning"
 )
 
 
@@ -83,6 +90,7 @@ class TestAsyncAwait(TestNameCheckVisitorBase):
 
 class TestMissingAwait(TestNameCheckVisitorBase):
     @only_before((3, 11))
+    @_IGNORE_ASYNCIO_COROUTINE_WARNING
     @assert_passes()
     def test_asyncio_coroutine_internal(self):
         import asyncio
@@ -96,6 +104,7 @@ class TestMissingAwait(TestNameCheckVisitorBase):
             f()  # E: missing_await
 
     @only_before((3, 11))
+    @_IGNORE_ASYNCIO_COROUTINE_WARNING
     @assert_passes()
     def test_yield_from(self):
         import asyncio
@@ -109,6 +118,7 @@ class TestMissingAwait(TestNameCheckVisitorBase):
             yield from f()
 
     @only_before((3, 11))
+    @_IGNORE_ASYNCIO_COROUTINE_WARNING
     @assert_passes()
     def test_asyncio_coroutine_external(self):
         import asyncio
@@ -118,6 +128,7 @@ class TestMissingAwait(TestNameCheckVisitorBase):
             asyncio.sleep(3)  # E: missing_await
 
     @only_before((3, 11))
+    @_IGNORE_ASYNCIO_COROUTINE_WARNING
     def test_add_yield_from(self):
         self.assert_is_changed(
             """
@@ -137,6 +148,7 @@ class TestMissingAwait(TestNameCheckVisitorBase):
         )
 
     @only_before((3, 11))
+    @_IGNORE_ASYNCIO_COROUTINE_WARNING
     @assert_passes()
     def test_has_yield_from_external(self):
         import asyncio
@@ -194,6 +206,7 @@ class TestMissingAwait(TestNameCheckVisitorBase):
 
 class TestArgSpec(TestNameCheckVisitorBase):
     @only_before((3, 11))
+    @_IGNORE_ASYNCIO_COROUTINE_WARNING
     @assert_passes()
     def test_asyncio_coroutine(self):
         import asyncio

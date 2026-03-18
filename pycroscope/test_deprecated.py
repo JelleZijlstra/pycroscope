@@ -1,4 +1,6 @@
 # static analysis: ignore
+import pytest
+
 from .test_name_check_visitor import TestNameCheckVisitorBase
 from .test_node_visitor import assert_passes
 
@@ -116,6 +118,7 @@ class TestRuntime(TestNameCheckVisitorBase):
             return DeprecatedClass()  # E: deprecated
 
     @assert_passes(run_in_both_module_modes=True)
+    @pytest.mark.filterwarnings("ignore:.*:DeprecationWarning")
     def test_unimportable_module_deprecations(self):
         from typing import Protocol
 
