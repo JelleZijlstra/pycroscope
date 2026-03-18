@@ -4,7 +4,7 @@ from pycroscope.value import AnySource, AnyValue, CustomCheckExtension
 
 from .annotated_types import Gt
 from .test_name_check_visitor import TestNameCheckVisitorBase
-from .test_node_visitor import assert_passes, skip_if_not_installed
+from .test_node_visitor import assert_passes, skip_before, skip_if_not_installed
 from .test_value import (
     AnnotatedValue,
     TypedValue,
@@ -334,6 +334,7 @@ class TestAnnotatedTypesAnnotations(TestNameCheckVisitorBase):
             takes_utc(non_utc_aware_dt)  # E: incompatible_argument
 
     @skip_if_not_installed("annotated_types")
+    @skip_before((3, 14))
     @assert_passes()
     def test_timezone_metadata_compatibility(self):
         from datetime import datetime, timedelta, timezone
