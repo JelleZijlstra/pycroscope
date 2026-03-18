@@ -728,7 +728,10 @@ class _AttrContext(CheckerAttrContext):
             root_value.typ, (type, str)
         ):
             synthetic_typ = root_value.typ
-        elif isinstance(root_value, TypeVarValue):
+        elif (
+            isinstance(root_value, TypeVarValue)
+            and root_value.typevar_param.bound is not None
+        ):
             bound = replace_fallback(root_value.typevar_param.bound)
             if isinstance(bound, GenericValue) and isinstance(bound.typ, (type, str)):
                 synthetic_typ = bound.typ
@@ -3094,7 +3097,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 is_staticmethod=is_staticmethod,
                 returns_self_on_class_access=returns_self_on_class_access,
             )
-            self._discard_synthetic_instance_only_annotation_name(synthetic_name)
+            symbol = synthetic_class.declared_symbols.get(synthetic_name)
+            if symbol is None or symbol.dataclass_field is None or symbol.is_classvar:
+                self._discard_synthetic_instance_only_annotation_name(synthetic_name)
         else:
             raise AssertionError(
                 f"unexpected synthetic class metadata attribute {synthetic_name!r}"
@@ -3499,7 +3504,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             existing.typ if existing is not None else AnyValue(AnySource.inference),
             frozenset(qualifiers),
             is_instance_only=(
-                existing.is_instance_only if existing is not None else False
+                False if Qualifier.ClassVar in qualifiers else not initvar
             ),
             is_method=(existing.is_method if existing is not None else False),
             is_classmethod=(existing.is_classmethod if existing is not None else False),

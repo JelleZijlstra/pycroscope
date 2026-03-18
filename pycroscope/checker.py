@@ -3107,46 +3107,6 @@ class Checker:
     def _synthetic_class_has_any_base(self, value: SyntheticClassObjectValue) -> bool:
         return any(has_any_base_value(base) for base in value.base_classes)
 
-    def _make_any_base_attribute(
-        self,
-        name: str,
-        attr: Value,
-        *,
-        self_annotation_value: Value | None = None,
-        is_staticmethod: bool = False,
-        is_classmethod: bool = False,
-    ) -> Value:
-        raw_attr = attr
-        attr = normalize_synthetic_descriptor_attribute(attr)
-        signature = (
-            attr.signature
-            if isinstance(attr, CallableValue)
-            else self.signature_from_value(attr)
-        )
-        if isinstance(signature, ConcreteSignature):
-            if is_staticmethod:
-                return (
-                    attr
-                    if isinstance(attr, CallableValue)
-                    else CallableValue(signature)
-                )
-            if is_classmethod:
-                return self._specialize_synthetic_classmethod(
-                    raw_attr,
-                    (
-                        attr
-                        if isinstance(attr, CallableValue)
-                        else CallableValue(signature)
-                    ),
-                    self_annotation_value=self_annotation_value,
-                )
-            maybe_bound = self._bind_synthetic_method(
-                signature, self_annotation_value=self_annotation_value
-            )
-            if maybe_bound is not None:
-                return CallableValue(maybe_bound)
-        return attr
-
     def _bind_synthetic_method(
         self,
         signature: ConcreteSignature,

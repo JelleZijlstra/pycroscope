@@ -643,6 +643,10 @@ def _default_type_argument_for_param(
 def _add_runtime_declared_symbols(typ: type, symbols: dict[str, ClassSymbol]) -> None:
     class_dict = safe_getattr(typ, "__dict__", None)
     namedtuple_fields = frozenset(_runtime_namedtuple_field_names(typ))
+    runtime_dataclass_fields = {
+        record.field_name: record.field_info
+        for record in _get_runtime_dataclass_fields(typ)
+    }
     for name in namedtuple_fields:
         raw_value = (
             KnownValue(class_dict[name])
@@ -679,9 +683,17 @@ def _add_runtime_declared_symbols(typ: type, symbols: dict[str, ClassSymbol]) ->
             is_instance_only = (
                 not symbol.is_classvar
                 and not symbol.is_initvar
-                and (not isinstance(class_dict, Mapping) or name not in class_dict)
+                and (
+                    name in runtime_dataclass_fields
+                    or not isinstance(class_dict, Mapping)
+                    or name not in class_dict
+                )
             )
-            symbols[name] = replace(symbol, is_instance_only=is_instance_only)
+            symbols[name] = replace(
+                symbol,
+                is_instance_only=is_instance_only,
+                dataclass_field=runtime_dataclass_fields.get(name),
+            )
     if isinstance(class_dict, Mapping):
         for name, raw_value in class_dict.items():
             if not isinstance(name, str):
@@ -710,6 +722,9 @@ def _add_runtime_declared_symbols(typ: type, symbols: dict[str, ClassSymbol]) ->
             symbols[name] = ClassSymbol(
                 (existing.typ if existing is not None else KnownValue(raw_value)),
                 existing.qualifiers if existing is not None else frozenset(),
+                is_instance_only=(
+                    existing.is_instance_only if existing is not None else False
+                ),
                 is_method=is_method,
                 is_classmethod=is_classmethod,
                 is_staticmethod=is_staticmethod,
@@ -717,6 +732,9 @@ def _add_runtime_declared_symbols(typ: type, symbols: dict[str, ClassSymbol]) ->
                     _runtime_property_info(raw_value, typ) if is_property else None
                 ),
                 initializer=KnownValue(raw_value),
+                dataclass_field=(
+                    existing.dataclass_field if existing is not None else None
+                ),
             )
 
 

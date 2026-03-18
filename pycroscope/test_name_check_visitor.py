@@ -430,6 +430,37 @@ class TestImportFailureHandling(TestNameCheckVisitorBase):
             assert_type(func3(TeamUser), TeamUser)
             type.unknown  # E: undefined_attribute
 
+    @assert_passes(allow_import_failures=True)
+    def test_forward_reference_to_later_dataclass_uses_instance_field_type(self):
+        from dataclasses import dataclass
+
+        from typing_extensions import assert_type
+
+        def f(symbol: "C") -> None:
+            assert_type(symbol.x, bool)
+            if not symbol.x:
+                pass
+
+        @dataclass(frozen=True)
+        class C:
+            x: bool = False
+
+    @assert_passes(allow_import_failures=True)
+    def test_forward_reference_to_later_dataclass_member_from_mapping(self):
+        from dataclasses import dataclass
+
+        from typing_extensions import assert_type
+
+        def f(symbols: dict[str, "C"]) -> None:
+            for symbol in symbols.values():
+                assert_type(symbol.is_method, bool)
+                if not symbol.is_method:
+                    pass
+
+        @dataclass(frozen=True)
+        class C:
+            is_method: bool = False
+
     @assert_passes()
     def test_generic_constructor_accepts_known_protocol_value(self):
         import logging
