@@ -50,6 +50,15 @@
 - Prefer `assert_type()` over `assert_is_value()` for type assertions against types where possible; it's OK to keep
   `assert_is_value` for more complicated types that cannot be directly represented in user code.
 
+## Coverage
+
+- To reproduce the CI coverage run locally, use Python 3.14 and `pytest-cov`, for example:
+  `UV_CACHE_DIR=/tmp/uv-cache uv run --python 3.14 --extra tests --extra asynq --extra codemod --with pytest-cov pytest --cov=pycroscope --cov-report=term-missing --cov-report=json:coverage.json pycroscope`
+- To generate an HTML line-by-line coverage report locally, add `--cov-report=html` to the coverage command above.
+  The report is written to `htmlcov/index.html`.
+- The pinned-full-coverage check is checked in as `tools/check_full_coverage.py`; run it with
+  `python tools/check_full_coverage.py coverage.json tools/full_coverage_files.txt`.
+
 ## Code Conventions
 
 - All type inference should go through the main type inference visitor in `name_check_visitor.py`. Other code should
