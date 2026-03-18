@@ -1,7 +1,9 @@
 # static analysis: ignore
+import sys
+
 from .extensions import is_keyword, is_of_type, is_positional, is_provided, show_error
 from .test_name_check_visitor import TestNameCheckVisitorBase
-from .test_node_visitor import assert_passes
+from .test_node_visitor import assert_passes, only_before, skip_before, skip_if
 from .value import AnySource, AnyValue, assert_is_value
 
 
@@ -228,6 +230,118 @@ class TestTypeEvaluation(TestNameCheckVisitorBase):
             else:
                 assert_type(where_am_i(), Literal["Somewhere else"])
 
+    @skip_if(sys.platform == "darwin")
+    @assert_passes()
+    def test_platform_error_off_mac(self):
+        import sys
+
+        from pycroscope.extensions import evaluated
+
+        @evaluated
+        def not_on_mac():
+            if sys.platform == "darwin":
+                return str
+            return int
+
+        def not_on_mac():
+            raise NotImplementedError
+
+        def capybara() -> None:
+            assert_type(not_on_mac(), int)
+
+    @skip_if(sys.platform != "darwin")
+    @assert_passes()
+    def test_platform_error_on_mac(self):
+        import sys
+        from typing import Any
+
+        from pycroscope.extensions import evaluated, show_error
+
+        @evaluated
+        def not_on_mac():
+            if sys.platform == "darwin":
+                show_error("macOS unsupported")
+                return Any
+            return int
+
+        def not_on_mac():
+            raise NotImplementedError
+
+        def capybara() -> None:
+            not_on_mac()  # E: incompatible_call
+
+    @skip_if(sys.platform != "linux")
+    @assert_passes()
+    def test_platform_detail_with_negation_on_linux(self):
+        import sys
+
+        from pycroscope.extensions import evaluated
+
+        @evaluated
+        def linux_only():
+            if not (sys.platform == "linux"):
+                return str
+            return int
+
+        def linux_only():
+            raise NotImplementedError
+
+        def capybara() -> None:
+            assert_type(linux_only(), int)
+
+    @skip_if(sys.platform == "linux")
+    @assert_passes()
+    def test_platform_detail_with_negation_off_linux(self):
+        import sys
+        from typing import Any
+
+        from pycroscope.extensions import evaluated, show_error
+
+        @evaluated
+        def linux_only():
+            if not (sys.platform == "linux"):
+                show_error("linux only")
+                return Any
+            return int
+
+        def linux_only():
+            raise NotImplementedError
+
+        def capybara() -> None:
+            linux_only()  # E: incompatible_call
+
+    @skip_if(sys.platform != "linux")
+    @assert_passes()
+    def test_platform_condition_error_details_on_linux(self):
+        import sys
+        from typing import Any
+
+        from pycroscope.extensions import evaluated, show_error
+
+        @evaluated
+        def linux_only():
+            if sys.platform == "linux":
+                show_error("linux only")
+                return Any
+            return int
+
+        @evaluated
+        def not_darwin():
+            if not (sys.platform == "darwin"):
+                show_error("not darwin")
+                return Any
+            return int
+
+        def linux_only():
+            raise NotImplementedError
+
+        def not_darwin():
+            raise NotImplementedError
+
+        def capybara() -> None:
+            linux_only()  # E: incompatible_call
+            not_darwin()  # E: incompatible_call
+
     @assert_passes()
     def test_version(self):
         import sys
@@ -250,6 +364,66 @@ class TestTypeEvaluation(TestNameCheckVisitorBase):
                 assert_type(is_self_available(), Literal[True])
             else:
                 assert_type(is_self_available(), Literal[False])
+
+    @only_before((3, 11))
+    @assert_passes()
+    def test_version_error_before_311(self):
+        import sys
+
+        from pycroscope.extensions import evaluated
+
+        @evaluated
+        def no_new_python():
+            if sys.version_info >= (3, 11):
+                return str
+            return int
+
+        def no_new_python():
+            raise NotImplementedError
+
+        def capybara() -> None:
+            assert_type(no_new_python(), int)
+
+    @skip_before((3, 11))
+    @assert_passes()
+    def test_version_error_from_311(self):
+        import sys
+        from typing import Any
+
+        from pycroscope.extensions import evaluated, show_error
+
+        @evaluated
+        def no_new_python():
+            if sys.version_info >= (3, 11):
+                show_error("Python too new")
+                return Any
+            return int
+
+        def no_new_python():
+            raise NotImplementedError
+
+        def capybara() -> None:
+            no_new_python()  # E: incompatible_call
+
+    @assert_passes()
+    def test_version_detail_with_int_literal(self):
+        import sys
+        from typing import Any
+
+        from pycroscope.extensions import evaluated, show_error
+
+        @evaluated
+        def only_python_three():
+            if not (sys.version_info == 3):
+                show_error("python 3 only")
+                return Any
+            return int
+
+        def only_python_three():
+            raise NotImplementedError
+
+        def capybara() -> None:
+            only_python_three()  # E: incompatible_call
 
     @assert_passes()
     def test_nested_ifs(self):
@@ -287,6 +461,98 @@ class TestTypeEvaluation(TestNameCheckVisitorBase):
         def capybara():
             want_one(2)  # E: incompatible_call
             want_one(y=False)  # E: incompatible_call
+
+    @assert_passes()
+    def test_is_of_type_error_details(self):
+        from typing import Any
+
+        from typing_extensions import Literal
+
+        from pycroscope.extensions import evaluated, is_of_type, show_error
+
+        @evaluated
+        def reject_one(x: int | str):
+            if is_of_type(x, Literal[1]):
+                show_error("one is forbidden", argument=x)
+                return Any
+            return str
+
+        def reject_one(x: int | str) -> str:
+            raise NotImplementedError
+
+        @evaluated
+        def reject_non_int(x: int | str):
+            if not is_of_type(x, int):
+                show_error("need an int", argument=x)
+                return Any
+            return int
+
+        def reject_non_int(x: int | str) -> int:
+            raise NotImplementedError
+
+        def capybara(x: Literal[1, "x"]) -> None:
+            reject_one(1)  # E: incompatible_call
+            reject_one(x)  # E: incompatible_call
+            reject_non_int("x")  # E: incompatible_call
+            reject_non_int(x)  # E: incompatible_call
+
+    @assert_passes()
+    def test_exclude_any_false(self):
+        from typing import Any
+
+        from pycroscope.extensions import evaluated, is_of_type, show_error
+
+        @evaluated
+        def require_int(x: object):
+            if not is_of_type(x, int, exclude_any=False):
+                show_error("x must be int", argument=x)
+                return Any
+            return int
+
+        def require_int(x: object) -> object:
+            raise NotImplementedError
+
+        def capybara(unannotated) -> None:
+            assert_type(require_int(1), int)
+            assert_type(require_int(unannotated), int)
+            require_int("x")  # E: incompatible_call
+
+    @assert_passes()
+    def test_is_provided_error_details(self):
+        from typing import Any
+
+        from pycroscope.extensions import evaluated, is_provided, show_error
+
+        @evaluated
+        def use_default(x: int = 1):
+            if is_provided(x):
+                show_error("x must use the default", argument=x)
+                return Any
+            return int
+
+        def use_default(x: int = 1) -> int:
+            raise NotImplementedError
+
+        def capybara(i: int) -> None:
+            assert_type(use_default(), int)
+            use_default(i)  # E: incompatible_call
+
+    @assert_passes()
+    def test_async_evaluated(self):
+        from pycroscope.extensions import evaluated
+
+        @evaluated
+        async def classify(x: int):
+            if x == 1:
+                return str
+            return int
+
+        async def classify(x: int) -> object:
+            raise NotImplementedError
+
+        async def capybara() -> None:
+            assert_type(await classify(1), object)
+            assert_type(await classify(2), object)
 
     @assert_passes()
     def test_reveal_type(self):
@@ -415,10 +681,35 @@ class TestBoolOp(TestNameCheckVisitorBase):
             assert_type(val, int)
             assert_type(is_one(2), str)
 
+    @assert_passes()
+    def test_nested_combined_returns(self):
+        from typing_extensions import Literal
+
+        from pycroscope.extensions import evaluated
+
+        @evaluated
+        def classify(x: Literal[1, 2, 3, 4]):
+            if x == 1 or x == 2:
+                if x == 1:
+                    return str
+                return int
+            else:
+                if x == 3:
+                    return float
+                return bool
+
+        def classify(x: Literal[1, 2, 3, 4]) -> object:
+            raise NotImplementedError
+
+        def capybara(x: Literal[1, 2, 3, 4]) -> None:
+            assert_type(classify(x), str | int | float | bool)
+
 
 class TestValidation(TestNameCheckVisitorBase):
     @assert_passes()
     def test_bad(self):
+        import sys
+
         from pycroscope.extensions import evaluated
 
         @evaluated
@@ -446,6 +737,15 @@ class TestValidation(TestNameCheckVisitorBase):
             if a == len("x"):  # E: bad_evaluator
                 return None
 
+            if is_provided(a, a):  # E: bad_evaluator
+                return None
+            if is_of_type(1, int):  # E: bad_evaluator
+                return None
+            if sys.path == []:  # E: bad_evaluator
+                return None
+            if sys.version_info > "x":  # E: bad_evaluator
+                return None
+
             if is_provided("x"):  # E: bad_evaluator
                 return None
 
@@ -461,6 +761,24 @@ class TestValidation(TestNameCheckVisitorBase):
             return None
 
         def bad_evaluator(a: int) -> None:
+            pass
+
+    @assert_passes()
+    def test_bad_reveal_type_and_show_error(self):
+        from pycroscope.extensions import evaluated
+
+        z = 1
+
+        @evaluated
+        def bad_helpers(a: int):
+            reveal_type()  # E: bad_evaluator
+            reveal_type(a, a)  # E: bad_evaluator
+            reveal_type(1)  # E: bad_evaluator
+            reveal_type(z)  # E: bad_evaluator
+            show_error("message", argument=1)  # E: bad_evaluator
+            return None
+
+        def bad_helpers(a: int) -> None:
             pass
 
 

@@ -4,7 +4,7 @@ from pycroscope.value import AnySource, AnyValue, CustomCheckExtension
 
 from .annotated_types import Gt
 from .test_name_check_visitor import TestNameCheckVisitorBase
-from .test_node_visitor import assert_passes, skip_if_not_installed
+from .test_node_visitor import assert_passes, skip_before, skip_if_not_installed
 from .test_value import (
     AnnotatedValue,
     TypedValue,
@@ -47,6 +47,34 @@ class TestAnnotatedTypesAnnotations(TestNameCheckVisitorBase):
 
     @skip_if_not_installed("annotated_types")
     @assert_passes()
+    def test_grouped_and_unknown_metadata(self):
+        from typing import Any
+
+        import annotated_types
+        from typing_extensions import Annotated
+
+        class Unknown(annotated_types.BaseMetadata):
+            pass
+
+        class Mixed(annotated_types.GroupedMetadata):
+            def __iter__(self):
+                yield 0
+                yield annotated_types.MinLen(1)
+                yield Unknown()
+
+        def takes_unknown(x: Annotated[int, Unknown()]) -> None:
+            pass
+
+        def takes_mixed(x: Annotated[Any, Mixed()]) -> None:
+            pass
+
+        def capybara(i: int) -> None:
+            takes_unknown(i)
+            takes_mixed("x")
+            takes_mixed("")  # E: incompatible_argument
+
+    @skip_if_not_installed("annotated_types")
+    @assert_passes()
     def test_ge(self):
         from typing import Any
 
@@ -76,6 +104,40 @@ class TestAnnotatedTypesAnnotations(TestNameCheckVisitorBase):
             takes_ge_5(4)  # E: incompatible_argument
             takes_ge_5(5)
             takes_ge_5(6)
+
+    @skip_if_not_installed("annotated_types")
+    @assert_passes()
+    def test_mismatched_metadata_families(self):
+        from annotated_types import Ge, Gt, Le, Lt, MinLen, MultipleOf
+        from typing_extensions import Annotated
+
+        def takes_gt_5(x: Annotated[int, Gt(5)]) -> None:
+            pass
+
+        def takes_ge_5(x: Annotated[int, Ge(5)]) -> None:
+            pass
+
+        def takes_lt_5(x: Annotated[int, Lt(5)]) -> None:
+            pass
+
+        def takes_le_5(x: Annotated[int, Le(5)]) -> None:
+            pass
+
+        def takes_multiple_of_10(x: Annotated[int, MultipleOf(10)]) -> None:
+            pass
+
+        def capybara(
+            lt_100: Annotated[int, Lt(100)],
+            le_100: Annotated[int, Le(100)],
+            gt_100: Annotated[int, Gt(100)],
+            min_len_1: Annotated[str, MinLen(1)],
+        ) -> None:
+            takes_gt_5(lt_100)  # E: incompatible_argument
+            takes_ge_5(le_100)  # E: incompatible_argument
+            takes_lt_5(gt_100)  # E: incompatible_argument
+            takes_le_5(gt_100)  # E: incompatible_argument
+            takes_multiple_of_10(gt_100)  # E: incompatible_argument
+            takes_gt_5(min_len_1)  # E: incompatible_argument
 
     @skip_if_not_installed("annotated_types")
     @assert_passes()
@@ -272,6 +334,56 @@ class TestAnnotatedTypesAnnotations(TestNameCheckVisitorBase):
             takes_utc(non_utc_aware_dt)  # E: incompatible_argument
 
     @skip_if_not_installed("annotated_types")
+    @skip_before((3, 14))
+    @assert_passes()
+    def test_timezone_metadata_compatibility(self):
+        from datetime import datetime, timedelta, timezone
+
+        from annotated_types import Timezone
+        from typing_extensions import Annotated
+
+        plus_one = timezone(timedelta(hours=1))
+
+        def takes_aware(x: Annotated[datetime, Timezone(...)]) -> None:
+            pass
+
+        def takes_utc(x: Annotated[datetime, Timezone(timezone.utc)]) -> None:
+            pass
+
+        def capybara(
+            utc_dt: Annotated[datetime, Timezone(timezone.utc)],
+            plus_one_dt: Annotated[datetime, Timezone(plus_one)],
+            naive_dt: Annotated[datetime, Timezone(None)],
+        ) -> None:
+            takes_aware(utc_dt)
+            takes_aware(plus_one_dt)
+            takes_aware(naive_dt)  # E: incompatible_argument
+            takes_utc(utc_dt)
+            takes_utc(plus_one_dt)  # E: incompatible_argument
+
+    @skip_if_not_installed("annotated_types")
+    @assert_passes()
+    def test_object_timezone_metadata(self):
+        from datetime import datetime, timezone
+
+        from annotated_types import Timezone
+        from typing_extensions import Annotated
+
+        def takes_aware(x: Annotated[object, Timezone(...)]) -> None:
+            pass
+
+        def takes_named_timezone(x: Annotated[object, Timezone("UTC")]) -> None:
+            pass
+
+        aware = datetime.now(timezone.utc)
+
+        def capybara(unannotated) -> None:
+            takes_aware(aware)
+            takes_aware(1)  # E: incompatible_argument
+            takes_aware(unannotated)
+            takes_named_timezone(aware)  # E: incompatible_argument
+
+    @skip_if_not_installed("annotated_types")
     @assert_passes()
     def test_predicate(self):
         from annotated_types import Predicate
@@ -288,6 +400,99 @@ class TestAnnotatedTypesAnnotations(TestNameCheckVisitorBase):
             takes_upper(scream)
             takes_upper("WHY DO YOU ONLY WANT UPPERCASE")
             takes_upper("lowercase")  # E: incompatible_argument
+
+    @skip_if_not_installed("annotated_types")
+    @assert_passes()
+    def test_predicate_runtime_exception(self):
+        from annotated_types import Predicate
+        from typing_extensions import Annotated
+
+        def takes_upperish(x: Annotated[object, Predicate(str.isupper)]) -> None:
+            pass
+
+        def capybara(
+            scream: Annotated[str, Predicate(str.isupper)], unannotated
+        ) -> None:
+            takes_upperish(scream)
+            takes_upperish("LOUD")
+            takes_upperish("quiet")  # E: incompatible_argument
+            takes_upperish(1)  # E: incompatible_argument
+            takes_upperish(unannotated)
+
+    @skip_if_not_installed("annotated_types")
+    @assert_passes()
+    def test_min_max_len_collections(self):
+        from annotated_types import MaxLen, MinLen
+        from typing_extensions import Annotated, TypedDict
+
+        def takes_min_2(x: Annotated[object, MinLen(2)]) -> None:
+            pass
+
+        def takes_max_2(x: Annotated[object, MaxLen(2)]) -> None:
+            pass
+
+        class ClosedPair(TypedDict, closed=True):
+            a: int
+            b: int
+
+        def capybara(
+            closed_pair: ClosedPair,
+            fixed: tuple[int, int] | tuple[int, int, int],
+            maybe_open: tuple[int, int] | tuple[int, ...],
+        ) -> None:
+            takes_min_2("ab")
+            takes_max_2("ab")
+            takes_min_2({"a": 1, "b": 2})
+            takes_min_2({"a": 1})  # E: incompatible_argument
+            takes_max_2({"a": 1, "b": 2})
+            takes_max_2({"a": 1, "b": 2, "c": 3})  # E: incompatible_argument
+            takes_min_2(fixed)
+            takes_max_2(fixed)  # E: incompatible_argument
+            takes_max_2(maybe_open)  # E: incompatible_argument
+            takes_max_2(closed_pair)
+
+    @skip_if_not_installed("annotated_types")
+    @assert_passes()
+    def test_min_max_len_unions_and_unpack(self):
+        from annotated_types import MaxLen, MinLen
+        from typing_extensions import Annotated
+
+        def takes_min_2(x: Annotated[object, MinLen(2)]) -> None:
+            pass
+
+        def takes_max_2(x: Annotated[object, MaxLen(2)]) -> None:
+            pass
+
+        def capybara(cond: bool, unannotated) -> None:
+            maybe_short = (1,) if cond else (1, 2)
+            maybe_long = (1, 2) if cond else (1, 2, 3)
+            maybe_open = (1, 2) if cond else (1, *unannotated)
+
+            takes_min_2(maybe_short)  # E: incompatible_argument
+            takes_max_2(maybe_long)  # E: incompatible_argument
+            takes_max_2(maybe_open)  # E: incompatible_argument
+            takes_max_2({"a": 1, **unannotated})  # E: incompatible_argument
+
+    @skip_if_not_installed("annotated_types")
+    @assert_passes()
+    def test_min_max_len_annotated_unions(self):
+        from annotated_types import MaxLen, MinLen
+        from typing_extensions import Annotated
+
+        def takes_min_2(x: Annotated[object, MinLen(2)]) -> None:
+            pass
+
+        def takes_max_2(x: Annotated[object, MaxLen(2)]) -> None:
+            pass
+
+        def capybara(
+            maybe_short: Annotated[tuple[int] | tuple[int, int], "tag"],
+            maybe_long: Annotated[tuple[int, int] | tuple[int, int, int], "tag"],
+            extra: dict[str, int],
+        ) -> None:
+            takes_min_2(maybe_short)  # E: incompatible_argument
+            takes_max_2(maybe_long)  # E: incompatible_argument
+            takes_max_2({"a": 1, **extra})  # E: incompatible_argument
 
 
 class TestInferAnnotations(TestNameCheckVisitorBase):

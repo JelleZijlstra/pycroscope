@@ -182,3 +182,15 @@ ignore = [
 "pycroscope/annotations.py" = [
   "UP006",  # Need to refer to typing.Type
 ]
+
+[tool.coverage.run]
+source = ["pycroscope"]
+omit = [
+  "pycroscope/test_*.py",
+  "pycroscope/tests.py",
+  "pycroscope/asynq_tests.py",
+]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true
