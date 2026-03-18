@@ -8,6 +8,9 @@ from dataclasses import MISSING, replace
 
 from typing_extensions import assert_never
 
+if sys.version_info >= (3, 14):
+    from annotationlib import Format, get_annotations
+
 from pycroscope.checker import Checker
 from pycroscope.type_object import TypeObject
 

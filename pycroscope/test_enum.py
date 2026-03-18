@@ -1,6 +1,6 @@
 # static analysis: ignore
 from .test_name_check_visitor import TestNameCheckVisitorBase
-from .test_node_visitor import assert_passes
+from .test_node_visitor import assert_passes, skip_before
 from .value import AnySource, AnyValue, assert_is_value
 
 
@@ -65,6 +65,7 @@ class TestEnum(TestNameCheckVisitorBase):
             a = 1
             b = 1  # E: duplicate_enum_member
 
+    @skip_before((3, 11))
     @assert_passes(run_in_both_module_modes=True)
     def test_member_and_nonmember_helpers(self):
         from enum import Enum, member, nonmember

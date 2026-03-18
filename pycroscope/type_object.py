@@ -900,12 +900,12 @@ def _typed_class_key(value: Value) -> list[type | str]:
     return []
 
 
-def _checker_ctx(ctx: CanAssignContext) -> object:
+def _checker_ctx(ctx: object) -> object:
     return safe_getattr(ctx, "checker", ctx)
 
 
 def _specialize_symbol_value_for_owner(
-    class_key: type | str, owner: type | str, value: Value, ctx: CanAssignContext
+    class_key: type | str, owner: type | str, value: Value, ctx: object
 ) -> Value:
     def _get_substitutions(
         get_generic_bases: object,
