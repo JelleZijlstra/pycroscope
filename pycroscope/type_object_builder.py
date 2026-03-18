@@ -4,7 +4,7 @@ import inspect
 import itertools
 import sys
 from collections.abc import Iterable, Iterator, Mapping, Sequence
-from dataclasses import replace
+from dataclasses import MISSING, replace
 
 from typing_extensions import assert_never
 
@@ -26,6 +26,7 @@ from .safe import (
 )
 from .type_object import (
     EXCLUDED_PROTOCOL_MEMBERS,
+    DataclassFieldRecord,
     MroValue,
     TypeObject,
     _class_key_from_value,
@@ -37,6 +38,7 @@ from .value import (
     AnySource,
     AnyValue,
     ClassSymbol,
+    DataclassFieldInfo,
     GenericValue,
     IntersectionValue,
     KnownValue,
@@ -70,6 +72,7 @@ def build_type_object(checker: Checker, typ: type | super | str) -> TypeObject:
         bases = _get_typeshed_bases(checker, typ)
         synthetic_class = checker.get_synthetic_class(typ)
         direct_symbols = _build_direct_declared_symbols(checker, typ)
+        dataclass_fields: tuple[DataclassFieldRecord, ...] = ()
         if checker._arg_spec_cache is None:
             declared_type_params = ()
             mro = ()
@@ -78,6 +81,7 @@ def build_type_object(checker: Checker, typ: type | super | str) -> TypeObject:
             mro = compute_type_object_mro(checker, typ)
         if synthetic_class is not None:
             bases |= _get_type_bases_from_synthetic_class(checker, synthetic_class)
+            dataclass_fields = _get_synthetic_dataclass_fields(checker, synthetic_class)
         is_protocol = any(is_typing_name(base, "Protocol") for base in bases)
         if is_protocol:
             protocol_members = _get_protocol_members(
@@ -94,6 +98,7 @@ def build_type_object(checker: Checker, typ: type | super | str) -> TypeObject:
             protocol_members=protocol_members,
             is_final=checker.ts_finder.is_final(typ),
             declared_symbols=direct_symbols,
+            dataclass_fields=dataclass_fields,
         )
     elif isinstance(typ, super):
         return TypeObject(
@@ -106,6 +111,7 @@ def build_type_object(checker: Checker, typ: type | super | str) -> TypeObject:
         typeshed_bases = _get_recursive_typeshed_bases(checker, typ)
         additional_bases = plugin_bases | typeshed_bases
         direct_symbols = _build_direct_declared_symbols(checker, typ)
+        dataclass_fields = _get_runtime_dataclass_fields(typ)
         if checker._arg_spec_cache is None:
             declared_type_params = ()
             mro = ()
@@ -122,6 +128,7 @@ def build_type_object(checker: Checker, typ: type | super | str) -> TypeObject:
                 is_protocol=True,
                 protocol_members=_get_protocol_members(checker, typeshed_bases),
                 declared_symbols=direct_symbols,
+                dataclass_fields=dataclass_fields,
             )
         # Is it a protocol at runtime?
         if is_instance_of_typing_name(typ, "_ProtocolMeta") and safe_getattr(
@@ -142,6 +149,7 @@ def build_type_object(checker: Checker, typ: type | super | str) -> TypeObject:
                 is_protocol=True,
                 protocol_members=members,
                 declared_symbols=direct_symbols,
+                dataclass_fields=dataclass_fields,
             )
 
         is_final = checker.ts_finder.is_final(typ)
@@ -152,7 +160,84 @@ def build_type_object(checker: Checker, typ: type | super | str) -> TypeObject:
             declared_type_params=declared_type_params,
             is_final=is_final,
             declared_symbols=direct_symbols,
+            dataclass_fields=dataclass_fields,
         )
+
+
+def _get_runtime_dataclass_fields(typ: type) -> tuple[DataclassFieldRecord, ...]:
+    dataclass_fields = safe_getattr(typ, "__dataclass_fields__", None)
+    if not isinstance(dataclass_fields, Mapping):
+        return ()
+    records: list[DataclassFieldRecord] = []
+    for name, field in dataclass_fields.items():
+        if not isinstance(name, str):
+            continue
+        records.append(
+            DataclassFieldRecord(
+                field_name=name, field_info=_runtime_dataclass_field_info(field)
+            )
+        )
+    return tuple(records)
+
+
+def _runtime_dataclass_field_info(field: object) -> DataclassFieldInfo:
+    has_default = (
+        safe_getattr(field, "default", MISSING) is not MISSING
+        or safe_getattr(field, "default_factory", MISSING) is not MISSING
+    )
+    init = safe_getattr(field, "init", True)
+    if not isinstance(init, bool):
+        init = True
+    kw_only = safe_getattr(field, "kw_only", False)
+    if not isinstance(kw_only, bool):
+        kw_only = False
+    return DataclassFieldInfo(has_default=has_default, init=init, kw_only=kw_only)
+
+
+def _get_synthetic_dataclass_fields(
+    checker: Checker, synthetic_class: SyntheticClassObjectValue
+) -> tuple[DataclassFieldRecord, ...]:
+    if not synthetic_class.is_dataclass:
+        return ()
+
+    ordered: list[str] = []
+    records_by_name: dict[str, DataclassFieldRecord] = {}
+    for base in synthetic_class.base_classes:
+        for base_value in _iter_base_type_values(base, checker._arg_spec_cache):
+            base_type_object = checker.make_type_object(base_value.typ)
+            for record in base_type_object.dataclass_fields:
+                if record.field_name not in records_by_name:
+                    ordered.append(record.field_name)
+                records_by_name[record.field_name] = record
+
+    local_fields = synthetic_class.dataclass_field_order
+    if not local_fields:
+        local_fields = tuple(
+            name
+            for name, symbol in synthetic_class.declared_symbols.items()
+            if symbol.dataclass_field is not None
+        )
+    class_type = synthetic_class.class_type
+    if not isinstance(class_type, TypedValue) or not isinstance(
+        class_type.typ, (type, str)
+    ):
+        return tuple(records_by_name[name] for name in ordered)
+    for field_name in local_fields:
+        symbol = synthetic_class.declared_symbols.get(field_name)
+        if symbol is None:
+            continue
+        record = DataclassFieldRecord(
+            field_name=field_name,
+            field_info=(
+                symbol.dataclass_field
+                if symbol.dataclass_field is not None
+                else DataclassFieldInfo()
+            ),
+        )
+        if field_name not in records_by_name:
+            ordered.append(field_name)
+        records_by_name[field_name] = record
+    return tuple(records_by_name[name] for name in ordered)
 
 
 def _extract_protocol_members(typ: type) -> set[str]:

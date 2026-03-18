@@ -6,6 +6,7 @@ from .checker import Checker
 from .test_name_check_visitor import TestNameCheckVisitorBase
 from .test_node_visitor import assert_passes
 from .type_object import (
+    DataclassFieldRecord,
     TypeObject,
     _class_key_from_value,
     _is_readonly_instance_member,
@@ -21,6 +22,8 @@ from .value import (
     AnyValue,
     CallableValue,
     ClassSymbol,
+    DataclassFieldInfo,
+    DataclassInfo,
     GenericValue,
     IntersectionValue,
     KnownValue,
@@ -138,6 +141,70 @@ def test_runtime_declared_symbol_uses_annotation_expr_parsing() -> None:
     assert not symbol.is_instance_only
     assert symbol.typ == AnnotatedValue(TypedValue(int), [KnownValue("meta")])
     assert symbol.initializer is None
+
+
+def test_runtime_type_object_tracks_dataclass_fields() -> None:
+    from dataclasses import InitVar, dataclass
+    from typing import ClassVar
+
+    @dataclass
+    class Base:
+        a: int
+
+    @dataclass
+    class Child(Base):
+        b: int
+        c: InitVar[str]
+        d: ClassVar[int] = 0
+
+    checker = Checker()
+    assert checker.make_type_object(Child).dataclass_fields == (
+        DataclassFieldRecord("a", DataclassFieldInfo()),
+        DataclassFieldRecord("b", DataclassFieldInfo()),
+        DataclassFieldRecord("c", DataclassFieldInfo()),
+        DataclassFieldRecord("d", DataclassFieldInfo(has_default=True, kw_only=False)),
+    )
+
+
+def test_synthetic_type_object_tracks_dataclass_fields_without_initializers() -> None:
+    checker = Checker()
+    dataclass_info = DataclassInfo(
+        init=True,
+        eq=True,
+        frozen=False,
+        unsafe_hash=False,
+        match_args=True,
+        order=False,
+        slots=False,
+        kw_only_default=False,
+        field_specifiers=(),
+    )
+    base = SyntheticClassObjectValue(
+        "Base",
+        TypedValue("mod.Base"),
+        dataclass_info=dataclass_info,
+        dataclass_field_order=("a",),
+        declared_symbols={
+            "a": ClassSymbol(TypedValue(int), dataclass_field=DataclassFieldInfo())
+        },
+    )
+    child = SyntheticClassObjectValue(
+        "Child",
+        TypedValue("mod.Child"),
+        base_classes=(TypedValue("mod.Base"),),
+        dataclass_info=dataclass_info,
+        dataclass_field_order=("b",),
+        declared_symbols={
+            "b": ClassSymbol(TypedValue(str), dataclass_field=DataclassFieldInfo())
+        },
+    )
+    checker.register_synthetic_class(base)
+    checker.register_synthetic_class(child)
+
+    assert checker.make_type_object("mod.Child").dataclass_fields == (
+        DataclassFieldRecord("a", DataclassFieldInfo()),
+        DataclassFieldRecord("b", DataclassFieldInfo()),
+    )
 
 
 def test_synthetic_namedtuple_field_is_readonly_without_runtime_class() -> None:

@@ -46,6 +46,7 @@ from .value import (
     CanAssignContext,
     CanAssignError,
     ClassSymbol,
+    DataclassFieldInfo,
     GenericValue,
     IntersectionValue,
     KnownValue,
@@ -161,6 +162,12 @@ def get_mro(typ: type | super) -> Sequence[type]:
 MroValue = TypedValue | AnyValue
 
 
+@dataclass(frozen=True)
+class DataclassFieldRecord:
+    field_name: str
+    field_info: DataclassFieldInfo
+
+
 @dataclass(kw_only=True)
 class TypeObject:
     typ: type | super | str
@@ -175,6 +182,9 @@ class TypeObject:
     is_protocol: bool = False
     protocol_members: set[str] = field(default_factory=set)
     declared_symbols: dict[str, ClassSymbol] = field(default_factory=dict, repr=False)
+    dataclass_fields: tuple[DataclassFieldRecord, ...] = field(
+        default_factory=tuple, repr=False
+    )
     virtual_bases: list[MroValue] = field(default_factory=list)
     is_thrift_enum: bool = field(init=False)
     is_universally_assignable: bool = field(init=False)

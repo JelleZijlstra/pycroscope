@@ -4477,29 +4477,6 @@ def iter_synthetic_member_names(
         yield name
 
 
-def iter_synthetic_dataclass_field_candidates(
-    synthetic_class: SyntheticClassObjectValue,
-) -> Iterator[tuple[str, Value, ClassSymbol | None, DataclassFieldInfo | None]]:
-    ordered_fields = list(synthetic_class.dataclass_field_order)
-    field_names = (
-        ordered_fields
-        if ordered_fields
-        else [
-            name
-            for name in iter_synthetic_member_names(synthetic_class)
-            if not (name.startswith("__") and name.endswith("__"))
-        ]
-    )
-    for name in field_names:
-        attr = (
-            get_synthetic_member_initializer(synthetic_class, name)
-            or UNINITIALIZED_VALUE
-        )
-        symbol = synthetic_class.declared_symbols.get(name)
-        field = symbol.dataclass_field if symbol is not None else None
-        yield name, attr, symbol, field
-
-
 @dataclass(frozen=True)
 class AnnotationExpr:
     ctx: "pycroscope.annotations.Context"

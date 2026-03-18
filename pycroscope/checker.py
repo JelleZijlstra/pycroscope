@@ -56,6 +56,7 @@ from .stacked_scopes import Composite
 from .suggested_type import CallableTracker
 from .type_object import (
     EXCLUDED_PROTOCOL_MEMBERS,
+    DataclassFieldRecord,
     TypeObject,
     class_keys_match,
     lookup_declared_symbol,
@@ -72,6 +73,7 @@ from .value import (
     CanAssignContext,
     CanAssignError,
     ClassSymbol,
+    DataclassFieldInfo,
     GenericValue,
     HasAttrExtension,
     KnownValue,
@@ -105,7 +107,6 @@ from .value import (
     get_tv_map,
     has_any_base_value,
     is_union,
-    iter_synthetic_dataclass_field_candidates,
     iter_synthetic_member_initializers,
     iter_type_params_in_value,
     ordered_namedtuple_fields_from_synthetic,
@@ -139,7 +140,6 @@ class AdditionalBaseProviders(PyObjectSequenceOption[_BaseProvider]):
 
 @dataclass(frozen=True)
 class _DataclassFieldEntry:
-    field_name: str
     parameter: SigParameter
     is_initvar: bool
 
@@ -362,18 +362,6 @@ def _extract_generic_args_from_self_annotation(
     return None
 
 
-def _synthetic_dataclass_converter_input_types(
-    synthetic_class: SyntheticClassObjectValue,
-) -> dict[str, Value]:
-    converter_input_types: dict[str, Value] = {}
-    for field_name, symbol in synthetic_class.declared_symbols.items():
-        field = symbol.dataclass_field
-        if field is None or field.converter_input_type is None:
-            continue
-        converter_input_types[field_name] = field.converter_input_type
-    return converter_input_types
-
-
 def _signature_from_synthetic_attribute(
     value: Value, ctx: AttrContext
 ) -> Signature | OverloadedSignature | None:
@@ -559,6 +547,7 @@ class Checker:
             cached.is_protocol = rebuilt.is_protocol
             cached.protocol_members = rebuilt.protocol_members
             cached.declared_symbols = rebuilt.declared_symbols
+            cached.dataclass_fields = rebuilt.dataclass_fields
             cached.virtual_bases = rebuilt.virtual_bases
             cached.is_thrift_enum = rebuilt.is_thrift_enum
             cached.is_universally_assignable = rebuilt.is_universally_assignable
@@ -2205,63 +2194,93 @@ class Checker:
             return []
         seen.add(value_id)
 
-        entries_by_field: dict[str, _DataclassFieldEntry] = {}
-        field_order: list[str] = []
-        if include_inherited:
-            for base in value.base_classes:
-                for inherited in self._iter_synthetic_dataclass_base_field_entries(
-                    base, seen=seen
-                ):
-                    if inherited.field_name not in entries_by_field:
-                        field_order.append(inherited.field_name)
-                    entries_by_field[inherited.field_name] = inherited
-
-        converter_input_types = _synthetic_dataclass_converter_input_types(value)
-        for name, attr, symbol, field_info in iter_synthetic_dataclass_field_candidates(
-            value
+        class_type = value.class_type
+        if not isinstance(class_type, TypedValue) or not isinstance(
+            class_type.typ, (type, str)
         ):
-            excluded = (
-                attr is UNINITIALIZED_VALUE
-                or symbol is not None
-                and (symbol.is_method or symbol.is_classvar)
-                or field_info is not None
-                and not field_info.init
-            )
-            if excluded:
-                entries_by_field.pop(name, None)
+            return []
+        field_records = self._get_ordered_synthetic_dataclass_field_records(
+            value, include_inherited=include_inherited
+        )
+
+        entries: list[_DataclassFieldEntry] = []
+        for record in field_records:
+            symbol = lookup_declared_symbol(class_type.typ, record.field_name, self)
+            if symbol is None:
                 continue
+            field_info = record.field_info
+            excluded = symbol.is_method or symbol.is_classvar or (not field_info.init)
+            if excluded:
+                continue
+            attr = symbol.initializer if symbol.initializer is not None else symbol.typ
             param_name = (
-                field_info.alias
-                if field_info is not None and field_info.alias is not None
-                else name
+                field_info.alias if field_info.alias is not None else record.field_name
             )
-            annotation = converter_input_types.get(name)
+            annotation = field_info.converter_input_type
             if annotation is None:
                 annotation = self._synthetic_dataclass_field_annotation(attr)
-            has_default = field_info is not None and field_info.has_default
+            has_default = field_info.has_default
             if isinstance(attr, KnownValue):
                 default: Value | None = attr if has_default else None
             else:
                 default = KnownValue(...) if has_default else None
-            if name not in field_order:
-                field_order.append(name)
-            entries_by_field[name] = _DataclassFieldEntry(
-                field_name=name,
-                parameter=SigParameter(
-                    param_name,
-                    (
-                        ParameterKind.KEYWORD_ONLY
-                        if field_info is not None and field_info.kw_only
-                        else ParameterKind.POSITIONAL_OR_KEYWORD
+            entries.append(
+                _DataclassFieldEntry(
+                    parameter=SigParameter(
+                        param_name,
+                        (
+                            ParameterKind.KEYWORD_ONLY
+                            if field_info.kw_only
+                            else ParameterKind.POSITIONAL_OR_KEYWORD
+                        ),
+                        default=default,
+                        annotation=annotation,
                     ),
-                    default=default,
-                    annotation=annotation,
-                ),
-                is_initvar=symbol is not None and symbol.is_initvar,
+                    is_initvar=symbol.is_initvar,
+                )
             )
-        return [
-            entries_by_field[name] for name in field_order if name in entries_by_field
-        ]
+        return entries
+
+    def _get_ordered_synthetic_dataclass_field_records(
+        self, value: SyntheticClassObjectValue, *, include_inherited: bool
+    ) -> tuple[DataclassFieldRecord, ...]:
+        ordered_names: list[str] = []
+        records_by_name: dict[str, DataclassFieldRecord] = {}
+        if include_inherited:
+            for base in value.base_classes:
+                for base_value in pycroscope.type_object_builder._iter_base_type_values(
+                    base, self.arg_spec_cache
+                ):
+                    for record in self.make_type_object(
+                        base_value.typ
+                    ).dataclass_fields:
+                        if record.field_name not in records_by_name:
+                            ordered_names.append(record.field_name)
+                        records_by_name[record.field_name] = record
+
+        local_field_names = value.dataclass_field_order
+        if not local_field_names:
+            local_field_names = tuple(
+                name
+                for name, symbol in value.declared_symbols.items()
+                if symbol.dataclass_field is not None
+            )
+        for field_name in local_field_names:
+            symbol = value.declared_symbols.get(field_name)
+            if symbol is None:
+                continue
+            record = DataclassFieldRecord(
+                field_name=field_name,
+                field_info=(
+                    symbol.dataclass_field
+                    if symbol.dataclass_field is not None
+                    else DataclassFieldInfo()
+                ),
+            )
+            if field_name not in records_by_name:
+                ordered_names.append(field_name)
+            records_by_name[field_name] = record
+        return tuple(records_by_name[name] for name in ordered_names)
 
     def _synthetic_dataclass_field_annotation(self, attr: Value) -> Value:
         ctx = CheckerAttrContext(
@@ -2411,20 +2430,6 @@ class Checker:
             ),
             impl=impl,
         )
-
-    def _iter_synthetic_dataclass_base_field_entries(
-        self, base: Value, *, seen: set[int]
-    ) -> list[_DataclassFieldEntry]:
-        for base_value in pycroscope.type_object_builder._iter_base_type_values(
-            base, self.arg_spec_cache
-        ):
-            synthetic_base = self.get_synthetic_class(base_value.typ)
-            if synthetic_base is None or not synthetic_base.is_dataclass:
-                continue
-            return self._get_synthetic_dataclass_field_entries(
-                synthetic_base, include_inherited=True, seen=seen
-            )
-        return []
 
     def signature_from_value(
         self,
