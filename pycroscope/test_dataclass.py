@@ -332,6 +332,20 @@ class TestDataclass(TestNameCheckVisitorBase):
             DC4("", 0.2, b=3)
             DC4(a="", b=3, c=0.2)
 
+    def test_dataclass_kw_only_marker_cannot_have_default(self):
+        self.assert_passes(
+            """
+            from dataclasses import KW_ONLY, dataclass
+
+            @dataclass
+            class BadMarker:
+                x: int
+                _: KW_ONLY = 0  # E: invalid_annotation
+                y: int
+            """,
+            run_in_both_module_modes=True,
+        )
+
     @assert_passes(run_in_both_module_modes=True)
     def test_dataclass_constructor_field_metadata_after_import_failure(self):
         from dataclasses import dataclass, field

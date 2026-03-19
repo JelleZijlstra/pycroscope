@@ -921,6 +921,58 @@ class TestImportFailureHandlingCodeSamples(TestNameCheckVisitorBase):
             def good_override(x: int | str) -> int | str:
                 return x
 
+    @assert_passes(run_in_both_module_modes=True)
+    def test_synthetic_typeddict_inheritance_edge_cases_after_import_failure(self):
+        from typing_extensions import NotRequired, ReadOnly, TypedDict
+
+        class ClosedBase(TypedDict, closed=True):
+            name: str
+
+        class BadClosedChild(ClosedBase):
+            year: int  # E: invalid_annotation
+
+        class ReadOnlyExtraBase(TypedDict, extra_items=ReadOnly[int]):
+            name: str
+
+        class BadReadOnlyExtraChild(ReadOnlyExtraBase):
+            year: str  # E: invalid_annotation
+
+        class MutableExtraBase(TypedDict, extra_items=int):
+            name: str
+
+        class BadRequiredExtraChild(MutableExtraBase):
+            year: int  # E: invalid_annotation
+
+        class BadOptionalExtraChild(MutableExtraBase):
+            year: NotRequired[str]  # E: invalid_annotation
+
+        class MutableBase(TypedDict):
+            x: int
+
+        class BadMutableOverride(MutableBase):
+            x: float  # E: invalid_annotation
+
+        class MutableLeft(TypedDict):
+            x: int
+
+        class ReadOnlyRight(TypedDict):
+            x: ReadOnly[int]
+
+        class BadBaseMutability(MutableLeft, ReadOnlyRight): ...  # E: invalid_base
+
+        class ReadOnlyLeft(TypedDict):
+            x: ReadOnly[int]
+
+        class ReadOnlyWrongType(TypedDict):
+            x: ReadOnly[str]
+
+        class BadReadonlyTypes(ReadOnlyLeft, ReadOnlyWrongType): ...  # E: invalid_base
+
+        class OptionalRight(TypedDict):
+            x: NotRequired[int]
+
+        class BadBaseRequiredness(MutableLeft, OptionalRight): ...  # E: invalid_base
+
     @assert_passes(allow_import_failures=True)
     def test_namedtuple_after_import_failure(self):
         from typing import Generic, Literal, NamedTuple, TypeVar
@@ -3643,6 +3695,13 @@ class TestMissingF(TestNameCheckVisitorBase):
             x = 3
             return "x = {x}"  # E: missing_f
 
+    @assert_passes()
+    def test_invalid_format_spec_falls_back_to_str(self):
+        from typing_extensions import assert_type
+
+        def capybara() -> None:
+            assert_type(f"{1:zz}", str)
+
     def test_autofix(self):
         self.assert_is_changed(
             """
@@ -3669,6 +3728,23 @@ class TestFStrings(TestNameCheckVisitorBase):
     def test_undefined_name(self):
         def capybara():
             return f"{x}"  # E: undefined_name
+
+
+class TestRuntimeTypeExpressions(TestNameCheckVisitorBase):
+    @skip_before((3, 11))
+    def test_unpack_runtime_type_expression(self):
+        self.assert_passes("""
+            import typing
+
+            from typing import TypeVarTuple, Unpack
+
+            Ts = TypeVarTuple("Ts")
+
+            def capybara() -> None:
+                tuple[*Ts]
+                tuple[Unpack[Ts]]
+                tuple[typing.Unpack[Ts]]
+            """)
 
 
 _AnnotSettings = {
