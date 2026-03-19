@@ -1354,9 +1354,8 @@ class TestOverload(TestNameCheckVisitorBase):
 
             @overload
             @override
-            def proto_override(
-                self, x: str
-            ) -> str: ...  # E: invalid_override_decorator
+            # E: invalid_override_decorator
+            def proto_override(self, x: str) -> str: ...
 
     @assert_passes()
     def test_consistency_with_transforms(self):
