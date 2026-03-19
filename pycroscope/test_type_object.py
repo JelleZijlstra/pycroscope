@@ -9,7 +9,6 @@ from .type_object import (
     DataclassFieldRecord,
     TypeObject,
     _class_key_from_value,
-    _iter_base_keys,
     _should_use_permissive_dunder_hash,
     get_mro,
     lookup_declared_symbol,
@@ -90,26 +89,26 @@ def test_class_key_from_intersection_with_consistent_key() -> None:
     assert _class_key_from_value(value) == "mod.Base"
 
 
-def test_iter_base_keys_handles_subclass_synthetic_base() -> None:
-    synthetic = SyntheticClassObjectValue(
+def test_lookup_declared_symbol_with_owner_handles_synthetic_base() -> None:
+    checker = Checker()
+    base = SyntheticClassObjectValue(
+        "Base",
+        TypedValue("mod.Base"),
+        declared_symbols={"x": ClassSymbol(TypedValue(int))},
+    )
+    child = SyntheticClassObjectValue(
         "Child",
         TypedValue("mod.Child"),
         base_classes=(SubclassValue(TypedValue("mod.Base")),),
     )
+    checker.register_synthetic_class(base)
+    checker.register_synthetic_class(child)
 
-    class _Checker:
-        def get_synthetic_class(self, typ):
-            if typ == "mod.Child":
-                return synthetic
-            return None
-
-        def get_generic_bases(self, typ):
-            return {}
-
-    class _Ctx:
-        checker = _Checker()
-
-    assert _iter_base_keys("mod.Child", _Ctx()) == ["mod.Base"]
+    match = lookup_declared_symbol_with_owner("mod.Child", "x", checker)
+    assert match is not None
+    owner, symbol = match
+    assert owner == "mod.Base"
+    assert symbol.typ == TypedValue(int)
 
 
 def test_permissive_dunder_hash_class_object_detection() -> None:
@@ -431,6 +430,105 @@ def test_runtime_declared_symbol_includes_plain_class_dict_entry() -> None:
     assert not symbol.is_property
     assert symbol.typ == KnownValue(1)
     assert symbol.initializer == KnownValue(1)
+
+
+def test_get_attribute_substitutes_direct_declared_type_params() -> None:
+    from typing import Generic
+
+    class Box(Generic[T]):
+        value: T
+
+        @property
+        def prop(self) -> T:
+            raise NotImplementedError
+
+    checker = Checker()
+    type_object = checker.make_type_object(Box)
+
+    value_attr = type_object.get_attribute(
+        "value",
+        checker,
+        on_class=False,
+        receiver_value=GenericValue(Box, [TypedValue(str)]),
+    )
+    assert value_attr is not None
+    assert value_attr.value == TypedValue(str)
+
+    prop_attr = type_object.get_attribute(
+        "prop",
+        checker,
+        on_class=False,
+        receiver_value=GenericValue(Box, [TypedValue(str)]),
+    )
+    assert prop_attr is not None
+    assert prop_attr.value == TypedValue(str)
+
+    class_prop_attr = type_object.get_attribute(
+        "prop",
+        checker,
+        on_class=True,
+        receiver_value=GenericValue(Box, [TypedValue(str)]),
+    )
+    assert class_prop_attr is not None
+    assert class_prop_attr.value == TypedValue(property)
+
+
+def test_get_attribute_substitutes_inherited_generic_base_args() -> None:
+    from typing import Generic
+
+    class Base(Generic[T]):
+        value: T
+
+    class Child(Base[int]):
+        pass
+
+    checker = Checker()
+    attribute = checker.make_type_object(Child).get_attribute(
+        "value", checker, on_class=False, receiver_value=TypedValue(Child)
+    )
+
+    assert attribute is not None
+    assert attribute.owner.typ is Base
+    assert attribute.value == TypedValue(int)
+
+
+def test_get_attribute_substitutes_receiver_args_through_generic_mro() -> None:
+    from typing import Generic
+
+    class Base(Generic[T]):
+        value: T
+
+    class Child(Base[list[T]], Generic[T]):
+        pass
+
+    checker = Checker()
+    attribute = checker.make_type_object(Child).get_attribute(
+        "value",
+        checker,
+        on_class=False,
+        receiver_value=GenericValue(Child, [TypedValue(int)]),
+    )
+
+    assert attribute is not None
+    assert attribute.owner.typ is Base
+    assert attribute.value == GenericValue(list, [TypedValue(int)])
+
+
+def test_get_attribute_applies_classmethod_descriptor_protocol() -> None:
+    class Box:
+        @classmethod
+        def make(cls) -> int:
+            return 1
+
+    checker = Checker()
+    attribute = checker.make_type_object(Box).get_attribute(
+        "make", checker, on_class=False, receiver_value=TypedValue(Box)
+    )
+
+    assert attribute is not None
+    assert isinstance(attribute.value, CallableValue)
+    assert attribute.value.signature.return_value == TypedValue(int)
+    assert not attribute.value.signature.parameters
 
 
 class TestNumerics(TestNameCheckVisitorBase):

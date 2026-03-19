@@ -223,7 +223,6 @@ from .type_object import (
     class_keys_match,
     get_mro,
     is_readonly_annotated_member,
-    lookup_declared_symbol,
     lookup_declared_symbol_with_owner,
     merge_declared_symbol,
 )
@@ -3325,7 +3324,10 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         return symbol is not None and symbol.is_readonly
 
     def _is_instance_only_member(self, class_key: type | str, attr_name: str) -> bool:
-        symbol = lookup_declared_symbol(class_key, attr_name, self)
+        attribute = self.checker.make_type_object(class_key).get_attribute(
+            attr_name, self, on_class=False, receiver_value=TypedValue(class_key)
+        )
+        symbol = None if attribute is None else attribute.symbol
         return (
             symbol is not None
             and symbol.is_instance_only
@@ -3336,17 +3338,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     def _get_instance_only_annotation_value_for_class_key(
         self, class_key: type | str, attr_name: str, node: ast.AST | None = None
     ) -> Value:
-        def _apply_owner_substitutions(owner: type | str, value: Value) -> Value:
-            if class_keys_match(owner, class_key):
-                return value
-            substitutions = self.checker.get_generic_bases(class_key).get(owner)
-            if not substitutions:
-                return value
-            merged: dict[TypeVarLike, Value] = {}
-            for typevar, substituted in substitutions.items():
-                merged[typevar] = substituted.substitute_typevars(merged)
-            return value.substitute_typevars(merged)
-
         direct_type_object = self.checker.make_type_object(class_key)
         if isinstance(class_key, str):
             synthetic_class = self._synthetic_classes_by_name.get(class_key)
@@ -3367,17 +3358,26 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     or symbol.is_initvar
                 ):
                     continue
-                return _apply_owner_substitutions(class_key, symbol.typ)
+                attribute = direct_type_object.get_attribute(
+                    candidate,
+                    self,
+                    on_class=False,
+                    receiver_value=TypedValue(class_key),
+                )
+                if attribute is not None:
+                    return attribute.value
 
-        match = lookup_declared_symbol_with_owner(class_key, attr_name, self)
-        if match is not None:
-            owner, symbol = match
+        attribute = direct_type_object.get_attribute(
+            attr_name, self, on_class=False, receiver_value=TypedValue(class_key)
+        )
+        if attribute is not None:
+            symbol = attribute.symbol
             if (
                 symbol.is_instance_only
                 and not symbol.is_classvar
                 and not symbol.is_initvar
             ):
-                return _apply_owner_substitutions(owner, symbol.typ)
+                return attribute.value
 
         return UNINITIALIZED_VALUE
 
@@ -15094,7 +15094,10 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             return None
         class_name = class_key.rsplit(".", maxsplit=1)[-1]
         for candidate in self._property_attr_candidates(attr_name, class_name):
-            symbol = lookup_declared_symbol(class_key, candidate, self)
+            attribute = self.checker.make_type_object(class_key).get_attribute(
+                candidate, self, on_class=False, receiver_value=TypedValue(class_key)
+            )
+            symbol = None if attribute is None else attribute.symbol
             if symbol is None or symbol.property_info is None:
                 continue
             message = (

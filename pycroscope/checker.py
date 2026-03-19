@@ -20,11 +20,7 @@ import pycroscope
 from . import dataclass as dataclass_helpers
 from .annotations import type_from_runtime, type_from_value
 from .arg_spec import ArgSpecCache, GenericBases
-from .attributes import (
-    AttrContext,
-    get_attribute,
-    normalize_synthetic_descriptor_attribute,
-)
+from .attributes import AttrContext, get_attribute
 from .extensions import get_overloads as get_runtime_overloads
 from .input_sig import InputSigValue, coerce_paramspec_specialization_to_input_sig
 from .node_visitor import Failure
@@ -60,6 +56,7 @@ from .type_object import (
     TypeObject,
     class_keys_match,
     lookup_declared_symbol,
+    normalize_synthetic_descriptor_attribute,
     runtime_type_generic_alias,
 )
 from .typeshed import TypeshedFinder
