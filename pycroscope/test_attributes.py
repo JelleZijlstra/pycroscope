@@ -84,6 +84,15 @@ class TestAttributes(TestNameCheckVisitorBase):
             assert_type(DefiniteCapybara.capybara_id, Literal[3])
 
     @assert_passes()
+    def test_subclass_special_attributes(self):
+        class Base:
+            pass
+
+        def capybara(cls: type[Base]) -> None:
+            assert_is_value(cls.__class__, KnownValue(type))
+            assert_type(cls.__bases__, tuple[type[object], ...])
+
+    @assert_passes()
     def test_readonly_attribute_assignment_and_deletion(self):
         from typing import ClassVar
 
@@ -145,6 +154,16 @@ class TestAttributes(TestNameCheckVisitorBase):
 
         def capybara():
             assert_type(SPECIAL_STRING.special, Literal["special"])
+
+    @assert_passes()
+    def test_default_known_attribute_hook(self):
+        import sys
+        import types
+        from typing import Any
+
+        def capybara() -> None:
+            assert_is_value(Any.whatever, AnyValue(AnySource.explicit))
+            assert_type(sys.modules, dict[str, types.ModuleType])
 
     @assert_passes()
     def test_generic(self):
@@ -404,6 +423,111 @@ class TestAttributes(TestNameCheckVisitorBase):
 
         def capybara():
             assert_is_value(has_prop.does_it_really, AnyValue(AnySource.inference))
+
+    @assert_passes()
+    def test_super_descriptor_binding(self):
+        class Base:
+            @classmethod
+            def make_name(cls) -> str:
+                return cls.__name__
+
+            @property
+            def payload(self) -> bytes:
+                return b"x"
+
+            def scale(self, x: float) -> float:
+                return x
+
+        class Child(Base):
+            @classmethod
+            def read_classmethod(cls) -> None:
+                assert_type(super().make_name(), str)
+
+            def read_property(self) -> None:
+                assert_type(super().payload, bytes)
+
+            def read_method(self) -> None:
+                assert_type(super().scale(1.0), float)
+
+    @assert_passes()
+    def test_direct_super_objects(self):
+        class Base:
+            @classmethod
+            def make_name(cls) -> str:
+                return cls.__name__
+
+            def scale(self, x: float) -> float:
+                return x
+
+        class Child(Base):
+            @classmethod
+            def read_classmethod(cls) -> None:
+                bound = super(Child, cls).make_name
+                assert_type(bound(), str)
+
+            def read_method(self) -> None:
+                bound = super(Child, self).scale
+                assert_type(bound(1.0), float)
+
+    @assert_passes()
+    def test_super_staticmethod_current_behavior(self):
+        class Base:
+            @staticmethod
+            def label() -> int:
+                return 1
+
+        class Child(Base):
+            def read_staticmethod(self) -> None:
+                # TODO: This should be accepted once super() staticmethod binding is fixed.
+                super().label()  # E: incompatible_call
+
+    @assert_passes()
+    def test_function_annotations_and_unhashable_hash(self):
+        from typing import Any
+
+        def f(x: int) -> str:
+            return str(x)
+
+        class Unhashable:
+            __hash__ = None
+
+        def capybara(u: Unhashable) -> None:
+            assert_type(f.__annotations__, dict[str, Any])
+            assert_is_value(u.__hash__, KnownValue(None))
+
+    @assert_passes()
+    def test_runtime_type_alias_attributes(self):
+        from typing_extensions import Literal, TypeAliasType
+
+        Alias = TypeAliasType("Alias", int)
+
+        def capybara() -> None:
+            assert_type(Alias.__name__, Literal["Alias"])
+            Alias.unknown  # E: undefined_attribute
+
+    @assert_passes()
+    def test_enum_value_type(self):
+        import enum
+
+        from typing_extensions import Literal
+
+        class Mixed(enum.Enum):
+            INT = 1
+            STR = "x"
+
+        def capybara(value: Mixed) -> None:
+            assert_type(value.value, Literal[1, "x"])
+
+    @assert_passes()
+    def test_private_attribute_lookup(self):
+        from typing_extensions import Literal
+
+        class Base:
+            def __init__(self) -> None:
+                self.__secret = 1
+
+            def reveal(self) -> None:
+                assert_type(self.__secret, Literal[1])
 
     @skip_if_not_installed("qcore")
     @assert_passes()

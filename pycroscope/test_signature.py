@@ -1276,6 +1276,89 @@ class TestOverload(TestNameCheckVisitorBase):
             return 1
 
     @assert_passes()
+    def test_invalid_overload_block_shapes(self):
+        from typing import overload
+
+        @overload
+        def single(x: int) -> int: ...  # E: invalid_annotation
+
+        def single(x: int) -> int:
+            return x
+
+        @overload
+        def missing_impl(x: int) -> int: ...  # E: invalid_annotation
+
+        @overload
+        def missing_impl(x: str) -> str: ...
+
+    @assert_passes()
+    def test_inconsistent_overload_method_kinds(self):
+        from typing import overload
+
+        class MixedOverloadKinds:
+            @overload
+            @staticmethod
+            def same_name(x: int) -> int: ...  # E: invalid_annotation
+
+            @overload
+            @classmethod
+            def same_name(cls, x: str) -> str: ...
+
+            @classmethod
+            def same_name(cls, x: int | str) -> int | str:
+                return x
+
+        class BadImplementationKind:
+            @overload
+            @staticmethod
+            def same_name(x: int) -> int: ...
+
+            @overload
+            @staticmethod
+            def same_name(x: str) -> str: ...
+
+            @classmethod
+            def same_name(cls, x: int | str) -> int | str:  # E: invalid_annotation
+                return x
+
+    @assert_passes()
+    def test_overload_final_and_override_placement(self):
+        from typing import Protocol, final, overload
+
+        from typing_extensions import override
+
+        class BadPlacement:
+            @overload
+            @final
+            def with_final(self, x: int) -> int: ...  # E: invalid_annotation
+
+            @overload
+            def with_final(self, x: str) -> str: ...
+
+            def with_final(self, x: int | str) -> int | str:
+                return x
+
+            @overload
+            @override
+            def with_override(self, x: int) -> int: ...  # E: invalid_override_decorator
+
+            @overload
+            def with_override(self, x: str) -> str: ...
+
+            def with_override(self, x: int | str) -> int | str:
+                return x
+
+        class BadProtocolPlacement(Protocol):
+            @overload
+            def proto_override(self, x: int) -> int: ...
+
+            @overload
+            @override
+            def proto_override(
+                self, x: str
+            ) -> str: ...  # E: invalid_override_decorator
+
+    @assert_passes()
     def test_consistency_with_transforms(self):
         from typing import Callable, Coroutine, overload
 
