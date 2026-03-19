@@ -683,6 +683,47 @@ class TestImportFailureHandlingCodeSamples(TestNameCheckVisitorBase):
 
         class BadChild(Parent[T1, T2], Grandparent[T2, T1]): ...  # E: invalid_base
 
+    @assert_passes(allow_import_failures=True)
+    def test_generic_instance_attribute_preserves_type_args_after_import_failure(self):
+        from typing import Any, Generic, TypeVar, assert_type
+
+        T = TypeVar("T")
+
+        class Node(Generic[T]):
+            label: T
+
+            def __init__(self, label: T | None = None) -> None:
+                if label is not None:
+                    self.label = label
+
+        def check_nodes() -> None:
+            assert_type(Node(0).label, int)
+            assert_type(Node().label, Any)
+            assert_type(Node[int]().label, int)
+
+    @assert_passes(allow_import_failures=True)
+    def test_generic_paramspec_attribute_after_import_failure(self):
+        from typing import Callable, Generic, ParamSpec, TypeVar, assert_type
+
+        P = ParamSpec("P")
+        U = TypeVar("U")
+
+        class Y(Generic[U, P]):
+            f: Callable[P, str]
+            prop: U
+
+            def __init__(self, f: Callable[P, str], prop: U) -> None:
+                self.f = f
+                self.prop = prop
+
+        def callback_a(q: int, /) -> str:
+            raise NotImplementedError
+
+        def check_paramspec(x: int) -> None:
+            y = Y(callback_a, x)
+            assert_type(y.prop, int)
+            assert_type(y.f, Callable[[int], str])
+
     @assert_passes(run_in_both_module_modes=True)
     def test_overload_fallback_after_import_failure(self):
         from typing import overload

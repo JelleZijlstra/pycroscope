@@ -1,7 +1,6 @@
 # static analysis: ignore
 from typing import Dict, Union
 
-from .attributes import normalize_synthetic_descriptor_attribute
 from .test_name_check_visitor import TestNameCheckVisitorBase
 from .test_node_visitor import (
     assert_passes,
@@ -9,6 +8,7 @@ from .test_node_visitor import (
     skip_before,
     skip_if_not_installed,
 )
+from .type_object import normalize_synthetic_descriptor_attribute
 from .value import (
     AnnotatedValue,
     AnySource,

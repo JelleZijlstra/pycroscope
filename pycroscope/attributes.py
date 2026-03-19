@@ -28,11 +28,7 @@ from .annotations import (
     annotation_expr_from_annotations,
     type_from_runtime,
 )
-from .input_sig import (
-    FullSignature,
-    InputSigValue,
-    coerce_paramspec_specialization_to_input_sig,
-)
+from .input_sig import coerce_paramspec_specialization_to_input_sig
 from .options import Options, PyObjectSequenceOption
 from .relations import Relation, has_relation
 from .safe import (
@@ -54,9 +50,8 @@ from .signature import (
 )
 from .stacked_scopes import Composite
 from .type_object import (
-    _specialize_symbol_value_for_owner,
-    lookup_declared_symbol,
     lookup_declared_symbol_with_owner,
+    normalize_synthetic_descriptor_attribute,
 )
 from .value import (
     UNINITIALIZED_VALUE,
@@ -79,7 +74,6 @@ from .value import (
     PredicateValue,
     Qualifier,
     SelfT,
-    SelfTVV,
     SimpleType,
     SubclassValue,
     SyntheticClassObjectValue,
@@ -495,8 +489,13 @@ def _get_attribute_from_synthetic_type(
         return TypedValue(dict)
     synthetic_class = ctx.get_synthetic_class(fq_name)
     if synthetic_class is not None:
+        receiver_value: TypedValue | GenericValue
+        if generic_args:
+            receiver_value = GenericValue(fq_name, generic_args)
+        else:
+            receiver_value = TypedValue(fq_name)
         result = _get_direct_attribute_from_synthetic_instance(
-            synthetic_class, ctx.attr, ctx
+            synthetic_class, ctx.attr, ctx, receiver_value=receiver_value
         )
         if result is not UNINITIALIZED_VALUE:
             result = dataclass_helpers.maybe_resolve_synthetic_descriptor_attribute(
@@ -650,33 +649,54 @@ def _get_direct_attribute_from_synthetic_class(
 
 
 def _get_direct_attribute_from_synthetic_instance(
-    self_value: SyntheticClassObjectValue, attr_name: str, ctx: AttrContext
+    self_value: SyntheticClassObjectValue,
+    attr_name: str,
+    ctx: AttrContext,
+    *,
+    receiver_value: TypedValue | GenericValue | None = None,
 ) -> Value:
     selected_name = _select_synthetic_attribute_name(self_value, attr_name)
-    symbol = None
-    owner = None
     class_type = self_value.class_type
     can_assign_ctx = ctx.get_can_assign_context()
     if (
+        receiver_value is not None
+        and can_assign_ctx is not None
+        and isinstance(receiver_value.typ, (type, str))
+    ):
+        attribute = can_assign_ctx.make_type_object(receiver_value.typ).get_attribute(
+            selected_name, can_assign_ctx, on_class=False, receiver_value=receiver_value
+        )
+        if attribute is not None:
+            symbol = attribute.symbol
+            if attribute.is_property:
+                return attribute.value
+            if (
+                symbol.is_instance_only
+                and not symbol.is_classvar
+                and not symbol.is_initvar
+                and not symbol.is_method
+            ):
+                return attribute.value
+    if (
         can_assign_ctx is not None
-        and isinstance(class_type, TypedValue)
+        and isinstance(class_type, (TypedValue, GenericValue))
         and isinstance(class_type.typ, (type, str))
     ):
-        match = lookup_declared_symbol_with_owner(
-            class_type.typ, selected_name, can_assign_ctx
+        attribute = can_assign_ctx.make_type_object(class_type.typ).get_attribute(
+            selected_name, can_assign_ctx, on_class=False, receiver_value=class_type
         )
-        if match is not None:
-            owner, symbol = match
-    if symbol is None:
-        symbol = self_value.declared_symbols.get(selected_name)
-        if (
-            symbol is not None
-            and isinstance(class_type, TypedValue)
-            and isinstance(class_type.typ, (type, str))
-        ):
-            owner = class_type.typ
-    if symbol is not None and symbol.property_info is not None:
-        return symbol.property_info.getter_type
+        if attribute is not None:
+            symbol = attribute.symbol
+            if attribute.is_property:
+                return attribute.value
+            if (
+                symbol.is_instance_only
+                and not symbol.is_classvar
+                and not symbol.is_initvar
+                and not symbol.is_method
+            ):
+                return attribute.value
+    symbol = self_value.declared_symbols.get(selected_name)
     if (
         symbol is not None
         and symbol.is_instance_only
@@ -684,14 +704,6 @@ def _get_direct_attribute_from_synthetic_instance(
         and not symbol.is_initvar
         and not symbol.is_method
     ):
-        if (
-            owner is not None
-            and isinstance(class_type, TypedValue)
-            and isinstance(class_type.typ, (type, str))
-        ):
-            return _specialize_symbol_value_for_owner(
-                class_type.typ, owner, symbol.typ, ctx
-            )
         return symbol.typ
     return _get_direct_attribute_from_synthetic_class(self_value, attr_name, ctx)
 
@@ -858,83 +870,16 @@ def _is_synthetic_self_classmethod_attribute(
     can_assign_ctx = ctx.get_can_assign_context()
     if (
         can_assign_ctx is not None
-        and isinstance(class_type, TypedValue)
+        and isinstance(class_type, (TypedValue, GenericValue))
         and isinstance(class_type.typ, (type, str))
     ):
-        symbol = lookup_declared_symbol(class_type.typ, attr_name, can_assign_ctx)
+        attribute = can_assign_ctx.make_type_object(class_type.typ).get_attribute(
+            attr_name, can_assign_ctx, on_class=True, receiver_value=class_type
+        )
+        symbol = None if attribute is None else attribute.symbol
     else:
         symbol = self_value.declared_symbols.get(attr_name)
     return symbol is not None and symbol.returns_self_on_class_access
-
-
-def normalize_synthetic_descriptor_attribute(
-    value: Value,
-    *,
-    is_self_returning_classmethod: bool = False,
-    unknown_descriptor_means_any: bool = True,
-) -> Value:
-    if isinstance(value, GenericValue) and value.typ is staticmethod:
-        if not value.args:
-            if unknown_descriptor_means_any:
-                return AnyValue(AnySource.inference)
-            return value
-        wrapped = next(iter(value.args))
-
-        if isinstance(wrapped, InputSigValue):
-            if isinstance(wrapped.input_sig, FullSignature):
-                return_annotation = (
-                    value.args[1]
-                    if len(value.args) > 1
-                    else wrapped.input_sig.sig.return_value
-                )
-                return CallableValue(
-                    replace(wrapped.input_sig.sig, return_value=return_annotation)
-                )
-            return AnyValue(AnySource.inference)
-        return wrapped
-    if isinstance(value, GenericValue) and value.typ is classmethod:
-        if not value.args:
-            if unknown_descriptor_means_any:
-                return AnyValue(AnySource.inference)
-            return value
-        wrapped = value.args[1] if len(value.args) >= 2 else value.args[0]
-
-        if isinstance(wrapped, InputSigValue):
-            if isinstance(wrapped.input_sig, FullSignature):
-                return_annotation = (
-                    value.args[2]
-                    if len(value.args) > 2
-                    else wrapped.input_sig.sig.return_value
-                )
-                if (
-                    is_self_returning_classmethod
-                    and isinstance(return_annotation, AnyValue)
-                    and return_annotation.source is AnySource.generic_argument
-                ):
-                    return_annotation = SelfTVV
-                return CallableValue(
-                    replace(wrapped.input_sig.sig, return_value=return_annotation)
-                )
-            return AnyValue(AnySource.inference)
-        if isinstance(wrapped, CallableValue):
-            return_annotation = (
-                value.args[2] if len(value.args) > 2 else wrapped.signature.return_value
-            )
-            if (
-                is_self_returning_classmethod
-                and isinstance(return_annotation, AnyValue)
-                and return_annotation.source is AnySource.generic_argument
-            ):
-                return_annotation = SelfTVV
-            return CallableValue(
-                replace(wrapped.signature, return_value=return_annotation)
-            )
-        return wrapped
-    if isinstance(value, KnownValue) and isinstance(value.val, staticmethod):
-        return KnownValue(value.val.__func__)
-    if isinstance(value, KnownValue) and isinstance(value.val, classmethod):
-        return KnownValue(value.val.__func__)
-    return value
 
 
 def _normalize_synthetic_class_attribute(

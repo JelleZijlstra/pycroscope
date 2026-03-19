@@ -531,8 +531,14 @@ def _merge_mro_value_sequences(
 def _get_generic_bases_for_class_definition(
     checker: Checker, typ: type | str
 ) -> GenericBases:
-    generic_bases = checker.arg_spec_cache.get_generic_bases(typ, ())
     synthetic_bases = checker._get_synthetic_generic_bases(typ)
+    if synthetic_bases is None:
+        declared_type_params = tuple(checker.get_type_parameters(typ))
+    else:
+        declared_type_params = checker._get_synthetic_declared_type_params(typ)
+    generic_bases = checker.arg_spec_cache.get_generic_bases(
+        typ, [type_param_to_value(type_param) for type_param in declared_type_params]
+    )
     merged: _SyntheticGenericBases = {
         base: dict(tv_map) for base, tv_map in generic_bases.items()
     }
@@ -540,7 +546,6 @@ def _get_generic_bases_for_class_definition(
         checker._augment_namedtuple_generic_bases(typ, merged, {})
         return merged
 
-    declared_type_params = checker._get_synthetic_declared_type_params(typ)
     substitution_map = {
         type_param.typevar: type_param_to_value(type_param)
         for type_param in declared_type_params
