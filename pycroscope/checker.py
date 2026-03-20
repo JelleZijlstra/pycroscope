@@ -55,7 +55,6 @@ from .type_object import (
     DataclassFieldRecord,
     TypeObject,
     class_keys_match,
-    lookup_declared_symbol,
     normalize_synthetic_descriptor_attribute,
     runtime_type_generic_alias,
 )
@@ -2185,10 +2184,11 @@ class Checker:
         field_records = self._get_ordered_synthetic_dataclass_field_records(
             value, include_inherited=include_inherited
         )
+        tobj = self.make_type_object(class_type.typ)
 
         entries: list[_DataclassFieldEntry] = []
         for record in field_records:
-            symbol = lookup_declared_symbol(class_type.typ, record.field_name, self)
+            symbol = tobj.get_declared_symbol_from_mro(record.field_name, self)
             if symbol is None:
                 continue
             field_info = record.field_info
@@ -2593,19 +2593,9 @@ class Checker:
                     if not should_preserve_cached_constructor:
                         if has_direct_new and synthetic_constructor_sig is not None:
                             argspec = synthetic_constructor_sig
-                        elif isinstance(synthetic_constructor_sig, OverloadedSignature):
-                            # Runtime signatures drop @overload relationships between
-                            # constructor parameters and return types.
-                            argspec = synthetic_constructor_sig
                         elif (
                             is_namedtuple_synthetic
                             and synthetic_constructor_sig is not None
-                        ):
-                            argspec = synthetic_constructor_sig
-                        elif (
-                            synthetic_constructor_sig is not None
-                            and not runtime_metaclass_overrides_constructor
-                            and runtime_constructor_sig is None
                         ):
                             argspec = synthetic_constructor_sig
                         elif synthetic_class.is_dataclass:

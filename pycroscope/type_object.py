@@ -1269,16 +1269,6 @@ def _get_synthetic_class_for_key(
     return None
 
 
-def lookup_declared_symbol(
-    class_key: type | str, member: str, ctx: CanAssignContext
-) -> ClassSymbol | None:
-    match = lookup_declared_symbol_with_owner(class_key, member, ctx)
-    if match is None:
-        return None
-    _, symbol = match
-    return symbol
-
-
 def lookup_declared_symbol_with_owner(
     class_key: type | str, member: str, ctx: CanAssignContext
 ) -> tuple[type | str, ClassSymbol] | None:
