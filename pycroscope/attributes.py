@@ -201,13 +201,6 @@ class AttrContext:
             prefer_typeshed=False,
         )
 
-    def clone_for_root_composite(
-        self, root_composite: Composite, *, lookup_root_value: Value | None = None
-    ) -> "AttrContext":
-        return replace(
-            self, root_composite=root_composite, lookup_root_value=lookup_root_value
-        )
-
 
 def get_attribute(ctx: AttrContext) -> Value:
     if (

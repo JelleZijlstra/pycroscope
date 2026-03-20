@@ -801,27 +801,6 @@ class _AttrContext(CheckerAttrContext):
             self_value=self.self_value,
         )
 
-    def clone_for_root_composite(
-        self,
-        root_composite: Composite,
-        *,
-        lookup_root_value: Value | None = None,
-        self_value: Value | None = None,
-    ) -> "_AttrContext":
-        return _AttrContext(
-            root_composite,
-            lookup_root_value,
-            self.attr,
-            self.visitor,
-            node=self.node,
-            ignore_none=self.ignore_none,
-            skip_mro=self.skip_mro,
-            skip_unwrap=self.skip_unwrap,
-            prefer_typeshed=self.prefer_typeshed,
-            record_reads=self.record_reads,
-            self_value=self_value if self_value is not None else self.self_value,
-        )
-
 
 @dataclass
 class _SyntheticTypedDictContext:
