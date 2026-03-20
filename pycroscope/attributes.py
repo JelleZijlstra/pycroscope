@@ -387,6 +387,8 @@ def _super_mro_values(
     return receiver_value.get_type_object(ctx).mro
 
 
+# TODO: in principle this should be doable with TypeObject.get_attribute if we add a flag
+# that says to skip MRO elements up to a certain point.
 def _get_attribute_from_super_value(super_value: SuperValue, ctx: AttrContext) -> Value:
     if super_value.selfobj is None:
         return AnyValue(AnySource.inference)
