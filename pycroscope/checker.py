@@ -2552,7 +2552,6 @@ class Checker:
                         value.val, instance_type=runtime_instance_type
                     )
                 )
-                runtime_constructor_sig: ConcreteSignature | None = None
                 preserve_custom_constructor = _signature_uses_custom_constructor(
                     cached_argspec, value.val
                 ) and (
