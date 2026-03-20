@@ -376,9 +376,7 @@ def _synthetic_descriptor_set_type(descriptor: Value, ctx: AttrContext) -> Value
     descriptor = replace_fallback(descriptor)
     if isinstance(descriptor, AnnotatedValue):
         return _synthetic_descriptor_set_type(descriptor.value, ctx)
-    if not isinstance(
-        descriptor, (KnownValue, TypedValue, GenericValue, SyntheticClassObjectValue)
-    ):
+    if not isinstance(descriptor, (KnownValue, TypedValue, SyntheticClassObjectValue)):
         return None
     method_ctx = ctx.clone_for_attribute_lookup(Composite(descriptor), "__set__")
     method_value = get_attribute(method_ctx)

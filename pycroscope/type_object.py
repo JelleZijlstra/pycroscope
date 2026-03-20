@@ -226,7 +226,7 @@ class TypeObject:
         ctx: CanAssignContext,
         *,
         on_class: bool,
-        receiver_value: TypedValue | GenericValue | None = None,
+        receiver_value: TypedValue | None = None,
     ) -> TypeObjectAttribute | None:
         match = self._get_declared_symbol_with_owner(name, ctx)
         if match is None:
@@ -1053,7 +1053,7 @@ def _typevar_map_from_generic_args(
 
 
 def _typevar_map_from_type_value(
-    receiver_value: TypedValue | GenericValue, type_params: Sequence[TypeParam]
+    receiver_value: TypedValue, type_params: Sequence[TypeParam]
 ) -> dict[TypeVarLike, Value]:
     _, generic_args = _class_key_and_generic_args_from_type_value(receiver_value)
     return _typevar_map_from_generic_args(type_params, generic_args)
@@ -1065,7 +1065,7 @@ def _specialize_symbol_for_owner(
     symbol: ClassSymbol,
     ctx: CanAssignContext,
     *,
-    receiver_value: TypedValue | GenericValue | None = None,
+    receiver_value: TypedValue | None = None,
 ) -> ClassSymbol:
     substitutions = _get_symbol_owner_substitutions_from_type_objects(
         receiver_tobj, owner_tobj, ctx, receiver_value=receiver_value
@@ -1106,7 +1106,7 @@ def _specialize_self_returning_classmethod(
     raw_attr: Value,
     normalized_attr: Value,
     *,
-    receiver_value: TypedValue | GenericValue | None,
+    receiver_value: TypedValue | None,
     ctx: CanAssignContext,
 ) -> Value:
     if receiver_value is None or not isinstance(normalized_attr, CallableValue):
@@ -1131,7 +1131,7 @@ def _specialize_self_returning_classmethod(
 
 
 def _classmethod_receiver_value_from_type_value(
-    receiver_value: TypedValue | GenericValue,
+    receiver_value: TypedValue,
 ) -> SubclassValue:
     class_key, _ = _class_key_and_generic_args_from_type_value(receiver_value)
     return SubclassValue(TypedValue(class_key))
@@ -1142,7 +1142,7 @@ def _get_attribute_value_from_symbol(
     ctx: CanAssignContext,
     *,
     on_class: bool,
-    receiver_value: TypedValue | GenericValue | None,
+    receiver_value: TypedValue | None,
 ) -> Value:
     if symbol.property_info is not None:
         if on_class:
@@ -1209,7 +1209,7 @@ def _get_symbol_owner_substitutions_from_type_objects(
     owner_tobj: TypeObject,
     ctx: CanAssignContext,
     *,
-    receiver_value: TypedValue | GenericValue | None = None,
+    receiver_value: TypedValue | None = None,
 ) -> dict[TypeVarLike, Value]:
     receiver_substitutions: dict[TypeVarLike, Value] = {}
     if receiver_value is not None:

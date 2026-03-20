@@ -343,9 +343,7 @@ def _extract_super_value(value: Value) -> SuperValue | None:
     return None
 
 
-def _super_receiver_type_value(
-    value: Value,
-) -> tuple[TypedValue | GenericValue | None, bool]:
+def _super_receiver_type_value(value: Value) -> tuple[TypedValue | None, bool]:
     value = replace_fallback(value)
     if isinstance(value, TypedValue):
         return value, False
@@ -377,7 +375,7 @@ def _super_mro_lookup_root(mro_value: Value, *, is_class_access: bool) -> Value 
 
 
 def _super_mro_values(
-    receiver_value: TypedValue | GenericValue, ctx: CanAssignContext
+    receiver_value: TypedValue, ctx: CanAssignContext
 ) -> Sequence[MroValue]:
     # TODO: switch to just using the MRO; that currently doesn't work because it gets set too late
     if isinstance(receiver_value.typ, type):
@@ -622,7 +620,6 @@ def _get_attribute_from_synthetic_type(
         return TypedValue(dict)
     synthetic_class = ctx.get_synthetic_class(fq_name)
     if synthetic_class is not None:
-        receiver_value: TypedValue | GenericValue
         if generic_args:
             receiver_value = GenericValue(fq_name, generic_args)
         else:
@@ -895,9 +892,7 @@ def _synthetic_descriptor_method_signature_any(
         return _synthetic_descriptor_method_signature_any(
             descriptor.value, method_name, ctx
         )
-    if not isinstance(
-        descriptor, (KnownValue, TypedValue, GenericValue, SyntheticClassObjectValue)
-    ):
+    if not isinstance(descriptor, (KnownValue, TypedValue, SyntheticClassObjectValue)):
         return None
     method_ctx = ctx.clone_for_attribute_lookup(Composite(descriptor), method_name)
     method_value = get_attribute(method_ctx)

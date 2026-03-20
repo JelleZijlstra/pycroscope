@@ -285,7 +285,7 @@ def has_relation(
 
 def _specialized_synthetic_class_type(
     synthetic_class: SyntheticClassObjectValue, ctx: CanAssignContext
-) -> TypedValue | GenericValue | TypedDictValue:
+) -> TypedValue | TypedDictValue:
     if not isinstance(synthetic_class.class_type, TypedValue):
         return synthetic_class.class_type
     class_typ = synthetic_class.class_type.typ
