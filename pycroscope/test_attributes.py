@@ -611,6 +611,7 @@ class TestAttributes(TestNameCheckVisitorBase):
     @assert_passes()
     def test_private_enum_nonmember_attribute(self):
         import enum
+        import sys
 
         from typing_extensions import Literal, assert_type
 
@@ -618,7 +619,10 @@ class TestAttributes(TestNameCheckVisitorBase):
             __B = 2
 
             def method(self) -> None:
-                assert_type(Example2.__B, Literal[2])
+                if sys.version_info < (3, 11):
+                    assert_type(Example2.__B, Literal[Example2._Example2__B])
+                else:
+                    assert_type(Example2.__B, Literal[2])
 
     @assert_passes(allow_import_failures=True)
     def test_synthetic_typevar_bound_class_attribute_after_import_failure(self):
