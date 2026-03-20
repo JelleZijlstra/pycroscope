@@ -65,6 +65,7 @@ from .value import (
     CallableValue,
     CanAssignContext,
     CanAssignError,
+    ClassSymbol,
     CustomCheckExtension,
     GenericBases,
     GenericValue,
@@ -93,7 +94,6 @@ from .value import (
     UnboundMethodValue,
     Value,
     annotate_value,
-    get_synthetic_member_initializer,
     has_any_base_value,
     replace_fallback,
     set_self,
@@ -471,7 +471,7 @@ def _get_attribute_from_subclass(
         # type[T] represents an arbitrary subclass of T, so class identity
         # attributes should be widened from base-class literals.
         return TypedValue(str)
-    synthetic_attr = _get_runtime_attribute_from_synthetic_dataclass(
+    synthetic_attr = _get_runtime_attribute_from_synthetic_class(
         typ, (), ctx, on_class=True
     )
     if synthetic_attr is not UNINITIALIZED_VALUE:
@@ -732,7 +732,7 @@ def _get_direct_attribute_from_synthetic_class(
 ) -> Value:
     if _is_synthetic_initvar_attribute(self_value, attr_name):
         return UNINITIALIZED_VALUE
-    raw_value = get_synthetic_member_initializer(self_value, attr_name)
+    raw_value = _get_synthetic_member_initializer(self_value, attr_name)
     if raw_value is None:
         return UNINITIALIZED_VALUE
     result = _normalize_synthetic_class_attribute(
@@ -785,7 +785,7 @@ def _get_direct_attribute_from_synthetic_instance(
                 and not symbol.is_method
             ):
                 return attribute.value
-    symbol = self_value.declared_symbols.get(attr_name)
+    symbol = _get_synthetic_declared_symbol(self_value, attr_name)
     if (
         symbol is not None
         and symbol.is_instance_only
@@ -797,10 +797,31 @@ def _get_direct_attribute_from_synthetic_instance(
     return _get_direct_attribute_from_synthetic_class(self_value, attr_name, ctx)
 
 
+def _get_synthetic_declared_symbol(
+    self_value: SyntheticClassObjectValue, attr_name: str
+) -> ClassSymbol | None:
+    symbol = self_value.declared_symbols.get(attr_name)
+    if symbol is not None:
+        return symbol
+    mangled = _maybe_mangle_private_name(attr_name, self_value.name)
+    if mangled is None:
+        return None
+    return self_value.declared_symbols.get(mangled)
+
+
+def _get_synthetic_member_initializer(
+    self_value: SyntheticClassObjectValue, attr_name: str
+) -> Value | None:
+    symbol = _get_synthetic_declared_symbol(self_value, attr_name)
+    if symbol is None:
+        return None
+    return symbol.initializer
+
+
 def _is_synthetic_method_attribute(
     self_value: SyntheticClassObjectValue, attr_name: str
 ) -> bool:
-    symbol = self_value.declared_symbols.get(attr_name)
+    symbol = _get_synthetic_declared_symbol(self_value, attr_name)
     return symbol is not None and symbol.is_method
 
 
@@ -929,7 +950,7 @@ def _maybe_resolve_synthetic_property_attribute(
 def _is_synthetic_initvar_attribute(
     self_value: SyntheticClassObjectValue, attr_name: str
 ) -> bool:
-    symbol = self_value.declared_symbols.get(attr_name)
+    symbol = _get_synthetic_declared_symbol(self_value, attr_name)
     return symbol is not None and symbol.is_initvar
 
 
@@ -944,8 +965,14 @@ def _is_synthetic_self_classmethod_attribute(
         )
         symbol = None if attribute is None else attribute.symbol
     else:
-        symbol = self_value.declared_symbols.get(attr_name)
+        symbol = _get_synthetic_declared_symbol(self_value, attr_name)
     return symbol is not None and symbol.returns_self_on_class_access
+
+
+def _maybe_mangle_private_name(attr_name: str, class_name: str) -> str | None:
+    if not attr_name.startswith("__") or attr_name.endswith("__"):
+        return None
+    return f"_{class_name}{attr_name}"
 
 
 def _normalize_synthetic_class_attribute(
@@ -1185,7 +1212,7 @@ def _get_attribute_from_typed(
         types.BuiltinFunctionType,
     }:
         return GenericValue(dict, [TypedValue(str), AnyValue(AnySource.explicit)])
-    synthetic_attr = _get_runtime_attribute_from_synthetic_dataclass(
+    synthetic_attr = _get_runtime_attribute_from_synthetic_class(
         typ, generic_args, ctx, on_class=False
     )
     if synthetic_attr is not UNINITIALIZED_VALUE:
@@ -1231,14 +1258,19 @@ def _get_attribute_from_typed(
     return result
 
 
-def _get_runtime_attribute_from_synthetic_dataclass(
+def _get_runtime_attribute_from_synthetic_class(
     typ: type, generic_args: Sequence[Value], ctx: AttrContext, *, on_class: bool
 ) -> Value:
     synthetic_class = ctx.get_synthetic_class(typ)
-    if synthetic_class is None or not synthetic_class.is_dataclass:
+    if synthetic_class is None:
+        return UNINITIALIZED_VALUE
+    if (
+        not synthetic_class.is_dataclass
+        and _maybe_mangle_private_name(ctx.attr, synthetic_class.name) is None
+    ):
         return UNINITIALIZED_VALUE
 
-    symbol = synthetic_class.declared_symbols.get(ctx.attr)
+    symbol = _get_synthetic_declared_symbol(synthetic_class, ctx.attr)
     if symbol is None or not symbol.is_method:
         if on_class:
             direct = _get_direct_attribute_from_synthetic_class(
@@ -1471,7 +1503,7 @@ def _get_attribute_from_known(obj: object, ctx: AttrContext) -> Value:
         return hooked_value
 
     if safe_isinstance(obj, type):
-        synthetic_attr = _get_runtime_attribute_from_synthetic_dataclass(
+        synthetic_attr = _get_runtime_attribute_from_synthetic_class(
             obj, (), ctx, on_class=True
         )
         if synthetic_attr is not UNINITIALIZED_VALUE:

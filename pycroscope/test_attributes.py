@@ -602,6 +602,18 @@ class TestAttributes(TestNameCheckVisitorBase):
         def capybara(value: Mixed) -> None:
             print(value.value)
 
+    @assert_passes()
+    def test_private_enum_nonmember_attribute(self):
+        import enum
+
+        from typing_extensions import Literal, assert_type
+
+        class Example2(enum.Enum):
+            __B = 2
+
+            def method(self) -> None:
+                assert_type(Example2.__B, Literal[2])
+
     @assert_passes(allow_import_failures=True)
     def test_synthetic_typevar_bound_class_attribute_after_import_failure(self):
         from typing import TypeVar
