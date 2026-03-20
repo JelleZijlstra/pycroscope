@@ -1,6 +1,8 @@
 # static analysis: ignore
 from typing import Dict, Union
 
+import pytest
+
 from .test_name_check_visitor import TestNameCheckVisitorBase
 from .test_node_visitor import (
     assert_passes,
@@ -602,6 +604,10 @@ class TestAttributes(TestNameCheckVisitorBase):
         def capybara(value: Mixed) -> None:
             print(value.value)
 
+    @pytest.mark.filterwarnings(
+        "ignore:private variables, such as .* will be normal attributes in 3\\.11:"
+        "DeprecationWarning"
+    )
     @assert_passes()
     def test_private_enum_nonmember_attribute(self):
         import enum
