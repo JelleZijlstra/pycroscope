@@ -365,17 +365,8 @@ def _super_thisclass_key(value: Value) -> type | str | None:
     return None
 
 
-def _super_mro_lookup_root(mro_value: Value, *, is_class_access: bool) -> Value | None:
-    if not is_class_access:
-        return mro_value
-    owner_key = _class_key_from_value(mro_value)
-    if owner_key is None:
-        return None
-    return SubclassValue(TypedValue(owner_key))
-
-
 def _super_mro_values(
-    receiver_value: TypedValue | GenericValue, ctx: CanAssignContext
+    receiver_value: TypedValue, ctx: CanAssignContext
 ) -> Sequence[MroValue]:
     # TODO: switch to just using the MRO; that currently doesn't work because it gets set too late
     if isinstance(receiver_value.typ, type):
