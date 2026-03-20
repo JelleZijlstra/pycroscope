@@ -606,6 +606,7 @@ def _iter_base_type_values_from_simple(
         return
     if isinstance(value, TypedValue):
         yield value
+        return
     if isinstance(value, SubclassValue):
         if isinstance(value.typ, TypedValue):
             yield value.typ
