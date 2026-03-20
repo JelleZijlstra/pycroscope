@@ -50,7 +50,9 @@ from .signature import (
 from .stacked_scopes import Composite
 from .type_object import (
     MroValue,
+    _bind_attribute_signature,
     _class_key_from_value,
+    _classmethod_receiver_value_from_type_value,
     _get_attribute_value_from_symbol,
     _is_property_marker_value,
     _specialize_symbol_for_owner,
@@ -375,12 +377,48 @@ def _super_mro_lookup_root(mro_value: Value, *, is_class_access: bool) -> Value 
 
 
 def _super_mro_values(
-    receiver_value: TypedValue, ctx: CanAssignContext
+    receiver_value: TypedValue | GenericValue, ctx: CanAssignContext
 ) -> Sequence[MroValue]:
     # TODO: switch to just using the MRO; that currently doesn't work because it gets set too late
     if isinstance(receiver_value.typ, type):
         return [TypedValue(base) for base in receiver_value.typ.__mro__]
     return receiver_value.get_type_object(ctx).mro
+
+
+def _get_attribute_from_runtime_super_owner(
+    owner: type,
+    *,
+    receiver_composite: Composite,
+    receiver_value: TypedValue | GenericValue,
+    ctx: AttrContext,
+) -> Value:
+    try:
+        descriptor = inspect.getattr_static(owner, ctx.attr)
+    except AttributeError:
+        return UNINITIALIZED_VALUE
+    can_assign_ctx = ctx.get_can_assign_context()
+    if can_assign_ctx is None:
+        return UNINITIALIZED_VALUE
+
+    receiver_ctx = ctx.clone_for_root_composite(
+        receiver_composite, lookup_root_value=receiver_value
+    )
+    if isinstance(descriptor, staticmethod):
+        return KnownValue(descriptor.__func__)
+    if isinstance(descriptor, classmethod):
+        return _bind_attribute_signature(
+            KnownValue(descriptor.__func__),
+            receiver_value=_classmethod_receiver_value_from_type_value(receiver_value),
+            ctx=can_assign_ctx,
+        )
+
+    descriptor_value = KnownValue(descriptor)
+    result = _unwrap_value_from_typed(descriptor_value, owner, receiver_ctx)
+    if isinstance(result, UnboundMethodValue):
+        return _bind_attribute_signature(
+            descriptor_value, receiver_value=receiver_value, ctx=can_assign_ctx
+        )
+    return result
 
 
 # TODO: in principle this should be doable with TypeObject.get_attribute if we add a flag
@@ -394,6 +432,9 @@ def _get_attribute_from_super_value(super_value: SuperValue, ctx: AttrContext) -
     if receiver_value is None or thisclass_key is None or can_assign_ctx is None:
         return AnyValue(AnySource.inference)
 
+    receiver_composite = Composite(
+        receiver_value, ctx.root_composite.varname, ctx.root_composite.node
+    )
     receiver_tobj = receiver_value.get_type_object(can_assign_ctx)
     saw_thisclass = False
     for mro_value in _super_mro_values(receiver_value, can_assign_ctx):
@@ -431,7 +472,7 @@ def _get_attribute_from_super_value(super_value: SuperValue, ctx: AttrContext) -
                 )
             ):
                 result = TypedValue(property)
-            result = set_self(result, ctx.get_self_value())
+            result = set_self(result, receiver_value)
             ctx.record_usage(super, result)
             return result
         lookup_root_value = _super_mro_lookup_root(
@@ -439,12 +480,21 @@ def _get_attribute_from_super_value(super_value: SuperValue, ctx: AttrContext) -
         )
         if lookup_root_value is None:
             continue
-        result = get_attribute(
-            ctx.clone_for_root_composite(
-                ctx.root_composite, lookup_root_value=lookup_root_value
+        if isinstance(owner_key, type):
+            result = _get_attribute_from_runtime_super_owner(
+                owner_key,
+                receiver_composite=receiver_composite,
+                receiver_value=receiver_value,
+                ctx=ctx,
             )
-        )
+        else:
+            result = get_attribute(
+                ctx.clone_for_root_composite(
+                    receiver_composite, lookup_root_value=lookup_root_value
+                )
+            )
         if result is not UNINITIALIZED_VALUE:
+            ctx.record_usage(super, result)
             return result
     return UNINITIALIZED_VALUE
 
