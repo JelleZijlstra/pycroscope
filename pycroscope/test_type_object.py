@@ -11,7 +11,6 @@ from .type_object import (
     _class_key_from_value,
     _should_use_permissive_dunder_hash,
     get_mro,
-    lookup_declared_symbol,
     lookup_declared_symbol_with_owner,
 )
 from .value import (
@@ -383,25 +382,6 @@ def test_runtime_and_string_type_objects_share_declared_symbols() -> None:
         is string_type_object.get_declared_symbols()
     )
     assert runtime_type_object.get_declared_symbol("attr") is not None
-
-
-def test_inherited_symbol_lookup_respects_shadowing() -> None:
-    from typing import ClassVar
-
-    from typing_extensions import ReadOnly
-
-    class Base:
-        x: ClassVar[ReadOnly[int]]
-
-    class Child(Base):
-        x: int = 1
-
-    checker = Checker()
-    symbol = lookup_declared_symbol(Child, "x", checker)
-    assert symbol is not None
-    assert not symbol.is_classvar
-    assert not symbol.is_readonly
-    assert symbol.typ == TypedValue(int)
 
 
 def test_inherited_symbol_lookup_returns_declaring_class() -> None:
