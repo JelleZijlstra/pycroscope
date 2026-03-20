@@ -28,6 +28,7 @@ from .value import (
     PredicateValue,
     SimpleType,
     SubclassValue,
+    SuperValue,
     SyntheticClassObjectValue,
     SyntheticModuleValue,
     TypedValue,
@@ -252,6 +253,8 @@ def get_pure_async_equivalent(value: Value) -> str:
 
 
 def _stringify_async_fn(value: Value) -> str:
+    if isinstance(value, SuperValue):
+        return f"super({_stringify_async_fn(value.thisclass)}, self)"
     value = replace_fallback(value)
     if isinstance(value, MultiValuedValue):
         return _stringify_async_values(value.vals, fallback=str(value))
@@ -311,9 +314,6 @@ def _stringify_obj(obj: Any) -> str:
         else:
             cls = type(obj.instance)
         return f"{_stringify_obj(cls)}.{obj.decorator.fn.__name__}"
-    elif isinstance(obj, super):
-        # self might not always be correct, but it's close enough
-        return f"super({_stringify_obj(obj.__self_class__)}, self)"
     else:
         return f"{obj.__module__}.{obj.__name__}"
 

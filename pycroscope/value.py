@@ -240,9 +240,7 @@ class CanAssignContext(Protocol):
 
     """
 
-    def make_type_object(
-        self, typ: type | super | str
-    ) -> "pycroscope.type_object.TypeObject":
+    def make_type_object(self, typ: type | str) -> "pycroscope.type_object.TypeObject":
         """Return a ``pycroscope.type_object.TypeObject`` for this concrete type."""
         raise NotImplementedError
 
@@ -586,6 +584,45 @@ class PartialCallValue(Value):
         for argument in self.arguments.values():
             yield from argument.walk_values()
         yield from self.runtime_value.walk_values()
+
+
+@dataclass(frozen=True)
+class SuperValue(Value):
+    """Value representing a super() call.
+
+    super(typ, self) => SuperValue(thisclass=typ, selfobj=self)
+    """
+
+    thisclass: Value
+    selfobj: Value | None = None
+
+    def __str__(self) -> str:
+        if self.selfobj is not None:
+            return f"super({self.thisclass}, {self.selfobj})"
+        else:
+            return f"super({self.thisclass})"
+
+    def get_fallback_value(self) -> Value:
+        return TypedValue(super)
+
+    def get_type_value(self) -> Value:
+        return self.get_fallback_value().get_type_value()
+
+    def substitute_typevars(self, typevars: TypeVarMap) -> "SuperValue":
+        return SuperValue(
+            thisclass=self.thisclass.substitute_typevars(typevars),
+            selfobj=(
+                self.selfobj.substitute_typevars(typevars)
+                if self.selfobj is not None
+                else None
+            ),
+        )
+
+    def walk_values(self) -> Iterable[Value]:
+        yield self
+        yield from self.thisclass.walk_values()
+        if self.selfobj is not None:
+            yield from self.selfobj.walk_values()
 
 
 @dataclass(frozen=True)
@@ -1409,15 +1446,11 @@ class TypedValue(Value):
             return super().can_overlap(other, ctx, mode)
 
     def get_generic_args_for_type(
-        self, typ: type | super | str, ctx: CanAssignContext
+        self, typ: type | str, ctx: CanAssignContext
     ) -> list[Value] | None:
-        def _is_same_synthetic_class_key(
-            left: type | super | str, right: type | str
-        ) -> bool:
+        def _is_same_synthetic_class_key(left: type | str, right: type | str) -> bool:
             if left == right:
                 return True
-            if isinstance(left, super):
-                return False
             checker_ctx = safe_getattr(ctx, "checker", ctx)
             get_synthetic_class = safe_getattr(checker_ctx, "get_synthetic_class", None)
             if not callable(get_synthetic_class):
@@ -1442,12 +1475,7 @@ class TypedValue(Value):
             args = self.args
         else:
             args = ()
-        if isinstance(self.typ, super):
-            generic_bases = ctx.get_generic_bases(self.typ.__self_class__, args)
-        else:
-            generic_bases = ctx.get_generic_bases(self.typ, args)
-        if isinstance(typ, super):
-            return None
+        generic_bases = ctx.get_generic_bases(self.typ, args)
         params_key: type | str = typ
         if params_key in generic_bases:
             raw_args = list(generic_bases[params_key].values())
@@ -1491,7 +1519,7 @@ class TypedValue(Value):
         return None
 
     def get_generic_arg_for_type(
-        self, typ: type | super, ctx: CanAssignContext, index: int
+        self, typ: type | str, ctx: CanAssignContext, index: int
     ) -> Value:
         args = self.get_generic_args_for_type(typ, ctx)
         if args and index < len(args):
@@ -3430,6 +3458,7 @@ GradualType: typing_extensions.TypeAlias = (
     | AnnotatedValue
     | PartialValue
     | PartialCallValue
+    | SuperValue
 )
 
 GRADUAL_TYPE = GradualType.__args__

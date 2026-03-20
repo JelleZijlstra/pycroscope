@@ -28,7 +28,13 @@ from .test_name_check_visitor import (
 )
 from .test_node_visitor import assert_passes
 from .tests import ASYNQ_METHOD_NAME
-from .value import IntersectionValue, KnownValue, TypedValue, UnboundMethodValue
+from .value import (
+    IntersectionValue,
+    KnownValue,
+    SuperValue,
+    TypedValue,
+    UnboundMethodValue,
+)
 
 
 class AsynqVisitor(ConfiguredNameCheckVisitor):
@@ -423,14 +429,21 @@ def test_stringify_async_fn():
         ),
     )
 
-    check(
-        "Subclass.async_method", KnownValue(super(Subclass, Subclass(1)).async_method)
+    assert (
+        "super(pycroscope.asynq_tests.Subclass, self).async_method"
+        == _stringify_async_fn(
+            UnboundMethodValue(
+                "async_method",
+                Composite(SuperValue(KnownValue(Subclass), TypedValue(Subclass))),
+            )
+        )
     )
     assert (
         "super(pycroscope.asynq_tests.Subclass, self).async_method"
         == _stringify_async_fn(
             UnboundMethodValue(
-                "async_method", Composite(TypedValue(super(Subclass, Subclass)))
+                "async_method",
+                Composite(SuperValue(KnownValue(Subclass), TypedValue(Subclass))),
             )
         )
     )

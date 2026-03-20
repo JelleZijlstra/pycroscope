@@ -60,6 +60,7 @@ from pycroscope.value import (
     SequenceValue,
     SimpleType,
     SubclassValue,
+    SuperValue,
     SyntheticClassObjectValue,
     SyntheticModuleValue,
     T,
@@ -907,7 +908,7 @@ def _has_relation(
             # An actually-empty dict literal has no key/value witnesses, so
             # it is assignable regardless of concrete K/V parameters.
             return {}
-        if isinstance(right, TypedValue) and not isinstance(right.typ, super):
+        if isinstance(right, TypedValue):
             generic_args = right.get_generic_args_for_type(left.typ, ctx)
             # If we don't think it's a generic base, try super;
             # runtime isinstance() may disagree.
@@ -1340,6 +1341,7 @@ def _extract_type_form(value: Value, ctx: CanAssignContext) -> Value | CanAssign
             SyntheticModuleValue,
             TypeVarTupleValue,
             UnboundMethodValue,
+            SuperValue,
         ),
     ):
         return CanAssignError(f"{value} is not a TypeForm")
@@ -2585,6 +2587,14 @@ def _intersect_values_inner(
             return left
         return Irreducible
 
+    if (result := _simple_intersection(left, right, ctx)) is not None:
+        return result
+
+    if isinstance(left, TypeAliasValue):
+        return _intersect_alias(left, right, ctx)
+    if isinstance(right, TypeAliasValue):
+        return _intersect_alias(right, left, ctx)
+
     wrapper_types = (
         AnnotatedValue,
         NewTypeValue,
@@ -2594,16 +2604,8 @@ def _intersect_values_inner(
         PartialCallValue,
         TypeVarValue,
         TypeVarTupleValue,
+        SuperValue,
     )
-
-    if (result := _simple_intersection(left, right, ctx)) is not None:
-        return result
-
-    if isinstance(left, TypeAliasValue):
-        return _intersect_alias(left, right, ctx)
-    if isinstance(right, TypeAliasValue):
-        return _intersect_alias(right, left, ctx)
-
     if isinstance(left, wrapper_types):
         return _intersect_wrapper(left, right, ctx)
     if isinstance(right, wrapper_types):
@@ -2622,6 +2624,7 @@ def _intersect_wrapper(
         | ParamSpecKwargsValue
         | TypeVarValue
         | TypeVarTupleValue
+        | SuperValue
     ),
     right: GradualType,
     ctx: CanAssignContext,

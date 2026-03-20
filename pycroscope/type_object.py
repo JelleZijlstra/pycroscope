@@ -157,13 +157,9 @@ class TypeObjectAttribute:
     property_has_setter: bool
 
 
-def get_mro(typ: type | super) -> Sequence[type]:
-    if isinstance(typ, super):
-        typ_for_mro = typ.__thisclass__
-    else:
-        typ_for_mro = typ
+def get_mro(typ: type) -> Sequence[type]:
     try:
-        return inspect.getmro(typ_for_mro)
+        return inspect.getmro(typ)
     except AttributeError:
         # It's not actually a class.
         return []
@@ -180,7 +176,7 @@ class DataclassFieldRecord:
 
 @dataclass(kw_only=True)
 class TypeObject:
-    typ: type | super | str
+    typ: type | str
     mro: tuple[MroValue, ...]
     """Types that we consider the type to inherit from for purposes of subtyping, but that
     are not actual bases."""
@@ -208,13 +204,10 @@ class TypeObject:
             self.is_universally_assignable = False
             self.is_thrift_enum = False
             return
-        if isinstance(self.typ, super):
-            self.is_universally_assignable = False
-        else:
-            assert isinstance(self.typ, type), repr(self.typ)
-            self.is_universally_assignable = issubclass(self.typ, mock.NonCallableMock)
-            if safe_getattr(self.typ, "__final__", False):
-                self.is_final = True
+        assert isinstance(self.typ, type), repr(self.typ)
+        self.is_universally_assignable = issubclass(self.typ, mock.NonCallableMock)
+        if safe_getattr(self.typ, "__final__", False):
+            self.is_final = True
         self.is_thrift_enum = hasattr(self.typ, "_VALUES_TO_NAMES")
         self.base_classes |= set(get_mro(self.typ))
         if self.is_thrift_enum:
@@ -294,8 +287,6 @@ class TypeObject:
         return self.is_universally_assignable
 
     def is_assignable_to_type_object(self, other: "TypeObject") -> bool:
-        if isinstance(other.typ, super):
-            return False
         if isinstance(other.typ, str):
             return (
                 self.is_universally_assignable
@@ -333,10 +324,6 @@ class TypeObject:
         other = other_basic.get_type_object(ctx)
         if other.is_universally_assignable:
             return {}
-        if isinstance(self.typ, super):
-            if isinstance(other.typ, super):
-                return {}
-            return CanAssignError(f"Cannot assign to super object {self}")
         if not self.is_protocol:
             if self.typ is object:
                 return {}
@@ -358,10 +345,6 @@ class TypeObject:
                         return {}
                 return CanAssignError(f"Cannot assign {other_val} to {self}")
         else:
-            if isinstance(other.typ, super):
-                return CanAssignError(
-                    f"Cannot assign super object {other_val} to protocol {self}"
-                )
             use_cache = not isinstance(self_val, AnnotatedValue) and not isinstance(
                 other_val, AnnotatedValue
             )
@@ -875,7 +858,7 @@ def _resolve_member_access(
         )
     symbol = access.symbol
     owner = access.owner
-    if class_object_access or isinstance(tobj.typ, super):
+    if class_object_access:
         property_getter, property_has_setter = None, False
     elif symbol.property_info is not None:
         property_has_setter = access.property_has_setter
@@ -1585,11 +1568,9 @@ def _bind_protocol_call_expected(
 
 
 def _get_protocol_call_member_initializer(
-    protocol_typ: type | super | str, self_value: Value, ctx: CanAssignContext
+    protocol_typ: type | str, self_value: Value, ctx: CanAssignContext
 ) -> Value:
     call_member = UNINITIALIZED_VALUE
-    if isinstance(protocol_typ, super):
-        return call_member
     if isinstance(protocol_typ, str):
         checker_ctx = safe_getattr(ctx, "checker", ctx)
         get_synthetic_class = safe_getattr(checker_ctx, "get_synthetic_class", None)

@@ -275,6 +275,7 @@ from .value import (
     SequenceValue,
     SkipDeprecatedExtension,
     SubclassValue,
+    SuperValue,
     SyntheticClassObjectValue,
     SyntheticModuleValue,
     SysPlatformExtension,
@@ -1280,8 +1281,6 @@ class ClassAttributeChecker:
                 return None  # ignore non-hashable types
             else:
                 return typ
-        if isinstance(typ, super):
-            typ = typ.__self_class__
         if isinstance(safe_getattr(typ, "__module__", None), str) and isinstance(
             safe_getattr(typ, "__name__", None), str
         ):
@@ -2360,7 +2359,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             return self._get_synthetic_class_for_runtime_type(typ)
         return self._synthetic_classes_by_name.get(typ)
 
-    def make_type_object(self, typ: type | super | str) -> TypeObject:
+    def make_type_object(self, typ: type | str) -> TypeObject:
         return self.checker.make_type_object(typ)
 
     def can_assume_compatibility(self, left: TypeObject, right: TypeObject) -> bool:
@@ -15345,21 +15344,27 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         # We don't throw an error in many
         # cases where we're not quite sure whether an attribute
         # will exist.
+        if isinstance(root_value, SuperValue):
+            thisclass = replace_fallback(root_value.thisclass)
+            if isinstance(thisclass, KnownValue) and isinstance(thisclass.val, type):
+                subclasses = get_subclasses_recursively(thisclass.val)
+                if any(
+                    hasattr(cls, attr) for cls in subclasses if cls is not thisclass.val
+                ):
+                    return AnyValue(AnySource.inference)
+            if allow_error:
+                self._show_error_if_checking(
+                    node,
+                    f"{root_value} has no attribute {attr!r}",
+                    ErrorCode.undefined_attribute,
+                )
+                return AnyValue(AnySource.error)
+            return UNINITIALIZED_VALUE
         root_value = replace_fallback(root_value)
         if isinstance(root_value, UnboundMethodValue):
             if self._should_ignore_val(node):
                 return AnyValue(AnySource.error)
         elif isinstance(root_value, KnownValue):
-            # super calls on mixin classes may use attributes that are defined only on child classes
-            if isinstance(root_value.val, super):
-                subclasses = get_subclasses_recursively(root_value.val.__thisclass__)
-                if any(
-                    hasattr(cls, attr)
-                    for cls in subclasses
-                    if cls is not root_value.val.__thisclass__
-                ):
-                    return AnyValue(AnySource.inference)
-
             # Ignore objects that override __getattr__.
             # typing alias objects expose __getattr__ but still should not be
             # treated as having arbitrary attributes.

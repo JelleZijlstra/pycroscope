@@ -110,7 +110,7 @@ from .value import (
     unite_values,
 )
 
-_BaseProvider = Callable[[type | super], set[type]]
+_BaseProvider = Callable[[type], set[type]]
 _SyntheticGenericBases = dict[type | str, dict[TypeVarLike, Value]]
 
 
@@ -412,7 +412,7 @@ class Checker:
     ts_finder: TypeshedFinder = field(init=False, repr=False)
     reexport_tracker: ImplicitReexportTracker = field(init=False, repr=False)
     callable_tracker: CallableTracker = field(init=False, repr=False)
-    type_object_cache: dict[type | super | str, TypeObject] = field(
+    type_object_cache: dict[type | str, TypeObject] = field(
         default_factory=dict, init=False, repr=False
     )
     synthetic_classes: dict[type | str, SyntheticClassObjectValue] = field(
@@ -478,13 +478,13 @@ class Checker:
     def perform_final_checks(self) -> list[Failure]:
         return self.callable_tracker.check(self)
 
-    def get_additional_bases(self, typ: type | super) -> set[type | str]:
+    def get_additional_bases(self, typ: type) -> set[type | str]:
         bases: set[type | str] = set()
         for provider in self.options.get_value_for(AdditionalBaseProviders):
             bases |= provider(typ)
         return bases
 
-    def make_type_object(self, typ: type | super | str) -> TypeObject:
+    def make_type_object(self, typ: type | str) -> TypeObject:
         try:
             in_cache = typ in self.type_object_cache
         except Exception:
@@ -497,7 +497,7 @@ class Checker:
         return type_object
 
     def _sync_synthetic_class_type_object(
-        self, typ: type | super | str, type_object: TypeObject
+        self, typ: type | str, type_object: TypeObject
     ) -> None:
         if not isinstance(typ, (type, str)):
             return
