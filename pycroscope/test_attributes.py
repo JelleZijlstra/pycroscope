@@ -470,7 +470,7 @@ class TestAttributes(TestNameCheckVisitorBase):
                 assert_type(bound(1.0), float)
 
     @assert_passes()
-    def test_super_staticmethod_current_behavior(self):
+    def test_super_staticmethod(self):
         class Base:
             @staticmethod
             def label() -> int:
@@ -478,8 +478,7 @@ class TestAttributes(TestNameCheckVisitorBase):
 
         class Child(Base):
             def read_staticmethod(self) -> None:
-                # TODO: This should be accepted once super() staticmethod binding is fixed.
-                super().label()  # E: incompatible_call
+                assert_type(super().label(), int)
 
     @assert_passes()
     def test_function_annotations_and_unhashable_hash(self):

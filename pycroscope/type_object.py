@@ -157,13 +157,9 @@ class TypeObjectAttribute:
     property_has_setter: bool
 
 
-def get_mro(typ: type | super) -> Sequence[type]:
-    if isinstance(typ, super):
-        typ_for_mro = typ.__thisclass__
-    else:
-        typ_for_mro = typ
+def get_mro(typ: type) -> Sequence[type]:
     try:
-        return inspect.getmro(typ_for_mro)
+        return inspect.getmro(typ)
     except AttributeError:
         # It's not actually a class.
         return []
@@ -180,7 +176,7 @@ class DataclassFieldRecord:
 
 @dataclass(kw_only=True)
 class TypeObject:
-    typ: type | super | str
+    typ: type | str
     mro: tuple[MroValue, ...]
     """Types that we consider the type to inherit from for purposes of subtyping, but that
     are not actual bases."""
@@ -208,13 +204,10 @@ class TypeObject:
             self.is_universally_assignable = False
             self.is_thrift_enum = False
             return
-        if isinstance(self.typ, super):
-            self.is_universally_assignable = False
-        else:
-            assert isinstance(self.typ, type), repr(self.typ)
-            self.is_universally_assignable = issubclass(self.typ, mock.NonCallableMock)
-            if safe_getattr(self.typ, "__final__", False):
-                self.is_final = True
+        assert isinstance(self.typ, type), repr(self.typ)
+        self.is_universally_assignable = issubclass(self.typ, mock.NonCallableMock)
+        if safe_getattr(self.typ, "__final__", False):
+            self.is_final = True
         self.is_thrift_enum = hasattr(self.typ, "_VALUES_TO_NAMES")
         self.base_classes |= set(get_mro(self.typ))
         if self.is_thrift_enum:
@@ -233,7 +226,7 @@ class TypeObject:
         ctx: CanAssignContext,
         *,
         on_class: bool,
-        receiver_value: TypedValue | GenericValue | None = None,
+        receiver_value: TypedValue | None = None,
     ) -> TypeObjectAttribute | None:
         match = self._get_declared_symbol_with_owner(name, ctx)
         if match is None:
@@ -294,8 +287,6 @@ class TypeObject:
         return self.is_universally_assignable
 
     def is_assignable_to_type_object(self, other: "TypeObject") -> bool:
-        if isinstance(other.typ, super):
-            return False
         if isinstance(other.typ, str):
             return (
                 self.is_universally_assignable
@@ -333,10 +324,6 @@ class TypeObject:
         other = other_basic.get_type_object(ctx)
         if other.is_universally_assignable:
             return {}
-        if isinstance(self.typ, super):
-            if isinstance(other.typ, super):
-                return {}
-            return CanAssignError(f"Cannot assign to super object {self}")
         if not self.is_protocol:
             if self.typ is object:
                 return {}
@@ -358,10 +345,6 @@ class TypeObject:
                         return {}
                 return CanAssignError(f"Cannot assign {other_val} to {self}")
         else:
-            if isinstance(other.typ, super):
-                return CanAssignError(
-                    f"Cannot assign super object {other_val} to protocol {self}"
-                )
             use_cache = not isinstance(self_val, AnnotatedValue) and not isinstance(
                 other_val, AnnotatedValue
             )
@@ -434,11 +417,6 @@ class TypeObject:
         other_type_key = _receiver_key_from_value(other_val)
 
         bounds_maps = []
-        protocol_type_key: type | str | None
-        if isinstance(self.typ, (type, str)):
-            protocol_type_key = self.typ
-        else:
-            protocol_type_key = None
         if len(self.protocol_members) > 1:
             protocol_self_typevar_map = _collect_protocol_self_typevar_map(
                 self, self.protocol_members, other_val, ctx
@@ -450,8 +428,8 @@ class TypeObject:
             protocol_self_typevar_map = {}
             actual_self_typevar_map = {}
         apply_synthetic_member_rules = (
-            isinstance(protocol_type_key, str)
-            and _get_synthetic_class_for_key(protocol_type_key, ctx) is not None
+            isinstance(self.typ, str)
+            and _get_synthetic_class_for_key(self.typ, ctx) is not None
         )
         class_object_check = _is_definitely_class_object_value(other_val)
         for member in self.protocol_members:
@@ -875,7 +853,7 @@ def _resolve_member_access(
         )
     symbol = access.symbol
     owner = access.owner
-    if class_object_access or isinstance(tobj.typ, super):
+    if class_object_access:
         property_getter, property_has_setter = None, False
     elif symbol.property_info is not None:
         property_has_setter = access.property_has_setter
@@ -972,7 +950,7 @@ def _iter_class_keys_from_simple_value(value: SimpleType) -> list[type | str]:
 
 
 def _typed_class_key(value: Value) -> list[type | str]:
-    if isinstance(value, TypedValue) and isinstance(value.typ, (type, str)):
+    if isinstance(value, TypedValue):
         return [value.typ]
     return []
 
@@ -1050,14 +1028,12 @@ def normalize_synthetic_descriptor_attribute(
 
 
 def _class_key_and_generic_args_from_type_value(
-    receiver_value: TypedValue | GenericValue,
+    receiver_value: TypedValue,
 ) -> tuple[type | str, Sequence[Value]]:
-    if isinstance(receiver_value.typ, (type, str)):
-        generic_args = (
-            receiver_value.args if isinstance(receiver_value, GenericValue) else ()
-        )
-        return receiver_value.typ, generic_args
-    raise AssertionError(receiver_value)
+    generic_args = (
+        receiver_value.args if isinstance(receiver_value, GenericValue) else ()
+    )
+    return receiver_value.typ, generic_args
 
 
 def _typevar_map_from_generic_args(
@@ -1077,7 +1053,7 @@ def _typevar_map_from_generic_args(
 
 
 def _typevar_map_from_type_value(
-    receiver_value: TypedValue | GenericValue, type_params: Sequence[TypeParam]
+    receiver_value: TypedValue, type_params: Sequence[TypeParam]
 ) -> dict[TypeVarLike, Value]:
     _, generic_args = _class_key_and_generic_args_from_type_value(receiver_value)
     return _typevar_map_from_generic_args(type_params, generic_args)
@@ -1089,7 +1065,7 @@ def _specialize_symbol_for_owner(
     symbol: ClassSymbol,
     ctx: CanAssignContext,
     *,
-    receiver_value: TypedValue | GenericValue | None = None,
+    receiver_value: TypedValue | None = None,
 ) -> ClassSymbol:
     substitutions = _get_symbol_owner_substitutions_from_type_objects(
         receiver_tobj, owner_tobj, ctx, receiver_value=receiver_value
@@ -1130,7 +1106,7 @@ def _specialize_self_returning_classmethod(
     raw_attr: Value,
     normalized_attr: Value,
     *,
-    receiver_value: TypedValue | GenericValue | None,
+    receiver_value: TypedValue | None,
     ctx: CanAssignContext,
 ) -> Value:
     if receiver_value is None or not isinstance(normalized_attr, CallableValue):
@@ -1155,7 +1131,7 @@ def _specialize_self_returning_classmethod(
 
 
 def _classmethod_receiver_value_from_type_value(
-    receiver_value: TypedValue | GenericValue,
+    receiver_value: TypedValue,
 ) -> SubclassValue:
     class_key, _ = _class_key_and_generic_args_from_type_value(receiver_value)
     return SubclassValue(TypedValue(class_key))
@@ -1166,7 +1142,7 @@ def _get_attribute_value_from_symbol(
     ctx: CanAssignContext,
     *,
     on_class: bool,
-    receiver_value: TypedValue | GenericValue | None,
+    receiver_value: TypedValue | None,
 ) -> Value:
     if symbol.property_info is not None:
         if on_class:
@@ -1233,7 +1209,7 @@ def _get_symbol_owner_substitutions_from_type_objects(
     owner_tobj: TypeObject,
     ctx: CanAssignContext,
     *,
-    receiver_value: TypedValue | GenericValue | None = None,
+    receiver_value: TypedValue | None = None,
 ) -> dict[TypeVarLike, Value]:
     receiver_substitutions: dict[TypeVarLike, Value] = {}
     if receiver_value is not None:
@@ -1313,10 +1289,7 @@ def lookup_declared_symbol_with_owner(
     if match is None:
         return None
     owner_tobj, symbol = match
-    owner_key = owner_tobj.typ
-    if not isinstance(owner_key, (type, str)):
-        return None
-    return owner_key, symbol
+    return owner_tobj.typ, symbol
 
 
 def _is_member_defined_on_class_key(
@@ -1338,7 +1311,7 @@ def _is_property_marker_value(value: Value) -> bool:
     return (
         isinstance(value, KnownValue)
         and isinstance(value.val, property)
-        or isinstance(value, (TypedValue, GenericValue))
+        or isinstance(value, TypedValue)
         and value.typ is property
     )
 
@@ -1585,11 +1558,9 @@ def _bind_protocol_call_expected(
 
 
 def _get_protocol_call_member_initializer(
-    protocol_typ: type | super | str, self_value: Value, ctx: CanAssignContext
+    protocol_typ: type | str, self_value: Value, ctx: CanAssignContext
 ) -> Value:
     call_member = UNINITIALIZED_VALUE
-    if isinstance(protocol_typ, super):
-        return call_member
     if isinstance(protocol_typ, str):
         checker_ctx = safe_getattr(ctx, "checker", ctx)
         get_synthetic_class = safe_getattr(checker_ctx, "get_synthetic_class", None)
@@ -1643,9 +1614,6 @@ def _collect_protocol_self_typevar_map(
 
     This propagates `self: T` constraints across protocol members.
     """
-    if not isinstance(tobj.typ, (type, str)):
-        return {}
-
     tv_map: dict[TypeVarLike, Value] = {}
     for member in protocol_members:
         receiver_for_match = receiver_value

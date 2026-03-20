@@ -88,6 +88,7 @@ from .value import (
     Qualifier,
     SequenceValue,
     SubclassValue,
+    SuperValue,
     SyntheticClassObjectValue,
     TypeAliasValue,
     TypedDictEntry,
@@ -716,13 +717,13 @@ def _super_impl(ctx: CallContext) -> Value:
                     typ = first_arg.typ.typ
                     if isinstance(typ, str):
                         return AnyValue(AnySource.inference)
-                    return KnownValue(super(current_class, typ))
+                    return SuperValue(KnownValue(current_class), first_arg)
                 elif isinstance(first_arg, KnownValue):
-                    return KnownValue(super(current_class, first_arg.val))
+                    return SuperValue(KnownValue(current_class), first_arg)
                 elif isinstance(first_arg, TypedValue):
                     if isinstance(first_arg.typ, str):
                         return AnyValue(AnySource.inference)
-                    return TypedValue(super(current_class, first_arg.typ))
+                    return SuperValue(KnownValue(current_class), first_arg)
                 else:
                     return AnyValue(AnySource.inference)
         return AnyValue(AnySource.inference)
@@ -740,10 +741,8 @@ def _super_impl(ctx: CallContext) -> Value:
 
     if isinstance(obj, TypedValue) and obj.typ is not type:
         tobj = obj.get_type_object(ctx.visitor)
-        is_value = True
     elif isinstance(obj, SubclassValue) and isinstance(obj.typ, TypedValue):
         tobj = obj.typ.get_type_object(ctx.visitor)
-        is_value = False
     else:
         return AnyValue(AnySource.inference)
 
@@ -761,15 +760,12 @@ def _super_impl(ctx: CallContext) -> Value:
         return AnyValue(AnySource.inference)
 
     try:
-        super_val = super(cls, tobj.typ)
+        super(cls, tobj.typ)
     except Exception:
         ctx.show_error("Bad arguments to super", ErrorCode.bad_super_call)
         return AnyValue(AnySource.error)
 
-    if is_value:
-        return TypedValue(super_val)
-    else:
-        return KnownValue(super_val)
+    return SuperValue(KnownValue(cls), obj)
 
 
 def _tuple_impl(ctx: CallContext) -> ImplReturn:
@@ -2962,7 +2958,7 @@ def get_default_argspecs() -> dict[object, Signature]:
             ],
             impl=_super_impl,
             callable=super,
-            return_annotation=TypedValue(super),
+            return_annotation=SuperValue(AnyValue(AnySource.inference)),
         ),
         Signature.make(
             [SigParameter("iterable", _POS_ONLY, default=NO_ARG_SENTINEL)],

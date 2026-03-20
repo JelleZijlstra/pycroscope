@@ -110,7 +110,7 @@ from .value import (
     unite_values,
 )
 
-_BaseProvider = Callable[[type | super], set[type]]
+_BaseProvider = Callable[[type], set[type]]
 _SyntheticGenericBases = dict[type | str, dict[TypeVarLike, Value]]
 
 
@@ -376,9 +376,7 @@ def _synthetic_descriptor_set_type(descriptor: Value, ctx: AttrContext) -> Value
     descriptor = replace_fallback(descriptor)
     if isinstance(descriptor, AnnotatedValue):
         return _synthetic_descriptor_set_type(descriptor.value, ctx)
-    if not isinstance(
-        descriptor, (KnownValue, TypedValue, GenericValue, SyntheticClassObjectValue)
-    ):
+    if not isinstance(descriptor, (KnownValue, TypedValue, SyntheticClassObjectValue)):
         return None
     method_ctx = ctx.clone_for_attribute_lookup(Composite(descriptor), "__set__")
     method_value = get_attribute(method_ctx)
@@ -412,7 +410,7 @@ class Checker:
     ts_finder: TypeshedFinder = field(init=False, repr=False)
     reexport_tracker: ImplicitReexportTracker = field(init=False, repr=False)
     callable_tracker: CallableTracker = field(init=False, repr=False)
-    type_object_cache: dict[type | super | str, TypeObject] = field(
+    type_object_cache: dict[type | str, TypeObject] = field(
         default_factory=dict, init=False, repr=False
     )
     synthetic_classes: dict[type | str, SyntheticClassObjectValue] = field(
@@ -478,13 +476,13 @@ class Checker:
     def perform_final_checks(self) -> list[Failure]:
         return self.callable_tracker.check(self)
 
-    def get_additional_bases(self, typ: type | super) -> set[type | str]:
+    def get_additional_bases(self, typ: type) -> set[type | str]:
         bases: set[type | str] = set()
         for provider in self.options.get_value_for(AdditionalBaseProviders):
             bases |= provider(typ)
         return bases
 
-    def make_type_object(self, typ: type | super | str) -> TypeObject:
+    def make_type_object(self, typ: type | str) -> TypeObject:
         try:
             in_cache = typ in self.type_object_cache
         except Exception:
@@ -497,10 +495,8 @@ class Checker:
         return type_object
 
     def _sync_synthetic_class_type_object(
-        self, typ: type | super | str, type_object: TypeObject
+        self, typ: type | str, type_object: TypeObject
     ) -> None:
-        if not isinstance(typ, (type, str)):
-            return
         synthetic_class = self.get_synthetic_class(typ)
         if synthetic_class is None:
             return
@@ -793,10 +789,7 @@ class Checker:
         seen: frozenset[type | str] = frozenset(),
     ) -> tuple[str, ...]:
         class_type = synthetic_class.class_type
-        if not (
-            isinstance(class_type, TypedValue)
-            and isinstance(class_type.typ, (type, str))
-        ):
+        if not isinstance(class_type, TypedValue):
             return ()
         class_key = class_type.typ
         if class_key in seen:
@@ -2187,9 +2180,7 @@ class Checker:
         seen.add(value_id)
 
         class_type = value.class_type
-        if not isinstance(class_type, TypedValue) or not isinstance(
-            class_type.typ, (type, str)
-        ):
+        if not isinstance(class_type, TypedValue):
             return []
         field_records = self._get_ordered_synthetic_dataclass_field_records(
             value, include_inherited=include_inherited
@@ -2869,9 +2860,7 @@ class Checker:
                     preserve_exact_return = True
         elif isinstance(root, SyntheticClassObjectValue):
             synthetic_root = root
-            if isinstance(root.class_type, TypedValue) and isinstance(
-                root.class_type.typ, (type, str)
-            ):
+            if isinstance(root.class_type, TypedValue):
                 class_type = root.class_type.typ
             origin_argspec = self.signature_from_value(
                 root,
@@ -2947,10 +2936,7 @@ class Checker:
                     TypedValue(member.val)
                     if isinstance(member, KnownValue) and type(member.val) is type
                     else (
-                        member
-                        if isinstance(member, (TypedValue, GenericValue))
-                        and isinstance(member.typ, (type, str))
-                        else converted_member
+                        member if isinstance(member, TypedValue) else converted_member
                     )
                 )
                 for member, converted_member in zip(
@@ -2970,8 +2956,7 @@ class Checker:
                 if (
                     isinstance(converted_member, AnyValue)
                     and converted_member.source is AnySource.error
-                    and isinstance(member, (TypedValue, GenericValue))
-                    and isinstance(member.typ, (type, str))
+                    and isinstance(member, TypedValue)
                 )
                 else exact_member
             )
@@ -3239,9 +3224,7 @@ class CheckerAttrContext(AttrContext):
     def bind_synthetic_instance_attribute(self, attr_name: str, value: Value) -> Value:
         root_value = self.root_value
         resolved_root_value = replace_fallback(root_value)
-        if isinstance(resolved_root_value, TypedValue) and isinstance(
-            resolved_root_value.typ, (type, str)
-        ):
+        if isinstance(resolved_root_value, TypedValue):
             class_key = resolved_root_value.typ
         elif isinstance(resolved_root_value, KnownValue) and not isinstance(
             resolved_root_value.val, type

@@ -37,6 +37,7 @@ from .value import (
     OverlappingValue,
     SequenceValue,
     SubclassValue,
+    SuperValue,
     SyntheticClassObjectValue,
     TypedValue,
     TypeVarParam,
@@ -267,11 +268,8 @@ def test_get_generic_args_for_type_with_super() -> None:
     class Child(Base[int]):
         pass
 
-    super_obj = super(Child, Child)
-    assert TypedValue(Child).get_generic_args_for_type(super_obj, CTX) is None
-    assert TypedValue(super_obj).get_generic_args_for_type(Base, CTX) == [
-        TypedValue(int)
-    ]
+    super_value = SuperValue(KnownValue(Child), TypedValue(Child))
+    assert super_value.get_fallback_value().get_generic_args_for_type(Base, CTX) is None
 
 
 @runtime_checkable

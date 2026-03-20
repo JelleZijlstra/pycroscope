@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Improve `super()` modeling so pycroscope now tracks `super` calls with a dedicated internal value, resolves `super()` attribute lookup more consistently, and accepts staticmethod access like `super().label()`.
 - Run Python 3.14 CI tests with coverage reporting, and keep a pinned set of fully covered modules at 100% coverage so regressions in files like `annotated_types.py`, `regex_check.py`, and `type_evaluation.py` fail CI.
 - Make the pytest suite fail on unexpected `DeprecationWarning`s by default, so newly escaped deprecated APIs are caught unless a test intentionally filters them.
 - Add `pycroscope.get_mro()` and record value-level class MROs on type objects, so generic, tuple-subclass, namedtuple, and synthetic-class inheritance can now be inspected with preserved specialization.

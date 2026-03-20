@@ -69,7 +69,7 @@ from .value import (
 _SyntheticGenericBases = dict[type | str, dict[TypeVarLike, Value]]
 
 
-def build_type_object(checker: Checker, typ: type | super | str) -> TypeObject:
+def build_type_object(checker: Checker, typ: type | str) -> TypeObject:
     if isinstance(typ, str):
         # Synthetic type
         bases = _get_typeshed_bases(checker, typ)
@@ -103,68 +103,61 @@ def build_type_object(checker: Checker, typ: type | super | str) -> TypeObject:
             declared_symbols=direct_symbols,
             dataclass_fields=dataclass_fields,
         )
-    elif isinstance(typ, super):
-        return TypeObject(
-            typ=typ,
-            mro=tuple(TypedValue(base) for base in get_mro(typ)),
-            base_classes=checker.get_additional_bases(typ),
-        )
+    plugin_bases = checker.get_additional_bases(typ)
+    typeshed_bases = _get_recursive_typeshed_bases(checker, typ)
+    additional_bases = plugin_bases | typeshed_bases
+    direct_symbols = _build_direct_declared_symbols(checker, typ)
+    dataclass_fields = _get_runtime_dataclass_fields(typ)
+    if checker._arg_spec_cache is None:
+        declared_type_params = ()
+        mro = ()
     else:
-        plugin_bases = checker.get_additional_bases(typ)
-        typeshed_bases = _get_recursive_typeshed_bases(checker, typ)
-        additional_bases = plugin_bases | typeshed_bases
-        direct_symbols = _build_direct_declared_symbols(checker, typ)
-        dataclass_fields = _get_runtime_dataclass_fields(typ)
-        if checker._arg_spec_cache is None:
-            declared_type_params = ()
-            mro = ()
-        else:
-            declared_type_params = tuple(checker.get_type_parameters(typ))
-            mro = compute_type_object_mro(checker, typ)
-        # Is it marked as a protocol in stubs? If so, use the stub definition.
-        if checker.ts_finder.is_protocol(typ):
-            return TypeObject(
-                typ=typ,
-                mro=mro,
-                base_classes=additional_bases,
-                declared_type_params=declared_type_params,
-                is_protocol=True,
-                protocol_members=_get_protocol_members(checker, typeshed_bases),
-                declared_symbols=direct_symbols,
-                dataclass_fields=dataclass_fields,
-            )
-        # Is it a protocol at runtime?
-        if is_instance_of_typing_name(typ, "_ProtocolMeta") and safe_getattr(
-            typ, "_is_protocol", False
-        ):
-            bases = get_mro(typ)
-            members = set(
-                itertools.chain.from_iterable(
-                    _extract_protocol_members(base) for base in bases
-                )
-            )
-            members |= _get_synthetic_protocol_members(checker, typ)
-            return TypeObject(
-                typ=typ,
-                mro=mro,
-                base_classes=additional_bases,
-                declared_type_params=declared_type_params,
-                is_protocol=True,
-                protocol_members=members,
-                declared_symbols=direct_symbols,
-                dataclass_fields=dataclass_fields,
-            )
-
-        is_final = checker.ts_finder.is_final(typ)
+        declared_type_params = tuple(checker.get_type_parameters(typ))
+        mro = compute_type_object_mro(checker, typ)
+    # Is it marked as a protocol in stubs? If so, use the stub definition.
+    if checker.ts_finder.is_protocol(typ):
         return TypeObject(
             typ=typ,
             mro=mro,
             base_classes=additional_bases,
             declared_type_params=declared_type_params,
-            is_final=is_final,
+            is_protocol=True,
+            protocol_members=_get_protocol_members(checker, typeshed_bases),
             declared_symbols=direct_symbols,
             dataclass_fields=dataclass_fields,
         )
+    # Is it a protocol at runtime?
+    if is_instance_of_typing_name(typ, "_ProtocolMeta") and safe_getattr(
+        typ, "_is_protocol", False
+    ):
+        bases = get_mro(typ)
+        members = set(
+            itertools.chain.from_iterable(
+                _extract_protocol_members(base) for base in bases
+            )
+        )
+        members |= _get_synthetic_protocol_members(checker, typ)
+        return TypeObject(
+            typ=typ,
+            mro=mro,
+            base_classes=additional_bases,
+            declared_type_params=declared_type_params,
+            is_protocol=True,
+            protocol_members=members,
+            declared_symbols=direct_symbols,
+            dataclass_fields=dataclass_fields,
+        )
+
+    is_final = checker.ts_finder.is_final(typ)
+    return TypeObject(
+        typ=typ,
+        mro=mro,
+        base_classes=additional_bases,
+        declared_type_params=declared_type_params,
+        is_final=is_final,
+        declared_symbols=direct_symbols,
+        dataclass_fields=dataclass_fields,
+    )
 
 
 def _get_runtime_dataclass_fields(typ: type) -> tuple[DataclassFieldRecord, ...]:
@@ -221,9 +214,7 @@ def _get_synthetic_dataclass_fields(
             if symbol.dataclass_field is not None
         )
     class_type = synthetic_class.class_type
-    if not isinstance(class_type, TypedValue) or not isinstance(
-        class_type.typ, (type, str)
-    ):
+    if not isinstance(class_type, TypedValue):
         return tuple(records_by_name[name] for name in ordered)
     for field_name in local_fields:
         symbol = synthetic_class.declared_symbols.get(field_name)
@@ -614,11 +605,10 @@ def _iter_base_type_values_from_simple(
         )
         return
     if isinstance(value, TypedValue):
-        if isinstance(value.typ, (type, str)):
-            yield value
+        yield value
         return
     if isinstance(value, SubclassValue):
-        if isinstance(value.typ, TypedValue) and isinstance(value.typ.typ, (type, str)):
+        if isinstance(value.typ, TypedValue):
             yield value.typ
         return
     if isinstance(

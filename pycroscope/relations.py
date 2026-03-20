@@ -60,6 +60,7 @@ from pycroscope.value import (
     SequenceValue,
     SimpleType,
     SubclassValue,
+    SuperValue,
     SyntheticClassObjectValue,
     SyntheticModuleValue,
     T,
@@ -284,12 +285,10 @@ def has_relation(
 
 def _specialized_synthetic_class_type(
     synthetic_class: SyntheticClassObjectValue, ctx: CanAssignContext
-) -> TypedValue | GenericValue | TypedDictValue:
+) -> TypedValue | TypedDictValue:
     if not isinstance(synthetic_class.class_type, TypedValue):
         return synthetic_class.class_type
     class_typ = synthetic_class.class_type.typ
-    if not isinstance(class_typ, (type, str)):
-        return synthetic_class.class_type
     declared = ctx.get_generic_bases(class_typ).get(class_typ)
     if declared:
         return GenericValue(class_typ, declared.values())
@@ -701,7 +700,7 @@ def _has_relation(
             return {}
         elif isinstance(right, TypedValue) and right.typ is type:
             return {}
-        elif isinstance(right, TypedValue) and isinstance(right.typ, (type, str)):
+        elif isinstance(right, TypedValue):
             get_synthetic_class = getattr(ctx, "get_synthetic_class", None)
             if callable(get_synthetic_class):
                 synthetic_class = get_synthetic_class(right.typ)
@@ -907,7 +906,7 @@ def _has_relation(
             # An actually-empty dict literal has no key/value witnesses, so
             # it is assignable regardless of concrete K/V parameters.
             return {}
-        if isinstance(right, TypedValue) and not isinstance(right.typ, super):
+        if isinstance(right, TypedValue):
             generic_args = right.get_generic_args_for_type(left.typ, ctx)
             # If we don't think it's a generic base, try super;
             # runtime isinstance() may disagree.
@@ -1340,6 +1339,7 @@ def _extract_type_form(value: Value, ctx: CanAssignContext) -> Value | CanAssign
             SyntheticModuleValue,
             TypeVarTupleValue,
             UnboundMethodValue,
+            SuperValue,
         ),
     ):
         return CanAssignError(f"{value} is not a TypeForm")
@@ -2585,6 +2585,14 @@ def _intersect_values_inner(
             return left
         return Irreducible
 
+    if (result := _simple_intersection(left, right, ctx)) is not None:
+        return result
+
+    if isinstance(left, TypeAliasValue):
+        return _intersect_alias(left, right, ctx)
+    if isinstance(right, TypeAliasValue):
+        return _intersect_alias(right, left, ctx)
+
     wrapper_types = (
         AnnotatedValue,
         NewTypeValue,
@@ -2594,16 +2602,8 @@ def _intersect_values_inner(
         PartialCallValue,
         TypeVarValue,
         TypeVarTupleValue,
+        SuperValue,
     )
-
-    if (result := _simple_intersection(left, right, ctx)) is not None:
-        return result
-
-    if isinstance(left, TypeAliasValue):
-        return _intersect_alias(left, right, ctx)
-    if isinstance(right, TypeAliasValue):
-        return _intersect_alias(right, left, ctx)
-
     if isinstance(left, wrapper_types):
         return _intersect_wrapper(left, right, ctx)
     if isinstance(right, wrapper_types):
@@ -2622,6 +2622,7 @@ def _intersect_wrapper(
         | ParamSpecKwargsValue
         | TypeVarValue
         | TypeVarTupleValue
+        | SuperValue
     ),
     right: GradualType,
     ctx: CanAssignContext,

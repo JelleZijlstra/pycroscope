@@ -8,7 +8,7 @@ import enum
 import inspect
 import sys
 import types
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field, replace
 from enum import Enum
 from typing import Any, ClassVar, get_origin
@@ -46,10 +46,15 @@ from .signature import (
     OverloadedSignature,
     ParameterKind,
     Signature,
-    make_bound_method,
 )
 from .stacked_scopes import Composite
 from .type_object import (
+    MroValue,
+    _class_key_from_value,
+    _get_attribute_value_from_symbol,
+    _is_property_marker_value,
+    _specialize_symbol_for_owner,
+    class_keys_match,
     lookup_declared_symbol_with_owner,
     normalize_synthetic_descriptor_attribute,
 )
@@ -76,6 +81,7 @@ from .value import (
     SelfT,
     SimpleType,
     SubclassValue,
+    SuperValue,
     SyntheticClassObjectValue,
     SyntheticEnumMember,
     SyntheticModuleValue,
@@ -195,13 +201,6 @@ class AttrContext:
             prefer_typeshed=False,
         )
 
-    def clone_for_root_composite(
-        self, root_composite: Composite, *, lookup_root_value: Value | None = None
-    ) -> "AttrContext":
-        return replace(
-            self, root_composite=root_composite, lookup_root_value=lookup_root_value
-        )
-
 
 def get_attribute(ctx: AttrContext) -> Value:
     if (
@@ -213,6 +212,17 @@ def get_attribute(ctx: AttrContext) -> Value:
     lookup_root_value = (
         ctx.root_value if ctx.lookup_root_value is None else ctx.lookup_root_value
     )
+    super_value = _extract_super_value(lookup_root_value)
+    if super_value is not None:
+        attribute_value = _get_attribute_from_super_value(super_value, ctx)
+        if (
+            isinstance(attribute_value, AnyValue)
+            or attribute_value is UNINITIALIZED_VALUE
+        ) and isinstance(ctx.root_value, AnnotatedValue):
+            for guard in ctx.root_value.get_metadata_of_type(HasAttrExtension):
+                if guard.attribute_name == KnownValue(ctx.attr):
+                    return guard.attribute_type
+        return attribute_value
     root_value = replace_fallback(lookup_root_value)
     if isinstance(root_value, KnownValue) and is_typing_name(
         type(root_value.val), "TypeAliasType"
@@ -316,6 +326,99 @@ def get_attribute(ctx: AttrContext) -> Value:
             if guard.attribute_name == KnownValue(ctx.attr):
                 return guard.attribute_type
     return attribute_value
+
+
+def _extract_super_value(value: Value) -> SuperValue | None:
+    if isinstance(value, SuperValue):
+        return value
+    if isinstance(value, AnnotatedValue):
+        return _extract_super_value(value.value)
+    return None
+
+
+def _super_receiver_type_value(value: Value) -> tuple[TypedValue | None, bool]:
+    value = replace_fallback(value)
+    if isinstance(value, TypedValue):
+        return value, False
+    if isinstance(value, SubclassValue) and isinstance(value.typ, TypedValue):
+        return value.typ, True
+    if isinstance(value, KnownValue):
+        if isinstance(value.val, type):
+            return TypedValue(value.val), True
+        return TypedValue(type(value.val)), False
+    return None, False
+
+
+def _super_thisclass_key(value: Value) -> type | str | None:
+    value = replace_fallback(value)
+    if isinstance(value, KnownValue) and isinstance(value.val, type):
+        return value.val
+    if isinstance(value, TypedValue):
+        return value.typ
+    return None
+
+
+def _super_mro_values(
+    receiver_value: TypedValue, ctx: CanAssignContext
+) -> Sequence[MroValue]:
+    # TODO: switch to just using the MRO; that currently doesn't work because it gets set too late
+    if isinstance(receiver_value.typ, type):
+        return [TypedValue(base) for base in receiver_value.typ.__mro__]
+    return receiver_value.get_type_object(ctx).mro
+
+
+# TODO: in principle this should be doable with TypeObject.get_attribute if we add a flag
+# that says to skip MRO elements up to a certain point.
+def _get_attribute_from_super_value(super_value: SuperValue, ctx: AttrContext) -> Value:
+    if super_value.selfobj is None:
+        return AnyValue(AnySource.inference)
+    receiver_value, is_class_access = _super_receiver_type_value(super_value.selfobj)
+    thisclass_key = _super_thisclass_key(super_value.thisclass)
+    can_assign_ctx = ctx.get_can_assign_context()
+    if receiver_value is None or thisclass_key is None or can_assign_ctx is None:
+        return AnyValue(AnySource.inference)
+
+    receiver_tobj = receiver_value.get_type_object(can_assign_ctx)
+    saw_thisclass = False
+    for mro_value in _super_mro_values(receiver_value, can_assign_ctx):
+        if isinstance(mro_value, AnyValue):
+            continue
+        owner_key = _class_key_from_value(mro_value)
+        if owner_key is None:
+            continue
+        if not saw_thisclass:
+            if class_keys_match(owner_key, thisclass_key):
+                saw_thisclass = True
+            continue
+        owner_tobj = mro_value.get_type_object(can_assign_ctx)
+        symbol = owner_tobj.get_declared_symbol(ctx.attr)
+        if symbol is not None:
+            symbol = _specialize_symbol_for_owner(
+                receiver_tobj,
+                owner_tobj,
+                symbol,
+                can_assign_ctx,
+                receiver_value=receiver_value,
+            )
+            result = _get_attribute_value_from_symbol(
+                symbol,
+                can_assign_ctx,
+                on_class=is_class_access and not symbol.is_method,
+                receiver_value=receiver_value,
+            )
+            if (
+                is_class_access
+                and symbol.property_info is not None
+                and (
+                    result is UNINITIALIZED_VALUE
+                    or not _is_property_marker_value(result)
+                )
+            ):
+                result = TypedValue(property)
+            result = set_self(result, receiver_value)
+            ctx.record_usage(super, result)
+            return result
+    return UNINITIALIZED_VALUE
 
 
 def _get_attribute_from_type_alias(value: TypeAliasValue, ctx: AttrContext) -> Value:
@@ -489,7 +592,6 @@ def _get_attribute_from_synthetic_type(
         return TypedValue(dict)
     synthetic_class = ctx.get_synthetic_class(fq_name)
     if synthetic_class is not None:
-        receiver_value: TypedValue | GenericValue
         if generic_args:
             receiver_value = GenericValue(fq_name, generic_args)
         else:
@@ -653,16 +755,12 @@ def _get_direct_attribute_from_synthetic_instance(
     attr_name: str,
     ctx: AttrContext,
     *,
-    receiver_value: TypedValue | GenericValue | None = None,
+    receiver_value: TypedValue | None = None,
 ) -> Value:
     selected_name = _select_synthetic_attribute_name(self_value, attr_name)
     class_type = self_value.class_type
     can_assign_ctx = ctx.get_can_assign_context()
-    if (
-        receiver_value is not None
-        and can_assign_ctx is not None
-        and isinstance(receiver_value.typ, (type, str))
-    ):
+    if receiver_value is not None and can_assign_ctx is not None:
         attribute = can_assign_ctx.make_type_object(receiver_value.typ).get_attribute(
             selected_name, can_assign_ctx, on_class=False, receiver_value=receiver_value
         )
@@ -677,11 +775,7 @@ def _get_direct_attribute_from_synthetic_instance(
                 and not symbol.is_method
             ):
                 return attribute.value
-    if (
-        can_assign_ctx is not None
-        and isinstance(class_type, (TypedValue, GenericValue))
-        and isinstance(class_type.typ, (type, str))
-    ):
+    if can_assign_ctx is not None and isinstance(class_type, TypedValue):
         attribute = can_assign_ctx.make_type_object(class_type.typ).get_attribute(
             selected_name, can_assign_ctx, on_class=False, receiver_value=class_type
         )
@@ -770,9 +864,7 @@ def _synthetic_descriptor_method_signature_any(
         return _synthetic_descriptor_method_signature_any(
             descriptor.value, method_name, ctx
         )
-    if not isinstance(
-        descriptor, (KnownValue, TypedValue, GenericValue, SyntheticClassObjectValue)
-    ):
+    if not isinstance(descriptor, (KnownValue, TypedValue, SyntheticClassObjectValue)):
         return None
     method_ctx = ctx.clone_for_attribute_lookup(Composite(descriptor), method_name)
     method_value = get_attribute(method_ctx)
@@ -868,11 +960,7 @@ def _is_synthetic_self_classmethod_attribute(
 ) -> bool:
     class_type = self_value.class_type
     can_assign_ctx = ctx.get_can_assign_context()
-    if (
-        can_assign_ctx is not None
-        and isinstance(class_type, (TypedValue, GenericValue))
-        and isinstance(class_type.typ, (type, str))
-    ):
+    if can_assign_ctx is not None and isinstance(class_type, TypedValue):
         attribute = can_assign_ctx.make_type_object(class_type.typ).get_attribute(
             attr_name, can_assign_ctx, on_class=True, receiver_value=class_type
         )
@@ -973,13 +1061,11 @@ def _get_attribute_from_synthetic_base(
             members = tuple(base.members)
             if isinstance(root, SyntheticClassObjectValue):
                 class_type = root.class_type
-                if isinstance(class_type, TypedValue) and isinstance(
-                    class_type.typ, (type, str)
-                ):
+                if isinstance(class_type, TypedValue):
                     base = GenericValue(class_type.typ, members)
             elif isinstance(root, KnownValue) and isinstance(root.val, type):
                 base = GenericValue(root.val, members)
-            elif isinstance(root, TypedValue) and isinstance(root.typ, (type, str)):
+            elif isinstance(root, TypedValue):
                 base = GenericValue(root.typ, members)
 
     base = replace_fallback(base)
@@ -1236,10 +1322,7 @@ def _substitute_typevars(
     provider: object,
     ctx: AttrContext,
 ) -> Value:
-    if isinstance(typ, (type, str)):
-        generic_bases = ctx.get_generic_bases(typ, generic_args)
-    else:
-        generic_bases = {}
+    generic_bases = ctx.get_generic_bases(typ, generic_args)
     provider_key: type | str | None
     if isinstance(provider, (type, str)) and provider in generic_bases:
         provider_key = provider
@@ -1426,91 +1509,11 @@ class KnownAttributeHook(PyObjectSequenceOption[_KAH]):
         return None
 
 
-def _get_super_receiver_value(obj: super, ctx: AttrContext) -> Value | None:
-    root_value = ctx.root_composite.value
-    if isinstance(root_value, KnownValueWithTypeVars) and SelfT in root_value.typevars:
-        return root_value.typevars[SelfT]
-    receiver_obj = safe_getattr(obj, "__self__", None)
-    if isinstance(receiver_obj, type):
-        return SubclassValue(TypedValue(receiver_obj))
-    if receiver_obj is not None:
-        return KnownValue(receiver_obj)
-    return None
-
-
-def _iter_super_descriptors(obj: super, attr: str) -> Iterable[tuple[type, object]]:
-    self_class = safe_getattr(obj, "__self_class__", None)
-    this_class = safe_getattr(obj, "__thisclass__", None)
-    if not isinstance(self_class, type) or not isinstance(this_class, type):
-        return
-    saw_this_class = False
-    for base in safe_getattr(self_class, "__mro__", ()):
-        if not saw_this_class:
-            saw_this_class = base is this_class
-            continue
-        if attr in safe_getattr(base, "__dict__", {}):
-            yield base, base.__dict__[attr]
-
-
-def _bind_super_descriptor(
-    obj: super, owner: type, descriptor: object, receiver_value: Value, ctx: AttrContext
-) -> Value:
-    if isinstance(descriptor, (classmethod, staticmethod)):
-        try:
-            return KnownValue(getattr(obj, ctx.attr))
-        except AttributeError:
-            return UNINITIALIZED_VALUE
-
-    receiver_composite = Composite(
-        receiver_value, ctx.root_composite.varname, ctx.root_composite.node
-    )
-    receiver_ctx = ctx.clone_for_root_composite(
-        root_composite=receiver_composite, lookup_root_value=receiver_value
-    )
-    descriptor_value = KnownValue(descriptor)
-    result = _unwrap_value_from_typed(descriptor_value, owner, receiver_ctx)
-    if not isinstance(result, UnboundMethodValue):
-        return result
-    can_assign_ctx = ctx.get_can_assign_context()
-    if can_assign_ctx is None:
-        return result
-    signature = receiver_ctx.signature_from_value(descriptor_value)
-    bound = make_bound_method(signature, receiver_composite, ctx=can_assign_ctx)
-    if bound is None:
-        return result
-    bound_signature = bound.get_signature(preserve_impl=True, ctx=can_assign_ctx)
-    if bound_signature is None:
-        return result
-    return CallableValue(bound_signature)
-
-
-def _get_attribute_from_super(obj: super, ctx: AttrContext) -> Value:
-    receiver_value = _get_super_receiver_value(obj, ctx)
-    if receiver_value is not None:
-        for owner, descriptor in _iter_super_descriptors(obj, ctx.attr):
-            result = _bind_super_descriptor(obj, owner, descriptor, receiver_value, ctx)
-            if result is not UNINITIALIZED_VALUE:
-                ctx.record_usage(type(obj), result)
-                return result
-    try:
-        attr_value = getattr(obj, ctx.attr)
-    except AttributeError:
-        return UNINITIALIZED_VALUE
-    result = KnownValue(attr_value)
-    if safe_isinstance(attr_value, (types.MethodType, types.BuiltinFunctionType)):
-        result = set_self(result, ctx.get_self_value())
-    ctx.record_usage(type(obj), result)
-    return result
-
-
 def _get_attribute_from_known(obj: object, ctx: AttrContext) -> Value:
     if safe_isinstance(obj, type):
         ctx.record_attr_read(obj)
     else:
         ctx.record_attr_read(type(obj))
-
-    if isinstance(obj, super):
-        return _get_attribute_from_super(obj, ctx)
 
     if isinstance(obj, (types.FunctionType, types.BuiltinFunctionType)):
         if ctx.attr in {"__name__", "__qualname__", "__module__"}:
