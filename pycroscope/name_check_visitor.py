@@ -15255,6 +15255,34 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         result = attributes.get_attribute(ctx)
         if (
             result is UNINITIALIZED_VALUE
+            and self.current_class_key is not None
+            and self._is_class_object_attribute_root(root_composite.value) is True
+            and (current_class_name := self._current_class_name_from_context())
+            is not None
+            and (
+                root_class_key := self._class_key_from_attribute_root_value(
+                    root_composite.value
+                )
+            )
+            is not None
+            and class_keys_match(root_class_key, self.current_class_key)
+        ):
+            mangled_attr = _mangle_class_attribute_name(current_class_name, attr)
+            if mangled_attr != attr:
+                mangled_ctx = _AttrContext(
+                    root_composite,
+                    lookup_root_value,
+                    mangled_attr,
+                    self,
+                    node=node,
+                    ignore_none=ignore_none,
+                    prefer_typeshed=prefer_typeshed,
+                    record_reads=record_reads,
+                    self_value=resolved_self_value,
+                )
+                result = attributes.get_attribute(mangled_ctx)
+        if (
+            result is UNINITIALIZED_VALUE
             and node is not None
             and isinstance(root_composite.value, TypeAliasValue)
             and is_type_alias_symbol

@@ -199,3 +199,7 @@ omit = [
 [tool.coverage.report]
 show_missing = true
 skip_covered = true
+exclude_also = [
+  "raise NotImplementedError",
+  "assert_never\\(",
+]
