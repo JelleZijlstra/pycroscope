@@ -275,7 +275,6 @@ from .value import (
     SequenceValue,
     SkipDeprecatedExtension,
     SubclassValue,
-    SuperValue,
     SyntheticClassObjectValue,
     SyntheticModuleValue,
     SysPlatformExtension,
@@ -15344,22 +15343,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         # We don't throw an error in many
         # cases where we're not quite sure whether an attribute
         # will exist.
-        if isinstance(root_value, SuperValue):
-            thisclass = replace_fallback(root_value.thisclass)
-            if isinstance(thisclass, KnownValue) and isinstance(thisclass.val, type):
-                subclasses = get_subclasses_recursively(thisclass.val)
-                if any(
-                    hasattr(cls, attr) for cls in subclasses if cls is not thisclass.val
-                ):
-                    return AnyValue(AnySource.inference)
-            if allow_error:
-                self._show_error_if_checking(
-                    node,
-                    f"{root_value} has no attribute {attr!r}",
-                    ErrorCode.undefined_attribute,
-                )
-                return AnyValue(AnySource.error)
-            return UNINITIALIZED_VALUE
         root_value = replace_fallback(root_value)
         if isinstance(root_value, UnboundMethodValue):
             if self._should_ignore_val(node):
@@ -18332,7 +18315,7 @@ def _has_only_known_attributes(ts_finder: TypeshedFinder | None, typ: object) ->
     if hasattr(typ, "__getattr__"):
         return False
     # for namedtuples
-    if is_dataclass_type(typ) or issubclass(typ, tuple):
+    if is_dataclass_type(typ) or issubclass(typ, tuple) or typ is super:
         return True
     if (
         ts_finder is not None

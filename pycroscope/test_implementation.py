@@ -173,7 +173,7 @@ class TestSuperCall(TestNameCheckVisitorBase):
         class Mixin(object):
             @classmethod
             def eat(cls):
-                super(Mixin, cls).eat()
+                super(Mixin, cls).eat()  # E: undefined_attribute
 
         class Capybara(Mixin, Base):
             pass
