@@ -3199,6 +3199,9 @@ class CheckerAttrContext(AttrContext):
             fq_name, self.attr, on_class=on_class
         )
 
+    def should_ignore_none_attributes(self) -> bool:
+        return False
+
     def get_signature(self, obj: object) -> MaybeSignature:
         return self.checker.signature_from_value(KnownValue(obj))
 

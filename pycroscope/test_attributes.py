@@ -255,6 +255,20 @@ class TestAttributes(TestNameCheckVisitorBase):
             print(prop, prop2)
 
     @assert_passes()
+    def test_custom_descriptor_on_class_object(self):
+        class CustomDescriptor:
+            def __get__(self, obj, typ):
+                if obj is None:
+                    return self
+                return 3
+
+        class Capybara:
+            prop = CustomDescriptor()
+
+        def use_it(cls: type[Capybara]) -> None:
+            assert_is_value(cls.prop, AnyValue(AnySource.inference))
+
+    @assert_passes()
     def test_tuple_subclass_with_getattr(self):
         # Inspired by pyspark.sql.types.Row
         class Row(tuple):
@@ -469,6 +483,44 @@ class TestAttributes(TestNameCheckVisitorBase):
                 bound = super(Child, self).scale
                 assert_type(bound(1.0), float)
 
+    def test_super_special_attributes(self):
+        class Base:
+            pass
+
+        class Child(Base):
+            def read_instance_super(self) -> None:
+                receiver: object = super().__self__
+                owner: object = super().__thisclass__
+                print(receiver, owner)
+
+            @classmethod
+            def read_class_super(cls) -> None:
+                receiver: object = super().__self__
+                print(receiver)
+
+    @assert_passes()
+    def test_explicit_super_receiver_variants(self):
+        class Base:
+            @classmethod
+            def make_name(cls) -> str:
+                return cls.__name__
+
+            def scale(self, x: float) -> float:
+                return x
+
+        class Child(Base):
+            pass
+
+        instance_super = super(Child, Child())
+        class_super = super(Child, Child)
+
+        def capybara() -> None:
+            receiver1: object = instance_super.__self__
+            receiver2: object = class_super.__self__
+            assert_type(instance_super.scale(1.0), float)
+            assert_type(class_super.make_name(), str)
+            print(receiver1, receiver2)
+
     @assert_passes()
     def test_super_staticmethod(self):
         class Base:
@@ -479,6 +531,19 @@ class TestAttributes(TestNameCheckVisitorBase):
         class Child(Base):
             def read_staticmethod(self) -> None:
                 assert_type(super().label(), int)
+
+    @assert_passes()
+    def test_super_new_attribute(self):
+        class Base:
+            def __new__(cls) -> "Base":
+                return super().__new__(cls)
+
+        class Child(Base):
+            @classmethod
+            def make(cls) -> "Child":
+                ctor = super().__new__
+                # TODO: This should be inferred as Child once super().__new__ is specialized.
+                return ctor(cls)  # E: incompatible_return_value
 
     @assert_passes()
     def test_function_annotations_and_unhashable_hash(self):
@@ -493,6 +558,13 @@ class TestAttributes(TestNameCheckVisitorBase):
         def capybara(u: Unhashable) -> None:
             assert_type(f.__annotations__, dict[str, Any])
             assert_is_value(u.__hash__, KnownValue(None))
+
+    @assert_passes(ignore_none_attributes=True)
+    def test_ignore_none_attributes_option(self):
+        value = None
+
+        def capybara() -> None:
+            print(value.missing)
 
     @assert_passes()
     def test_runtime_type_alias_attributes(self):
@@ -517,9 +589,147 @@ class TestAttributes(TestNameCheckVisitorBase):
         def capybara(value: Mixed) -> None:
             assert_type(value.value, Literal[1, "x"])
 
-    @assert_passes()
+    @assert_passes(allow_import_failures=True)
+    def test_synthetic_enum_value_type(self):
+        import enum
+
+        import does_not_exist  # noqa: F401
+
+        class Mixed(enum.Enum):
+            INT = 1
+            STR = "x"
+
+        def capybara(value: Mixed) -> None:
+            print(value.value)
+
+    @assert_passes(allow_import_failures=True)
+    def test_synthetic_typevar_bound_class_attribute_after_import_failure(self):
+        from typing import TypeVar
+
+        import does_not_exist  # noqa: F401
+        from typing_extensions import assert_type
+
+        class Base:
+            value: int
+
+            @classmethod
+            def build(cls) -> type["Base"]:
+                return cls
+
+        T = TypeVar("T", bound="Base")
+
+        def capybara(cls: type[T]) -> None:
+            assert_type(cls.value, int)
+            print(cls.build())
+
+    @assert_passes(allow_import_failures=True)
+    def test_synthetic_sequence_base_attributes_after_import_failure(self):
+        from collections.abc import Sequence
+
+        import does_not_exist  # noqa: F401
+        from typing_extensions import assert_type
+
+        class Base(Sequence[int]):
+            def __getitem__(self, index: int) -> int:
+                return index
+
+            def __len__(self) -> int:
+                return 0
+
+        class Child(Base):
+            pass
+
+        def capybara(child: Child) -> None:
+            print(child.__dict__)
+            assert_type(child.count(1), int)
+
+    @assert_passes(allow_import_failures=True)
+    def test_synthetic_inherited_call_after_import_failure(self):
+        from typing import Any
+
+        import does_not_exist  # noqa: F401
+        from typing_extensions import assert_type
+
+        class Base:
+            def __call__(self, x: int) -> int:
+                return x
+
+        class Child(Base):
+            pass
+
+        def capybara(child: Child) -> None:
+            assert_type(child(1), Any)
+
+    @assert_passes(allow_import_failures=True)
+    def test_synthetic_module_attribute_lookup_after_import_failure(self):
+        import does_not_exist
+
+        def capybara() -> None:
+            print(does_not_exist.__name__)
+            print(does_not_exist.no_such_attribute)
+
+    @assert_passes(allow_import_failures=True)
+    def test_synthetic_static_and_class_method_wrappers_after_import_failure(self):
+        import does_not_exist  # noqa: F401
+        from typing_extensions import Self, assert_type
+
+        class Base:
+            @staticmethod
+            def parse(x: int) -> int:
+                return x
+
+            @classmethod
+            def make(cls, x: int) -> Self:
+                return cls()
+
+        class Child(Base):
+            pass
+
+        def capybara(child: Child, cls: type[Child]) -> None:
+            assert_type(child.parse(1), int)
+            assert_type(Child.parse(1), int)
+            assert_type(cls.parse(1), int)
+            assert_type(child.make(1), Child)
+            assert_type(Child.make(1), Child)
+            print(cls.make(1))
+
+    @assert_passes(allow_import_failures=True)
+    def test_synthetic_descriptor_signature_matching_after_import_failure(self):
+        from typing import Annotated, Any
+
+        import does_not_exist  # noqa: F401
+
+        class DefaultDescriptor:
+            def __get__(
+                self, instance: object | None, owner: Any, extra: int = 0
+            ) -> int:
+                return extra
+
+        class VariadicDescriptor:
+            def __get__(
+                self, instance: object | None, owner: Any, *extra: object
+            ) -> int:
+                return len(extra)
+
+        class BrokenDescriptor:
+            def __get__(self, instance: object | None, owner: Any, extra: int) -> int:
+                return extra
+
+        class Box:
+            default: DefaultDescriptor = DefaultDescriptor()
+            variadic: VariadicDescriptor = VariadicDescriptor()
+            annotated: Annotated[DefaultDescriptor, "x"] = DefaultDescriptor()
+            broken: BrokenDescriptor = BrokenDescriptor()
+
+        def capybara(box: Box) -> None:
+            print(box.default)
+            print(box.variadic)
+            print(box.annotated)
+            print(box.broken)
+
+    @assert_passes(run_in_both_module_modes=True)
     def test_private_attribute_lookup(self):
-        from typing_extensions import Literal
+        from typing_extensions import Literal, assert_type
 
         class Base:
             def __init__(self) -> None:
@@ -527,6 +737,170 @@ class TestAttributes(TestNameCheckVisitorBase):
 
             def reveal(self) -> None:
                 assert_type(self.__secret, Literal[1])
+
+    @assert_passes(run_in_both_module_modes=True)
+    def test_private_dataclass_attribute_lookup(self):
+        from dataclasses import dataclass
+
+        from typing_extensions import assert_type
+
+        @dataclass
+        class Base:
+            __secret: int
+
+            def reveal(self) -> None:
+                assert_type(self.__secret, int)
+
+        def capybara(base: Base) -> None:
+            assert_type(base.reveal(), None)
+
+    @assert_passes(allow_import_failures=True)
+    def test_synthetic_generic_descriptor_and_private_attributes(self):
+        from typing import Any, Generic, TypeVar, overload
+
+        import does_not_exist  # noqa: F401
+        from typing_extensions import Self
+
+        T = TypeVar("T")
+
+        class Descriptor(Generic[T]):
+            @overload
+            def __get__(self, instance: None, owner: Any) -> "Descriptor[T]": ...
+
+            @overload
+            def __get__(self, instance: object, owner: Any) -> T: ...
+
+            def __get__(
+                self, instance: object | None, owner: Any
+            ) -> "Descriptor[T] | T":
+                raise NotImplementedError
+
+        class Base(Generic[T]):
+            data: T
+            __secret: int
+            desc: Descriptor[T] = Descriptor()
+
+            def __init__(self, data: T, secret: int) -> None:
+                self.data = data
+                self.__secret = secret
+
+            @property
+            def payload(self) -> T:
+                return self.data
+
+            @classmethod
+            def make(cls, data: T, secret: int) -> Self:
+                return cls(data, secret)
+
+            def reveal(self) -> int:
+                return self.__secret
+
+        class Child(Base[int]):
+            pass
+
+        def capybara(cls: type[Child], inst: Child) -> None:
+            print(Child.__dict__)
+            print(cls.make(1, 2))
+            print(inst.data)
+            print(inst.desc)
+            print(inst.payload)
+            print(inst.reveal())
+
+    @assert_passes(allow_import_failures=True)
+    def test_synthetic_dataclass_descriptor_generic_base_attributes(self):
+        from dataclasses import dataclass
+        from typing import Any, Generic, TypeVar, cast, overload
+
+        import does_not_exist  # noqa: F401
+
+        T = TypeVar("T")
+
+        class ReadDescriptor(Generic[T]):
+            @overload
+            def __get__(self, instance: None, owner: Any) -> "ReadDescriptor[T]": ...
+
+            @overload
+            def __get__(self, instance: object, owner: Any) -> T: ...
+
+            def __get__(
+                self, instance: object | None, owner: Any
+            ) -> "ReadDescriptor[T] | T":
+                if instance is None:
+                    return self
+                return cast(T, 0)
+
+        @dataclass
+        class Base(Generic[T]):
+            value: T
+            __secret: int
+            extra: ReadDescriptor[T] = ReadDescriptor()
+
+            @property
+            def payload(self) -> T:
+                return self.value
+
+            def reveal(self) -> int:
+                return self.__secret
+
+        @dataclass
+        class Child(Base[int]):
+            label: str = "x"
+
+        def capybara(inst: Child) -> None:
+            print(Child.__class__)
+            print(Child.__dict__)
+            print(Child.extra)
+            print(inst.value)
+            print(inst.extra)
+            print(inst.payload)
+            print(inst.reveal())
+
+    @assert_passes(run_in_both_module_modes=True)
+    def test_module_mode_dataclass_descriptor_generic_base_attributes(self):
+        from dataclasses import dataclass
+        from typing import Any, Generic, TypeVar, cast, overload
+
+        T = TypeVar("T")
+
+        class ReadDescriptor(Generic[T]):
+            @overload
+            def __get__(self, instance: None, owner: Any) -> "ReadDescriptor[T]": ...
+
+            @overload
+            def __get__(self, instance: object, owner: Any) -> T: ...
+
+            def __get__(
+                self, instance: object | None, owner: Any
+            ) -> "ReadDescriptor[T] | T":
+                if instance is None:
+                    return self
+                return cast(T, 0)
+
+        @dataclass
+        class Base(Generic[T]):
+            value: T
+            __secret: int
+            extra: ReadDescriptor[T] = ReadDescriptor()
+
+            @property
+            def payload(self) -> T:
+                return self.value
+
+            def reveal(self) -> int:
+                return self.__secret
+
+        @dataclass
+        class Child(Base[int]):
+            label: str = "x"
+
+        def capybara(inst: Child) -> None:
+            print(Child.__class__)
+            print(Child.__dict__)
+            print(Child.extra)
+            print(inst.value)
+            print(inst.extra)
+            print(inst.payload)
+            print(inst.reveal())
 
     @skip_if_not_installed("qcore")
     @assert_passes()
@@ -617,5 +991,6 @@ class TestClassAttributeTransformer(TestNameCheckVisitorBase):
         class Capybara:
             foo = StringField()
 
-        def capybara(c: Capybara):
+        def capybara(c: Capybara, cls: type[Capybara]):
             assert_type(c.foo, str)
+            assert_type(cls.foo, str)
