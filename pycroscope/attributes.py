@@ -347,9 +347,7 @@ def _super_receiver_type_value(
     value: Value,
 ) -> tuple[TypedValue | GenericValue | None, bool]:
     value = replace_fallback(value)
-    if isinstance(value, GenericValue) and isinstance(value.typ, (type, str)):
-        return value, False
-    if isinstance(value, TypedValue) and isinstance(value.typ, (type, str)):
+    if isinstance(value, TypedValue):
         return value, False
     if isinstance(value, SubclassValue) and isinstance(value.typ, TypedValue):
         return value.typ, True
@@ -364,7 +362,7 @@ def _super_thisclass_key(value: Value) -> type | str | None:
     value = replace_fallback(value)
     if isinstance(value, KnownValue) and isinstance(value.val, type):
         return value.val
-    if isinstance(value, TypedValue) and isinstance(value.typ, (type, str)):
+    if isinstance(value, TypedValue):
         return value.typ
     return None
 
@@ -788,16 +786,12 @@ def _get_direct_attribute_from_synthetic_instance(
     attr_name: str,
     ctx: AttrContext,
     *,
-    receiver_value: TypedValue | GenericValue | None = None,
+    receiver_value: TypedValue | None = None,
 ) -> Value:
     selected_name = _select_synthetic_attribute_name(self_value, attr_name)
     class_type = self_value.class_type
     can_assign_ctx = ctx.get_can_assign_context()
-    if (
-        receiver_value is not None
-        and can_assign_ctx is not None
-        and isinstance(receiver_value.typ, (type, str))
-    ):
+    if receiver_value is not None and can_assign_ctx is not None:
         attribute = can_assign_ctx.make_type_object(receiver_value.typ).get_attribute(
             selected_name, can_assign_ctx, on_class=False, receiver_value=receiver_value
         )
@@ -812,11 +806,7 @@ def _get_direct_attribute_from_synthetic_instance(
                 and not symbol.is_method
             ):
                 return attribute.value
-    if (
-        can_assign_ctx is not None
-        and isinstance(class_type, (TypedValue, GenericValue))
-        and isinstance(class_type.typ, (type, str))
-    ):
+    if can_assign_ctx is not None and isinstance(class_type, TypedValue):
         attribute = can_assign_ctx.make_type_object(class_type.typ).get_attribute(
             selected_name, can_assign_ctx, on_class=False, receiver_value=class_type
         )
@@ -1003,11 +993,7 @@ def _is_synthetic_self_classmethod_attribute(
 ) -> bool:
     class_type = self_value.class_type
     can_assign_ctx = ctx.get_can_assign_context()
-    if (
-        can_assign_ctx is not None
-        and isinstance(class_type, (TypedValue, GenericValue))
-        and isinstance(class_type.typ, (type, str))
-    ):
+    if can_assign_ctx is not None and isinstance(class_type, TypedValue):
         attribute = can_assign_ctx.make_type_object(class_type.typ).get_attribute(
             attr_name, can_assign_ctx, on_class=True, receiver_value=class_type
         )
@@ -1108,13 +1094,11 @@ def _get_attribute_from_synthetic_base(
             members = tuple(base.members)
             if isinstance(root, SyntheticClassObjectValue):
                 class_type = root.class_type
-                if isinstance(class_type, TypedValue) and isinstance(
-                    class_type.typ, (type, str)
-                ):
+                if isinstance(class_type, TypedValue):
                     base = GenericValue(class_type.typ, members)
             elif isinstance(root, KnownValue) and isinstance(root.val, type):
                 base = GenericValue(root.val, members)
-            elif isinstance(root, TypedValue) and isinstance(root.typ, (type, str)):
+            elif isinstance(root, TypedValue):
                 base = GenericValue(root.typ, members)
 
     base = replace_fallback(base)
@@ -1371,10 +1355,7 @@ def _substitute_typevars(
     provider: object,
     ctx: AttrContext,
 ) -> Value:
-    if isinstance(typ, (type, str)):
-        generic_bases = ctx.get_generic_bases(typ, generic_args)
-    else:
-        generic_bases = {}
+    generic_bases = ctx.get_generic_bases(typ, generic_args)
     provider_key: type | str | None
     if isinstance(provider, (type, str)) and provider in generic_bases:
         provider_key = provider

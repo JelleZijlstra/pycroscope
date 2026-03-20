@@ -417,11 +417,6 @@ class TypeObject:
         other_type_key = _receiver_key_from_value(other_val)
 
         bounds_maps = []
-        protocol_type_key: type | str | None
-        if isinstance(self.typ, (type, str)):
-            protocol_type_key = self.typ
-        else:
-            protocol_type_key = None
         if len(self.protocol_members) > 1:
             protocol_self_typevar_map = _collect_protocol_self_typevar_map(
                 self, self.protocol_members, other_val, ctx
@@ -433,8 +428,8 @@ class TypeObject:
             protocol_self_typevar_map = {}
             actual_self_typevar_map = {}
         apply_synthetic_member_rules = (
-            isinstance(protocol_type_key, str)
-            and _get_synthetic_class_for_key(protocol_type_key, ctx) is not None
+            isinstance(self.typ, str)
+            and _get_synthetic_class_for_key(self.typ, ctx) is not None
         )
         class_object_check = _is_definitely_class_object_value(other_val)
         for member in self.protocol_members:
@@ -955,7 +950,7 @@ def _iter_class_keys_from_simple_value(value: SimpleType) -> list[type | str]:
 
 
 def _typed_class_key(value: Value) -> list[type | str]:
-    if isinstance(value, TypedValue) and isinstance(value.typ, (type, str)):
+    if isinstance(value, TypedValue):
         return [value.typ]
     return []
 
@@ -1033,14 +1028,12 @@ def normalize_synthetic_descriptor_attribute(
 
 
 def _class_key_and_generic_args_from_type_value(
-    receiver_value: TypedValue | GenericValue,
+    receiver_value: TypedValue,
 ) -> tuple[type | str, Sequence[Value]]:
-    if isinstance(receiver_value.typ, (type, str)):
-        generic_args = (
-            receiver_value.args if isinstance(receiver_value, GenericValue) else ()
-        )
-        return receiver_value.typ, generic_args
-    raise AssertionError(receiver_value)
+    generic_args = (
+        receiver_value.args if isinstance(receiver_value, GenericValue) else ()
+    )
+    return receiver_value.typ, generic_args
 
 
 def _typevar_map_from_generic_args(
@@ -1296,10 +1289,7 @@ def lookup_declared_symbol_with_owner(
     if match is None:
         return None
     owner_tobj, symbol = match
-    owner_key = owner_tobj.typ
-    if not isinstance(owner_key, (type, str)):
-        return None
-    return owner_key, symbol
+    return owner_tobj.typ, symbol
 
 
 def _is_member_defined_on_class_key(
@@ -1321,7 +1311,7 @@ def _is_property_marker_value(value: Value) -> bool:
     return (
         isinstance(value, KnownValue)
         and isinstance(value.val, property)
-        or isinstance(value, (TypedValue, GenericValue))
+        or isinstance(value, TypedValue)
         and value.typ is property
     )
 
@@ -1624,9 +1614,6 @@ def _collect_protocol_self_typevar_map(
 
     This propagates `self: T` constraints across protocol members.
     """
-    if not isinstance(tobj.typ, (type, str)):
-        return {}
-
     tv_map: dict[TypeVarLike, Value] = {}
     for member in protocol_members:
         receiver_for_match = receiver_value

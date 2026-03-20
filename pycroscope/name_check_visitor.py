@@ -718,24 +718,20 @@ class _AttrContext(CheckerAttrContext):
             root_value = replace_fallback(root_value.value)
         synthetic_typ: type | str | None = None
         generic_args: Sequence[Value] = ()
-        if isinstance(root_value, GenericValue) and isinstance(
-            root_value.typ, (type, str)
-        ):
+        if isinstance(root_value, GenericValue):
             synthetic_typ = root_value.typ
             generic_args = root_value.args
-        elif isinstance(root_value, TypedValue) and isinstance(
-            root_value.typ, (type, str)
-        ):
+        elif isinstance(root_value, TypedValue):
             synthetic_typ = root_value.typ
         elif (
             isinstance(root_value, TypeVarValue)
             and root_value.typevar_param.bound is not None
         ):
             bound = replace_fallback(root_value.typevar_param.bound)
-            if isinstance(bound, GenericValue) and isinstance(bound.typ, (type, str)):
+            if isinstance(bound, GenericValue):
                 synthetic_typ = bound.typ
                 generic_args = bound.args
-            elif isinstance(bound, TypedValue) and isinstance(bound.typ, (type, str)):
+            elif isinstance(bound, TypedValue):
                 synthetic_typ = bound.typ
         elif isinstance(root_value, KnownValue) and not isinstance(
             root_value.val, type
@@ -3741,22 +3737,14 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         if isinstance(base_value, SubclassValue) and isinstance(
             base_value.typ, TypedValue
         ):
-            if isinstance(base_value.typ.typ, (type, str)):
-                return base_value.typ.typ
-            return None
+            return base_value.typ.typ
         if isinstance(base_value, SyntheticClassObjectValue):
             class_type = base_value.class_type
             if isinstance(class_type, TypedValue):
                 return class_type.typ
             return None
-        if isinstance(base_value, GenericValue):
-            if isinstance(base_value.typ, (type, str)):
-                return base_value.typ
-            return None
         if isinstance(base_value, TypedValue):
-            if isinstance(base_value.typ, (type, str)):
-                return base_value.typ
-            return None
+            return base_value.typ
         if isinstance(base_value, KnownValue):
             if isinstance(base_value.val, type):
                 return base_value.val
@@ -3878,10 +3866,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         for subval in flatten_values(existing_value):
             if isinstance(subval, KnownValue) and isinstance(subval.val, property):
                 return
-            if (
-                isinstance(subval, (GenericValue, TypedValue))
-                and subval.typ is property
-            ):
+            if isinstance(subval, TypedValue) and subval.typ is property:
                 return
 
         # allow augmenting an attribute
@@ -5698,7 +5683,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             return None
         if isinstance(value, SubclassValue) and isinstance(value.typ, TypedValue):
             return self._get_dataclass_transform_info_from_value(value.typ)
-        if isinstance(value, (TypedValue, GenericValue)):
+        if isinstance(value, TypedValue):
             if isinstance(value.typ, str):
                 synthetic_class = self.checker.get_synthetic_class(value.typ)
                 if synthetic_class is None:
@@ -6131,9 +6116,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             return None
         if isinstance(value, KnownValue) and isinstance(value.val, type):
             return self._slot_state_for_runtime_type(value.val)
-        if isinstance(value, (TypedValue, GenericValue)) and isinstance(
-            value.typ, (type, str)
-        ):
+        if isinstance(value, TypedValue):
             return self._slot_state_for_type(value.typ, seen=seen)
         return None
 
@@ -6166,13 +6149,12 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             if isinstance(value.val, type):
                 return None
             return self._slot_state_for_runtime_type(type(value.val))
-        if isinstance(value, (TypedValue, GenericValue)):
-            if isinstance(value.typ, (type, str)):
-                if isinstance(value.typ, type) and safe_getattr(
-                    value.typ, "__abstractmethods__", None
-                ):
-                    return None
-                return self._slot_state_for_type(value.typ)
+        if isinstance(value, TypedValue):
+            if isinstance(value.typ, type) and safe_getattr(
+                value.typ, "__abstractmethods__", None
+            ):
+                return None
+            return self._slot_state_for_type(value.typ)
         return None
 
     def _is_assignment_to_non_slot_attribute(
@@ -6231,22 +6213,17 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         if isinstance(value, SyntheticClassObjectValue):
             if value.is_dataclass:
                 return True, value.dataclass_frozen
-            if isinstance(value.class_type, TypedValue) and isinstance(
-                value.class_type.typ, (type, str)
-            ):
+            if isinstance(value.class_type, TypedValue):
                 return self._get_dataclass_status_for_type(value.class_type.typ)
             return False, None
         if isinstance(value, SubclassValue) and isinstance(value.typ, TypedValue):
-            if isinstance(value.typ.typ, (type, str)):
-                return self._get_dataclass_status_for_type(value.typ.typ)
-            return False, None
+            return self._get_dataclass_status_for_type(value.typ.typ)
         if isinstance(value, KnownValue):
             if isinstance(value.val, type):
                 return self._get_dataclass_status_for_type(value.val)
             return False, None
-        if isinstance(value, (TypedValue, GenericValue)):
-            if isinstance(value.typ, (type, str)):
-                return self._get_dataclass_status_for_type(value.typ)
+        if isinstance(value, TypedValue):
+            return self._get_dataclass_status_for_type(value.typ)
         return False, None
 
     def _get_dataclass_status_for_instance_value(
@@ -6267,9 +6244,8 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             if isinstance(value.val, type):
                 return False, None
             return self._get_dataclass_status_for_type(type(value.val))
-        if isinstance(value, (TypedValue, GenericValue)):
-            if isinstance(value.typ, (type, str)):
-                return self._get_dataclass_status_for_type(value.typ)
+        if isinstance(value, TypedValue):
+            return self._get_dataclass_status_for_type(value.typ)
         return False, None
 
     def _get_dataclass_order_info_for_instance_value(
@@ -6296,9 +6272,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             if not is_dataclass:
                 return None
             return typ, order
-        if isinstance(value, (TypedValue, GenericValue)):
-            if not isinstance(value.typ, (type, str)):
-                return None
+        if isinstance(value, TypedValue):
             typ = value.typ
             is_dataclass, order = self._get_dataclass_order_status_for_type(typ)
             if not is_dataclass:
@@ -6319,15 +6293,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         rhs_type, rhs_order = rhs_info
         if lhs_order is not True or rhs_order is not True or lhs_type != rhs_type:
             description, _, _, _ = BINARY_OPERATION_TO_DESCRIPTION_AND_METHOD[type(op)]
-            lhs_shown = (
-                lhs_type if isinstance(lhs_type, str) else stringify_object(lhs_type)
-            )
-            rhs_shown = (
-                rhs_type if isinstance(rhs_type, str) else stringify_object(rhs_type)
-            )
             self._show_error_if_checking(
                 parent_node,
-                f"Unsupported operands for {description}: {lhs_shown} and {rhs_shown}",
+                f"Unsupported operands for {description}: {lhs_type} and {rhs_type}",
                 error_code=ErrorCode.unsupported_operation,
             )
 
@@ -9037,9 +9005,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 return origin
             return type(root_value.val)
         if isinstance(root_value, GenericValue):
-            if isinstance(root_value.typ, (type, str)):
-                return root_value.typ
-            return None
+            return root_value.typ
         if isinstance(root_value, MultiValuedValue):
             class_keys = {
                 class_key
@@ -14248,7 +14214,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             value.class_type, TypedValue
         ):
             class_type = value.class_type.typ
-        elif isinstance(value, TypedValue) and isinstance(value.typ, (type, str)):
+        elif isinstance(value, TypedValue):
             class_type = value.typ
         if class_type is None:
             return False
@@ -14274,9 +14240,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 sequence_normalized = replace_known_sequence_value(member)
                 if sequence_normalized != member:
                     return sequence_normalized
-                if isinstance(member, (TypedValue, GenericValue)) and isinstance(
-                    member.typ, (type, str)
-                ):
+                if isinstance(member, TypedValue):
                     return member
             return normalized
 
@@ -14284,19 +14248,15 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         root_for_partial: Value
         if isinstance(value, KnownValue) and isinstance(value.val, type):
             synthetic_class = self.checker.get_synthetic_class(value.val)
-            if (
-                synthetic_class is None
-                or not isinstance(synthetic_class.class_type, TypedValue)
-                or not isinstance(synthetic_class.class_type.typ, (type, str))
+            if synthetic_class is None or not isinstance(
+                synthetic_class.class_type, TypedValue
             ):
                 return None
             synthetic_typ = synthetic_class.class_type.typ
             root_for_partial = synthetic_class
         elif isinstance(value, SyntheticClassObjectValue):
             class_type = value.class_type
-            if not isinstance(class_type, TypedValue) or not isinstance(
-                class_type.typ, (type, str)
-            ):
+            if not isinstance(class_type, TypedValue):
                 return None
             synthetic_typ = class_type.typ
             root_for_partial = value
@@ -16218,10 +16178,8 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 preserve_exact_type_args = (
                     self.checker._runtime_has_explicit_new_return_annotation(origin)
                 )
-            elif (
-                isinstance(callee.root, SyntheticClassObjectValue)
-                and isinstance(callee.root.class_type, TypedValue)
-                and isinstance(callee.root.class_type.typ, (type, str))
+            elif isinstance(callee.root, SyntheticClassObjectValue) and isinstance(
+                callee.root.class_type, TypedValue
             ):
                 origin = callee.root.class_type.typ
                 allow_annotated_specialization = True

@@ -289,8 +289,6 @@ def _specialized_synthetic_class_type(
     if not isinstance(synthetic_class.class_type, TypedValue):
         return synthetic_class.class_type
     class_typ = synthetic_class.class_type.typ
-    if not isinstance(class_typ, (type, str)):
-        return synthetic_class.class_type
     declared = ctx.get_generic_bases(class_typ).get(class_typ)
     if declared:
         return GenericValue(class_typ, declared.values())
@@ -702,7 +700,7 @@ def _has_relation(
             return {}
         elif isinstance(right, TypedValue) and right.typ is type:
             return {}
-        elif isinstance(right, TypedValue) and isinstance(right.typ, (type, str)):
+        elif isinstance(right, TypedValue):
             get_synthetic_class = getattr(ctx, "get_synthetic_class", None)
             if callable(get_synthetic_class):
                 synthetic_class = get_synthetic_class(right.typ)

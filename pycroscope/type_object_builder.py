@@ -214,9 +214,7 @@ def _get_synthetic_dataclass_fields(
             if symbol.dataclass_field is not None
         )
     class_type = synthetic_class.class_type
-    if not isinstance(class_type, TypedValue) or not isinstance(
-        class_type.typ, (type, str)
-    ):
+    if not isinstance(class_type, TypedValue):
         return tuple(records_by_name[name] for name in ordered)
     for field_name in local_fields:
         symbol = synthetic_class.declared_symbols.get(field_name)
@@ -607,11 +605,9 @@ def _iter_base_type_values_from_simple(
         )
         return
     if isinstance(value, TypedValue):
-        if isinstance(value.typ, (type, str)):
-            yield value
-        return
+        yield value
     if isinstance(value, SubclassValue):
-        if isinstance(value.typ, TypedValue) and isinstance(value.typ.typ, (type, str)):
+        if isinstance(value.typ, TypedValue):
             yield value.typ
         return
     if isinstance(

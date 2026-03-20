@@ -4172,17 +4172,9 @@ def tuple_members_from_value(
         if len(normalized.args) == 1:
             return ((True, normalized.args[0]),)
         return tuple((False, arg) for arg in normalized.args)
-    if (
-        _can_use_generic_bases()
-        and isinstance(normalized, GenericValue)
-        and isinstance(normalized.typ, (type, str))
-    ):
+    if _can_use_generic_bases() and isinstance(normalized, GenericValue):
         return _from_tuple_args(normalized.get_generic_args_for_type(tuple, ctx))
-    if (
-        _can_use_generic_bases()
-        and isinstance(normalized, TypedValue)
-        and isinstance(normalized.typ, (type, str))
-    ):
+    if _can_use_generic_bases() and isinstance(normalized, TypedValue):
         return _from_tuple_args(normalized.get_generic_args_for_type(tuple, ctx))
     return None
 
@@ -4205,9 +4197,7 @@ def _class_key_for_tuple_members(value: Value) -> type | str | None:
         return None
     if isinstance(value, SyntheticClassObjectValue):
         class_type = value.class_type
-        if isinstance(class_type, TypedValue) and isinstance(
-            class_type.typ, (type, str)
-        ):
+        if isinstance(class_type, TypedValue):
             return class_type.typ
         return None
     if isinstance(value, SubclassValue):
@@ -4216,9 +4206,7 @@ def _class_key_for_tuple_members(value: Value) -> type | str | None:
         if isinstance(value.val, tuple) and type(value.val) is not tuple:
             return type(value.val)
         return None
-    if isinstance(value, (GenericValue, TypedValue)) and isinstance(
-        value.typ, (type, str)
-    ):
+    if isinstance(value, TypedValue):
         return value.typ
     return None
 
@@ -4469,7 +4457,7 @@ def _is_property_initializer(value: Value) -> bool:
     return (
         isinstance(value, KnownValue)
         and isinstance(value.val, property)
-        or isinstance(value, (TypedValue, GenericValue))
+        or isinstance(value, TypedValue)
         and value.typ is property
     )
 

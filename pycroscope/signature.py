@@ -2312,7 +2312,7 @@ def _self_type_from_annotation(annotation: Value) -> Value | None:
         and annotation.typevar_param.typevar is SelfT
     ):
         return annotation.get_upper_bound_value()
-    if isinstance(annotation, (TypedValue, GenericValue)):
+    if isinstance(annotation, TypedValue):
         return annotation
     return None
 
