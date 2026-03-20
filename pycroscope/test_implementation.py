@@ -43,6 +43,22 @@ class TestSuperCall(TestNameCheckVisitorBase):
             def __init__(self, a, b):
                 super().__init__()
 
+    @assert_passes(run_in_both_module_modes=True)
+    def test_super_no_args_runtime_base_init(self):
+        import ast
+
+        class Visitor(ast.NodeVisitor):
+            def __init__(self, x: int) -> None:
+                super().__init__()
+
+    @assert_passes(run_in_both_module_modes=True)
+    def test_super_no_args_runtime_base_method(self):
+        import ast
+
+        class Visitor(ast.NodeVisitor):
+            def visit(self, node: ast.AST) -> object:
+                return super().visit(node)
+
     @assert_passes()
     def test_super_no_args_wrong_args(self):
         class Gaudeamus:
