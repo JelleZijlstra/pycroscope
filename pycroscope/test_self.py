@@ -7,7 +7,6 @@ Runs pycroscope on itself.
 import ast
 import sys
 import textwrap
-from pathlib import Path
 
 import pycroscope
 from pycroscope import node_visitor
@@ -26,6 +25,8 @@ class PycroscopeVisitor(pycroscope.name_check_visitor.NameCheckVisitor):
 def _files_for_self_check() -> list[str]:
     files = ["pycroscope"]
     if sys.version_info >= (3, 11):
+        from pathlib import Path
+
         conformance_ci = (
             Path(__file__).resolve().parent.parent / "tools" / "conformance_ci.py"
         )
