@@ -9,7 +9,8 @@ import operator
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from math import comb
-from typing import assert_never
+
+from typing_extensions import assert_never
 
 from .boolability import Boolability, get_boolability
 from .relations import Relation
