@@ -14806,8 +14806,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             on_class=on_class,
             receiver_value=root if isinstance(root, TypedValue) else None,
         )
-        if node.attr == "rgb":
-            print("ATTR", attr, "ON", tobj.typ)
         if attr is None:
             self._get_attribute_fallback(root, node.attr, node)
             self._record_type_attr_set_for_value(
@@ -14867,7 +14865,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             can_assign = has_relation(
                 attr.value, self.being_assigned, Relation.ASSIGNABLE, self
             )
-            print("CNA", attr.value, self.being_assigned, can_assign)
             if isinstance(can_assign, CanAssignError):
                 self._show_error_if_checking(
                     node,

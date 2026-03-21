@@ -186,13 +186,7 @@ def _should_suggest_simple_type(value: SimpleType) -> bool:
     if isinstance(value, AnyValue):
         return False
     if isinstance(
-        value,
-        (
-            SyntheticClassObjectValue,
-            SyntheticModuleValue,
-            UnboundMethodValue,
-            PredicateValue,
-        ),
+        value, (SyntheticClassObjectValue, SyntheticModuleValue, UnboundMethodValue)
     ):
         return False
     if isinstance(value, (TypedValue, SubclassValue, TypeFormValue, KnownValue)):
