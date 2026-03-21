@@ -2196,6 +2196,18 @@ class TestSubclassValue(TestNameCheckVisitorBase):
             assert_type(cls("x"), bytes)
 
     @assert_passes()
+    def test_generic_metaclass_is_not_supported(self):
+        from typing import Generic, TypeVar
+
+        T = TypeVar("T")
+
+        class GenericMeta(type, Generic[T]):
+            pass
+
+        class GenericMetaInstance(metaclass=GenericMeta[T]):  # E: unsupported_operation
+            pass
+
+    @assert_passes()
     def test_type_form_union_with_metaclass_type(self):
         from typing import TypeVar
 

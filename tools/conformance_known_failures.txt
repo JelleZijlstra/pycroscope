@@ -45,3 +45,6 @@ generics_typevartuple_basic
 generics_typevartuple_concat
 generics_typevartuple_args
 generics_typevartuple_callable
+
+# https://github.com/python/typing/pull/2223
+enums_members

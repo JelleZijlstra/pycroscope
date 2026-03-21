@@ -2778,7 +2778,17 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             return AnyValue(AnySource.inference), EMPTY_ORIGIN
         origin = current_scope.set(varname, value, lookup_node, self.state)
         if scope_type == ScopeType.class_scope:
-            self._set_synthetic_class_attribute(varname, value, node=node)
+            self._set_synthetic_class_attribute(
+                varname,
+                value,
+                node=node,
+                force_nonmember=(
+                    isinstance(self.current_statement, ast.AnnAssign)
+                    and self.current_statement.value is None
+                    and self.current_class_key is not None
+                    and self._is_enum_class_key(self.current_class_key)
+                ),
+            )
         return value, origin
 
     def _get_synthetic_class_for_current_scope(
@@ -3020,6 +3030,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         *,
         node: ast.AST | None = None,
         annotation_type: Value | None = None,
+        force_nonmember: bool = False,
     ) -> None:
         synthetic_class = self._get_synthetic_class_for_current_scope()
         if synthetic_class is None:
@@ -3046,6 +3057,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 unwrapped, forced_member, forced_nonmember = (
                     _unwrap_enum_member_wrapper(synthetic_value)
                 )
+                forced_nonmember = forced_nonmember or force_nonmember
                 if forced_member or (
                     not forced_nonmember
                     and not _is_nonmember_enum_assignment_value(unwrapped, self)
@@ -12808,6 +12820,10 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 expected_type or AnyValue(AnySource.error),
                 node=node,
                 annotation_type=expected_type or AnyValue(AnySource.error),
+                force_nonmember=(
+                    self.current_class_key is not None
+                    and self._is_enum_class_key(self.current_class_key)
+                ),
             )
 
         if node.value is not None:
@@ -14696,7 +14712,20 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             return
         yield root_value
 
-    def _normalize_expected_attribute_type_for_assignment(self, value: Value) -> Value:
+    def _self_value_for_attribute_assignment_root(
+        self, root: SimpleType
+    ) -> Value | None:
+        if isinstance(root, (TypedValue, GenericValue)):
+            return root
+        if isinstance(root, KnownValueWithTypeVars) and SelfT in root.typevars:
+            return root.typevars[SelfT]
+        if isinstance(root, KnownValue) and not isinstance(root.val, type):
+            return TypedValue(type(root.val))
+        return None
+
+    def _normalize_expected_attribute_type_for_assignment(
+        self, value: Value, root: SimpleType, *, on_class: bool
+    ) -> Value:
         # TODO: this should be unnecessary if we get better at
         # treating these as descriptors.
         if isinstance(value, KnownValue) and safe_isinstance(
@@ -14707,7 +14736,15 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 types.WrapperDescriptorType,
             ),
         ):
-            return TypedValue(object)
+            value = TypedValue(object)
+        if not on_class and any(
+            isinstance(subval, TypeVarValue) and subval.typevar_param.typevar is SelfT
+            for subval in value.walk_values()
+        ):
+            if (
+                self_value := self._self_value_for_attribute_assignment_root(root)
+            ) is not None:
+                value = value.substitute_typevars({SelfT: self_value})
         return value
 
     def _check_attribute_write(self, node: ast.Attribute, value: Value) -> None:
@@ -14917,7 +14954,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             return
         if self.being_assigned is not None:
             expected_type = self._normalize_expected_attribute_type_for_assignment(
-                attr.value
+                attr.value, root, on_class=on_class
             )
             if (
                 not on_class
@@ -15406,7 +15443,8 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         elif isinstance(root_value, SyntheticClassObjectValue) and isinstance(
             root_value.class_type, TypedValue
         ):
-            return AnyValue(AnySource.inference)
+            if any(has_any_base_value(base) for base in root_value.base_classes):
+                return AnyValue(AnySource.inference)
         elif isinstance(root_value, SubclassValue):
             if isinstance(root_value.typ, TypedValue):
                 root_type = root_value.typ.typ
@@ -15735,12 +15773,19 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         for keyword_node, keyword_value in keyword_values:
             if keyword_node.arg != "metaclass":
                 continue
-            if not isinstance(replace_fallback(keyword_value), GenericValue):
+            if not (
+                isinstance(replace_fallback(keyword_value), GenericValue)
+                or (
+                    isinstance(keyword_value, PartialValue)
+                    and keyword_value.operation is PartialValueOperation.SUBSCRIPT
+                    and keyword_value.runtime_value == TypedValue(types.GenericAlias)
+                )
+            ):
                 continue
             self._show_error_if_checking(
                 keyword_node.value,
                 "Generic metaclasses are not supported",
-                error_code=ErrorCode.invalid_annotation,
+                error_code=ErrorCode.unsupported_operation,
             )
             return
 

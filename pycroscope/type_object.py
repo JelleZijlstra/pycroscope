@@ -1078,6 +1078,11 @@ def _specialize_symbol_for_owner(
     return replace(
         symbol,
         typ=_substitute_symbol_value(symbol.typ, substitutions),
+        annotation_type=(
+            _substitute_symbol_value(symbol.annotation_type, substitutions)
+            if symbol.annotation_type is not None
+            else None
+        ),
         property_info=(
             symbol.property_info.substitute_typevars(substitutions)
             if symbol.property_info is not None
