@@ -9,6 +9,7 @@ https://typing.python.org/en/latest/spec/concepts.html#summary-of-type-relations
 
 import collections.abc
 import enum
+import itertools
 import struct
 import sys
 from collections.abc import Iterable, Iterator, Mapping, MutableMapping, Sequence
@@ -21,8 +22,6 @@ from typing_extensions import assert_never
 
 import pycroscope
 from pycroscope.analysis_lib import Sentinel
-from pycroscope.annotated_types import MaxLen, MinLen
-from pycroscope.extensions import PredicateCheck
 from pycroscope.find_unused import used
 from pycroscope.safe import safe_equals, safe_isinstance, safe_issubclass
 from pycroscope.typevar import resolve_bounds_map
@@ -475,20 +474,6 @@ def _has_relation(
             bounds_maps.append(custom_can_assign)
         return unify_bounds_maps(bounds_maps)
 
-    # PredicateValue
-    if isinstance(left, PredicateValue):
-        if isinstance(right, PredicateValue):
-            if _predicate_implies(right.predicate, left.predicate):
-                return {}
-            return CanAssignError(f"{right} is not {relation.description} {left}")
-        if _value_guarantees_predicate(right, left.predicate, ctx):
-            return {}
-        return CanAssignError(f"{right} is not {relation.description} {left}")
-    if isinstance(right, PredicateValue):
-        if left == TypedValue(object):
-            return {}
-        return CanAssignError(f"{right} is not {relation.description} {left}")
-
     # TypeFormValue
     if isinstance(left, TypeFormValue):
         return _can_assign_type_form(left.inner_type, right, ctx)
@@ -646,6 +631,17 @@ def _has_relation(
             return CanAssignError("Any is not a subtype of anything")
         return {}  # Any is assignable to everything
     assert not isinstance(left, NewTypeValue)
+
+    # PredicateValue
+    if isinstance(left, PredicateValue):
+        result = left.predicate.has_relation(right, relation)
+        if result:
+            return {}
+        return CanAssignError(f"{right} is not {relation.description} {left}")
+    if isinstance(right, PredicateValue):
+        if left == TypedValue(object):
+            return {}
+        return CanAssignError(f"{right} is not {relation.description} {left}")
 
     # SyntheticModuleValue
     if isinstance(left, SyntheticModuleValue) or isinstance(
@@ -2320,208 +2316,13 @@ def _expand_tuple_members_to_max_len(
     return deduped
 
 
-def _narrow_tuple_to_min_len(
-    value: Value, target_len: int, ctx: CanAssignContext
-) -> GradualType | None:
-    members = tuple_members_from_value(value, ctx)
-    if members is None:
-        return None
-    expanded = _expand_tuple_members_to_min_len(members, target_len)
-    if expanded is None:
-        return None
-    if not expanded:
-        return NO_RETURN_VALUE
-    return gradualize(
-        unite_values(*[SequenceValue(tuple, members) for members in expanded])
-    )
-
-
-def _narrow_tuple_to_max_len(
-    value: Value, target_len: int, ctx: CanAssignContext
-) -> GradualType | None:
-    members = tuple_members_from_value(value, ctx)
-    if members is None:
-        return None
-    expanded = _expand_tuple_members_to_max_len(members, target_len)
-    if expanded is None:
-        return None
-    if not expanded:
-        return NO_RETURN_VALUE
-    return gradualize(
-        unite_values(*[SequenceValue(tuple, members) for members in expanded])
-    )
-
-
-def _get_len_bounds(value: Value) -> tuple[int | None, int | None]:
-    if isinstance(value, KnownValue):
-        try:
-            length = len(value.val)
-        except Exception:
-            return None, None
-        return length, length
-    if isinstance(value, SequenceValue):
-        min_len = 0
-        max_len = 0
-        for is_many, _ in value.members:
-            if is_many:
-                max_len = None
-            else:
-                min_len += 1
-                if max_len is not None:
-                    max_len += 1
-        return min_len, max_len
-    if isinstance(value, GenericValue) and value.typ is tuple and len(value.args) == 1:
-        return 0, None
-    if isinstance(value, DictIncompleteValue):
-        min_len = sum(pair.is_required and not pair.is_many for pair in value.kv_pairs)
-        max_len = 0
-        has_unbounded_tail = False
-        for pair in value.kv_pairs:
-            if pair.is_many:
-                has_unbounded_tail = True
-                break
-            max_len += 1
-        if has_unbounded_tail:
-            return min_len, None
-        return min_len, max_len
-    if isinstance(value, TypedDictValue):
-        min_len = sum(entry.required for entry in value.items.values())
-        if value.extra_keys is not NO_RETURN_VALUE:
-            return min_len, None
-        return min_len, len(value.items)
-    if isinstance(value, TypedValue) and value.typ in {
-        str,
-        bytes,
-        bytearray,
-        tuple,
-        list,
-        set,
-        frozenset,
-        dict,
-    }:
-        return 0, None
-    return None, None
-
-
-def _predicate_implies(stronger: PredicateCheck, weaker: PredicateCheck) -> bool:
-    if stronger == weaker:
-        return True
-    return weaker.is_compatible_metadata(stronger)
-
-
-def _intersect_len_predicate(
-    predicate: MinLen | MaxLen, value: SimpleType, ctx: CanAssignContext
-) -> TypeOrIrreducible:
-    if not isinstance(predicate.value, int):
-        return Irreducible
-
-    min_len, max_len = _get_len_bounds(value)
-    if isinstance(value, KnownValue) and min_len is None and max_len is None:
-        return NO_RETURN_VALUE
-    if isinstance(predicate, MinLen):
-        target = predicate.value
-        tuple_narrowed = _narrow_tuple_to_min_len(value, target, ctx)
-        if tuple_narrowed is NO_RETURN_VALUE:
-            return NO_RETURN_VALUE
-        if tuple_narrowed is not None:
-            return tuple_narrowed
-        if max_len is not None and max_len < target:
-            return NO_RETURN_VALUE
-        if min_len is not None and min_len >= target:
-            return value
-        return Irreducible
-    else:
-        target = predicate.value
-        tuple_narrowed = _narrow_tuple_to_max_len(value, target, ctx)
-        if tuple_narrowed is NO_RETURN_VALUE:
-            return NO_RETURN_VALUE
-        if tuple_narrowed is not None:
-            return tuple_narrowed
-        if min_len is not None and min_len > target:
-            return NO_RETURN_VALUE
-        if max_len is not None and max_len <= target:
-            return value
-        return Irreducible
-
-
-def _intersect_predicate_predicate(
-    left: PredicateValue, right: PredicateValue
-) -> TypeOrIrreducible:
-    left_pred = left.predicate
-    right_pred = right.predicate
-    if isinstance(left_pred, MinLen) and isinstance(right_pred, MinLen):
-        if isinstance(left_pred.value, int) and isinstance(right_pred.value, int):
-            return PredicateValue(MinLen(max(left_pred.value, right_pred.value)))
-    if isinstance(left_pred, MaxLen) and isinstance(right_pred, MaxLen):
-        if isinstance(left_pred.value, int) and isinstance(right_pred.value, int):
-            return PredicateValue(MaxLen(min(left_pred.value, right_pred.value)))
-    if isinstance(left_pred, MinLen) and isinstance(right_pred, MaxLen):
-        if (
-            isinstance(left_pred.value, int)
-            and isinstance(right_pred.value, int)
-            and left_pred.value > right_pred.value
-        ):
-            return NO_RETURN_VALUE
-    if isinstance(left_pred, MaxLen) and isinstance(right_pred, MinLen):
-        if (
-            isinstance(left_pred.value, int)
-            and isinstance(right_pred.value, int)
-            and right_pred.value > left_pred.value
-        ):
-            return NO_RETURN_VALUE
-    if _predicate_implies(left_pred, right_pred):
-        return left
-    if _predicate_implies(right_pred, left_pred):
-        return right
-    return Irreducible
-
-
 def _intersect_predicate(
     left: PredicateValue, right: SimpleType, ctx: CanAssignContext
 ) -> TypeOrIrreducible:
-    if isinstance(right, PredicateValue):
-        return _intersect_predicate_predicate(left, right)
-    if isinstance(left.predicate, (MinLen, MaxLen)):
-        return _intersect_len_predicate(left.predicate, right, ctx)
-    if isinstance(right, KnownValue):
-        can_assign = left.predicate.can_assign(right, ctx)
-        if isinstance(can_assign, CanAssignError):
-            return NO_RETURN_VALUE
-        return right
-    return Irreducible
-
-
-def _value_guarantees_predicate(
-    value: GradualType, predicate: PredicateCheck, ctx: CanAssignContext
-) -> bool:
-    if value is NO_RETURN_VALUE:
-        return True
-    if isinstance(value, AnyValue):
-        return True
-    if isinstance(value, MultiValuedValue):
-        return all(
-            _value_guarantees_predicate(gradualize(val), predicate, ctx)
-            for val in value.vals
-        )
-    if isinstance(value, IntersectionValue):
-        return any(
-            _value_guarantees_predicate(gradualize(val), predicate, ctx)
-            for val in value.vals
-        )
-    if isinstance(value, PredicateValue):
-        return _predicate_implies(value.predicate, predicate)
-    if isinstance(predicate, MinLen) and isinstance(predicate.value, int):
-        min_len, _ = _get_len_bounds(value)
-        return min_len is not None and min_len >= predicate.value
-    if isinstance(predicate, MaxLen) and isinstance(predicate.value, int):
-        _, max_len = _get_len_bounds(value)
-        return max_len is not None and max_len <= predicate.value
-    if isinstance(value, KnownValue):
-        try:
-            return not isinstance(predicate.can_assign(value, ctx), CanAssignError)
-        except Exception:
-            return False
-    return False
+    inters = left.predicate.intersect_with(right)
+    if inters is None:
+        return Irreducible
+    return gradualize(inters)
 
 
 def intersect_multi(values: Sequence[Value], ctx: CanAssignContext) -> GradualType:
@@ -2538,6 +2339,12 @@ def intersect_multi(values: Sequence[Value], ctx: CanAssignContext) -> GradualTy
 def intersect_values(left: Value, right: Value, ctx: CanAssignContext) -> GradualType:
     value = _intersect_values_inner(left, right, ctx)
     if value is Irreducible:
+        assert not isinstance(
+            left, (MultiValuedValue, IntersectionValue)
+        ), f"{left} & {right}"
+        assert not isinstance(
+            right, (MultiValuedValue, IntersectionValue)
+        ), f"{left} & {right}"
         return IntersectionValue((left, right))
     return value
 
@@ -2569,21 +2376,21 @@ def _intersect_values_inner(
             return Irreducible
         if right == TypedValue(object):
             return left
-        overlap = _intersect_values_inner(left.type, right, ctx)
-        if overlap is NO_RETURN_VALUE:
-            return NO_RETURN_VALUE
         if is_subtype(left.type, right, ctx):
             return right
-        return Irreducible
+        if isinstance(right, (IntersectionValue, MultiValuedValue)):
+            return _flatten_intersection(left, right, ctx=ctx)
+        else:
+            return Irreducible
     if isinstance(right, OverlappingValue):
         if left == TypedValue(object):
             return right
-        overlap = _intersect_values_inner(right.type, left, ctx)
-        if overlap is NO_RETURN_VALUE:
-            return NO_RETURN_VALUE
         if is_subtype(right.type, left, ctx):
             return left
-        return Irreducible
+        if isinstance(left, (IntersectionValue, MultiValuedValue)):
+            return _flatten_intersection(left, right, ctx=ctx)
+        else:
+            return Irreducible
 
     if (result := _simple_intersection(left, right, ctx)) is not None:
         return result
@@ -2637,7 +2444,27 @@ def _intersect_wrapper(
         return Irreducible
     # Example: NT = NewType("NT", Literal[1, 2, 3])
     # NT & Literal[2, 3, 4] = NT & Literal[2, 3]
-    return IntersectionValue((left_inner, result))
+    return gradualize(_flatten_intersection(left, result, ctx=ctx))
+
+
+def _flatten_intersection(*values: Value, ctx: CanAssignContext) -> Value:
+    unions = []
+    simple = []
+    for value in values:
+        match value:
+            case MultiValuedValue(vals=vals):
+                unions.append(vals)
+            case IntersectionValue(vals=vals):
+                simple.extend(vals)
+            case _:
+                simple.append(value)
+    if not unions:
+        return IntersectionValue(tuple(simple))
+    else:
+        results = []
+        for seq in itertools.product(*unions):
+            results.append(intersect_multi([*seq, *simple], ctx))
+        return unite_values(*results)
 
 
 def _intersect_typevar_value(
@@ -2712,11 +2539,15 @@ def _simple_intersection(
         return Irreducible
 
     # Intersections with internal Any sources collapse to the other side.
-    if isinstance(left, AnyValue):
+    if isinstance(left, AnyValue) and not isinstance(
+        right, (MultiValuedValue, IntersectionValue)
+    ):
         if left.source in _COLLAPSIBLE_ANY_SOURCES:
             return right
         return Irreducible
-    if isinstance(right, AnyValue):
+    if isinstance(right, AnyValue) and not isinstance(
+        left, (MultiValuedValue, IntersectionValue)
+    ):
         if right.source in _COLLAPSIBLE_ANY_SOURCES:
             return left
         return Irreducible
@@ -3039,4 +2870,4 @@ def _intersect_intersection(
             results.append(new_subval)
     if should_add_right:
         results.append(right)
-    return IntersectionValue(tuple(dict.fromkeys(results)))
+    return gradualize(_flatten_intersection(*results, ctx=ctx))

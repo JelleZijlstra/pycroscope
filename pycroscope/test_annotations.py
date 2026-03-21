@@ -1,4 +1,5 @@
 # static analysis: ignore
+
 from .annotations import has_invalid_paramspec_usage
 from .error_code import ErrorCode
 from .signature import OverloadedSignature, Signature, SigParameter
@@ -740,7 +741,7 @@ class TestAnnotated(TestNameCheckVisitorBase):
     def test_typing_extensions(self):
         from typing import Iterable, Optional
 
-        from typing_extensions import Annotated
+        from typing_extensions import Annotated, assert_type
 
         obj = object()
 
@@ -753,13 +754,13 @@ class TestAnnotated(TestNameCheckVisitorBase):
             in_optional: Optional[Annotated[int, 1]],
             in_iterable: Iterable[Annotated[int, 1]],
         ) -> None:
-            assert_type(x, Annotated[int, "stuff"])
-            assert_is_value(y, AnnotatedValue(TypedValue(int), [KnownValue(obj)]))
-            assert_type(quoted, Annotated[int, int, str])
-            assert_type(nested, Annotated[Annotated[int, 1], 2])
-            assert_type(nested_quoted, Annotated[Annotated[int, 1], 2])
-            assert_type(in_optional, Optional[Annotated[int, 1]])
-            assert_type(in_iterable, Iterable[Annotated[int, 1]])
+            assert_type(x, int)
+            assert_type(y, int)
+            assert_type(quoted, int)
+            assert_type(nested, int)
+            assert_type(nested_quoted, int)
+            assert_type(in_optional, int | None)
+            assert_type(in_iterable, Iterable[int])
 
     @assert_passes()
     def test_typing(self):
@@ -776,13 +777,13 @@ class TestAnnotated(TestNameCheckVisitorBase):
             in_optional: Optional[Annotated[int, 1]],
             in_iterable: Iterable[Annotated[int, 1]],
         ) -> None:
-            assert_type(x, Annotated[int, "stuff"])
-            assert_is_value(y, AnnotatedValue(TypedValue(int), [KnownValue(obj)]))
-            assert_type(quoted, Annotated[int, int, str])
-            assert_type(nested, Annotated[Annotated[int, 1], 2])
-            assert_type(nested_quoted, Annotated[Annotated[int, 1], 2])
-            assert_type(in_optional, Optional[Annotated[int, 1]])
-            assert_type(in_iterable, Iterable[Annotated[int, 1]])
+            assert_type(x, int)
+            assert_type(y, int)
+            assert_type(quoted, int)
+            assert_type(nested, int)
+            assert_type(nested_quoted, int)
+            assert_type(in_optional, int | None)
+            assert_type(in_iterable, Iterable[int])
 
     @assert_passes()
     def test_genericalias_nested_class(self):

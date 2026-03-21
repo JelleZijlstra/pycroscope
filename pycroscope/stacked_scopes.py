@@ -35,17 +35,11 @@ from typing import Any, NamedTuple, Optional, TypeVar, cast
 
 from typing_extensions import assert_never
 
-from pycroscope.relations import (
-    Relation,
-    has_relation,
-    intersect_values,
-    subtract_values,
-)
-
 from .analysis_lib import Sentinel, override
-from .annotated_types import MaxLen, MinLen
 from .boolability import get_boolability
 from .extensions import reveal_type
+from .predicates import FALSY, TRUTHY
+from .relations import Relation, has_relation, intersect_values, subtract_values
 from .safe import safe_equals
 from .value import (
     NO_RETURN_VALUE,
@@ -503,7 +497,7 @@ def _maybe_narrow_for_truthiness(
     value: Value, *, positive: bool, ctx: CanAssignContext
 ) -> Value | None:
     inner_value = replace_fallback(value)
-    predicate = PredicateValue(MinLen(1)) if positive else PredicateValue(MaxLen(0))
+    predicate = PredicateValue(TRUTHY) if positive else PredicateValue(FALSY)
     match inner_value:
         case KnownValue(val=val) if isinstance(val, tuple):
             pass

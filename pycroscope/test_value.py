@@ -13,9 +13,9 @@ from typing_extensions import Protocol, runtime_checkable
 from pycroscope.test_node_visitor import skip_if_not_installed
 
 from . import tests, value
-from .annotated_types import MinLen
 from .checker import Checker
 from .name_check_visitor import NameCheckVisitor
+from .predicates import MinLen
 from .relations import _extract_type_form, intersect_values
 from .signature import ELLIPSIS_PARAM, Signature
 from .stacked_scopes import Composite
@@ -29,6 +29,7 @@ from .value import (
     CanAssignError,
     ClassSymbol,
     GenericValue,
+    IntersectionValue,
     KnownValue,
     KVPair,
     MultiValuedValue,
@@ -40,6 +41,7 @@ from .value import (
     SuperValue,
     SyntheticClassObjectValue,
     TypedValue,
+    TypeIsExtension,
     TypeVarParam,
     TypeVarValue,
     Value,
@@ -829,11 +831,12 @@ def test_new_type_value() -> None:
 
 def test_annotated_value() -> None:
     tv_int = TypedValue(int)
-    assert_can_assign(AnnotatedValue(tv_int, [tv_int]), tv_int)
-    assert_can_assign(tv_int, AnnotatedValue(tv_int, [tv_int]))
+    ext = TypeIsExtension(tv_int)
+    assert_can_assign(AnnotatedValue(tv_int, [ext]), tv_int)
+    assert_can_assign(tv_int, AnnotatedValue(tv_int, [ext]))
 
     union = TypedValue(int) | TypedValue(float)
-    annotated = AnnotatedValue(union, [KnownValue(1)])
+    annotated = AnnotatedValue(union, [ext])
     assert_can_assign(annotated, union)
     assert_can_assign(union, annotated)
 
@@ -905,6 +908,13 @@ def test_unannotated_any_intersection_simplifies() -> None:
     )
 
 
+def test_predicate_intersection() -> None:
+    pred = value.PredicateValue(MinLen(1))
+    inters = IntersectionValue((TypedValue(str), pred))
+    assert_can_assign(TypedValue(str), inters)
+    assert_can_assign(pred, inters)
+
+
 def test_overlapping_value_intersection_simplifies() -> None:
     overlapping_int = OverlappingValue(TypedValue(int))
 
@@ -913,16 +923,21 @@ def test_overlapping_value_intersection_simplifies() -> None:
     assert intersect_values(overlapping_int, TypedValue(object), CTX) == overlapping_int
     assert intersect_values(TypedValue(object), overlapping_int, CTX) == overlapping_int
 
-    assert intersect_values(overlapping_int, TypedValue(str), CTX) == NO_RETURN_VALUE
-    assert intersect_values(TypedValue(str), overlapping_int, CTX) == NO_RETURN_VALUE
+    assert intersect_values(
+        overlapping_int, TypedValue(str), CTX
+    ) == overlapping_int & TypedValue(str)
+    assert (
+        intersect_values(TypedValue(str), overlapping_int, CTX)
+        == TypedValue(str) & overlapping_int
+    )
 
     overlapping_int_or_str = OverlappingValue(TypedValue(int) | TypedValue(str))
     int_or_bytes = TypedValue(int) | TypedValue(bytes)
     assert intersect_values(overlapping_int_or_str, int_or_bytes, CTX) == (
-        value.IntersectionValue((overlapping_int_or_str, int_or_bytes))
+        TypedValue(int) | (TypedValue(bytes) & overlapping_int_or_str)
     )
     assert intersect_values(int_or_bytes, overlapping_int_or_str, CTX) == (
-        value.IntersectionValue((int_or_bytes, overlapping_int_or_str))
+        TypedValue(int) | (TypedValue(bytes) & overlapping_int_or_str)
     )
 
 

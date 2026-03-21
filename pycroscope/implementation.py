@@ -14,12 +14,12 @@ import typing_extensions
 import pycroscope
 
 from . import runtime
-from .annotated_types import MaxLen, MinLen
 from .annotations import annotation_expr_from_value, is_typevarlike, type_from_value
 from .error_code import ErrorCode
 from .extensions import assert_type, reveal_locals, reveal_type
 from .format_strings import parse_format_string
 from .maybe_asynq import qcore
+from .predicates import MaxLen, MinLen
 from .regex_check import check_regex_in_value
 from .relations import (
     Relation,

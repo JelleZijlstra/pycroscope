@@ -15,11 +15,10 @@ from typing import Any, TypeVar
 import pycroscope
 
 from .analysis_lib import override, set_inferred_value
-from .annotated_types import MaxLen, MinLen
 from .annotations import type_from_value
 from .error_code import ErrorCode
 from .extensions import CustomCheck
-from .predicates import EqualsPredicate, IsAssignablePredicate
+from .predicates import EqualsPredicate, IsAssignablePredicate, MaxLen, MinLen
 from .relations import Relation, has_relation, intersect_values
 from .signature import MappingValue
 from .stacked_scopes import (

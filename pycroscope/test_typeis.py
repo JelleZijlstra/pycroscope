@@ -216,13 +216,16 @@ class TestTypeIs(TestNameCheckVisitorBase):
         def anymain(a: Any) -> None:
             any_explicit = AnyValue(AnySource.explicit)
             if is_objfloat(a):
-                assert_is_value(a, any_explicit & (TypedValue(float) | TypedValue(int)))
+                assert_is_value(
+                    a,
+                    (TypedValue(float) & any_explicit)
+                    | (TypedValue(int) & any_explicit),
+                )
             if is_anyfloat(a):
                 assert_is_value(
                     a,
-                    (any_explicit & TypedValue(float))
-                    | (any_explicit & TypedValue(int))
-                    | (any_explicit & (TypedValue(float) | TypedValue(int))),
+                    (TypedValue(float) & any_explicit)
+                    | (TypedValue(int) & any_explicit),
                 )
 
     @assert_passes()

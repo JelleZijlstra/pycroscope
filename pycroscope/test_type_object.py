@@ -14,7 +14,6 @@ from .type_object import (
     lookup_declared_symbol_with_owner,
 )
 from .value import (
-    AnnotatedValue,
     AnySource,
     AnyValue,
     CallableValue,
@@ -136,7 +135,7 @@ def test_runtime_declared_symbol_uses_annotation_expr_parsing() -> None:
     assert symbol.is_classvar
     assert symbol.is_readonly
     assert not symbol.is_instance_only
-    assert symbol.annotation == AnnotatedValue(TypedValue(int), [KnownValue("meta")])
+    assert symbol.annotation == TypedValue(int)
     assert symbol.initializer is None
 
 

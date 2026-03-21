@@ -1785,38 +1785,48 @@ class TestConstraints(TestNameCheckVisitorBase):
             if y in container:
                 assert_type(y, Literal[1, 2, 3])
 
+    @skip_if_not_installed("annotated_types")
     @assert_passes()
     def test_preserve_annotated(self):
-        from typing import Optional
+        from typing import Any, Optional
 
+        from annotated_types import Predicate
         from typing_extensions import Annotated
 
-        AnnotatedUnion = AnnotatedValue(
-            TypedValue(str), [KnownValue(1)]
-        ) | AnnotatedValue(KnownValue(None), [KnownValue(1)])
+        from pycroscope.annotated_types import AnnotatedPredicate
+        from pycroscope.value import CustomCheckExtension
 
-        def capybara(x: Annotated[Optional[str], 1]) -> None:
+        def pred(x: Any) -> bool:
+            return x > 5
+
+        Pred = Predicate(pred)
+        Ext = CustomCheckExtension(AnnotatedPredicate(pred))
+        AnnotatedUnion = AnnotatedValue(TypedValue(str), [Ext]) | AnnotatedValue(
+            KnownValue(None), [Ext]
+        )
+
+        def capybara(x: Annotated[Optional[str], Pred]) -> None:
             assert_is_value(x, AnnotatedUnion)
 
             if x:
-                assert_type(x, Annotated[str, 1])
+                assert_type(x, Annotated[str, Pred])
             else:
                 # None or the empty string
                 assert_is_value(x, AnnotatedUnion)
 
-        def pacarana(x: Annotated[Optional[str], 1]) -> None:
+        def pacarana(x: Annotated[Optional[str], Pred]) -> None:
             assert_is_value(x, AnnotatedUnion)
             if x is not None:
-                assert_type(x, Annotated[str, 1])
+                assert_type(x, Annotated[str, Pred])
             else:
-                assert_type(x, Annotated[None, 1])
+                assert_type(x, Annotated[None, Pred])
 
-        def agouti(x: Annotated[Optional[str], 1]) -> None:
+        def agouti(x: Annotated[Optional[str], Pred]) -> None:
             assert_is_value(x, AnnotatedUnion)
             if isinstance(x, str):
-                assert_is_value(x, TypedValue(str))
+                assert_type(x, Annotated[str, Pred])
             else:
-                assert_type(x, Annotated[None, 1])
+                assert_type(x, Annotated[None, Pred])
 
     @assert_passes()
     def test_possibly_undefined(self):
@@ -1972,13 +1982,26 @@ class TestInvalidation(TestNameCheckVisitorBase):
     def test_len_condition(self) -> None:
         from typing_extensions import Any, assert_type
 
+        from pycroscope.predicates import MinLen
+        from pycroscope.value import (
+            AnySource,
+            AnyValue,
+            IntersectionValue,
+            PredicateValue,
+        )
+
         def capybara(file_list, key, ids):
             has_bias = len(key) > 0
             data = []
             for _ in file_list:
                 assert_type(key, Any)
                 if has_bias:
-                    assert_type(key, Any)
+                    assert_is_value(
+                        key,
+                        IntersectionValue(
+                            (AnyValue(AnySource.unannotated), PredicateValue(MinLen(1)))
+                        ),
+                    )
                     data = [ids, data[key]]
                 else:
                     data = [ids]

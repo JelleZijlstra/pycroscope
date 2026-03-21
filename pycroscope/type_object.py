@@ -215,7 +215,7 @@ class TypeObject:
             self.virtual_bases.append(TypedValue(int))
 
     def get_declared_symbol(self, name: str) -> ClassSymbol | None:
-        return self.declared_symbols.get(name)
+        return self.get_declared_symbols().get(name)
 
     def get_declared_symbols(self) -> dict[str, ClassSymbol]:
         return self.declared_symbols
@@ -265,14 +265,14 @@ class TypeObject:
     def _get_declared_symbol_with_owner(
         self, name: str, ctx: CanAssignContext
     ) -> tuple["TypeObject", ClassSymbol] | None:
-        symbol = self.declared_symbols.get(name)
+        symbol = self.get_declared_symbols().get(name)
         if symbol is not None:
             return self, symbol
         for mro_value in self.mro:
             if isinstance(mro_value, AnyValue):
                 return None
             type_obj = mro_value.get_type_object(ctx)
-            symbol = type_obj.declared_symbols.get(name)
+            symbol = type_obj.get_declared_symbols().get(name)
             if symbol is not None:
                 return type_obj, symbol
         return None

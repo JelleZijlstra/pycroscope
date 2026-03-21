@@ -50,9 +50,8 @@ from typing_extensions import NoDefault, Protocol, assert_never
 
 import pycroscope
 from pycroscope.error_code import Error
-from pycroscope.extensions import CustomCheck, ExternalType, PredicateCheck
+from pycroscope.extensions import CustomCheck, ExternalType
 from pycroscope.safe import (
-    all_of_type,
     is_instance_of_typing_name,
     is_namedtuple_class,
     is_typing_name,
@@ -1795,6 +1794,8 @@ class SequenceValue(GenericValue):
             (f"*tuple[{m}, ...]" if is_many else str(m)) for is_many, m in self.members
         )
         if self.typ is tuple:
+            if not members:
+                return "tuple[()]"
             return f"tuple[{members}]"
         return f"<{stringify_object(self.typ)} containing [{members}]>"
 
@@ -2487,6 +2488,13 @@ class IntersectionValue(Value):
 
     def __post_init__(self) -> None:
         assert self.vals, "IntersectionValue must have at least one value"
+        for val in self.vals:
+            assert not isinstance(
+                val, IntersectionValue
+            ), "Nested IntersectionValues are not allowed"
+            assert not isinstance(
+                val, MultiValuedValue
+            ), "IntersectionValues cannot contain MultiValuedValues"
 
     def substitute_typevars(self, typevars: TypeVarMap) -> Value:
         return IntersectionValue(
@@ -3307,10 +3315,10 @@ class AnnotatedValue(Value):
 
     value: Value
     """The underlying value."""
-    metadata: tuple[Value | Extension, ...]
+    metadata: tuple[Extension, ...]
     """The extensions associated with this value."""
 
-    def __init__(self, value: Value, metadata: Sequence[Value | Extension]) -> None:
+    def __init__(self, value: Value, metadata: Sequence[Extension]) -> None:
         object.__setattr__(self, "value", value)
         object.__setattr__(self, "metadata", tuple(metadata))
 
@@ -3416,11 +3424,50 @@ class VariableNameValue(AnyValue):
         return None
 
 
+class Predicate:
+    """Represents a predicate on a value, such as "has an attribute named 'x' of type int"."""
+
+    def has_relation(
+        self, other: "GradualType", relation: "pycroscope.relations.Relation"
+    ) -> bool:
+        """Whether this predicate has the given relation to another GradualType.
+
+        For example, whether other is a subtype of this predicate, meaning that all values
+        included in the type are guaranteed to satisfy the predicate.
+        """
+        other = replace_fallback(other)
+        if isinstance(other, (MultiValuedValue, IntersectionValue)):
+            return False
+        return self.has_relation_simple_type(other, relation)
+
+    def has_relation_simple_type(
+        self, other: "SimpleType", relation: "pycroscope.relations.Relation"
+    ) -> bool:
+        return False
+
+    def intersect_with(self, other: "GradualType") -> Value | None:
+        """Return a Value representing the intersection of this predicate with another
+        GradualType, or None if the intersection is irreducible."""
+        other = replace_fallback(other)
+        if isinstance(other, (MultiValuedValue, IntersectionValue)):
+            return None
+        return self.intersect_with_simple_type(other)
+
+    def intersect_with_simple_type(self, other: "SimpleType") -> Value | None:
+        return None
+
+    def substitute_typevars(self, typevars: TypeVarMap) -> "Predicate":
+        return self
+
+    def walk_values(self) -> Iterable[Value]:
+        return ()
+
+
 @dataclass(frozen=True)
 class PredicateValue(Value):
     """Represents a type-level predicate constraint."""
 
-    predicate: PredicateCheck
+    predicate: Predicate
 
     def __str__(self) -> str:
         return f"Predicate[{self.predicate}]"
@@ -3602,7 +3649,7 @@ def intersect_bounds_maps(bounds_maps: Sequence[BoundsMap]) -> BoundsMap:
     }
 
 
-def annotate_value(origin: Value, metadata: Sequence[Value | Extension]) -> Value:
+def annotate_value(origin: Value, metadata: Sequence[Extension]) -> Value:
     if not metadata:
         return origin
     if isinstance(origin, AnnotatedValue):
@@ -3635,9 +3682,7 @@ def unannotate_value(
     matches = [
         metadata for metadata in origin.metadata if isinstance(metadata, extension)
     ]
-    # the all_of_type call is redundant but necessary for pycroscope's narrower for now
-    # TODO remove it
-    if matches and all_of_type(matches, Extension):
+    if matches:
         remaining = [
             metadata
             for metadata in origin.metadata
@@ -3681,6 +3726,7 @@ def unite_values(*values: Value) -> Value:
     hashable_vals = {}
     unhashable_vals = []
     for value in values:
+        assert isinstance(value, Value), repr(value)
         if isinstance(value, MultiValuedValue):
             subvals = value.vals
         elif isinstance(value, AnnotatedValue) and isinstance(
@@ -4506,7 +4552,7 @@ class AnnotationExpr:
     ctx: "pycroscope.annotations.Context"
     _value: Value | None
     qualifiers: Sequence[tuple[Qualifier, ast.AST | None]] = field(default_factory=list)
-    metadata: Sequence[Value | Extension] = field(default_factory=list)
+    metadata: Sequence[Extension] = field(default_factory=list)
 
     def add_qualifier(
         self, qualifier: Qualifier, node: ast.AST | None
@@ -4518,12 +4564,22 @@ class AnnotationExpr:
             metadata=self.metadata,
         )
 
-    def add_metadata(self, metadata: Sequence[Value | Extension]) -> "AnnotationExpr":
+    def add_metadata(
+        self, metadata: tuple[Sequence[Value], Sequence[Extension]]
+    ) -> "AnnotationExpr":
+        new_intersects, new_extensions = metadata
+        if new_intersects:
+            if self._value:
+                new_value = IntersectionValue((self._value, *new_intersects))
+            else:
+                new_value = IntersectionValue(tuple(new_intersects))
+        else:
+            new_value = self._value
         return AnnotationExpr(
             self.ctx,
-            self._value,
+            new_value,
             qualifiers=self.qualifiers,
-            metadata=[*self.metadata, *metadata],
+            metadata=[*self.metadata, *new_extensions],
         )
 
     def to_value(
