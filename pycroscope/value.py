@@ -3425,9 +3425,6 @@ class PredicateValue(Value):
         yield self
         yield from self.predicate.walk_values()
 
-    def get_fallback_value(self) -> Value | None:
-        return TypedValue(object)
-
 
 SimpleType: typing_extensions.TypeAlias = (
     AnyValue
@@ -3438,6 +3435,7 @@ SimpleType: typing_extensions.TypeAlias = (
     | TypedValue
     | SubclassValue
     | TypeFormValue
+    | PredicateValue
 )
 
 BasicType: typing_extensions.TypeAlias = (
@@ -3461,7 +3459,6 @@ GradualType: typing_extensions.TypeAlias = (
     | PartialValue
     | PartialCallValue
     | SuperValue
-    | PredicateValue
 )
 
 GRADUAL_TYPE = GradualType.__args__

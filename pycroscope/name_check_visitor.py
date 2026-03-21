@@ -14828,7 +14828,10 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             )
             return
         self._check_deprecated_property_setter(node, root)
-        if attr.symbol.is_readonly:
+        if (
+            attr.symbol.is_readonly
+            and not self._is_allowed_readonly_attribute_initialization(node, root)
+        ):
             self._show_error_if_checking(
                 node,
                 f"Cannot assign to read-only attribute {node.attr!r}",

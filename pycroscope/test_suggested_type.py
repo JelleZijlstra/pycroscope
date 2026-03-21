@@ -1,6 +1,7 @@
 # static analysis: ignore
 from unittest import mock
 
+from .annotated_types import MinLen
 from .error_code import ErrorCode
 from .stacked_scopes import Composite
 from .suggested_type import prepare_type, should_suggest_type
@@ -12,6 +13,7 @@ from .value import (
     AnyValue,
     IntersectionValue,
     KnownValue,
+    PredicateValue,
     SubclassValue,
     SyntheticClassObjectValue,
     SyntheticModuleValue,
@@ -119,3 +121,4 @@ def test_should_not_suggest_non_annotation_values() -> None:
     )
     assert not should_suggest_type(SyntheticModuleValue(("mod",)))
     assert not should_suggest_type(UnboundMethodValue("f", Composite(TypedValue(int))))
+    assert not should_suggest_type(PredicateValue(MinLen(1)))
