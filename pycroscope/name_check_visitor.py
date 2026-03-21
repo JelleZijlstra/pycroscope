@@ -14800,6 +14800,16 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 error_code=ErrorCode.incompatible_assignment,
             )
             return
+        slots_state = self._slot_state_for_type(tobj.typ)
+        if slots_state is not None:
+            slots, has_dict = slots_state
+            if not has_dict and node.attr not in slots:
+                self._show_error_if_checking(
+                    node,
+                    f"Cannot assign to attribute {node.attr!r}; it is not in __slots__",
+                    error_code=ErrorCode.incompatible_assignment,
+                )
+                return
         attr = tobj.get_attribute(
             node.attr,
             self,
@@ -14854,16 +14864,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             return
         if self._check_final_attribute_assignment(node, attr):
             return
-        slots_state = self._slot_state_for_type(tobj.typ)
-        if slots_state is not None:
-            slots, has_dict = slots_state
-            if not has_dict and node.attr not in slots:
-                self._show_error_if_checking(
-                    node,
-                    f"Cannot assign to attribute {node.attr!r}; it is not in __slots__",
-                    error_code=ErrorCode.incompatible_assignment,
-                )
-                return
         if self.being_assigned is not None:
             can_assign = has_relation(
                 attr.value, self.being_assigned, Relation.ASSIGNABLE, self
