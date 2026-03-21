@@ -271,6 +271,21 @@ class TestTypeAliasType(TestNameCheckVisitorBase):
             f([s])  # E: incompatible_argument
 
     @assert_passes()
+    def test_typing_extensions_generic_subscripted_annotation(self):
+        from typing import List, TypeVar
+
+        from typing_extensions import TypeAliasType, assert_type
+
+        T = TypeVar("T")
+        MyType = TypeAliasType("MyType", List[T], type_params=(T,))
+
+        def f(x: MyType[int]) -> None:
+            assert_type(x, MyType[int])
+
+        def capybara() -> None:
+            f([1])
+
+    @assert_passes()
     def test_typing_extensions_runtime_attributes(self):
         from typing import Literal, TypeVar
 
