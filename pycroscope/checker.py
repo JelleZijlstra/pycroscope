@@ -13,7 +13,7 @@ from collections.abc import Callable, Generator, Iterable, Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import InitVar, dataclass, field
 from dataclasses import replace as dataclass_replace
-from typing import TypeVar, assert_never, cast
+from typing import TypeVar, cast
 
 import pycroscope
 
@@ -78,6 +78,7 @@ from .value import (
     ParamSpecParam,
     PartialValue,
     PartialValueOperation,
+    PredicateValue,
     SelfT,
     SequenceValue,
     SimpleType,
@@ -500,17 +501,17 @@ class Checker:
     def get_type_object_for_value(self, value: SimpleType) -> tuple[TypeObject, bool]:
         """Return a tuple of the type object, and whether it is for the class or instance."""
         match value:
-            case AnyValue() | TypeFormValue() | UnboundMethodValue():
+            case AnyValue() | TypeFormValue() | UnboundMethodValue() | PredicateValue():
                 return self.make_type_object(object), False
             case SyntheticModuleValue():
                 return self.make_type_object(types.ModuleType), False
             case KnownValue(val) if safe_isinstance(val, type):
                 return self.make_type_object(val), True
-            case KnownValue(val):
+            case KnownValue(val=val):
                 return self.make_type_object(type(val)), False
             case SyntheticClassObjectValue(class_type=TypedValue(typ)):
                 return self.make_type_object(typ), True
-            case TypedValue(typ):
+            case TypedValue(typ=typ):
                 return self.make_type_object(typ), False
             case SubclassValue(TypedValue(typ)):
                 return self.make_type_object(typ), True
@@ -518,7 +519,8 @@ class Checker:
                 # TODO: could be more precise
                 return self.make_type_object(object), True
             case _:
-                assert_never(value)
+                # TODO: should be assert_never(value) but our narrowing isn't good enough
+                assert False
 
     def _sync_synthetic_class_type_object(
         self, typ: type | str, type_object: TypeObject

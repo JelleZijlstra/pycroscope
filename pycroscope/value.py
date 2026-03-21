@@ -542,6 +542,11 @@ class PartialValue(Value):
             runtime_value=self.runtime_value.substitute_typevars(typevars),
         )
 
+    def can_overlap(
+        self, other: Value, ctx: CanAssignContext, mode: OverlapMode
+    ) -> CanAssignError | None:
+        return self.runtime_value.can_overlap(other, ctx, mode)
+
     def walk_values(self) -> Iterable[Value]:
         yield self
         yield from self.root.walk_values()

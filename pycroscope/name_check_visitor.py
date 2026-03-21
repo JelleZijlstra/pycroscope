@@ -6137,17 +6137,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             return self._slot_state_for_type(value.typ)
         return None
 
-    def _is_assignment_to_non_slot_attribute(
-        self, root_value: Value, attr_name: str
-    ) -> bool:
-        slot_state = self._slot_state_for_instance_value(root_value)
-        if slot_state is None:
-            return False
-        slot_names, has_dict = slot_state
-        if has_dict:
-            return False
-        return attr_name not in slot_names
-
     def _get_dataclass_status_for_type(
         self, typ: type | str
     ) -> tuple[bool, bool | None]:
@@ -8982,17 +8971,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             return None
         return self._base_class_key_from_value(root_value)
 
-    def _frozen_dataclass_instance_status(self, value: Value) -> bool | None:
-        is_dataclass_class, frozen = self._get_dataclass_status_for_instance_value(
-            value
-        )
-        if not is_dataclass_class:
-            return False
-        return frozen
-
-    def _is_assignment_to_frozen_dataclass_attribute(self, root_value: Value) -> bool:
-        return self._frozen_dataclass_instance_status(root_value) is True
-
     def _is_assignment_to_final_attribute(
         self, node: ast.Attribute, root_value: Value
     ) -> bool:
@@ -9029,13 +9007,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 self.current_class_key, node.attr
             )
         return False
-
-    def _is_assignment_to_readonly_attribute(
-        self, node: ast.Attribute, root_value: Value
-    ) -> bool:
-        if self._is_allowed_readonly_attribute_initialization(node, root_value):
-            return False
-        return self._value_has_readonly_attribute(root_value, node.attr, node=node)
 
     def _is_deletion_of_readonly_attribute(
         self, node: ast.Attribute, root_value: Value
@@ -14345,11 +14316,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 node, expected_type_arg_message, error_code=ErrorCode.invalid_annotation
             )
             return AnyValue(AnySource.error)
-        if synthetic_base_key is None:
-            return None
-        specialized_members = self.arg_spec_cache._specialize_generic_type_params(
-            type_parameters, normalized_members
-        )
         return PartialValue(
             PartialValueOperation.SUBSCRIPT,
             root_for_partial,
@@ -14701,32 +14667,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             return
         yield root_value
 
-    def _get_attribute_assignment_symbol(
-        self, node: ast.Attribute, root_value: SimpleType
-    ) -> tuple[ClassSymbol | None, type | str | None]:
-        class_key = self._class_key_for_attribute_target(node, root_value)
-        if class_key is None:
-            return None, None
-        match = lookup_declared_symbol_with_owner(class_key, node.attr, self)
-        return None if match is None else match[1], class_key
-
-    def _get_attribute_value_for_assignment(
-        self, root_value: SimpleType, attr: str, node: ast.Attribute
-    ) -> Value:
-        lookup_value: Value = root_value
-        if isinstance(root_value, KnownValue) and not isinstance(root_value.val, type):
-            lookup_value = TypedValue(type(root_value.val))
-        ctx = _AttrContext(
-            Composite(lookup_value),
-            None,
-            attr,
-            self,
-            node=node,
-            ignore_none=self.options.get_value_for(IgnoreNoneAttributes),
-            record_reads=False,
-        )
-        return attributes.get_attribute(ctx)
-
     def _normalize_expected_attribute_type_for_assignment(self, value: Value) -> Value:
         # TODO: this should be unnecessary if we get better at
         # treating these as descriptors.
@@ -14740,16 +14680,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         ):
             return TypedValue(object)
         return value
-
-    def _dataclass_converter_input_type_for_field(
-        self, class_key: type | str, field_name: str
-    ) -> Value | None:
-        synthetic_class = self.checker.get_synthetic_class(class_key)
-        if synthetic_class is None or not synthetic_class.is_dataclass:
-            return None
-        return dataclass_helpers.get_synthetic_dataclass_converter_input_type(
-            synthetic_class, field_name
-        )
 
     def _check_attribute_write(self, node: ast.Attribute, value: Value) -> None:
         if (
@@ -14991,153 +14921,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             error_code=ErrorCode.incompatible_assignment,
         )
         return True
-
-    def _check_attribute_assignment(
-        self, node: ast.Attribute, root_composite: Composite
-    ) -> bool:
-        if self.being_assigned is None:
-            return False
-        for subvalue in self._iter_attribute_assignment_root_values(
-            root_composite.value
-        ):
-            symbol, class_key = self._get_attribute_assignment_symbol(node, subvalue)
-            if symbol is None or class_key is None:
-                continue
-            if self.ann_assign_type is None or not self.ann_assign_type[1]:
-                if self._is_final_member(
-                    class_key, node.attr, initializer=symbol.initializer
-                ):
-                    required = self.final_members_requiring_init.get(class_key)
-                    if (
-                        self.current_function_name == "__init__"
-                        and required is not None
-                    ):
-                        if node.attr in required:
-                            self.final_members_initialized_in_init.setdefault(
-                                class_key, set()
-                            ).add(node.attr)
-                            continue
-                    self._show_error_if_checking(
-                        node,
-                        f"Cannot assign to final name {node.attr}",
-                        error_code=ErrorCode.incompatible_assignment,
-                    )
-                    return False
-            is_class_object = self._is_class_object_attribute_root(subvalue)
-            if symbol.is_classvar and is_class_object is False:
-                self._show_error_if_checking(
-                    node,
-                    f"Cannot assign to class variable {node.attr!r} via instance",
-                    error_code=ErrorCode.incompatible_assignment,
-                )
-                return False
-            if (
-                symbol.is_instance_only
-                and not symbol.is_classvar
-                and not symbol.is_initvar
-                and is_class_object is True
-            ):
-                self._show_error_if_checking(
-                    node,
-                    f"Cannot assign to instance attribute {node.attr!r} via class object",
-                    error_code=ErrorCode.incompatible_assignment,
-                )
-                return False
-        if self._is_assignment_to_frozen_dataclass_attribute(root_composite.value):
-            self._show_error_if_checking(
-                node,
-                "Dataclass is frozen",
-                error_code=ErrorCode.incompatible_assignment,
-            )
-            return False
-        if self._is_assignment_to_readonly_attribute(node, root_composite.value):
-            self._show_error_if_checking(
-                node,
-                f"Cannot assign to readonly attribute {node.attr!r}",
-                error_code=ErrorCode.incompatible_assignment,
-            )
-            return False
-        if self._is_assignment_to_non_slot_attribute(root_composite.value, node.attr):
-            self._show_error_if_checking(
-                node,
-                f"Cannot assign to attribute {node.attr!r}; it is not in __slots__",
-                error_code=ErrorCode.incompatible_assignment,
-            )
-            return False
-        self._check_attribute_assignment_type(node, root_composite)
-        self._record_synthetic_attr_set(node, root_composite.value)
-        return True
-
-    def _check_attribute_assignment_type(
-        self, node: ast.Attribute, root_composite: Composite
-    ) -> None:
-        if self.being_assigned is None:
-            return
-        self._check_deprecated_property_setter(node, root_composite.value)
-        if (
-            self.current_class_key is not None
-            and self._is_current_method_receiver_node(node.value)
-            and self._class_key_for_attribute_target(node, root_composite.value)
-            == self.current_class_key
-            and not self._is_protocol_base_member_assignment(
-                self.current_class_key, node.attr
-            )
-        ):
-            return
-        for subvalue in self._iter_attribute_assignment_root_values(
-            root_composite.value
-        ):
-            expected = self._get_attribute_value_for_assignment(
-                subvalue, node.attr, node
-            )
-            if expected is UNINITIALIZED_VALUE:
-                _, class_key = self._get_attribute_assignment_symbol(node, subvalue)
-                if (
-                    class_key is not None
-                    and self.checker.make_type_object(class_key).is_protocol
-                ):
-                    self._show_error_if_checking(
-                        node,
-                        f"{root_composite.value} has no attribute {node.attr!r}",
-                        ErrorCode.undefined_attribute,
-                    )
-                    return
-                continue
-            expected_type = self._normalize_expected_attribute_type_for_assignment(
-                expected
-            )
-            use_typevar_inference = False
-            if (
-                expected_type is not None
-                and (class_key := self._class_key_from_attribute_root_value(subvalue))
-                is not None
-                and self._is_class_object_attribute_root(subvalue) is False
-                and (
-                    converter_input_type := self._dataclass_converter_input_type_for_field(
-                        class_key, node.attr
-                    )
-                )
-                is not None
-            ):
-                expected_type = converter_input_type
-                use_typevar_inference = True
-            if expected_type is None:
-                continue
-            if use_typevar_inference:
-                can_assign = get_tv_map(expected_type, self.being_assigned, self)
-            else:
-                can_assign = has_relation(
-                    expected_type, self.being_assigned, Relation.ASSIGNABLE, self
-                )
-            if isinstance(can_assign, CanAssignError):
-                self._show_error_if_checking(
-                    node,
-                    f"Incompatible assignment: expected {expected_type}, got"
-                    f" {self.being_assigned}",
-                    error_code=ErrorCode.incompatible_assignment,
-                    detail=can_assign.display(),
-                )
-                return
 
     def _check_deprecated_property_getter(
         self, node: ast.Attribute, root_value: Value
@@ -15581,9 +15364,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         elif isinstance(root_value, SyntheticClassObjectValue) and isinstance(
             root_value.class_type, TypedValue
         ):
-            root_type = root_value.class_type.typ
-            if not self._is_dataclass_initvar_attribute(root_type, attr):
-                return self._maybe_get_attr_value(root_type, attr)
+            return AnyValue(AnySource.inference)
         elif isinstance(root_value, SubclassValue):
             if isinstance(root_value.typ, TypedValue):
                 root_type = root_value.typ.typ
