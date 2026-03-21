@@ -14745,9 +14745,11 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                         self.show_caught_errors(errors)
             case _:
                 # TODO: bad match narrowing
-                # static analysis: ignore[incompatible_argument]
                 self._check_attribute_write_on_simple_type(
-                    node, value, is_deletion=is_deletion
+                    # static analysis: ignore[incompatible_argument]
+                    node,
+                    value,
+                    is_deletion=is_deletion,
                 )
 
     def _is_dynamic_function_attribute_target(self, root: SimpleType) -> bool:
