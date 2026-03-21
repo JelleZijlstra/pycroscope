@@ -681,10 +681,11 @@ def _add_runtime_declared_symbols(typ: type, symbols: dict[str, ClassSymbol]) ->
             if isinstance(class_dict, Mapping) and name in class_dict
             else None
         )
+        annotation_type = _value_from_runtime_annotation(
+            get_namedtuple_field_annotation(typ, name), typ
+        )
         symbols[name] = ClassSymbol(
-            _value_from_runtime_annotation(
-                get_namedtuple_field_annotation(typ, name), typ
-            ),
+            annotation_type,
             frozenset({Qualifier.ReadOnly}),
             is_instance_only=True,
             property_info=(
@@ -693,6 +694,7 @@ def _add_runtime_declared_symbols(typ: type, symbols: dict[str, ClassSymbol]) ->
                 else None
             ),
             initializer=raw_value,
+            annotation_type=annotation_type,
         )
     try:
         if sys.version_info >= (3, 14):
@@ -759,6 +761,9 @@ def _add_runtime_declared_symbols(typ: type, symbols: dict[str, ClassSymbol]) ->
                 property_info=(
                     _runtime_property_info(raw_value, typ) if is_property else None
                 ),
+                annotation_type=(
+                    existing.annotation_type if existing is not None else None
+                ),
                 initializer=KnownValue(raw_value),
                 dataclass_field=(
                     existing.dataclass_field if existing is not None else None
@@ -817,6 +822,7 @@ def _symbol_from_runtime_annotation(annotation: object, owner: type) -> ClassSym
     return ClassSymbol(
         typ if typ is not None else AnyValue(AnySource.incomplete_annotation),
         frozenset(qualifiers),
+        annotation_type=typ,
     )
 
 

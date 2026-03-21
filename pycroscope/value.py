@@ -4420,6 +4420,7 @@ class ClassSymbol:
     returns_self_on_class_access: bool = False
     property_info: PropertyInfo | None = None
     initializer: Value | None = None
+    annotation_type: Value | None = None
     dataclass_field: DataclassFieldInfo | None = None
 
     def __post_init__(self) -> None:

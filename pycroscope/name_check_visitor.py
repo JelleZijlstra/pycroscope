@@ -62,6 +62,7 @@ from .analysis_lib import (
     is_cython_class,
     object_from_string,
     override,
+    set_inferred_value,
 )
 from .annotated_types import Ge, Gt, Le, Lt
 from .annotations import (
@@ -2528,7 +2529,8 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             )
         # Recover memory used for the AST. We keep the visitor object around later in order
         # to show ClassAttributeChecker errors, but those don't need the full AST.
-        self.tree = None
+        # This is intentionally unsafe.
+        self.tree = None  # static analysis: ignore[incompatible_assignment]
         self._argspec_to_retval.clear()
         end_time = time.time()
         message = f"{self.filename} took {end_time - start_time:.2f} s"
@@ -2548,6 +2550,8 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 # inline override here
                 old_statement = self.current_statement
                 try:
+                    # TODO: if we narrow on the "if node_type in ..." this should be accepted
+                    # static analysis: ignore[incompatible_assignment]
                     self.current_statement = node
                     ret = method(node)
                 finally:
@@ -2568,7 +2572,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         if ret is None:
             ret = VOID
         if self.annotate:
-            node.inferred_value = ret
+            set_inferred_value(node, ret)
         if self.error_for_implicit_any:
             for val in ret.walk_values():
                 if isinstance(val, AnyValue) and val.source is not AnySource.explicit:
@@ -3991,7 +3995,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 callee = self.visit(decorator.func)
                 value = self.visit_Call(decorator, callee=callee)
                 if self.annotate:
-                    decorator.inferred_value = value
+                    set_inferred_value(decorator, value)
             else:
                 callee = value = self.visit(decorator)
             result.append((callee, value, decorator))
@@ -9743,7 +9747,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                         self.visit(node)
                 val = value_from_ast(node, visitor=self)
                 if self.annotate:
-                    node.inferred_value = val
+                    set_inferred_value(node, val)
             else:
                 val = self.visit(node)
             if self._is_invalid_generic_annotation_node(node):
@@ -12222,7 +12226,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     continue
                 if hasattr(subnode, "inferred_value"):
                     continue
-                subnode.inferred_value = AnyValue(AnySource.inference)
+                set_inferred_value(subnode, AnyValue(AnySource.inference))
 
     def constraint_from_condition(
         self, node: ast.AST, check_boolability: bool = True
@@ -12489,7 +12493,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                         error_code=ErrorCode.invalid_annotation,
                     )
                 if self.annotate:
-                    node.target.inferred_value = AnyValue(AnySource.inference)
+                    set_inferred_value(node.target, AnyValue(AnySource.inference))
                 return
             if self._is_subscripted_type_alias_annotation(node.annotation):
                 expr = annotation_expr_from_ast(
@@ -13718,7 +13722,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
 
     def composite_from_subscript(self, node: ast.Subscript) -> Composite:
         if self.annotate and not hasattr(node, "inferred_value"):
-            node.inferred_value = AnyValue(AnySource.inference)
+            set_inferred_value(node, AnyValue(AnySource.inference))
         root_composite = self.composite_from_node(node.value)
         index_composite = self._composite_from_subscript_index(
             node.value, node.slice, root_composite.value
@@ -13750,7 +13754,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             )
         composite = Composite(return_value, varname, node)
         if self.annotate:
-            node.inferred_value = composite.value
+            set_inferred_value(node, composite.value)
         return composite
 
     def _composite_from_subscript_index(
@@ -14707,6 +14711,8 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     for errors in errors_lists:
                         self.show_caught_errors(errors)
             case _:
+                # TODO: bad match narrowing
+                # static analysis: ignore[incompatible_argument]
                 self._check_attribute_write_on_simple_type(node, value)
 
     def _is_dynamic_function_attribute_target(self, root: SimpleType) -> bool:
@@ -14867,7 +14873,10 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             return
         if self._check_final_attribute_assignment(node, attr):
             return
-        if self._is_enum_value_assignment_on_current_receiver(node, root):
+        if (
+            self._is_enum_value_assignment_on_current_receiver(node, root)
+            or attr.symbol.annotation_type is None
+        ):
             self._record_type_attr_set_for_value(
                 root, node.attr, node, self.being_assigned
             )
@@ -15409,7 +15418,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         else:
             composite = Composite(self.visit(node), None, node)
         if self.annotate:
-            node.inferred_value = composite.value
+            set_inferred_value(node, composite.value)
         return composite
 
     def varname_for_constraint(self, node: ast.AST) -> VarnameWithOrigin | None:
@@ -16503,8 +16512,14 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         return set()
 
     def _record_type_attr_set_for_value(
-        self, root_value: Value, attr_name: str, node: ast.AST | None, value: Value
+        self,
+        root_value: Value,
+        attr_name: str,
+        node: ast.AST | None,
+        value: Value | None,
     ) -> None:
+        if value is None:
+            return
         for typ in self._attribute_write_types_for_value(root_value):
             self._record_type_attr_set(typ, attr_name, node, value)
 

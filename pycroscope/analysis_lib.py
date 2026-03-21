@@ -268,3 +268,8 @@ except ImportError:
         if not text.endswith("\n"):
             text += "\n"
         return text
+
+
+def set_inferred_value(node: ast.AST, value: object) -> None:
+    # static analysis: ignore[undefined_attribute]
+    node.inferred_value = value
