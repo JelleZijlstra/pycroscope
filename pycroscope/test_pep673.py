@@ -182,8 +182,8 @@ class TestPEP673(TestNameCheckVisitorBase):
                 return str(self.value)
 
         xs = OrdinalLinkedList(
-            value=1, next=LinkedList[int](value=2)
-        )  # E: incompatible_argument
+            value=1, next=LinkedList[int](value=2)  # E: incompatible_argument
+        )
 
         if xs.next is not None:
             xs.next = OrdinalLinkedList(value=3, next=None)

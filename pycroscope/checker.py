@@ -499,7 +499,7 @@ class Checker:
         return type_object
 
     def get_type_object_for_value(
-        self, value: SimpleType, current_class: type | str
+        self, value: SimpleType, current_class: type | str | None
     ) -> tuple[TypeObject, bool]:
         """Return a tuple of the type object, and whether it is for the class or instance."""
         match value:
@@ -518,7 +518,7 @@ class Checker:
             case SubclassValue(TypedValue(typ)):
                 return self.make_type_object(typ), True
             case SubclassValue(TypeVarValue() as tv):
-                if tv.typevar_param.typevar is SelfT:
+                if tv.typevar_param.typevar is SelfT and current_class is not None:
                     return self.make_type_object(current_class), True
                 # TODO: could be more precise
                 return self.make_type_object(object), True

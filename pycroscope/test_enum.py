@@ -88,6 +88,8 @@ class TestEnum(TestNameCheckVisitorBase):
     def test_annotated_nonmember_attributes_can_be_assigned_in_init(self):
         from enum import Enum
 
+        from typing_extensions import assert_type
+
         class Pet(Enum):
             genus: str
             species: str
