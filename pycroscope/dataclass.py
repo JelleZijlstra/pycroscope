@@ -160,9 +160,7 @@ def apply_synthetic_attributes(
         if slot_names is not None:
             slot_value = KnownValue(slot_names)
             merge_declared_symbol(
-                synthetic_class,
-                "__slots__",
-                ClassSymbol(slot_value, initializer=slot_value),
+                synthetic_class, "__slots__", ClassSymbol(initializer=slot_value)
             )
 
     if (
@@ -174,7 +172,7 @@ def apply_synthetic_attributes(
             synthetic_class,
             "__dataclass_fields__",
             ClassSymbol(
-                dataclass_fields_value,
+                annotation=dataclass_fields_value,
                 qualifiers=frozenset({Qualifier.ClassVar}),
                 initializer=dataclass_fields_value,
             ),
@@ -188,7 +186,7 @@ def apply_synthetic_attributes(
             merge_declared_symbol(
                 synthetic_class,
                 "__init__",
-                ClassSymbol(init_value, is_method=True, initializer=init_value),
+                ClassSymbol(is_method=True, initializer=init_value),
             )
 
     if get_synthetic_member_initializer(synthetic_class, "__match_args__") is None:
@@ -199,7 +197,7 @@ def apply_synthetic_attributes(
             merge_declared_symbol(
                 synthetic_class,
                 "__match_args__",
-                ClassSymbol(match_args_value, initializer=match_args_value),
+                ClassSymbol(initializer=match_args_value),
             )
 
     if get_synthetic_member_initializer(synthetic_class, "__hash__") is None:
@@ -208,7 +206,7 @@ def apply_synthetic_attributes(
             merge_declared_symbol(
                 synthetic_class,
                 "__hash__",
-                ClassSymbol(hash_value, is_method=True, initializer=hash_value),
+                ClassSymbol(is_method=True, initializer=hash_value),
             )
 
 

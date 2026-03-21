@@ -735,8 +735,10 @@ def _get_direct_attribute_from_synthetic_class(
     symbol = _get_synthetic_declared_symbol(self_value, attr_name)
     if symbol is None:
         return UNINITIALIZED_VALUE
-    if symbol.annotation_type is not None and not symbol.is_method:
-        raw_value = symbol.annotation_type
+    if symbol.is_property:
+        raw_value = symbol.initializer
+    elif symbol.annotation is not None and not symbol.is_method:
+        raw_value = symbol.annotation
     else:
         raw_value = symbol.initializer
     if raw_value is None:
@@ -799,7 +801,7 @@ def _get_direct_attribute_from_synthetic_instance(
         and not symbol.is_initvar
         and not symbol.is_method
     ):
-        return symbol.typ
+        return symbol.get_effective_type()
     return _get_direct_attribute_from_synthetic_class(self_value, attr_name, ctx)
 
 

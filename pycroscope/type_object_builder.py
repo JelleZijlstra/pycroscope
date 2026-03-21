@@ -681,12 +681,12 @@ def _add_runtime_declared_symbols(typ: type, symbols: dict[str, ClassSymbol]) ->
             if isinstance(class_dict, Mapping) and name in class_dict
             else None
         )
-        annotation_type = _value_from_runtime_annotation(
+        annotation = _value_from_runtime_annotation(
             get_namedtuple_field_annotation(typ, name), typ
         )
         symbols[name] = ClassSymbol(
-            annotation_type,
-            frozenset({Qualifier.ReadOnly}),
+            annotation=annotation,
+            qualifiers=frozenset({Qualifier.ReadOnly}),
             is_instance_only=True,
             property_info=(
                 _runtime_property_info(raw_value.val, typ)
@@ -694,7 +694,6 @@ def _add_runtime_declared_symbols(typ: type, symbols: dict[str, ClassSymbol]) ->
                 else None
             ),
             initializer=raw_value,
-            annotation_type=annotation_type,
         )
     try:
         if sys.version_info >= (3, 14):
@@ -750,8 +749,8 @@ def _add_runtime_declared_symbols(typ: type, symbols: dict[str, ClassSymbol]) ->
                     or inspect.ismethoddescriptor(raw_value)
                 )
             symbols[name] = ClassSymbol(
-                (existing.typ if existing is not None else KnownValue(raw_value)),
-                existing.qualifiers if existing is not None else frozenset(),
+                annotation=existing.annotation if existing is not None else None,
+                qualifiers=existing.qualifiers if existing is not None else frozenset(),
                 is_instance_only=(
                     existing.is_instance_only if existing is not None else False
                 ),
@@ -760,9 +759,6 @@ def _add_runtime_declared_symbols(typ: type, symbols: dict[str, ClassSymbol]) ->
                 is_staticmethod=is_staticmethod,
                 property_info=(
                     _runtime_property_info(raw_value, typ) if is_property else None
-                ),
-                annotation_type=(
-                    existing.annotation_type if existing is not None else None
                 ),
                 initializer=KnownValue(raw_value),
                 dataclass_field=(
@@ -820,9 +816,10 @@ def _symbol_from_runtime_annotation(annotation: object, owner: type) -> ClassSym
         expr = annotation_expr_from_runtime(annotation, ctx=ctx)
         typ, qualifiers = expr.maybe_unqualify(_CLASS_SYMBOL_ALLOWED_QUALIFIERS)
     return ClassSymbol(
-        typ if typ is not None else AnyValue(AnySource.incomplete_annotation),
-        frozenset(qualifiers),
-        annotation_type=typ,
+        annotation=(
+            typ if typ is not None else AnyValue(AnySource.incomplete_annotation)
+        ),
+        qualifiers=frozenset(qualifiers),
     )
 
 

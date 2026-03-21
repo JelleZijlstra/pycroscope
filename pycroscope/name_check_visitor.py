@@ -2831,8 +2831,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         self,
         name: str,
         *,
-        typ: Value | None = None,
-        annotation_type: Value | None = None,
+        annotation: Value | None = None,
         add_qualifiers: Iterable[Qualifier] = (),
         is_instance_only: bool | None = None,
         is_method: bool | None = None,
@@ -2906,16 +2905,12 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 else existing.initializer if existing is not None else None
             )
         synthetic_class.declared_symbols[name] = ClassSymbol(
-            (
-                typ
-                if typ is not None
-                else (
-                    existing.typ
-                    if existing is not None
-                    else AnyValue(AnySource.inference)
-                )
+            annotation=(
+                annotation
+                if annotation is not None
+                else existing.annotation if existing is not None else None
             ),
-            frozenset(qualifiers),
+            qualifiers=frozenset(qualifiers),
             is_instance_only=(
                 (existing.is_instance_only if existing is not None else False)
                 if is_instance_only is None
@@ -2927,11 +2922,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             returns_self_on_class_access=resolved_returns_self_on_class_access,
             property_info=resolved_property_info,
             initializer=resolved_initializer,
-            annotation_type=(
-                annotation_type
-                if annotation_type is not None
-                else existing.annotation_type if existing is not None else None
-            ),
             dataclass_field=existing.dataclass_field if existing is not None else None,
         )
 
@@ -2941,8 +2931,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         name: str,
         value: Value,
         *,
-        typ: Value | None = None,
-        annotation_type: Value | None = None,
+        annotation: Value | None = None,
         is_method: bool | None = None,
         is_classmethod: bool | None = None,
         is_staticmethod: bool | None = None,
@@ -3004,8 +2993,12 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             )
             resolved_initializer = value
         synthetic_class.declared_symbols[name] = ClassSymbol(
-            typ if typ is not None else existing.typ if existing is not None else value,
-            existing.qualifiers if existing is not None else frozenset(),
+            annotation=(
+                annotation
+                if annotation is not None
+                else existing.annotation if existing is not None else None
+            ),
+            qualifiers=existing.qualifiers if existing is not None else frozenset(),
             is_instance_only=(
                 existing.is_instance_only if existing is not None else False
             ),
@@ -3015,11 +3008,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             returns_self_on_class_access=resolved_returns_self_on_class_access,
             property_info=resolved_property_info,
             initializer=resolved_initializer,
-            annotation_type=(
-                annotation_type
-                if annotation_type is not None
-                else existing.annotation_type if existing is not None else None
-            ),
             dataclass_field=existing.dataclass_field if existing is not None else None,
         )
 
@@ -3029,7 +3017,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         value: Value,
         *,
         node: ast.AST | None = None,
-        annotation_type: Value | None = None,
+        annotation: Value | None = None,
         force_nonmember: bool = False,
     ) -> None:
         synthetic_class = self._get_synthetic_class_for_current_scope()
@@ -3037,7 +3025,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             return
         synthetic_name = name
         synthetic_value = value
-        enum_member_value: Value | None = None
         enum_member_is_method = False
         if isinstance(self.current_class, (type, str)) and self._is_enum_class_key(
             self.current_class
@@ -3062,17 +3049,15 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     not forced_nonmember
                     and not _is_nonmember_enum_assignment_value(unwrapped, self)
                 ):
-                    enum_member_value = (
+                    synthetic_value = (
                         self._get_enclosing_class_value_for_method()
                         or TypedValue(self.current_class)
                     )
-                    synthetic_value = enum_member_value
                     enum_member_is_method = isinstance(
                         node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
                     )
                 elif forced_nonmember:
                     synthetic_value = unwrapped
-                    enum_member_value = unwrapped
         if not synthetic_name.startswith("%"):
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and (
                 self._is_property_decorated_function(node)
@@ -3081,12 +3066,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     synthetic_name, is_instance_only=False
                 )
                 return
-            declared_type = value
+            declared_annotation = annotation
             if self.ann_assign_type is not None and self.ann_assign_type[0] is not None:
-                declared_type = self.ann_assign_type[0]
-                annotation_type = self.ann_assign_type[0]
-            if enum_member_value is not None:
-                declared_type = enum_member_value
+                declared_annotation = self.ann_assign_type[0]
             is_method = isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
             if enum_member_is_method:
                 is_method = False
@@ -3097,17 +3079,25 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 is_classmethod, is_staticmethod, returns_self_on_class_access = (
                     self._synthetic_method_symbol_flags(node)
                 )
+            has_initializer = True
+            if (
+                isinstance(node, ast.AnnAssign)
+                and node.value is None
+                and declared_annotation is not None
+            ):
+                has_initializer = False
             self._set_synthetic_member_on_class(
                 synthetic_class,
                 synthetic_name,
-                synthetic_value,
-                typ=declared_type,
-                annotation_type=annotation_type,
+                synthetic_value if has_initializer else value,
+                annotation=declared_annotation,
                 is_method=is_method,
                 is_classmethod=is_classmethod,
                 is_staticmethod=is_staticmethod,
                 returns_self_on_class_access=returns_self_on_class_access,
             )
+            if not has_initializer:
+                self._update_synthetic_declared_symbol(synthetic_name, initializer=None)
             symbol = synthetic_class.declared_symbols.get(synthetic_name)
             if (
                 force_nonmember
@@ -3191,7 +3181,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             )
             self._update_synthetic_declared_symbol(
                 mangled_name,
-                typ=getter_value,
+                annotation=getter_value,
                 is_method=False,
                 is_classmethod=False,
                 is_staticmethod=False,
@@ -3245,7 +3235,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     existing_property_info.getter_type
                     if existing_property_info is not None
                     else (
-                        existing.typ
+                        existing.get_effective_type()
                         if existing is not None
                         else AnyValue(AnySource.inference)
                     )
@@ -3519,8 +3509,8 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         else:
             qualifiers.discard(Qualifier.InitVar)
         synthetic_class.declared_symbols[name] = ClassSymbol(
-            existing.typ if existing is not None else AnyValue(AnySource.inference),
-            frozenset(qualifiers),
+            annotation=existing.annotation if existing is not None else None,
+            qualifiers=frozenset(qualifiers),
             is_instance_only=(
                 False if Qualifier.ClassVar in qualifiers else not initvar
             ),
@@ -3534,9 +3524,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             ),
             property_info=existing.property_info if existing is not None else None,
             initializer=existing.initializer if existing is not None else None,
-            annotation_type=(
-                existing.annotation_type if existing is not None else None
-            ),
             dataclass_field=DataclassFieldInfo(
                 has_default=has_default,
                 init=init,
@@ -4308,7 +4295,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                             synthetic_class,
                             method_name,
                             ClassSymbol(
-                                initializer,
                                 is_method=True,
                                 is_classmethod=is_classmethod,
                                 is_staticmethod=is_staticmethod,
@@ -4771,7 +4757,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                                 synthetic_class,
                                 method_name,
                                 ClassSymbol(
-                                    method_initializer,
                                     is_method=True,
                                     is_classmethod=is_classmethod,
                                     is_staticmethod=is_staticmethod,
@@ -4837,7 +4822,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                             dataclass_metadata_class,
                             method_name,
                             ClassSymbol(
-                                method_initializer,
                                 is_method=True,
                                 is_classmethod=is_classmethod,
                                 is_staticmethod=is_staticmethod,
@@ -5340,7 +5324,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 synthetic_class,
                 name,
                 value,
-                typ=value,
                 is_method=False,
                 is_classmethod=False,
                 is_staticmethod=False,
@@ -7467,7 +7450,10 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 return False
             seen.add(synthetic_id)
             if any(
-                _value_contains_self(symbol.typ)
+                (
+                    symbol.annotation is not None
+                    and _value_contains_self(symbol.annotation)
+                )
                 or (
                     symbol.initializer is not None
                     and _value_contains_self(symbol.initializer)
@@ -12820,7 +12806,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 node.target.id,
                 expected_type or AnyValue(AnySource.error),
                 node=node,
-                annotation_type=expected_type or AnyValue(AnySource.error),
+                annotation=expected_type or AnyValue(AnySource.error),
                 force_nonmember=(
                     self.current_class_key is not None
                     and self._is_enum_class_key(self.current_class_key)
@@ -14979,7 +14965,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             return
         if (
             self._is_enum_value_assignment_on_current_receiver(node, root)
-            or attr.symbol.annotation_type is None
+            or attr.symbol.annotation is None
         ):
             self._record_type_attr_set_for_value(
                 root, node.attr, node, self.being_assigned
@@ -16469,14 +16455,13 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     suppress_errors=True,
                 )
                 synthetic.declared_symbols[name] = ClassSymbol(
-                    field_value,
-                    frozenset({Qualifier.ReadOnly}),
+                    annotation=field_value,
+                    qualifiers=frozenset({Qualifier.ReadOnly}),
                     is_instance_only=True,
                     initializer=field_value,
                 )
             elif isinstance(attr, property):
                 synthetic.declared_symbols[name] = ClassSymbol(
-                    AnyValue(AnySource.inference),
                     property_info=PropertyInfo(
                         AnyValue(AnySource.inference),
                         setter_type=(
@@ -16491,7 +16476,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 is_staticmethod = isinstance(attr, staticmethod)
                 is_classmethod = isinstance(attr, classmethod)
                 synthetic.declared_symbols[name] = ClassSymbol(
-                    KnownValue(attr),
                     is_method=True,
                     is_classmethod=is_classmethod,
                     is_staticmethod=is_staticmethod,
@@ -16499,7 +16483,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 )
             else:
                 synthetic.declared_symbols[name] = ClassSymbol(
-                    KnownValue(attr), initializer=KnownValue(attr)
+                    initializer=KnownValue(attr)
                 )
         self.checker.refresh_synthetic_type_object_metadata(synthetic_name)
         return synthetic
@@ -16664,17 +16648,8 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         synthetic_class = self.checker.get_synthetic_class(class_key)
         if synthetic_class is None:
             return
-        existing = synthetic_class.declared_symbols.get(node.attr)
-        symbol_type = self.being_assigned
-        if existing is not None and not (
-            isinstance(existing.typ, AnyValue)
-            and existing.typ.source is AnySource.inference
-        ):
-            symbol_type = AnyValue(AnySource.inference)
         self._merge_synthetic_declared_symbol(
-            synthetic_class,
-            node.attr,
-            ClassSymbol(symbol_type, initializer=self.being_assigned),
+            synthetic_class, node.attr, ClassSymbol(initializer=self.being_assigned)
         )
 
     def _record_type_attr_read(self, typ: type, attr_name: str, node: ast.AST) -> None:

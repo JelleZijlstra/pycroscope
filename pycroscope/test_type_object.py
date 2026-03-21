@@ -93,7 +93,7 @@ def test_lookup_declared_symbol_with_owner_handles_synthetic_base() -> None:
     base = SyntheticClassObjectValue(
         "Base",
         TypedValue("mod.Base"),
-        declared_symbols={"x": ClassSymbol(TypedValue(int))},
+        declared_symbols={"x": ClassSymbol(annotation=TypedValue(int))},
     )
     child = SyntheticClassObjectValue(
         "Child",
@@ -107,7 +107,7 @@ def test_lookup_declared_symbol_with_owner_handles_synthetic_base() -> None:
     assert match is not None
     owner, symbol = match
     assert owner == "mod.Base"
-    assert symbol.typ == TypedValue(int)
+    assert symbol.annotation == TypedValue(int)
 
 
 def test_permissive_dunder_hash_class_object_detection() -> None:
@@ -136,7 +136,7 @@ def test_runtime_declared_symbol_uses_annotation_expr_parsing() -> None:
     assert symbol.is_classvar
     assert symbol.is_readonly
     assert not symbol.is_instance_only
-    assert symbol.typ == AnnotatedValue(TypedValue(int), [KnownValue("meta")])
+    assert symbol.annotation == AnnotatedValue(TypedValue(int), [KnownValue("meta")])
     assert symbol.initializer is None
 
 
@@ -182,7 +182,9 @@ def test_synthetic_type_object_tracks_dataclass_fields_without_initializers() ->
         dataclass_info=dataclass_info,
         dataclass_field_order=("a",),
         declared_symbols={
-            "a": ClassSymbol(TypedValue(int), dataclass_field=DataclassFieldInfo())
+            "a": ClassSymbol(
+                annotation=TypedValue(int), dataclass_field=DataclassFieldInfo()
+            )
         },
     )
     child = SyntheticClassObjectValue(
@@ -192,7 +194,9 @@ def test_synthetic_type_object_tracks_dataclass_fields_without_initializers() ->
         dataclass_info=dataclass_info,
         dataclass_field_order=("b",),
         declared_symbols={
-            "b": ClassSymbol(TypedValue(str), dataclass_field=DataclassFieldInfo())
+            "b": ClassSymbol(
+                annotation=TypedValue(str), dataclass_field=DataclassFieldInfo()
+            )
         },
     )
     checker.register_synthetic_class(base)
@@ -223,7 +227,9 @@ def test_synthetic_declared_symbol_overrides_raw_attribute_value() -> None:
         TypedValue("mod.Impl"),
         declared_symbols={
             "attr": ClassSymbol(
-                TypedValue(object), is_instance_only=True, initializer=TypedValue(str)
+                annotation=TypedValue(object),
+                is_instance_only=True,
+                initializer=TypedValue(str),
             )
         },
     )
@@ -232,7 +238,7 @@ def test_synthetic_declared_symbol_overrides_raw_attribute_value() -> None:
     symbol = checker.make_type_object("mod.Impl").get_declared_symbol("attr")
     assert symbol is not None
     assert symbol.is_instance_only
-    assert symbol.typ == TypedValue(object)
+    assert symbol.annotation == TypedValue(object)
     assert symbol.initializer == TypedValue(str)
 
 
@@ -241,7 +247,7 @@ def test_type_object_declared_symbols_are_canonical_for_synthetic_class() -> Non
     synthetic = SyntheticClassObjectValue(
         "Impl",
         TypedValue("mod.Impl"),
-        declared_symbols={"attr": ClassSymbol(TypedValue(int))},
+        declared_symbols={"attr": ClassSymbol(annotation=TypedValue(int))},
     )
     checker.register_synthetic_class(synthetic)
 
@@ -327,14 +333,14 @@ def test_synthetic_namedtuple_type_object_uses_specialized_tuple_mro() -> None:
         ),
     )
     synthetic.declared_symbols["x"] = ClassSymbol(
-        TypedValue(int),
-        frozenset({Qualifier.ReadOnly}),
+        annotation=TypedValue(int),
+        qualifiers=frozenset({Qualifier.ReadOnly}),
         is_instance_only=True,
         initializer=TypedValue(int),
     )
     synthetic.declared_symbols["y"] = ClassSymbol(
-        TypedValue(str),
-        frozenset({Qualifier.ReadOnly}),
+        annotation=TypedValue(str),
+        qualifiers=frozenset({Qualifier.ReadOnly}),
         is_instance_only=True,
         initializer=TypedValue(str),
     )
@@ -354,10 +360,10 @@ def test_direct_synthetic_declared_symbol_mutation_updates_type_object_view() ->
     type_object = checker.make_type_object("mod.Impl")
     assert type_object.get_declared_symbol("attr") is None
 
-    synthetic.declared_symbols["attr"] = ClassSymbol(TypedValue(int))
+    synthetic.declared_symbols["attr"] = ClassSymbol(annotation=TypedValue(int))
     symbol = type_object.get_declared_symbol("attr")
     assert symbol is not None
-    assert symbol.typ == TypedValue(int)
+    assert symbol.annotation == TypedValue(int)
 
 
 def test_runtime_and_string_type_objects_share_declared_symbols() -> None:
@@ -368,7 +374,7 @@ def test_runtime_and_string_type_objects_share_declared_symbols() -> None:
     synthetic = SyntheticClassObjectValue(
         "Impl",
         TypedValue(Impl),
-        declared_symbols={"attr": ClassSymbol(TypedValue(int))},
+        declared_symbols={"attr": ClassSymbol(annotation=TypedValue(int))},
     )
     checker.register_synthetic_class(synthetic)
 
@@ -396,7 +402,7 @@ def test_inherited_symbol_lookup_returns_declaring_class() -> None:
     assert match is not None
     owner, symbol = match
     assert owner is Base
-    assert symbol.typ == TypedValue(int)
+    assert symbol.annotation == TypedValue(int)
 
 
 def test_runtime_declared_symbol_includes_plain_class_dict_entry() -> None:
@@ -408,7 +414,7 @@ def test_runtime_declared_symbol_includes_plain_class_dict_entry() -> None:
     assert symbol is not None
     assert not symbol.is_method
     assert not symbol.is_property
-    assert symbol.typ == KnownValue(1)
+    assert symbol.annotation is None
     assert symbol.initializer == KnownValue(1)
 
 
