@@ -832,12 +832,12 @@ def test_new_type_value() -> None:
 def test_annotated_value() -> None:
     tv_int = TypedValue(int)
     ext = TypeIsExtension(tv_int)
-    assert_can_assign(AnnotatedValue(tv_int, [ext]), tv_int)
+    assert_cannot_assign(AnnotatedValue(tv_int, [ext]), tv_int)
     assert_can_assign(tv_int, AnnotatedValue(tv_int, [ext]))
 
     union = TypedValue(int) | TypedValue(float)
     annotated = AnnotatedValue(union, [ext])
-    assert_can_assign(annotated, union)
+    assert_cannot_assign(annotated, union)
     assert_can_assign(union, annotated)
 
 

@@ -14,7 +14,6 @@ import struct
 import sys
 from collections.abc import Iterable, Iterator, Mapping, MutableMapping, Sequence
 from dataclasses import dataclass, replace
-from math import comb
 from types import FunctionType, ModuleType
 from typing import Literal, Protocol
 
@@ -2209,112 +2208,6 @@ def can_assign_and_used_any(
 Irreducible = Sentinel("Irreducible")
 TypeOrIrreducible = GradualType | Literal[Irreducible]
 
-_MAX_EXACT_TUPLE_LENGTH = 64
-_MAX_EXACT_TUPLE_EXPANSIONS = 128
-
-
-def _iter_compositions(total: int, parts: int) -> Iterable[tuple[int, ...]]:
-    if parts == 1:
-        yield (total,)
-        return
-    for first in range(total + 1):
-        for rest in _iter_compositions(total - first, parts - 1):
-            yield (first, *rest)
-
-
-def _expand_tuple_members_to_exact_len(
-    members: tuple[tuple[bool, Value], ...], target_len: int
-) -> list[tuple[tuple[bool, Value], ...]] | None:
-    if target_len < 0:
-        return []
-    if target_len > _MAX_EXACT_TUPLE_LENGTH:
-        return None
-    fixed_count = sum(not is_many for is_many, _ in members)
-    many_values = [value for is_many, value in members if is_many]
-    if target_len < fixed_count:
-        return []
-    if not many_values:
-        if target_len == fixed_count:
-            return [members]
-        return []
-    extra = target_len - fixed_count
-    if len(many_values) > 1:
-        expansions = comb(extra + len(many_values) - 1, len(many_values) - 1)
-        if expansions > _MAX_EXACT_TUPLE_EXPANSIONS:
-            return None
-    result = []
-    for counts in _iter_compositions(extra, len(many_values)):
-        many_index = 0
-        expanded = []
-        for is_many, member in members:
-            if not is_many:
-                expanded.append((False, member))
-                continue
-            expanded.extend((False, member) for _ in range(counts[many_index]))
-            many_index += 1
-        result.append(tuple(expanded))
-    return result
-
-
-def _expand_tuple_members_to_min_len(
-    members: tuple[tuple[bool, Value], ...], target_len: int
-) -> list[tuple[tuple[bool, Value], ...]] | None:
-    if target_len < 0:
-        return [members]
-    if target_len > _MAX_EXACT_TUPLE_LENGTH:
-        return None
-    fixed_count = sum(not is_many for is_many, _ in members)
-    many_values = [value for is_many, value in members if is_many]
-    if target_len <= fixed_count:
-        return [members]
-    if not many_values:
-        return []
-    needed = target_len - fixed_count
-    if len(many_values) > 1:
-        expansions = comb(needed + len(many_values) - 1, len(many_values) - 1)
-        if expansions > _MAX_EXACT_TUPLE_EXPANSIONS:
-            return None
-    result = []
-    for counts in _iter_compositions(needed, len(many_values)):
-        many_index = 0
-        expanded = []
-        for is_many, member in members:
-            if not is_many:
-                expanded.append((False, member))
-                continue
-            expanded.extend((False, member) for _ in range(counts[many_index]))
-            expanded.append((True, member))
-            many_index += 1
-        result.append(tuple(expanded))
-    return result
-
-
-def _expand_tuple_members_to_max_len(
-    members: tuple[tuple[bool, Value], ...], target_len: int
-) -> list[tuple[tuple[bool, Value], ...]] | None:
-    if target_len < 0:
-        return []
-    if target_len > _MAX_EXACT_TUPLE_LENGTH:
-        return None
-    fixed_count = sum(not is_many for is_many, _ in members)
-    if fixed_count > target_len:
-        return []
-
-    expanded = []
-    for current_len in range(fixed_count, target_len + 1):
-        exact = _expand_tuple_members_to_exact_len(members, current_len)
-        if exact is None:
-            return None
-        expanded.extend(exact)
-        if len(expanded) > _MAX_EXACT_TUPLE_EXPANSIONS:
-            return None
-
-    deduped = []
-    for option in expanded:
-        if option not in deduped:
-            deduped.append(option)
-    return deduped
-
 
 def _intersect_predicate(
     left: PredicateValue, right: SimpleType, ctx: CanAssignContext
@@ -2379,7 +2272,7 @@ def _intersect_values_inner(
         if is_subtype(left.type, right, ctx):
             return right
         if isinstance(right, (IntersectionValue, MultiValuedValue)):
-            return _flatten_intersection(left, right, ctx=ctx)
+            return gradualize(_flatten_intersection(left, right, ctx=ctx))
         else:
             return Irreducible
     if isinstance(right, OverlappingValue):
@@ -2388,7 +2281,7 @@ def _intersect_values_inner(
         if is_subtype(right.type, left, ctx):
             return left
         if isinstance(left, (IntersectionValue, MultiValuedValue)):
-            return _flatten_intersection(left, right, ctx=ctx)
+            return gradualize(_flatten_intersection(left, right, ctx=ctx))
         else:
             return Irreducible
 
