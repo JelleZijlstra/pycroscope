@@ -14746,9 +14746,8 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             case _:
                 # TODO: bad match narrowing
                 self._check_attribute_write_on_simple_type(
-                    # static analysis: ignore[incompatible_argument]
                     node,
-                    value,
+                    value,  # static analysis: ignore[incompatible_argument]
                     is_deletion=is_deletion,
                 )
 
