@@ -4014,19 +4014,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             return safe_issubclass(class_key, enum.Enum)
         return False
 
-    def _get_runtime_type_param_for_current_scope(
-        self, name: str, *, expected_kind: str
-    ) -> object | None:
-        scope_object = self.scopes.current_scope().scope_object
-        runtime_type_params = safe_getattr(scope_object, "__type_params__", ())
-        for runtime_type_param in runtime_type_params:
-            if (
-                safe_getattr(runtime_type_param, "__name__", None) == name
-                and type(runtime_type_param).__name__ == expected_kind
-            ):
-                return runtime_type_param
-        return None
-
     @contextlib.contextmanager
     def _set_current_class(self, current_class: type | str | None) -> Generator[None]:
         should_track_members = should_check_for_duplicate_values(
@@ -13636,6 +13623,19 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     )
             set_value, _ = self._set_name_in_scope(name, node, alias_val)
             return set_value
+
+        def _get_runtime_type_param_for_current_scope(
+            self, name: str, *, expected_kind: str
+        ) -> object | None:
+            scope_object = self.scopes.current_scope().scope_object
+            runtime_type_params = safe_getattr(scope_object, "__type_params__", ())
+            for runtime_type_param in runtime_type_params:
+                if (
+                    safe_getattr(runtime_type_param, "__name__", None) == name
+                    and type(runtime_type_param).__name__ == expected_kind
+                ):
+                    return runtime_type_param
+            return None
 
         def visit_TypeVar(self, node: ast.TypeVar) -> Value:
             bound = constraints = default = None
