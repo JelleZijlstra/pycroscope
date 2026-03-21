@@ -84,6 +84,30 @@ class TestEnum(TestNameCheckVisitorBase):
         x: int = Example.b
         assert_type(Example.c, Literal[Example.c])
 
+    @assert_passes(run_in_both_module_modes=True)
+    def test_annotated_nonmember_attributes_can_be_assigned_in_init(self):
+        from enum import Enum
+
+        from typing_extensions import assert_type
+
+        class Pet(Enum):
+            genus: str
+            species: str
+
+            CAT = "felis", "catus"
+            DOG = "canis", "lupus"
+
+            def __init__(self, genus: str, species: str) -> None:
+                self.genus = genus
+                self.species = species
+
+        def capybara(pet: Pet):
+            assert_type(pet.genus, str)
+            assert_type(pet.species, str)
+
+            # TODO: add a check for "Pet.genus" on the class, which should be an error.
+            # Currently works differently in importable and unimportable mode.
+
     @assert_passes()
     def test_value_assignment_with_nonstandard_receiver_name(self):
         import enum

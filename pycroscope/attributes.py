@@ -732,7 +732,13 @@ def _get_direct_attribute_from_synthetic_class(
 ) -> Value:
     if _is_synthetic_initvar_attribute(self_value, attr_name):
         return UNINITIALIZED_VALUE
-    raw_value = _get_synthetic_member_initializer(self_value, attr_name)
+    symbol = _get_synthetic_declared_symbol(self_value, attr_name)
+    if symbol is None:
+        return UNINITIALIZED_VALUE
+    if symbol.annotation_type is not None and not symbol.is_method:
+        raw_value = symbol.annotation_type
+    else:
+        raw_value = symbol.initializer
     if raw_value is None:
         return UNINITIALIZED_VALUE
     result = _normalize_synthetic_class_attribute(
@@ -807,15 +813,6 @@ def _get_synthetic_declared_symbol(
     if mangled is None:
         return None
     return self_value.declared_symbols.get(mangled)
-
-
-def _get_synthetic_member_initializer(
-    self_value: SyntheticClassObjectValue, attr_name: str
-) -> Value | None:
-    symbol = _get_synthetic_declared_symbol(self_value, attr_name)
-    if symbol is None:
-        return None
-    return symbol.initializer
 
 
 def _is_synthetic_method_attribute(
@@ -1264,13 +1261,16 @@ def _get_runtime_attribute_from_synthetic_class(
     synthetic_class = ctx.get_synthetic_class(typ)
     if synthetic_class is None:
         return UNINITIALIZED_VALUE
-    if (
-        not synthetic_class.is_dataclass
-        and _maybe_mangle_private_name(ctx.attr, synthetic_class.name) is None
-    ):
-        return UNINITIALIZED_VALUE
-
     symbol = _get_synthetic_declared_symbol(synthetic_class, ctx.attr)
+    if not synthetic_class.is_dataclass:
+        if _maybe_mangle_private_name(ctx.attr, synthetic_class.name) is None:
+            if symbol is None:
+                return UNINITIALIZED_VALUE
+            if on_class and symbol.is_instance_only:
+                return UNINITIALIZED_VALUE
+            if not on_class and not symbol.is_instance_only:
+                return UNINITIALIZED_VALUE
+
     if symbol is None or not symbol.is_method:
         if on_class:
             direct = _get_direct_attribute_from_synthetic_class(
@@ -1642,6 +1642,12 @@ def _get_attribute_from_mro(
                     try:
                         val = KnownValue(getattr(typ, ctx.attr))
                     except Exception:
+                        if (
+                            ctx.attr == "__slots__"
+                            and safe_isinstance(typ, type)
+                            and ctx.get_synthetic_class(typ) is not None
+                        ):
+                            return UNINITIALIZED_VALUE, object, False
                         val = AnyValue(AnySource.inference)
                     return val, base_cls, True
 
@@ -1659,6 +1665,12 @@ def _get_attribute_from_mro(
         except AttributeError:
             pass
         except Exception:
+            if (
+                ctx.attr == "__slots__"
+                and safe_isinstance(typ, type)
+                and ctx.get_synthetic_class(typ) is not None
+            ):
+                return UNINITIALIZED_VALUE, object, False
             # It exists, but has a broken __getattr__ or something
             return AnyValue(AnySource.inference), typ, True
 

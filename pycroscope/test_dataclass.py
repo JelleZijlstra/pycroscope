@@ -279,6 +279,17 @@ class TestDataclass(TestNameCheckVisitorBase):
             InitDisabled(1, 2)  # E: incompatible_call
 
     @assert_passes(run_in_both_module_modes=True)
+    def test_dataclass_match_args_false_has_no_match_args(self):
+        from dataclasses import dataclass
+
+        @dataclass(match_args=False)
+        class NoMatchArgs:
+            x: int
+
+        def capybara() -> None:
+            NoMatchArgs.__match_args__  # E: undefined_attribute
+
+    @assert_passes(run_in_both_module_modes=True)
     def test_dataclass_kw_only_checks_after_import_failure(self):
         from dataclasses import KW_ONLY, dataclass, field
         from typing import Literal

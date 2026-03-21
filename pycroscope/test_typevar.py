@@ -1173,6 +1173,22 @@ class TestGenericClasses(TestNameCheckVisitorBase):
         """)
 
     @skip_before((3, 12))
+    def test_infer_variance_from_inferred_variance_base(self):
+        self.assert_passes("""
+            from typing import Iterator
+
+            class Parent[T]:
+                def __iter__(self) -> Iterator[T]:
+                    raise NotImplementedError
+
+            class Child[T](Parent[T]):
+                pass
+
+            a: Child[float] = Child[int]()
+            b: Child[int] = Child[float]()  # E: incompatible_assignment
+        """)
+
+    @skip_before((3, 12))
     def test_infer_variance_mixed_input_and_output_is_invariant(self):
         self.assert_passes("""
             class Box[T]:

@@ -212,15 +212,6 @@ def apply_synthetic_attributes(
             )
 
 
-def get_synthetic_dataclass_converter_input_type(
-    synthetic_class: SyntheticClassObjectValue, field_name: str
-) -> Value | None:
-    symbol = synthetic_class.declared_symbols.get(field_name)
-    if symbol is None or symbol.dataclass_field is None:
-        return None
-    return symbol.dataclass_field.converter_input_type
-
-
 def maybe_resolve_synthetic_descriptor_attribute(
     synthetic_class: SyntheticClassObjectValue,
     attr_name: str,

@@ -47,6 +47,8 @@ from .value import (
     KnownValue,
     MultiValuedValue,
     ParamSpecParam,
+    PartialValue,
+    PartialValueOperation,
     PredicateValue,
     PropertyInfo,
     Qualifier,
@@ -567,6 +569,34 @@ def _iter_base_type_values(
     arg_spec_cache: ArgSpecCache | None,
     seen_known_bases: frozenset[int] = frozenset(),
 ) -> Iterator[TypedValue]:
+    if isinstance(value, PartialValue):
+        if value.operation is not PartialValueOperation.SUBSCRIPT:
+            return
+        root: Value = value.root
+        if isinstance(root, SyntheticClassObjectValue):
+            root = root.class_type
+        elif isinstance(root, KnownValue):
+            if arg_spec_cache is not None:
+                root = arg_spec_cache._type_from_base(root.val)
+            elif isinstance(root.val, type):
+                root = TypedValue(root.val)
+            else:
+                return
+        root = replace_fallback(root)
+        members = tuple(
+            (
+                arg_spec_cache._type_from_base(member.val)
+                if arg_spec_cache is not None and isinstance(member, KnownValue)
+                else member
+            )
+            for member in value.members
+        )
+        if isinstance(root, SequenceValue) and root.typ is tuple:
+            yield SequenceValue(tuple, [(False, member) for member in members])
+            return
+        if isinstance(root, (TypedValue, GenericValue)):
+            yield GenericValue(root.typ, members)
+        return
     value = replace_fallback(value)
     if isinstance(value, MultiValuedValue):
         for subval in value.vals:
@@ -651,10 +681,11 @@ def _add_runtime_declared_symbols(typ: type, symbols: dict[str, ClassSymbol]) ->
             if isinstance(class_dict, Mapping) and name in class_dict
             else None
         )
+        annotation_type = _value_from_runtime_annotation(
+            get_namedtuple_field_annotation(typ, name), typ
+        )
         symbols[name] = ClassSymbol(
-            _value_from_runtime_annotation(
-                get_namedtuple_field_annotation(typ, name), typ
-            ),
+            annotation_type,
             frozenset({Qualifier.ReadOnly}),
             is_instance_only=True,
             property_info=(
@@ -663,6 +694,7 @@ def _add_runtime_declared_symbols(typ: type, symbols: dict[str, ClassSymbol]) ->
                 else None
             ),
             initializer=raw_value,
+            annotation_type=annotation_type,
         )
     try:
         if sys.version_info >= (3, 14):
@@ -729,6 +761,9 @@ def _add_runtime_declared_symbols(typ: type, symbols: dict[str, ClassSymbol]) ->
                 property_info=(
                     _runtime_property_info(raw_value, typ) if is_property else None
                 ),
+                annotation_type=(
+                    existing.annotation_type if existing is not None else None
+                ),
                 initializer=KnownValue(raw_value),
                 dataclass_field=(
                     existing.dataclass_field if existing is not None else None
@@ -787,6 +822,7 @@ def _symbol_from_runtime_annotation(annotation: object, owner: type) -> ClassSym
     return ClassSymbol(
         typ if typ is not None else AnyValue(AnySource.incomplete_annotation),
         frozenset(qualifiers),
+        annotation_type=typ,
     )
 
 

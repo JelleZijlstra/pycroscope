@@ -542,6 +542,11 @@ class PartialValue(Value):
             runtime_value=self.runtime_value.substitute_typevars(typevars),
         )
 
+    def can_overlap(
+        self, other: Value, ctx: CanAssignContext, mode: OverlapMode
+    ) -> CanAssignError | None:
+        return self.runtime_value.can_overlap(other, ctx, mode)
+
     def walk_values(self) -> Iterable[Value]:
         yield self
         yield from self.root.walk_values()
@@ -4415,6 +4420,7 @@ class ClassSymbol:
     returns_self_on_class_access: bool = False
     property_info: PropertyInfo | None = None
     initializer: Value | None = None
+    annotation_type: Value | None = None
     dataclass_field: DataclassFieldInfo | None = None
 
     def __post_init__(self) -> None:
@@ -4446,6 +4452,10 @@ class ClassSymbol:
     @property
     def is_initvar(self) -> bool:
         return Qualifier.InitVar in self.qualifiers
+
+    @property
+    def is_final(self) -> bool:
+        return Qualifier.Final in self.qualifiers
 
     @property
     def is_property(self) -> bool:

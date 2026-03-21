@@ -14,7 +14,7 @@ from typing import Any, TypeVar
 
 import pycroscope
 
-from .analysis_lib import override
+from .analysis_lib import override, set_inferred_value
 from .annotated_types import MaxLen, MinLen
 from .annotations import type_from_value
 from .error_code import ErrorCode
@@ -209,7 +209,7 @@ class PatmaVisitor(ast.NodeVisitor):
     def visit(self, node: ast.AST) -> AbstractConstraint:
         constraint = super().visit(node)
         if self.visitor.annotate:
-            node.inferred_value = VOID
+            set_inferred_value(node, VOID)
         return constraint
 
     def visit_MatchSingleton(self, node: MatchSingleton) -> AbstractConstraint:

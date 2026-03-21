@@ -814,6 +814,11 @@ def merge_declared_symbol(
         ),
         property_info=_merge_property_info(existing.property_info, new.property_info),
         initializer=_merge_symbol_initializer(existing.initializer, new.initializer),
+        annotation_type=(
+            new.annotation_type
+            if new.annotation_type is not None
+            else existing.annotation_type
+        ),
         dataclass_field=(
             new.dataclass_field
             if new.dataclass_field is not None
@@ -1073,6 +1078,11 @@ def _specialize_symbol_for_owner(
     return replace(
         symbol,
         typ=_substitute_symbol_value(symbol.typ, substitutions),
+        annotation_type=(
+            _substitute_symbol_value(symbol.annotation_type, substitutions)
+            if symbol.annotation_type is not None
+            else None
+        ),
         property_info=(
             symbol.property_info.substitute_typevars(substitutions)
             if symbol.property_info is not None
@@ -1148,6 +1158,9 @@ def _get_attribute_value_from_symbol(
         if on_class:
             return UNINITIALIZED_VALUE
         return symbol.property_info.getter_type
+    declared_value = (
+        symbol.annotation_type if symbol.annotation_type is not None else symbol.typ
+    )
     raw_value = symbol.initializer if symbol.initializer is not None else symbol.typ
     raw_value = normalize_synthetic_descriptor_attribute(
         raw_value,
@@ -1169,9 +1182,11 @@ def _get_attribute_value_from_symbol(
             ctx=ctx,
         )
     if on_class:
+        if not symbol.is_method:
+            return declared_value
         return raw_value
     if not symbol.is_classvar and not symbol.is_method and symbol.initializer is None:
-        return symbol.typ
+        return declared_value
     if symbol.is_method and not symbol.is_staticmethod and not symbol.is_classmethod:
         if receiver_value is None:
             return raw_value
@@ -1184,7 +1199,7 @@ def _get_attribute_value_from_symbol(
         and symbol.initializer is not None
         and symbol.typ != symbol.initializer
     ):
-        return symbol.typ
+        return declared_value
     return raw_value
 
 
@@ -1213,8 +1228,6 @@ def _get_symbol_owner_substitutions_from_type_objects(
 ) -> dict[TypeVarLike, Value]:
     receiver_substitutions: dict[TypeVarLike, Value] = {}
     if receiver_value is not None:
-        receiver_value_tobj = receiver_value.get_type_object(ctx)
-        assert receiver_value_tobj is receiver_tobj
         receiver_substitutions = _typevar_map_from_type_value(
             receiver_value, receiver_tobj.declared_type_params
         )

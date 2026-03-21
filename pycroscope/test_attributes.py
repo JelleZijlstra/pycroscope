@@ -1016,3 +1016,19 @@ class TestClassAttributeTransformer(TestNameCheckVisitorBase):
         def capybara(c: Capybara, cls: type[Capybara]):
             assert_type(c.foo, str)
             assert_type(cls.foo, str)
+
+
+class TestAttributeWrites(TestNameCheckVisitorBase):
+    @assert_passes()
+    def test_unannotated_in_body(self):
+        from typing_extensions import Literal, assert_type
+
+        class Capybara:
+            flag = False
+
+            def __init__(self) -> None:
+                self.flag = True
+
+            def method(self) -> None:
+                # TODO should be bool
+                assert_type(self.flag, Literal[False])

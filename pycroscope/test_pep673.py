@@ -163,6 +163,33 @@ class TestPEP673(TestNameCheckVisitorBase):
             assert_type(o.next, OrdinalLinkedList | None)
 
     @assert_passes()
+    def test_self_attribute_assignment_specializes_for_subclass(self):
+        from dataclasses import dataclass
+        from typing import Generic, TypeVar
+
+        from typing_extensions import Self
+
+        T = TypeVar("T")
+
+        @dataclass
+        class LinkedList(Generic[T]):
+            value: T
+            next: Self | None = None
+
+        @dataclass
+        class OrdinalLinkedList(LinkedList[int]):
+            def ordinal_value(self) -> str:
+                return str(self.value)
+
+        xs = OrdinalLinkedList(
+            value=1, next=LinkedList[int](value=2)  # E: incompatible_argument
+        )
+
+        if xs.next is not None:
+            xs.next = OrdinalLinkedList(value=3, next=None)
+            xs.next = LinkedList[int](value=3, next=None)  # E: incompatible_assignment
+
+    @assert_passes()
     def test_generic(self):
         from typing import Generic, TypeVar
 
