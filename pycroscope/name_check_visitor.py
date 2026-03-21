@@ -224,7 +224,6 @@ from .type_object import (
     TypeObjectAttribute,
     class_keys_match,
     get_mro,
-    is_readonly_annotated_member,
     lookup_declared_symbol_with_owner,
     merge_declared_symbol,
 )
@@ -9010,25 +9009,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             return None
         return self._base_class_key_from_value(root_value)
 
-    def _is_assignment_to_final_attribute(
-        self, node: ast.Attribute, root_value: Value
-    ) -> bool:
-        if self.ann_assign_type is not None and self.ann_assign_type[1]:
-            return False
-        for subvalue in self._iter_attribute_assignment_root_values(root_value):
-            class_key = self._class_key_for_attribute_target(node, subvalue)
-            if class_key is None or not self._is_final_member(class_key, node.attr):
-                continue
-            required = self.final_members_requiring_init.get(class_key)
-            if self.current_function_name == "__init__" and required is not None:
-                if node.attr in required:
-                    self.final_members_initialized_in_init.setdefault(
-                        class_key, set()
-                    ).add(node.attr)
-                    continue
-            return True
-        return False
-
     def _is_allowed_readonly_attribute_initialization(
         self, node: ast.Attribute, root_value: Value
     ) -> bool:
@@ -9046,32 +9026,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 self.current_class_key, node.attr
             )
         return False
-
-    def _is_deletion_of_readonly_attribute(
-        self, node: ast.Attribute, root_value: Value
-    ) -> bool:
-        return self._value_has_readonly_attribute(root_value, node.attr, node=node)
-
-    def _value_has_readonly_attribute(
-        self, root_value: Value, attr_name: str, *, node: ast.Attribute
-    ) -> bool:
-        value = replace_fallback(root_value)
-        if isinstance(value, AnnotatedValue):
-            return self._value_has_readonly_attribute(value.value, attr_name, node=node)
-        if isinstance(value, MultiValuedValue):
-            return bool(value.vals) and any(
-                self._value_has_readonly_attribute(subval, attr_name, node=node)
-                for subval in value.vals
-            )
-        if isinstance(value, IntersectionValue):
-            return bool(value.vals) and all(
-                self._value_has_readonly_attribute(subval, attr_name, node=node)
-                for subval in value.vals
-            )
-        class_key = self._class_key_for_attribute_target(node, root_value)
-        return class_key is not None and is_readonly_annotated_member(
-            class_key, attr_name, self
-        )
 
     def _is_class_object_attribute_root(self, value: Value) -> bool | None:
         if (
@@ -14631,7 +14585,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
 
         root_composite = self.composite_from_node(node.value)
         composite = self._extend_composite(root_composite, node.attr, node)
-        if self._is_write_ctx(node.ctx):
+        if isinstance(node.ctx, (ast.Store, ast.Del)):
             # TODO: We should do something here if we're in an AnnAssign, e.g.
             # note the type in the class's namespace.
             if self.being_assigned is None:
@@ -14639,7 +14593,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     self.ann_assign_type is not None
                 ), "should only happen in AnnAssign"
                 return Composite(AnyValue(AnySource.inference), composite, node)
-            self._check_attribute_write(node, root_composite.value)
+            self._check_attribute_write(
+                node, root_composite.value, is_deletion=isinstance(node.ctx, ast.Del)
+            )
             if (
                 composite is not None
                 and self.scopes.scope_type() == ScopeType.function_scope
@@ -14648,7 +14604,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     composite.get_varname(), self.being_assigned, node, self.state
                 )
             return Composite(self.being_assigned, composite, node)
-        elif self._is_read_ctx(node.ctx):
+        elif isinstance(node.ctx, ast.Load):
             root_composite = self._get_locally_narrowed_composite(root_composite, node)
             if self._is_checking():
                 if (
@@ -14686,21 +14642,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     ErrorCode.undefined_attribute,
                 )
                 value = AnyValue(AnySource.error)
-            if isinstance(node.ctx, ast.Del):
-                if self._is_assignment_to_final_attribute(node, root_composite.value):
-                    self._show_error_if_checking(
-                        node,
-                        f"Cannot delete final name {node.attr}",
-                        error_code=ErrorCode.incompatible_assignment,
-                    )
-                elif self._is_deletion_of_readonly_attribute(
-                    node, root_composite.value
-                ):
-                    self._show_error_if_checking(
-                        node,
-                        f"Cannot delete readonly attribute {node.attr!r}",
-                        error_code=ErrorCode.incompatible_assignment,
-                    )
             self._check_deprecated_property_getter(node, root_composite.value)
             self.check_deprecation(node, value)
             if self._should_use_varname_value(value):
@@ -14731,20 +14672,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         else:
             self.show_error(node, "Unknown context", ErrorCode.unexpected_node)
             return Composite(AnyValue(AnySource.error), composite, node)
-
-    def _iter_attribute_assignment_root_values(
-        self, root_value: Value
-    ) -> Iterable[SimpleType]:
-        root_value = replace_fallback(root_value)
-        if isinstance(root_value, MultiValuedValue):
-            for subval in root_value.vals:
-                yield from self._iter_attribute_assignment_root_values(subval)
-            return
-        if isinstance(root_value, IntersectionValue):
-            for subval in root_value.vals:
-                yield from self._iter_attribute_assignment_root_values(subval)
-            return
-        yield root_value
 
     def _self_value_for_attribute_assignment_root(
         self, root: SimpleType
@@ -14781,7 +14708,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 value = value.substitute_typevars({SelfT: self_value})
         return value
 
-    def _check_attribute_write(self, node: ast.Attribute, value: Value) -> None:
+    def _check_attribute_write(
+        self, node: ast.Attribute, value: Value, *, is_deletion: bool = False
+    ) -> None:
         if (
             isinstance(value, PartialValue)
             and value.operation == PartialValueOperation.SUBSCRIPT
@@ -14798,13 +14727,15 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         match value:
             case MultiValuedValue(vals=union_members):
                 for subval in union_members:
-                    self._check_attribute_write(node, subval)
+                    self._check_attribute_write(node, subval, is_deletion=is_deletion)
             case IntersectionValue(vals=intersection_members):
                 errors_lists = []
                 success = False
                 for subval in intersection_members:
                     with self.catch_errors() as errors:
-                        self._check_attribute_write(node, subval)
+                        self._check_attribute_write(
+                            node, subval, is_deletion=is_deletion
+                        )
                     if not errors:
                         success = True
                         break
@@ -14815,7 +14746,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             case _:
                 # TODO: bad match narrowing
                 # static analysis: ignore[incompatible_argument]
-                self._check_attribute_write_on_simple_type(node, value)
+                self._check_attribute_write_on_simple_type(
+                    node, value, is_deletion=is_deletion
+                )
 
     def _is_dynamic_function_attribute_target(self, root: SimpleType) -> bool:
         return (
@@ -14847,21 +14780,22 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         )
 
     def _check_attribute_write_on_simple_type(
-        self, node: ast.Attribute, root: SimpleType
+        self, node: ast.Attribute, root: SimpleType, *, is_deletion: bool = False
     ) -> None:
+        wording = "delete" if is_deletion else "assign to"
         if isinstance(root, AnyValue):
             return  # always ok
         elif isinstance(root, UnboundMethodValue):
             self._show_error_if_checking(
                 node,
-                f"Cannot assign to attribute {node.attr} of method {root}",
+                f"Cannot {wording} attribute {node.attr} of method {root}",
                 error_code=ErrorCode.incompatible_assignment,
             )
             return
         elif isinstance(root, TypeFormValue):
             self._show_error_if_checking(
                 node,
-                f"Cannot assign to attribute {node.attr} of type form {root}",
+                f"Cannot {wording} attribute {node.attr} of type form {root}",
                 error_code=ErrorCode.incompatible_assignment,
             )
             return
@@ -14872,7 +14806,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         if is_dataclass and dataclass_frozen:
             self._show_error_if_checking(
                 node,
-                f"Cannot assign to attribute {node.attr} of frozen dataclass {tobj.typ}",
+                f"Cannot {wording} attribute {node.attr} of frozen dataclass {tobj.typ}",
                 error_code=ErrorCode.incompatible_assignment,
             )
             return
@@ -14888,7 +14822,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 if not is_abstract_with_empty_slots:
                     self._show_error_if_checking(
                         node,
-                        f"Cannot assign to attribute {node.attr!r}; "
+                        f"Cannot {wording} attribute {node.attr!r}; "
                         f"it is not in __slots__ for {tobj.typ}",
                         error_code=ErrorCode.incompatible_assignment,
                     )
@@ -14939,14 +14873,14 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         if attr.is_property and on_class:
             self._show_error_if_checking(
                 node,
-                f"Cannot assign to property {node.attr!r} via class object",
+                f"Cannot {wording} property {node.attr!r} via class object",
                 error_code=ErrorCode.incompatible_assignment,
             )
             return
         if attr.is_property and not attr.property_has_setter:
             self._show_error_if_checking(
                 node,
-                f"Cannot assign to read-only property {node.attr!r}",
+                f"Cannot {wording} read-only property {node.attr!r}",
                 error_code=ErrorCode.incompatible_assignment,
             )
             return
@@ -14957,25 +14891,32 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         ):
             self._show_error_if_checking(
                 node,
-                f"Cannot assign to read-only attribute {node.attr!r}",
+                f"Cannot {wording} read-only attribute {node.attr!r}",
                 error_code=ErrorCode.incompatible_assignment,
             )
             return
         if attr.symbol.is_classvar and not on_class:
             self._show_error_if_checking(
                 node,
-                f"Cannot assign to class variable {node.attr!r} via instance",
+                f"Cannot {wording} class variable {node.attr!r} via instance",
                 error_code=ErrorCode.incompatible_assignment,
             )
             return
         if attr.symbol.is_instance_only and on_class:
             self._show_error_if_checking(
                 node,
-                f"Cannot assign to instance attribute {node.attr!r} via class object",
+                f"Cannot {wording} instance attribute {node.attr!r} via class object",
                 error_code=ErrorCode.incompatible_assignment,
             )
             return
-        if self._check_final_attribute_assignment(node, attr):
+        if self._check_final_attribute_assignment(node, attr, wording):
+            return
+        if is_deletion:
+            self._show_error_if_checking(
+                node,
+                f"Cannot delete attribute {node.attr!r}",
+                error_code=ErrorCode.incompatible_assignment,
+            )
             return
         if (
             self._is_enum_value_assignment_on_current_receiver(node, root)
@@ -15014,7 +14955,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 self._record_synthetic_attr_set(node, root)
 
     def _check_final_attribute_assignment(
-        self, node: ast.Attribute, attr: TypeObjectAttribute
+        self, node: ast.Attribute, attr: TypeObjectAttribute, wording: str
     ) -> bool:
         """Return true if we should reject the assignment."""
         if not attr.symbol.is_final:
@@ -15030,7 +14971,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             return False
         self._show_error_if_checking(
             node,
-            f"Cannot assign to final name {node.attr}",
+            f"Cannot {wording} final name {node.attr}",
             error_code=ErrorCode.incompatible_assignment,
         )
         return True

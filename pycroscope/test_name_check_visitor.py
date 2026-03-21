@@ -1268,7 +1268,8 @@ class TestImportFailureHandlingCodeSamples(TestNameCheckVisitorBase):
 
         def mutate(p: Intersection[Readonly, Mutable]) -> None:
             p.x = 2
-            del p.x
+            # We disallow deleting attributes
+            del p.x  # E: incompatible_assignment
 
     @assert_passes(run_in_both_module_modes=True)
     def test_namedtuple_attribute_is_immutable_after_import_failure(self):

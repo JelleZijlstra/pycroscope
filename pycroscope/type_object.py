@@ -901,13 +901,6 @@ def _resolve_member_access(
     )
 
 
-def is_readonly_annotated_member(
-    class_key: type | str, member: str, ctx: CanAssignContext
-) -> bool:
-    match = lookup_declared_symbol_with_owner(class_key, member, ctx)
-    return match is not None and match[1].is_readonly
-
-
 def _class_key_from_value(value: Value) -> type | str | None:
     keys = list(dict.fromkeys(_iter_class_keys_from_value(value)))
     if len(keys) == 1:
