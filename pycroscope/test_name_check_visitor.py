@@ -4626,6 +4626,19 @@ class TestControlFlow(TestNameCheckVisitorBase):
             x = 1 if False else "x"
             assert_type(x, Literal[1, "x"])
 
+    @assert_passes(run_in_both_module_modes=True)
+    def test_annotated_class_attribute_read_uses_annotation_type(self):
+        from typing_extensions import assert_type
+
+        class Visitor:
+            should_check_environ_for_files: bool = True
+
+            @classmethod
+            def capybara(cls) -> None:
+                assert_type(cls.should_check_environ_for_files, bool)
+                if cls.should_check_environ_for_files:
+                    pass
+
     @assert_passes()
     def test_for_else_with_always_present_iterable_keeps_body_assignment(self):
         from typing_extensions import Literal, assert_type

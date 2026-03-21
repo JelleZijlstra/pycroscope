@@ -1158,6 +1158,9 @@ def _get_attribute_value_from_symbol(
         if on_class:
             return UNINITIALIZED_VALUE
         return symbol.property_info.getter_type
+    declared_value = (
+        symbol.annotation_type if symbol.annotation_type is not None else symbol.typ
+    )
     raw_value = symbol.initializer if symbol.initializer is not None else symbol.typ
     raw_value = normalize_synthetic_descriptor_attribute(
         raw_value,
@@ -1179,9 +1182,11 @@ def _get_attribute_value_from_symbol(
             ctx=ctx,
         )
     if on_class:
+        if not symbol.is_method:
+            return declared_value
         return raw_value
     if not symbol.is_classvar and not symbol.is_method and symbol.initializer is None:
-        return symbol.typ
+        return declared_value
     if symbol.is_method and not symbol.is_staticmethod and not symbol.is_classmethod:
         if receiver_value is None:
             return raw_value
@@ -1194,7 +1199,7 @@ def _get_attribute_value_from_symbol(
         and symbol.initializer is not None
         and symbol.typ != symbol.initializer
     ):
-        return symbol.typ
+        return declared_value
     return raw_value
 
 
