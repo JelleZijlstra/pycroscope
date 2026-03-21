@@ -1162,7 +1162,7 @@ class TestImportFailureHandlingCodeSamples(TestNameCheckVisitorBase):
         D.x = 5
 
         d = D()
-        d.x = 4  # E: incompatible_assignment
+        d.x = 4
 
     @assert_passes()
     def test_union_attribute_assignment_type(self):

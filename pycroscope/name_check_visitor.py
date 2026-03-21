@@ -2822,6 +2822,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         name: str,
         *,
         typ: Value | None = None,
+        annotation_type: Value | None = None,
         add_qualifiers: Iterable[Qualifier] = (),
         is_instance_only: bool | None = None,
         is_method: bool | None = None,
@@ -2916,6 +2917,11 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             returns_self_on_class_access=resolved_returns_self_on_class_access,
             property_info=resolved_property_info,
             initializer=resolved_initializer,
+            annotation_type=(
+                annotation_type
+                if annotation_type is not None
+                else existing.annotation_type if existing is not None else None
+            ),
             dataclass_field=existing.dataclass_field if existing is not None else None,
         )
 
@@ -2926,6 +2932,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         value: Value,
         *,
         typ: Value | None = None,
+        annotation_type: Value | None = None,
         is_method: bool | None = None,
         is_classmethod: bool | None = None,
         is_staticmethod: bool | None = None,
@@ -2998,11 +3005,21 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             returns_self_on_class_access=resolved_returns_self_on_class_access,
             property_info=resolved_property_info,
             initializer=resolved_initializer,
+            annotation_type=(
+                annotation_type
+                if annotation_type is not None
+                else existing.annotation_type if existing is not None else None
+            ),
             dataclass_field=existing.dataclass_field if existing is not None else None,
         )
 
     def _set_synthetic_class_attribute(
-        self, name: str, value: Value, *, node: ast.AST | None = None
+        self,
+        name: str,
+        value: Value,
+        *,
+        node: ast.AST | None = None,
+        annotation_type: Value | None = None,
     ) -> None:
         synthetic_class = self._get_synthetic_class_for_current_scope()
         if synthetic_class is None:
@@ -3055,6 +3072,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             declared_type = value
             if self.ann_assign_type is not None and self.ann_assign_type[0] is not None:
                 declared_type = self.ann_assign_type[0]
+                annotation_type = self.ann_assign_type[0]
             if enum_member_value is not None:
                 declared_type = enum_member_value
             is_method = isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
@@ -3072,6 +3090,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 synthetic_name,
                 synthetic_value,
                 typ=declared_type,
+                annotation_type=annotation_type,
                 is_method=is_method,
                 is_classmethod=is_classmethod,
                 is_staticmethod=is_staticmethod,
@@ -3493,6 +3512,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             ),
             property_info=existing.property_info if existing is not None else None,
             initializer=existing.initializer if existing is not None else None,
+            annotation_type=(
+                existing.annotation_type if existing is not None else None
+            ),
             dataclass_field=DataclassFieldInfo(
                 has_default=has_default,
                 init=init,
@@ -12782,7 +12804,10 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         )
         if is_class_annotation_without_value:
             self._set_synthetic_class_attribute(
-                node.target.id, expected_type or AnyValue(AnySource.error), node=node
+                node.target.id,
+                expected_type or AnyValue(AnySource.error),
+                node=node,
+                annotation_type=expected_type or AnyValue(AnySource.error),
             )
 
         if node.value is not None:

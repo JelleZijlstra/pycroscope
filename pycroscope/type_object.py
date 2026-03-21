@@ -814,6 +814,11 @@ def merge_declared_symbol(
         ),
         property_info=_merge_property_info(existing.property_info, new.property_info),
         initializer=_merge_symbol_initializer(existing.initializer, new.initializer),
+        annotation_type=(
+            new.annotation_type
+            if new.annotation_type is not None
+            else existing.annotation_type
+        ),
         dataclass_field=(
             new.dataclass_field
             if new.dataclass_field is not None
