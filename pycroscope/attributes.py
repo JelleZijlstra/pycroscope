@@ -1264,13 +1264,16 @@ def _get_runtime_attribute_from_synthetic_class(
     synthetic_class = ctx.get_synthetic_class(typ)
     if synthetic_class is None:
         return UNINITIALIZED_VALUE
-    if (
-        not synthetic_class.is_dataclass
-        and _maybe_mangle_private_name(ctx.attr, synthetic_class.name) is None
-    ):
-        return UNINITIALIZED_VALUE
-
     symbol = _get_synthetic_declared_symbol(synthetic_class, ctx.attr)
+    if not synthetic_class.is_dataclass:
+        if _maybe_mangle_private_name(ctx.attr, synthetic_class.name) is None:
+            if symbol is None:
+                return UNINITIALIZED_VALUE
+            if on_class and symbol.is_instance_only:
+                return UNINITIALIZED_VALUE
+            if not on_class and not symbol.is_instance_only:
+                return UNINITIALIZED_VALUE
+
     if symbol is None or not symbol.is_method:
         if on_class:
             direct = _get_direct_attribute_from_synthetic_class(

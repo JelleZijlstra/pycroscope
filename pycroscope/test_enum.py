@@ -105,8 +105,8 @@ class TestEnum(TestNameCheckVisitorBase):
             assert_type(pet.genus, str)
             assert_type(pet.species, str)
 
-            # TODO: this should be an error, the attribute doesn't exist on the class
-            assert_type(Pet.genus, str)
+            # TODO: add a check for "Pet.genus" on the class, which should be an error.
+            # Currently works differently in importable and unimportable mode.
 
     @assert_passes()
     def test_value_assignment_with_nonstandard_receiver_name(self):

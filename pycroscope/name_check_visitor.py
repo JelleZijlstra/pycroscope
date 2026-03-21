@@ -3109,7 +3109,17 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 returns_self_on_class_access=returns_self_on_class_access,
             )
             symbol = synthetic_class.declared_symbols.get(synthetic_name)
-            if symbol is None or symbol.dataclass_field is None or symbol.is_classvar:
+            if (
+                force_nonmember
+                and isinstance(node, ast.AnnAssign)
+                and node.value is None
+                and symbol is not None
+                and not symbol.is_classvar
+            ):
+                self._update_synthetic_declared_symbol(
+                    synthetic_name, is_instance_only=True
+                )
+            elif symbol is None or symbol.dataclass_field is None or symbol.is_classvar:
                 self._update_synthetic_declared_symbol(
                     synthetic_name, is_instance_only=False
                 )
