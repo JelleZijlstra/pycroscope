@@ -14727,42 +14727,18 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         )
         return attributes.get_attribute(ctx)
 
-    def _normalize_expected_attribute_type_for_assignment(
-        self, value: Value
-    ) -> Value | None:
-        if value is UNINITIALIZED_VALUE:
-            return None
-        value = replace_fallback(value)
-        if isinstance(value, AnyValue):
-            return None
-        if isinstance(value, AnnotatedValue):
-            normalized = self._normalize_expected_attribute_type_for_assignment(
-                value.value
-            )
-            if normalized is None:
-                return None
-            return annotate_value(normalized, value.metadata)
-        if isinstance(value, MultiValuedValue):
-            normalized_vals: list[Value] = []
-            saw_non_known = False
-            for subval in value.vals:
-                subval = replace_fallback(subval)
-                if isinstance(subval, KnownValue):
-                    normalized_vals.append(TypedValue(type(subval.val)))
-                    continue
-                normalized_subval = (
-                    self._normalize_expected_attribute_type_for_assignment(subval)
-                )
-                if normalized_subval is not None:
-                    normalized_vals.append(normalized_subval)
-                    saw_non_known = True
-            if not normalized_vals or not saw_non_known:
-                return None
-            return unite_values(*normalized_vals)
-        if isinstance(value, KnownValue):
-            return None
-        if isinstance(value, SequenceValue):
-            return value
+    def _normalize_expected_attribute_type_for_assignment(self, value: Value) -> Value:
+        # TODO: this should be unnecessary if we get better at
+        # treating these as descriptors.
+        if isinstance(value, KnownValue) and safe_isinstance(
+            value.val,
+            (
+                types.GetSetDescriptorType,
+                types.MemberDescriptorType,
+                types.WrapperDescriptorType,
+            ),
+        ):
+            return TypedValue(object)
         return value
 
     def _dataclass_converter_input_type_for_field(
@@ -14912,10 +14888,10 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 isinstance(root, SyntheticModuleValue)
                 or (
                     isinstance(root, KnownValue)
-                    and isinstance(root.val, types.ModuleType)
+                    and safe_isinstance(root.val, types.ModuleType)
                 )
                 or on_class
-                or (self._is_dynamic_function_attribute_target(root))
+                or self._is_dynamic_function_attribute_target(root)
             ):
                 return
             self._get_attribute_fallback(root, node.attr, node)
@@ -14971,33 +14947,15 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             expected_type = self._normalize_expected_attribute_type_for_assignment(
                 attr.value
             )
-            use_typevar_inference = False
             if (
-                expected_type is not None
-                and (class_key := self._class_key_from_attribute_root_value(root))
-                is not None
-                and not on_class
-                and (
-                    converter_input_type := self._dataclass_converter_input_type_for_field(
-                        class_key, node.attr
-                    )
-                )
-                is not None
+                not on_class
+                and attr.symbol.dataclass_field is not None
+                and attr.symbol.dataclass_field.converter_input_type is not None
             ):
-                expected_type = converter_input_type
-                use_typevar_inference = True
-            if expected_type is None:
-                self._record_type_attr_set_for_value(
-                    root, node.attr, node, self.being_assigned
-                )
-                self._record_synthetic_attr_set(node, root)
-                return
-            if use_typevar_inference:
-                can_assign = get_tv_map(expected_type, self.being_assigned, self)
-            else:
-                can_assign = has_relation(
-                    expected_type, self.being_assigned, Relation.ASSIGNABLE, self
-                )
+                expected_type = attr.symbol.dataclass_field.converter_input_type
+            can_assign = has_relation(
+                expected_type, self.being_assigned, Relation.ASSIGNABLE, self
+            )
             if isinstance(can_assign, CanAssignError):
                 self._show_error_if_checking(
                     node,
