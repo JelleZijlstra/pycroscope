@@ -259,9 +259,22 @@ class TestPatma(TestNameCheckVisitorBase):
                     assert_type(x, dict[str, int])
                     assert_type(count, int)
                 case _:
-                    # TODO: Narrow this fallback to dict[str, int] once match
-                    # fallthrough excludes the tuple branch here.
-                    print(x)
+                    assert_type(x, dict[str, int])
+
+    @assert_passes()
+    def test_match_class_pattern_fallthrough_after_irrefutable_keyword(self):
+        from typing_extensions import assert_type
+
+        class Box:
+            value: int
+
+        def capybara(x: int | Box) -> None:
+            match x:
+                case Box(value=value):
+                    assert_type(x, Box)
+                    assert_type(value, int)
+                case _:
+                    assert_type(x, int)
 
     @assert_passes()
     def test_reassign_in_tuple(self):

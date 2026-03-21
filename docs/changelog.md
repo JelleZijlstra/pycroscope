@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Improve `match` fallthrough narrowing for irrefutable class and sequence patterns, so later cases and wildcard fallbacks now exclude values already guaranteed to match earlier branches.
 - Fix attribute-assignment checks on unions and intersections so pycroscope now preserves special-case errors like `Final`/`ClassVar` writes and still validates declared attribute types across each possible receiver branch.
 - Improve `super()` modeling so pycroscope now tracks `super` calls with a dedicated internal value, resolves `super()` attribute lookup more consistently, and accepts staticmethod access like `super().label()`.
 - Run Python 3.14 CI tests with coverage reporting, and keep a pinned set of fully covered modules at 100% coverage so regressions in files like `annotated_types.py`, `regex_check.py`, and `type_evaluation.py` fail CI.

@@ -9,7 +9,7 @@ import collections.abc
 import enum
 import itertools
 from collections.abc import Callable, Container, Iterable, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from typing import Any, TypeVar
 
 import pycroscope
@@ -202,9 +202,44 @@ class AlwaysMatching:
             return None
 
 
+class PatternMatchability(enum.Enum):
+    NEVER = 1
+    MAYBE = 2
+    ALWAYS = 3
+
+
+ClassPatternName = str | SpecialPositionalMatch
+ClassPattern = tuple[ClassPatternName, ast.AST]
+ClassPatternStatus = CanAssignError | list[ClassPatternName] | None
+
+
+@dataclass
+class StructuralPatternPredicate:
+    pattern: ast.AST
+    patma_visitor: "PatmaVisitor"
+
+    def __call__(self, value: Value, positive: bool) -> Value | None:
+        matching_values = []
+        for subval in flatten_values(value, unwrap_annotated=True):
+            matchability = self.patma_visitor.pattern_matchability(self.pattern, subval)
+            if positive:
+                if matchability is not PatternMatchability.NEVER:
+                    matching_values.append(subval)
+            elif matchability is not PatternMatchability.ALWAYS:
+                matching_values.append(subval)
+        if not matching_values:
+            return None
+        return unite_values(*matching_values)
+
+
 @dataclass
 class PatmaVisitor(ast.NodeVisitor):
     visitor: "pycroscope.name_check_visitor.NameCheckVisitor"
+    _match_value_cache: dict[int, Value] = field(default_factory=dict)
+    _mapping_key_cache: dict[int, list[Value]] = field(default_factory=dict)
+    _class_pattern_info_cache: dict[
+        int, tuple[Value, Value, list[ClassPattern], ClassPatternStatus]
+    ] = field(default_factory=dict)
 
     def visit(self, node: ast.AST) -> AbstractConstraint:
         constraint = super().visit(node)
@@ -221,6 +256,7 @@ class PatmaVisitor(ast.NodeVisitor):
 
     def visit_MatchValue(self, node: MatchValue) -> AbstractConstraint:
         pattern_val = self.visitor.visit(node.value)
+        self._match_value_cache[id(node)] = pattern_val
         self.check_impossible_pattern(node, pattern_val)
         if not isinstance(pattern_val, KnownValue):
             self.visitor.show_error(
@@ -300,6 +336,8 @@ class PatmaVisitor(ast.NodeVisitor):
         subject = constrain_value(
             self.visitor.match_subject.value, constraint, ctx=self.visitor
         )
+        key_values = [self.visitor.visit(key) for key in node.keys]
+        self._mapping_key_cache[id(node)] = key_values
         kv_pairs = kv_pairs_from_mapping(subject, self.visitor)
         if isinstance(kv_pairs, CanAssignError):
             kv_pairs = [
@@ -311,8 +349,7 @@ class PatmaVisitor(ast.NodeVisitor):
         kv_pairs = list(reversed(kv_pairs))
         optional_pairs: set[KVPair] = set()
         removed_pairs: set[KVPair] = set()
-        for key, pattern in zip(node.keys, node.patterns):
-            key_val = self.visitor.visit(key)
+        for key_val, pattern in zip(key_values, node.patterns):
             value, new_optional_pairs, new_removed_pairs = get_value_from_kv_pairs(
                 kv_pairs, key_val, self.visitor, optional_pairs, removed_pairs
             )
@@ -341,7 +378,9 @@ class PatmaVisitor(ast.NodeVisitor):
         return AndConstraint.make(constraints)
 
     def visit_MatchClass(self, node: MatchClass) -> AbstractConstraint:
-        cls = self.visitor.visit(node.cls)
+        cls, matched_type, patterns, match_args_status = self._get_class_pattern_info(
+            node
+        )
         can_assign = has_relation(
             TypedValue(type), cls, Relation.ASSIGNABLE, self.visitor
         )
@@ -352,8 +391,22 @@ class PatmaVisitor(ast.NodeVisitor):
                 ErrorCode.bad_match,
                 detail=str(can_assign),
             )
-        matched_type = type_from_value(cls, visitor=self.visitor, node=node.cls)
         self.check_impossible_pattern(node, matched_type)
+        if isinstance(match_args_status, CanAssignError):
+            self.visitor.show_error(
+                node.cls,
+                "Invalid class pattern",
+                ErrorCode.bad_match,
+                detail=str(match_args_status),
+            )
+        elif isinstance(match_args_status, list):
+            self.visitor.show_error(
+                node.cls,
+                f"{cls} takes at most {len(match_args_status)} positional subpatterns,"
+                f" but {len(node.patterns)} were provided",
+                ErrorCode.bad_match,
+                detail=str(match_args_status),
+            )
         constraint = self.make_constraint(
             ConstraintType.predicate,
             IsAssignablePredicate(
@@ -366,29 +419,6 @@ class PatmaVisitor(ast.NodeVisitor):
             self.visitor.match_subject.value, constraint, ctx=self.visitor
         )
         subject_composite = self.visitor.match_subject._replace(value=subject)
-        patterns = [
-            (attr, pattern) for attr, pattern in zip(node.kwd_attrs, node.kwd_patterns)
-        ]
-        if node.patterns:
-            match_args = get_match_args(cls, self.visitor)
-            if isinstance(match_args, CanAssignError):
-                self.visitor.show_error(
-                    node.cls,
-                    "Invalid class pattern",
-                    ErrorCode.bad_match,
-                    detail=str(match_args),
-                )
-                match_args = [SpecialPositionalMatch.error for _ in node.patterns]
-            if len(node.patterns) > len(match_args):
-                self.visitor.show_error(
-                    node.cls,
-                    f"{cls} takes at most {len(match_args)} positional subpatterns,"
-                    f" but {len(match_args)} were provided",
-                    ErrorCode.bad_match,
-                    detail=str(match_args),
-                )
-                match_args = [SpecialPositionalMatch.error for _ in node.patterns]
-            patterns = [*zip(match_args, node.patterns), *patterns]
 
         seen_names = set()
         for name, _ in patterns:
@@ -461,6 +491,100 @@ class PatmaVisitor(ast.NodeVisitor):
         varname = self.visitor.match_subject.varname
         return Constraint(varname, typ, True, value)
 
+    def make_structural_constraint(self, node: ast.AST) -> AbstractConstraint:
+        return self.make_constraint(
+            ConstraintType.predicate, StructuralPatternPredicate(node, self)
+        )
+
+    def pattern_matchability(self, node: ast.AST, value: Value) -> PatternMatchability:
+        if isinstance(node, MatchSingleton):
+            pattern_val = KnownValue(node.value)
+            if (
+                value.can_overlap(pattern_val, self.visitor, OverlapMode.MATCH)
+                is not None
+            ):
+                return PatternMatchability.NEVER
+            if isinstance(value, KnownValue):
+                op = (
+                    value.val is node.value
+                    if node.value in (None, True, False)
+                    else False
+                )
+                return PatternMatchability.ALWAYS if op else PatternMatchability.NEVER
+            if isinstance(value, TypedValue) and (
+                (node.value is None and value.typ is type(None))
+                or (node.value in (True, False) and value.typ is bool)
+            ):
+                return PatternMatchability.MAYBE
+            return PatternMatchability.MAYBE
+        elif isinstance(node, MatchValue):
+            pattern_val = self._match_value_cache.get(id(node))
+            if pattern_val is None:
+                return PatternMatchability.MAYBE
+            if (
+                value.can_overlap(pattern_val, self.visitor, OverlapMode.MATCH)
+                is not None
+            ):
+                return PatternMatchability.NEVER
+            if isinstance(pattern_val, KnownValue) and isinstance(value, KnownValue):
+                return (
+                    PatternMatchability.ALWAYS
+                    if value.val == pattern_val.val
+                    else PatternMatchability.NEVER
+                )
+            return PatternMatchability.MAYBE
+        elif isinstance(node, MatchSequence):
+            outer = self._outer_matchability(MatchableSequence, value)
+            if outer is PatternMatchability.NEVER:
+                return outer
+            length_matchability = self._sequence_length_matchability(node, value)
+            if length_matchability is PatternMatchability.NEVER:
+                return length_matchability
+            subpattern_matchability = self._sequence_subpattern_matchability(
+                node, value
+            )
+            return self._combine_matchabilities(
+                outer, length_matchability, subpattern_matchability
+            )
+        elif isinstance(node, MatchMapping):
+            outer = self._outer_matchability(MappingValue, value)
+            if outer is PatternMatchability.NEVER:
+                return outer
+            key_values = self._mapping_key_cache.get(id(node))
+            if key_values is None:
+                return PatternMatchability.MAYBE
+            kv_pairs = kv_pairs_from_mapping(value, self.visitor)
+            if isinstance(kv_pairs, CanAssignError):
+                return PatternMatchability.MAYBE
+            optional_pairs: set[KVPair] = set()
+            removed_pairs: set[KVPair] = set()
+            results = []
+            for key_val, pattern in zip(key_values, node.patterns):
+                subvalue, new_optional_pairs, new_removed_pairs = (
+                    get_value_from_kv_pairs(
+                        kv_pairs, key_val, self.visitor, optional_pairs, removed_pairs
+                    )
+                )
+                optional_pairs |= new_optional_pairs
+                removed_pairs |= new_removed_pairs
+                if subvalue is UNINITIALIZED_VALUE:
+                    return PatternMatchability.MAYBE
+                results.append(self.pattern_matchability(pattern, subvalue))
+            return self._combine_matchabilities(outer, *results)
+        elif isinstance(node, MatchClass):
+            return self._class_pattern_matchability(node, value)
+        elif isinstance(node, MatchStar):
+            return PatternMatchability.ALWAYS
+        elif isinstance(node, MatchAs):
+            if node.pattern is None:
+                return PatternMatchability.ALWAYS
+            return self.pattern_matchability(node.pattern, value)
+        elif isinstance(node, MatchOr):
+            return self._or_matchability(
+                self.pattern_matchability(pattern, value) for pattern in node.patterns
+            )
+        raise NotImplementedError(f"Unsupported pattern node: {node}")
+
     def check_impossible_pattern(self, node: ast.AST, value: Value) -> None:
         error = self.visitor.match_subject.value.can_overlap(
             value, self.visitor, OverlapMode.MATCH
@@ -473,6 +597,157 @@ class PatmaVisitor(ast.NodeVisitor):
                 ErrorCode.impossible_pattern,
                 detail=str(error),
             )
+
+    def _outer_matchability(
+        self, pattern_value: Value, value: Value
+    ) -> PatternMatchability:
+        if (
+            value.can_overlap(pattern_value, self.visitor, OverlapMode.MATCH)
+            is not None
+        ):
+            return PatternMatchability.NEVER
+        if pattern_value.is_assignable(value, self.visitor):
+            return PatternMatchability.ALWAYS
+        return PatternMatchability.MAYBE
+
+    def _combine_matchabilities(
+        self, *matchabilities: PatternMatchability
+    ) -> PatternMatchability:
+        if any(
+            matchability is PatternMatchability.NEVER for matchability in matchabilities
+        ):
+            return PatternMatchability.NEVER
+        if all(
+            matchability is PatternMatchability.ALWAYS
+            for matchability in matchabilities
+        ):
+            return PatternMatchability.ALWAYS
+        return PatternMatchability.MAYBE
+
+    def _or_matchability(
+        self, matchabilities: Iterable[PatternMatchability]
+    ) -> PatternMatchability:
+        matchabilities = list(matchabilities)
+        if any(
+            matchability is PatternMatchability.ALWAYS
+            for matchability in matchabilities
+        ):
+            return PatternMatchability.ALWAYS
+        if any(
+            matchability is PatternMatchability.MAYBE for matchability in matchabilities
+        ):
+            return PatternMatchability.MAYBE
+        return PatternMatchability.NEVER
+
+    def _sequence_length_matchability(
+        self, node: MatchSequence, value: Value
+    ) -> PatternMatchability:
+        starred_index = index_of(node.patterns, lambda pat: isinstance(pat, MatchStar))
+        expected_length = len(node.patterns) - int(starred_index is not None)
+        value_len = len_of_value(value)
+        if isinstance(value_len, KnownValue) and isinstance(value_len.val, int):
+            if starred_index is None:
+                matches = value_len.val == expected_length
+            else:
+                matches = value_len.val >= expected_length
+            return PatternMatchability.ALWAYS if matches else PatternMatchability.NEVER
+        return PatternMatchability.MAYBE
+
+    def _sequence_subpattern_matchability(
+        self, node: MatchSequence, value: Value
+    ) -> PatternMatchability:
+        starred_index = index_of(node.patterns, lambda pat: isinstance(pat, MatchStar))
+        if starred_index is None:
+            target_length = len(node.patterns)
+            post_starred_length = None
+        else:
+            target_length = starred_index
+            post_starred_length = len(node.patterns) - 1 - target_length
+        narrowed = LenPredicate(
+            len(node.patterns) - int(starred_index is not None),
+            starred_index is not None,
+            self.visitor,
+        )(value, True)
+        if narrowed is None:
+            return PatternMatchability.NEVER
+        unpacked = unpack_values(
+            narrowed, self.visitor, target_length, post_starred_length
+        )
+        if isinstance(unpacked, CanAssignError):
+            return PatternMatchability.MAYBE
+        results = [
+            self.pattern_matchability(pattern, subject)
+            for pattern, subject in zip(node.patterns, unpacked)
+        ]
+        return self._combine_matchabilities(*results)
+
+    def _class_pattern_matchability(
+        self, node: MatchClass, value: Value
+    ) -> PatternMatchability:
+        info = self._class_pattern_info_cache.get(id(node))
+        if info is None:
+            return PatternMatchability.MAYBE
+        _, matched_type, patterns, _ = info
+        outer = self._outer_matchability(matched_type, value)
+        if outer is PatternMatchability.NEVER:
+            return outer
+
+        subject_composite = Composite(value)
+        results = []
+        for name, subpattern in patterns:
+            if name is SpecialPositionalMatch.self:
+                subvalue = value
+            elif name is SpecialPositionalMatch.error:
+                return PatternMatchability.MAYBE
+            else:
+                assert isinstance(name, str)
+                attr = self.visitor.get_attribute(
+                    subject_composite, name, record_reads=False
+                )
+                if attr is UNINITIALIZED_VALUE:
+                    return PatternMatchability.MAYBE
+                subvalue = attr
+            results.append(self.pattern_matchability(subpattern, subvalue))
+        return self._combine_matchabilities(outer, *results)
+
+    def _get_class_pattern_info(
+        self, node: MatchClass
+    ) -> tuple[Value, Value, list[ClassPattern], ClassPatternStatus]:
+        if cached := self._class_pattern_info_cache.get(id(node)):
+            return cached
+
+        cls = self.visitor.visit(node.cls)
+        matched_type = type_from_value(cls, visitor=self.visitor, node=node.cls)
+        patterns: list[ClassPattern] = [
+            (attr, pattern) for attr, pattern in zip(node.kwd_attrs, node.kwd_patterns)
+        ]
+        match_args_status: ClassPatternStatus = None
+        if node.patterns:
+            match_args = get_match_args(cls, self.visitor)
+            if isinstance(match_args, CanAssignError):
+                match_args_status = match_args
+                patterns = [
+                    *[
+                        (SpecialPositionalMatch.error, pattern)
+                        for pattern in node.patterns
+                    ],
+                    *patterns,
+                ]
+            elif len(node.patterns) > len(match_args):
+                match_args_status = [*match_args]
+                patterns = [
+                    *[
+                        (SpecialPositionalMatch.error, pattern)
+                        for pattern in node.patterns
+                    ],
+                    *patterns,
+                ]
+            else:
+                patterns = [*zip(match_args, node.patterns), *patterns]
+
+        info = (cls, matched_type, patterns, match_args_status)
+        self._class_pattern_info_cache[id(node)] = info
+        return info
 
 
 def index_of(elts: Sequence[T], pred: Callable[[T], bool]) -> int | None:
