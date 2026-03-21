@@ -1148,7 +1148,82 @@ class TestImportFailureHandlingCodeSamples(TestNameCheckVisitorBase):
 
         d = D()
         d.x = 4  # E: incompatible_assignment
+
+    @assert_passes()
+    def test_subclass_write_shadows_inherited_classvar(self):
+        from typing import ClassVar
+
+        class C:
+            x: ClassVar[int] = 1
+
+        class D(C):
+            pass
+
         D.x = 5
+
+        d = D()
+        d.x = 4
+
+    @assert_passes()
+    def test_union_attribute_assignment_type(self):
+        class C:
+            x: int
+
+        class D:
+            x: int
+
+        def f(obj: C | D) -> None:
+            obj.x = "x"  # E: incompatible_assignment
+
+    @assert_passes()
+    def test_union_classvar_attribute_assignment_on_instance(self):
+        from typing import ClassVar
+
+        class C:
+            x: ClassVar[int] = 1
+
+        class D:
+            x: ClassVar[int] = 2
+
+        def f(obj: C | D) -> None:
+            obj.x = 3  # E: incompatible_assignment
+
+    @assert_passes()
+    def test_union_final_attribute_assignment_on_instance(self):
+        from typing import Final
+
+        class C:
+            x: Final[int] = 1
+
+        class D:
+            x: Final[int] = 2
+
+        def f(obj: C | D) -> None:
+            obj.x = 3  # E: incompatible_assignment
+
+    @assert_passes()
+    def test_union_classvar_attribute_assignment_on_class_object(self):
+        from typing import ClassVar
+
+        class C:
+            x: ClassVar[int] = 1
+
+        class D:
+            x: ClassVar[int] = 2
+
+        def f(cls: type[C] | type[D]) -> None:
+            cls.x = "x"  # E: incompatible_assignment
+
+    @assert_passes()
+    def test_union_instance_member_assignment_through_class(self):
+        class C:
+            x: int
+
+        class D:
+            x: int
+
+        def f(cls: type[C] | type[D]) -> None:
+            cls.x = 1  # E: incompatible_assignment
 
     @assert_passes()
     def test_namedtuple_attribute_is_immutable(self):
@@ -3878,7 +3953,7 @@ class TestAnnAssign(TestNameCheckVisitorBase):
             x: int
 
             def method(this, value: object) -> None:  # E: method_first_arg
-                this.x = value
+                this.x = value  # E: incompatible_assignment
 
     @assert_passes(run_in_both_module_modes=True)
     def test_final_decorator_in_unimportable_module(self):

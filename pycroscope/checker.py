@@ -13,7 +13,7 @@ from collections.abc import Callable, Generator, Iterable, Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import InitVar, dataclass, field
 from dataclasses import replace as dataclass_replace
-from typing import TypeVar, cast
+from typing import TypeVar, assert_never, cast
 
 import pycroscope
 
@@ -30,6 +30,7 @@ from .safe import (
     is_namedtuple_class,
     is_typing_name,
     safe_getattr,
+    safe_isinstance,
     safe_issubclass,
     should_disable_runtime_call_for_namedtuple_class,
 )
@@ -79,12 +80,15 @@ from .value import (
     PartialValueOperation,
     SelfT,
     SequenceValue,
+    SimpleType,
     SubclassValue,
     SyntheticClassObjectValue,
+    SyntheticModuleValue,
     TypeAlias,
     TypeAliasValue,
     TypedDictValue,
     TypedValue,
+    TypeFormValue,
     TypeParam,
     TypeVarLike,
     TypeVarMap,
@@ -492,6 +496,29 @@ class Checker:
         self._sync_synthetic_class_type_object(typ, type_object)
         self.type_object_cache[typ] = type_object
         return type_object
+
+    def get_type_object_for_value(self, value: SimpleType) -> tuple[TypeObject, bool]:
+        """Return a tuple of the type object, and whether it is for the class or instance."""
+        match value:
+            case AnyValue() | TypeFormValue() | UnboundMethodValue():
+                return self.make_type_object(object), False
+            case SyntheticModuleValue():
+                return self.make_type_object(types.ModuleType), False
+            case KnownValue(val) if safe_isinstance(val, type):
+                return self.make_type_object(val), True
+            case KnownValue(val):
+                return self.make_type_object(type(val)), False
+            case SyntheticClassObjectValue(class_type=TypedValue(typ)):
+                return self.make_type_object(typ), True
+            case TypedValue(typ):
+                return self.make_type_object(typ), False
+            case SubclassValue(TypedValue(typ)):
+                return self.make_type_object(typ), True
+            case SubclassValue(TypeVarValue() as tv):
+                # TODO: could be more precise
+                return self.make_type_object(object), True
+            case _:
+                assert_never(value)
 
     def _sync_synthetic_class_type_object(
         self, typ: type | str, type_object: TypeObject

@@ -220,6 +220,7 @@ from .suggested_type import (
 )
 from .type_object import (
     TypeObject,
+    TypeObjectAttribute,
     class_keys_match,
     get_mro,
     is_readonly_annotated_member,
@@ -273,6 +274,7 @@ from .value import (
     ReferencingValue,
     SelfT,
     SequenceValue,
+    SimpleType,
     SkipDeprecatedExtension,
     SubclassValue,
     SyntheticClassObjectValue,
@@ -6099,6 +6101,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             return self._slot_state_for_type(value.typ, seen=seen)
         return None
 
+    # TODO: track this on the type object
     def _slot_state_for_type(
         self, typ: type | str, *, seen: set[int] | None = None
     ) -> tuple[frozenset[str], bool] | None:
@@ -9013,19 +9016,19 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     ) -> bool:
         if self.ann_assign_type is not None and self.ann_assign_type[1]:
             return False
-        class_key = self._class_key_for_attribute_target(node, root_value)
-        if class_key is None:
-            return False
-        if not self._is_final_member(class_key, node.attr):
-            return False
-        required = self.final_members_requiring_init.get(class_key)
-        if self.current_function_name == "__init__" and required is not None:
-            if node.attr in required:
-                self.final_members_initialized_in_init.setdefault(class_key, set()).add(
-                    node.attr
-                )
-                return False
-        return True
+        for subvalue in self._iter_attribute_assignment_root_values(root_value):
+            class_key = self._class_key_for_attribute_target(node, subvalue)
+            if class_key is None or not self._is_final_member(class_key, node.attr):
+                continue
+            required = self.final_members_requiring_init.get(class_key)
+            if self.current_function_name == "__init__" and required is not None:
+                if node.attr in required:
+                    self.final_members_initialized_in_init.setdefault(
+                        class_key, set()
+                    ).add(node.attr)
+                    continue
+            return True
+        return False
 
     def _is_allowed_readonly_attribute_initialization(
         self, node: ast.Attribute, root_value: Value
@@ -9139,24 +9142,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         ):
             return False
         assert_never(value)
-
-    def _is_assignment_to_classvar_through_instance(
-        self, node: ast.Attribute, root_value: Value
-    ) -> bool:
-        class_key = self._class_key_for_attribute_target(node, root_value)
-        if class_key is None or not self._is_classvar_member(class_key, node.attr):
-            return False
-        is_class_object = self._is_class_object_attribute_root(root_value)
-        return is_class_object is False
-
-    def _is_assignment_to_instance_member_through_class(
-        self, node: ast.Attribute, root_value: Value
-    ) -> bool:
-        class_key = self._class_key_for_attribute_target(node, root_value)
-        if class_key is None or not self._is_instance_only_member(class_key, node.attr):
-            return False
-        is_class_object = self._is_class_object_attribute_root(root_value)
-        return is_class_object is True
 
     def _class_key_from_type_call_expr(
         self, call_expr: ast.AST | None
@@ -14359,7 +14344,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             root_for_partial,
             node,
             members,
-            GenericValue(synthetic_typ, specialized_members),
+            TypedValue(types.GenericAlias),
         )
 
     def _get_dunder(
@@ -14598,114 +14583,13 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     self.ann_assign_type is not None
                 ), "should only happen in AnnAssign"
                 return Composite(AnyValue(AnySource.inference), composite, node)
-            is_final_assignment = self._is_assignment_to_final_attribute(
-                node, root_composite.value
-            )
-            if is_final_assignment:
-                self._show_error_if_checking(
-                    node,
-                    f"Cannot assign to final name {node.attr}",
-                    error_code=ErrorCode.incompatible_assignment,
-                )
-            is_classvar_instance_assignment = (
-                not is_final_assignment
-                and self._is_assignment_to_classvar_through_instance(
-                    node, root_composite.value
-                )
-            )
-            if is_classvar_instance_assignment:
-                self._show_error_if_checking(
-                    node,
-                    f"Cannot assign to class variable {node.attr!r} via instance",
-                    error_code=ErrorCode.incompatible_assignment,
-                )
-            is_instance_member_class_assignment = (
-                not is_final_assignment
-                and not is_classvar_instance_assignment
-                and self._is_assignment_to_instance_member_through_class(
-                    node, root_composite.value
-                )
-            )
-            if is_instance_member_class_assignment:
-                self._show_error_if_checking(
-                    node,
-                    f"Cannot assign to instance attribute {node.attr!r} via class object",
-                    error_code=ErrorCode.incompatible_assignment,
-                )
-            is_frozen_dataclass_assignment = (
-                not is_final_assignment
-                and not is_classvar_instance_assignment
-                and not is_instance_member_class_assignment
-                and self._is_assignment_to_frozen_dataclass_attribute(
-                    root_composite.value
-                )
-            )
-            if is_frozen_dataclass_assignment:
-                self._show_error_if_checking(
-                    node,
-                    "Dataclass is frozen",
-                    error_code=ErrorCode.incompatible_assignment,
-                )
-            is_readonly_assignment = (
-                not is_final_assignment
-                and not is_classvar_instance_assignment
-                and not is_instance_member_class_assignment
-                and not is_frozen_dataclass_assignment
-                and self._is_assignment_to_readonly_attribute(
-                    node, root_composite.value
-                )
-            )
-            if is_readonly_assignment:
-                self._show_error_if_checking(
-                    node,
-                    f"Cannot assign to readonly attribute {node.attr!r}",
-                    error_code=ErrorCode.incompatible_assignment,
-                )
-            is_slots_assignment = (
-                not is_final_assignment
-                and not is_classvar_instance_assignment
-                and not is_instance_member_class_assignment
-                and not is_frozen_dataclass_assignment
-                and not is_readonly_assignment
-                and self._is_assignment_to_non_slot_attribute(
-                    root_composite.value, node.attr
-                )
-            )
-            if is_slots_assignment:
-                self._show_error_if_checking(
-                    node,
-                    f"Cannot assign to attribute {node.attr!r}; it is not in __slots__",
-                    error_code=ErrorCode.incompatible_assignment,
-                )
-            if (
-                not is_final_assignment
-                and not is_classvar_instance_assignment
-                and not is_instance_member_class_assignment
-                and not is_frozen_dataclass_assignment
-                and not is_readonly_assignment
-                and not is_slots_assignment
-            ):
-                self._check_attribute_assignment_type(node, root_composite)
-                self._record_synthetic_attr_set(node, root_composite.value)
-            should_record_type_attr_set = (
-                not is_final_assignment
-                and not is_classvar_instance_assignment
-                and not is_instance_member_class_assignment
-                and not is_frozen_dataclass_assignment
-                and not is_readonly_assignment
-                and not is_slots_assignment
-            )
+            self._check_attribute_write(node, root_composite.value)
             if (
                 composite is not None
                 and self.scopes.scope_type() == ScopeType.function_scope
             ):
                 self.scopes.set(
                     composite.get_varname(), self.being_assigned, node, self.state
-                )
-
-            if should_record_type_attr_set:
-                self._record_type_attr_set_for_value(
-                    root_composite.value, node.attr, node, self.being_assigned
                 )
             return Composite(self.being_assigned, composite, node)
         elif self._is_read_ctx(node.ctx):
@@ -14772,22 +14656,37 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             self.show_error(node, "Unknown context", ErrorCode.unexpected_node)
             return Composite(AnyValue(AnySource.error), composite, node)
 
+    def _iter_attribute_assignment_root_values(
+        self, root_value: Value
+    ) -> Iterable[SimpleType]:
+        root_value = replace_fallback(root_value)
+        if isinstance(root_value, MultiValuedValue):
+            for subval in root_value.vals:
+                yield from self._iter_attribute_assignment_root_values(subval)
+            return
+        if isinstance(root_value, IntersectionValue):
+            for subval in root_value.vals:
+                yield from self._iter_attribute_assignment_root_values(subval)
+            return
+        yield root_value
+
+    def _get_attribute_assignment_symbol(
+        self, node: ast.Attribute, root_value: SimpleType
+    ) -> tuple[ClassSymbol | None, type | str | None]:
+        class_key = self._class_key_for_attribute_target(node, root_value)
+        if class_key is None:
+            return None, None
+        match = lookup_declared_symbol_with_owner(class_key, node.attr, self)
+        return None if match is None else match[1], class_key
+
     def _get_attribute_value_for_assignment(
-        self, root_composite: Composite, attr: str, node: ast.Attribute
+        self, root_value: SimpleType, attr: str, node: ast.Attribute
     ) -> Value:
-        lookup_composite = root_composite
-        root_value = replace_fallback(root_composite.value)
+        lookup_value: Value = root_value
         if isinstance(root_value, KnownValue) and not isinstance(root_value.val, type):
-            lookup_composite = Composite(
-                TypedValue(type(root_value.val)),
-                root_composite.varname,
-                root_composite.node,
-            )
-            root_value = lookup_composite.value
-        if isinstance(root_value, (MultiValuedValue, IntersectionValue)):
-            return UNINITIALIZED_VALUE
+            lookup_value = TypedValue(type(root_value.val))
         ctx = _AttrContext(
-            lookup_composite,
+            Composite(lookup_value),
             None,
             attr,
             self,
@@ -14845,6 +14744,242 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             synthetic_class, field_name
         )
 
+    def _check_attribute_write(self, node: ast.Attribute, value: Value) -> None:
+        if (
+            isinstance(value, PartialValue)
+            and value.operation == PartialValueOperation.SUBSCRIPT
+            and value.runtime_value == TypedValue(types.GenericAlias)
+        ):
+            value = value.root
+        value = replace_fallback(value)
+        match value:
+            case MultiValuedValue(vals=union_members):
+                for subval in union_members:
+                    self._check_attribute_write(node, subval)
+            case IntersectionValue(vals=intersection_members):
+                errors_lists = []
+                success = False
+                for subval in intersection_members:
+                    with self.catch_errors() as errors:
+                        self._check_attribute_write(node, subval)
+                    if not errors:
+                        success = True
+                        break
+                    errors_lists.append(errors)
+                if not success:
+                    for errors in errors_lists:
+                        self.show_caught_errors(errors)
+            case _:
+                self._check_attribute_write_on_simple_type(node, value)
+
+    def _check_attribute_write_on_simple_type(
+        self, node: ast.Attribute, root: SimpleType
+    ) -> None:
+        if isinstance(root, AnyValue):
+            return  # always ok
+        elif isinstance(root, UnboundMethodValue):
+            self._show_error_if_checking(
+                node,
+                f"Cannot assign to attribute {node.attr} of method {root}",
+                error_code=ErrorCode.incompatible_assignment,
+            )
+            return
+        elif isinstance(root, TypeFormValue):
+            self._show_error_if_checking(
+                node,
+                f"Cannot assign to attribute {node.attr} of type form {root}",
+                error_code=ErrorCode.incompatible_assignment,
+            )
+            return
+        tobj, on_class = self.checker.get_type_object_for_value(root)
+        is_dataclass, dataclass_frozen = self._get_dataclass_status_for_type(tobj.typ)
+        if is_dataclass and dataclass_frozen:
+            self._show_error_if_checking(
+                node,
+                f"Cannot assign to attribute {node.attr} of frozen dataclass {tobj.typ}",
+                error_code=ErrorCode.incompatible_assignment,
+            )
+            return
+        attr = tobj.get_attribute(
+            node.attr,
+            self,
+            on_class=on_class,
+            receiver_value=root if isinstance(root, TypedValue) else None,
+        )
+        if node.attr == "rgb":
+            print("ATTR", attr, "ON", tobj.typ)
+        if attr is None:
+            self._get_attribute_fallback(root, node.attr, node)
+            self._record_type_attr_set_for_value(
+                root, node.attr, node, self.being_assigned
+            )
+            self._record_synthetic_attr_set(node, root)
+            return
+        if attr.is_property and on_class:
+            self._show_error_if_checking(
+                node,
+                f"Cannot assign to property {node.attr!r} via class object",
+                error_code=ErrorCode.incompatible_assignment,
+            )
+            return
+        if attr.is_property and not attr.property_has_setter:
+            self._show_error_if_checking(
+                node,
+                f"Cannot assign to read-only property {node.attr!r}",
+                error_code=ErrorCode.incompatible_assignment,
+            )
+            return
+        self._check_deprecated_property_setter(node, root)
+        if attr.symbol.is_readonly:
+            self._show_error_if_checking(
+                node,
+                f"Cannot assign to read-only attribute {node.attr!r}",
+                error_code=ErrorCode.incompatible_assignment,
+            )
+            return
+        if attr.symbol.is_classvar and not on_class:
+            self._show_error_if_checking(
+                node,
+                f"Cannot assign to class variable {node.attr!r} via instance",
+                error_code=ErrorCode.incompatible_assignment,
+            )
+            return
+        if attr.symbol.is_instance_only and on_class:
+            self._show_error_if_checking(
+                node,
+                f"Cannot assign to instance attribute {node.attr!r} via class object",
+                error_code=ErrorCode.incompatible_assignment,
+            )
+            return
+        if self._check_final_attribute_assignment(node, attr):
+            return
+        slots_state = self._slot_state_for_type(tobj.typ)
+        if slots_state is not None:
+            slots, has_dict = slots_state
+            if not has_dict and node.attr not in slots:
+                self._show_error_if_checking(
+                    node,
+                    f"Cannot assign to attribute {node.attr!r}; it is not in __slots__",
+                    error_code=ErrorCode.incompatible_assignment,
+                )
+                return
+        if self.being_assigned is not None:
+            can_assign = has_relation(
+                attr.value, self.being_assigned, Relation.ASSIGNABLE, self
+            )
+            print("CNA", attr.value, self.being_assigned, can_assign)
+            if isinstance(can_assign, CanAssignError):
+                self._show_error_if_checking(
+                    node,
+                    f"Incompatible types in assignment to attribute {node.attr!r}: "
+                    f"expected {attr.value}, got {self.being_assigned}",
+                    error_code=ErrorCode.incompatible_assignment,
+                    detail=str(can_assign),
+                )
+            else:
+                self._record_type_attr_set_for_value(
+                    root, node.attr, node, self.being_assigned
+                )
+                self._record_synthetic_attr_set(node, root)
+
+    def _check_final_attribute_assignment(
+        self, node: ast.Attribute, attr: TypeObjectAttribute
+    ) -> bool:
+        """Return true if we should reject the assignment."""
+        if not attr.symbol.is_final:
+            return False
+        if self.current_function_name == "__init__" and self.being_assigned is not None:
+            required = self.final_members_requiring_init.get(attr.owner.typ)
+            if required is not None and node.attr in required:
+                self.final_members_initialized_in_init.setdefault(
+                    attr.owner.typ, set()
+                ).add(node.attr)
+                return False
+        if self.ann_assign_type is not None and self.ann_assign_type[1]:
+            return False
+        self._show_error_if_checking(
+            node,
+            f"Cannot assign to final name {node.attr}",
+            error_code=ErrorCode.incompatible_assignment,
+        )
+        return True
+
+    def _check_attribute_assignment(
+        self, node: ast.Attribute, root_composite: Composite
+    ) -> bool:
+        if self.being_assigned is None:
+            return False
+        for subvalue in self._iter_attribute_assignment_root_values(
+            root_composite.value
+        ):
+            symbol, class_key = self._get_attribute_assignment_symbol(node, subvalue)
+            if symbol is None or class_key is None:
+                continue
+            if self.ann_assign_type is None or not self.ann_assign_type[1]:
+                if self._is_final_member(
+                    class_key, node.attr, initializer=symbol.initializer
+                ):
+                    required = self.final_members_requiring_init.get(class_key)
+                    if (
+                        self.current_function_name == "__init__"
+                        and required is not None
+                    ):
+                        if node.attr in required:
+                            self.final_members_initialized_in_init.setdefault(
+                                class_key, set()
+                            ).add(node.attr)
+                            continue
+                    self._show_error_if_checking(
+                        node,
+                        f"Cannot assign to final name {node.attr}",
+                        error_code=ErrorCode.incompatible_assignment,
+                    )
+                    return False
+            is_class_object = self._is_class_object_attribute_root(subvalue)
+            if symbol.is_classvar and is_class_object is False:
+                self._show_error_if_checking(
+                    node,
+                    f"Cannot assign to class variable {node.attr!r} via instance",
+                    error_code=ErrorCode.incompatible_assignment,
+                )
+                return False
+            if (
+                symbol.is_instance_only
+                and not symbol.is_classvar
+                and not symbol.is_initvar
+                and is_class_object is True
+            ):
+                self._show_error_if_checking(
+                    node,
+                    f"Cannot assign to instance attribute {node.attr!r} via class object",
+                    error_code=ErrorCode.incompatible_assignment,
+                )
+                return False
+        if self._is_assignment_to_frozen_dataclass_attribute(root_composite.value):
+            self._show_error_if_checking(
+                node,
+                "Dataclass is frozen",
+                error_code=ErrorCode.incompatible_assignment,
+            )
+            return False
+        if self._is_assignment_to_readonly_attribute(node, root_composite.value):
+            self._show_error_if_checking(
+                node,
+                f"Cannot assign to readonly attribute {node.attr!r}",
+                error_code=ErrorCode.incompatible_assignment,
+            )
+            return False
+        if self._is_assignment_to_non_slot_attribute(root_composite.value, node.attr):
+            self._show_error_if_checking(
+                node,
+                f"Cannot assign to attribute {node.attr!r}; it is not in __slots__",
+                error_code=ErrorCode.incompatible_assignment,
+            )
+            return False
+        self._check_attribute_assignment_type(node, root_composite)
+        self._record_synthetic_attr_set(node, root_composite.value)
+        return True
+
     def _check_attribute_assignment_type(
         self, node: ast.Attribute, root_composite: Composite
     ) -> None:
@@ -14861,52 +14996,60 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             )
         ):
             return
-        expected = self._get_attribute_value_for_assignment(
-            root_composite, node.attr, node
-        )
-        if expected is UNINITIALIZED_VALUE:
-            class_key = self._class_key_for_attribute_target(node, root_composite.value)
+        for subvalue in self._iter_attribute_assignment_root_values(
+            root_composite.value
+        ):
+            expected = self._get_attribute_value_for_assignment(
+                subvalue, node.attr, node
+            )
+            if expected is UNINITIALIZED_VALUE:
+                _, class_key = self._get_attribute_assignment_symbol(node, subvalue)
+                if (
+                    class_key is not None
+                    and self.checker.make_type_object(class_key).is_protocol
+                ):
+                    self._show_error_if_checking(
+                        node,
+                        f"{root_composite.value} has no attribute {node.attr!r}",
+                        ErrorCode.undefined_attribute,
+                    )
+                    return
+                continue
+            expected_type = self._normalize_expected_attribute_type_for_assignment(
+                expected
+            )
+            use_typevar_inference = False
             if (
-                class_key is not None
-                and self.checker.make_type_object(class_key).is_protocol
+                expected_type is not None
+                and (class_key := self._class_key_from_attribute_root_value(subvalue))
+                is not None
+                and self._is_class_object_attribute_root(subvalue) is False
+                and (
+                    converter_input_type := self._dataclass_converter_input_type_for_field(
+                        class_key, node.attr
+                    )
+                )
+                is not None
             ):
+                expected_type = converter_input_type
+                use_typevar_inference = True
+            if expected_type is None:
+                continue
+            if use_typevar_inference:
+                can_assign = get_tv_map(expected_type, self.being_assigned, self)
+            else:
+                can_assign = has_relation(
+                    expected_type, self.being_assigned, Relation.ASSIGNABLE, self
+                )
+            if isinstance(can_assign, CanAssignError):
                 self._show_error_if_checking(
                     node,
-                    f"{root_composite.value} has no attribute {node.attr!r}",
-                    ErrorCode.undefined_attribute,
+                    f"Incompatible assignment: expected {expected_type}, got"
+                    f" {self.being_assigned}",
+                    error_code=ErrorCode.incompatible_assignment,
+                    detail=can_assign.display(),
                 )
-            return
-        expected_type = self._normalize_expected_attribute_type_for_assignment(expected)
-        if expected_type is None:
-            return
-        use_typevar_inference = False
-        class_key = self._class_key_from_attribute_root_value(root_composite.value)
-        if (
-            class_key is not None
-            and self._is_class_object_attribute_root(root_composite.value) is False
-            and (
-                converter_input_type := self._dataclass_converter_input_type_for_field(
-                    class_key, node.attr
-                )
-            )
-            is not None
-        ):
-            expected_type = converter_input_type
-            use_typevar_inference = True
-        if use_typevar_inference:
-            can_assign = get_tv_map(expected_type, self.being_assigned, self)
-        else:
-            can_assign = has_relation(
-                expected_type, self.being_assigned, Relation.ASSIGNABLE, self
-            )
-        if isinstance(can_assign, CanAssignError):
-            self._show_error_if_checking(
-                node,
-                f"Incompatible assignment: expected {expected_type}, got"
-                f" {self.being_assigned}",
-                error_code=ErrorCode.incompatible_assignment,
-                detail=can_assign.display(),
-            )
+                return
 
     def _check_deprecated_property_getter(
         self, node: ast.Attribute, root_value: Value
@@ -14924,6 +15067,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             error_code=ErrorCode.deprecated,
         )
 
+    # TODO: move relevant information into the type object
     def _check_deprecated_property_setter(
         self, node: ast.Attribute, root_value: Value
     ) -> None:
@@ -15332,6 +15476,12 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             ):
                 if not self._is_dataclass_initvar_attribute(root_type, attr):
                     return self._maybe_get_attr_value(root_type, attr)
+        elif isinstance(root_value, SyntheticClassObjectValue) and isinstance(
+            root_value.class_type, TypedValue
+        ):
+            root_type = root_value.class_type.typ
+            if not self._is_dataclass_initvar_attribute(root_type, attr):
+                return self._maybe_get_attr_value(root_type, attr)
         elif isinstance(root_value, SubclassValue):
             if isinstance(root_value.typ, TypedValue):
                 root_type = root_value.typ.typ

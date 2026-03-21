@@ -1213,8 +1213,6 @@ def _get_symbol_owner_substitutions_from_type_objects(
 ) -> dict[TypeVarLike, Value]:
     receiver_substitutions: dict[TypeVarLike, Value] = {}
     if receiver_value is not None:
-        receiver_value_tobj = receiver_value.get_type_object(ctx)
-        assert receiver_value_tobj is receiver_tobj
         receiver_substitutions = _typevar_map_from_type_value(
             receiver_value, receiver_tobj.declared_type_params
         )
