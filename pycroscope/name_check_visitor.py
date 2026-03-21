@@ -14730,11 +14730,8 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     for errors in errors_lists:
                         self.show_caught_errors(errors)
             case _:
-                # TODO: bad match narrowing
                 self._check_attribute_write_on_simple_type(
-                    node,
-                    value,  # static analysis: ignore[incompatible_argument]
-                    is_deletion=is_deletion,
+                    node, value, is_deletion=is_deletion
                 )
 
     def _is_dynamic_function_attribute_target(self, root: SimpleType) -> bool:
@@ -16470,6 +16467,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     pattern_constraint = patma_visitor.visit(case.pattern)
                     constraints = [pattern_constraint]
                     self.add_constraint(case.pattern, pattern_constraint)
+                    structural_pattern_constraint = (
+                        patma_visitor.make_structural_constraint(case.pattern)
+                    )
                     if case.guard is not None:
                         _, guard_constraint = self.constraint_from_condition(case.guard)
                         self.add_constraint(case.guard, guard_constraint)
@@ -16477,7 +16477,15 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
 
                     case_constraint = AndConstraint.make(constraints)
                     self.add_constraint(case, case_constraint)
-                    constraints_to_apply.append(case_constraint.invert())
+                    fallthrough_constraint = case_constraint.invert()
+                    if case.guard is None:
+                        fallthrough_constraint = AndConstraint.make(
+                            [
+                                fallthrough_constraint,
+                                structural_pattern_constraint.invert(),
+                            ]
+                        )
+                    constraints_to_apply.append(fallthrough_constraint)
                     self._generic_visit_list(case.body)
                     subscopes.append(case_scope)
 
