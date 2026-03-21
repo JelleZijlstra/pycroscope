@@ -14717,6 +14717,12 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             and value.runtime_value == TypedValue(types.GenericAlias)
         ):
             value = value.root
+        elif (
+            self.current_class_key is not None
+            and isinstance(value, TypeVarValue)
+            and value.typevar_param.typevar is SelfT
+        ):
+            value = TypedValue(self.current_class_key)
         value = replace_fallback(value)
         match value:
             case MultiValuedValue(vals=union_members):
@@ -14788,7 +14794,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 error_code=ErrorCode.incompatible_assignment,
             )
             return
-        tobj, on_class = self.checker.get_type_object_for_value(root)
+        tobj, on_class = self.checker.get_type_object_for_value(
+            root, self.current_class_key
+        )
         is_dataclass, dataclass_frozen = self._get_dataclass_status_for_type(tobj.typ)
         if is_dataclass and dataclass_frozen:
             self._show_error_if_checking(
