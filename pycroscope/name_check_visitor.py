@@ -4014,6 +4014,19 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             return safe_issubclass(class_key, enum.Enum)
         return False
 
+    def _get_runtime_type_param_for_current_scope(
+        self, name: str, *, expected_kind: str
+    ) -> object | None:
+        scope_object = self.scopes.current_scope().scope_object
+        runtime_type_params = safe_getattr(scope_object, "__type_params__", ())
+        for runtime_type_param in runtime_type_params:
+            if (
+                safe_getattr(runtime_type_param, "__name__", None) == name
+                and type(runtime_type_param).__name__ == expected_kind
+            ):
+                return runtime_type_param
+        return None
+
     @contextlib.contextmanager
     def _set_current_class(self, current_class: type | str | None) -> Generator[None]:
         should_track_members = should_check_for_duplicate_values(
@@ -4580,6 +4593,11 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             method_type_param_values = self._align_type_params_with_runtime_class(
                 runtime_class_for_type_params, method_type_params
             )
+            class_scope_type_params = (
+                tuple(registered_type_param_values)
+                if registered_type_param_values
+                else tuple(method_type_param_values)
+            )
             should_register_generic_bases = synthetic_typeddict is None and (
                 isinstance(generic_class_key, str) or bool(registered_type_param_values)
             )
@@ -4603,13 +4621,10 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             if isinstance(class_scope_object, type):
                 self._record_class_body_attributes(node, class_scope_object)
             class_annotation_identities = {
-                type_param.typevar for type_param in method_type_param_values
+                type_param.typevar for type_param in class_scope_type_params
             }
-            class_annotation_identities.update(
-                type_param.typevar for type_param in type_param_values
-            )
             with (
-                self.active_type_params.push_pep695_scope(type_param_values),
+                self.active_type_params.push_pep695_scope(class_scope_type_params),
                 self.active_type_params.allow_in_annotations(
                     class_annotation_identities
                 ),
@@ -4626,9 +4641,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                         else False
                     ),
                 ),
-                self.active_type_params.push_class_type_params(
-                    tuple(method_type_param_values)
-                ),
+                self.active_type_params.push_class_type_params(class_scope_type_params),
                 self.active_type_params.push_class_type_param_variance_collection(
                     class_type_param_polarities, is_protocol_class=is_protocol_class
                 ),
@@ -4638,10 +4651,13 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 )
             if synthetic_typeddict is None:
                 inferred_registration_type_params: Sequence[TypeParam] | None = None
-                if type_param_values:
+                if class_scope_type_params and any(
+                    _type_param_uses_infer_variance(type_param)
+                    for type_param in class_scope_type_params
+                ):
                     inferred_registration_type_params = (
                         self._infer_type_param_variances_from_polarities(
-                            type_param_values,
+                            class_scope_type_params,
                             class_type_param_polarities,
                             is_protocol=False,
                         )
@@ -13677,7 +13693,13 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             if sys.version_info >= (3, 13):
                 if node.default_value is not None:
                     default = self._type_from_pep695_type_param_expr(node.default_value)
-            tv = typing.cast(Any, TypeVar(node.name))
+            maybe_runtime_typevar = self._get_runtime_type_param_for_current_scope(
+                node.name, expected_kind="TypeVar"
+            )
+            if maybe_runtime_typevar is None:
+                tv = typing.cast(Any, TypeVar(node.name))
+            else:
+                tv = typing.cast(Any, maybe_runtime_typevar)
             typevar = TypeVarValue(
                 TypeVarParam(
                     tv,
@@ -13691,13 +13713,27 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             return typevar
 
         def visit_ParamSpec(self, node: ast.ParamSpec) -> Value:
-            ps = typing.ParamSpec(node.name)
+            maybe_runtime_param_spec = self._get_runtime_type_param_for_current_scope(
+                node.name, expected_kind="ParamSpec"
+            )
+            if maybe_runtime_param_spec is None:
+                ps = typing.ParamSpec(node.name)
+            else:
+                ps = typing.cast(Any, maybe_runtime_param_spec)
             typevar = InputSigValue(ParamSpecParam(ps))
             self._set_name_in_scope(node.name, node, typevar)
             return typevar
 
         def visit_TypeVarTuple(self, node: ast.TypeVarTuple) -> Value:
-            tv = typing.cast(Any, getattr(typing, "TypeVarTuple"))(node.name)
+            maybe_runtime_typevar_tuple = (
+                self._get_runtime_type_param_for_current_scope(
+                    node.name, expected_kind="TypeVarTuple"
+                )
+            )
+            if maybe_runtime_typevar_tuple is None:
+                tv = typing.cast(Any, getattr(typing, "TypeVarTuple"))(node.name)
+            else:
+                tv = typing.cast(Any, maybe_runtime_typevar_tuple)
             typevar = TypeVarTupleValue(TypeVarTupleParam(tv))
             self._set_name_in_scope(node.name, node, typevar)
             return typevar
