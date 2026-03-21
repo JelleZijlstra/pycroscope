@@ -2149,7 +2149,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     arg_spec_cache: ArgSpecCache
     async_kind: AsyncFunctionKind
     asynq_checker: AsynqChecker
-    attribute_checker: ClassAttributeChecker
+    attribute_checker: ClassAttributeChecker | None
     being_assigned: Value | None
     checker: Checker
     collector: CallSiteCollector | None
@@ -2183,7 +2183,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     return_values: list[Value | None]
     scopes: StackedScopes
     state: VisitorState
-    unused_finder: UnusedObjectFinder
+    unused_finder: UnusedObjectFinder | None
     final_class_keys: set[type | str]
     final_member_names_by_class: dict[type | str, set[str]]
     final_members_initialized_in_init: dict[type | str, set[str]]
@@ -4441,46 +4441,12 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             annotation_type_param_values = (
                 self._type_params_from_base_annotations_for_default_rules(node.bases)
             )
-
-            def _merge_with_annotation_type_params(
-                type_params: Sequence[TypeParam],
-            ) -> Sequence[TypeParam]:
-                normalized_type_params = list(type_params)
-                if not annotation_type_param_values:
-                    return normalized_type_params
-                by_identity = {
-                    type_param.typevar: type_param
-                    for type_param in normalized_type_params
-                }
-                merged = []
-                for annotation_type_param in annotation_type_param_values:
-                    existing = by_identity.get(annotation_type_param.typevar)
-                    if existing is None:
-                        merged.append(annotation_type_param)
-                    else:
-                        if isinstance(
-                            annotation_type_param, TypeVarParam
-                        ) and isinstance(existing, TypeVarParam):
-                            merged.append(
-                                replace(
-                                    annotation_type_param,
-                                    typevar=existing.typevar,
-                                    variance=existing.variance,
-                                )
-                            )
-                        elif type(annotation_type_param) is type(existing):
-                            merged.append(existing)
-                        else:
-                            merged.append(annotation_type_param)
-                seen = {type_param.typevar for type_param in merged}
-                for type_param in normalized_type_params:
-                    if type_param.typevar in seen:
-                        continue
-                    merged.append(type_param)
-                return merged
-
-            effective_type_param_values = _merge_with_annotation_type_params(
-                effective_type_param_values
+            effective_type_param_values = (
+                self._merge_type_params_using_declared_identities(
+                    effective_type_param_values,
+                    annotation_type_param_values,
+                    append_unmatched_declared=True,
+                )
             )
             if (
                 not type_param_values
@@ -4507,10 +4473,13 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     runtime_type_params.append(runtime_type_param)
                 if runtime_type_params:
                     effective_type_param_values = runtime_type_params
-            registered_type_param_values = self._align_type_params_with_runtime_class(
-                runtime_class_for_type_params,
-                _merge_with_annotation_type_params(effective_type_param_values),
-            )
+            registered_type_param_values = effective_type_param_values
+            if not type_param_values:
+                registered_type_param_values = (
+                    self._align_type_params_with_runtime_class(
+                        runtime_class_for_type_params, registered_type_param_values
+                    )
+                )
             has_explicit_constructor = any(
                 isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef))
                 and statement.name in {"__init__", "__new__"}
@@ -4561,8 +4530,10 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             method_type_params = (
                 type_param_values
                 if type_param_values
-                else _merge_with_annotation_type_params(
-                    self._type_params_from_base_values_for_methods(base_values)
+                else self._merge_type_params_using_declared_identities(
+                    self._type_params_from_base_values_for_methods(base_values),
+                    annotation_type_param_values,
+                    append_unmatched_declared=True,
                 )
             )
             if (
@@ -4570,13 +4541,15 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 and self.module is None
                 and analyzed_base_values is not base_values
             ):
-                method_type_params = _merge_with_annotation_type_params(
+                method_type_params = self._merge_type_params_using_declared_identities(
                     self._order_type_params_by_base_annotation_appearance(
                         node.bases,
                         self._type_params_from_base_values_for_methods(
                             analyzed_base_values
                         ),
-                    )
+                    ),
+                    annotation_type_param_values,
+                    append_unmatched_declared=True,
                 )
             if not method_type_params and self.module is None:
                 method_type_params = annotation_type_param_values
@@ -4590,9 +4563,11 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 )
             ):
                 method_type_params = effective_type_param_values
-            method_type_param_values = self._align_type_params_with_runtime_class(
-                runtime_class_for_type_params, method_type_params
-            )
+            method_type_param_values = method_type_params
+            if not type_param_values:
+                method_type_param_values = self._align_type_params_with_runtime_class(
+                    runtime_class_for_type_params, method_type_param_values
+                )
             class_scope_type_params = (
                 tuple(registered_type_param_values)
                 if registered_type_param_values
@@ -4692,16 +4667,10 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     ]
 
                 if inferred_registration_type_params is not None:
-                    registered_inferred_type_params = (
-                        self._align_type_params_with_runtime_class(
-                            runtime_class_for_type_params,
-                            inferred_registration_type_params,
-                        )
-                    )
                     self.checker.register_synthetic_type_bases(
                         generic_class_key,
                         base_values_for_registration,
-                        declared_type_params=registered_inferred_type_params,
+                        declared_type_params=inferred_registration_type_params,
                     )
             if self._is_checking() and synthetic_typeddict is None:
                 declared_type_params = (
@@ -4715,32 +4684,13 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     )
                 )
                 if annotation_declared_type_params:
-                    by_identity = {
-                        type_param.typevar: type_param
-                        for type_param in declared_type_params
-                    }
-                    declared_type_params = [
-                        (
-                            replace(
-                                type_param,
-                                typevar=by_identity[type_param.typevar].typevar,
-                                variance=by_identity[type_param.typevar].variance,
-                            )
-                            if type_param.typevar in by_identity
-                            and isinstance(type_param, TypeVarParam)
-                            and isinstance(
-                                by_identity[type_param.typevar], TypeVarParam
-                            )
-                            else (
-                                by_identity[type_param.typevar]
-                                if type_param.typevar in by_identity
-                                and type(by_identity[type_param.typevar])
-                                is type(type_param)
-                                else type_param
-                            )
+                    declared_type_params = (
+                        self._merge_type_params_using_declared_identities(
+                            declared_type_params,
+                            annotation_declared_type_params,
+                            append_unmatched_declared=False,
                         )
-                        for type_param in annotation_declared_type_params
-                    ]
+                    )
                 elif not declared_type_params:
                     declared_type_params = annotation_declared_type_params
                 self._check_class_type_param_default_rules(node, declared_type_params)
@@ -6598,6 +6548,44 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             else:
                 aligned.append(replace(type_param, typevar_tuple=runtime_type_param))
         return aligned
+
+    def _merge_type_params_using_declared_identities(
+        self,
+        declared_type_params: Sequence[TypeParam],
+        ordered_type_params: Sequence[TypeParam],
+        *,
+        append_unmatched_declared: bool,
+    ) -> Sequence[TypeParam]:
+        if not ordered_type_params:
+            return list(declared_type_params)
+        by_identity = {
+            type_param.typevar: type_param for type_param in declared_type_params
+        }
+        merged = []
+        for ordered_type_param in ordered_type_params:
+            declared = by_identity.get(ordered_type_param.typevar)
+            if declared is None:
+                merged.append(ordered_type_param)
+            elif isinstance(ordered_type_param, TypeVarParam) and isinstance(
+                declared, TypeVarParam
+            ):
+                merged.append(
+                    replace(
+                        ordered_type_param,
+                        typevar=declared.typevar,
+                        variance=declared.variance,
+                    )
+                )
+            elif type(declared) is type(ordered_type_param):
+                merged.append(declared)
+            else:
+                merged.append(ordered_type_param)
+        if append_unmatched_declared:
+            seen = {type_param.typevar for type_param in merged}
+            for declared in declared_type_params:
+                if declared.typevar not in seen:
+                    merged.append(declared)
+        return merged
 
     def _type_parameter_value_has_default(self, type_param: TypeParam) -> bool:
         return type_param.default is not None

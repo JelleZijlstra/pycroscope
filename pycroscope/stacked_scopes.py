@@ -31,7 +31,7 @@ from dataclasses import dataclass, field, replace
 from functools import cached_property
 from itertools import chain
 from types import ModuleType
-from typing import Any, NamedTuple, Optional, TypeVar
+from typing import Any, NamedTuple, Optional, TypeVar, cast
 
 from typing_extensions import assert_never
 
@@ -1229,7 +1229,9 @@ class FunctionScope(Scope):
         self.definition_node_to_value = {_UNINITIALIZED: _empty_constrained}
         self.name_to_all_definition_nodes = defaultdict(set)
         self.name_to_composites = defaultdict(set)
-        self.referencing_value_vars = defaultdict(lambda: UNINITIALIZED_VALUE)
+        self.referencing_value_vars = defaultdict(
+            lambda: cast(Value, UNINITIALIZED_VALUE)
+        )
         # Names that are accessed from a None node context (e.g., from a nested function). These
         # are ignored when looking at unused variables.
         self.accessed_from_special_nodes = set()

@@ -26,7 +26,7 @@ from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 from types import ModuleType
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 from typing_extensions import NotRequired, Protocol, TypedDict
 
@@ -188,7 +188,7 @@ class BaseNodeVisitor(ast.NodeVisitor):
     error_code_enum: ErrorCodeContainer | None = None
     default_module: ModuleType | None = None  # module to run on by default
     # whether to look at FILE_ENVIRON_KEY to find files to run on
-    should_check_environ_for_files: bool = True
+    should_check_environ_for_files: bool = cast(bool, True)
     caught_errors: list[dict[str, Any]] | None = None
 
     _changes_for_fixer: dict[str, list[Replacement]] = collections.defaultdict(list)
@@ -389,7 +389,8 @@ class BaseNodeVisitor(ast.NodeVisitor):
     @classmethod
     def get_files_to_check(cls, include_tests: bool, **kwargs: Any) -> list[str]:
         """Produce the list of files to check."""
-        if cls.should_check_environ_for_files:
+        should_check_environ_for_files = cast(bool, cls.should_check_environ_for_files)
+        if should_check_environ_for_files:
             environ_files = get_files_to_check_from_environ()
         else:
             environ_files = None
