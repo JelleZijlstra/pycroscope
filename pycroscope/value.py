@@ -2165,8 +2165,12 @@ class SyntheticClassObjectValue(Value):
             declared_type_params=tuple(self.declared_type_params),
             declared_symbols={
                 key: ClassSymbol(
-                    symbol.typ.substitute_typevars(typevars),
-                    symbol.qualifiers,
+                    annotation=(
+                        symbol.annotation.substitute_typevars(typevars)
+                        if symbol.annotation is not None
+                        else None
+                    ),
+                    qualifiers=symbol.qualifiers,
                     is_instance_only=symbol.is_instance_only,
                     is_method=symbol.is_method,
                     is_classmethod=symbol.is_classmethod,
@@ -2228,7 +2232,8 @@ class SyntheticClassObjectValue(Value):
         if self.dataclass_transform_info is not None:
             yield from self.dataclass_transform_info.walk_values()
         for symbol in self.declared_symbols.values():
-            yield from symbol.typ.walk_values()
+            if symbol.annotation is not None:
+                yield from symbol.annotation.walk_values()
             if symbol.property_info is not None:
                 yield from symbol.property_info.walk_values()
             if symbol.initializer is not None:
@@ -4088,7 +4093,7 @@ def get_namedtuple_field_value_from_synthetic(
             and not symbol.is_initvar
             and not symbol.is_method
         ):
-            return symbol.typ
+            return symbol.get_declared_type()
         if symbol.initializer is not None and not (
             synthetic_class.namedtuple_info is not None and not symbol.is_method
         ):
@@ -4411,7 +4416,9 @@ class Qualifier(enum.Enum):
 
 @dataclass(frozen=True)
 class ClassSymbol:
-    typ: Value
+    # Declared annotation for the member, if any. This is present for annotated
+    # attributes and absent for unannotated synthetic members and methods.
+    annotation: Value | None = None
     qualifiers: frozenset[Qualifier] = frozenset()
     is_instance_only: bool = False
     is_method: bool = False
@@ -4419,8 +4426,10 @@ class ClassSymbol:
     is_staticmethod: bool = False
     returns_self_on_class_access: bool = False
     property_info: PropertyInfo | None = None
+    # Stored value information for the member. For annotated attributes this is
+    # the assigned/default value when known; for methods it is the callable
+    # value; for unannotated synthetic members it is the best available value.
     initializer: Value | None = None
-    annotation_type: Value | None = None
     dataclass_field: DataclassFieldInfo | None = None
 
     def __post_init__(self) -> None:
@@ -4439,7 +4448,7 @@ class ClassSymbol:
         if self.is_method:
             assert self.initializer is not None
             assert self.property_info is None
-            assert self.typ == self.initializer
+            assert self.annotation is None
 
     @property
     def is_classvar(self) -> bool:
@@ -4460,6 +4469,17 @@ class ClassSymbol:
     @property
     def is_property(self) -> bool:
         return self.property_info is not None
+
+    def get_declared_type(self) -> Value | None:
+        if self.annotation is not None:
+            return self.annotation
+        return self.initializer
+
+    def get_effective_type(self) -> Value:
+        declared_type = self.get_declared_type()
+        if declared_type is not None:
+            return declared_type
+        return AnyValue(AnySource.inference)
 
 
 def _is_property_initializer(value: Value) -> bool:

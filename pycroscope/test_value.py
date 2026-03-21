@@ -766,10 +766,10 @@ def test_synthetic_namedtuple_members_without_runtime_class() -> None:
         ),
     )
     point.declared_symbols["x"] = ClassSymbol(
-        TypedValue(int), is_instance_only=True, initializer=TypedValue(int)
+        annotation=TypedValue(int), is_instance_only=True, initializer=TypedValue(int)
     )
     point.declared_symbols["label"] = ClassSymbol(
-        TypedValue(str), is_instance_only=True, initializer=TypedValue(str)
+        annotation=TypedValue(str), is_instance_only=True, initializer=TypedValue(str)
     )
     checker.register_synthetic_class(point)
 

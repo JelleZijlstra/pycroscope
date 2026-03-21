@@ -443,7 +443,7 @@ class TypeObject:
                 if isinstance(self.typ, str):
                     symbol = self.get_declared_symbol_from_mro(member, ctx)
                     if symbol is not None:
-                        expected = symbol.typ
+                        expected = symbol.get_effective_type()
                 if expected is UNINITIALIZED_VALUE:
                     expected_signature = _as_concrete_signature(
                         ctx.signature_from_value(self_val), ctx
@@ -799,12 +799,8 @@ def merge_declared_symbol(
     if existing is None:
         return new
     return ClassSymbol(
-        (
-            existing.typ
-            if _prefer_existing_symbol_type(existing.typ, new.typ)
-            else new.typ
-        ),
-        existing.qualifiers | new.qualifiers,
+        annotation=_merge_symbol_initializer(existing.annotation, new.annotation),
+        qualifiers=existing.qualifiers | new.qualifiers,
         is_instance_only=existing.is_instance_only or new.is_instance_only,
         is_method=existing.is_method or new.is_method,
         is_classmethod=existing.is_classmethod or new.is_classmethod,
@@ -814,11 +810,6 @@ def merge_declared_symbol(
         ),
         property_info=_merge_property_info(existing.property_info, new.property_info),
         initializer=_merge_symbol_initializer(existing.initializer, new.initializer),
-        annotation_type=(
-            new.annotation_type
-            if new.annotation_type is not None
-            else existing.annotation_type
-        ),
         dataclass_field=(
             new.dataclass_field
             if new.dataclass_field is not None
@@ -851,7 +842,7 @@ def _resolve_member_access(
     if access is None:
         return TypeObjectAttribute(
             value=resolved_value,
-            symbol=ClassSymbol(typ=resolved_value),
+            symbol=ClassSymbol(initializer=resolved_value),
             owner=tobj,
             is_property=False,
             property_has_setter=False,
@@ -881,9 +872,9 @@ def _resolve_member_access(
         and not symbol.is_classvar
         and not is_property
         and not symbol.is_method
-        and (symbol.initializer is None or symbol.typ != symbol.initializer)
+        and symbol.annotation is not None
     ):
-        value = symbol.typ
+        value = symbol.annotation
     else:
         value = property_getter if property_getter is not None else resolved_value
     if (
@@ -1077,10 +1068,9 @@ def _specialize_symbol_for_owner(
     )
     return replace(
         symbol,
-        typ=_substitute_symbol_value(symbol.typ, substitutions),
-        annotation_type=(
-            _substitute_symbol_value(symbol.annotation_type, substitutions)
-            if symbol.annotation_type is not None
+        annotation=(
+            _substitute_symbol_value(symbol.annotation, substitutions)
+            if symbol.annotation is not None
             else None
         ),
         property_info=(
@@ -1158,10 +1148,8 @@ def _get_attribute_value_from_symbol(
         if on_class:
             return UNINITIALIZED_VALUE
         return symbol.property_info.getter_type
-    declared_value = (
-        symbol.annotation_type if symbol.annotation_type is not None else symbol.typ
-    )
-    raw_value = symbol.initializer if symbol.initializer is not None else symbol.typ
+    declared_value = symbol.get_effective_type()
+    raw_value = symbol.initializer if symbol.initializer is not None else declared_value
     raw_value = normalize_synthetic_descriptor_attribute(
         raw_value,
         is_self_returning_classmethod=symbol.returns_self_on_class_access,
@@ -1197,7 +1185,7 @@ def _get_attribute_value_from_symbol(
         not symbol.is_classvar
         and not symbol.is_method
         and symbol.initializer is not None
-        and symbol.typ != symbol.initializer
+        and symbol.annotation is not None
     ):
         return declared_value
     return raw_value
@@ -1625,7 +1613,7 @@ def _collect_protocol_self_typevar_map(
             if symbol is None:
                 raw_attr = UNINITIALIZED_VALUE
             elif symbol.is_property:
-                raw_attr = symbol.typ
+                raw_attr = symbol.get_effective_type()
             elif symbol.initializer is not None:
                 raw_attr = symbol.initializer
             else:

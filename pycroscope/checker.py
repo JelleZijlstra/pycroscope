@@ -749,8 +749,7 @@ class Checker:
             existing = synthetic_class.declared_symbols.get(member)
             if existing is None:
                 synthetic_class.declared_symbols[member] = ClassSymbol(
-                    AnyValue(AnySource.inference),
-                    initializer=AnyValue(AnySource.inference),
+                    initializer=AnyValue(AnySource.inference)
                 )
 
     def _iter_generic_override_keys(self, typ: type | str) -> Iterator[type | str]:
@@ -2228,7 +2227,7 @@ class Checker:
             excluded = symbol.is_method or symbol.is_classvar or (not field_info.init)
             if excluded:
                 continue
-            attr = symbol.initializer if symbol.initializer is not None else symbol.typ
+            attr = symbol.get_effective_type()
             param_name = (
                 field_info.alias if field_info.alias is not None else record.field_name
             )
