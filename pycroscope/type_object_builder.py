@@ -47,6 +47,8 @@ from .value import (
     KnownValue,
     MultiValuedValue,
     ParamSpecParam,
+    PartialValue,
+    PartialValueOperation,
     PredicateValue,
     PropertyInfo,
     Qualifier,
@@ -567,6 +569,34 @@ def _iter_base_type_values(
     arg_spec_cache: ArgSpecCache | None,
     seen_known_bases: frozenset[int] = frozenset(),
 ) -> Iterator[TypedValue]:
+    if isinstance(value, PartialValue):
+        if value.operation is not PartialValueOperation.SUBSCRIPT:
+            return
+        root: Value = value.root
+        if isinstance(root, SyntheticClassObjectValue):
+            root = root.class_type
+        elif isinstance(root, KnownValue):
+            if arg_spec_cache is not None:
+                root = arg_spec_cache._type_from_base(root.val)
+            elif isinstance(root.val, type):
+                root = TypedValue(root.val)
+            else:
+                return
+        root = replace_fallback(root)
+        members = tuple(
+            (
+                arg_spec_cache._type_from_base(member.val)
+                if arg_spec_cache is not None and isinstance(member, KnownValue)
+                else member
+            )
+            for member in value.members
+        )
+        if isinstance(root, SequenceValue) and root.typ is tuple:
+            yield SequenceValue(tuple, [(False, member) for member in members])
+            return
+        if isinstance(root, (TypedValue, GenericValue)):
+            yield GenericValue(root.typ, members)
+        return
     value = replace_fallback(value)
     if isinstance(value, MultiValuedValue):
         for subval in value.vals:

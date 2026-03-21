@@ -1642,6 +1642,12 @@ def _get_attribute_from_mro(
                     try:
                         val = KnownValue(getattr(typ, ctx.attr))
                     except Exception:
+                        if (
+                            ctx.attr == "__slots__"
+                            and safe_isinstance(typ, type)
+                            and ctx.get_synthetic_class(typ) is not None
+                        ):
+                            return UNINITIALIZED_VALUE, object, False
                         val = AnyValue(AnySource.inference)
                     return val, base_cls, True
 
@@ -1659,6 +1665,12 @@ def _get_attribute_from_mro(
         except AttributeError:
             pass
         except Exception:
+            if (
+                ctx.attr == "__slots__"
+                and safe_isinstance(typ, type)
+                and ctx.get_synthetic_class(typ) is not None
+            ):
+                return UNINITIALIZED_VALUE, object, False
             # It exists, but has a broken __getattr__ or something
             return AnyValue(AnySource.inference), typ, True
 
