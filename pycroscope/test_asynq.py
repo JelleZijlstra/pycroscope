@@ -59,6 +59,14 @@ class TestBadAsyncYield(TestNameCheckVisitorBase):
             assert_type(val3, Any | Literal[4])
 
     @assert_passes()
+    def test_bad_async_yield(self):
+        from asynq import asynq
+
+        @asynq()
+        def capybara():
+            yield 1  # E: bad_async_yield
+
+    @assert_passes()
     def test_yield_without_value(self):
         from asynq import asynq
 
