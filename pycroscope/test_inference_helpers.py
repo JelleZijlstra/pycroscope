@@ -28,6 +28,95 @@ class TestInferenceHelpers(TestNameCheckVisitorBase):
             assert_is_value(y, KnownValue([]))
 
     @assert_passes()
+    def test_assert_type(self) -> None:
+        from typing import Any
+
+        from pycroscope.extensions import assert_type
+
+        def capybara(x: int) -> None:
+            assert_type(x, int)
+            assert_type(x, "int")
+            assert_type(x, Any)  # E: inference_failure
+            assert_type(x, str)  # E: inference_failure
+
+
+class TestAssertError(TestNameCheckVisitorBase):
+    @assert_passes()
+    def test(self) -> None:
+        from pycroscope.extensions import assert_error
+
+        def f(x: int) -> None:
+            pass
+
+        def capybara() -> None:
+            with assert_error():
+                f("x")
+
+            with assert_error():  # E: inference_failure
+                f(1)
+
+    @assert_passes()
+    def test_nested_control_flow(self) -> None:
+        from pycroscope.extensions import assert_error
+
+        def f(x: int) -> None:
+            pass
+
+        def capybara(flag: bool) -> None:
+            with assert_error():
+                if flag:
+                    f("x")
+                else:
+                    f("y")
+
+    @assert_passes()
+    def test_nested_with_block(self) -> None:
+        import contextlib
+
+        from typing_extensions import assert_type
+
+        from pycroscope.extensions import assert_error
+
+        def f(x: int) -> None:
+            pass
+
+        def capybara() -> None:
+            with assert_error():
+                with contextlib.nullcontext(None) as value:
+                    assert_type(value, None)
+                    f("x")
+
+    @assert_passes()
+    def test_multiple_errors_in_block(self) -> None:
+        from pycroscope.extensions import assert_error
+
+        def f(x: int) -> None:
+            pass
+
+        def g(x: str) -> None:
+            pass
+
+        def capybara() -> None:
+            with assert_error():
+                f("x")
+                g(1)
+
+
+class TestRevealLocals(TestNameCheckVisitorBase):
+    @assert_passes()
+    def test(self) -> None:
+        from pycroscope.extensions import reveal_locals
+
+        def capybara(a: object, b: str) -> None:
+            c = 3
+            if b == "x":
+                reveal_locals()  # E: reveal_type
+            print(a, b, c)
+
+
+class TestGetMro(TestNameCheckVisitorBase):
+
+    @assert_passes()
     def test_get_mro(self) -> None:
         from typing import Generic, NamedTuple, TypeVar
 
@@ -128,89 +217,3 @@ class TestInferenceHelpers(TestNameCheckVisitorBase):
             get_mro(Child),
             tuple[Child, Left[int], Right[str], Base[int], Generic, object],
         )
-
-    @assert_passes()
-    def test_assert_type(self) -> None:
-        from typing import Any
-
-        from pycroscope.extensions import assert_type
-
-        def capybara(x: int) -> None:
-            assert_type(x, int)
-            assert_type(x, "int")
-            assert_type(x, Any)  # E: inference_failure
-            assert_type(x, str)  # E: inference_failure
-
-
-class TestAssertError(TestNameCheckVisitorBase):
-    @assert_passes()
-    def test(self) -> None:
-        from pycroscope.extensions import assert_error
-
-        def f(x: int) -> None:
-            pass
-
-        def capybara() -> None:
-            with assert_error():
-                f("x")
-
-            with assert_error():  # E: inference_failure
-                f(1)
-
-    @assert_passes()
-    def test_nested_control_flow(self) -> None:
-        from pycroscope.extensions import assert_error
-
-        def f(x: int) -> None:
-            pass
-
-        def capybara(flag: bool) -> None:
-            with assert_error():
-                if flag:
-                    f("x")
-                else:
-                    f("y")
-
-    @assert_passes()
-    def test_nested_with_block(self) -> None:
-        import contextlib
-
-        from typing_extensions import assert_type
-
-        from pycroscope.extensions import assert_error
-
-        def f(x: int) -> None:
-            pass
-
-        def capybara() -> None:
-            with assert_error():
-                with contextlib.nullcontext(None) as value:
-                    assert_type(value, None)
-                    f("x")
-
-    @assert_passes()
-    def test_multiple_errors_in_block(self) -> None:
-        from pycroscope.extensions import assert_error
-
-        def f(x: int) -> None:
-            pass
-
-        def g(x: str) -> None:
-            pass
-
-        def capybara() -> None:
-            with assert_error():
-                f("x")
-                g(1)
-
-
-class TestRevealLocals(TestNameCheckVisitorBase):
-    @assert_passes()
-    def test(self) -> None:
-        from pycroscope.extensions import reveal_locals
-
-        def capybara(a: object, b: str) -> None:
-            c = 3
-            if b == "x":
-                reveal_locals()  # E: reveal_type
-            print(a, b, c)
