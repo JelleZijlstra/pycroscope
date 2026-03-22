@@ -230,8 +230,6 @@ class _LookupContext:
 class ConstraintType(enum.Enum):
     is_instance = 1
     """Corresponds to ``(not) isinstance(constraint.varname, constraint.value)``."""
-    is_value = 2
-    """Corresponds to ``constraint.varname is (not) constraint.value``."""
     is_truthy = 3
     """Corresponds to ``if (not) constraint.varname``."""
     one_of = 4
@@ -245,8 +243,7 @@ class ConstraintType(enum.Enum):
     all_of = 5
     """All of several other constraints on `varname` are true."""
     is_value_object = 6
-    """`constraint.varname` should be typed as a :class:`pycroscope.value.Value` object. Naming of
-    this and `is_value` is confusing, and ideally we'd come up with better names."""
+    """`constraint.varname` should be typed as a :class:`pycroscope.value.Value` object."""
     predicate = 7
     """`constraint.value` is a `PredicateFunc`."""
     add_annotation = 8
@@ -310,9 +307,8 @@ class Constraint(AbstractConstraint):
     for an `is_truthy` constraint, ``if x`` would lead to a positive and ``if not x``
     to a negative constraint."""
     value: Any
-    """Type for an ``is_instance`` constraint; value identical to the variable
-    for ``is_value``; unused for is_truthy; :class:`pycroscope.value.Value` object for
-    `is_value_object`."""
+    """Type for an ``is_instance`` constraint; unused for is_truthy;
+    :class:`pycroscope.value.Value` object for `is_value_object`."""
     inverted: Optional["Constraint"] = field(
         compare=False, repr=False, hash=False, default=None
     )
@@ -383,23 +379,6 @@ class Constraint(AbstractConstraint):
                 # _constrain_value() will eventually return NoReturn.
             else:
                 if not _is_subtype(target_type, inner_value, ctx):
-                    yield value
-
-        elif self.constraint_type == ConstraintType.is_value:
-            if self.positive:
-                known_val = KnownValue(self.value)
-                if (
-                    isinstance(inner_value, KnownValue)
-                    and inner_value.val is self.value
-                ):
-                    yield value
-                elif _is_subtype(inner_value, known_val, ctx):
-                    yield known_val
-            else:
-                if not (
-                    isinstance(inner_value, KnownValue)
-                    and inner_value.val is self.value
-                ):
                     yield value
 
         elif self.constraint_type == ConstraintType.is_value_object:
