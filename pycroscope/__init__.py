@@ -28,6 +28,7 @@ from . import (
     patma,
     predicates,
     reexport,
+    relations,
     safe,
     runtime,
     shared_options,
@@ -80,3 +81,4 @@ used(typevar)
 used(annotated_types)
 used(runtime)
 used(input_sig)
+used(relations)

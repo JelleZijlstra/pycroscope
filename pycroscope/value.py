@@ -4362,7 +4362,11 @@ def _unpack_sequence_value(
                     *reversed(tail),
                 ]
         else:
-            return [*head, SequenceValue(list, remaining_members), *reversed(tail)]
+            if len(remaining_members) == 1 and remaining_members[0][0]:
+                middle = GenericValue(list, [remaining_members[0][1]])
+            else:
+                middle = SequenceValue(list, remaining_members)
+            return [*head, middle, *reversed(tail)]
 
 
 def replace_known_sequence_value(
@@ -4436,6 +4440,11 @@ def is_overlapping(left: Value, right: Value, ctx: CanAssignContext) -> bool:
     # Fairly permissive checks for now; possibly this can be tightened up later.
     left = _deliteral(left)
     right = _deliteral(right)
+    # TODO: we should always do this but that leads to some silly behavior
+    # (it starts thinking about dictionary subclasses that are also sequences)
+    if isinstance(left, PredicateValue) or isinstance(right, PredicateValue):
+        inters = pycroscope.relations.intersect_values(left, right, ctx)
+        return inters is not NO_RETURN_VALUE
     if isinstance(left, (MultiValuedValue, IntersectionValue)) and left.vals:
         # Swap the operands so we decompose and de-Literal the other union too
         return any(is_overlapping(right, val, ctx) for val in left.vals)

@@ -269,13 +269,10 @@ class PatmaVisitor(ast.NodeVisitor):
         else:
             target_length = starred_index
             post_starred_length = len(node.patterns) - 1 - target_length
-        constraints = [
-            self.intersect_with(
-                PredicateValue(
-                    MinLen(len(node.patterns) - int(starred_index is not None))
-                )
-            )
-        ]
+        constraints = []
+        min_len = len(node.patterns) - int(starred_index is not None)
+        if min_len > 0:
+            constraints.append(self.intersect_with(PredicateValue(MinLen(min_len))))
         if starred_index is None:
             constraints.append(
                 self.intersect_with(PredicateValue(MaxLen(len(node.patterns))))
