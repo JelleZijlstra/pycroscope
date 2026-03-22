@@ -23,8 +23,6 @@ from typing import Any, Generic, TypeVar
 import typeshed_client
 from typing_extensions import Protocol
 
-from pycroscope.functions import translate_vararg_type
-
 from .analysis_lib import is_positional_only_arg_name
 from .annotations import (
     Context,
@@ -36,6 +34,7 @@ from .annotations import (
 from .error_code import Error, ErrorCode
 from .extensions import deprecated as deprecated_decorator
 from .extensions import evaluated, overload, real_overload
+from .functions import translate_vararg_type
 from .input_sig import InputSigValue
 from .options import (
     InvalidConfigOption,

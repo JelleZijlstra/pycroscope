@@ -4123,17 +4123,17 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 )
             with legacy_type_param_ctx as allowed_legacy_identities:
                 if sys.version_info >= (3, 12) and node.type_params:
-                    declared_type_params = node.type_params
+                    declared_type_param_nodes = node.type_params
                     type_param_values = list(
                         self.visit_type_param_values(
-                            declared_type_params,
+                            declared_type_param_nodes,
                             legacy_allowed_identities=allowed_legacy_identities,
                         )
                     )
                 else:
                     assert allowed_legacy_identities is None
                     type_param_values = []
-                    declared_type_params = []
+                    declared_type_param_nodes = []
 
                 disallowed_type_params = (
                     self.active_type_params.current_annotation_identities()
@@ -4165,7 +4165,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 )
                 self._check_type_parameter_base_argument_validity(node, base_values)
                 self._check_type_parameter_base_coverage(node, base_values)
-                if sys.version_info >= (3, 12) and declared_type_params:
+                if sys.version_info >= (3, 12) and declared_type_param_nodes:
                     self._check_pep695_type_parameter_base_compatibility(
                         node, base_values
                     )
@@ -4324,8 +4324,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 tobj.set_dataclass_info(dataclass_semantics)
                 tobj.set_dataclass_transform_info(dataclass_transform_info)
 
-                if class_obj is not None:
-                    _set_synthetic_runtime_class(synthetic_class, KnownValue(class_obj))
                 if is_namedtuple_synthetic:
                     _set_synthetic_namedtuple_info(
                         synthetic_class,

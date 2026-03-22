@@ -7,45 +7,42 @@ An object that represents a type.
 import collections.abc
 import inspect
 import sys
-from collections.abc import Iterator, Mapping, MutableMapping, Sequence
+from collections.abc import Iterable, Iterator, Mapping, MutableMapping, Sequence
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Literal
 from unittest import mock
 
 from typing_extensions import assert_never
 
-if sys.version_info >= (3, 14):
-    pass
-else:
-    pass
+import pycroscope
 
 if TYPE_CHECKING:
     from .checker import Checker
     from .relations import Relation
 
-from pycroscope.input_sig import (
+from .annotations import make_type_param
+from .input_sig import (
     FullSignature,
     InputSigValue,
     coerce_paramspec_specialization_to_input_sig,
 )
-from pycroscope.relations import (
+from .relations import (
     infer_positional_generic_typevar_map,
     translate_generic_typevar_map,
 )
-from pycroscope.signature import (
-    BoundMethodSignature,
-    OverloadedSignature,
-    ParameterKind,
-    Signature,
-    mark_ellipsis_style_any_tail_parameters,
-)
-
 from .safe import (
     is_instance_of_typing_name,
     is_typing_name,
     safe_getattr,
     safe_isinstance,
     safe_issubclass,
+)
+from .signature import (
+    BoundMethodSignature,
+    OverloadedSignature,
+    ParameterKind,
+    Signature,
+    mark_ellipsis_style_any_tail_parameters,
 )
 from .value import (
     UNINITIALIZED_VALUE,
@@ -65,6 +62,7 @@ from .value import (
     IntersectionValue,
     KnownValue,
     MultiValuedValue,
+    ParamSpecParam,
     PredicateValue,
     PropertyInfo,
     SelfT,
@@ -78,6 +76,7 @@ from .value import (
     TypeFormValue,
     TypeParam,
     TypeVarLike,
+    TypeVarTupleValue,
     TypeVarValue,
     UnboundMethodValue,
     Value,
@@ -254,9 +253,21 @@ class TypeObject:
         return direct_symbols
 
     def _compute_declared_type_params(self) -> tuple[TypeParam, ...]:
-        if self._checker._arg_spec_cache is None:
-            return ()
-        return tuple(self._checker.get_type_parameters(self.typ))
+        # First try stubs
+        if isinstance(self.typ, str):
+            ts_bases = self._checker.ts_finder.get_bases_for_fq_name(self.typ)
+        else:
+            ts_bases = self._checker.ts_finder.get_bases(self.typ)
+        if ts_bases is not None:
+            return tuple(_compute_type_params_from_bases(ts_bases))
+
+        # If it's a runtime class, try that
+        if isinstance(self.typ, type):
+            return _compute_type_params_from_runtime(self.typ, self._checker)
+
+        raise ValueError(
+            f"type_params not yet computed for synthetic class {self.typ!r}"
+        )
 
     def _compute_direct_bases(self) -> tuple[MroValue, ...]:
         import pycroscope.type_object_builder as type_object_builder
@@ -346,8 +357,6 @@ class TypeObject:
     def _update_loaded_synthetic_fields(self) -> None:
         if self._direct_bases is not None:
             self._direct_bases = self._compute_direct_bases()
-        if self._declared_type_params is not None:
-            self._declared_type_params = self._compute_declared_type_params()
         if self._mro is not None:
             self._mro = self._compute_mro()
         if self._is_final is not None:
@@ -382,8 +391,7 @@ class TypeObject:
         self._protocol_positive_cache.clear()
 
     def set_declared_type_params(self, type_params: Sequence[TypeParam]) -> None:
-        synthetic_class = self._ensure_synthetic_class()
-        object.__setattr__(synthetic_class, "declared_type_params", tuple(type_params))
+        self._declared_type_params = tuple(type_params)
         self._update_loaded_synthetic_fields()
         self._protocol_positive_cache.clear()
 
@@ -2205,3 +2213,70 @@ def _is_definitely_class_object_value(value: Value) -> bool:
             return value.typ in {"type", "builtins.type"}
         return False
     return False
+
+
+def _compute_type_params_from_bases(bases: Sequence[Value]) -> Iterable[TypeParam]:
+    # If any base is Protocol or Generic, it determines the type parameter order
+    for base in bases:
+        if isinstance(base, GenericValue) and (
+            is_typing_name(base.typ, "Protocol") or is_typing_name(base.typ, "Generic")
+        ):
+            for arg in base.args:
+                type_param = _extract_type_param(arg)
+                if type_param is not None:
+                    yield type_param
+            return
+
+    # Else we have to walk the bases
+    for base in bases:
+        yield from _compute_type_params_from_base(base)
+
+
+def _compute_type_params_from_base(base: Value) -> Iterable[TypeParam]:
+    if isinstance(base, SequenceValue):
+        for _, member in base.members:
+            type_param = _extract_type_param(member)
+            if type_param is not None:
+                yield type_param
+            else:
+                yield from _compute_type_params_from_base(member)
+    elif isinstance(base, GenericValue):
+        for arg in base.args:
+            type_param = _extract_type_param(arg)
+            if type_param is not None:
+                yield type_param
+            else:
+                yield from _compute_type_params_from_base(arg)
+
+
+def _extract_type_param(value: Value) -> TypeParam | None:
+    match value:
+        case TypeVarValue(typevar_param=typevar_param):
+            return typevar_param
+        case TypeVarTupleValue(typevar_param=typevar_param):
+            return typevar_param
+        case InputSigValue(input_sig=ParamSpecParam() as param):
+            return param
+        case _:
+            return None
+
+
+def _compute_type_params_from_runtime(
+    typ: type, checker: "pycroscope.checker.Checker"
+) -> list[TypeParam]:
+    runtime_type_params = safe_getattr(typ, "__type_params__", ())
+    if not runtime_type_params:
+        runtime_type_params = safe_getattr(typ, "__parameters__", ())
+    try:
+        runtime_type_params_iter = iter(runtime_type_params)
+    except TypeError:
+        return []
+    type_params: list[TypeParam] = []
+    for type_param in runtime_type_params_iter:
+        try:
+            type_params.append(
+                make_type_param(type_param, ctx=checker._arg_spec_cache.default_context)
+            )
+        except TypeError:
+            continue
+    return type_params

@@ -2117,9 +2117,6 @@ class SyntheticClassObjectValue(Value):
     dataclass_transform_info: "DataclassTransformInfo | None" = field(
         default=None, compare=False, hash=False, repr=False
     )
-    declared_type_params: Sequence[TypeParam] = field(
-        default_factory=tuple, compare=False, hash=False, repr=False
-    )
     dataclass_field_order: tuple[str, ...] = field(
         default_factory=tuple, compare=False, hash=False, repr=False
     )
@@ -2160,7 +2157,6 @@ class SyntheticClassObjectValue(Value):
                 if self.dataclass_transform_info is not None
                 else None
             ),
-            declared_type_params=tuple(self.declared_type_params),
             dataclass_field_order=tuple(self.dataclass_field_order),
         )
 

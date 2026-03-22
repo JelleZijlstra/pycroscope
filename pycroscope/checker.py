@@ -783,7 +783,7 @@ class Checker:
                 base_typ: dict(tv_map)
                 for base_typ, tv_map in synthetic_class.generic_bases.items()
             }
-        if synthetic_class.declared_type_params:
+        if self.make_type_object(typ).get_declared_type_params():
             return {}
         return None
 
@@ -914,10 +914,8 @@ class Checker:
     def _get_synthetic_declared_type_params(
         self, typ: type | str
     ) -> tuple[TypeParam, ...]:
-        synthetic_class = self.get_synthetic_class(typ)
-        if synthetic_class is not None and synthetic_class.declared_type_params:
-            return tuple(synthetic_class.declared_type_params)
-        return ()
+        tobj = self.make_type_object(typ)
+        return tobj.get_declared_type_params()
 
     def get_signature(
         self, obj: object, is_asynq: bool = False
