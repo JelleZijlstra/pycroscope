@@ -265,9 +265,11 @@ class TypeObject:
         if isinstance(self.typ, type):
             return _compute_type_params_from_runtime(self.typ, self._checker)
 
-        raise ValueError(
-            f"type_params not yet computed for synthetic class {self.typ!r}"
-        )
+        return ()
+        # TODO:
+        # raise ValueError(
+        #     f"type_params not yet computed for synthetic class {self.typ!r}"
+        # )
 
     def _compute_direct_bases(self) -> tuple[MroValue, ...]:
         import pycroscope.type_object_builder as type_object_builder

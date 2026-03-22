@@ -265,7 +265,7 @@ def test_runtime_type_object_tracks_declared_type_params_and_specialized_mro() -
     base_object = checker.make_type_object(Base)
     child_object = checker.make_type_object(Child)
 
-    assert base_object.get_declared_type_params() == tuple(
+    assert tuple(base_object.get_declared_type_params()) == tuple(
         checker.get_type_parameters(Base)
     )
     assert base_object.get_mro() == (
@@ -273,7 +273,7 @@ def test_runtime_type_object_tracks_declared_type_params_and_specialized_mro() -
         TypedValue(Generic),
         TypedValue(object),
     )
-    assert child_object.get_declared_type_params() == ()
+    assert tuple(child_object.get_declared_type_params()) == ()
     assert child_object.get_mro() == (
         GenericValue(Base, [TypedValue(int)]),
         TypedValue(Generic),

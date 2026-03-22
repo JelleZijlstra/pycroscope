@@ -4555,6 +4555,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                         node.bases, registered_type_param_values
                     )
                 )
+            tobj.set_declared_type_params(tuple(registered_type_param_values))
             method_type_params = (
                 type_param_values
                 if type_param_values
@@ -13932,7 +13933,8 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             return type_params if len(type_params) == arity else None
         candidate = replace_fallback(root_value)
         if isinstance(candidate, SyntheticClassObjectValue):
-            type_params = candidate.declared_type_params
+            tobj = self.checker.make_type_object(candidate.class_type.typ)
+            type_params = tobj.get_declared_type_params()
             if len(type_params) == arity:
                 return type_params
             if isinstance(candidate.class_type, TypedValue):
