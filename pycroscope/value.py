@@ -871,7 +871,7 @@ class TypeAlias:
         return self.type_params
 
 
-def _default_value_for_type_param(type_param: "TypeParam") -> Value:
+def default_value_for_type_param(type_param: "TypeParam") -> Value:
     if type_param.default is not None:
         return type_param.default
     return AnyValue(AnySource.generic_argument)
@@ -932,7 +932,7 @@ def match_typevar_arguments(
         substitutions[type_param.typevar] = argument
 
     def _default_argument(type_param: TypeParam) -> Value:
-        return _default_value_for_type_param(type_param).substitute_typevars(
+        return default_value_for_type_param(type_param).substitute_typevars(
             substitutions
         )
 
@@ -1041,7 +1041,7 @@ class TypeAliasValue(Value):
             # Unsubscripted aliases default each unspecialized parameter.
             substitutions: dict[TypeVarLike, Value] = {}
             for type_param in type_params:
-                substitutions[type_param.typevar] = _default_value_for_type_param(
+                substitutions[type_param.typevar] = default_value_for_type_param(
                     type_param
                 ).substitute_typevars(substitutions)
             val = val.substitute_typevars(substitutions)

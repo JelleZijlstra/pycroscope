@@ -312,7 +312,6 @@ class TestAdd(TestNameCheckVisitorBase):
 
 
 class TestAnnotated(TestNameCheckVisitorBase):
-
     @assert_passes()
     def test_union(self):
         from typing import Union

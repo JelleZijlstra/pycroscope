@@ -1168,6 +1168,7 @@ def _runtime_type_alias_from_partial_value(
     return _make_runtime_type_alias_value(alias_value, inferred_type_params)
 
 
+# TODO: I think this ends up the same as just returning match_typevar_arguments()
 def _match_type_alias_arg_values(
     type_params: Sequence[TypeParam], args_vals: Sequence[Value]
 ) -> Sequence[tuple[TypeParam, Value]] | None:

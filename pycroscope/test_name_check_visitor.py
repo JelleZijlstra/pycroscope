@@ -79,8 +79,7 @@ class TestNameCheckVisitorBase(test_node_visitor.BaseNodeVisitorTester):
             return super().assert_passes(code_str, **kwargs)
         if kwargs.get("allow_import_failures"):
             raise AssertionError(
-                "run_in_both_module_modes cannot be combined with "
-                "allow_import_failures"
+                "run_in_both_module_modes cannot be combined with allow_import_failures"
             )
         if kwargs.get("allow_runtime_module_load_failure"):
             raise AssertionError(

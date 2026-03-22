@@ -228,6 +228,7 @@ from .suggested_type import (
     should_suggest_type,
 )
 from .type_object import (
+    MroValue,
     TypeObject,
     TypeObjectAttribute,
     class_keys_match,
@@ -4085,6 +4086,45 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             result.append((callee, value, decorator))
         return result
 
+    def _visit_bases(
+        self, node: ast.ClassDef, tobj: TypeObject
+    ) -> tuple[list[Value], list[_BaseTypeParamVarianceInfo]]:
+        base_values = []
+        base_type_param_variance_infos: list[_BaseTypeParamVarianceInfo] = []
+        for base_node in node.bases:
+            local_type_param_polarities: dict[object, set[int]] = {}
+            with (
+                self.active_type_params.collect_variance(
+                    local_type_param_polarities, polarity=1
+                ),
+                self.active_type_params.allow_variance_outside_annotations(),
+            ):
+                base_value = self.visit(base_node)
+            is_variance_declaration_base = self._is_type_parameter_base(base_value)
+            base_values.append(base_value)
+            base_type_param_variance_infos.append(
+                _BaseTypeParamVarianceInfo(
+                    local_type_param_polarities,
+                    is_variance_declaration_base=is_variance_declaration_base,
+                )
+            )
+        if isinstance(tobj.typ, str):
+            tobj.set_direct_bases(
+                [self._translate_base_value(base, node) for base in base_values]
+            )
+        return base_values, base_type_param_variance_infos
+
+    def _translate_base_value(self, value: Value, node: ast.expr) -> MroValue:
+        type_value = type_from_value(value, self, node=node)
+        if isinstance(type_value, (AnyValue, TypedValue)):
+            return type_value
+        self._show_error_if_checking(
+            node,
+            f"Base class expression is not a valid type: {self.display_value(value)}",
+            error_code=ErrorCode.invalid_base,
+        )
+        return AnyValue(AnySource.error)
+
     def visit_ClassDef(self, node: ast.ClassDef) -> Value:
         decorator_values = self.visit_decorator_list(node.decorator_list)
         class_obj = self._get_current_class_object(node)
@@ -4110,7 +4150,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         else:
             ctx = contextlib.nullcontext()
         with ctx:
-            base_type_param_variance_infos: list[_BaseTypeParamVarianceInfo] = []
             legacy_type_param_ctx: AbstractContextManager[set[object] | None] = (
                 contextlib.nullcontext(None)
             )
@@ -4139,26 +4178,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     self.active_type_params.current_annotation_identities()
                 )
                 with self.active_type_params.disallow(disallowed_type_params):
-                    base_values = []
-                    for base_node in node.bases:
-                        local_type_param_polarities: dict[object, set[int]] = {}
-                        with (
-                            self.active_type_params.collect_variance(
-                                local_type_param_polarities, polarity=1
-                            ),
-                            self.active_type_params.allow_variance_outside_annotations(),
-                        ):
-                            base_value = self.visit(base_node)
-                        is_variance_declaration_base = self._is_type_parameter_base(
-                            base_value
-                        )
-                        base_values.append(base_value)
-                        base_type_param_variance_infos.append(
-                            _BaseTypeParamVarianceInfo(
-                                local_type_param_polarities,
-                                is_variance_declaration_base=is_variance_declaration_base,
-                            )
-                        )
+                    base_values, base_type_param_variance_infos = self._visit_bases(
+                        node, tobj
+                    )
             if self._is_checking():
                 self._check_typevartuple_usage_in_type_parameter_bases(
                     node, base_values

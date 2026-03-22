@@ -20,7 +20,7 @@ if TYPE_CHECKING:
     from .checker import Checker
     from .relations import Relation
 
-from .annotations import make_type_param
+from .annotations import make_type_param, type_from_runtime
 from .input_sig import (
     FullSignature,
     InputSigValue,
@@ -76,10 +76,12 @@ from .value import (
     TypeFormValue,
     TypeParam,
     TypeVarLike,
+    TypeVarMap,
     TypeVarTupleValue,
     TypeVarValue,
     UnboundMethodValue,
     Value,
+    default_value_for_type_param,
     freshen_typevars_for_inference,
     get_tv_map,
     has_any_base_value,
@@ -87,6 +89,7 @@ from .value import (
     replace_fallback,
     stringify_object,
     tuple_members_from_value,
+    type_param_to_value,
     unify_bounds_maps,
     unite_values,
 )
@@ -186,6 +189,25 @@ MroValue = TypedValue | AnyValue
 
 
 @dataclass(frozen=True)
+class MroEntry:
+    tobj: "TypeObject | None"  # None only for is_any=True entries
+    tv_map: TypeVarMap
+    is_any: bool
+    is_virtual: bool
+
+    def substitute_typevars(self, typevars: TypeVarMap) -> "MroEntry":
+        if self.is_any:
+            return self
+        substituted_tv_map = {
+            tv: value.substitute_typevars(typevars) for tv, value in self.tv_map.items()
+        }
+        return replace(self, tv_map=substituted_tv_map)
+
+
+ANY_MRO_ENTRY = MroEntry(None, {}, is_any=True, is_virtual=False)
+
+
+@dataclass(frozen=True)
 class DataclassFieldRecord:
     field_name: str
     field_info: DataclassFieldInfo
@@ -197,7 +219,7 @@ class TypeObject:
     typ: type | str
     _checker: "Checker"
     _direct_bases: tuple[MroValue, ...] | None
-    _mro: tuple[MroValue, ...] | None
+    _mro: Sequence[MroEntry] | None
     _declared_type_params: tuple[TypeParam, ...] | None
     _is_final: bool | None
     _is_protocol: bool | None
@@ -271,10 +293,7 @@ class TypeObject:
 
     def _compute_declared_type_params(self) -> tuple[TypeParam, ...]:
         # First try stubs
-        if isinstance(self.typ, str):
-            ts_bases = self._checker.ts_finder.get_bases_for_fq_name(self.typ)
-        else:
-            ts_bases = self._checker.ts_finder.get_bases(self.typ)
+        ts_bases = self._checker.ts_finder.get_bases(self.typ)
         if ts_bases is not None:
             return tuple(_compute_type_params_from_bases(ts_bases))
 
@@ -289,18 +308,31 @@ class TypeObject:
         # )
 
     def _compute_direct_bases(self) -> tuple[MroValue, ...]:
-        import pycroscope.type_object_builder as type_object_builder
+        ts_bases = self._checker.ts_finder.get_bases(self.typ)
+        if ts_bases is not None:
+            return tuple(_replace_invalid_bases(ts_bases))
 
-        return type_object_builder.compute_type_object_direct_bases(
-            self._checker, self.typ
-        )
+        if isinstance(self.typ, type):
+            return tuple(_extract_runtime_direct_bases(self.typ, self._checker))
 
-    def _compute_mro(self) -> tuple[MroValue, ...]:
-        import pycroscope.type_object_builder as type_object_builder
+        # TODO: raise error if direct bases are not initialized for synthetic types
+        return (TypedValue(object),)
 
-        if self._checker._arg_spec_cache is None:
-            return ()
-        return type_object_builder.compute_type_object_mro(self._checker, self.typ)
+    def _compute_mro(self) -> list[MroEntry]:
+        direct_bases = self.get_direct_bases()
+
+        parent_tv_map = {
+            param.typevar: type_param_to_value(param)
+            for param in self.get_declared_type_params()
+        }
+        self_mro_entry = _get_mro_entry(TypedValue(self), parent_tv_map, self._checker)
+        child_mros = [
+            _get_mro_from_mro_value(base, parent_tv_map, self._checker)
+            for base in direct_bases
+        ]
+        result = _linearize_mros(self_mro_entry, child_mros)
+        if isinstance(result, str):
+            return [self_mro_entry, ANY_MRO_ENTRY]
 
     def _compute_is_final(self) -> bool:
         if isinstance(self.typ, str):
@@ -374,8 +406,6 @@ class TypeObject:
         return isinstance(self.typ, type) and issubclass(self.typ, mock.NonCallableMock)
 
     def _update_loaded_synthetic_fields(self) -> None:
-        if self._direct_bases is not None:
-            self._direct_bases = self._compute_direct_bases()
         if self._mro is not None:
             self._mro = self._compute_mro()
         if self._is_final is not None:
@@ -402,6 +432,11 @@ class TypeObject:
         if self._synthetic_declared_symbols is None:
             self._synthetic_declared_symbols = {}
         return self._synthetic_declared_symbols
+
+    def set_direct_bases(self, base_values: Sequence[MroValue]) -> None:
+        self._direct_bases = tuple(base_values)
+        self._update_loaded_synthetic_fields()
+        self._protocol_positive_cache.clear()
 
     def set_base_values(self, base_values: Sequence[Value]) -> None:
         synthetic_class = self._ensure_synthetic_class()
@@ -1490,6 +1525,7 @@ def _class_key_and_generic_args_from_type_value(
     return receiver_value.typ, generic_args
 
 
+# TODO: this is basically the same as _match_up_generic_args below
 def _typevar_map_from_generic_args(
     type_params: Sequence[TypeParam], generic_args: Sequence[Value]
 ) -> dict[TypeVarLike, Value]:
@@ -2300,3 +2336,139 @@ def _compute_type_params_from_runtime(
         except TypeError:
             continue
     return type_params
+
+
+def _replace_invalid_bases(bases: Sequence[Value]) -> Iterable[MroValue]:
+    for base in bases:
+        if isinstance(base, (TypedValue, AnyValue)):
+            yield base
+        elif isinstance(base, KnownValue) and is_typing_name(base.val, "Any"):
+            yield AnyValue(AnySource.explicit)
+        else:
+            yield AnyValue(AnySource.inference)
+
+
+def _extract_runtime_direct_bases(
+    typ: type, checker: "pycroscope.checker.Checker"
+) -> list[MroValue]:
+    try:
+        class_dict = typ.__dict__
+        raw_bases = iter(class_dict["__orig_bases__"])
+    except Exception:
+        try:
+            raw_bases = iter(typ.__bases__)
+        except Exception:
+            return []
+    bases = [
+        type_from_runtime(base, visitor=checker, suppress_errors=True)
+        for base in raw_bases
+    ]
+    return _replace_invalid_bases(bases)
+
+
+def _get_mro_entry(
+    mro_value: MroValue,
+    parent_tv_map: TypeVarMap,
+    checker: "pycroscope.checker.Checker",
+) -> MroEntry:
+    match mro_value:
+        case TypedValue():
+            tv_map = _get_tv_map_for_mro(mro_value, parent_tv_map, checker)
+            tobj = mro_value.get_type_object(checker)
+
+            return MroEntry(tobj=tobj, tv_map=tv_map, is_any=False, is_virtual=False)
+        case AnyValue():
+            return ANY_MRO_ENTRY
+        case _:
+            assert_never(mro_value)
+
+
+def _get_tv_map_for_mro(
+    mro_value: TypedValue,
+    parent_tv_map: TypeVarMap,
+    checker: "pycroscope.checker.Checker",
+) -> TypeVarMap:
+    tobj = mro_value.get_type_object(checker)
+    params = tobj.get_declared_type_params()
+    if params:
+        if isinstance(mro_value, GenericValue):
+            tv_map = _match_up_generic_params(params, mro_value.args)
+            return {
+                tv: value.substitute_typevars(parent_tv_map)
+                for tv, value in tv_map.items()
+            }
+        else:
+            return {
+                param.typevar: AnyValue(AnySource.generic_argument) for param in params
+            }
+    else:
+        return {}
+
+
+def _get_mro_from_mro_value(
+    mro_value: MroValue,
+    parent_tv_map: TypeVarMap,
+    checker: "pycroscope.checker.Checker",
+) -> list[MroEntry]:
+    match mro_value:
+        case TypedValue():
+            tobj = mro_value.get_type_object(checker)
+            tv_map = _get_tv_map_for_mro(mro_value, parent_tv_map, checker)
+            mro = tobj.get_mro()
+            return [mro_entry.substitute_typevars(tv_map) for mro_entry in mro]
+        case AnyValue():
+            return [ANY_MRO_ENTRY]
+        case _:
+            assert_never(mro_value)
+
+
+def _match_up_generic_params(
+    type_params: Sequence[TypeParam], generic_args: Sequence[Value]
+) -> TypeVarMap:
+    """Match generic arguments to type parameters,
+    returning a mapping of type variables to values."""
+    seq = match_typevar_arguments(type_params, generic_args)
+    if seq is None:
+        return {
+            param.typevar: default_value_for_type_param(param) for param in type_params
+        }
+    return {param.typevar: value for param, value in seq}
+
+
+def _entries_match(a: MroEntry, b: MroEntry) -> bool:
+    if a.is_any:
+        return b.is_any
+    return a.tobj is b.tobj
+
+
+def _linearize_mros(
+    head: MroEntry, tail_mros: Sequence[list[MroEntry]]
+) -> list[MroEntry] | str:
+    """Linearize MROs using the C3 algorithm.
+
+    Returns either an MRO or an error message if the MRO is invalid.
+    """
+    mro = [head]
+    tails = [list(tail) for tail in tail_mros if tail]
+    while tails:
+        for i, tail in enumerate(tails):
+            candidate = tail[0]
+            if not any(
+                _entries_match(candidate, other_tail[j])
+                for j, other_tail in enumerate(tails)
+                if i != j
+                for j in range(1, len(other_tail))
+            ):
+                break
+        else:
+            # No valid candidate found, MRO is invalid
+            return (
+                f"Cannot create consistent MRO because {candidate.tobj} "
+                f"appears multiple times in conflicting positions"
+            )
+        mro.append(candidate)
+        for tail in tails:
+            if tail and _entries_match(tail[0], candidate):
+                tail.pop(0)
+        tails = [tail for tail in tails if tail]
+    return mro

@@ -410,7 +410,7 @@ class TypeshedFinder:
                 return True
         return False
 
-    def get_bases(self, typ: type) -> list[Value] | None:
+    def get_bases(self, typ: type | str) -> list[Value] | None:
         """Return the base classes for this type, including generic bases."""
         return self.get_bases_for_value(TypedValue(typ))
 

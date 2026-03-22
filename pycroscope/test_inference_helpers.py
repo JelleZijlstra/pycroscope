@@ -115,7 +115,6 @@ class TestRevealLocals(TestNameCheckVisitorBase):
 
 
 class TestGetMro(TestNameCheckVisitorBase):
-
     @assert_passes()
     def test_get_mro(self) -> None:
         from typing import Generic, NamedTuple, TypeVar
@@ -151,8 +150,9 @@ class TestGetMro(TestNameCheckVisitorBase):
 
     @assert_passes(run_in_both_module_modes=True)
     def test_get_mro_multiple_inheritance(self) -> None:
+        from typing_extensions import assert_type
+
         from pycroscope import get_mro
-        from pycroscope.extensions import assert_type
 
         class O:
             pass
@@ -193,8 +193,9 @@ class TestGetMro(TestNameCheckVisitorBase):
     def test_get_mro_multiple_inheritance_with_generics(self) -> None:
         from typing import Generic, TypeVar
 
+        from typing_extensions import assert_type
+
         from pycroscope import get_mro
-        from pycroscope.extensions import assert_type
 
         T = TypeVar("T")
         U = TypeVar("U")
@@ -217,3 +218,18 @@ class TestGetMro(TestNameCheckVisitorBase):
             get_mro(Child),
             tuple[Child, Left[int], Right[str], Base[int], Generic, object],
         )
+
+    @assert_passes(run_in_both_module_modes=True)
+    def test_get_mro_inherit_any(self):
+        from typing import Any
+
+        from typing_extensions import assert_type
+
+        from pycroscope import get_mro
+
+        class A(Any):
+            pass
+
+        def capybara(x: Any) -> None:
+            dump_value(get_mro(A))
+            assert_type(get_mro(A), tuple[A, x, object])
