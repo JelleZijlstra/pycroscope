@@ -423,6 +423,22 @@ class TestTypeAliasType(TestNameCheckVisitorBase):
         """)
 
     @skip_before((3, 12))
+    def test_312_annotated_runtime_alias(self):
+        self.assert_passes(
+            """
+            from typing_extensions import assert_type
+
+            type Alias = tuple[int, str]
+
+            def capybara(x: Alias) -> None:
+                a, b = x
+                assert_type(a, int)
+                assert_type(b, str)
+            """,
+            annotate=True,
+        )
+
+    @skip_before((3, 12))
     def test_312_local_alias(self):
         self.assert_passes("""
             def capybara():
@@ -543,4 +559,44 @@ class TestTypeAliasType(TestNameCheckVisitorBase):
 
             def pacarana(x: MyType):
                 capybara(x)
+        """)
+
+
+class TestFocusedTypeVarCoverage(TestNameCheckVisitorBase):
+    @assert_passes()
+    def test_typevar_default_must_match_bound_and_constraints(self):
+        from typing_extensions import TypeVar
+
+        TypeVar("BadBound", bound=str, default=int)  # E: incompatible_call
+        TypeVar("BadConstraint", float, str, default=int)  # E: incompatible_call
+        Base = TypeVar("Base", int, str)
+        TypeVar("GoodConstraint", int, str, bool, default=Base)
+        TypeVar(
+            "BadConstraintTypeVar", bool, complex, default=Base  # E: incompatible_call
+        )
+
+    @skip_before((3, 12))
+    def test_pep695_type_parameter_bound_and_constraint_validation(self):
+        self.assert_passes("""
+            class Outer[V]:
+                class BadBound[T: dict[str, V]]:  # E: invalid_annotation
+                    ...
+
+            class BadConstraints0[T: ()]:  # E: invalid_annotation
+                ...
+
+            class BadConstraints1[T: (str,)]:  # E: invalid_annotation
+                ...
+        """)
+
+    @skip_before((3, 12))
+    def test_pep695_type_parameter_dependent_bounds_and_constraints(self):
+        self.assert_passes("""
+            from typing import Sequence
+
+            class BadBound[S, T: Sequence[S]]:  # E: invalid_annotation
+                ...
+
+            class BadConstraint[S, T: (Sequence[S], bytes)]:  # E: invalid_annotation
+                ...
         """)

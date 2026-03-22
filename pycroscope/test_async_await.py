@@ -166,6 +166,14 @@ class TestMissingAwait(TestNameCheckVisitorBase):
             f()  # E: missing_await
 
     @assert_passes()
+    def test_sync_def_internal_missing_await(self):
+        async def f():
+            return 42
+
+        def g():
+            f()  # E: missing_await
+
+    @assert_passes()
     def test_async_def_internal_has_await(self):
         async def f():
             return 42
@@ -322,6 +330,12 @@ class TestAsyncGenerator(TestNameCheckVisitorBase):
             )
             async for i in gen():
                 assert_type(i, int)
+
+    @assert_passes()
+    def test_async_for_not_async_iterable(self):
+        async def capybara() -> None:
+            async for i in [1, 2, 3]:  # E: unsupported_operation  # E: unused_variable
+                pass
 
     @assert_passes()
     def test_async_comprehension_over_generator(self):
