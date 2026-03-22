@@ -208,6 +208,7 @@ class TypeObject:
     _is_thrift_enum: bool | None
     _is_universally_assignable: bool | None
     _protocol_positive_cache: dict[tuple[Value, Value], BoundsMap]
+    _has_stubs: bool | None
 
     def __init__(self, checker: "Checker", typ: type | str) -> None:
         self.typ = typ
@@ -225,10 +226,16 @@ class TypeObject:
         self._virtual_bases = None
         self._is_thrift_enum = None
         self._is_universally_assignable = None
+        self._has_stubs = None
 
     def adopt_synthetic_class(self, synthetic_class: SyntheticClassObjectValue) -> None:
         self._update_loaded_synthetic_fields()
         self._protocol_positive_cache.clear()
+
+    def has_stubs(self) -> bool:
+        if self._has_stubs is None:
+            self._has_stubs = self._checker.ts_finder.has_stubs(self.typ)
+        return self._has_stubs
 
     def _compute_declared_symbols(self) -> dict[str, ClassSymbol]:
         import pycroscope.type_object_builder as type_object_builder

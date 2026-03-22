@@ -579,10 +579,13 @@ class TypeshedFinder:
         mod, _ = fq_name.rsplit(".", maxsplit=1)
         return self._get_all_attributes_from_info(info, mod)
 
-    def has_stubs(self, typ: type) -> bool:
-        fq_name = self._get_fq_name(typ)
-        if fq_name is None:
-            return False
+    def has_stubs(self, typ: type | str) -> bool:
+        if isinstance(typ, str):
+            fq_name = typ
+        else:
+            fq_name = self._get_fq_name(typ)
+            if fq_name is None:
+                return False
         info = self._get_info_for_name(fq_name)
         return info is not None
 

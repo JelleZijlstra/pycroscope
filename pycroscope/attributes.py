@@ -714,14 +714,19 @@ def _get_attribute_from_synthetic_class_inner(
     if _is_instance_only_enum_attr(self_value.class_type, ctx.attr):
         return UNINITIALIZED_VALUE
 
-    for base in self_value.base_classes:
-        result = _get_attribute_from_synthetic_base(base, self_value, ctx, seen=seen)
-        if result is not UNINITIALIZED_VALUE:
-            return result
+    tobj = ctx.get_can_assign_context().make_type_object(self_value.class_type.typ)
+    if not tobj.has_stubs():
+        for base in tobj.get_direct_bases():
+            result = _get_attribute_from_synthetic_base(
+                base, self_value, ctx, seen=seen
+            )
+            if result is not UNINITIALIZED_VALUE:
+                return result
 
     result, _ = ctx.get_attribute_from_typeshed_recursively(fq_name, on_class=True)
     if result is not UNINITIALIZED_VALUE:
         return result
+
     if runtime_type is not None:
         return _get_attribute_from_subclass(runtime_type, self_value.class_type, ctx)
     return result
