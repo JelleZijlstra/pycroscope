@@ -417,7 +417,7 @@ def dump_value(value: T) -> T:
     return value
 
 
-def get_mro(typ: object) -> tuple[type, ...]:
+def get_mro(typ: object, *, include_virtual: bool = False) -> tuple[type, ...]:
     """Return the runtime MRO for a class-like object.
 
     During static analysis, pycroscope replaces this with a value-level MRO that

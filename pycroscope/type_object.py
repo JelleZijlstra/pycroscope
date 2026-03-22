@@ -195,6 +195,19 @@ class MroEntry:
     is_any: bool
     is_virtual: bool
 
+    def __repr__(self) -> str:
+        if self.is_any:
+            return "Any"
+        result = repr(self.tobj.typ)
+        if self.is_virtual:
+            result = f"~{result}"
+        if self.tv_map:
+            args_str = ", ".join(
+                f"{tv.__name__}={value}" for tv, value in self.tv_map.items()
+            )
+            result += f"[{args_str}]"
+        return result
+
     def substitute_typevars(self, typevars: TypeVarMap) -> "MroEntry":
         if self.is_any:
             return self
@@ -202,6 +215,20 @@ class MroEntry:
             tv: value.substitute_typevars(typevars) for tv, value in self.tv_map.items()
         }
         return replace(self, tv_map=substituted_tv_map)
+
+    def get_mro_value(self) -> MroValue:
+        if self.is_any:
+            return AnyValue(AnySource.inference)
+        assert self.tobj is not None
+        if self.tv_map:
+            return GenericValue(
+                self.tobj.typ,
+                [
+                    self.tv_map[param.typevar]
+                    for param in self.tobj.get_declared_type_params()
+                ],
+            )
+        return TypedValue(self.tobj.typ)
 
 
 ANY_MRO_ENTRY = MroEntry(None, {}, is_any=True, is_virtual=False)
@@ -262,7 +289,7 @@ class TypeObject:
 
     def has_any_base(self) -> bool:
         # TODO: only use MRO
-        if any(isinstance(base, AnyValue) for base in self.get_mro()):
+        if any(entry.is_any for entry in self.get_mro()):
             return True
         synthetic_class = self._checker.get_synthetic_class(self.typ)
         if synthetic_class is not None:
@@ -308,8 +335,12 @@ class TypeObject:
         # )
 
     def _compute_direct_bases(self) -> tuple[MroValue, ...]:
+        if self.typ is object:
+            return ()
         ts_bases = self._checker.ts_finder.get_bases(self.typ)
         if ts_bases is not None:
+            if not ts_bases:
+                return (TypedValue(object),)
             return tuple(_replace_invalid_bases(ts_bases))
 
         if isinstance(self.typ, type):
@@ -321,11 +352,17 @@ class TypeObject:
     def _compute_mro(self) -> list[MroEntry]:
         direct_bases = self.get_direct_bases()
 
-        parent_tv_map = {
-            param.typevar: type_param_to_value(param)
-            for param in self.get_declared_type_params()
-        }
-        self_mro_entry = _get_mro_entry(TypedValue(self), parent_tv_map, self._checker)
+        params = self.get_declared_type_params()
+        if params:
+            parent_tv_map = {
+                param.typevar: type_param_to_value(param) for param in params
+            }
+            self_args = [type_param_to_value(param) for param in params]
+            self_value = GenericValue(self.typ, self_args)
+        else:
+            parent_tv_map = {}
+            self_value = TypedValue(self.typ)
+        self_mro_entry = _get_mro_entry(self_value, parent_tv_map, self._checker)
         child_mros = [
             _get_mro_from_mro_value(base, parent_tv_map, self._checker)
             for base in direct_bases
@@ -333,6 +370,7 @@ class TypeObject:
         result = _linearize_mros(self_mro_entry, child_mros)
         if isinstance(result, str):
             return [self_mro_entry, ANY_MRO_ENTRY]
+        return result
 
     def _compute_is_final(self) -> bool:
         if isinstance(self.typ, str):
@@ -381,7 +419,7 @@ class TypeObject:
         present_keys = {
             key
             for key in (
-                _class_key_from_value(mro_value) for mro_value in self.get_mro()
+                _class_key_from_value(entry.get_mro_value()) for entry in self.get_mro()
             )
             if key is not None
         }
@@ -520,10 +558,10 @@ class TypeObject:
 
     def get_nominal_bases(self) -> tuple[MroValue, ...]:
         mro_bases = tuple(
-            mro_value
-            for mro_value in self.get_mro()
+            entry.get_mro_value()
+            for entry in self.get_mro()
             if (
-                (key := _class_key_from_value(mro_value)) is None
+                (key := _class_key_from_value(entry.get_mro_value())) is None
                 or not class_keys_match(key, self.typ)
             )
         )
@@ -759,13 +797,12 @@ class TypeObject:
         symbol = self.get_declared_symbols().get(name)
         if symbol is not None:
             return self, symbol
-        for mro_value in self.get_mro():
-            if isinstance(mro_value, AnyValue):
+        for entry in self.get_mro():
+            if entry.tobj is None:
                 return None
-            type_obj = mro_value.get_type_object(ctx)
-            symbol = type_obj.get_declared_symbols().get(name)
+            symbol = entry.tobj.get_declared_symbols().get(name)
             if symbol is not None:
-                return type_obj, symbol
+                return entry.tobj, symbol
         return None
 
     def is_assignable_to_type(self, typ: type) -> bool:
@@ -1717,10 +1754,9 @@ def _get_symbol_owner_substitutions_from_type_objects(
         return receiver_substitutions
     owner_value = next(
         (
-            mro_value
-            for mro_value in receiver_tobj.get_mro()
-            if isinstance(mro_value, TypedValue)
-            and mro_value.get_type_object(ctx) is owner_tobj
+            entry.get_mro_value()
+            for entry in receiver_tobj.get_mro()
+            if entry.tobj is owner_tobj
         ),
         None,
     )
@@ -2283,8 +2319,10 @@ def _compute_type_params_from_bases(bases: Sequence[Value]) -> Iterable[TypePara
             return
 
     # Else we have to walk the bases
+    type_params = []
     for base in bases:
-        yield from _compute_type_params_from_base(base)
+        type_params.extend(_compute_type_params_from_base(base))
+    yield from dict.fromkeys(type_params)  # deduplicate while preserving order
 
 
 def _compute_type_params_from_base(base: Value) -> Iterable[TypeParam]:
@@ -2375,7 +2413,6 @@ def _get_mro_entry(
         case TypedValue():
             tv_map = _get_tv_map_for_mro(mro_value, parent_tv_map, checker)
             tobj = mro_value.get_type_object(checker)
-
             return MroEntry(tobj=tobj, tv_map=tv_map, is_any=False, is_virtual=False)
         case AnyValue():
             return ANY_MRO_ENTRY
@@ -2432,7 +2469,7 @@ def _match_up_generic_params(
         return {
             param.typevar: default_value_for_type_param(param) for param in type_params
         }
-    return {param.typevar: value for param, value in seq}
+    return {param: value for param, value in seq}
 
 
 def _entries_match(a: MroEntry, b: MroEntry) -> bool:

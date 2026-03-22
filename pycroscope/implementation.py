@@ -2028,11 +2028,16 @@ def _get_mro_impl(ctx: CallContext) -> Value:
     typ = replace_fallback(ctx.vars["typ"])
     checker = ctx.visitor.checker
     class_key = _class_key_from_value(typ)
+    include_virtual = _enforce_literal_bool(ctx, "include_virtual", False)
     if class_key is None:
         return ctx.inferred_return_value
     return SequenceValue(
         tuple,
-        [(False, value) for value in checker.make_type_object(class_key).get_mro()],
+        [
+            (False, entry.get_mro_value())
+            for entry in checker.make_type_object(class_key).get_mro()
+            if include_virtual or not entry.is_virtual
+        ],
     )
 
 
@@ -2873,7 +2878,15 @@ def get_default_argspecs() -> dict[object, Signature]:
             callable=dump_value,
         ),
         Signature.make(
-            [SigParameter("typ", _POS_ONLY)],
+            [
+                SigParameter("typ", _POS_ONLY),
+                SigParameter(
+                    "include_virtual",
+                    ParameterKind.KEYWORD_ONLY,
+                    annotation=TypedValue(bool),
+                    default=KnownValue(False),
+                ),
+            ],
             return_annotation=GenericValue(tuple, [TypedValue(type)]),
             impl=_get_mro_impl,
             callable=get_mro,
