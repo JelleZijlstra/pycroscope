@@ -66,6 +66,7 @@ nitpick_ignore = [
     ("py:class", "pycroscope.node_visitor.Failure"),
     ("py:class", "pycroscope.options.Options"),
     ("py:class", "pycroscope.options.T"),
+    ("py:class", "pycroscope.relations.Relation"),
     ("py:class", "pycroscope.signature.CheckCallContext"),
     ("py:class", "pycroscope.stacked_scopes.ConstraintType"),
     ("py:class", "pycroscope.stacked_scopes.ScopeType"),

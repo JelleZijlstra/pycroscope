@@ -60,7 +60,12 @@ from typing_extensions import (
 import pycroscope
 from pycroscope.annotated_types import get_annotated_types_extension
 from pycroscope.input_sig import FullSignature, InputSigValue
-from pycroscope.relations import HashableProtoValue, Relation, has_relation
+from pycroscope.relations import (
+    HashableProtoValue,
+    Relation,
+    has_relation,
+    intersect_multi,
+)
 
 from . import type_evaluation
 from .analysis_lib import object_from_string, override
@@ -3177,8 +3182,9 @@ def _make_callable_from_value(
 
 def translate_annotated_metadata(
     metadata: Sequence[Value], ctx: Context
-) -> list[Value | Extension]:
-    metadata_objs: list[Value | Extension] = []
+) -> tuple[Sequence[Value], Sequence[Extension]]:
+    metadata_objs: list[Extension] = []
+    intersects: list[Value] = []
     for entry in metadata:
         if isinstance(entry, KnownValue):
             if isinstance(entry.val, ParameterTypeGuard):
@@ -3211,14 +3217,21 @@ def translate_annotated_metadata(
                 continue
             annotated_types_extensions = list(get_annotated_types_extension(entry.val))
             if annotated_types_extensions:
-                metadata_objs.extend(annotated_types_extensions)
-            else:
-                metadata_objs.append(entry)
-    return metadata_objs
+                for obj in annotated_types_extensions:
+                    if isinstance(obj, Value):
+                        intersects.append(obj)
+                    else:
+                        metadata_objs.append(obj)
+    return intersects, metadata_objs
 
 
 def _make_annotated(origin: Value, metadata: Sequence[Value], ctx: Context) -> Value:
-    metadata_objs = translate_annotated_metadata(metadata, ctx)
+    intersects, metadata_objs = translate_annotated_metadata(metadata, ctx)
+    if intersects:
+        if ctx.can_assign_ctx is not None:
+            origin = intersect_multi([origin, *intersects], ctx=ctx.can_assign_ctx)
+        else:
+            origin = IntersectionValue((origin, *intersects))
     return annotate_value(origin, metadata_objs)
 
 

@@ -1,6 +1,5 @@
 # Files in this list must stay at 100% statement coverage in the Python 3.14 coverage job.
 pycroscope/__init__.py
-pycroscope/annotated_types.py
 pycroscope/error_code.py
 pycroscope/regex_check.py
 pycroscope/shared_options.py

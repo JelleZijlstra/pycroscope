@@ -10,32 +10,18 @@ from dataclasses import dataclass
 from datetime import datetime, timezone, tzinfo
 from typing import Any
 
-from typing_extensions import assert_never
-
 from pycroscope.value import CanAssign, CanAssignContext, Value, flatten_values
 
 from .extensions import CustomCheck, PredicateCheck
+from .predicates import MaxLen, MinLen
 from .value import (
-    NO_RETURN_VALUE,
     AnnotatedValue,
     AnyValue,
     CanAssignError,
     CustomCheckExtension,
-    DictIncompleteValue,
-    IntersectionValue,
     KnownValue,
-    MultiValuedValue,
+    Predicate,
     PredicateValue,
-    SequenceValue,
-    SimpleType,
-    SubclassValue,
-    SyntheticClassObjectValue,
-    SyntheticModuleValue,
-    TypedDictValue,
-    TypedValue,
-    TypeFormValue,
-    UnboundMethodValue,
-    replace_fallback,
     unannotate,
 )
 
@@ -43,27 +29,37 @@ try:
     import annotated_types
 except ImportError:  # pragma: no cover
 
-    def get_annotated_types_extension(obj: object) -> Iterable[CustomCheckExtension]:
+    def get_annotated_types_extension(
+        obj: object,
+    ) -> Iterable[CustomCheckExtension | Value]:
         return []
 
 else:
 
-    def get_annotated_types_extension(obj: object) -> Iterable[CustomCheckExtension]:
+    def get_annotated_types_extension(
+        obj: object,
+    ) -> Iterable[CustomCheckExtension | Value]:
         if isinstance(obj, annotated_types.GroupedMetadata):
             for value in obj:
                 if not isinstance(value, annotated_types.BaseMetadata):
                     continue
                 maybe_ext = _get_single_annotated_types_extension(value)
                 if maybe_ext is not None:
-                    yield CustomCheckExtension(maybe_ext)
+                    if isinstance(maybe_ext, Predicate):
+                        yield PredicateValue(maybe_ext)
+                    else:
+                        yield CustomCheckExtension(maybe_ext)
         elif isinstance(obj, annotated_types.BaseMetadata):
             maybe_ext = _get_single_annotated_types_extension(obj)
             if maybe_ext is not None:
-                yield CustomCheckExtension(maybe_ext)
+                if isinstance(maybe_ext, Predicate):
+                    yield PredicateValue(maybe_ext)
+                else:
+                    yield CustomCheckExtension(maybe_ext)
 
     def _get_single_annotated_types_extension(
         obj: annotated_types.BaseMetadata,
-    ) -> CustomCheck | None:
+    ) -> CustomCheck | Predicate | None:
         if isinstance(obj, annotated_types.Gt):
             return Gt(obj.gt)
         elif isinstance(obj, annotated_types.Ge):
@@ -81,7 +77,7 @@ else:
         elif isinstance(obj, annotated_types.Timezone):
             return Timezone(obj.tz)
         elif isinstance(obj, annotated_types.Predicate):
-            return Predicate(obj.func)
+            return AnnotatedPredicate(obj.func)
         else:
             # In case annotated_types adds more kinds of checks in the future
             return None
@@ -231,46 +227,6 @@ class MultipleOf(AnnotatedTypesCheck):
 
 
 @dataclass(frozen=True)
-class MinLen(AnnotatedTypesCheck):
-    value: Any
-
-    def predicate(self, value: Any) -> bool:
-        return len(value) >= self.value
-
-    def is_compatible_metadata(self, metadata: PredicateCheck) -> bool:
-        if isinstance(metadata, MinLen):
-            return metadata.value >= self.value
-        else:
-            return False
-
-    def can_assign_non_literal(self, value: Value) -> CanAssign:
-        min_len = _min_len_of_value(value)
-        if min_len is not None and min_len >= self.value:
-            return {}
-        return super().can_assign_non_literal(value)
-
-
-@dataclass(frozen=True)
-class MaxLen(AnnotatedTypesCheck):
-    value: Any
-
-    def predicate(self, value: Any) -> bool:
-        return len(value) <= self.value
-
-    def is_compatible_metadata(self, metadata: PredicateCheck) -> bool:
-        if isinstance(metadata, MaxLen):
-            return metadata.value <= self.value
-        else:
-            return False
-
-    def can_assign_non_literal(self, value: Value) -> CanAssign:
-        max_len = _max_len_of_value(value)
-        if max_len is not None and max_len <= self.value:
-            return {}
-        return super().can_assign_non_literal(value)
-
-
-@dataclass(frozen=True)
 class Timezone(AnnotatedTypesCheck):
     value: str | timezone | tzinfo | type(...) | None
 
@@ -297,124 +253,8 @@ class Timezone(AnnotatedTypesCheck):
 
 
 @dataclass(frozen=True)
-class Predicate(AnnotatedTypesCheck):
+class AnnotatedPredicate(AnnotatedTypesCheck):
     predicate_callable: Callable[[Any], bool]
 
     def predicate(self, value: Any) -> bool:
         return self.predicate_callable(value)
-
-
-def _min_len_of_value(val: Value) -> int | None:
-    val = replace_fallback(val)
-    # Public assignability checks flatten top-level unions before they reach these
-    # helpers, but recursive IntersectionValue members can still include unions.
-    if isinstance(val, MultiValuedValue):  # pragma: no cover
-        minima = [_min_len_of_value(subval) for subval in val.vals]
-        if any(minimum is None for minimum in minima):
-            return None
-        if minima:
-            return min(minimum for minimum in minima if minimum is not None)
-        return None
-    if isinstance(val, IntersectionValue):
-        minima = []
-        for subval in val.vals:
-            sub_min = _min_len_of_value(subval)
-            if sub_min is not None:
-                minima.append(sub_min)
-        if minima:
-            return max(minima)
-        return None
-    return _min_len_of_simple_value(val)
-
-
-def _min_len_of_simple_value(val: SimpleType) -> int | None:
-    if isinstance(val, SequenceValue):
-        return sum(is_many is False for is_many, _ in val.members)
-    if isinstance(val, PredicateValue):
-        if isinstance(val.predicate, MinLen) and isinstance(val.predicate.value, int):
-            return val.predicate.value
-        return None
-    if isinstance(val, DictIncompleteValue):
-        return sum(pair.is_required and not pair.is_many for pair in val.kv_pairs)
-    if isinstance(val, TypedDictValue):
-        return sum(entry.required for entry in val.items.values())
-    if isinstance(
-        val,
-        (
-            AnyValue,
-            KnownValue,
-            SyntheticClassObjectValue,
-            SyntheticModuleValue,
-            UnboundMethodValue,
-            TypedValue,
-            SubclassValue,
-            TypeFormValue,
-        ),
-    ):
-        return None
-    assert_never(val)  # pragma: no cover
-
-
-def _max_len_of_value(val: Value) -> int | None:
-    val = replace_fallback(val)
-    # Public assignability checks flatten top-level unions before they reach these
-    # helpers, but recursive IntersectionValue members can still include unions.
-    if isinstance(val, MultiValuedValue):  # pragma: no cover
-        maxima = [_max_len_of_value(subval) for subval in val.vals]
-        if any(maximum is None for maximum in maxima):
-            return None
-        if maxima:
-            return max(maximum for maximum in maxima if maximum is not None)
-        return None
-    if isinstance(val, IntersectionValue):
-        maxima = []
-        for subval in val.vals:
-            sub_max = _max_len_of_value(subval)
-            if sub_max is not None:
-                maxima.append(sub_max)
-        if maxima:
-            return min(maxima)
-        return None
-    return _max_len_of_simple_value(val)
-
-
-def _max_len_of_simple_value(val: SimpleType) -> int | None:
-    if isinstance(val, SequenceValue):
-        maximum = 0
-        for is_many, _ in val.members:
-            if is_many:
-                return None
-            maximum += 1
-        return maximum
-    if isinstance(val, PredicateValue):
-        if isinstance(val.predicate, MaxLen) and isinstance(val.predicate.value, int):
-            return val.predicate.value
-        return None
-    if isinstance(val, DictIncompleteValue):
-        maximum = 0
-        for pair in val.kv_pairs:
-            if pair.is_many:
-                return None
-            if pair.is_required:
-                maximum += 1
-        return maximum
-    if isinstance(val, TypedDictValue):
-        if val.extra_keys is not NO_RETURN_VALUE:
-            # May have arbitrary number of extra keys
-            return None
-        return len(val.items)
-    if isinstance(
-        val,
-        (
-            AnyValue,
-            KnownValue,
-            SyntheticClassObjectValue,
-            SyntheticModuleValue,
-            UnboundMethodValue,
-            TypedValue,
-            SubclassValue,
-            TypeFormValue,
-        ),
-    ):
-        return None
-    assert_never(val)  # pragma: no cover
