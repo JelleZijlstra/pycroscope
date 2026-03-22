@@ -239,10 +239,7 @@ class PatmaVisitor(ast.NodeVisitor):
 
     def visit_MatchSingleton(self, node: MatchSingleton) -> AbstractConstraint:
         self.check_impossible_pattern(node, KnownValue(node.value))
-        return self.make_constraint(
-            ConstraintType.predicate,
-            EqualsPredicate(node.value, self.visitor, use_is=True),
-        )
+        return self.intersect_with(KnownValue(node.value))
 
     def visit_MatchValue(self, node: MatchValue) -> AbstractConstraint:
         pattern_val = self.visitor.visit(node.value)
