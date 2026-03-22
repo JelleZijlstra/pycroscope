@@ -52,8 +52,6 @@ from unittest.mock import ANY
 import typeshed_client
 from typing_extensions import Protocol, assert_never, is_typeddict
 
-from pycroscope.input_sig import ActualArguments, InputSigValue
-
 from . import attributes, format_strings, importer, node_visitor, type_evaluation
 from . import dataclass as dataclass_helpers
 from .analysis_lib import (
@@ -125,6 +123,7 @@ from .functions import (
     compute_parameters,
     compute_value_of_function,
 )
+from .input_sig import ActualArguments, InputSigValue
 from .maybe_asynq import asynq, qcore
 from .options import (
     BooleanOption,
@@ -138,7 +137,7 @@ from .options import (
     add_arguments,
 )
 from .patma import PatmaVisitor
-from .predicates import EqualsPredicate, InPredicate
+from .predicates import EqualsPredicate, HasAttr, InPredicate
 from .reexport import ImplicitReexportTracker
 from .relations import (
     Relation,
@@ -3282,28 +3281,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 continue
             return node.args[0].value
         return None
-
-    def _is_classvar_member(self, class_key: type | str, attr_name: str) -> bool:
-        match = lookup_declared_symbol_with_owner(class_key, attr_name, self)
-        if match is None:
-            return False
-        owner, symbol = match
-        if symbol.is_classvar:
-            return True
-        if (
-            owner == class_key
-            and not symbol.qualifiers
-            and not symbol.is_instance_only
-            and not symbol.is_method
-            and not symbol.is_property
-            and symbol.dataclass_field is None
-        ):
-            return any(
-                self._is_classvar_member(base_key, attr_name)
-                for base_key in self._direct_base_class_keys(class_key)
-                if not class_keys_match(base_key, class_key)
-            )
-        return False
 
     def _get_direct_declared_symbol(
         self, class_key: type | str, attr_name: str
