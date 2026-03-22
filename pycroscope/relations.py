@@ -633,7 +633,7 @@ def _has_relation(
 
     # PredicateValue
     if isinstance(left, PredicateValue):
-        result = left.predicate.has_relation(right, relation)
+        result = left.predicate.has_relation(right, relation, ctx)
         if result:
             return {}
         return CanAssignError(f"{right} is not {relation.description} {left}")
@@ -2212,7 +2212,7 @@ TypeOrIrreducible = GradualType | Literal[Irreducible]
 def _intersect_predicate(
     left: PredicateValue, right: SimpleType, ctx: CanAssignContext
 ) -> TypeOrIrreducible:
-    inters = left.predicate.intersect_with(right)
+    inters = left.predicate.intersect_with(right, ctx)
     if inters is None:
         return Irreducible
     return gradualize(inters)

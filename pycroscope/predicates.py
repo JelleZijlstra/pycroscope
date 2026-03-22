@@ -12,14 +12,18 @@ from math import comb
 
 from typing_extensions import assert_never
 
+from pycroscope.value import TypeVarMap
+
 from .boolability import Boolability, get_boolability
-from .relations import Relation
+from .relations import Relation, has_relation, intersect_values, is_subtype
 from .safe import safe_issubclass
 from .value import (
     NO_RETURN_VALUE,
+    UNINITIALIZED_VALUE,
     AnySource,
     AnyValue,
     CanAssignContext,
+    CanAssignError,
     DictIncompleteValue,
     GenericValue,
     GradualType,
@@ -205,15 +209,114 @@ class InPredicate:
 
 
 @dataclass(frozen=True)
+class HasAttr(Predicate):
+    attr: str
+    value: Value
+
+    def substitute_typevars(self, typevars: TypeVarMap) -> Predicate:
+        return HasAttr(self.attr, self.value.substitute_typevars(typevars))
+
+    def walk_values(self) -> Iterable[Value]:
+        yield from self.value.walk_values()
+
+    def __str__(self) -> str:
+        return f"x.{self.attr}: {self.value}"
+
+    def has_relation_simple_type(
+        self, other: SimpleType, relation: Relation, ctx: CanAssignContext
+    ) -> bool:
+        match other:
+            case AnyValue():
+                if relation is Relation.SUBTYPE:
+                    return False
+                else:
+                    return True
+            case TypeFormValue():
+                return False
+            case PredicateValue():
+                if (
+                    isinstance(other.predicate, HasAttr)
+                    and self.attr == other.predicate.attr
+                ):
+                    can_assign = has_relation(
+                        self.value, other.predicate.value, relation, ctx
+                    )
+                    return not isinstance(can_assign, CanAssignError)
+                else:
+                    return False
+            case _:
+                attr_value = ctx.get_attribute_from_value(other, self.attr)
+                if attr_value is UNINITIALIZED_VALUE:
+                    return False
+                can_assign = has_relation(self.value, attr_value, relation, ctx)
+                return not isinstance(can_assign, CanAssignError)
+
+    def intersect_with_simple_type(
+        self, other: SimpleType, ctx: CanAssignContext
+    ) -> Value | None:
+        match other:
+            case AnyValue() | TypeFormValue():
+                return None
+            case PredicateValue():
+                if (
+                    isinstance(other.predicate, HasAttr)
+                    and self.attr == other.predicate.attr
+                ):
+                    intersected_value = intersect_values(
+                        self.value, other.predicate.value, ctx
+                    )
+                    if intersected_value is NO_RETURN_VALUE:
+                        return NO_RETURN_VALUE
+                    else:
+                        return PredicateValue(HasAttr(self.attr, intersected_value))
+                else:
+                    return None
+            case (
+                SyntheticClassObjectValue()
+                | SyntheticModuleValue()
+                | KnownValue()
+                | UnboundMethodValue()
+            ):
+                return self._intersect_with_value(other, ctx, is_final=True)
+            case TypedValue():
+                tobj = ctx.make_type_object(other.typ)
+                return self._intersect_with_value(other, ctx, is_final=tobj.is_final)
+            case SubclassValue():
+                return self._intersect_with_value(other, ctx, is_final=False)
+            case _:
+                assert_never(other)
+
+    def _intersect_with_value(
+        self, other: Value, ctx: CanAssignContext, *, is_final: bool
+    ) -> Value | None:
+        attr_value = ctx.get_attribute_from_value(other, self.attr)
+        if attr_value is UNINITIALIZED_VALUE:
+            return NO_RETURN_VALUE if is_final else None
+        intersected_value = intersect_values(self.value, attr_value, ctx)
+        if intersected_value is NO_RETURN_VALUE:
+            return NO_RETURN_VALUE
+        elif is_subtype(self.value, attr_value, ctx):
+            # e.g. if we have HasAttr("x", object) intersecting with something with x: int,
+            # we can drop the HasAttr
+            return other
+        else:
+            return None
+
+
+@dataclass(frozen=True)
 class MaxLen(Predicate):
     """Predicate that the value has a length no greater than the specified maximum."""
 
     max_len: int
 
-    def intersect_with_simple_type(self, other: SimpleType) -> Value | None:
+    def intersect_with_simple_type(
+        self, other: SimpleType, ctx: CanAssignContext
+    ) -> Value | None:
         return _intersect_min_or_max_len(other, min_len=None, max_len=self.max_len)
 
-    def has_relation_simple_type(self, other: SimpleType, relation: Relation) -> bool:
+    def has_relation_simple_type(
+        self, other: SimpleType, relation: Relation, ctx: CanAssignContext
+    ) -> bool:
         return _has_relation_min_or_max_len(
             other, relation, min_len=None, max_len=self.max_len
         )
@@ -228,10 +331,14 @@ class MinLen(Predicate):
 
     min_len: int
 
-    def intersect_with_simple_type(self, other: SimpleType) -> Value | None:
+    def intersect_with_simple_type(
+        self, other: SimpleType, ctx: CanAssignContext
+    ) -> Value | None:
         return _intersect_min_or_max_len(other, min_len=self.min_len, max_len=None)
 
-    def has_relation_simple_type(self, other: SimpleType, relation: Relation) -> bool:
+    def has_relation_simple_type(
+        self, other: SimpleType, relation: Relation, ctx: CanAssignContext
+    ) -> bool:
         return _has_relation_min_or_max_len(
             other, relation, min_len=self.min_len, max_len=None
         )
@@ -522,14 +629,16 @@ def _expand_tuple_members_to_max_len(
 
 @dataclass(frozen=True)
 class Truthy(Predicate):
-    def has_relation(self, other: GradualType, relation: Relation) -> bool:
+    def has_relation(
+        self, other: GradualType, relation: Relation, ctx: CanAssignContext
+    ) -> bool:
         boolability = get_boolability(other)
         return boolability in (
             Boolability.value_always_true,
             Boolability.type_always_true,
         )
 
-    def intersect_with(self, other: GradualType) -> Value | None:
+    def intersect_with(self, other: GradualType, ctx: CanAssignContext) -> Value | None:
         match get_boolability(other):
             case Boolability.value_always_true | Boolability.type_always_true:
                 return other
@@ -548,11 +657,13 @@ TRUTHY = Truthy()
 
 @dataclass(frozen=True)
 class Falsy(Predicate):
-    def has_relation(self, other: GradualType, relation: Relation) -> bool:
+    def has_relation(
+        self, other: GradualType, relation: Relation, ctx: CanAssignContext
+    ) -> bool:
         boolability = get_boolability(other)
         return boolability is Boolability.value_always_false
 
-    def intersect_with(self, other: GradualType) -> Value | None:
+    def intersect_with(self, other: GradualType, ctx: CanAssignContext) -> Value | None:
         match get_boolability(other):
             case Boolability.value_always_false:
                 return other

@@ -74,7 +74,6 @@ from .extensions import (
     AsynqCallable,
     CustomCheck,
     ExternalType,
-    HasAttrGuard,
     Intersection,
     NoReturnGuard,
     Overlapping,
@@ -109,7 +108,6 @@ from .value import (
     DictIncompleteValue,
     Extension,
     GenericValue,
-    HasAttrGuardExtension,
     IntersectionValue,
     KnownValue,
     KVPair,
@@ -3200,15 +3198,6 @@ def translate_annotated_metadata(
                     NoReturnGuardExtension(
                         entry.val.varname,
                         _type_from_runtime(entry.val.guarded_type, ctx),
-                    )
-                )
-                continue
-            elif isinstance(entry.val, HasAttrGuard):
-                metadata_objs.append(
-                    HasAttrGuardExtension(
-                        entry.val.varname,
-                        _type_from_runtime(entry.val.attribute_name, ctx),
-                        _type_from_runtime(entry.val.attribute_type, ctx),
                     )
                 )
                 continue
