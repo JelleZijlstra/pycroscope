@@ -192,15 +192,6 @@ class LenPredicate:
         return narrowed
 
 
-@dataclass
-class AlwaysMatching:
-    def __call__(self, value: Value, positive: bool) -> Value | None:
-        if positive:
-            return value
-        else:
-            return None
-
-
 class PatternMatchability(enum.Enum):
     NEVER = 1
     MAYBE = 2
@@ -248,10 +239,7 @@ class PatmaVisitor(ast.NodeVisitor):
 
     def visit_MatchSingleton(self, node: MatchSingleton) -> AbstractConstraint:
         self.check_impossible_pattern(node, KnownValue(node.value))
-        return self.make_constraint(
-            ConstraintType.predicate,
-            EqualsPredicate(node.value, self.visitor, use_is=True),
-        )
+        return self.intersect_with(KnownValue(node.value))
 
     def visit_MatchValue(self, node: MatchValue) -> AbstractConstraint:
         pattern_val = self.visitor.visit(node.value)
@@ -278,16 +266,14 @@ class PatmaVisitor(ast.NodeVisitor):
         else:
             target_length = starred_index
             post_starred_length = len(node.patterns) - 1 - target_length
-        constraints = [
-            self.make_constraint(
-                ConstraintType.predicate,
-                LenPredicate(
-                    len(node.patterns) - int(starred_index is not None),
-                    starred_index is not None,
-                    self.visitor,
-                ),
+        constraints = []
+        min_len = len(node.patterns) - int(starred_index is not None)
+        if min_len > 0:
+            constraints.append(self.intersect_with(PredicateValue(MinLen(min_len))))
+        if starred_index is None:
+            constraints.append(
+                self.intersect_with(PredicateValue(MaxLen(len(node.patterns))))
             )
-        ]
         can_assign_seq = has_relation(
             MatchableSequence,
             self.visitor.match_subject.value,
@@ -456,14 +442,12 @@ class PatmaVisitor(ast.NodeVisitor):
             self.visitor._set_name_in_scope(
                 node.name, node, self.visitor.match_subject.value
             )
-        return self.make_constraint(ConstraintType.predicate, AlwaysMatching())
+        return self.intersect_with(TypedValue(object))
 
     def visit_MatchAs(self, node: MatchAs) -> AbstractConstraint:
         val = self.visitor.match_subject.value
         if node.pattern is None:
-            constraint = self.make_constraint(
-                ConstraintType.predicate, AlwaysMatching()
-            )
+            constraint = self.intersect_with(TypedValue(object))
         else:
             constraint = self.visit(node.pattern)
 
@@ -489,6 +473,9 @@ class PatmaVisitor(ast.NodeVisitor):
     def make_constraint(self, typ: ConstraintType, value: object) -> AbstractConstraint:
         varname = self.visitor.match_subject.varname
         return Constraint(varname, typ, True, value)
+
+    def intersect_with(self, value: Value) -> AbstractConstraint:
+        return self.make_constraint(ConstraintType.intersect_with, value)
 
     def make_structural_constraint(self, node: ast.AST) -> AbstractConstraint:
         return self.make_constraint(
