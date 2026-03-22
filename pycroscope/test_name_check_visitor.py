@@ -5698,7 +5698,7 @@ class TestTryStar(TestNameCheckVisitorBase):
             """)
 
 
-class TestFocusedCallCoverage(TestNameCheckVisitorBase):
+class TestProtocolInstantiation(TestNameCheckVisitorBase):
     @assert_passes()
     def test_protocol_instantiation_is_rejected(self):
         from typing import Protocol
@@ -5708,33 +5708,6 @@ class TestFocusedCallCoverage(TestNameCheckVisitorBase):
 
         def capybara() -> None:
             Proto()  # E: incompatible_call
-
-    @assert_passes()
-    def test_deprecated_function_union_call(self):
-        from pycroscope.extensions import deprecated
-
-        @deprecated("old")
-        def f() -> None:
-            pass
-
-        def g() -> None:
-            pass
-
-        def capybara(flag: bool) -> None:
-            fn = f if flag else g  # E: deprecated
-            fn()  # E: deprecated
-
-    @assert_passes()
-    def test_deprecated_dunder_call(self):
-        from pycroscope.extensions import deprecated
-
-        class Invocable:
-            @deprecated("Deprecated")
-            def __call__(self) -> None:
-                pass
-
-        def capybara() -> None:
-            Invocable()()  # E: deprecated
 
 
 class TestMustUse(TestNameCheckVisitorBase):

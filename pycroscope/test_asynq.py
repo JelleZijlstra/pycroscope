@@ -58,6 +58,14 @@ class TestBadAsyncYield(TestNameCheckVisitorBase):
             val3 = yield task
             assert_type(val3, Any | Literal[4])
 
+    @assert_passes()
+    def test_yield_without_value(self):
+        from asynq import asynq
+
+        @asynq()
+        def capybara():
+            yield  # E: yield_without_value
+
 
 class TestUnwrapYield(TestNameCheckVisitorBase):
     @assert_passes()
@@ -158,6 +166,16 @@ class TestTaskNeedsYield(TestNameCheckVisitorBase):
         @asynq()
         def capybara(oid):  # E: task_needs_yield
             return async_fn.asynq(oid)
+
+    @assert_passes()
+    def test_bare_expression_not_yielded(self):
+        from asynq import asynq
+
+        from pycroscope.asynq_tests import async_fn
+
+        @asynq()
+        def capybara(oid):
+            async_fn.asynq(oid)  # E: task_needs_yield
 
     def test_not_yielded_replacement(self):
         self.assert_is_changed(

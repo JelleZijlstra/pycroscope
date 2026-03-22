@@ -64,6 +64,30 @@ class TestAsyncAwait(TestNameCheckVisitorBase):
             assert_type(await aw, str)
 
     @assert_passes()
+    def test_dunder_await_only(self):
+        from typing import Generator
+
+        class CustomAwaitable:
+            def __await__(self) -> Generator[None, None, int]:
+                if False:
+                    yield None
+                return 42
+
+        async def capybara() -> int:
+            x = await CustomAwaitable()
+            assert_type(x, int)
+            return x
+
+    @assert_passes()
+    def test_generic_awaitable(self):
+        from typing import Awaitable
+
+        async def capybara(task: Awaitable[int]) -> int:
+            x = await task
+            assert_type(x, int)
+            return x
+
+    @assert_passes()
     def test_async_comprehension(self):
         from typing_extensions import Self
 
