@@ -29,7 +29,6 @@ from .relations import (
     is_assignable,
     is_equivalent,
     is_equivalent_with_reason,
-    is_subtype,
 )
 from .safe import (
     hasattr_static,
@@ -657,14 +656,21 @@ def _hasattr_impl(ctx: CallContext) -> Value:
     # interpret a hasattr check as a sign that the object (somehow) has the attribute
     _record_attr_set(obj, name.val, ctx)
 
-    pred = HasAttr(name.val, TypedValue(object))
     # if the value exists on the type or instance, hasattr should return True
     # don't interpret the opposite to mean it should return False, as the attribute may
     # exist on a child class or get assigned at runtime
-    if is_subtype(PredicateValue(pred), obj, ctx.visitor):
+    # TODO: we could be more liberal about inferring True here, e.g with:
+    # is_subtype(PredicateValue(pred), obj, ctx.visitor)
+    # but that leads to too many false positives.
+    if isinstance(obj, TypedValue) and obj.get_type_object(ctx.visitor).has_attribute(
+        name.val, ctx.visitor
+    ):
+        return_value = KnownValue(True)
+    elif isinstance(obj, KnownValue) and hasattr_static(obj.val, name.val):
         return_value = KnownValue(True)
     else:
         return_value = TypedValue(bool)
+    pred = HasAttr(name.val, AnyValue(AnySource.inference))
     metadata = [AddPredicateExtension("object", pred)]
     return AnnotatedValue(return_value, metadata)
 

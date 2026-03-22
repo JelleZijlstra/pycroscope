@@ -17,7 +17,6 @@ from .value import (
     AnyValue,
     GenericValue,
     KnownValue,
-    TypedValue,
     assert_is_value,
 )
 
@@ -943,17 +942,21 @@ class TestAttributes(TestNameCheckVisitorBase):
 class TestHasAttr(TestNameCheckVisitorBase):
     @assert_passes()
     def test_hasattr(self):
+        from typing import Any
+
         from typing_extensions import Literal, Never, assert_type
 
         def capybara(x: Literal[1], y: object) -> None:
             if hasattr(x, "x"):
                 assert_type(x, Never)
             if hasattr(y, "x"):
-                assert_type(y.x, object)
+                assert_type(y.x, Any)
 
     @assert_passes()
     def test_multi_hasattr(self):
-        from typing import Union
+        from typing import Any, Union
+
+        from typing_extensions import assert_type
 
         class A:
             pass
@@ -963,8 +966,8 @@ class TestHasAttr(TestNameCheckVisitorBase):
 
         def capybara(x: Union[A, B]):
             if hasattr(x, "a") and hasattr(x, "b"):
-                assert_is_value(x.a, TypedValue(object))
-                assert_is_value(x.b, TypedValue(object))
+                assert_type(x.a, Any)
+                assert_type(x.b, Any)
 
     @assert_passes()
     def test_hasattr_plus_call(self):

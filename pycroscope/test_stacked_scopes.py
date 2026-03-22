@@ -1659,7 +1659,9 @@ class TestConstraints(TestNameCheckVisitorBase):
                     IntersectionValue(
                         (
                             TypedValue(int),
-                            PredicateValue(HasAttr("name", TypedValue(object))),
+                            PredicateValue(
+                                HasAttr("name", AnyValue(AnySource.inference))
+                            ),
                         )
                     ),
                 )
@@ -1677,12 +1679,15 @@ class TestConstraints(TestNameCheckVisitorBase):
                 assert_is_value(
                     x,
                     TypedValue(int)
-                    & PredicateValue(HasAttr("name", TypedValue(object))),
+                    & PredicateValue(HasAttr("name", AnyValue(AnySource.inference))),
                 )
             # TODO this should simplify to just int
             assert_is_value(
                 x,
-                (TypedValue(int) & PredicateValue(HasAttr("name", TypedValue(object))))
+                (
+                    TypedValue(int)
+                    & PredicateValue(HasAttr("name", AnyValue(AnySource.inference)))
+                )
                 | TypedValue(int),
             )
 

@@ -14336,7 +14336,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     node,
                     ignore_none=self.options.get_value_for(IgnoreNoneAttributes),
                 )
-            synthetic_lookup_val = callee_val.value
         if isinstance(callee_val, TypedValue):
             fallback_lookup_val = SubclassValue.make(callee_val)
         else:
