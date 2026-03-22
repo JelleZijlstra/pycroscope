@@ -410,7 +410,7 @@ def _invalid_classinfo_kind_runtime(
 
 
 def _is_non_runtime_checkable_protocol(typ: type, ctx: CallContext) -> bool:
-    if not ctx.visitor.checker.make_type_object(typ).is_protocol:
+    if not ctx.visitor.checker.make_type_object(typ).is_protocol():
         return False
     # Runtime classinfo semantics apply only to actual protocol runtime classes.
     if not safe_getattr(typ, "_is_protocol", False):
@@ -419,7 +419,7 @@ def _is_non_runtime_checkable_protocol(typ: type, ctx: CallContext) -> bool:
 
 
 def _is_runtime_checkable_protocol(typ: type, ctx: CallContext) -> bool:
-    if not ctx.visitor.checker.make_type_object(typ).is_protocol:
+    if not ctx.visitor.checker.make_type_object(typ).is_protocol():
         return False
     if not safe_getattr(typ, "_is_protocol", False):
         return False
@@ -427,7 +427,7 @@ def _is_runtime_checkable_protocol(typ: type, ctx: CallContext) -> bool:
 
 
 def _runtime_protocol_member_names(protocol: type, ctx: CallContext) -> set[str]:
-    return set(ctx.visitor.checker.make_type_object(protocol).protocol_members)
+    return set(ctx.visitor.checker.make_type_object(protocol).get_protocol_members())
 
 
 def _runtime_protocol_member_is_method(protocol: type, member: str) -> bool:
@@ -2031,7 +2031,8 @@ def _get_mro_impl(ctx: CallContext) -> Value:
     if class_key is None:
         return ctx.inferred_return_value
     return SequenceValue(
-        tuple, [(False, value) for value in checker.make_type_object(class_key).mro]
+        tuple,
+        [(False, value) for value in checker.make_type_object(class_key).get_mro()],
     )
 
 
@@ -2467,12 +2468,12 @@ def _newtype_is_protocol(value: Value, ctx: CallContext) -> bool:
     if isinstance(value, GenericValue):
         return (
             isinstance(value.typ, type)
-            and ctx.visitor.checker.make_type_object(value.typ).is_protocol
+            and ctx.visitor.checker.make_type_object(value.typ).is_protocol()
         )
     if isinstance(value, TypedValue):
         return (
             isinstance(value.typ, type)
-            and ctx.visitor.checker.make_type_object(value.typ).is_protocol
+            and ctx.visitor.checker.make_type_object(value.typ).is_protocol()
         )
     if isinstance(value, SubclassValue):
         return _newtype_is_protocol(value.typ, ctx)

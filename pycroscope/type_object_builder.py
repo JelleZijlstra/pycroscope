@@ -1,9 +1,8 @@
-"""Responsible for creating TypeObject objects."""
+"""Helpers for computing raw ``TypeObject`` ancestry and symbol metadata."""
 
 import inspect
-import itertools
 import sys
-from collections.abc import Iterable, Iterator, Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import MISSING, replace
 
 from typing_extensions import assert_never
@@ -12,7 +11,6 @@ if sys.version_info >= (3, 14):
     from annotationlib import Format, get_annotations
 
 from pycroscope.checker import Checker
-from pycroscope.type_object import TypeObject
 
 from .annotations import (
     _RuntimeAnnotationsContext,
@@ -21,20 +19,12 @@ from .annotations import (
 )
 from .arg_spec import ArgSpecCache, GenericBases
 from .input_sig import coerce_paramspec_specialization_to_input_sig
-from .safe import (
-    is_instance_of_typing_name,
-    is_namedtuple_class,
-    is_typing_name,
-    safe_getattr,
-)
+from .safe import is_namedtuple_class, safe_getattr
 from .type_object import (
-    EXCLUDED_PROTOCOL_MEMBERS,
     DataclassFieldRecord,
     MroValue,
-    TypeObject,
     _class_key_from_value,
     class_keys_match,
-    get_mro,
     merge_declared_symbol,
 )
 from .value import (
@@ -69,97 +59,6 @@ from .value import (
 )
 
 _SyntheticGenericBases = dict[type | str, dict[TypeVarLike, Value]]
-
-
-def build_type_object(checker: Checker, typ: type | str) -> TypeObject:
-    if isinstance(typ, str):
-        # Synthetic type
-        bases = _get_typeshed_bases(checker, typ)
-        synthetic_class = checker.get_synthetic_class(typ)
-        direct_symbols = _build_direct_declared_symbols(checker, typ)
-        dataclass_fields: tuple[DataclassFieldRecord, ...] = ()
-        if checker._arg_spec_cache is None:
-            declared_type_params = ()
-            mro = ()
-        else:
-            declared_type_params = tuple(checker.get_type_parameters(typ))
-            mro = compute_type_object_mro(checker, typ)
-        if synthetic_class is not None:
-            bases |= _get_type_bases_from_synthetic_class(checker, synthetic_class)
-            dataclass_fields = _get_synthetic_dataclass_fields(checker, synthetic_class)
-        is_protocol = any(is_typing_name(base, "Protocol") for base in bases)
-        if is_protocol:
-            protocol_members = _get_protocol_members(
-                checker, bases
-            ) | _get_synthetic_protocol_members(checker, typ)
-        else:
-            protocol_members = set()
-        return TypeObject(
-            typ=typ,
-            mro=mro,
-            base_classes=bases,
-            declared_type_params=declared_type_params,
-            is_protocol=is_protocol,
-            protocol_members=protocol_members,
-            is_final=checker.ts_finder.is_final(typ),
-            declared_symbols=direct_symbols,
-            dataclass_fields=dataclass_fields,
-        )
-    plugin_bases = checker.get_additional_bases(typ)
-    typeshed_bases = _get_recursive_typeshed_bases(checker, typ)
-    additional_bases = plugin_bases | typeshed_bases
-    direct_symbols = _build_direct_declared_symbols(checker, typ)
-    dataclass_fields = _get_runtime_dataclass_fields(typ)
-    if checker._arg_spec_cache is None:
-        declared_type_params = ()
-        mro = ()
-    else:
-        declared_type_params = tuple(checker.get_type_parameters(typ))
-        mro = compute_type_object_mro(checker, typ)
-    # Is it marked as a protocol in stubs? If so, use the stub definition.
-    if checker.ts_finder.is_protocol(typ):
-        return TypeObject(
-            typ=typ,
-            mro=mro,
-            base_classes=additional_bases,
-            declared_type_params=declared_type_params,
-            is_protocol=True,
-            protocol_members=_get_protocol_members(checker, typeshed_bases),
-            declared_symbols=direct_symbols,
-            dataclass_fields=dataclass_fields,
-        )
-    # Is it a protocol at runtime?
-    if is_instance_of_typing_name(typ, "_ProtocolMeta") and safe_getattr(
-        typ, "_is_protocol", False
-    ):
-        bases = get_mro(typ)
-        members = set(
-            itertools.chain.from_iterable(
-                _extract_protocol_members(base) for base in bases
-            )
-        )
-        members |= _get_synthetic_protocol_members(checker, typ)
-        return TypeObject(
-            typ=typ,
-            mro=mro,
-            base_classes=additional_bases,
-            declared_type_params=declared_type_params,
-            is_protocol=True,
-            protocol_members=members,
-            declared_symbols=direct_symbols,
-            dataclass_fields=dataclass_fields,
-        )
-
-    is_final = checker.ts_finder.is_final(typ)
-    return TypeObject(
-        typ=typ,
-        mro=mro,
-        base_classes=additional_bases,
-        declared_type_params=declared_type_params,
-        is_final=is_final,
-        declared_symbols=direct_symbols,
-        dataclass_fields=dataclass_fields,
-    )
 
 
 def _get_runtime_dataclass_fields(typ: type) -> tuple[DataclassFieldRecord, ...]:
@@ -203,23 +102,25 @@ def _get_synthetic_dataclass_fields(
     for base in synthetic_class.base_classes:
         for base_value in _iter_base_type_values(base, checker._arg_spec_cache):
             base_type_object = checker.make_type_object(base_value.typ)
-            for record in base_type_object.dataclass_fields:
+            for record in base_type_object.get_dataclass_fields():
                 if record.field_name not in records_by_name:
                     ordered.append(record.field_name)
                 records_by_name[record.field_name] = record
 
     local_fields = synthetic_class.dataclass_field_order
+    type_object = checker.make_type_object(synthetic_class.class_type.typ)
+    declared_symbols = type_object.get_declared_symbols()
     if not local_fields:
         local_fields = tuple(
             name
-            for name, symbol in synthetic_class.declared_symbols.items()
+            for name, symbol in declared_symbols.items()
             if symbol.dataclass_field is not None
         )
     class_type = synthetic_class.class_type
     if not isinstance(class_type, TypedValue):
         return tuple(records_by_name[name] for name in ordered)
     for field_name in local_fields:
-        symbol = synthetic_class.declared_symbols.get(field_name)
+        symbol = type_object.get_declared_symbol(field_name)
         if symbol is None:
             continue
         record = DataclassFieldRecord(
@@ -236,89 +137,11 @@ def _get_synthetic_dataclass_fields(
     return tuple(records_by_name[name] for name in ordered)
 
 
-def _extract_protocol_members(typ: type) -> set[str]:
-    if (
-        typ is object
-        or is_typing_name(typ, "Generic")
-        or is_typing_name(typ, "Protocol")
-    ):
-        return set()
-    members: set[str] = set(typ.__dict__) - EXCLUDED_PROTOCOL_MEMBERS
-    # Starting in 3.10 __annotations__ always exists on types
-    if sys.version_info >= (3, 10) or hasattr(typ, "__annotations__"):
-        members |= set(typ.__annotations__)
-    return members
-
-
-def _get_protocol_members(checker: Checker, bases: Iterable[type | str]) -> set[str]:
-    members = {
-        attr
-        for base in bases
-        for attr in checker.ts_finder.get_all_attributes(base)
-        if attr != "__slots__"
-    }
-    for base in bases:
-        members |= _get_synthetic_protocol_members(checker, base)
-    return members
-
-
-def _get_synthetic_protocol_members(checker: Checker, typ: type | str) -> set[str]:
-    synthetic_class = checker.get_synthetic_class(typ)
-    if synthetic_class is None:
-        return set()
-    return {
-        member
-        for member in synthetic_class.declared_symbols
-        if member not in EXCLUDED_PROTOCOL_MEMBERS and member != "__slots__"
-    }
-
-
-def _get_type_bases_from_synthetic_class(
-    checker: Checker, synthetic_class: SyntheticClassObjectValue
-) -> set[type | str]:
-    return {
-        base_value.typ
-        for base in synthetic_class.base_classes
-        for base_value in _iter_base_type_values(base, checker._arg_spec_cache)
-    }
-
-
-def _build_direct_declared_symbols(
+def compute_type_object_direct_bases(
     checker: Checker, typ: type | str
-) -> dict[str, ClassSymbol]:
-    direct_symbols: dict[str, ClassSymbol] = {}
-    if isinstance(typ, type):
-        _add_runtime_declared_symbols(typ, direct_symbols)
-    synthetic_class = checker.get_synthetic_class(typ)
-    if synthetic_class is not None:
-        _add_synthetic_declared_symbols(
-            synthetic_class.declared_symbols, direct_symbols
-        )
-    return direct_symbols
-
-
-def _get_recursive_typeshed_bases(checker: Checker, typ: type | str) -> set[type | str]:
-    seen = set()
-    to_do = {typ}
-    result = set()
-    while to_do:
-        typ = to_do.pop()
-        if typ in seen:
-            continue
-        bases = _get_typeshed_bases(checker, typ)
-        result |= bases
-        to_do |= bases
-        seen.add(typ)
-    return result
-
-
-def _get_typeshed_bases(checker: Checker, typ: type | str) -> set[type | str]:
-    base_values = checker.ts_finder.get_bases_recursively(typ)
-    return {
-        base_value.typ
-        for base in base_values
-        for base_value in _iter_base_type_values(base, checker._arg_spec_cache)
-    }
+) -> tuple[MroValue, ...]:
+    _, direct_base_values = _get_direct_mro_bases(checker, typ)
+    return direct_base_values
 
 
 def compute_type_object_mro(
@@ -326,9 +149,8 @@ def compute_type_object_mro(
 ) -> tuple[MroValue, ...]:
     if typ in seen:
         return ()
-    direct_base_keys = _get_direct_mro_base_keys(checker, typ)
+    direct_base_keys, direct_base_values = _get_direct_mro_bases(checker, typ)
     declared_type_params = tuple(checker.get_type_parameters(typ))
-    generic_bases = _get_generic_bases_for_class_definition(checker, typ)
     tuple_base = checker._namedtuple_tuple_base(typ)
     if not direct_base_keys:
         return (
@@ -339,12 +161,6 @@ def compute_type_object_mro(
                 tuple_base=tuple_base,
             ),
         )
-    direct_base_values = [
-        _specialize_mro_base_value(
-            checker, base_key, generic_bases=generic_bases, tuple_base=tuple_base
-        )
-        for base_key in direct_base_keys
-    ]
     sequences: list[tuple[MroValue, ...]] = [tuple(direct_base_values)]
     next_seen = seen | {typ}
     for base_key, base_value in zip(direct_base_keys, direct_base_values):
@@ -366,6 +182,23 @@ def compute_type_object_mro(
     if merged and merged[0] == self_value:
         return merged
     return (self_value, *merged)
+
+
+def _get_direct_mro_bases(
+    checker: Checker, typ: type | str
+) -> tuple[list[type | str], tuple[MroValue, ...]]:
+    direct_base_keys = _get_direct_mro_base_keys(checker, typ)
+    if not direct_base_keys:
+        return direct_base_keys, ()
+    generic_bases = _get_generic_bases_for_class_definition(checker, typ)
+    tuple_base = checker._namedtuple_tuple_base(typ)
+    direct_base_values = tuple(
+        _specialize_mro_base_value(
+            checker, base_key, generic_bases=generic_bases, tuple_base=tuple_base
+        )
+        for base_key in direct_base_keys
+    )
+    return direct_base_keys, direct_base_values
 
 
 def _get_direct_mro_base_keys(checker: Checker, typ: type | str) -> list[type | str]:

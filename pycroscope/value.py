@@ -1402,7 +1402,7 @@ class TypedValue(Value):
         self, other: Value, ctx: CanAssignContext, mode: OverlapMode
     ) -> CanAssignError | None:
         self_tobj = self.get_type_object(ctx)
-        if self_tobj.is_thrift_enum:
+        if self_tobj.is_thrift_enum():
             if isinstance(other, (KnownValue, TypedValue)):
                 can_assign = self.can_assign_thrift_enum(other, ctx)
                 if isinstance(can_assign, CanAssignError):
@@ -2120,9 +2120,6 @@ class SyntheticClassObjectValue(Value):
     declared_type_params: Sequence[TypeParam] = field(
         default_factory=tuple, compare=False, hash=False, repr=False
     )
-    declared_symbols: MutableMapping[str, "ClassSymbol"] = field(
-        default_factory=dict, compare=False, hash=False, repr=False
-    )
     dataclass_field_order: tuple[str, ...] = field(
         default_factory=tuple, compare=False, hash=False, repr=False
     )
@@ -2164,37 +2161,6 @@ class SyntheticClassObjectValue(Value):
                 else None
             ),
             declared_type_params=tuple(self.declared_type_params),
-            declared_symbols={
-                key: ClassSymbol(
-                    annotation=(
-                        symbol.annotation.substitute_typevars(typevars)
-                        if symbol.annotation is not None
-                        else None
-                    ),
-                    qualifiers=symbol.qualifiers,
-                    is_instance_only=symbol.is_instance_only,
-                    is_method=symbol.is_method,
-                    is_classmethod=symbol.is_classmethod,
-                    is_staticmethod=symbol.is_staticmethod,
-                    returns_self_on_class_access=symbol.returns_self_on_class_access,
-                    property_info=(
-                        symbol.property_info.substitute_typevars(typevars)
-                        if symbol.property_info is not None
-                        else None
-                    ),
-                    initializer=(
-                        symbol.initializer.substitute_typevars(typevars)
-                        if symbol.initializer is not None
-                        else None
-                    ),
-                    dataclass_field=(
-                        symbol.dataclass_field.substitute_typevars(typevars)
-                        if symbol.dataclass_field is not None
-                        else None
-                    ),
-                )
-                for key, symbol in self.declared_symbols.items()
-            },
             dataclass_field_order=tuple(self.dataclass_field_order),
         )
 
@@ -2232,15 +2198,6 @@ class SyntheticClassObjectValue(Value):
             yield from self.dataclass_info.walk_values()
         if self.dataclass_transform_info is not None:
             yield from self.dataclass_transform_info.walk_values()
-        for symbol in self.declared_symbols.values():
-            if symbol.annotation is not None:
-                yield from symbol.annotation.walk_values()
-            if symbol.property_info is not None:
-                yield from symbol.property_info.walk_values()
-            if symbol.initializer is not None:
-                yield from symbol.initializer.walk_values()
-            if symbol.dataclass_field is not None:
-                yield from symbol.dataclass_field.walk_values()
 
     def get_type_value(self) -> Value:
         if isinstance(self.class_type, TypedValue) and isinstance(
@@ -4058,7 +4015,7 @@ def is_iterable(value: Value, ctx: CanAssignContext) -> CanAssignError | Value:
 
 
 def ordered_namedtuple_fields_from_synthetic(
-    synthetic: SyntheticClassObjectValue,
+    synthetic: SyntheticClassObjectValue, ctx: CanAssignContext
 ) -> tuple[str, ...]:
     inherited: list[str] = []
     for base in synthetic.base_classes:
@@ -4070,7 +4027,9 @@ def ordered_namedtuple_fields_from_synthetic(
                     and isinstance(runtime_class.val, type)
                     and is_namedtuple_class(runtime_class.val)
                 ):
-                    inherited.extend(ordered_namedtuple_fields_from_synthetic(subval))
+                    inherited.extend(
+                        ordered_namedtuple_fields_from_synthetic(subval, ctx)
+                    )
             elif isinstance(subval, KnownValue) and isinstance(subval.val, type):
                 fields_obj = safe_getattr(subval.val, "_fields", None)
                 if is_namedtuple_class(subval.val) and isinstance(fields_obj, tuple):
@@ -4094,20 +4053,21 @@ def ordered_namedtuple_fields_from_synthetic(
                     field for field in fields_obj if isinstance(field, str)
                 )
         else:
+            declared_symbols = get_synthetic_declared_symbols(synthetic, ctx)
             allowed_names = {
                 name
-                for name, symbol in synthetic.declared_symbols.items()
+                for name, symbol in declared_symbols.items()
                 if symbol.is_instance_only
                 and not symbol.is_classvar
                 and not symbol.is_initvar
             }
             local_fields.extend(
                 name
-                for name, symbol in synthetic.declared_symbols.items()
+                for name, symbol in declared_symbols.items()
                 if not symbol.is_method and (not allowed_names or name in allowed_names)
             )
             for name in allowed_names:
-                symbol = synthetic.declared_symbols.get(name)
+                symbol = declared_symbols.get(name)
                 if symbol is None or symbol.is_method or name in local_fields:
                     continue
                 local_fields.append(name)
@@ -4131,7 +4091,7 @@ def get_namedtuple_field_value_from_synthetic(
 ) -> Value | None:
     from .annotations import type_from_runtime
 
-    symbol = synthetic_class.declared_symbols.get(field_name)
+    symbol = get_synthetic_declared_symbol(synthetic_class, field_name, ctx)
     if symbol is not None:
         if (
             synthetic_class.namedtuple_info is not None
@@ -4538,10 +4498,25 @@ def _is_property_initializer(value: Value) -> bool:
     )
 
 
+def get_synthetic_declared_symbols(
+    synthetic_class: SyntheticClassObjectValue, ctx: CanAssignContext
+) -> MutableMapping[str, ClassSymbol]:
+    class_type = synthetic_class.class_type
+    if not isinstance(class_type, TypedValue):
+        return {}
+    return ctx.make_type_object(class_type.typ).get_synthetic_declared_symbols()
+
+
+def get_synthetic_declared_symbol(
+    synthetic_class: SyntheticClassObjectValue, name: str, ctx: CanAssignContext
+) -> ClassSymbol | None:
+    return get_synthetic_declared_symbols(synthetic_class, ctx).get(name)
+
+
 def get_synthetic_member_initializer(
-    synthetic_class: SyntheticClassObjectValue, name: str
+    synthetic_class: SyntheticClassObjectValue, name: str, ctx: CanAssignContext
 ) -> Value | None:
-    symbol = synthetic_class.declared_symbols.get(name)
+    symbol = get_synthetic_declared_symbol(synthetic_class, name, ctx)
     if symbol is None:
         return None
     return symbol.initializer

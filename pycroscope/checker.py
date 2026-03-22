@@ -486,17 +486,63 @@ class Checker:
             bases |= provider(typ)
         return bases
 
+    def _canonical_type_object_key(self, typ: type | str) -> type | str:
+        synthetic_class = self.get_synthetic_class(typ)
+        if synthetic_class is not None and isinstance(
+            synthetic_class.class_type, TypedValue
+        ):
+            class_key = synthetic_class.class_type.typ
+            if isinstance(class_key, type):
+                return class_key
+        return typ
+
+    def _get_cached_type_object(self, typ: type | str) -> TypeObject | None:
+        canonical_key = typ
+        try:
+            canonical_key = self._canonical_type_object_key(typ)
+        except Exception:
+            pass
+        cached = self.type_object_cache.get(canonical_key)
+        if cached is None and typ != canonical_key:
+            cached = self.type_object_cache.get(typ)
+        if cached is None and isinstance(canonical_key, type):
+            cached = self.type_object_cache.get(
+                runtime_type_generic_alias(canonical_key)
+            )
+        if cached is None and isinstance(typ, type):
+            cached = self.type_object_cache.get(runtime_type_generic_alias(typ))
+        return cached
+
     def make_type_object(self, typ: type | str) -> TypeObject:
         try:
-            in_cache = typ in self.type_object_cache
+            canonical_key = self._canonical_type_object_key(typ)
         except Exception:
-            return pycroscope.type_object_builder.build_type_object(self, typ)
-        if in_cache:
-            return self.type_object_cache[typ]
-        type_object = pycroscope.type_object_builder.build_type_object(self, typ)
-        self._sync_synthetic_class_type_object(typ, type_object)
-        self.type_object_cache[typ] = type_object
-        return type_object
+            return TypeObject(self, typ)
+        cached = self._get_cached_type_object(canonical_key)
+        needs_sync = False
+        if cached is None:
+            cached = TypeObject(self, canonical_key)
+            self.type_object_cache[canonical_key] = cached
+            self.type_object_cache[typ] = cached
+            if isinstance(canonical_key, type):
+                self.type_object_cache[runtime_type_generic_alias(canonical_key)] = (
+                    cached
+                )
+            if isinstance(typ, type):
+                self.type_object_cache[runtime_type_generic_alias(typ)] = cached
+            needs_sync = True
+        elif isinstance(canonical_key, type) and cached.typ is not canonical_key:
+            cached.typ = canonical_key
+            needs_sync = True
+        if needs_sync:
+            self._sync_synthetic_class_type_object(canonical_key, cached)
+        self.type_object_cache[canonical_key] = cached
+        self.type_object_cache[typ] = cached
+        if isinstance(canonical_key, type):
+            self.type_object_cache[runtime_type_generic_alias(canonical_key)] = cached
+        if isinstance(typ, type):
+            self.type_object_cache[runtime_type_generic_alias(typ)] = cached
+        return cached
 
     def get_type_object_for_value(
         self, value: SimpleType, current_class: type | str | None
@@ -532,48 +578,7 @@ class Checker:
         synthetic_class = self.get_synthetic_class(typ)
         if synthetic_class is None:
             return
-        shared_declared_symbols = None
-        class_type = synthetic_class.class_type
-        if isinstance(class_type, TypedValue):
-            for key in self._iter_generic_override_keys(class_type.typ):
-                cached = self.type_object_cache.get(key)
-                if cached is not None and cached is not type_object:
-                    shared_declared_symbols = cached.declared_symbols
-                    break
-        if shared_declared_symbols is None:
-            shared_declared_symbols = type_object.declared_symbols
-        object.__setattr__(type_object, "declared_symbols", shared_declared_symbols)
-        object.__setattr__(synthetic_class, "declared_symbols", shared_declared_symbols)
-
-    def refresh_synthetic_type_object_metadata(self, typ: type | str) -> None:
-        synthetic_class = self.get_synthetic_class(typ)
-        keys: tuple[type | str, ...]
-        if synthetic_class is None:
-            keys = (typ,)
-        else:
-            class_type = synthetic_class.class_type
-            if isinstance(class_type, TypedValue):
-                keys = tuple(self._iter_generic_override_keys(class_type.typ))
-            else:
-                keys = (typ,)
-        for key in keys:
-            cached = self.type_object_cache.get(key)
-            if cached is None:
-                continue
-            rebuilt = pycroscope.type_object_builder.build_type_object(self, key)
-            self._sync_synthetic_class_type_object(key, rebuilt)
-            cached.mro = rebuilt.mro
-            cached.base_classes = rebuilt.base_classes
-            cached.declared_type_params = rebuilt.declared_type_params
-            cached.is_final = rebuilt.is_final
-            cached.is_protocol = rebuilt.is_protocol
-            cached.protocol_members = rebuilt.protocol_members
-            cached.declared_symbols = rebuilt.declared_symbols
-            cached.dataclass_fields = rebuilt.dataclass_fields
-            cached.virtual_bases = rebuilt.virtual_bases
-            cached.is_thrift_enum = rebuilt.is_thrift_enum
-            cached.is_universally_assignable = rebuilt.is_universally_assignable
-            cached._protocol_positive_cache.clear()
+        type_object.adopt_synthetic_class(synthetic_class)
 
     def _namedtuple_field_value_for_type(
         self, typ: type | str, field_name: str
@@ -662,6 +667,14 @@ class Checker:
         if isinstance(class_type, TypedDictValue):
             return
         typ = class_type.typ
+        had_cached_type_object = any(
+            key in self.type_object_cache
+            for key in self._iter_generic_override_keys(typ)
+        )
+        if not had_cached_type_object and isinstance(typ, type):
+            had_cached_type_object = (
+                runtime_type_generic_alias(typ) in self.type_object_cache
+            )
         for key in self._iter_generic_override_keys(typ):
             if key in self.synthetic_classes:
                 assert self.synthetic_classes[key] is synthetic_class, (
@@ -670,7 +683,10 @@ class Checker:
                     f" {self.synthetic_classes[key]} vs {synthetic_class}"
                 )
             self.synthetic_classes[key] = synthetic_class
-        self.refresh_synthetic_type_object_metadata(typ)
+        if had_cached_type_object:
+            cached = self._get_cached_type_object(typ)
+            if cached is not None:
+                self._sync_synthetic_class_type_object(typ, cached)
 
     def get_synthetic_class(self, typ: type | str) -> SyntheticClassObjectValue | None:
         for key in self._iter_generic_override_keys(typ):
@@ -679,7 +695,7 @@ class Checker:
                 return synthetic_class
         return None
 
-    def _ensure_synthetic_class(
+    def make_synthetic_class(
         self, typ: type | str, *, base_values: Sequence[Value] = ()
     ) -> SyntheticClassObjectValue:
         synthetic_class = self.get_synthetic_class(typ)
@@ -723,16 +739,14 @@ class Checker:
                 ).items():
                     merged_generic_bases.setdefault(gb_typ, {}).update(tv_map)
 
-        synthetic_class = self._ensure_synthetic_class(typ, base_values=base_values)
+        synthetic_class = self.make_synthetic_class(typ, base_values=base_values)
+        self.make_type_object(typ).set_base_values(base_values)
         merged_copy: _SyntheticGenericBases = {}
         for gb_typ, tv_map in merged_generic_bases.items():
             merged_copy[gb_typ] = dict(tv_map)
         synthetic_class.generic_bases.clear()
         synthetic_class.generic_bases.update(merged_copy)
-        object.__setattr__(
-            synthetic_class, "declared_type_params", tuple(declared_type_params)
-        )
-        self.refresh_synthetic_type_object_metadata(typ)
+        self.make_type_object(typ).set_declared_type_params(declared_type_params)
 
     def register_synthetic_protocol_members(
         self, typ: type | str, members: set[str]
@@ -745,11 +759,12 @@ class Checker:
         synthetic_class = self.get_synthetic_class(typ)
         if synthetic_class is None:
             return
+        type_object = self.make_type_object(typ)
         for member in cleaned_members:
-            existing = synthetic_class.declared_symbols.get(member)
+            existing = type_object.get_declared_symbol(member)
             if existing is None:
-                synthetic_class.declared_symbols[member] = ClassSymbol(
-                    initializer=AnyValue(AnySource.inference)
+                type_object.add_declared_symbol(
+                    member, ClassSymbol(initializer=AnyValue(AnySource.inference))
                 )
 
     def _iter_generic_override_keys(self, typ: type | str) -> Iterator[type | str]:
@@ -827,7 +842,7 @@ class Checker:
             return ()
         seen = seen | {class_key}
         if synthetic_class.namedtuple_info is not None:
-            return ordered_namedtuple_fields_from_synthetic(synthetic_class)
+            return ordered_namedtuple_fields_from_synthetic(synthetic_class, self)
         runtime_class = synthetic_class.runtime_class
         if (
             isinstance(runtime_class, KnownValue)
@@ -1311,7 +1326,9 @@ class Checker:
         get_return_override: Callable[[MaybeSignature], Value | None],
         get_call_attribute: Callable[[Value], Value] | None,
     ) -> bool:
-        new_symbol = value.declared_symbols.get("__new__")
+        new_symbol = self.make_type_object(value.class_type.typ).get_declared_symbol(
+            "__new__"
+        )
         if new_symbol is None or not new_symbol.is_method:
             return False
         new_sig = self._get_synthetic_constructor_method_signature(
@@ -1592,7 +1609,9 @@ class Checker:
         get_return_override: Callable[[MaybeSignature], Value | None],
         get_call_attribute: Callable[[Value], Value] | None,
     ) -> bool:
-        init_symbol = synthetic_class.declared_symbols.get("__init__")
+        init_symbol = self.make_type_object(
+            synthetic_class.class_type.typ
+        ).get_declared_symbol("__init__")
         has_direct_init = init_symbol is not None and init_symbol.is_method
         init_sig = self._get_synthetic_constructor_method_signature(
             synthetic_class,
@@ -1615,11 +1634,13 @@ class Checker:
         get_return_override: Callable[[MaybeSignature], Value | None],
         get_call_attribute: Callable[[Value], Value] | None,
     ) -> bool:
-        new_symbol = synthetic_class.declared_symbols.get("__new__")
+        new_symbol = self.make_type_object(
+            synthetic_class.class_type.typ
+        ).get_declared_symbol("__new__")
         has_direct_new = new_symbol is not None and new_symbol.is_method
         if has_direct_new:
             method = (
-                get_synthetic_member_initializer(synthetic_class, "__new__")
+                get_synthetic_member_initializer(synthetic_class, "__new__", self)
                 or UNINITIALIZED_VALUE
             )
             if not isinstance(method, Value):
@@ -1719,7 +1740,7 @@ class Checker:
             return ()
         class_type = value.class_type.typ
         for method_name in ("__new__", "__init__"):
-            method_value = get_synthetic_member_initializer(value, method_name)
+            method_value = get_synthetic_member_initializer(value, method_name, self)
             if not isinstance(method_value, CallableValue):
                 continue
             signatures = (
@@ -1805,7 +1826,7 @@ class Checker:
     ) -> ConcreteSignature | None:
         if use_direct_method:
             method = (
-                get_synthetic_member_initializer(value, method_name)
+                get_synthetic_member_initializer(value, method_name, self)
                 or UNINITIALIZED_VALUE
             )
             if not isinstance(method, Value):
@@ -1977,7 +1998,7 @@ class Checker:
         if isinstance(metaclass, SyntheticClassObjectValue):
             # Ignore the default metaclass call behavior; only use an explicit override.
             meta_call = (
-                get_synthetic_member_initializer(metaclass, "__call__")
+                get_synthetic_member_initializer(metaclass, "__call__", self)
                 or UNINITIALIZED_VALUE
             )
             if meta_call is UNINITIALIZED_VALUE:
@@ -2072,8 +2093,9 @@ class Checker:
         instance_type = self._make_synthetic_constructor_instance_value(
             value, apply_default_type_args=apply_default_type_args
         )
-        new_symbol = value.declared_symbols.get("__new__")
-        init_symbol = value.declared_symbols.get("__init__")
+        type_object = self.make_type_object(value.class_type.typ)
+        new_symbol = type_object.get_declared_symbol("__new__")
+        init_symbol = type_object.get_declared_symbol("__init__")
         has_direct_new = new_symbol is not None and new_symbol.is_method
         has_direct_init = init_symbol is not None and init_symbol.is_method
         dataclass_init_enabled = dataclass_helpers.dataclass_init_enabled(value)
@@ -2268,20 +2290,21 @@ class Checker:
                 ):
                     for record in self.make_type_object(
                         base_value.typ
-                    ).dataclass_fields:
+                    ).get_dataclass_fields():
                         if record.field_name not in records_by_name:
                             ordered_names.append(record.field_name)
                         records_by_name[record.field_name] = record
 
         local_field_names = value.dataclass_field_order
+        type_object = self.make_type_object(value.class_type.typ)
         if not local_field_names:
             local_field_names = tuple(
                 name
-                for name, symbol in value.declared_symbols.items()
+                for name, symbol in type_object.get_declared_symbols().items()
                 if symbol.dataclass_field is not None
             )
         for field_name in local_field_names:
-            symbol = value.declared_symbols.get(field_name)
+            symbol = type_object.get_declared_symbol(field_name)
             if symbol is None:
                 continue
             record = DataclassFieldRecord(
@@ -2390,7 +2413,7 @@ class Checker:
             return None
         ordered_names = [
             name
-            for name in ordered_namedtuple_fields_from_synthetic(value)
+            for name in ordered_namedtuple_fields_from_synthetic(value, self)
             if not _is_dunder(name)
         ]
         if not ordered_names:
@@ -2604,7 +2627,9 @@ class Checker:
                             argspec = runtime_constructor_sig
                 synthetic_class = self.get_synthetic_class(value.val)
                 if synthetic_class is not None:
-                    new_symbol = synthetic_class.declared_symbols.get("__new__")
+                    new_symbol = self.make_type_object(
+                        synthetic_class.class_type.typ
+                    ).get_declared_symbol("__new__")
                     has_direct_new = new_symbol is not None and new_symbol.is_method
                     is_namedtuple_synthetic = (
                         synthetic_class.namedtuple_info is not None
@@ -2732,7 +2757,7 @@ class Checker:
                 value.class_type.typ, allow_synthetic_type=True
             )
             if argspec is None:
-                init_attr = get_synthetic_member_initializer(value, "__init__")
+                init_attr = get_synthetic_member_initializer(value, "__init__", self)
                 if init_attr is not None:
                     init_sig = self.signature_from_value(init_attr)
                     if isinstance(init_sig, BoundMethodSignature):
@@ -2755,9 +2780,11 @@ class Checker:
                 synthetic_class = self.get_synthetic_class(typ)
                 if synthetic_class is not None:
                     synthetic_call = get_synthetic_member_initializer(
-                        synthetic_class, "__call__"
+                        synthetic_class, "__call__", self
                     )
-                    call_symbol = synthetic_class.declared_symbols.get("__call__")
+                    call_symbol = self.make_type_object(
+                        synthetic_class.class_type.typ
+                    ).get_declared_symbol("__call__")
                     if (
                         synthetic_call is not None
                         and call_symbol is not None
