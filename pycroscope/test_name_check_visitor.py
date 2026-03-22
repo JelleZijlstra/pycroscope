@@ -2998,6 +2998,13 @@ class TestTypingConstructNameMatching(TestNameCheckVisitorBase):
             BadTypedDict,
         )
 
+    @assert_passes()
+    def test_assignment_target_name_mismatch_with_keywords(self):
+        from typing_extensions import ParamSpec
+
+        BadParamSpec = ParamSpec(name="WrongParamSpec")  # E: incompatible_call
+        print(BadParamSpec)
+
     @skip_before((3, 11))
     def test_generic_typevartuple_base_validation(self):
         self.assert_passes(
@@ -3607,6 +3614,11 @@ class TestUnpacking(TestNameCheckVisitorBase):
             )
 
     @assert_passes()
+    def test_bad_dict_unpack(self):
+        def capybara() -> None:
+            {**3}  # E: unsupported_operation
+
+    @assert_passes()
     def test_minimal_mapping(self):
         from typing import List
 
@@ -3852,6 +3864,41 @@ class TestFStrings(TestNameCheckVisitorBase):
         def capybara(x):
             y = f"{x} stuff"
             assert_type(y, str)
+
+    @assert_passes()
+    def test_formatted_value_conversions_and_dynamic_spec(self):
+        from typing_extensions import Literal
+
+        def with_conversions() -> None:
+            assert_type(f"{1!r}", str)
+            assert_type(f"{'capybara'!s}", Literal["capybara"])
+            assert_type(f"{'capybara'!a}", Literal["'capybara'"])
+
+        def with_dynamic_spec(spec: str) -> None:
+            assert_type(f"{1:{spec}}", str)
+
+    @assert_passes()
+    def test_docstring_with_braces_does_not_require_f_string(self):
+        x = 3
+
+        def capybara() -> None:
+            """x = {x}"""
+
+    @assert_passes()
+    def test_unknown_name_in_braces_does_not_require_f_string(self):
+        def capybara() -> str:
+            return "x = {missing}"
+
+    @assert_passes()
+    def test_conversion_failure_falls_back_to_str(self):
+        class BadStr:
+            def __str__(self) -> str:
+                raise RuntimeError("capybara")
+
+        bad_str = BadStr()
+
+        def capybara() -> None:
+            assert_type(f"{bad_str!s}", str)
 
     @assert_passes()
     def test_undefined_name(self):
@@ -4590,6 +4637,67 @@ class TestControlFlow(TestNameCheckVisitorBase):
             assert_type(x, int)
 
     @assert_passes()
+    def test_assert_false(self):
+        def capybara() -> None:
+            assert False
+
+    @assert_passes()
+    def test_condition_on_attribute_of_call_result(self):
+        class Box:
+            def __init__(self, value: bool) -> None:
+                self.value = value
+
+        def make_box(value: bool) -> Box:
+            return Box(value)
+
+        def capybara() -> None:
+            if make_box(True).value:
+                pass
+
+    def test_annotate_explicit_type_alias_assignment(self):
+        self.assert_passes(
+            """
+            from typing import TypeAlias
+            from typing_extensions import assert_type
+
+            Alias: TypeAlias = tuple[int, str]
+
+            def capybara(x: Alias) -> None:
+                a, b = x
+                assert_type(a, int)
+                assert_type(b, str)
+            """,
+            annotate=True,
+        )
+
+    def test_annotate_skipped_constant_branches(self):
+        self.assert_passes(
+            """
+            from typing_extensions import Literal, assert_type
+
+            def capybara() -> None:
+                if True:  # E: value_always_true
+                    x = 1
+                else:
+                    x = 2
+                assert_type(x, Literal[1, 2])
+
+                if False:
+                    y = 3
+                else:
+                    y = 4
+                assert_type(y, Literal[3, 4])
+
+                z = 5 if True else 6  # E: value_always_true
+                assert_type(z, Literal[5, 6])
+
+                w = 7 if False else 8
+                assert_type(w, Literal[7, 8])
+            """,
+            annotate=True,
+        )
+
+    @assert_passes()
     def test_if_true_keeps_merged_assignment_type(self):
         from typing_extensions import Literal, assert_type
 
@@ -4736,6 +4844,16 @@ class TestControlFlow(TestNameCheckVisitorBase):
         from typing_extensions import assert_type
 
         def capybara(exc_type: Type[BaseException]) -> None:
+            try:
+                raise ValueError()
+            except exc_type as exc:
+                assert_type(exc, BaseException)
+
+    @assert_passes()
+    def test_except_unknown_handler_type_falls_back_to_baseexception(self):
+        from typing_extensions import assert_type
+
+        def capybara(exc_type: object) -> None:
             try:
                 raise ValueError()
             except exc_type as exc:
@@ -4925,6 +5043,49 @@ class TestWith(TestNameCheckVisitorBase):
             cm: GoodCM | BadCM = GoodCM() if flag else BadCM()
             with cm as value:  # E: invalid_context_manager
                 print(value)
+
+    @assert_passes()
+    def test_assert_error_block(self) -> None:
+        from pycroscope.extensions import assert_error
+
+        def f(x: int) -> None:
+            pass
+
+        def capybara() -> None:
+            with assert_error():
+                f("x")
+
+            with assert_error():  # E: inference_failure
+                f(1)
+
+    @assert_passes()
+    def test_assert_error_nested_control_flow(self) -> None:
+        from pycroscope.extensions import assert_error
+
+        def f(x: int) -> None:
+            pass
+
+        def capybara(flag: bool) -> None:
+            with assert_error():
+                if flag:
+                    f("x")
+                else:
+                    f("y")
+
+    @assert_passes()
+    def test_assert_error_nested_with_block(self) -> None:
+        import contextlib
+
+        from pycroscope.extensions import assert_error
+
+        def f(x: int) -> None:
+            pass
+
+        def capybara() -> None:
+            with assert_error():
+                with contextlib.nullcontext(None) as value:
+                    assert_type(value, None)
+                    f("x")
 
     @assert_passes()
     def test_async_with(self) -> None:
@@ -5535,6 +5696,18 @@ class TestTryStar(TestNameCheckVisitorBase):
                 except* ExceptionGroup as eg:  # E: bad_except_handler
                     print(eg)
             """)
+
+
+class TestProtocolInstantiation(TestNameCheckVisitorBase):
+    @assert_passes()
+    def test_protocol_instantiation_is_rejected(self):
+        from typing import Protocol
+
+        class Proto(Protocol):
+            def meth(self) -> int: ...
+
+        def capybara() -> None:
+            Proto()  # E: incompatible_call
 
 
 class TestMustUse(TestNameCheckVisitorBase):

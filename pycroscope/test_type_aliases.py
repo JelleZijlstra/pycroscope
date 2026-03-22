@@ -423,6 +423,22 @@ class TestTypeAliasType(TestNameCheckVisitorBase):
         """)
 
     @skip_before((3, 12))
+    def test_312_annotated_runtime_alias(self):
+        self.assert_passes(
+            """
+            from typing_extensions import assert_type
+
+            type Alias = tuple[int, str]
+
+            def capybara(x: Alias) -> None:
+                a, b = x
+                assert_type(a, int)
+                assert_type(b, str)
+            """,
+            annotate=True,
+        )
+
+    @skip_before((3, 12))
     def test_312_local_alias(self):
         self.assert_passes("""
             def capybara():
