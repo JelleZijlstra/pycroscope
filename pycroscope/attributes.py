@@ -94,7 +94,6 @@ from .value import (
     UnboundMethodValue,
     Value,
     annotate_value,
-    has_any_base_value,
     replace_fallback,
     set_self,
     stringify_object,
@@ -270,7 +269,8 @@ def get_attribute(ctx: AttrContext) -> Value:
                     synthetic_name, synthetic_class, ctx, seen={id(synthetic_class)}
                 )
                 if attribute_value is UNINITIALIZED_VALUE:
-                    if _synthetic_class_has_any_base(synthetic_class):
+                    tobj = ctx.get_can_assign_context().make_type_object(synthetic_name)
+                    if tobj.has_any_base():
                         attribute_value = AnyValue(AnySource.from_another)
                 else:
                     self_value: Value = root_value.typ
@@ -588,6 +588,7 @@ def _get_attribute_from_synthetic_type(
     elif ctx.attr == "__dict__":
         return TypedValue(dict)
     synthetic_class = ctx.get_synthetic_class(fq_name)
+    tobj = ctx.get_can_assign_context().make_type_object(fq_name)
     if synthetic_class is not None:
         if generic_args:
             receiver_value = GenericValue(fq_name, generic_args)
@@ -622,9 +623,8 @@ def _get_attribute_from_synthetic_type(
         result, provider = _get_attribute_from_synthetic_type_bases(
             fq_name, generic_args, ctx
         )
-    if result is UNINITIALIZED_VALUE and synthetic_class is not None:
-        if _synthetic_class_has_any_base(synthetic_class):
-            return AnyValue(AnySource.from_another)
+    if tobj.has_any_base():
+        return AnyValue(AnySource.from_another)
     result = _substitute_typevars(fq_name, generic_args, result, provider, ctx)
     result = _maybe_resolve_synthetic_property_attribute(result, ctx)
     result = set_self(result, ctx.get_self_value())
@@ -685,7 +685,8 @@ def _get_attribute_from_synthetic_class(
         fq_name, self_value, ctx, seen={id(self_value)}, runtime_type=runtime_type
     )
     if result is UNINITIALIZED_VALUE:
-        if _synthetic_class_has_any_base(self_value):
+        tobj = ctx.get_can_assign_context().make_type_object(fq_name)
+        if tobj.has_any_base():
             return AnyValue(AnySource.from_another)
         return result
     result = set_self(result, self_value.class_type)
@@ -1148,10 +1149,6 @@ def _get_attribute_from_synthetic_base(
         return AnyValue(AnySource.from_another)
 
     return UNINITIALIZED_VALUE
-
-
-def _synthetic_class_has_any_base(self_value: SyntheticClassObjectValue) -> bool:
-    return any(has_any_base_value(base) for base in self_value.base_classes)
 
 
 def _contains_self_typevar(value: Value) -> bool:
