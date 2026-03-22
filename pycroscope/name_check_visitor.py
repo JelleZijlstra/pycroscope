@@ -256,7 +256,6 @@ from .value import (
     DictIncompleteValue,
     GenericBases,
     GenericValue,
-    HasAttrExtension,
     IntersectionValue,
     KnownValue,
     KnownValueWithTypeVars,
@@ -14347,13 +14346,13 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         self, node: ast.AST | None, callee_val: Value, method_name: str
     ) -> Value:
         synthetic_lookup_val = callee_val
-        if isinstance(callee_val, AnnotatedValue):
+        if (
+            isinstance(callee_val, PredicateValue)
+            and isinstance(callee_val.predicate, HasAttr)
+            and callee_val.predicate.attr == method_name
+        ):
             is_dunder = method_name.startswith("__") and method_name.endswith("__")
-            has_explicit_method = any(
-                extension.attribute_name == KnownValue(method_name)
-                for extension in callee_val.get_metadata_of_type(HasAttrExtension)
-            )
-            if has_explicit_method and not is_dunder:
+            if not is_dunder:
                 return self.get_attribute(
                     Composite(callee_val),
                     method_name,

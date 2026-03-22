@@ -17,6 +17,7 @@ from .value import (
     AnyValue,
     GenericValue,
     KnownValue,
+    TypedValue,
     assert_is_value,
 )
 
@@ -939,43 +940,16 @@ class TestAttributes(TestNameCheckVisitorBase):
             assert_type(c.f(), int)
 
 
-class TestHasAttrExtension(TestNameCheckVisitorBase):
+class TestHasAttr(TestNameCheckVisitorBase):
     @assert_passes()
     def test_hasattr(self):
-        from typing_extensions import Literal
+        from typing_extensions import Literal, Never, assert_type
 
-        def capybara(x: Literal[1]) -> None:
+        def capybara(x: Literal[1], y: object) -> None:
             if hasattr(x, "x"):
-                assert_is_value(x.x, AnyValue(AnySource.inference))
-
-    @assert_passes()
-    def test_user_hasattr(self):
-        from typing import Any, TypeVar
-
-        from typing_extensions import Annotated, Literal
-
-        from pycroscope.extensions import HasAttrGuard
-
-        T = TypeVar("T", bound=str)
-
-        def my_hasattr(
-            obj: object, name: T
-        ) -> Annotated[bool, HasAttrGuard["obj", T, Any]]:
-            return hasattr(obj, name)
-
-        def has_int_attr(
-            obj: object, name: T
-        ) -> Annotated[bool, HasAttrGuard["obj", T, int]]:
-            val = getattr(obj, name, None)
-            return isinstance(val, int)
-
-        def capybara(x: Literal[1]) -> None:
-            if my_hasattr(x, "x"):
-                assert_is_value(x.x, AnyValue(AnySource.explicit))
-
-        def inty_capybara(x: Literal[1]) -> None:
-            if has_int_attr(x, "inty"):
-                assert_type(x.inty, int)
+                assert_type(x, Never)
+            if hasattr(y, "x"):
+                assert_type(y.x, object)
 
     @assert_passes()
     def test_multi_hasattr(self):
@@ -989,8 +963,8 @@ class TestHasAttrExtension(TestNameCheckVisitorBase):
 
         def capybara(x: Union[A, B]):
             if hasattr(x, "a") and hasattr(x, "b"):
-                assert_is_value(x.a, AnyValue(AnySource.inference))
-                assert_is_value(x.b, AnyValue(AnySource.inference))
+                assert_is_value(x.a, TypedValue(object))
+                assert_is_value(x.b, TypedValue(object))
 
     @assert_passes()
     def test_hasattr_plus_call(self):

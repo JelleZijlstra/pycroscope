@@ -10,7 +10,6 @@ In addition to the standard Python type system, pycroscope supports a number of 
 - `pycroscope.extensions.AsynqCallable` is a variant of `Callable` that applies to `asynq` functions.
 - `pycroscope.extensions.Overlapping[T]` accepts values whose types overlap with `T` (that is, where `T & U` is not `Never`).
 - `pycroscope.extensions.ParameterTypeGuard` is a generalization of PEP 649's `TypeGuard` that allows guards on any parameter to a function. To use it, return `Annotated[bool, ParameterTypeGuard["arg", SomeType]]`.
-- `pycroscope.extensions.HasAttrGuard` is a similar mechanism that allows indicating that an object has a particular attribute. To use it, return `Annotated[bool, HasAttrGuard["arg", "attribute", SomeType]]`.
 - `pycroscope.extensions.ExternalType` is a way to refer to a type that cannot
   be referenced by name in contexts where using `if TYPE_CHECKING` is not possible.
 - `pycroscope.extensions.CustomCheck` is a powerful mechanism to extend the type system
@@ -94,39 +93,6 @@ def _can_perform_call(
         isinstance(kwarg, KnownValue) for kwarg in keywords
     )
 ```
-
-### HasAttrGuard
-
-`HasAttrGuard` is similar to `ParameterTypeGuard` and `TypeGuard`, but instead of narrowing a type, it indicates that an object has a particular attribute. For example, consider this function:
-
-```python
-from typing import Literal, Annotated
-from pycroscope.extensions import HasAttrGuard
-
-def has_time(arg: object) -> Annotated[bool, HasAttrGuard["arg", Literal["time"], int]]:
-    attr = getattr(arg, "time", None)
-    return isinstance(attr, int)
-```
-
-After a call to `has_time(o)` succeeds, pycroscope will know that `o.time` exists and is of type `int`.
-
-In practice the main use of this type is to implement the type of `hasattr` itself. In pure Python `hasattr` could look like this:
-
-```python
-from typing import Any, TypeVar, Annotated
-from pycroscope.extensions import HasAttrGuard
-
-T = TypeVar("T", bound=str)
-
-def hasattr(obj: object, name: T) -> Annotated[bool, HasAttrGuard["obj", T, Any]]:
-    try:
-        getattr(obj, name)
-        return True
-    except AttributeError:
-        return False
-```
-
-As currently implemented, `HasAttrGuard` does not narrow types; instead it preserves the previous type of a variable and adds the additional attribute.
 
 ### ExternalType
 

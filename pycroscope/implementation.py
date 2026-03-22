@@ -19,7 +19,7 @@ from .error_code import ErrorCode
 from .extensions import assert_type, reveal_locals, reveal_type
 from .format_strings import parse_format_string
 from .maybe_asynq import qcore
-from .predicates import MaxLen, MinLen
+from .predicates import HasAttr, MaxLen, MinLen
 from .regex_check import check_regex_in_value
 from .relations import (
     Relation,
@@ -65,6 +65,7 @@ from .type_object import _class_key_from_value
 from .value import (
     NO_RETURN_VALUE,
     UNINITIALIZED_VALUE,
+    AddPredicateExtension,
     AnnotatedValue,
     AnySource,
     AnyValue,
@@ -75,7 +76,6 @@ from .value import (
     DataclassTransformInfo,
     DictIncompleteValue,
     GenericValue,
-    HasAttrGuardExtension,
     IntersectionValue,
     KnownValue,
     KVPair,
@@ -656,18 +656,15 @@ def _hasattr_impl(ctx: CallContext) -> Value:
     # interpret a hasattr check as a sign that the object (somehow) has the attribute
     _record_attr_set(obj, name.val, ctx)
 
+    pred = HasAttr(name.val, TypedValue(object))
     # if the value exists on the type or instance, hasattr should return True
     # don't interpret the opposite to mean it should return False, as the attribute may
     # exist on a child class or get assigned at runtime
-    if isinstance(obj, TypedValue) and obj.get_type_object(ctx.visitor).has_attribute(
-        name.val, ctx.visitor
-    ):
-        return_value = KnownValue(True)
-    elif isinstance(obj, KnownValue) and hasattr_static(obj.val, name.val):
+    if is_assignable(PredicateValue(pred), obj, ctx.visitor):
         return_value = KnownValue(True)
     else:
         return_value = TypedValue(bool)
-    metadata = [HasAttrGuardExtension("object", name, AnyValue(AnySource.inference))]
+    metadata = [AddPredicateExtension("object", pred)]
     return AnnotatedValue(return_value, metadata)
 
 

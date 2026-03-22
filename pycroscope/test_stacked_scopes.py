@@ -1,4 +1,5 @@
 # static analysis: ignore
+
 from .error_code import ErrorCode
 from .name_check_visitor import build_stacked_scopes
 from .options import Options
@@ -1645,34 +1646,45 @@ class TestConstraints(TestNameCheckVisitorBase):
     def test_while_hasattr(self):
         from typing import Optional
 
-        from pycroscope.value import HasAttrExtension
+        from typing_extensions import assert_type
+
+        from pycroscope.predicates import HasAttr
+        from pycroscope.value import IntersectionValue, PredicateValue, TypedValue
 
         def capybara(x: Optional[int]):
             assert_type(x, int | None)
             while x is not None and hasattr(x, "name"):
                 assert_is_value(
                     x,
-                    AnnotatedValue(
-                        TypedValue(int),
-                        [
-                            HasAttrExtension(
-                                KnownValue("name"), AnyValue(AnySource.inference)
-                            )
-                        ],
+                    IntersectionValue(
+                        (
+                            TypedValue(int),
+                            PredicateValue(HasAttr("name", TypedValue(object))),
+                        )
                     ),
                 )
 
     @assert_passes()
     def test_hasattr_annotated_unification(self):
-        from pycroscope.value import HasAttrExtension
+        from typing_extensions import assert_type
 
-        ext = HasAttrExtension(KnownValue("name"), AnyValue(AnySource.inference))
+        from pycroscope.predicates import HasAttr
+        from pycroscope.value import PredicateValue, TypedValue
 
         def capybara(x: int) -> None:
             assert_type(x, int)
             if hasattr(x, "name"):
-                assert_is_value(x, AnnotatedValue(TypedValue(int), [ext]))
-            assert_is_value(x, TypedValue(int) | AnnotatedValue(TypedValue(int), [ext]))
+                assert_is_value(
+                    x,
+                    TypedValue(int)
+                    & PredicateValue(HasAttr("name", TypedValue(object))),
+                )
+            # TODO this should simplify to just int
+            assert_is_value(
+                x,
+                (TypedValue(int) & PredicateValue(HasAttr("name", TypedValue(object))))
+                | TypedValue(int),
+            )
 
     @assert_passes()
     def test_gt_annotated_unification(self):

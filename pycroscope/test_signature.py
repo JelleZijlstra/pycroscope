@@ -918,8 +918,10 @@ class TestCalls(TestNameCheckVisitorBase):
         def mistyped_args():
             hasattr(True, False)  # E: incompatible_argument
 
-        # The HasAttrGuard gets stripped.
-        inferred = AnnotatedValue(TypedValue(bool), [cast(Any, ANY)])
+        # The AddPredicate gets stripped.
+        # TODO: Literal[True] is wrong, but our attribute lookup API wrongly
+        # indicates it's present on `object`.
+        inferred = AnnotatedValue(KnownValue(True), [cast(Any, ANY)])
 
         def only_on_class(o: object):
             val = hasattr(o, "__qualname__")
