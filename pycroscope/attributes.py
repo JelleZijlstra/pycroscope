@@ -361,7 +361,9 @@ def _super_mro_values(
     # TODO: switch to just using the MRO; that currently doesn't work because it gets set too late
     if isinstance(receiver_value.typ, type):
         return [TypedValue(base) for base in receiver_value.typ.__mro__]
-    return receiver_value.get_type_object(ctx).get_mro()
+    return [
+        entry.get_mro_value() for entry in receiver_value.get_type_object(ctx).get_mro()
+    ]
 
 
 # TODO: in principle this should be doable with TypeObject.get_attribute if we add a flag

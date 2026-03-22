@@ -4109,13 +4109,24 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 )
             )
         if isinstance(tobj.typ, str):
-            tobj.set_direct_bases(
-                [self._translate_base_value(base, node) for base in base_values]
-            )
+            if base_values:
+                if not any(
+                    isinstance(base, KnownValue)
+                    and is_typing_name(base.val, "TypedDict")
+                    for base in base_values
+                ):
+                    tobj.set_direct_bases(
+                        [
+                            self._translate_base_value(base, base_node)
+                            for base_node, base in zip(node.bases, base_values)
+                        ]
+                    )
+            else:
+                tobj.set_direct_bases([TypedValue(object)])
         return base_values, base_type_param_variance_infos
 
     def _translate_base_value(self, value: Value, node: ast.expr) -> MroValue:
-        type_value = type_from_value(value, self, node=node)
+        type_value = replace_fallback(type_from_value(value, self, node=node))
         if isinstance(type_value, (AnyValue, TypedValue)):
             return type_value
         self._show_error_if_checking(

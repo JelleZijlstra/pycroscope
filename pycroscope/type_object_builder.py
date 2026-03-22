@@ -137,53 +137,6 @@ def _get_synthetic_dataclass_fields(
     return tuple(records_by_name[name] for name in ordered)
 
 
-def compute_type_object_direct_bases(
-    checker: Checker, typ: type | str
-) -> tuple[MroValue, ...]:
-    _, direct_base_values = _get_direct_mro_bases(checker, typ)
-    return direct_base_values
-
-
-def compute_type_object_mro(
-    checker: Checker, typ: type | str, *, seen: frozenset[type | str] = frozenset()
-) -> tuple[MroValue, ...]:
-    if typ in seen:
-        return ()
-    direct_base_keys, direct_base_values = _get_direct_mro_bases(checker, typ)
-    declared_type_params = tuple(checker.get_type_parameters(typ))
-    tuple_base = checker._namedtuple_tuple_base(typ)
-    if not direct_base_keys:
-        return (
-            _self_mro_value(
-                typ,
-                declared_type_params=declared_type_params,
-                direct_base_values=(),
-                tuple_base=tuple_base,
-            ),
-        )
-    sequences: list[tuple[MroValue, ...]] = [tuple(direct_base_values)]
-    next_seen = seen | {typ}
-    for base_key, base_value in zip(direct_base_keys, direct_base_values):
-        base_mro = compute_type_object_mro(checker, base_key, seen=next_seen)
-        if base_mro:
-            tail = _specialize_mro_tail_for_base(
-                checker, base_value, checker.get_type_parameters(base_key), base_mro[1:]
-            )
-        else:
-            tail = ()
-        sequences.append((base_value, *tail))
-    merged = _merge_mro_value_sequences(checker, sequences)
-    self_value = _self_mro_value(
-        typ,
-        declared_type_params=declared_type_params,
-        direct_base_values=direct_base_values,
-        tuple_base=tuple_base,
-    )
-    if merged and merged[0] == self_value:
-        return merged
-    return (self_value, *merged)
-
-
 def _get_direct_mro_bases(
     checker: Checker, typ: type | str
 ) -> tuple[list[type | str], tuple[MroValue, ...]]:

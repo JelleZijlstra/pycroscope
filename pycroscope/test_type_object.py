@@ -48,18 +48,6 @@ def test_protocol_member_str_order_is_deterministic() -> None:
     type_object = checker.make_type_object(HasMembers)
     assert str(type_object).endswith("(Protocol with members 'f', 'm')")
 
-    synthetic_protocol = SyntheticClassObjectValue(
-        "Protocol",
-        TypedValue("synthetic.Protocol"),
-        base_classes=(TypedValue(Protocol),),
-    )
-    checker.register_synthetic_class(synthetic_protocol)
-    checker.register_synthetic_protocol_members("synthetic.Protocol", {"m", "f"})
-    assert (
-        str(checker.make_type_object("synthetic.Protocol"))
-        == "synthetic.Protocol (Protocol with members 'f', 'm')"
-    )
-
 
 def test_class_key_from_subclass_generic_value() -> None:
     value = SubclassValue(GenericValue("mod.Base", [TypedValue(int)]))
@@ -96,12 +84,50 @@ def test_lookup_declared_symbol_with_owner_handles_synthetic_base() -> None:
     checker.make_type_object("mod.Base").set_declared_symbol(
         "x", ClassSymbol(annotation=TypedValue(int))
     )
+    checker.make_type_object("mod.Child").set_direct_bases((TypedValue("mod.Base"),))
 
     match = lookup_declared_symbol_with_owner("mod.Child", "x", checker)
     assert match is not None
     owner, symbol = match
     assert owner == "mod.Base"
     assert symbol.annotation == TypedValue(int)
+
+
+def test_runtime_mro_marks_typeshed_only_bases_virtual() -> None:
+    from collections.abc import MutableSequence
+
+    checker = Checker()
+    entries = {
+        entry.tobj.typ: entry
+        for entry in checker.make_type_object(list).get_mro()
+        if entry.tobj is not None
+    }
+
+    assert entries[list].is_virtual is False
+    assert entries[MutableSequence].is_virtual is True
+    assert entries[object].is_virtual is False
+
+
+def test_synthetic_mro_prefers_non_virtual_duplicate_base() -> None:
+    from collections.abc import MutableSequence, Sequence
+
+    checker = Checker()
+    checker.make_type_object("mod.A").set_direct_bases((TypedValue(list),))
+    checker.make_type_object("mod.B").set_direct_bases((TypedValue(Sequence),))
+    checker.make_type_object("mod.Child").set_direct_bases(
+        (TypedValue("mod.A"), TypedValue("mod.B"))
+    )
+
+    entries = {
+        entry.tobj.typ: entry
+        for entry in checker.make_type_object("mod.Child").get_mro()
+        if entry.tobj is not None
+    }
+
+    assert entries["mod.A"].is_virtual is False
+    assert entries["mod.B"].is_virtual is False
+    assert entries[Sequence].is_virtual is False
+    assert entries[MutableSequence].is_virtual is True
 
 
 def test_permissive_dunder_hash_class_object_detection() -> None:
@@ -268,17 +294,18 @@ def test_runtime_type_object_tracks_declared_type_params_and_specialized_mro() -
     assert tuple(base_object.get_declared_type_params()) == tuple(
         checker.get_type_parameters(Base)
     )
-    assert base_object.get_mro() == (
+    assert [entry.get_mro_value() for entry in base_object.get_mro()] == [
         GenericValue(Base, [TypeVarValue(TypeVarParam(T))]),
         TypedValue(Generic),
         TypedValue(object),
-    )
+    ]
     assert tuple(child_object.get_declared_type_params()) == ()
-    assert child_object.get_mro() == (
+    assert [entry.get_mro_value() for entry in child_object.get_mro()] == [
+        TypedValue(Child),
         GenericValue(Base, [TypedValue(int)]),
         TypedValue(Generic),
         TypedValue(object),
-    )
+    ]
 
 
 def test_synthetic_type_object_tracks_declared_type_params_and_specialized_mro() -> (
@@ -299,19 +326,26 @@ def test_synthetic_type_object_tracks_declared_type_params_and_specialized_mro()
         grandchild, [GenericValue(child, [TypedValue(int)])]
     )
 
-    base_object = checker.make_type_object(base)
-    grandchild_object = checker.make_type_object(grandchild)
+    base_tobj = checker.make_type_object(base)
+    child_tobj = checker.make_type_object(child)
+    child_tobj.set_direct_bases(
+        [GenericValue(base, [GenericValue(list, [TypeVarValue(type_param)])])]
+    )
 
-    assert base_object.get_declared_type_params() == (type_param,)
-    assert base_object.get_mro() == (
+    grandchild_tobj = checker.make_type_object(grandchild)
+    grandchild_tobj.set_direct_bases([GenericValue(child, [TypedValue(int)])])
+
+    assert base_tobj.get_declared_type_params() == (type_param,)
+    assert [entry.get_mro_value() for entry in base_tobj.get_mro()] == [
         GenericValue(base, [TypeVarValue(type_param)]),
         TypedValue(object),
-    )
-    assert grandchild_object.get_mro() == (
+    ]
+    assert [entry.get_mro_value() for entry in grandchild_tobj.get_mro()] == [
+        TypedValue(grandchild),
         GenericValue(child, [TypedValue(int)]),
         GenericValue(base, [GenericValue(list, [TypedValue(int)])]),
         TypedValue(object),
-    )
+    ]
 
 
 def test_synthetic_namedtuple_type_object_uses_specialized_tuple_mro() -> None:
@@ -345,10 +379,13 @@ def test_synthetic_namedtuple_type_object_uses_specialized_tuple_mro() -> None:
         ),
     )
 
-    assert checker.make_type_object("mod.Point").get_mro() == (
+    assert [
+        entry.get_mro_value()
+        for entry in checker.make_type_object("mod.Point").get_mro()
+    ] == [
         SequenceValue(tuple, [(False, TypedValue(int)), (False, TypedValue(str))]),
         TypedValue(object),
-    )
+    ]
 
 
 def test_direct_synthetic_declared_symbol_mutation_updates_type_object_view() -> None:

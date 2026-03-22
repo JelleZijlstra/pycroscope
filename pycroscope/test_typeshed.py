@@ -905,16 +905,6 @@ class TestCheckerGenericBases:
             base: {T: TypedValue(int)},
         }
 
-    def test_make_type_object_includes_subclass_synthetic_base(self):
-        checker = Checker()
-        base = "test.Base"
-        child = "test.Child"
-        checker.register_synthetic_type_bases(child, [SubclassValue(TypedValue(base))])
-        assert any(
-            isinstance(mro_value, TypedValue) and mro_value.typ == base
-            for mro_value in checker.make_type_object(child).get_mro()[1:]
-        )
-
 
 class TestAttribute:
     def test_basic(self) -> None:

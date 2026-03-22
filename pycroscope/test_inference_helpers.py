@@ -1,4 +1,5 @@
 # static analysis: ignore
+
 from .test_name_check_visitor import TestNameCheckVisitorBase
 from .test_node_visitor import assert_passes
 from .value import KnownValue
@@ -117,7 +118,7 @@ class TestRevealLocals(TestNameCheckVisitorBase):
 class TestGetMro(TestNameCheckVisitorBase):
     @assert_passes()
     def test_get_mro_simple(self) -> None:
-        from typing import Generic, NamedTuple, TypeVar
+        from typing import Generic, TypeVar
 
         from pycroscope import get_mro
         from pycroscope.extensions import assert_type
@@ -133,20 +134,45 @@ class TestGetMro(TestNameCheckVisitorBase):
         class L(list[int]):
             pass
 
+        assert_type(get_mro(object), tuple[object])
+        assert_type(get_mro(int), tuple[int, object])
+        assert_type(get_mro(Base), tuple[Base[T], Generic, object])
+        assert_type(get_mro(Child), tuple[Child, Base[int], Generic, object])
+        assert_type(get_mro(L), tuple[L, list[int], object])
+
+    @assert_passes()
+    def test_get_mro_tuple(self) -> None:
+        import collections
+        from typing import Any, Generic, NamedTuple, TypeVar
+
+        from pycroscope import get_mro
+        from pycroscope.extensions import assert_type
+
+        T = TypeVar("T")
+
         class Tup(tuple[int, str]):
+            pass
+
+        class GenTup(tuple[int, T], Generic[T]):
+            pass
+
+        class GenTup2(GenTup[float]):
             pass
 
         class NT(NamedTuple):
             x: int
             y: str
 
-        # assert_type(get_mro(object), tuple[object])
-        # assert_type(get_mro(int), tuple[int, object])
-        # assert_type(get_mro(Base), tuple[Base[T], Generic, object])
-        # assert_type(get_mro(Child), tuple[Child, Base[int], Generic, object])
-        assert_type(get_mro(L), tuple[list[int], object])
-        # assert_type(get_mro(Tup), tuple[tuple[int, str], object])
-        # assert_type(get_mro(NT), tuple[tuple[int, str], object])
+        nt = collections.namedtuple("nt", ["x", "y"])
+
+        assert_type(get_mro(Tup), tuple[Tup, tuple[int, str], object])
+        assert_type(get_mro(GenTup), tuple[GenTup[T], tuple[int, T], Generic, object])
+        assert_type(
+            get_mro(GenTup2),
+            tuple[GenTup2, GenTup[float], tuple[int, float], Generic, object],
+        )
+        assert_type(get_mro(nt), tuple[nt, tuple[Any, Any], object])
+        assert_type(get_mro(NT), tuple[NT, tuple[int, str], object])
 
     @assert_passes(run_in_both_module_modes=True)
     def test_get_mro_multiple_inheritance(self) -> None:
@@ -216,7 +242,7 @@ class TestGetMro(TestNameCheckVisitorBase):
         assert_type(get_mro(Right), tuple[Right[U], Generic, object])
         assert_type(
             get_mro(Child),
-            tuple[Child, Left[int], Right[str], Base[int], Generic, object],
+            tuple[Child, Left[int], Base[int], Right[str], Generic, object],
         )
 
     @assert_passes(run_in_both_module_modes=True)
@@ -230,6 +256,11 @@ class TestGetMro(TestNameCheckVisitorBase):
         class A(Any):
             pass
 
-        def capybara(x: Any) -> None:
-            dump_value(get_mro(A))
-            assert_type(get_mro(A), tuple[A, x, object])
+        class B:
+            pass
+
+        class C(A, B):
+            pass
+
+        assert_type(get_mro(A), tuple[A, Any, object])
+        assert_type(get_mro(C), tuple[C, A, Any, B, object])

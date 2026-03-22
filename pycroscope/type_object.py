@@ -32,6 +32,7 @@ from .relations import (
 )
 from .safe import (
     is_instance_of_typing_name,
+    is_namedtuple_class,
     is_typing_name,
     safe_getattr,
     safe_isinstance,
@@ -192,12 +193,25 @@ MroValue = TypedValue | AnyValue
 class MroEntry:
     tobj: "TypeObject | None"  # None only for is_any=True entries
     tv_map: TypeVarMap
-    is_any: bool
+    value: MroValue | None
+    """Value to store directly. Should be set only if it's Any or a SequenceValue."""
     is_virtual: bool
+    """A virtual base is a base that is not part of the MRO of this class at runtime,
+    but that is included for typing purposes.
+
+    For example, list inherits directly from object at runtime, but in typeshed it is
+    declared as inheriting from MutableSequence. Therefore, MutableSequence (and its bases)
+    should be marked as virtual bases.
+    """
+
+    @property
+    def is_any(self) -> bool:
+        return isinstance(self.value, AnyValue)
 
     def __repr__(self) -> str:
         if self.is_any:
             return "Any"
+        assert self.tobj is not None
         result = repr(self.tobj.typ)
         if self.is_virtual:
             result = f"~{result}"
@@ -214,11 +228,15 @@ class MroEntry:
         substituted_tv_map = {
             tv: value.substitute_typevars(typevars) for tv, value in self.tv_map.items()
         }
-        return replace(self, tv_map=substituted_tv_map)
+        if self.value is None:
+            new_value = None
+        else:
+            new_value = self.value.substitute_typevars(typevars)
+        return replace(self, tv_map=substituted_tv_map, value=new_value)
 
     def get_mro_value(self) -> MroValue:
-        if self.is_any:
-            return AnyValue(AnySource.inference)
+        if self.value is not None:
+            return self.value
         assert self.tobj is not None
         if self.tv_map:
             return GenericValue(
@@ -231,7 +249,9 @@ class MroEntry:
         return TypedValue(self.tobj.typ)
 
 
-ANY_MRO_ENTRY = MroEntry(None, {}, is_any=True, is_virtual=False)
+ANY_MRO_ENTRY = MroEntry(
+    None, {}, value=AnyValue(AnySource.inference), is_virtual=False
+)
 
 
 @dataclass(frozen=True)
@@ -367,9 +387,23 @@ class TypeObject:
             _get_mro_from_mro_value(base, parent_tv_map, self._checker)
             for base in direct_bases
         ]
+        if isinstance(self.typ, str):
+            child_mros = [
+                _mark_direct_base_non_virtual(child_mro) for child_mro in child_mros
+            ]
         result = _linearize_mros(self_mro_entry, child_mros)
         if isinstance(result, str):
-            return [self_mro_entry, ANY_MRO_ENTRY]
+            return [
+                self_mro_entry,
+                ANY_MRO_ENTRY,
+                _make_object_mro_entry(self._checker),
+            ]
+        if isinstance(self.typ, type):
+            runtime_mro = tuple(get_mro(self.typ))
+            result = [
+                _mark_entry_virtual_by_runtime_mro(entry, runtime_mro)
+                for entry in result
+            ]
         return result
 
     def _compute_is_final(self) -> bool:
@@ -551,7 +585,7 @@ class TypeObject:
             self._direct_bases = self._compute_direct_bases()
         return self._direct_bases
 
-    def get_mro(self) -> tuple[MroValue, ...]:
+    def get_mro(self) -> Sequence[MroEntry]:
         if self._mro is None:
             self._mro = self._compute_mro()
         return self._mro
@@ -2383,12 +2417,13 @@ def _replace_invalid_bases(bases: Sequence[Value]) -> Iterable[MroValue]:
         elif isinstance(base, KnownValue) and is_typing_name(base.val, "Any"):
             yield AnyValue(AnySource.explicit)
         else:
+            print("REPLACED INVALID BASE", repr(base))
             yield AnyValue(AnySource.inference)
 
 
 def _extract_runtime_direct_bases(
     typ: type, checker: "pycroscope.checker.Checker"
-) -> list[MroValue]:
+) -> Iterable[MroValue]:
     try:
         class_dict = typ.__dict__
         raw_bases = iter(class_dict["__orig_bases__"])
@@ -2401,7 +2436,29 @@ def _extract_runtime_direct_bases(
         type_from_runtime(base, visitor=checker, suppress_errors=True)
         for base in raw_bases
     ]
+    if is_namedtuple_class(typ):
+        bases = [_replace_tuple(base, typ, checker) for base in bases]
     return _replace_invalid_bases(bases)
+
+
+def _replace_tuple(
+    base: Value, typ: type, checker: "pycroscope.checker.Checker"
+) -> Value:
+    if base == TypedValue(tuple):
+        if typ.__annotations__:
+            field_types = tuple(typ.__annotations__.values())
+            return SequenceValue(
+                tuple,
+                [
+                    (False, type_from_runtime(field_type, visitor=checker))
+                    for field_type in field_types
+                ],
+            )
+        else:
+            return SequenceValue(
+                tuple, [(False, AnyValue(AnySource.unannotated)) for _ in typ._fields]
+            )
+    return base
 
 
 def _get_mro_entry(
@@ -2413,11 +2470,32 @@ def _get_mro_entry(
         case TypedValue():
             tv_map = _get_tv_map_for_mro(mro_value, parent_tv_map, checker)
             tobj = mro_value.get_type_object(checker)
-            return MroEntry(tobj=tobj, tv_map=tv_map, is_any=False, is_virtual=False)
+            if isinstance(mro_value, SequenceValue):
+                value = mro_value
+            else:
+                value = None
+            return MroEntry(tobj=tobj, tv_map=tv_map, value=value, is_virtual=False)
         case AnyValue():
             return ANY_MRO_ENTRY
         case _:
             assert_never(mro_value)
+
+
+def _mark_direct_base_non_virtual(mro: list[MroEntry]) -> list[MroEntry]:
+    if not mro or mro[0].is_any:
+        return mro
+    return [replace(mro[0], is_virtual=False), *mro[1:]]
+
+
+def _mark_entry_virtual_by_runtime_mro(
+    entry: MroEntry, runtime_mro: Sequence[type]
+) -> MroEntry:
+    if entry.is_any or entry.tobj is None:
+        return entry
+    is_in_runtime_mro = any(
+        class_keys_match(entry.tobj.typ, runtime_base) for runtime_base in runtime_mro
+    )
+    return replace(entry, is_virtual=not is_in_runtime_mro)
 
 
 def _get_tv_map_for_mro(
@@ -2442,6 +2520,11 @@ def _get_tv_map_for_mro(
         return {}
 
 
+def _make_object_mro_entry(checker: "pycroscope.checker.Checker") -> MroEntry:
+    tobj = checker.make_type_object(object)
+    return MroEntry(tobj=tobj, tv_map={}, value=None, is_virtual=False)
+
+
 def _get_mro_from_mro_value(
     mro_value: MroValue,
     parent_tv_map: TypeVarMap,
@@ -2452,9 +2535,15 @@ def _get_mro_from_mro_value(
             tobj = mro_value.get_type_object(checker)
             tv_map = _get_tv_map_for_mro(mro_value, parent_tv_map, checker)
             mro = tobj.get_mro()
-            return [mro_entry.substitute_typevars(tv_map) for mro_entry in mro]
+            mro = [mro_entry.substitute_typevars(tv_map) for mro_entry in mro]
+            if isinstance(mro_value, SequenceValue) and mro_value.typ is tuple:
+                assert mro[0].tobj is not None and mro[0].tobj.typ is tuple, repr(
+                    mro[0]
+                )
+                mro[0] = replace(mro[0], value=mro_value)
+            return mro
         case AnyValue():
-            return [ANY_MRO_ENTRY]
+            return [ANY_MRO_ENTRY, _make_object_mro_entry(checker)]
         case _:
             assert_never(mro_value)
 
@@ -2488,6 +2577,7 @@ def _linearize_mros(
     mro = [head]
     tails = [list(tail) for tail in tail_mros if tail]
     while tails:
+        candidate = None
         for i, tail in enumerate(tails):
             candidate = tail[0]
             if not any(
@@ -2498,11 +2588,19 @@ def _linearize_mros(
             ):
                 break
         else:
+            assert candidate is not None
             # No valid candidate found, MRO is invalid
             return (
                 f"Cannot create consistent MRO because {candidate.tobj} "
                 f"appears multiple times in conflicting positions"
             )
+        for other_tail in tails:
+            for entry in other_tail:
+                if _entries_match(candidate, entry) and not entry.is_virtual:
+                    candidate = replace(candidate, is_virtual=False)
+                    break
+            if not candidate.is_virtual:
+                break
         mro.append(candidate)
         for tail in tails:
             if tail and _entries_match(tail[0], candidate):
