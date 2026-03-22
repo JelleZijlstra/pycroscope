@@ -263,7 +263,7 @@ class TypeObject:
 
         # If it's a runtime class, try that
         if isinstance(self.typ, type):
-            return _compute_type_params_from_runtime(self.typ, self._checker)
+            return tuple(_compute_type_params_from_runtime(self.typ, self._checker))
 
         return ()
         # TODO:
@@ -2276,6 +2276,7 @@ def _compute_type_params_from_runtime(
     type_params: list[TypeParam] = []
     for type_param in runtime_type_params_iter:
         try:
+            assert checker._arg_spec_cache is not None
             type_params.append(
                 make_type_param(type_param, ctx=checker._arg_spec_cache.default_context)
             )
