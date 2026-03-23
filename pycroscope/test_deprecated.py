@@ -144,6 +144,47 @@ class TestRuntime(TestNameCheckVisitorBase):
         def capybara() -> None:
             Invocable()()  # E: deprecated
 
+    @assert_passes()
+    def test_inherited_property(self):
+        from pycroscope.extensions import deprecated
+
+        class Base:
+            @property
+            @deprecated("getter")
+            def greasy(self) -> int:
+                return 1
+
+            @property
+            def shape(self) -> str:
+                return "cube"
+
+            @shape.setter
+            @deprecated("setter")
+            def shape(self, value: str) -> None:
+                pass
+
+        class Child(Base):
+            pass
+
+        def capybara(child: Child) -> None:
+            child.greasy  # E: deprecated
+            child.shape = "sphere"  # E: deprecated
+
+    @assert_passes()
+    def test_inherited_dunder_call(self):
+        from pycroscope.extensions import deprecated
+
+        class Base:
+            @deprecated("Deprecated")
+            def __call__(self) -> None:
+                pass
+
+        class Child(Base):
+            pass
+
+        def capybara() -> None:
+            Child()()  # E: deprecated
+
     @assert_passes(run_in_both_module_modes=True)
     @pytest.mark.filterwarnings("ignore:.*:DeprecationWarning")
     def test_unimportable_module_deprecations(self):

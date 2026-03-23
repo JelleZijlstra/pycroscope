@@ -3398,6 +3398,41 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     ) -> ClassSymbol | None:
         return self.checker.make_type_object(class_key).get_declared_symbol(attr_name)
 
+    def _is_instance_only_symbol(self, symbol: ClassSymbol | None) -> bool:
+        return (
+            symbol is not None
+            and symbol.is_instance_only
+            and not symbol.is_classvar
+            and not symbol.is_initvar
+        )
+
+    def _get_type_object_attribute_match_for_class_key(
+        self, class_key: type | str, attr_name: str
+    ) -> tuple[str, TypeObjectAttribute] | None:
+        type_object = self.checker.make_type_object(class_key)
+        class_name = (
+            class_key.__name__
+            if isinstance(class_key, type)
+            else class_key.rsplit(".", maxsplit=1)[-1]
+        )
+        for candidate in self._property_attr_candidates(attr_name, class_name):
+            attribute = type_object.get_attribute(
+                candidate, self, on_class=False, receiver_value=TypedValue(class_key)
+            )
+            if attribute is not None:
+                return candidate, attribute
+        return None
+
+    def _get_type_object_attribute_for_class_key(
+        self, class_key: type | str, attr_name: str
+    ) -> TypeObjectAttribute | None:
+        match = self._get_type_object_attribute_match_for_class_key(
+            class_key, attr_name
+        )
+        if match is not None:
+            return match[1]
+        return None
+
     def _is_direct_classvar_member(self, class_key: type | str, attr_name: str) -> bool:
         symbol = self._get_direct_declared_symbol(class_key, attr_name)
         return symbol is not None and symbol.is_classvar
@@ -3405,12 +3440,8 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     def _is_direct_instance_only_member(
         self, class_key: type | str, attr_name: str
     ) -> bool:
-        symbol = self._get_direct_declared_symbol(class_key, attr_name)
-        return (
-            symbol is not None
-            and symbol.is_instance_only
-            and not symbol.is_classvar
-            and not symbol.is_initvar
+        return self._is_instance_only_symbol(
+            self._get_direct_declared_symbol(class_key, attr_name)
         )
 
     def _is_direct_readonly_member(self, class_key: type | str, attr_name: str) -> bool:
@@ -3418,61 +3449,15 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         return symbol is not None and symbol.is_readonly
 
     def _is_instance_only_member(self, class_key: type | str, attr_name: str) -> bool:
-        attribute = self.checker.make_type_object(class_key).get_attribute(
-            attr_name, self, on_class=False, receiver_value=TypedValue(class_key)
-        )
-        symbol = None if attribute is None else attribute.symbol
-        return (
-            symbol is not None
-            and symbol.is_instance_only
-            and not symbol.is_classvar
-            and not symbol.is_initvar
-        )
+        attribute = self._get_type_object_attribute_for_class_key(class_key, attr_name)
+        return attribute is not None and self._is_instance_only_symbol(attribute.symbol)
 
     def _get_instance_only_annotation_value_for_class_key(
-        self, class_key: type | str, attr_name: str, node: ast.AST | None = None
+        self, class_key: type | str, attr_name: str
     ) -> Value:
-        direct_type_object = self.checker.make_type_object(class_key)
-        if isinstance(class_key, str):
-            synthetic_class = self._synthetic_classes_by_name.get(class_key)
-        elif isinstance(class_key, type):
-            synthetic_class = self.checker.get_synthetic_class(class_key)
-        else:
-            synthetic_class = None
-        if synthetic_class is not None:
-            candidate_names = self._property_attr_candidates(
-                attr_name, synthetic_class.name
-            )
-            for candidate in candidate_names:
-                symbol = direct_type_object.get_declared_symbol(candidate)
-                if (
-                    symbol is None
-                    or not symbol.is_instance_only
-                    or symbol.is_classvar
-                    or symbol.is_initvar
-                ):
-                    continue
-                attribute = direct_type_object.get_attribute(
-                    candidate,
-                    self,
-                    on_class=False,
-                    receiver_value=TypedValue(class_key),
-                )
-                if attribute is not None:
-                    return attribute.value
-
-        attribute = direct_type_object.get_attribute(
-            attr_name, self, on_class=False, receiver_value=TypedValue(class_key)
-        )
-        if attribute is not None:
-            symbol = attribute.symbol
-            if (
-                symbol.is_instance_only
-                and not symbol.is_classvar
-                and not symbol.is_initvar
-            ):
-                return attribute.value
-
+        attribute = self._get_type_object_attribute_for_class_key(class_key, attr_name)
+        if attribute is not None and self._is_instance_only_symbol(attribute.symbol):
+            return attribute.value
         return UNINITIALIZED_VALUE
 
     def _contains_classvar_type_parameter(self, value: Value) -> bool:
@@ -15056,33 +15041,27 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     def _method_deprecation_message_for_class_key(
         self, class_key: type | str, attr_name: str
     ) -> str | None:
-        if isinstance(class_key, type):
-            class_name = class_key.__name__
-            class_dict = safe_getattr(class_key, "__dict__", None)
+        match = self._get_type_object_attribute_match_for_class_key(
+            class_key, attr_name
+        )
+        if match is None:
+            return None
+        candidate, attribute = match
+        if attribute.symbol.property_info is not None:
+            return None
+        owner = attribute.owner.typ
+        if isinstance(owner, type):
+            class_dict = safe_getattr(owner, "__dict__", None)
             if isinstance(class_dict, Mapping):
-                for candidate in self._property_attr_candidates(attr_name, class_name):
-                    member = class_dict.get(candidate)
-                    if isinstance(member, property):
-                        continue
-                    if isinstance(member, (staticmethod, classmethod)):
-                        member = member.__func__
-                    deprecated = safe_getattr(member, "__deprecated__", None)
-                    if safe_isinstance(deprecated, str):
-                        return deprecated
-            return None
-
-        synthetic_class = self.checker.get_synthetic_class(class_key)
-        if synthetic_class is None:
-            return None
-        class_name = class_key.rsplit(".", maxsplit=1)[-1]
-        for candidate in self._property_attr_candidates(attr_name, class_name):
-            member = self._get_synthetic_member_initializer(synthetic_class, candidate)
-            if member is None:
-                continue
-            message = self._deprecation_message_from_value(member)
-            if message is not None:
-                return message
-        return None
+                member = class_dict.get(candidate)
+                if isinstance(member, (staticmethod, classmethod)):
+                    member = member.__func__
+                if member is not None:
+                    message = self._deprecation_message_from_value(KnownValue(member))
+                    if message is not None:
+                        return message
+        value = attribute.symbol.initializer or attribute.value
+        return self._deprecation_message_from_value(value)
 
     def _property_deprecation_message(
         self, root_value: Value, attr_name: str, *, is_setter: bool
@@ -15106,39 +15085,30 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     def _property_deprecation_message_for_class_key(
         self, class_key: type | str, attr_name: str, *, is_setter: bool
     ) -> str | None:
-        if isinstance(class_key, type):
-            class_name = class_key.__name__
-            class_dict = safe_getattr(class_key, "__dict__", None)
+        match = self._get_type_object_attribute_match_for_class_key(
+            class_key, attr_name
+        )
+        if match is None:
+            return None
+        candidate, attribute = match
+        symbol = attribute.symbol
+        if symbol.property_info is None:
+            return None
+        owner = attribute.owner.typ
+        if isinstance(owner, type):
+            class_dict = safe_getattr(owner, "__dict__", None)
             if isinstance(class_dict, Mapping):
-                for candidate in self._property_attr_candidates(attr_name, class_name):
-                    descriptor = class_dict.get(candidate)
-                    if not isinstance(descriptor, property):
-                        continue
+                descriptor = class_dict.get(candidate)
+                if isinstance(descriptor, property):
                     accessor = descriptor.fset if is_setter else descriptor.fget
                     deprecated = safe_getattr(accessor, "__deprecated__", None)
                     if safe_isinstance(deprecated, str):
                         return deprecated
-            return None
-
-        synthetic_class = self.checker.get_synthetic_class(class_key)
-        if synthetic_class is None:
-            return None
-        class_name = class_key.rsplit(".", maxsplit=1)[-1]
-        for candidate in self._property_attr_candidates(attr_name, class_name):
-            attribute = self.checker.make_type_object(class_key).get_attribute(
-                candidate, self, on_class=False, receiver_value=TypedValue(class_key)
-            )
-            symbol = None if attribute is None else attribute.symbol
-            if symbol is None or symbol.property_info is None:
-                continue
-            message = (
-                symbol.property_info.setter_deprecation
-                if is_setter
-                else symbol.property_info.getter_deprecation
-            )
-            if message is not None:
-                return message
-        return None
+        return (
+            symbol.property_info.setter_deprecation
+            if is_setter
+            else symbol.property_info.getter_deprecation
+        )
 
     def _property_attr_candidates(
         self, attr_name: str, class_name: str
@@ -15214,7 +15184,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             and self._is_instance_only_member(self.current_class_key, attr)
         ):
             static_member = self._get_instance_only_annotation_value_for_class_key(
-                self.current_class_key, attr, node
+                self.current_class_key, attr
             )
             if static_member is not UNINITIALIZED_VALUE:
                 return static_member
