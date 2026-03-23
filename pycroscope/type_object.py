@@ -716,21 +716,27 @@ class TypeObject:
     def set_is_direct_namedtuple(self, is_direct_namedtuple: bool) -> None:
         self._is_direct_namedtuple = is_direct_namedtuple
         if not is_direct_namedtuple and self._namedtuple_fields is None:
-            self._update_loaded_synthetic_fields()
-            self._protocol_positive_cache.clear()
+            self._invalidate_synthetic_state()
+
+    def _sync_declared_symbols(self) -> None:
+        if self._declared_symbols is None:
+            return
+        if isinstance(self.typ, type):
+            self._declared_symbols = self._compute_declared_symbols()
+        else:
+            self._declared_symbols = self.get_synthetic_declared_symbols()
+
+    def _invalidate_synthetic_state(self) -> None:
+        self._update_loaded_synthetic_fields()
+        self._protocol_positive_cache.clear()
 
     def replace_declared_symbols(self, symbols: Mapping[str, ClassSymbol]) -> None:
         self._ensure_synthetic_class()
         synthetic_symbols = self.get_synthetic_declared_symbols()
         synthetic_symbols.clear()
         synthetic_symbols.update(symbols)
-        if self._declared_symbols is not None:
-            if isinstance(self.typ, type):
-                self._declared_symbols = self._compute_declared_symbols()
-            else:
-                self._declared_symbols = synthetic_symbols
-        self._update_loaded_synthetic_fields()
-        self._protocol_positive_cache.clear()
+        self._sync_declared_symbols()
+        self._invalidate_synthetic_state()
 
     def set_runtime_namedtuple(self, runtime_class_value: KnownValue) -> None:
         import pycroscope.type_object_builder as type_object_builder
@@ -832,41 +838,28 @@ class TypeObject:
         # class data directly.
         synthetic_class = self._ensure_synthetic_class()
         object.__setattr__(synthetic_class, "runtime_class", runtime_class)
-        if self._declared_symbols is not None and isinstance(self.typ, type):
-            self._declared_symbols = self._compute_declared_symbols()
-        self._update_loaded_synthetic_fields()
-        self._protocol_positive_cache.clear()
+        self._sync_declared_symbols()
+        self._invalidate_synthetic_state()
 
     def set_metaclass(self, metaclass: Value | None) -> None:
         # TODO: Remove this once SyntheticClassObjectValue no longer stores
         # metaclass data directly.
         synthetic_class = self._ensure_synthetic_class()
         object.__setattr__(synthetic_class, "metaclass", metaclass)
-        self._update_loaded_synthetic_fields()
-        self._protocol_positive_cache.clear()
+        self._invalidate_synthetic_state()
 
     def clear_declared_symbols(self) -> None:
         self._ensure_synthetic_class()
         self.get_synthetic_declared_symbols().clear()
-        if self._declared_symbols is not None:
-            if isinstance(self.typ, type):
-                self._declared_symbols = self._compute_declared_symbols()
-            else:
-                self._declared_symbols.clear()
-        self._update_loaded_synthetic_fields()
-        self._protocol_positive_cache.clear()
+        self._sync_declared_symbols()
+        self._invalidate_synthetic_state()
 
     def set_declared_symbol(self, name: str, symbol: ClassSymbol) -> None:
         self._ensure_synthetic_class()
         synthetic_symbols = self.get_synthetic_declared_symbols()
         synthetic_symbols[name] = symbol
-        if self._declared_symbols is not None:
-            if isinstance(self.typ, type):
-                self._declared_symbols = self._compute_declared_symbols()
-            else:
-                self._declared_symbols = synthetic_symbols
-        self._update_loaded_synthetic_fields()
-        self._protocol_positive_cache.clear()
+        self._sync_declared_symbols()
+        self._invalidate_synthetic_state()
 
     def add_declared_symbol(self, name: str, symbol: ClassSymbol) -> None:
         self._ensure_synthetic_class()
@@ -874,13 +867,8 @@ class TypeObject:
         synthetic_symbols[name] = merge_declared_symbol(
             synthetic_symbols.get(name), symbol
         )
-        if self._declared_symbols is not None:
-            if isinstance(self.typ, type):
-                self._declared_symbols = self._compute_declared_symbols()
-            else:
-                self._declared_symbols = synthetic_symbols
-        self._update_loaded_synthetic_fields()
-        self._protocol_positive_cache.clear()
+        self._sync_declared_symbols()
+        self._invalidate_synthetic_state()
 
     def get_direct_bases(self) -> tuple[MroValue, ...]:
         if self._direct_bases is None:

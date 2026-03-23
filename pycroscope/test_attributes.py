@@ -625,6 +625,18 @@ class TestAttributes(TestNameCheckVisitorBase):
                     assert_type(Example2.__B, Literal[2])
 
     @assert_passes(allow_import_failures=True)
+    def test_private_synthetic_enum_nonmember_attribute(self):
+        import enum
+
+        import does_not_exist  # noqa: F401
+
+        class Example2(enum.Enum):
+            __B = 2
+
+            def method(self) -> None:
+                print(Example2.__B)
+
+    @assert_passes(allow_import_failures=True)
     def test_synthetic_typevar_bound_class_attribute_after_import_failure(self):
         from typing import TypeVar
 

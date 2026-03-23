@@ -29,15 +29,7 @@ import types
 import typing
 from abc import abstractmethod
 from argparse import SUPPRESS, ArgumentParser
-from collections.abc import (
-    Callable,
-    Container,
-    Generator,
-    Iterable,
-    Mapping,
-    MutableMapping,
-    Sequence,
-)
+from collections.abc import Callable, Container, Generator, Iterable, Mapping, Sequence
 from contextlib import AbstractContextManager
 from dataclasses import dataclass, replace
 from dataclasses import field as dataclass_field
@@ -309,7 +301,6 @@ from .value import (
     annotate_value,
     concrete_values_from_iterable,
     flatten_values,
-    get_synthetic_member_initializer,
     get_tv_map,
     get_typevar_variance,
     is_async_iterable,
@@ -2837,26 +2828,19 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     def _get_synthetic_type_object(
         self, synthetic_class: SyntheticClassObjectValue
     ) -> TypeObject:
-        return self.checker.make_type_object(synthetic_class.class_type.typ)
-
-    def _get_synthetic_declared_symbols(
-        self, synthetic_class: SyntheticClassObjectValue
-    ) -> MutableMapping[str, ClassSymbol]:
-        return self._get_synthetic_type_object(
-            synthetic_class
-        ).get_synthetic_declared_symbols()
-
-    def _get_synthetic_declared_symbol(
-        self, synthetic_class: SyntheticClassObjectValue, name: str
-    ) -> ClassSymbol | None:
-        return self._get_synthetic_type_object(synthetic_class).get_declared_symbol(
-            name
-        )
+        return synthetic_class.get_type_object(self.checker)
 
     def _get_synthetic_member_initializer(
         self, synthetic_class: SyntheticClassObjectValue, name: str
     ) -> Value | None:
-        return get_synthetic_member_initializer(synthetic_class, name, self.checker)
+        symbol = (
+            self._get_synthetic_type_object(synthetic_class)
+            .get_synthetic_declared_symbols()
+            .get(name)
+        )
+        if symbol is None:
+            return None
+        return symbol.initializer
 
     def _prepare_synthetic_class_binding(
         self,
@@ -2960,19 +2944,19 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     def _apply_synthetic_method_symbol_flags(
         self, synthetic_class: SyntheticClassObjectValue, node: ast.ClassDef
     ) -> None:
+        synthetic_type = self._get_synthetic_type_object(synthetic_class)
         for method_name, (
             is_classmethod,
             is_staticmethod,
             returns_self_on_class_access,
         ) in self._get_synthetic_method_symbol_flags(node).items():
-            existing = self._get_synthetic_declared_symbol(synthetic_class, method_name)
+            existing = synthetic_type.get_declared_symbol(method_name)
             if existing is not None and existing.is_property:
                 continue
             initializer = self._get_synthetic_member_initializer(
                 synthetic_class, method_name
             ) or AnyValue(AnySource.from_another)
-            self._merge_synthetic_declared_symbol(
-                synthetic_class,
+            synthetic_type.add_declared_symbol(
                 method_name,
                 ClassSymbol(
                     is_method=True,
@@ -2993,23 +2977,27 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         metaclass_value: Value | None,
         class_key: type | str | None = None,
     ) -> None:
+        synthetic_type = self._get_synthetic_type_object(synthetic_class)
         for name, attr_value in class_scope_values.items():
             if name.startswith("%"):
                 continue
-            if self._get_synthetic_declared_symbol(synthetic_class, name) is not None:
+            synthetic_name = name
+            if class_key is not None and self._is_enum_class_key(class_key):
+                mangled = _mangle_private_enum_name(node.name, name)
+                if mangled is not None:
+                    synthetic_name = mangled
+            if synthetic_type.get_declared_symbol(synthetic_name) is not None:
                 continue
             self._set_synthetic_member_on_class(
-                synthetic_class, name, initializer=attr_value
+                synthetic_class, synthetic_name, initializer=attr_value
             )
-        synthetic_type = self._get_synthetic_type_object(synthetic_class)
         if metaclass_value is not None:
             synthetic_type.set_metaclass(metaclass_value)
         self._apply_synthetic_method_symbol_flags(synthetic_class, node)
         dataclass_helpers.apply_synthetic_attributes(
             synthetic_class,
             dataclass_semantics,
-            merge_declared_symbol=self._merge_synthetic_declared_symbol,
-            get_member_initializer=self._get_synthetic_member_initializer,
+            type_object=synthetic_type,
             get_slot_names=self._dataclass_slot_names_from_synthetic_class,
             get_field_parameters=self.checker.get_synthetic_dataclass_field_parameters,
         )
@@ -3242,7 +3230,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         )
         if not has_initializer:
             self._update_synthetic_declared_symbol(synthetic_name, initializer=None)
-        symbol = self._get_synthetic_declared_symbol(synthetic_class, synthetic_name)
+        symbol = self._get_synthetic_type_object(synthetic_class).get_declared_symbol(
+            synthetic_name
+        )
         if (
             force_nonmember
             and isinstance(node, ast.AnnAssign)
@@ -3257,13 +3247,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             self._update_synthetic_declared_symbol(
                 synthetic_name, is_instance_only=False
             )
-
-    def _merge_synthetic_declared_symbol(
-        self, synthetic_class: SyntheticClassObjectValue, name: str, symbol: ClassSymbol
-    ) -> None:
-        self._get_synthetic_type_object(synthetic_class).add_declared_symbol(
-            name, symbol
-        )
 
     def _record_complete_synthetic_function_symbol(
         self, node: FunctionDefNode, info: FunctionInfo, function_value: Value
@@ -3347,7 +3330,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 setter_value = AnyValue(AnySource.unannotated)
             else:
                 setter_value = setter_annotation
-        existing = self._get_synthetic_declared_symbol(synthetic_class, mangled_target)
+        existing = self._get_synthetic_type_object(synthetic_class).get_declared_symbol(
+            mangled_target
+        )
         existing_property_info = (
             existing.property_info if existing is not None else None
         )
@@ -5257,6 +5242,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     ) -> None:
         if not self._is_enum_class_key(class_key):
             return
+        synthetic_type = self._get_synthetic_type_object(synthetic_class)
 
         enum_value_type = self._get_declared_enum_value_type(class_key)
         ignore_names = _enum_ignore_names(
@@ -5366,17 +5352,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     enum_value_type, unwrapped, statement
                 )
 
-        declared_symbols = self._get_synthetic_declared_symbols(synthetic_class)
-        for attr_name in list(declared_symbols):
-            symbol = declared_symbols.get(attr_name)
-            if symbol is None or symbol.initializer is None:
-                continue
-            mangled = _mangle_private_enum_name(node.name, attr_name)
-            if mangled is None:
-                continue
-            declared_symbols.setdefault(mangled, symbol)
-            del declared_symbols[attr_name]
-
         runtime_enum = self._make_synthetic_enum_runtime_class(
             node, synthetic_class.base_classes, member_literal_values, member_order
         )
@@ -5395,14 +5370,10 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 continue
             if not isinstance(statement.value, ast.Name):
                 continue
-            target_symbol = self._get_synthetic_declared_symbol(
-                synthetic_class, statement.value.id
-            )
+            target_symbol = synthetic_type.get_declared_symbol(statement.value.id)
             if target_symbol is None or target_symbol.initializer is None:
                 continue
-            self._get_synthetic_type_object(synthetic_class).set_declared_symbol(
-                member_name, target_symbol
-            )
+            synthetic_type.set_declared_symbol(member_name, target_symbol)
 
     def _check_declared_enum_value_type(
         self, expected_type: Value, actual_value: Value, node: ast.AST
@@ -6273,7 +6244,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
 
         saw_default = False
         for field_name in field_order:
-            symbol = self._get_synthetic_declared_symbol(dataclass_class, field_name)
+            symbol = self._get_synthetic_type_object(
+                dataclass_class
+            ).get_declared_symbol(field_name)
             field = symbol.dataclass_field if symbol is not None else None
             if field is not None and (not field.init or field.kw_only):
                 continue
@@ -16501,8 +16474,8 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         synthetic_class = self.checker.get_synthetic_class(class_key)
         if synthetic_class is None:
             return
-        self._merge_synthetic_declared_symbol(
-            synthetic_class, node.attr, ClassSymbol(initializer=self.being_assigned)
+        self._get_synthetic_type_object(synthetic_class).add_declared_symbol(
+            node.attr, ClassSymbol(initializer=self.being_assigned)
         )
 
     def _record_type_attr_read(self, typ: type, attr_name: str, node: ast.AST) -> None:
@@ -16540,7 +16513,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     def _is_dataclass_initvar_attribute(self, typ: type, attr_name: str) -> bool:
         synthetic = self.checker.get_synthetic_class(typ)
         if synthetic is not None:
-            symbol = self._get_synthetic_declared_symbol(synthetic, attr_name)
+            symbol = self._get_synthetic_type_object(synthetic).get_declared_symbol(
+                attr_name
+            )
             if symbol is not None and symbol.is_initvar:
                 return True
         return _is_runtime_initvar_attribute(typ, attr_name)
