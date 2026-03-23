@@ -953,6 +953,12 @@ class TypeObject:
             self._declared_type_params = self._compute_declared_type_params()
         return self._declared_type_params
 
+    def get_substitutions(self, args: Sequence[Value]) -> TypeVarMap:
+        params = self.get_declared_type_params()
+        if not params:
+            return {}
+        return _match_up_generic_params(params, args)
+
     def is_final(self) -> bool:
         if self._is_final is None:
             self._is_final = self._compute_is_final()
@@ -1046,7 +1052,7 @@ class TypeObject:
         on_class: bool,
         receiver_value: TypedValue | None = None,
     ) -> TypeObjectAttribute | None:
-        match = self._get_declared_symbol_with_owner(name, ctx)
+        match = self.get_declared_symbol_with_owner(name, ctx)
         if match is None:
             return None
         owner, declared_symbol = match
@@ -1077,10 +1083,10 @@ class TypeObject:
     def get_declared_symbol_from_mro(
         self, name: str, ctx: CanAssignContext
     ) -> ClassSymbol | None:
-        match = self._get_declared_symbol_with_owner(name, ctx)
+        match = self.get_declared_symbol_with_owner(name, ctx)
         return None if match is None else match[1]
 
-    def _get_declared_symbol_with_owner(
+    def get_declared_symbol_with_owner(
         self, name: str, ctx: CanAssignContext
     ) -> tuple["TypeObject", ClassSymbol] | None:
         symbol = self.get_declared_symbols().get(name)
@@ -1524,7 +1530,7 @@ class TypeObject:
         """Whether this type definitely has this attribute."""
         if self.is_protocol():
             return attr in self.get_protocol_members()
-        match = self._get_declared_symbol_with_owner(attr, ctx)
+        match = self.get_declared_symbol_with_owner(attr, ctx)
         if match is None:
             return False
         _, symbol = match
@@ -2090,7 +2096,7 @@ def lookup_declared_symbol_with_owner(
     type_object = _make_type_object_for_key(class_key, ctx)
     if type_object is None:
         return None
-    match = type_object._get_declared_symbol_with_owner(member, ctx)
+    match = type_object.get_declared_symbol_with_owner(member, ctx)
     if match is None:
         return None
     owner_tobj, symbol = match
@@ -2126,7 +2132,7 @@ def _specialize_declared_property_value(
 ) -> tuple[Value | None, bool]:
     if receiver_tobj is None:
         return None, False
-    match = receiver_tobj._get_declared_symbol_with_owner(member, ctx)
+    match = receiver_tobj.get_declared_symbol_with_owner(member, ctx)
     if match is None:
         return None, False
     owner_tobj, symbol = match

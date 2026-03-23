@@ -10,7 +10,8 @@ from unittest import mock
 
 from typing_extensions import Protocol, runtime_checkable
 
-from pycroscope.test_node_visitor import skip_if_not_installed
+from .test_node_visitor import skip_if_not_installed
+from .type_object import NamedTupleField
 
 from . import tests, value
 from .checker import Checker
@@ -31,6 +32,7 @@ from .value import (
     GenericValue,
     IntersectionValue,
     KnownValue,
+    ClassSymbol,
     KVPair,
     MultiValuedValue,
     OverlapMode,
@@ -746,10 +748,23 @@ def test_synthetic_class_object_value_unresolved_nominal_class() -> None:
 def test_synthetic_namedtuple_members_without_runtime_class() -> None:
     checker = Checker()
     type_object = checker.make_type_object("mod.Point")
+    type_object.set_declared_symbol(
+        "x", ClassSymbol(annotation=TypedValue(int), is_instance_only=True)
+    )
+    type_object.set_declared_symbol(
+        "label",
+        ClassSymbol(
+            annotation=TypedValue(str),
+            is_instance_only=True,
+            initializer=KnownValue("default_label"),
+        ),
+    )
     type_object.set_namedtuple_fields(
         [
-            NamedTupleField("x", TypedValue(int), None),
-            NamedTupleField("label", TypedValue(str), None),
+            NamedTupleField("x", TypedValue(int), default=None),
+            NamedTupleField(
+                "label", TypedValue(str), default=KnownValue("default_label")
+            ),
         ]
     )
 

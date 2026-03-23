@@ -3969,6 +3969,41 @@ def tuple_members_from_value(
     return None
 
 
+def tuple_members_from_value_v2(
+    value: Value, ctx: CanAssignContext
+) -> tuple[tuple[bool, Value], ...] | None:
+    value = replace_known_sequence_value(value)
+    if isinstance(value, SequenceValue) and value.typ is tuple:
+        return value.members
+    elif isinstance(value, TypedValue):
+        tobj = value.get_type_object(ctx)
+        mro = tobj.get_mro()
+        tuple_entries = [
+            entry
+            for entry in mro
+            if entry.tobj is not None
+            and entry.tobj.typ is tuple
+            and isinstance(entry.value, SequenceValue)
+        ]
+        maybe_iter = tobj.get_declared_symbol_with_owner("__iter__", ctx)
+        if maybe_iter is None:
+            return None
+        owner_tobj, _ = maybe_iter
+        if owner_tobj.typ is not tuple:
+            return None  # overrides __iter__
+        if tuple_entries:
+            seq = tuple_entries[0].value
+            assert isinstance(seq, SequenceValue)
+            if isinstance(value, GenericValue):
+                substitutions = tobj.get_substitutions(value.args)
+                seq = seq.substitute_typevars(substitutions)
+            return seq.members
+    return None
+
+
+tuple_members_from_value = tuple_members_from_value_v2
+
+
 def _can_unpack_tuple_members_from_value(value: Value, ctx: CanAssignContext) -> bool:
     from .type_object import lookup_declared_symbol_with_owner
 
