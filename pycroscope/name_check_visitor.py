@@ -2194,7 +2194,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     final_members_initialized_in_init: dict[type | str, set[str]]
     final_members_requiring_init: dict[type | str, dict[str, ast.AST]]
     enum_class_keys: set[type | str]
-    enum_value_type_by_class: dict[type | str, Value]
     yield_checker: YieldChecker
 
     def __init__(
@@ -2323,7 +2322,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         self.final_members_initialized_in_init = {}
         self.final_members_requiring_init = {}
         self.enum_class_keys = set()
-        self.enum_value_type_by_class = {}
         self._fill_method_cache()
 
     def get_local_return_value(self, sig: MaybeSignature) -> Value | None:
@@ -4146,7 +4144,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             synthetic_class = self.checker.make_synthetic_class(class_key)
         else:
             synthetic_class = None
-        self.enum_value_type_by_class.pop(class_key, None)
         if any(
             self._is_final_decorator_value(value) for _, value, _ in decorator_values
         ):
@@ -5314,12 +5311,11 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         if not self._is_enum_class_key(class_key):
             return
 
-        enum_value_type = self.enum_value_type_by_class.get(class_key)
+        enum_value_type = self._get_declared_enum_value_type(class_key)
         ignore_names = _enum_ignore_names(
             self._get_synthetic_member_initializer(synthetic_class, "_ignore_")
         )
         member_literal_values: dict[str, object] = {}
-        member_aliases: dict[str, str] = {}
         member_order: list[str] = []
         missing: Value | None = None
 
@@ -5406,7 +5402,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 and isinstance(statement.value, ast.Name)
                 and statement.value.id in member_literal_values
             ):
-                member_aliases[member_name] = statement.value.id
                 literal_value = member_literal_values[statement.value.id]
             else:
                 literal_value = _runtime_object_for_enum_member(unwrapped)
@@ -5448,15 +5443,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 _set_enum_declared_symbol(member_name, initializer)
             except Exception:
                 continue
-        for member_name, target_name in member_aliases.items():
-            target_symbol = self._get_synthetic_declared_symbol(
-                synthetic_class, target_name
-            )
-            if target_symbol is None or target_symbol.initializer is None:
-                continue
-            self._get_synthetic_type_object(synthetic_class).set_declared_symbol(
-                member_name, target_symbol
-            )
         for member_name, statement in _iter_enum_assignment_candidates(node):
             if not isinstance(statement, (ast.Assign, ast.AnnAssign)):
                 continue
@@ -5484,6 +5470,16 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 error_code=ErrorCode.invalid_annotation,
                 detail=can_assign.display(),
             )
+
+    def _get_declared_enum_value_type(
+        self, class_key: type | str | None
+    ) -> Value | None:
+        if class_key is None or not self._is_enum_class_key(class_key):
+            return None
+        symbol = self.make_type_object(class_key).get_declared_symbol("_value_")
+        if symbol is None or symbol.annotation is None:
+            return None
+        return symbol.annotation
 
     def _make_synthetic_enum_runtime_class(
         self,
@@ -12359,11 +12355,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 name, alias_value, False, node
             )
 
-        enum_value_type = (
-            self.enum_value_type_by_class.get(self.current_class_key)
-            if self.current_class_key is not None
-            else None
-        )
+        enum_value_type = self._get_declared_enum_value_type(self.current_class_key)
         if (
             enum_value_type is not None
             and self.current_function_name is None
@@ -12604,15 +12596,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             self._record_synthetic_typeddict_item(
                 node.target.id, expected_type, qualifiers, node
             )
-        if (
-            isinstance(node.target, ast.Name)
-            and node.target.id == "_value_"
-            and self.current_class_key is not None
-            and self._is_enum_class_key(self.current_class_key)
-            and expected_type is not None
-        ):
-            self.enum_value_type_by_class[self.current_class_key] = expected_type
-
         if isinstance(expected_type, InputSigValue):
             if isinstance(expected_type.input_sig, ParamSpecParam):
                 self._show_error_if_checking(
@@ -14775,7 +14758,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         return (
             node.attr == "_value_"
             and self.current_class_key is not None
-            and self.current_class_key in self.enum_value_type_by_class
+            and self._get_declared_enum_value_type(self.current_class_key) is not None
             and self._is_enum_class_key(self.current_class_key)
             and self._is_current_method_receiver_node(node.value)
             and (class_key := self._class_key_for_attribute_target(node, root))
