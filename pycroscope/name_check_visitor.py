@@ -3679,6 +3679,10 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             # Dataclasses synthesize the expected __post_init__ contract from InitVar
             # fields, so generic override rules are too strict here.
             return
+        if varname == "__slots__":
+            # __slots__ is cumulative across inheritance, so subclasses may add
+            # slot names even when the literal value differs from the base class.
+            return
         if varname in {"__init__", "__new__", "__hash__", "__init_subclass__"}:
             return
         if varname in self.options.get_value_for(IgnoredForIncompatibleOverride):

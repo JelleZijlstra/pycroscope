@@ -5255,7 +5255,7 @@ class TestFallbackValueDispatch(TestNameCheckVisitorBase):
             x: int
 
         class Child(Base):
-            __slots__ = ("y",)  # E: incompatible_override
+            __slots__ = ("y",)
             y: int
 
             def mutate(self) -> None:
