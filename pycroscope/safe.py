@@ -117,6 +117,12 @@ def is_namedtuple_class(value: object) -> typing_extensions.TypeIs[type]:
     )
 
 
+def is_direct_namedtuple_class(value: object) -> bool:
+    """Return whether value is a namedtuple-like runtime class that is
+    not a subclass of another namedtuple."""
+    return is_namedtuple_class(value) and "_fields" in value.__dict__
+
+
 # TODO: why?
 def should_disable_runtime_call_for_namedtuple_class(value: type) -> bool:
     """Return whether runtime calls to this namedtuple class should be skipped."""

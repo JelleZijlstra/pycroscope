@@ -1015,7 +1015,7 @@ class TestImportFailureHandlingCodeSamples(TestNameCheckVisitorBase):
 
     @assert_passes(allow_import_failures=True)
     def test_namedtuple_after_import_failure(self):
-        from typing import Generic, Literal, NamedTuple, TypeVar
+        from typing import Generic, NamedTuple, TypeVar
 
         from typing_extensions import assert_type
 
@@ -1034,11 +1034,12 @@ class TestImportFailureHandlingCodeSamples(TestNameCheckVisitorBase):
             name: str
             value: T
 
-        pr = Property("", 3.4)
-        assert_type(pr, Property[Literal[3.4]])
-        assert_type(pr[1], Literal[3.4])
-        assert_type(pr.value, Literal[3.4])
-        Property[str]("", 3.1)  # E: incompatible_argument
+        def capybara(x: float) -> None:
+            pr = Property("", x)
+            assert_type(pr, Property[float])
+            assert_type(pr[1], float)
+            assert_type(pr.value, float)
+            Property[str]("", 3.1)  # E: incompatible_argument
 
         class DefaultProperty(NamedTuple, Generic[T]):
             name: str
@@ -1047,7 +1048,7 @@ class TestImportFailureHandlingCodeSamples(TestNameCheckVisitorBase):
 
         DefaultProperty[int]("", 3)
         default_pr = DefaultProperty("", 3)
-        assert_type(default_pr, DefaultProperty[Literal[3]])
+        assert_type(default_pr, DefaultProperty[int])
         assert_type(default_pr.units, str)
         DefaultProperty[int]("")  # E: incompatible_call
 
@@ -1071,6 +1072,19 @@ class TestImportFailureHandlingCodeSamples(TestNameCheckVisitorBase):
 
         class Unit(NamedTuple, object):  # E: invalid_base
             name: str
+
+    @assert_passes(allow_import_failures=True)
+    def test_generic_namedtuple_specialization_uses_synthetic_new_signature(self):
+        from typing import Generic, NamedTuple, TypeVar
+
+        T = TypeVar("T")
+
+        class Property(NamedTuple, Generic[T]):
+            name: str
+            value: T
+
+        Property[str]("", "")
+        Property[str]("", 3.1)  # E: incompatible_argument
 
     @assert_passes(run_in_both_module_modes=True)
     def test_synthetic_instance_annotations_do_not_create_namedtuple_constructor(self):
