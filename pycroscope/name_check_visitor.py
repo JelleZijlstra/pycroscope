@@ -2864,6 +2864,70 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     ) -> Value | None:
         return get_synthetic_member_initializer(synthetic_class, name, self.checker)
 
+    def _apply_synthetic_method_symbol_flags(
+        self, synthetic_class: SyntheticClassObjectValue, node: ast.ClassDef
+    ) -> None:
+        for method_name, (
+            is_classmethod,
+            is_staticmethod,
+            returns_self_on_class_access,
+        ) in self._get_synthetic_method_symbol_flags(node).items():
+            existing = self._get_synthetic_declared_symbol(synthetic_class, method_name)
+            if existing is not None and existing.is_property:
+                continue
+            initializer = self._get_synthetic_member_initializer(
+                synthetic_class, method_name
+            ) or AnyValue(AnySource.from_another)
+            self._merge_synthetic_declared_symbol(
+                synthetic_class,
+                method_name,
+                ClassSymbol(
+                    is_method=True,
+                    is_classmethod=is_classmethod,
+                    is_staticmethod=is_staticmethod,
+                    returns_self_on_class_access=returns_self_on_class_access,
+                    initializer=initializer,
+                ),
+            )
+
+    def _populate_synthetic_class_from_scope(
+        self,
+        node: ast.ClassDef,
+        synthetic_class: SyntheticClassObjectValue,
+        class_scope_values: Mapping[str, Value],
+        dataclass_semantics: DataclassInfo | None,
+        *,
+        metaclass_value: Value | None,
+        class_key: type | str | None = None,
+        update_namedtuple_info: bool = False,
+        namedtuple_info: NamedTupleInfo | None = None,
+    ) -> None:
+        for name, attr_value in class_scope_values.items():
+            if name.startswith("%"):
+                continue
+            if self._get_synthetic_declared_symbol(synthetic_class, name) is not None:
+                continue
+            self._set_synthetic_member_on_class(
+                synthetic_class, name, initializer=attr_value
+            )
+        synthetic_type = self._get_synthetic_type_object(synthetic_class)
+        if update_namedtuple_info:
+            synthetic_type.set_namedtuple_info(namedtuple_info)
+        if metaclass_value is not None:
+            synthetic_type.set_metaclass(metaclass_value)
+        self._apply_synthetic_method_symbol_flags(synthetic_class, node)
+        dataclass_helpers.apply_synthetic_attributes(
+            synthetic_class,
+            dataclass_semantics,
+            merge_declared_symbol=self._merge_synthetic_declared_symbol,
+            get_member_initializer=self._get_synthetic_member_initializer,
+            get_slot_names=self._dataclass_slot_names_from_synthetic_class,
+            get_field_parameters=self.checker.get_synthetic_dataclass_field_parameters,
+        )
+        if class_key is not None:
+            self._apply_synthetic_enum_semantics(node, synthetic_class, class_key)
+        self.checker.register_synthetic_class(synthetic_class)
+
     def _update_synthetic_declared_symbol(
         self,
         name: str,
@@ -4298,6 +4362,14 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                         f"Field {statement.target.id!r} conflicts with base NamedTuple field",
                         error_code=ErrorCode.incompatible_override,
                     )
+            namedtuple_info = (
+                NamedTupleInfo(
+                    field_names=namedtuple_field_names,
+                    has_namedtuple_marker_base=has_namedtuple_marker_base,
+                )
+                if is_namedtuple_synthetic
+                else None
+            )
             synthetic_base_values = tuple(
                 self._base_values_for_generic_analysis(node, base_values)
             ) or (KnownValue(object),)
@@ -4314,56 +4386,23 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 else:
                     synthetic_class_type = TypedValue(synthetic_fq_name)
                     class_scope_object = synthetic_fq_name
-                synthetic_class = self.checker.get_synthetic_class(
+                synthetic_class = self.checker.make_synthetic_class(
                     synthetic_class_type.typ
                 )
-                if synthetic_class is None:
-                    synthetic_class = SyntheticClassObjectValue(
-                        node.name, synthetic_class_type
-                    )
-                    self.checker.register_synthetic_class(synthetic_class)
                 tobj.clear_declared_symbols()
                 tobj.set_base_values(synthetic_base_values)
                 tobj.set_dataclass_info(dataclass_semantics)
                 tobj.set_dataclass_transform_info(dataclass_transform_info)
 
-                if is_namedtuple_synthetic:
-                    _set_synthetic_namedtuple_info(
-                        synthetic_class,
-                        NamedTupleInfo(
-                            field_names=namedtuple_field_names,
-                            has_namedtuple_marker_base=has_namedtuple_marker_base,
-                        ),
-                    )
+                if namedtuple_info is not None:
+                    self._get_synthetic_type_object(
+                        synthetic_class
+                    ).set_namedtuple_info(namedtuple_info)
                 if dataclass_transform_info is not None:
                     dataclass_helpers.set_synthetic_dataclass_transform_info(
                         synthetic_class, dataclass_transform_info
                     )
-                for method_name, (
-                    is_classmethod,
-                    is_staticmethod,
-                    returns_self_on_class_access,
-                ) in self._get_synthetic_method_symbol_flags(node).items():
-                    initializer = self._get_synthetic_member_initializer(
-                        synthetic_class, method_name
-                    ) or AnyValue(AnySource.from_another)
-                    existing = self._get_synthetic_declared_symbol(
-                        synthetic_class, method_name
-                    )
-                    if existing is None or not existing.is_property:
-                        self._merge_synthetic_declared_symbol(
-                            synthetic_class,
-                            method_name,
-                            ClassSymbol(
-                                is_method=True,
-                                is_classmethod=is_classmethod,
-                                is_staticmethod=is_staticmethod,
-                                returns_self_on_class_access=(
-                                    returns_self_on_class_access
-                                ),
-                                initializer=initializer,
-                            ),
-                        )
+                self._apply_synthetic_method_symbol_flags(synthetic_class, node)
                 dataclass_helpers.set_synthetic_dataclass_info(
                     synthetic_class, dataclass_semantics
                 )
@@ -4383,12 +4422,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             elif (
                 dataclass_semantics is not None or dataclass_transform_info is not None
             ):
-                existing = self.checker.get_synthetic_class(class_obj)
-                if existing is None:
-                    existing = SyntheticClassObjectValue(
-                        node.name, TypedValue(class_obj)
-                    )
-                    self.checker.register_synthetic_class(existing)
+                existing = self.checker.make_synthetic_class(class_obj)
                 tobj.clear_declared_symbols()
                 tobj.set_base_values(synthetic_base_values)
                 tobj.set_dataclass_info(dataclass_semantics)
@@ -4795,84 +4829,31 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     self.checker.register_synthetic_class(synthetic_class)
                     value = synthetic_class
                 else:
-                    class_attributes = {
-                        name: value
-                        for name, value in class_scope_values.items()
-                        if not name.startswith("%")
-                    }
-                    method_symbol_flags = self._get_synthetic_method_symbol_flags(node)
                     # Keep the prebound synthetic class object and fill in the
                     # discovered class attributes on that same object so
                     # references captured during class analysis (including bases
                     # of later synthetic classes) see the enriched attributes.
-                    for name, attr_value in class_attributes.items():
-                        if (
-                            self._get_synthetic_declared_symbol(synthetic_class, name)
-                            is not None
-                        ):
-                            continue
-                        self._set_synthetic_member_on_class(
-                            synthetic_class, name, initializer=attr_value
-                        )
-                    if is_namedtuple_synthetic:
-                        _set_synthetic_namedtuple_info(
-                            synthetic_class,
-                            NamedTupleInfo(
-                                field_names=namedtuple_field_names,
-                                has_namedtuple_marker_base=has_namedtuple_marker_base,
-                            ),
-                        )
-                    else:
-                        _set_synthetic_namedtuple_info(synthetic_class, None)
-                    if isinstance(metaclass_value, Value):
-                        _set_synthetic_metaclass(synthetic_class, metaclass_value)
-                    for method_name, (
-                        is_classmethod,
-                        is_staticmethod,
-                        returns_self_on_class_access,
-                    ) in method_symbol_flags.items():
-                        existing = self._get_synthetic_declared_symbol(
-                            synthetic_class, method_name
-                        )
-                        initializer = self._get_synthetic_member_initializer(
-                            synthetic_class, method_name
-                        )
-                        if existing is None or not existing.is_property:
-                            method_initializer = initializer or AnyValue(
-                                AnySource.from_another
-                            )
-                            self._merge_synthetic_declared_symbol(
-                                synthetic_class,
-                                method_name,
-                                ClassSymbol(
-                                    is_method=True,
-                                    is_classmethod=is_classmethod,
-                                    is_staticmethod=is_staticmethod,
-                                    returns_self_on_class_access=(
-                                        returns_self_on_class_access
-                                    ),
-                                    initializer=method_initializer,
-                                ),
-                            )
-                    dataclass_helpers.apply_synthetic_attributes(
+                    self._populate_synthetic_class_from_scope(
+                        node,
                         synthetic_class,
+                        class_scope_values,
                         dataclass_semantics,
-                        merge_declared_symbol=self._merge_synthetic_declared_symbol,
-                        get_member_initializer=self._get_synthetic_member_initializer,
-                        get_slot_names=self._dataclass_slot_names_from_synthetic_class,
-                        get_field_parameters=(
-                            self.checker.get_synthetic_dataclass_field_parameters
+                        metaclass_value=(
+                            metaclass_value
+                            if isinstance(metaclass_value, Value)
+                            else None
                         ),
+                        class_key=class_key,
+                        update_namedtuple_info=True,
+                        namedtuple_info=namedtuple_info,
                     )
-                    self._apply_synthetic_enum_semantics(
-                        node, synthetic_class, class_key
-                    )
-                    self.checker.register_synthetic_class(synthetic_class)
                     value = synthetic_class
                 if dataclass_semantics is not None:
                     dataclass_check_class = synthetic_class
-                if isinstance(metaclass_value, Value):
-                    _set_synthetic_metaclass(synthetic_class, metaclass_value)
+                if class_scope_values is None and isinstance(metaclass_value, Value):
+                    self._get_synthetic_type_object(synthetic_class).set_metaclass(
+                        metaclass_value
+                    )
                 if synthetic_fq_name is not None:
                     self._synthetic_classes_by_name[synthetic_fq_name] = synthetic_class
             elif (
@@ -4880,64 +4861,15 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 and class_scope_values is not None
                 and class_obj is not None
             ):
-                class_attributes = {
-                    name: value
-                    for name, value in class_scope_values.items()
-                    if not name.startswith("%")
-                }
-                method_symbol_flags = self._get_synthetic_method_symbol_flags(node)
-                for name, attr_value in class_attributes.items():
-                    if (
-                        self._get_synthetic_declared_symbol(
-                            dataclass_metadata_class, name
-                        )
-                        is not None
-                    ):
-                        continue
-                    self._set_synthetic_member_on_class(
-                        dataclass_metadata_class, name, initializer=attr_value
-                    )
-                if isinstance(metaclass_value, Value):
-                    _set_synthetic_metaclass(dataclass_metadata_class, metaclass_value)
-                for method_name, (
-                    is_classmethod,
-                    is_staticmethod,
-                    returns_self_on_class_access,
-                ) in method_symbol_flags.items():
-                    existing = self._get_synthetic_declared_symbol(
-                        dataclass_metadata_class, method_name
-                    )
-                    initializer = self._get_synthetic_member_initializer(
-                        dataclass_metadata_class, method_name
-                    )
-                    if existing is None or not existing.is_property:
-                        method_initializer = initializer or AnyValue(
-                            AnySource.from_another
-                        )
-                        self._merge_synthetic_declared_symbol(
-                            dataclass_metadata_class,
-                            method_name,
-                            ClassSymbol(
-                                is_method=True,
-                                is_classmethod=is_classmethod,
-                                is_staticmethod=is_staticmethod,
-                                returns_self_on_class_access=(
-                                    returns_self_on_class_access
-                                ),
-                                initializer=method_initializer,
-                            ),
-                        )
-                dataclass_helpers.apply_synthetic_attributes(
+                self._populate_synthetic_class_from_scope(
+                    node,
                     dataclass_metadata_class,
+                    class_scope_values,
                     dataclass_semantics,
-                    merge_declared_symbol=self._merge_synthetic_declared_symbol,
-                    get_member_initializer=self._get_synthetic_member_initializer,
-                    get_slot_names=self._dataclass_slot_names_from_synthetic_class,
-                    get_field_parameters=(
-                        self.checker.get_synthetic_dataclass_field_parameters
+                    metaclass_value=(
+                        metaclass_value if isinstance(metaclass_value, Value) else None
                     ),
                 )
-                self.checker.register_synthetic_class(dataclass_metadata_class)
                 if dataclass_semantics is not None:
                     dataclass_check_class = dataclass_metadata_class
             if (
@@ -16483,8 +16415,8 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             self.checker.register_synthetic_class(synthetic)
         type_object = self.checker.make_type_object(synthetic_name)
         type_object.set_base_values((TypedValue(tuple),))
-        _set_synthetic_runtime_class(synthetic, return_value)
-        _set_synthetic_namedtuple_info(synthetic, NamedTupleInfo(field_names=fields))
+        type_object.set_runtime_class(return_value)
+        type_object.set_namedtuple_info(NamedTupleInfo(field_names=fields))
         type_object.clear_declared_symbols()
         defaults = safe_getattr(runtime_class, "_field_defaults", {})
         namedtuple_fields: list[NamedTupleField] = []
@@ -17513,24 +17445,6 @@ def _normalize_slot_names(raw_names: Iterable[str]) -> tuple[tuple[str, ...], bo
             continue
         names.append(name)
     return tuple(names), has_dict
-
-
-def _set_synthetic_runtime_class(
-    synthetic_class: SyntheticClassObjectValue, runtime_class: Value | None
-) -> None:
-    object.__setattr__(synthetic_class, "runtime_class", runtime_class)
-
-
-def _set_synthetic_metaclass(
-    synthetic_class: SyntheticClassObjectValue, metaclass: Value | None
-) -> None:
-    object.__setattr__(synthetic_class, "metaclass", metaclass)
-
-
-def _set_synthetic_namedtuple_info(
-    synthetic_class: SyntheticClassObjectValue, info: NamedTupleInfo | None
-) -> None:
-    object.__setattr__(synthetic_class, "namedtuple_info", info)
 
 
 def _is_dataclass_kw_only_marker_value(value: Value) -> bool:

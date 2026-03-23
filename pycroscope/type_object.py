@@ -66,6 +66,7 @@ from .value import (
     IntersectionValue,
     KnownValue,
     MultiValuedValue,
+    NamedTupleInfo,
     ParamSpecParam,
     PredicateValue,
     PropertyInfo,
@@ -592,6 +593,32 @@ class TypeObject:
     def set_dataclass_field_order(self, field_order: Sequence[str]) -> None:
         synthetic_class = self._ensure_synthetic_class()
         object.__setattr__(synthetic_class, "dataclass_field_order", tuple(field_order))
+        self._update_loaded_synthetic_fields()
+        self._protocol_positive_cache.clear()
+
+    def set_runtime_class(self, runtime_class: Value | None) -> None:
+        # TODO: Remove this once SyntheticClassObjectValue no longer stores runtime
+        # class data directly.
+        synthetic_class = self._ensure_synthetic_class()
+        object.__setattr__(synthetic_class, "runtime_class", runtime_class)
+        if self._declared_symbols is not None and isinstance(self.typ, type):
+            self._declared_symbols = self._compute_declared_symbols()
+        self._update_loaded_synthetic_fields()
+        self._protocol_positive_cache.clear()
+
+    def set_metaclass(self, metaclass: Value | None) -> None:
+        # TODO: Remove this once SyntheticClassObjectValue no longer stores
+        # metaclass data directly.
+        synthetic_class = self._ensure_synthetic_class()
+        object.__setattr__(synthetic_class, "metaclass", metaclass)
+        self._update_loaded_synthetic_fields()
+        self._protocol_positive_cache.clear()
+
+    def set_namedtuple_info(self, info: NamedTupleInfo | None) -> None:
+        # TODO: Remove this once SyntheticClassObjectValue no longer stores
+        # namedtuple metadata directly.
+        synthetic_class = self._ensure_synthetic_class()
+        object.__setattr__(synthetic_class, "namedtuple_info", info)
         self._update_loaded_synthetic_fields()
         self._protocol_positive_cache.clear()
 
