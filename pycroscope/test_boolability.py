@@ -217,6 +217,20 @@ class TestConditionAlwaysTrue(TestNameCheckVisitorBase):
             pass
 
     @assert_passes()
+    def test_if_statement_bad_bool(self):
+        class X(object):
+            def __bool__(self):
+                raise Exception("I am a poorly behaved object")
+
+            __nonzero__ = __bool__
+
+        x = X()
+
+        def capybara() -> None:
+            if x:  # E: type_does_not_support_bool
+                pass
+
+    @assert_passes()
     def test_overrides_len(self):
         class Capybara(object):
             def __len__(self):

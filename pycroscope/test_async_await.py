@@ -64,6 +64,30 @@ class TestAsyncAwait(TestNameCheckVisitorBase):
             assert_type(await aw, str)
 
     @assert_passes()
+    def test_dunder_await_only(self):
+        from typing import Generator
+
+        class CustomAwaitable:
+            def __await__(self) -> Generator[None, None, int]:
+                if False:
+                    yield None
+                return 42
+
+        async def capybara() -> int:
+            x = await CustomAwaitable()
+            assert_type(x, int)
+            return x
+
+    @assert_passes()
+    def test_generic_awaitable(self):
+        from typing import Awaitable
+
+        async def capybara(task: Awaitable[int]) -> int:
+            x = await task
+            assert_type(x, int)
+            return x
+
+    @assert_passes()
     def test_async_comprehension(self):
         from typing_extensions import Self
 
@@ -163,6 +187,14 @@ class TestMissingAwait(TestNameCheckVisitorBase):
             return 42
 
         async def g():
+            f()  # E: missing_await
+
+    @assert_passes()
+    def test_sync_def_internal_missing_await(self):
+        async def f():
+            return 42
+
+        def g():
             f()  # E: missing_await
 
     @assert_passes()
@@ -322,6 +354,12 @@ class TestAsyncGenerator(TestNameCheckVisitorBase):
             )
             async for i in gen():
                 assert_type(i, int)
+
+    @assert_passes()
+    def test_async_for_not_async_iterable(self):
+        async def capybara() -> None:
+            async for i in [1, 2, 3]:  # E: unsupported_operation  # E: unused_variable
+                pass
 
     @assert_passes()
     def test_async_comprehension_over_generator(self):

@@ -117,6 +117,33 @@ class TestRuntime(TestNameCheckVisitorBase):
             print(DeprecatedClass)  # E: deprecated
             return DeprecatedClass()  # E: deprecated
 
+    @assert_passes()
+    def test_union_call_target(self):
+        from pycroscope.extensions import deprecated
+
+        @deprecated("old")
+        def f() -> None:
+            pass
+
+        def g() -> None:
+            pass
+
+        def capybara(flag: bool) -> None:
+            fn = f if flag else g  # E: deprecated
+            fn()  # E: deprecated
+
+    @assert_passes()
+    def test_dunder_call(self):
+        from pycroscope.extensions import deprecated
+
+        class Invocable:
+            @deprecated("Deprecated")
+            def __call__(self) -> None:
+                pass
+
+        def capybara() -> None:
+            Invocable()()  # E: deprecated
+
     @assert_passes(run_in_both_module_modes=True)
     @pytest.mark.filterwarnings("ignore:.*:DeprecationWarning")
     def test_unimportable_module_deprecations(self):

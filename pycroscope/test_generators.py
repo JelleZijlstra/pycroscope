@@ -43,6 +43,34 @@ class TestGenerator(TestNameCheckVisitorBase):
             x = yield from gen(True)
             assert_is_value(x, AnyValue(AnySource.generic_argument))
 
+    @assert_passes()
+    def test_yield_from_custom_awaitable(self):
+        from typing import Awaitable, Generator
+
+        class CustomAwaitable(Awaitable[int]):
+            def __await__(self) -> Generator[None, None, int]:
+                if False:
+                    yield None
+                return 42
+
+        def capybara() -> Generator[None, None, int]:
+            x = yield from CustomAwaitable()
+            assert_type(x, int)
+            return x
+
+    @assert_passes()
+    def test_yield_from_incompatible_yield_type(self):
+        from typing import Generator
+
+        def inner() -> Generator[str, None, int]:
+            yield "capybara"
+            return 42
+
+        def outer() -> Generator[int, None, int]:
+            x = yield from inner()  # E: incompatible_yield
+            assert_type(x, int)
+            return x
+
 
 class TestGeneratorReturn(TestNameCheckVisitorBase):
     @assert_passes()
