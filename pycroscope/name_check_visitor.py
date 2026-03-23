@@ -322,7 +322,6 @@ from .value import (
     iter_type_params_in_value,
     kv_pairs_from_mapping,
     make_coro_type,
-    ordered_namedtuple_fields_from_synthetic,
     replace_fallback,
     replace_known_sequence_value,
     set_self,
@@ -4224,7 +4223,8 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             )
             runtime_enum_fallback_class: type | None = None
             is_namedtuple_synthetic = any(
-                _is_namedtuple_like_base_value(base_value) for base_value in base_values
+                _is_namedtuple_like_base_value(base_value, self.checker)
+                for base_value in base_values
             )
             if (
                 class_obj is None
@@ -4957,7 +4957,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         if (
             self._is_checking()
             and isinstance(synthetic_class, SyntheticClassObjectValue)
-            and _synthetic_class_is_namedtuple_like(synthetic_class)
+            and self.checker.make_type_object(
+                synthetic_class.class_type.typ
+            ).is_namedtuple_like()
         ):
             value_to_store = synthetic_class
         if (
@@ -5193,16 +5195,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 base_value
             ):
                 continue
-            base = replace_fallback(base_value)
-            if isinstance(
-                base, SyntheticClassObjectValue
-            ) and _synthetic_class_is_namedtuple_like(base):
-                namedtuple_base_fields.update(
-                    ordered_namedtuple_fields_from_synthetic(base, self.checker)
-                )
-            if isinstance(base, KnownValue) and isinstance(base.val, type):
-                if is_namedtuple_class(base.val):
-                    namedtuple_base_fields.update(base.val._fields)
+            namedtuple_base_fields.update(
+                _namedtuple_base_fields_from_base_values((base_value,), self.checker)
+            )
             if has_namedtuple_marker_base and not self._is_namedtuple_generic_base(
                 base_value
             ):
@@ -17056,30 +17051,39 @@ def _is_namedtuple_marker_base(base_value: Value) -> bool:
     )
 
 
-def _is_namedtuple_like_base_value(base_value: Value) -> bool:
+def _type_object_from_base_subvalue(
+    base_value: Value, checker: Checker
+) -> TypeObject | None:
+    base_value = replace_fallback(base_value)
+    if isinstance(base_value, KnownValue):
+        if isinstance(base_value.val, type):
+            return checker.make_type_object(base_value.val)
+        return None
+    if isinstance(base_value, SyntheticClassObjectValue):
+        class_type = base_value.class_type
+        if isinstance(class_type, TypedValue):
+            return checker.make_type_object(class_type.typ)
+        return None
+    if isinstance(base_value, TypedValue):
+        return checker.make_type_object(base_value.typ)
+    if isinstance(base_value, SubclassValue) and isinstance(base_value.typ, TypedValue):
+        return checker.make_type_object(base_value.typ.typ)
+    return None
+
+
+def _iter_type_objects_from_base_value(
+    base_value: Value, checker: Checker
+) -> Iterable[TypeObject]:
     for subval in flatten_values(replace_fallback(base_value)):
-        if _is_namedtuple_marker_base(subval):
-            return True
-        if isinstance(subval, SyntheticClassObjectValue):
-            if _synthetic_class_is_namedtuple_like(subval):
-                return True
-            continue
-        if isinstance(subval, KnownValue) and isinstance(subval.val, type):
-            if is_namedtuple_class(subval.val):
-                return True
-    return False
+        tobj = _type_object_from_base_subvalue(subval, checker)
+        if tobj is not None:
+            yield tobj
 
 
-def _synthetic_class_is_namedtuple_like(
-    synthetic_class: SyntheticClassObjectValue,
-) -> bool:
-    if synthetic_class.namedtuple_info is not None:
-        return True
-    runtime_class = synthetic_class.runtime_class
-    return (
-        isinstance(runtime_class, KnownValue)
-        and isinstance(runtime_class.val, type)
-        and is_namedtuple_class(runtime_class.val)
+def _is_namedtuple_like_base_value(base_value: Value, checker: Checker) -> bool:
+    return _is_namedtuple_marker_base(base_value) or any(
+        tobj.is_namedtuple_like()
+        for tobj in _iter_type_objects_from_base_value(base_value, checker)
     )
 
 
@@ -17088,21 +17092,8 @@ def _namedtuple_base_fields_from_base_values(
 ) -> set[str]:
     fields: set[str] = set()
     for base_value in base_values:
-        for subval in flatten_values(replace_fallback(base_value)):
-            if isinstance(subval, SyntheticClassObjectValue):
-                if _synthetic_class_is_namedtuple_like(subval):
-                    fields.update(
-                        ordered_namedtuple_fields_from_synthetic(subval, checker)
-                    )
-            elif isinstance(subval, KnownValue) and isinstance(subval.val, type):
-                if is_namedtuple_class(subval.val):
-                    field_names = safe_getattr(subval.val, "_fields", ())
-                    if isinstance(field_names, tuple):
-                        fields.update(
-                            field_name
-                            for field_name in field_names
-                            if isinstance(field_name, str)
-                        )
+        for tobj in _iter_type_objects_from_base_value(base_value, checker):
+            fields.update(field.name for field in tobj.get_namedtuple_fields())
     return fields
 
 

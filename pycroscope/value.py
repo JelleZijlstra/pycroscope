@@ -3949,7 +3949,7 @@ def ordered_namedtuple_fields_from_synthetic(
     synthetic: SyntheticClassObjectValue, ctx: CanAssignContext
 ) -> tuple[str, ...]:
     inherited: list[str] = []
-    for base in synthetic.base_classes:  # tobj.get_direct_bases():
+    for base in synthetic.base_classes:
         for subval in flatten_values(replace_fallback(base)):
             if isinstance(subval, SyntheticClassObjectValue):
                 runtime_class = subval.runtime_class
@@ -3960,6 +3960,20 @@ def ordered_namedtuple_fields_from_synthetic(
                 ):
                     inherited.extend(
                         ordered_namedtuple_fields_from_synthetic(subval, ctx)
+                    )
+            elif isinstance(subval, TypedValue):
+                base_tobj = subval.get_type_object(ctx)
+                if base_tobj.is_namedtuple_like():
+                    inherited.extend(
+                        field.name for field in base_tobj.get_namedtuple_fields()
+                    )
+            elif isinstance(subval, SubclassValue) and isinstance(
+                subval.typ, TypedValue
+            ):
+                base_tobj = subval.typ.get_type_object(ctx)
+                if base_tobj.is_namedtuple_like():
+                    inherited.extend(
+                        field.name for field in base_tobj.get_namedtuple_fields()
                     )
             elif isinstance(subval, KnownValue) and isinstance(subval.val, type):
                 fields_obj = safe_getattr(subval.val, "_fields", None)
@@ -4046,20 +4060,37 @@ def get_namedtuple_field_value_from_synthetic(
             visitor=ctx,
             suppress_errors=True,
         )
-    tobj = synthetic_class.get_type_object(ctx)
-    for base_value in tobj.get_direct_bases():
+    for base_value in synthetic_class.get_type_object(ctx).get_direct_bases():
         if not isinstance(base_value, TypedValue):
             continue
-        tobj = base_value.get_type_object(ctx)
-        symbol = tobj.get_declared_symbol(field_name)
-        if symbol is not None:
-            if (
-                not symbol.is_classvar
-                and not symbol.is_initvar
-                and not symbol.is_method
+        field = base_value.get_type_object(ctx).get_namedtuple_field(field_name)
+        if field is not None:
+            return field.typ
+    for base_value in synthetic_class.base_classes:
+        for subval in flatten_values(replace_fallback(base_value)):
+            if isinstance(subval, SyntheticClassObjectValue):
+                field_value = get_namedtuple_field_value_from_synthetic(
+                    subval, field_name, ctx
+                )
+                if field_value is not None:
+                    return field_value
+            elif isinstance(subval, TypedValue):
+                field = subval.get_type_object(ctx).get_namedtuple_field(field_name)
+                if field is not None:
+                    return field.typ
+            elif isinstance(subval, SubclassValue) and isinstance(
+                subval.typ, TypedValue
             ):
-                return symbol.get_declared_type()
-            return symbol.initializer
+                field = subval.typ.get_type_object(ctx).get_namedtuple_field(field_name)
+                if field is not None:
+                    return field.typ
+            elif isinstance(subval, KnownValue) and isinstance(subval.val, type):
+                if is_namedtuple_class(subval.val):
+                    return type_from_runtime(
+                        get_namedtuple_field_annotation(subval.val, field_name),
+                        visitor=ctx,
+                        suppress_errors=True,
+                    )
     return None
 
 

@@ -87,8 +87,10 @@ from .value import (
     Value,
     default_value_for_type_param,
     freshen_typevars_for_inference,
+    get_namedtuple_field_value_from_synthetic,
     get_tv_map,
     match_typevar_arguments,
+    ordered_namedtuple_fields_from_synthetic,
     replace_fallback,
     stringify_object,
     tuple_members_from_value,
@@ -456,6 +458,70 @@ class TypeObject:
             )
         return type_object_builder._get_runtime_dataclass_fields(self.typ)
 
+    def _get_synthetic_namedtuple_class(self) -> SyntheticClassObjectValue | None:
+        import pycroscope.type_object_builder as type_object_builder
+
+        synthetic_class = self._checker.get_synthetic_class(self.typ)
+        if synthetic_class is None:
+            return None
+        if synthetic_class.namedtuple_info is not None:
+            return synthetic_class
+        runtime_class = synthetic_class.runtime_class
+        if (
+            isinstance(runtime_class, KnownValue)
+            and isinstance(runtime_class.val, type)
+            and is_namedtuple_class(runtime_class.val)
+        ):
+            return synthetic_class
+        for base in synthetic_class.base_classes:
+            for base_value in type_object_builder._iter_base_type_values(
+                base, self._checker.arg_spec_cache
+            ):
+                if self._checker.make_type_object(base_value.typ).is_namedtuple_like():
+                    return synthetic_class
+        return None
+
+    def _namedtuple_fields_from_runtime(self, typ: type) -> tuple[NamedTupleField, ...]:
+        fields: list[NamedTupleField] = []
+        defaults = safe_getattr(typ, "_field_defaults", None)
+        annos = safe_getattr(typ, "__annotations__", None)
+        for field_name in safe_getattr(typ, "_fields", ()):
+            if not isinstance(field_name, str):
+                continue
+            field_type = type_from_runtime(
+                annos.get(field_name, object) if annos else object,
+                visitor=self._checker,
+                suppress_errors=True,
+            )
+            if field_type == TypedValue(object) and not annos:
+                field_type = AnyValue(AnySource.unannotated)
+            default = (
+                KnownValue(defaults[field_name])
+                if isinstance(defaults, Mapping) and field_name in defaults
+                else None
+            )
+            fields.append(NamedTupleField(field_name, field_type, default))
+        return tuple(fields)
+
+    def _compute_synthetic_namedtuple_fields(
+        self, synthetic_class: SyntheticClassObjectValue
+    ) -> tuple[NamedTupleField, ...]:
+        return tuple(
+            NamedTupleField(
+                field_name,
+                (
+                    get_namedtuple_field_value_from_synthetic(
+                        synthetic_class, field_name, self._checker
+                    )
+                    or AnyValue(AnySource.inference)
+                ),
+                None,
+            )
+            for field_name in ordered_namedtuple_fields_from_synthetic(
+                synthetic_class, self._checker
+            )
+        )
+
     def _compute_is_thrift_enum(self) -> bool:
         return isinstance(self.typ, type) and hasattr(self.typ, "_VALUES_TO_NAMES")
 
@@ -509,26 +575,12 @@ class TypeObject:
 
     def _compute_namedtuple_data(self) -> tuple[bool, Sequence[NamedTupleField]]:
         if isinstance(self.typ, type) and is_direct_namedtuple_class(self.typ):
-            from .annotations import type_from_runtime
-
-            fields: list[NamedTupleField] = []
-            defaults = safe_getattr(self.typ, "_field_defaults", None)
-            annos = safe_getattr(self.typ, "__annotations__", None)
-            for field_name in self.typ._fields:
-                field_type = type_from_runtime(
-                    annos.get(field_name, object) if annos else object,
-                    visitor=self._checker,
-                    suppress_errors=True,
-                )
-                if field_type == TypedValue(object) and not annos:
-                    field_type = AnyValue(AnySource.unannotated)
-                default = (
-                    KnownValue(defaults[field_name])
-                    if isinstance(defaults, Mapping) and field_name in defaults
-                    else None
-                )
-                fields.append(NamedTupleField(field_name, field_type, default))
-            return True, fields
+            return True, self._namedtuple_fields_from_runtime(self.typ)
+        synthetic_class = self._get_synthetic_namedtuple_class()
+        if synthetic_class is not None:
+            return False, self._compute_synthetic_namedtuple_fields(synthetic_class)
+        if isinstance(self.typ, type) and is_namedtuple_class(self.typ):
+            return False, self._namedtuple_fields_from_runtime(self.typ)
         return False, ()
 
     def _update_loaded_synthetic_fields(self) -> None:
@@ -705,6 +757,17 @@ class TypeObject:
         if self._dataclass_fields is None:
             self._dataclass_fields = self._compute_dataclass_fields()
         return self._dataclass_fields
+
+    def is_namedtuple_like(self) -> bool:
+        return self._get_synthetic_namedtuple_class() is not None or (
+            isinstance(self.typ, type) and is_namedtuple_class(self.typ)
+        )
+
+    def get_namedtuple_field(self, field_name: str) -> NamedTupleField | None:
+        for field in self.get_namedtuple_fields():
+            if field.name == field_name:
+                return field
+        return None
 
     def get_virtual_bases(self) -> list[MroValue]:
         if self._virtual_bases is None:

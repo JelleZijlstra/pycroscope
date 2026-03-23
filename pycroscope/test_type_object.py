@@ -7,6 +7,7 @@ from .test_name_check_visitor import TestNameCheckVisitorBase
 from .test_node_visitor import assert_passes
 from .type_object import (
     DataclassFieldRecord,
+    NamedTupleField,
     _class_key_from_value,
     _should_use_permissive_dunder_hash,
     lookup_declared_symbol_with_owner,
@@ -22,6 +23,7 @@ from .value import (
     IntersectionValue,
     KnownValue,
     MultiValuedValue,
+    NamedTupleInfo,
     SubclassValue,
     SyntheticClassObjectValue,
     TypedValue,
@@ -233,6 +235,43 @@ def test_runtime_namedtuple_field_is_readonly() -> None:
     symbol = checker.make_type_object(Point).get_declared_symbol("x")
     assert symbol is not None
     assert symbol.is_readonly
+
+
+def test_type_object_exposes_synthetic_namedtuple_metadata() -> None:
+    checker = Checker()
+    base = SyntheticClassObjectValue(
+        "Base",
+        TypedValue("mod.Base"),
+        base_classes=(TypedValue(tuple),),
+        namedtuple_info=NamedTupleInfo(
+            field_names=("x",), has_namedtuple_marker_base=True
+        ),
+    )
+    child = SyntheticClassObjectValue(
+        "Child",
+        TypedValue("mod.Child"),
+        base_classes=(TypedValue("mod.Base"),),
+        namedtuple_info=NamedTupleInfo(
+            field_names=("label",), has_namedtuple_marker_base=False
+        ),
+    )
+    checker.register_synthetic_class(base)
+    checker.register_synthetic_class(child)
+    checker.make_type_object("mod.Base").set_declared_symbol(
+        "x", ClassSymbol(annotation=TypedValue(int), is_instance_only=True)
+    )
+    checker.make_type_object("mod.Child").set_declared_symbol(
+        "label", ClassSymbol(annotation=TypedValue(str), is_instance_only=True)
+    )
+
+    type_object = checker.make_type_object("mod.Child")
+    assert type_object.is_namedtuple_like()
+    assert type_object.get_namedtuple_fields() == (
+        NamedTupleField("x", TypedValue(int), None),
+    )
+    assert type_object.get_namedtuple_field("x") == NamedTupleField(
+        "x", TypedValue(int), None
+    )
 
 
 def test_synthetic_declared_symbol_overrides_raw_attribute_value() -> None:
