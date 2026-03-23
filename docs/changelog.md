@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Improve deprecated-member diagnostics for inherited properties and `__call__`, so subclasses now inherit those deprecation errors consistently instead of sometimes losing them.
 - Allow subclasses to add `__slots__` entries without triggering `incompatible_override`, while still rejecting writes to attributes that are not declared in inherited slots.
 - Improve `match` fallthrough narrowing for irrefutable class and sequence patterns, so later cases and wildcard fallbacks now exclude values already guaranteed to match earlier branches.
 - Fix attribute-assignment checks on unions and intersections so pycroscope now preserves special-case errors like `Final`/`ClassVar` writes and still validates declared attribute types across each possible receiver branch.
