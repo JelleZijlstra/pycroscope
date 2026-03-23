@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Allow subclasses to add `__slots__` entries without triggering `incompatible_override`, while still rejecting writes to attributes that are not declared in inherited slots.
 - Improve `match` fallthrough narrowing for irrefutable class and sequence patterns, so later cases and wildcard fallbacks now exclude values already guaranteed to match earlier branches.
 - Fix attribute-assignment checks on unions and intersections so pycroscope now preserves special-case errors like `Final`/`ClassVar` writes and still validates declared attribute types across each possible receiver branch.
 - Improve `super()` modeling so pycroscope now tracks `super` calls with a dedicated internal value, resolves `super()` attribute lookup more consistently, and accepts staticmethod access like `super().label()`.
