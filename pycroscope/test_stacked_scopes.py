@@ -2060,7 +2060,6 @@ class TestInvalidation(TestNameCheckVisitorBase):
 
 
 class TestClassNesting(TestNameCheckVisitorBase):
-
     @assert_passes()
     def test_class_in_class(self):
         class Caviids(object):

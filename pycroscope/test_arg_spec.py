@@ -62,7 +62,6 @@ def test_get_type_parameters_ignores_non_iterable_runtime_type_params() -> None:
 def test_match_typevar_arguments_preserves_suffix_after_default_before_typevartuple() -> (
     None
 ):
-
     default_t = TypeVar("DefaultT", default=int)
     ts = TypeVarTuple("Ts")
     u = TypeVar("U")

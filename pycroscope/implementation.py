@@ -27,6 +27,7 @@ from .relations import (
     has_relation,
     intersect_values,
     is_assignable,
+    is_assignable_with_reason,
     is_equivalent,
     is_equivalent_with_reason,
 )
@@ -410,7 +411,7 @@ def _invalid_classinfo_kind_runtime(
 
 
 def _is_non_runtime_checkable_protocol(typ: type, ctx: CallContext) -> bool:
-    if not ctx.visitor.checker.make_type_object(typ).is_protocol:
+    if not ctx.visitor.checker.make_type_object(typ).is_protocol():
         return False
     # Runtime classinfo semantics apply only to actual protocol runtime classes.
     if not safe_getattr(typ, "_is_protocol", False):
@@ -419,7 +420,7 @@ def _is_non_runtime_checkable_protocol(typ: type, ctx: CallContext) -> bool:
 
 
 def _is_runtime_checkable_protocol(typ: type, ctx: CallContext) -> bool:
-    if not ctx.visitor.checker.make_type_object(typ).is_protocol:
+    if not ctx.visitor.checker.make_type_object(typ).is_protocol():
         return False
     if not safe_getattr(typ, "_is_protocol", False):
         return False
@@ -427,7 +428,7 @@ def _is_runtime_checkable_protocol(typ: type, ctx: CallContext) -> bool:
 
 
 def _runtime_protocol_member_names(protocol: type, ctx: CallContext) -> set[str]:
-    return set(ctx.visitor.checker.make_type_object(protocol).protocol_members)
+    return set(ctx.visitor.checker.make_type_object(protocol).get_protocol_members())
 
 
 def _runtime_protocol_member_is_method(protocol: type, member: str) -> bool:
@@ -750,8 +751,15 @@ def _super_impl(ctx: CallContext) -> Value:
     else:
         return AnyValue(AnySource.inference)
 
-    if not tobj.is_assignable_to_type(cls):
-        ctx.show_error("Incompatible arguments to super", ErrorCode.bad_super_call)
+    can_assign = is_assignable_with_reason(
+        TypedValue(tobj.typ), TypedValue(cls), ctx.visitor
+    )
+    if isinstance(can_assign, CanAssignError):
+        ctx.show_error(
+            "Incompatible arguments to super",
+            ErrorCode.bad_super_call,
+            detail=str(can_assign),
+        )
 
     current_class = ctx.visitor.asynq_checker.current_class
     if current_class is not None and cls is not current_class:
@@ -987,10 +995,9 @@ def _sequence_common_getitem_impl(ctx: CallContext, typ: type) -> ImplReturn:
                 ctx.show_error(f"Invalid {typ.__name__} key {key}")
                 return AnyValue(AnySource.error)
         elif isinstance(key, TypedValue):
-            tobj = key.get_type_object(ctx.visitor)
-            if tobj.is_assignable_to_type(int):
+            if is_assignable(TypedValue(int), key, ctx.visitor):
                 return type_arg
-            elif tobj.is_assignable_to_type(slice):
+            elif is_assignable(TypedValue(slice), key, ctx.visitor):
                 if from_tuple_subtype:
                     return TypedValue(tuple)
                 if generated_tuple_sequence and isinstance(
@@ -2032,10 +2039,16 @@ def _get_mro_impl(ctx: CallContext) -> Value:
     typ = replace_fallback(ctx.vars["typ"])
     checker = ctx.visitor.checker
     class_key = _class_key_from_value(typ)
+    include_virtual = _enforce_literal_bool(ctx, "include_virtual", False)
     if class_key is None:
         return ctx.inferred_return_value
     return SequenceValue(
-        tuple, [(False, value) for value in checker.make_type_object(class_key).mro]
+        tuple,
+        [
+            (False, entry.get_mro_value())
+            for entry in checker.make_type_object(class_key).get_mro()
+            if include_virtual or not entry.is_virtual
+        ],
     )
 
 
@@ -2471,12 +2484,12 @@ def _newtype_is_protocol(value: Value, ctx: CallContext) -> bool:
     if isinstance(value, GenericValue):
         return (
             isinstance(value.typ, type)
-            and ctx.visitor.checker.make_type_object(value.typ).is_protocol
+            and ctx.visitor.checker.make_type_object(value.typ).is_protocol()
         )
     if isinstance(value, TypedValue):
         return (
             isinstance(value.typ, type)
-            and ctx.visitor.checker.make_type_object(value.typ).is_protocol
+            and ctx.visitor.checker.make_type_object(value.typ).is_protocol()
         )
     if isinstance(value, SubclassValue):
         return _newtype_is_protocol(value.typ, ctx)
@@ -2876,7 +2889,15 @@ def get_default_argspecs() -> dict[object, Signature]:
             callable=dump_value,
         ),
         Signature.make(
-            [SigParameter("typ", _POS_ONLY)],
+            [
+                SigParameter("typ", _POS_ONLY),
+                SigParameter(
+                    "include_virtual",
+                    ParameterKind.KEYWORD_ONLY,
+                    annotation=TypedValue(bool),
+                    default=KnownValue(False),
+                ),
+            ],
             return_annotation=GenericValue(tuple, [TypedValue(type)]),
             impl=_get_mro_impl,
             callable=get_mro,

@@ -1,6 +1,7 @@
 # static analysis: ignore
+
 from .test_name_check_visitor import TestNameCheckVisitorBase
-from .test_node_visitor import assert_passes
+from .test_node_visitor import assert_passes, skip_before
 from .value import KnownValue
 
 
@@ -26,108 +27,6 @@ class TestInferenceHelpers(TestNameCheckVisitorBase):
             y = reveal_type([])  # E: reveal_type
             assert_is_value(x, KnownValue([]))
             assert_is_value(y, KnownValue([]))
-
-    @assert_passes()
-    def test_get_mro(self) -> None:
-        from typing import Generic, NamedTuple, TypeVar
-
-        from pycroscope import get_mro
-        from pycroscope.extensions import assert_type
-
-        T = TypeVar("T")
-
-        class Base(Generic[T]):
-            pass
-
-        class Child(Base[int]):
-            pass
-
-        class L(list[int]):
-            pass
-
-        class Tup(tuple[int, str]):
-            pass
-
-        class NT(NamedTuple):
-            x: int
-            y: str
-
-        assert_type(get_mro(object), tuple[object])
-        assert_type(get_mro(int), tuple[int, object])
-        assert_type(get_mro(Base), tuple[Base[T], Generic, object])
-        assert_type(get_mro(Child), tuple[Base[int], Generic, object])
-        assert_type(get_mro(L), tuple[list[int], object])
-        assert_type(get_mro(Tup), tuple[tuple[int, str], object])
-        assert_type(get_mro(NT), tuple[tuple[int, str], object])
-
-    @assert_passes(run_in_both_module_modes=True)
-    def test_get_mro_multiple_inheritance(self) -> None:
-        from pycroscope import get_mro
-        from pycroscope.extensions import assert_type
-
-        class O:
-            pass
-
-        class A(O):
-            pass
-
-        class B(O):
-            pass
-
-        class C(O):
-            pass
-
-        class D(O):
-            pass
-
-        class E(O):
-            pass
-
-        class K1(A, B, C):
-            pass
-
-        class K2(D, B, E):
-            pass
-
-        class K3(D, A):
-            pass
-
-        class Z(K1, K2, K3):
-            pass
-
-        assert_type(get_mro(K1), tuple[K1, A, B, C, O, object])
-        assert_type(get_mro(K2), tuple[K2, D, B, E, O, object])
-        assert_type(get_mro(K3), tuple[K3, D, A, O, object])
-        assert_type(get_mro(Z), tuple[Z, K1, K2, K3, D, A, B, C, E, O, object])
-
-    @assert_passes(run_in_both_module_modes=True)
-    def test_get_mro_multiple_inheritance_with_generics(self) -> None:
-        from typing import Generic, TypeVar
-
-        from pycroscope import get_mro
-        from pycroscope.extensions import assert_type
-
-        T = TypeVar("T")
-        U = TypeVar("U")
-
-        class Base(Generic[T]):
-            pass
-
-        class Left(Base[T]):
-            pass
-
-        class Right(Generic[U]):
-            pass
-
-        class Child(Left[int], Right[str]):
-            pass
-
-        assert_type(get_mro(Left), tuple[Left[T], Base[T], Generic, object])
-        assert_type(get_mro(Right), tuple[Right[U], Generic, object])
-        assert_type(
-            get_mro(Child),
-            tuple[Child, Left[int], Right[str], Base[int], Generic, object],
-        )
 
     @assert_passes()
     def test_assert_type(self) -> None:
@@ -214,3 +113,155 @@ class TestRevealLocals(TestNameCheckVisitorBase):
             if b == "x":
                 reveal_locals()  # E: reveal_type
             print(a, b, c)
+
+
+class TestGetMro(TestNameCheckVisitorBase):
+    @assert_passes()
+    def test_get_mro_simple(self) -> None:
+        from typing import Generic, TypeVar
+
+        from pycroscope import get_mro
+        from pycroscope.extensions import assert_type
+
+        T = TypeVar("T")
+
+        class Base(Generic[T]):
+            pass
+
+        class Child(Base[int]):
+            pass
+
+        class L(list[int]):
+            pass
+
+        assert_type(get_mro(object), tuple[object])
+        assert_type(get_mro(int), tuple[int, object])
+        assert_type(get_mro(Base), tuple[Base[T], Generic, object])
+        assert_type(get_mro(Child), tuple[Child, Base[int], Generic, object])
+        assert_type(get_mro(L), tuple[L, list[int], object])
+
+    @assert_passes()
+    def test_get_mro_tuple(self) -> None:
+        import collections
+        from typing import Any, Generic, NamedTuple, TypeVar
+
+        from pycroscope import get_mro
+        from pycroscope.extensions import assert_type
+
+        T = TypeVar("T")
+
+        class Tup(tuple[int, str]):
+            pass
+
+        class GenTup(tuple[int, T], Generic[T]):
+            pass
+
+        class GenTup2(GenTup[float]):
+            pass
+
+        class NT(NamedTuple):
+            x: int
+            y: str
+
+        nt = collections.namedtuple("nt", ["x", "y"])
+
+        assert_type(get_mro(Tup), tuple[Tup, tuple[int, str], object])
+        assert_type(get_mro(GenTup), tuple[GenTup[T], tuple[int, T], Generic, object])
+        assert_type(
+            get_mro(GenTup2),
+            tuple[GenTup2, GenTup[float], tuple[int, float], Generic, object],
+        )
+        assert_type(get_mro(nt), tuple[nt, tuple[Any, Any], object])
+        assert_type(get_mro(NT), tuple[NT, tuple[int, str], object])
+
+    @assert_passes(run_in_both_module_modes=True)
+    def test_get_mro_multiple_inheritance(self) -> None:
+        from typing_extensions import assert_type
+
+        from pycroscope import get_mro
+
+        class O:
+            pass
+
+        class A(O):
+            pass
+
+        class B(O):
+            pass
+
+        class C(O):
+            pass
+
+        class D(O):
+            pass
+
+        class E(O):
+            pass
+
+        class K1(A, B, C):
+            pass
+
+        class K2(D, B, E):
+            pass
+
+        class K3(D, A):
+            pass
+
+        class Z(K1, K2, K3):
+            pass
+
+        assert_type(get_mro(K1), tuple[K1, A, B, C, O, object])
+        assert_type(get_mro(K2), tuple[K2, D, B, E, O, object])
+        assert_type(get_mro(K3), tuple[K3, D, A, O, object])
+        assert_type(get_mro(Z), tuple[Z, K1, K2, K3, D, A, B, C, E, O, object])
+
+    @assert_passes(run_in_both_module_modes=True)
+    def test_get_mro_multiple_inheritance_with_generics(self) -> None:
+        from typing import Generic, TypeVar
+
+        from typing_extensions import assert_type
+
+        from pycroscope import get_mro
+
+        T = TypeVar("T")
+        U = TypeVar("U")
+
+        class Base(Generic[T]):
+            pass
+
+        class Left(Base[T]):
+            pass
+
+        class Right(Generic[U]):
+            pass
+
+        class Child(Left[int], Right[str]):
+            pass
+
+        assert_type(get_mro(Left), tuple[Left[T], Base[T], Generic, object])
+        assert_type(get_mro(Right), tuple[Right[U], Generic, object])
+        assert_type(
+            get_mro(Child),
+            tuple[Child, Left[int], Base[int], Right[str], Generic, object],
+        )
+
+    @skip_before((3, 11))
+    @assert_passes(run_in_both_module_modes=True)
+    def test_get_mro_inherit_any(self):
+        from typing import Any
+
+        from typing_extensions import assert_type
+
+        from pycroscope import get_mro
+
+        class A(Any):
+            pass
+
+        class B:
+            pass
+
+        class C(A, B):
+            pass
+
+        assert_type(get_mro(A), tuple[A, Any, object])
+        assert_type(get_mro(C), tuple[C, A, Any, B, object])

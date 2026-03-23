@@ -790,7 +790,6 @@ class TestAnnotated(TestNameCheckVisitorBase):
         from typing_extensions import assert_type
 
         def capybara():
-
             class Base:
                 pass
 
@@ -2675,7 +2674,6 @@ class TestIfTypeChecking(TestNameCheckVisitorBase):
         from typing_extensions import Literal, assert_type
 
         if TYPE_CHECKING:
-
             T = TypeVar("T")
 
             def capybara(x: T) -> T:

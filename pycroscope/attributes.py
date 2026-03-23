@@ -95,7 +95,6 @@ from .value import (
     UnboundMethodValue,
     Value,
     annotate_value,
-    has_any_base_value,
     replace_fallback,
     set_self,
     stringify_object,
@@ -274,7 +273,8 @@ def get_attribute(ctx: AttrContext) -> Value:
                     synthetic_name, synthetic_class, ctx, seen={id(synthetic_class)}
                 )
                 if attribute_value is UNINITIALIZED_VALUE:
-                    if _synthetic_class_has_any_base(synthetic_class):
+                    tobj = ctx.get_can_assign_context().make_type_object(synthetic_name)
+                    if tobj.has_any_base():
                         attribute_value = AnyValue(AnySource.from_another)
                 else:
                     self_value: Value = root_value.typ
@@ -369,7 +369,9 @@ def _super_mro_values(
     # TODO: switch to just using the MRO; that currently doesn't work because it gets set too late
     if isinstance(receiver_value.typ, type):
         return [TypedValue(base) for base in receiver_value.typ.__mro__]
-    return receiver_value.get_type_object(ctx).mro
+    return [
+        entry.get_mro_value() for entry in receiver_value.get_type_object(ctx).get_mro()
+    ]
 
 
 # TODO: in principle this should be doable with TypeObject.get_attribute if we add a flag
@@ -596,6 +598,7 @@ def _get_attribute_from_synthetic_type(
     elif ctx.attr == "__dict__":
         return TypedValue(dict)
     synthetic_class = ctx.get_synthetic_class(fq_name)
+    tobj = ctx.get_can_assign_context().make_type_object(fq_name)
     if synthetic_class is not None:
         if generic_args:
             receiver_value = GenericValue(fq_name, generic_args)
@@ -615,7 +618,7 @@ def _get_attribute_from_synthetic_type(
             )
         if result is not UNINITIALIZED_VALUE:
             result = _maybe_resolve_synthetic_property_attribute(result, ctx)
-            if _is_synthetic_method_attribute(synthetic_class, ctx.attr) and (
+            if _is_synthetic_method_attribute(synthetic_class, ctx.attr, ctx) and (
                 not ctx.should_include_synthetic_methods()
             ):
                 result = UNINITIALIZED_VALUE
@@ -630,9 +633,8 @@ def _get_attribute_from_synthetic_type(
         result, provider = _get_attribute_from_synthetic_type_bases(
             fq_name, generic_args, ctx
         )
-    if result is UNINITIALIZED_VALUE and synthetic_class is not None:
-        if _synthetic_class_has_any_base(synthetic_class):
-            return AnyValue(AnySource.from_another)
+    if tobj.has_any_base():
+        return AnyValue(AnySource.from_another)
     result = _substitute_typevars(fq_name, generic_args, result, provider, ctx)
     result = _maybe_resolve_synthetic_property_attribute(result, ctx)
     result = set_self(result, ctx.get_self_value())
@@ -653,9 +655,9 @@ def _get_attribute_from_synthetic_type_bases(
                     synthetic_class, ctx.attr, ctx
                 )
                 if result is not UNINITIALIZED_VALUE:
-                    if _is_synthetic_method_attribute(synthetic_class, ctx.attr) and (
-                        not ctx.should_include_synthetic_methods()
-                    ):
+                    if _is_synthetic_method_attribute(
+                        synthetic_class, ctx.attr, ctx
+                    ) and (not ctx.should_include_synthetic_methods()):
                         result = UNINITIALIZED_VALUE
                 if result is not UNINITIALIZED_VALUE:
                     result = ctx.bind_synthetic_instance_attribute(ctx.attr, result)
@@ -693,7 +695,8 @@ def _get_attribute_from_synthetic_class(
         fq_name, self_value, ctx, seen={id(self_value)}, runtime_type=runtime_type
     )
     if result is UNINITIALIZED_VALUE:
-        if _synthetic_class_has_any_base(self_value):
+        tobj = ctx.get_can_assign_context().make_type_object(fq_name)
+        if tobj.has_any_base():
             return AnyValue(AnySource.from_another)
         return result
     result = set_self(result, self_value.class_type)
@@ -722,14 +725,19 @@ def _get_attribute_from_synthetic_class_inner(
     if _is_instance_only_enum_attr(self_value.class_type, ctx.attr):
         return UNINITIALIZED_VALUE
 
-    for base in self_value.base_classes:
-        result = _get_attribute_from_synthetic_base(base, self_value, ctx, seen=seen)
-        if result is not UNINITIALIZED_VALUE:
-            return result
+    tobj = ctx.get_can_assign_context().make_type_object(self_value.class_type.typ)
+    if not tobj.has_stubs():
+        for base in tobj.get_direct_bases():
+            result = _get_attribute_from_synthetic_base(
+                base, self_value, ctx, seen=seen
+            )
+            if result is not UNINITIALIZED_VALUE:
+                return result
 
     result, _ = ctx.get_attribute_from_typeshed_recursively(fq_name, on_class=True)
     if result is not UNINITIALIZED_VALUE:
         return result
+
     if runtime_type is not None:
         return _get_attribute_from_subclass(runtime_type, self_value.class_type, ctx)
     return result
@@ -738,9 +746,9 @@ def _get_attribute_from_synthetic_class_inner(
 def _get_direct_attribute_from_synthetic_class(
     self_value: SyntheticClassObjectValue, attr_name: str, ctx: AttrContext
 ) -> Value:
-    if _is_synthetic_initvar_attribute(self_value, attr_name):
+    if _is_synthetic_initvar_attribute(self_value, attr_name, ctx):
         return UNINITIALIZED_VALUE
-    symbol = _get_synthetic_declared_symbol(self_value, attr_name)
+    symbol = _get_synthetic_declared_symbol(self_value, attr_name, ctx)
     if symbol is None:
         return UNINITIALIZED_VALUE
     if symbol.is_property:
@@ -801,7 +809,7 @@ def _get_direct_attribute_from_synthetic_instance(
                 and not symbol.is_method
             ):
                 return attribute.value
-    symbol = _get_synthetic_declared_symbol(self_value, attr_name)
+    symbol = _get_synthetic_declared_symbol(self_value, attr_name, ctx)
     if (
         symbol is not None
         and symbol.is_instance_only
@@ -814,21 +822,26 @@ def _get_direct_attribute_from_synthetic_instance(
 
 
 def _get_synthetic_declared_symbol(
-    self_value: SyntheticClassObjectValue, attr_name: str
+    self_value: SyntheticClassObjectValue, attr_name: str, ctx: AttrContext
 ) -> ClassSymbol | None:
-    symbol = self_value.declared_symbols.get(attr_name)
+    class_type = self_value.class_type
+    if not isinstance(class_type, TypedValue):
+        return None
+    can_assign_ctx = ctx.get_can_assign_context()
+    type_object = can_assign_ctx.make_type_object(class_type.typ)
+    symbol = type_object.get_declared_symbol(attr_name)
     if symbol is not None:
         return symbol
     mangled = _maybe_mangle_private_name(attr_name, self_value.name)
     if mangled is None:
         return None
-    return self_value.declared_symbols.get(mangled)
+    return type_object.get_declared_symbol(mangled)
 
 
 def _is_synthetic_method_attribute(
-    self_value: SyntheticClassObjectValue, attr_name: str
+    self_value: SyntheticClassObjectValue, attr_name: str, ctx: AttrContext
 ) -> bool:
-    symbol = _get_synthetic_declared_symbol(self_value, attr_name)
+    symbol = _get_synthetic_declared_symbol(self_value, attr_name, ctx)
     return symbol is not None and symbol.is_method
 
 
@@ -955,9 +968,9 @@ def _maybe_resolve_synthetic_property_attribute(
 
 
 def _is_synthetic_initvar_attribute(
-    self_value: SyntheticClassObjectValue, attr_name: str
+    self_value: SyntheticClassObjectValue, attr_name: str, ctx: AttrContext
 ) -> bool:
-    symbol = _get_synthetic_declared_symbol(self_value, attr_name)
+    symbol = _get_synthetic_declared_symbol(self_value, attr_name, ctx)
     return symbol is not None and symbol.is_initvar
 
 
@@ -972,7 +985,7 @@ def _is_synthetic_self_classmethod_attribute(
         )
         symbol = None if attribute is None else attribute.symbol
     else:
-        symbol = _get_synthetic_declared_symbol(self_value, attr_name)
+        symbol = _get_synthetic_declared_symbol(self_value, attr_name, ctx)
     return symbol is not None and symbol.returns_self_on_class_access
 
 
@@ -1148,10 +1161,6 @@ def _get_attribute_from_synthetic_base(
     return UNINITIALIZED_VALUE
 
 
-def _synthetic_class_has_any_base(self_value: SyntheticClassObjectValue) -> bool:
-    return any(has_any_base_value(base) for base in self_value.base_classes)
-
-
 def _contains_self_typevar(value: Value) -> bool:
     return any(
         isinstance(subval, TypeVarValue) and subval.typevar_param.typevar is SelfT
@@ -1184,7 +1193,7 @@ def _get_attribute_from_typed(
             synthetic_result = _maybe_resolve_synthetic_property_attribute(
                 synthetic_result, ctx
             )
-            if _is_synthetic_method_attribute(synthetic_class, ctx.attr) and (
+            if _is_synthetic_method_attribute(synthetic_class, ctx.attr, ctx) and (
                 not ctx.should_include_synthetic_methods()
             ):
                 synthetic_result = UNINITIALIZED_VALUE
@@ -1271,7 +1280,7 @@ def _get_runtime_attribute_from_synthetic_class(
     synthetic_class = ctx.get_synthetic_class(typ)
     if synthetic_class is None:
         return UNINITIALIZED_VALUE
-    symbol = _get_synthetic_declared_symbol(synthetic_class, ctx.attr)
+    symbol = _get_synthetic_declared_symbol(synthetic_class, ctx.attr, ctx)
     if not synthetic_class.is_dataclass:
         if _maybe_mangle_private_name(ctx.attr, synthetic_class.name) is None:
             if symbol is None:

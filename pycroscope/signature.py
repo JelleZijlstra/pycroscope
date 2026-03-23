@@ -2375,7 +2375,8 @@ def preprocess_args(
                     )
                 elif param_spec is not arg.value.param_spec:
                     ctx.on_error(
-                        "ParamSpec.args and ParamSpec.kwargs must use the same ParamSpec",
+                        "ParamSpec.args and ParamSpec.kwargs must use the same"
+                        " ParamSpec",
                         node=arg.node,
                     )
                 elif seen_param_spec_kwargs:
@@ -3455,9 +3456,7 @@ def _match_typevartuple_var_positional_members(
         expected_members=expected_members,
         actual_members=actual_members,
         match_member=_match_member,
-        incompatible_message=lambda _index: (
-            f"type of parameter {param_name!r} is incompatible"
-        ),
+        incompatible_message=lambda _index: f"type of parameter {param_name!r} is incompatible",
         length_error=f"parameter {param_name!r} is not accepted",
     )
 
@@ -3897,8 +3896,7 @@ def signatures_have_relation(
                 and their_params[i].kind is ParameterKind.POSITIONAL_ONLY
             ):
                 return CanAssignError(
-                    f"parameter {my_param.name!r} is not accepted as a keyword"
-                    " argument"
+                    f"parameter {my_param.name!r} is not accepted as a keyword argument"
                 )
             elif args_annotation is not None and kwargs_annotation is not None:
                 new_tv_maps = has_relation_var_positional(

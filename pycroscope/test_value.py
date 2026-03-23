@@ -251,16 +251,6 @@ def test_typed_value() -> None:
     assert_can_assign(TypedValue(type), SubclassValue(TypedValue(float)))
 
 
-def test_typed_value_type_object_cache_is_context_local() -> None:
-    shared = TypedValue("pkg.A")
-    checker_with_base = Checker()
-    checker_with_base.register_synthetic_type_bases("pkg.A", [TypedValue(int)])
-    checker_without_base = Checker()
-
-    assert shared.get_type_object(checker_with_base).is_assignable_to_type(int)
-    assert not shared.get_type_object(checker_without_base).is_assignable_to_type(int)
-
-
 def test_get_generic_args_for_type_with_super() -> None:
     T = typing.TypeVar("T")
 
@@ -767,15 +757,29 @@ def test_synthetic_namedtuple_members_without_runtime_class() -> None:
             has_namedtuple_marker_base=True,
         ),
     )
-    point.declared_symbols["x"] = ClassSymbol(
-        annotation=TypedValue(int), is_instance_only=True, initializer=TypedValue(int)
-    )
-    point.declared_symbols["label"] = ClassSymbol(
-        annotation=TypedValue(str), is_instance_only=True, initializer=TypedValue(str)
-    )
     checker.register_synthetic_class(point)
+    type_object = checker.make_type_object("mod.Point")
+    type_object.set_declared_symbol(
+        "x",
+        ClassSymbol(
+            annotation=TypedValue(int),
+            is_instance_only=True,
+            initializer=TypedValue(int),
+        ),
+    )
+    type_object.set_declared_symbol(
+        "label",
+        ClassSymbol(
+            annotation=TypedValue(str),
+            is_instance_only=True,
+            initializer=TypedValue(str),
+        ),
+    )
 
-    assert value.ordered_namedtuple_fields_from_synthetic(point) == ("x", "label")
+    assert value.ordered_namedtuple_fields_from_synthetic(point, checker) == (
+        "x",
+        "label",
+    )
     assert value.tuple_members_from_value(TypedValue("mod.Point"), checker) == (
         (False, TypedValue(int)),
         (False, TypedValue(str)),

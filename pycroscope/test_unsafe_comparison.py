@@ -141,8 +141,10 @@ class TestOverrideEq(TestNameCheckVisitorBase):
         class FancyEq1:
             @overload
             def __eq__(self, x: int) -> Literal[False]: ...
+
             @overload
             def __eq__(self, x: str) -> Literal[False]: ...
+
             def __eq__(self, x: object) -> bool:
                 return False
 

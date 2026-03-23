@@ -370,12 +370,12 @@ class PercentFormatString:
         num_specifiers = len(specifiers)
         if num_args < num_specifiers:
             yield (
-                f"too few arguments to format string: "
+                "too few arguments to format string: "
                 f"got {num_args} but expected {num_specifiers}"
             )
         elif num_args > num_specifiers:
             yield (
-                f"too many arguments to format string: "
+                "too many arguments to format string: "
                 f"got {num_args} but expected {num_specifiers}"
             )
         else:

@@ -7,44 +7,43 @@ An object that represents a type.
 import collections.abc
 import inspect
 import sys
-from collections.abc import Sequence
-from dataclasses import dataclass, field, replace
+from collections.abc import Iterable, Iterator, Mapping, MutableMapping, Sequence
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Literal
 from unittest import mock
 
 from typing_extensions import assert_never
 
-if sys.version_info >= (3, 14):
-    pass
-else:
-    pass
+import pycroscope
 
 if TYPE_CHECKING:
+    from .checker import Checker
     from .relations import Relation
 
-from pycroscope.input_sig import (
+from .annotations import make_type_param, type_from_runtime
+from .input_sig import (
     FullSignature,
     InputSigValue,
     coerce_paramspec_specialization_to_input_sig,
 )
-from pycroscope.relations import (
+from .relations import (
     infer_positional_generic_typevar_map,
     translate_generic_typevar_map,
 )
-from pycroscope.signature import (
+from .safe import (
+    is_instance_of_typing_name,
+    is_namedtuple_class,
+    is_typing_name,
+    safe_getattr,
+    safe_isinstance,
+    safe_issubclass,
+)
+from .signature import (
     BoundMethodSignature,
     OverloadedSignature,
     ParameterKind,
     Signature,
     mark_ellipsis_style_any_tail_parameters,
-)
-
-from .safe import (
-    is_instance_of_typing_name,
-    safe_getattr,
-    safe_in,
-    safe_isinstance,
-    safe_issubclass,
 )
 from .value import (
     UNINITIALIZED_VALUE,
@@ -58,10 +57,13 @@ from .value import (
     CanAssignError,
     ClassSymbol,
     DataclassFieldInfo,
+    DataclassInfo,
+    DataclassTransformInfo,
     GenericValue,
     IntersectionValue,
     KnownValue,
     MultiValuedValue,
+    ParamSpecParam,
     PredicateValue,
     PropertyInfo,
     SelfT,
@@ -75,15 +77,19 @@ from .value import (
     TypeFormValue,
     TypeParam,
     TypeVarLike,
+    TypeVarMap,
+    TypeVarTupleValue,
     TypeVarValue,
     UnboundMethodValue,
     Value,
+    default_value_for_type_param,
     freshen_typevars_for_inference,
     get_tv_map,
     match_typevar_arguments,
     replace_fallback,
     stringify_object,
     tuple_members_from_value,
+    type_param_to_value,
     unify_bounds_maps,
     unite_values,
 )
@@ -165,7 +171,86 @@ def get_mro(typ: type) -> Sequence[type]:
         return []
 
 
+def _extract_runtime_protocol_members(typ: type) -> set[str]:
+    if (
+        typ is object
+        or is_typing_name(typ, "Generic")
+        or is_typing_name(typ, "Protocol")
+    ):
+        return set()
+    members: set[str] = set(typ.__dict__) - EXCLUDED_PROTOCOL_MEMBERS
+    # Starting in 3.10 __annotations__ always exists on types.
+    if sys.version_info >= (3, 10) or hasattr(typ, "__annotations__"):
+        members |= set(typ.__annotations__)
+    return members
+
+
 MroValue = TypedValue | AnyValue
+
+
+@dataclass(frozen=True)
+class MroEntry:
+    tobj: "TypeObject | None"  # None only for is_any=True entries
+    tv_map: TypeVarMap
+    value: MroValue | None
+    """Value to store directly. Should be set only if it's Any or a SequenceValue."""
+    is_virtual: bool
+    """A virtual base is a base that is not part of the MRO of this class at runtime,
+    but that is included for typing purposes.
+
+    For example, list inherits directly from object at runtime, but in typeshed it is
+    declared as inheriting from MutableSequence. Therefore, MutableSequence (and its bases)
+    should be marked as virtual bases.
+    """
+
+    @property
+    def is_any(self) -> bool:
+        return isinstance(self.value, AnyValue)
+
+    def __repr__(self) -> str:
+        if self.is_any:
+            return "Any"
+        assert self.tobj is not None
+        result = repr(self.tobj.typ)
+        if self.is_virtual:
+            result = f"~{result}"
+        if self.tv_map:
+            args_str = ", ".join(
+                f"{tv.__name__}={value}" for tv, value in self.tv_map.items()
+            )
+            result += f"[{args_str}]"
+        return result
+
+    def substitute_typevars(self, typevars: TypeVarMap) -> "MroEntry":
+        if self.is_any:
+            return self
+        substituted_tv_map = {
+            tv: value.substitute_typevars(typevars) for tv, value in self.tv_map.items()
+        }
+        if self.value is None:
+            new_value = None
+        else:
+            new_value = self.value.substitute_typevars(typevars)
+        return replace(self, tv_map=substituted_tv_map, value=new_value)
+
+    def get_mro_value(self) -> MroValue:
+        if self.value is not None:
+            return self.value
+        assert self.tobj is not None
+        if self.tv_map:
+            return GenericValue(
+                self.tobj.typ,
+                [
+                    self.tv_map[param.typevar]
+                    for param in self.tobj.get_declared_type_params()
+                ],
+            )
+        return TypedValue(self.tobj.typ)
+
+
+ANY_MRO_ENTRY = MroEntry(
+    None, {}, value=AnyValue(AnySource.inference), is_virtual=False
+)
 
 
 @dataclass(frozen=True)
@@ -174,51 +259,412 @@ class DataclassFieldRecord:
     field_info: DataclassFieldInfo
 
 
-@dataclass(kw_only=True)
 class TypeObject:
-    typ: type | str
-    mro: tuple[MroValue, ...]
-    """Types that we consider the type to inherit from for purposes of subtyping, but that
-    are not actual bases."""
-    base_classes: set[type | str] = field(default_factory=set)
-    declared_type_params: tuple[TypeParam, ...] = field(
-        default_factory=tuple, repr=False
-    )
-    is_final: bool = False
-    is_protocol: bool = False
-    protocol_members: set[str] = field(default_factory=set)
-    declared_symbols: dict[str, ClassSymbol] = field(default_factory=dict, repr=False)
-    dataclass_fields: tuple[DataclassFieldRecord, ...] = field(
-        default_factory=tuple, repr=False
-    )
-    virtual_bases: list[MroValue] = field(default_factory=list)
-    is_thrift_enum: bool = field(init=False)
-    is_universally_assignable: bool = field(init=False)
-    _protocol_positive_cache: dict[tuple[Value, Value], BoundsMap] = field(
-        default_factory=dict, repr=False
-    )
+    """Represents one logical type, with lazy and incrementally populated metadata."""
 
-    def __post_init__(self) -> None:
+    typ: type | str
+    _checker: "Checker"
+    _direct_bases: tuple[MroValue, ...] | None
+    _mro: Sequence[MroEntry] | None
+    _declared_type_params: tuple[TypeParam, ...] | None
+    _is_final: bool | None
+    _is_protocol: bool | None
+    _protocol_members: set[str] | None
+    _synthetic_declared_symbols: dict[str, ClassSymbol] | None
+    _declared_symbols: MutableMapping[str, ClassSymbol] | None
+    _dataclass_fields: tuple[DataclassFieldRecord, ...] | None
+    _virtual_bases: list[MroValue] | None
+    _is_thrift_enum: bool | None
+    _is_universally_assignable: bool | None
+    _protocol_positive_cache: dict[tuple[Value, Value], BoundsMap]
+    _has_stubs: bool | None
+
+    def __init__(self, checker: "Checker", typ: type | str) -> None:
+        self.typ = typ
+        self._checker = checker
+        self._synthetic_declared_symbols = None
+        self._declared_symbols = None
+        self._protocol_positive_cache = {}
+        self._direct_bases = None
+        self._mro = None
+        self._declared_type_params = None
+        self._is_final = None
+        self._is_protocol = None
+        self._protocol_members = None
+        self._dataclass_fields = None
+        self._virtual_bases = None
+        self._is_thrift_enum = None
+        self._is_universally_assignable = None
+        self._has_stubs = None
+
+    def adopt_synthetic_class(self, synthetic_class: SyntheticClassObjectValue) -> None:
+        self._update_loaded_synthetic_fields()
+        self._protocol_positive_cache.clear()
+
+    def has_stubs(self) -> bool:
+        if self._has_stubs is None:
+            self._has_stubs = self._checker.ts_finder.has_stubs(self.typ)
+        return self._has_stubs
+
+    def has_any_base(self) -> bool:
+        return any(entry.is_any for entry in self.get_mro())
+
+    def _compute_declared_symbols(self) -> dict[str, ClassSymbol]:
+        import pycroscope.type_object_builder as type_object_builder
+
+        direct_symbols: dict[str, ClassSymbol] = {}
+        if isinstance(self.typ, type):
+            type_object_builder._add_runtime_declared_symbols(self.typ, direct_symbols)
+        synthetic_class = self._checker.get_synthetic_class(self.typ)
+        if synthetic_class is not None:
+            synthetic_symbols: Mapping[str, ClassSymbol] = (
+                self.get_synthetic_declared_symbols()
+            )
+            if isinstance(self.typ, type) and synthetic_class.runtime_class is not None:
+                synthetic_symbols = {
+                    name: symbol
+                    for name, symbol in synthetic_symbols.items()
+                    if name in direct_symbols
+                }
+            type_object_builder._add_synthetic_declared_symbols(
+                synthetic_symbols, direct_symbols
+            )
+        return direct_symbols
+
+    def _compute_declared_type_params(self) -> tuple[TypeParam, ...]:
+        # First try stubs
+        ts_bases = self._checker.ts_finder.get_bases(self.typ)
+        if ts_bases is not None:
+            return tuple(_compute_type_params_from_bases(ts_bases))
+
+        # If it's a runtime class, try that
+        if isinstance(self.typ, type):
+            return tuple(_compute_type_params_from_runtime(self.typ, self._checker))
+
+        return ()
+        # TODO:
+        # raise ValueError(
+        #     f"type_params not yet computed for synthetic class {self.typ!r}"
+        # )
+
+    def _compute_direct_bases(self) -> tuple[MroValue, ...]:
+        if self.typ is object:
+            return ()
+        ts_bases = self._checker.ts_finder.get_bases(self.typ)
+        if ts_bases is not None:
+            if not ts_bases:
+                return (TypedValue(object),)
+            return tuple(_replace_invalid_bases(ts_bases))
+
+        if isinstance(self.typ, type):
+            return tuple(_extract_runtime_direct_bases(self.typ, self._checker))
+
+        # TODO: raise error if direct bases are not initialized for synthetic types
+        return (TypedValue(object),)
+
+    def _compute_mro(self) -> list[MroEntry]:
+        direct_bases = self.get_direct_bases()
+        virtual_bases = self.get_virtual_bases()
+
+        params = self.get_declared_type_params()
+        if params:
+            parent_tv_map = {
+                param.typevar: type_param_to_value(param) for param in params
+            }
+            self_args = [type_param_to_value(param) for param in params]
+            self_value = GenericValue(self.typ, self_args)
+        else:
+            parent_tv_map = {}
+            self_value = TypedValue(self.typ)
+        self_mro_entry = _get_mro_entry(self_value, parent_tv_map, self._checker)
+        child_mros = [
+            _get_mro_from_mro_value(base, parent_tv_map, self._checker)
+            for base in direct_bases
+        ] + [
+            _get_mro_from_mro_value(base, parent_tv_map, self._checker, virtual=True)
+            for base in virtual_bases
+        ]
         if isinstance(self.typ, str):
-            # Synthetic type
-            self.is_universally_assignable = False
-            self.is_thrift_enum = False
-            return
-        assert isinstance(self.typ, type), repr(self.typ)
-        self.is_universally_assignable = issubclass(self.typ, mock.NonCallableMock)
-        if safe_getattr(self.typ, "__final__", False):
-            self.is_final = True
-        self.is_thrift_enum = hasattr(self.typ, "_VALUES_TO_NAMES")
-        self.base_classes |= set(get_mro(self.typ))
-        if self.is_thrift_enum:
-            self.base_classes.add(int)
-            self.virtual_bases.append(TypedValue(int))
+            child_mros = [
+                _mark_direct_base_non_virtual(child_mro) for child_mro in child_mros
+            ]
+        result = _linearize_mros(self_mro_entry, child_mros)
+        if isinstance(result, str):
+            return [
+                self_mro_entry,
+                ANY_MRO_ENTRY,
+                _make_object_mro_entry(self._checker),
+            ]
+        if isinstance(self.typ, type):
+            runtime_mro = tuple(get_mro(self.typ))
+            result = [
+                _mark_entry_virtual_by_runtime_mro(entry, runtime_mro)
+                for entry in result
+            ]
+        return result
+
+    def _compute_is_final(self) -> bool:
+        if isinstance(self.typ, str):
+            return self._checker.ts_finder.is_final(self.typ)
+        return self._checker.ts_finder.is_final(self.typ) or safe_getattr(
+            self.typ, "__final__", False
+        )
+
+    def _compute_is_protocol(self) -> bool:
+        if isinstance(self.typ, str):
+            return any(
+                (base_key := _class_key_from_value(base_value)) is not None
+                and is_typing_name(base_key, "Protocol")
+                for base_value in self.get_direct_bases()
+            )
+        return self._checker.ts_finder.is_protocol(self.typ) or (
+            is_instance_of_typing_name(self.typ, "_ProtocolMeta")
+            and safe_getattr(self.typ, "_is_protocol", False)
+        )
+
+    def _compute_protocol_members(self) -> set[str]:
+        if not self.is_protocol():
+            return set()
+        return (
+            self._get_protocol_members_contributed_by_self()
+            | self._get_protocol_members_contributed_by_protocol_bases()
+        )
+
+    def _compute_dataclass_fields(self) -> tuple[DataclassFieldRecord, ...]:
+        import pycroscope.type_object_builder as type_object_builder
+
+        if isinstance(self.typ, str):
+            synthetic_class = self._checker.get_synthetic_class(self.typ)
+            if synthetic_class is None:
+                return ()
+            return type_object_builder._get_synthetic_dataclass_fields(
+                self._checker, synthetic_class
+            )
+        return type_object_builder._get_runtime_dataclass_fields(self.typ)
+
+    def _compute_is_thrift_enum(self) -> bool:
+        return isinstance(self.typ, type) and hasattr(self.typ, "_VALUES_TO_NAMES")
+
+    def _compute_virtual_bases(self) -> list[MroValue]:
+        present_keys = {self.typ} | {
+            val.typ for val in self.get_direct_bases() if isinstance(val, TypedValue)
+        }
+        return [
+            TypedValue(key)
+            for key in self._iter_candidate_virtual_bases()
+            if key not in present_keys
+        ]
+
+    def _iter_candidate_virtual_bases(self) -> Iterator[type | str]:
+        if isinstance(self.typ, type):
+            yield from self._checker.get_additional_bases(self.typ)
+        if self._compute_is_thrift_enum():
+            yield int
+
+    def _compute_is_universally_assignable(self) -> bool:
+        return isinstance(self.typ, type) and issubclass(self.typ, mock.NonCallableMock)
+
+    def _update_loaded_synthetic_fields(self) -> None:
+        if self._mro is not None:
+            self._mro = self._compute_mro()
+        if self._is_final is not None:
+            self._is_final = self._compute_is_final()
+        if self._is_protocol is not None:
+            self._is_protocol = self._compute_is_protocol()
+        if self._protocol_members is not None:
+            self._protocol_members = self._compute_protocol_members()
+        if self._dataclass_fields is not None:
+            self._dataclass_fields = self._compute_dataclass_fields()
+        if self._is_thrift_enum is not None:
+            self._is_thrift_enum = self._compute_is_thrift_enum()
+        if self._is_universally_assignable is not None:
+            self._is_universally_assignable = self._compute_is_universally_assignable()
+
+    def _ensure_synthetic_class(self) -> SyntheticClassObjectValue:
+        synthetic_class = self._checker.make_synthetic_class(self.typ)
+        self.adopt_synthetic_class(synthetic_class)
+        return synthetic_class
+
+    def get_synthetic_declared_symbols(self) -> MutableMapping[str, ClassSymbol]:
+        if self._synthetic_declared_symbols is None:
+            self._synthetic_declared_symbols = {}
+        return self._synthetic_declared_symbols
+
+    def set_direct_bases(self, base_values: Sequence[MroValue]) -> None:
+        self._direct_bases = tuple(base_values)
+        self._update_loaded_synthetic_fields()
+        self._protocol_positive_cache.clear()
+
+    def set_base_values(self, base_values: Sequence[Value]) -> None:
+        synthetic_class = self._ensure_synthetic_class()
+        object.__setattr__(synthetic_class, "base_classes", tuple(base_values))
+        self._update_loaded_synthetic_fields()
+        self._protocol_positive_cache.clear()
+
+    def set_declared_type_params(self, type_params: Sequence[TypeParam]) -> None:
+        self._declared_type_params = tuple(type_params)
+        self._update_loaded_synthetic_fields()
+        self._protocol_positive_cache.clear()
+
+    def set_dataclass_info(self, dataclass_info: DataclassInfo | None) -> None:
+        synthetic_class = self._ensure_synthetic_class()
+        object.__setattr__(synthetic_class, "dataclass_info", dataclass_info)
+        self._update_loaded_synthetic_fields()
+        self._protocol_positive_cache.clear()
+
+    def set_dataclass_transform_info(
+        self, dataclass_transform_info: DataclassTransformInfo | None
+    ) -> None:
+        synthetic_class = self._ensure_synthetic_class()
+        object.__setattr__(
+            synthetic_class, "dataclass_transform_info", dataclass_transform_info
+        )
+        self._update_loaded_synthetic_fields()
+        self._protocol_positive_cache.clear()
+
+    def set_dataclass_field_order(self, field_order: Sequence[str]) -> None:
+        synthetic_class = self._ensure_synthetic_class()
+        object.__setattr__(synthetic_class, "dataclass_field_order", tuple(field_order))
+        self._update_loaded_synthetic_fields()
+        self._protocol_positive_cache.clear()
+
+    def clear_declared_symbols(self) -> None:
+        self._ensure_synthetic_class()
+        self.get_synthetic_declared_symbols().clear()
+        if self._declared_symbols is not None:
+            if isinstance(self.typ, type):
+                self._declared_symbols = self._compute_declared_symbols()
+            else:
+                self._declared_symbols.clear()
+        self._update_loaded_synthetic_fields()
+        self._protocol_positive_cache.clear()
+
+    def set_declared_symbol(self, name: str, symbol: ClassSymbol) -> None:
+        self._ensure_synthetic_class()
+        synthetic_symbols = self.get_synthetic_declared_symbols()
+        synthetic_symbols[name] = symbol
+        if self._declared_symbols is not None:
+            if isinstance(self.typ, type):
+                self._declared_symbols = self._compute_declared_symbols()
+            else:
+                self._declared_symbols = synthetic_symbols
+        self._update_loaded_synthetic_fields()
+        self._protocol_positive_cache.clear()
+
+    def add_declared_symbol(self, name: str, symbol: ClassSymbol) -> None:
+        self._ensure_synthetic_class()
+        synthetic_symbols = self.get_synthetic_declared_symbols()
+        synthetic_symbols[name] = merge_declared_symbol(
+            synthetic_symbols.get(name), symbol
+        )
+        if self._declared_symbols is not None:
+            if isinstance(self.typ, type):
+                self._declared_symbols = self._compute_declared_symbols()
+            else:
+                self._declared_symbols = synthetic_symbols
+        self._update_loaded_synthetic_fields()
+        self._protocol_positive_cache.clear()
+
+    def get_direct_bases(self) -> tuple[MroValue, ...]:
+        if self._direct_bases is None:
+            self._direct_bases = self._compute_direct_bases()
+        return self._direct_bases
+
+    def get_direct_base_type_objects(self) -> Iterable["TypeObject"]:
+        for base in self.get_direct_bases():
+            if isinstance(base, TypedValue):
+                yield base.get_type_object(self._checker)
+
+    def get_mro(self) -> Sequence[MroEntry]:
+        if self._mro is None:
+            self._mro = self._compute_mro()
+        return self._mro
+
+    def _get_protocol_members_contributed_by_self(self) -> set[str]:
+        if isinstance(self.typ, str) or self._checker.ts_finder.is_protocol(self.typ):
+            members = {
+                attr
+                for attr in self._checker.ts_finder.get_all_attributes(self.typ)
+                if attr != "__slots__"
+            }
+            return members | self._get_protocol_members_from_overlay()
+        return (
+            _extract_runtime_protocol_members(self.typ)
+            | self._get_protocol_members_from_overlay()
+        )
+
+    def _get_protocol_members_contributed_by_protocol_bases(self) -> set[str]:
+        members = set()
+        for base_tobj in self.get_direct_base_type_objects():
+            if base_tobj.is_protocol():
+                members |= base_tobj.get_protocol_members()
+        return members
+
+    def _get_protocol_members_from_overlay(self) -> set[str]:
+        if self._checker.get_synthetic_class(self.typ) is None:
+            return set()
+        declared_symbols = self.get_declared_symbols()
+        runtime_names: set[str] | None = None
+        if isinstance(self.typ, type):
+            runtime_names = _extract_runtime_protocol_members(self.typ)
+        return {
+            member
+            for member in declared_symbols
+            if runtime_names is None or member in runtime_names
+            if member not in EXCLUDED_PROTOCOL_MEMBERS and member != "__slots__"
+        }
+
+    def get_declared_type_params(self) -> tuple[TypeParam, ...]:
+        if self._declared_type_params is None:
+            self._declared_type_params = self._compute_declared_type_params()
+        return self._declared_type_params
+
+    def is_final(self) -> bool:
+        if self._is_final is None:
+            self._is_final = self._compute_is_final()
+        return self._is_final
+
+    def is_protocol(self) -> bool:
+        if self._is_protocol is None:
+            self._is_protocol = self._compute_is_protocol()
+        return self._is_protocol
+
+    def get_protocol_members(self) -> set[str]:
+        if self._protocol_members is None:
+            self._protocol_members = self._compute_protocol_members()
+        return self._protocol_members
+
+    def get_dataclass_fields(self) -> tuple[DataclassFieldRecord, ...]:
+        if self._dataclass_fields is None:
+            self._dataclass_fields = self._compute_dataclass_fields()
+        return self._dataclass_fields
+
+    def get_virtual_bases(self) -> list[MroValue]:
+        if self._virtual_bases is None:
+            self._virtual_bases = self._compute_virtual_bases()
+        return self._virtual_bases
+
+    def is_thrift_enum(self) -> bool:
+        if self._is_thrift_enum is None:
+            self._is_thrift_enum = self._compute_is_thrift_enum()
+        return self._is_thrift_enum
+
+    def is_universally_assignable(self) -> bool:
+        if self._is_universally_assignable is None:
+            self._is_universally_assignable = self._compute_is_universally_assignable()
+        return self._is_universally_assignable
 
     def get_declared_symbol(self, name: str) -> ClassSymbol | None:
         return self.get_declared_symbols().get(name)
 
-    def get_declared_symbols(self) -> dict[str, ClassSymbol]:
-        return self.declared_symbols
+    def get_declared_symbols(self) -> MutableMapping[str, ClassSymbol]:
+        if self._declared_symbols is None:
+            if isinstance(self.typ, str):
+                self._declared_symbols = self.get_synthetic_declared_symbols()
+            else:
+                self._declared_symbols = self._compute_declared_symbols()
+        assert self._declared_symbols is not None
+        return self._declared_symbols
 
     def get_attribute(
         self,
@@ -268,33 +714,27 @@ class TypeObject:
         symbol = self.get_declared_symbols().get(name)
         if symbol is not None:
             return self, symbol
-        for mro_value in self.mro:
-            if isinstance(mro_value, AnyValue):
+        for entry in self.get_mro():
+            if entry.tobj is None:
                 return None
-            type_obj = mro_value.get_type_object(ctx)
-            symbol = type_obj.get_declared_symbols().get(name)
+            symbol = entry.tobj.get_declared_symbols().get(name)
             if symbol is not None:
-                return type_obj, symbol
+                return entry.tobj, symbol
         return None
 
-    def is_assignable_to_type(self, typ: type) -> bool:
-        for base in self.base_classes:
-            if isinstance(base, str):
-                continue
-            else:
-                if safe_issubclass(base, typ):
-                    return True
-        return self.is_universally_assignable
-
-    def is_assignable_to_type_object(self, other: "TypeObject") -> bool:
-        if isinstance(other.typ, str):
-            return (
-                self.is_universally_assignable
-                # TODO actually check protocols
-                or other.is_protocol
-                or other.typ in self.base_classes
+    def is_assignable_to_type(self, typ: type | str) -> bool:
+        return self.is_universally_assignable() or any(
+            entry.tobj is not None
+            and (
+                entry.tobj.typ == typ
+                or (
+                    safe_isinstance(entry.tobj.typ, type)
+                    and safe_isinstance(typ, type)
+                    and safe_issubclass(entry.tobj.typ, typ)
+                )
             )
-        return self.is_assignable_to_type(other.typ)
+            for entry in self.get_mro()
+        )
 
     def can_assign(
         self,
@@ -322,28 +762,22 @@ class TypeObject:
                     ctx,
                 )
         other = other_basic.get_type_object(ctx)
-        if other.is_universally_assignable:
+        if class_keys_match(self.typ, other.typ):
             return {}
-        if not self.is_protocol:
+        if other.is_universally_assignable():
+            return {}
+        if not self.is_protocol():
             if self.typ is object:
                 return {}
-            if other.is_protocol:
+            if other.is_protocol():
                 if self._is_callable_protocol_assignment_target(other):
                     return self._can_assign_callable_protocol(self_val, other_val, ctx)
                 return CanAssignError(
                     f"Cannot assign protocol {other_val} to non-protocol {self}"
                 )
-            if isinstance(self.typ, str):
-                if safe_in(self.typ, other.base_classes):
-                    return {}
-                return CanAssignError(f"Cannot assign {other_val} to {self}")
-            else:
-                for base in other.base_classes:
-                    if base is self.typ:
-                        return {}
-                    if isinstance(base, type) and safe_issubclass(base, self.typ):
-                        return {}
-                return CanAssignError(f"Cannot assign {other_val} to {self}")
+            if other.is_assignable_to_type(self.typ):
+                return {}
+            return CanAssignError(f"Cannot assign {other_val} to {self}")
         else:
             use_cache = not isinstance(self_val, AnnotatedValue) and not isinstance(
                 other_val, AnnotatedValue
@@ -359,8 +793,12 @@ class TypeObject:
                 return {}
             with ctx.assume_compatibility(self, other):
                 result = self._is_compatible_with_protocol(self_val, other_val, ctx)
-                if isinstance(result, CanAssignError) and other.virtual_bases:
-                    for base in other.virtual_bases:
+                if (
+                    isinstance(result, CanAssignError)
+                    and other.is_thrift_enum()
+                    and other.get_virtual_bases()
+                ):
+                    for base in other.get_virtual_bases():
                         assert isinstance(base, TypedValue), (self, base)
                         subresult = self._is_compatible_with_protocol(
                             self_val, base, ctx
@@ -378,7 +816,7 @@ class TypeObject:
                 not isinstance(result, CanAssignError)
                 and isinstance(self.typ, type)
                 and isinstance(other.typ, type)
-                and not other.is_protocol
+                and not other.is_protocol()
                 and not isinstance(other_basic, SubclassValue)
             ):
                 ctx.record_protocol_implementation(self.typ, other.typ)
@@ -387,7 +825,7 @@ class TypeObject:
     def _is_callable_protocol_assignment_target(self, other: "TypeObject") -> bool:
         return (
             self.typ is collections.abc.Callable
-            and "__call__" in other.protocol_members
+            and "__call__" in other.get_protocol_members()
         )
 
     def _can_assign_callable_protocol(
@@ -417,12 +855,13 @@ class TypeObject:
         other_type_key = _receiver_key_from_value(other_val)
 
         bounds_maps = []
-        if len(self.protocol_members) > 1:
+        protocol_members = self.get_protocol_members()
+        if len(protocol_members) > 1:
             protocol_self_typevar_map = _collect_protocol_self_typevar_map(
-                self, self.protocol_members, other_val, ctx
+                self, protocol_members, other_val, ctx
             )
             actual_self_typevar_map = _collect_protocol_self_typevar_map(
-                other_type_obj, self.protocol_members, other_val, ctx
+                other_type_obj, protocol_members, other_val, ctx
             )
         else:
             protocol_self_typevar_map = {}
@@ -432,7 +871,7 @@ class TypeObject:
             and _get_synthetic_class_for_key(self.typ, ctx) is not None
         )
         class_object_check = _is_definitely_class_object_value(other_val)
-        for member in self.protocol_members:
+        for member in protocol_members:
             is_dunder_member = member.startswith("__") and member.endswith("__")
             use_descriptor_rules = apply_synthetic_member_rules or (
                 class_object_check and not is_dunder_member
@@ -460,7 +899,7 @@ class TypeObject:
                     expected, other_val, ctx, protocol_self_value=self_val
                 )
                 expected = expected.substitute_typevars({SelfT: other_val})
-                if other_type_obj is not None and other_type_obj.is_protocol:
+                if other_type_obj is not None and other_type_obj.is_protocol():
                     actual = _get_protocol_call_member_initializer(
                         other_type_obj.typ, other_val, ctx
                     )
@@ -535,8 +974,8 @@ class TypeObject:
                 if (
                     actual is UNINITIALIZED_VALUE
                     and other_type_obj is not None
-                    and other_type_obj.is_protocol
-                    and member in other_type_obj.protocol_members
+                    and other_type_obj.is_protocol()
+                    and member in other_type_obj.get_protocol_members()
                 ):
                     actual = AnyValue(AnySource.inference)
             if actual is UNINITIALIZED_VALUE:
@@ -711,21 +1150,17 @@ class TypeObject:
 
     def has_attribute(self, attr: str, ctx: CanAssignContext) -> bool:
         """Whether this type definitely has this attribute."""
-        if self.is_protocol:
-            return attr in self.protocol_members
-        # We don't use ctx.get_attribute because that may have false positives.
-        for base in self.base_classes:
-            try:
-                present = attr in base.__dict__
-            except Exception:
-                present = False
-            if present:
-                return True
-        return False
+        if self.is_protocol():
+            return attr in self.get_protocol_members()
+        match = self._get_declared_symbol_with_owner(attr, ctx)
+        if match is None:
+            return False
+        _, symbol = match
+        return not symbol.is_instance_only and symbol.initializer is not None
 
     def __str__(self) -> str:
         base = stringify_object(self.typ)
-        if self.is_protocol:
+        if self.is_protocol():
             protocol_members = self._get_protocol_members_for_display()
             return (
                 f"{base} (Protocol with members"
@@ -734,14 +1169,15 @@ class TypeObject:
         return base
 
     def _get_protocol_members_for_display(self) -> list[str]:
+        protocol_members = self.get_protocol_members()
         if not isinstance(self.typ, type):
-            return sorted(self.protocol_members)
+            return sorted(protocol_members)
 
         members: list[str] = []
         seen = set()
         for base in get_mro(self.typ):
             for attr in base.__dict__:
-                if attr in self.protocol_members and attr not in seen:
+                if attr in protocol_members and attr not in seen:
                     members.append(attr)
                     seen.add(attr)
 
@@ -749,13 +1185,13 @@ class TypeObject:
             if not isinstance(annotations, dict):
                 continue
             for attr in annotations:
-                if attr in self.protocol_members and attr not in seen:
+                if attr in protocol_members and attr not in seen:
                     members.append(attr)
                     seen.add(attr)
 
-        if len(seen) == len(self.protocol_members):
+        if len(seen) == len(protocol_members):
             return members
-        return [*members, *sorted(self.protocol_members - seen)]
+        return [*members, *sorted(protocol_members - seen)]
 
 
 def _prefer_existing_symbol_type(existing: Value, new: Value) -> bool:
@@ -1025,6 +1461,7 @@ def _class_key_and_generic_args_from_type_value(
     return receiver_value.typ, generic_args
 
 
+# TODO: this is basically the same as _match_up_generic_args below
 def _typevar_map_from_generic_args(
     type_params: Sequence[TypeParam], generic_args: Sequence[Value]
 ) -> dict[TypeVarLike, Value]:
@@ -1210,16 +1647,15 @@ def _get_symbol_owner_substitutions_from_type_objects(
     receiver_substitutions: dict[TypeVarLike, Value] = {}
     if receiver_value is not None:
         receiver_substitutions = _typevar_map_from_type_value(
-            receiver_value, receiver_tobj.declared_type_params
+            receiver_value, receiver_tobj.get_declared_type_params()
         )
     if owner_tobj is receiver_tobj:
         return receiver_substitutions
     owner_value = next(
         (
-            mro_value
-            for mro_value in receiver_tobj.mro
-            if isinstance(mro_value, TypedValue)
-            and mro_value.get_type_object(ctx) is owner_tobj
+            entry.get_mro_value()
+            for entry in receiver_tobj.get_mro()
+            if entry.tobj is owner_tobj
         ),
         None,
     )
@@ -1228,7 +1664,7 @@ def _get_symbol_owner_substitutions_from_type_objects(
     if receiver_substitutions:
         owner_value = owner_value.substitute_typevars(receiver_substitutions)
     owner_substitutions = _typevar_map_from_generic_args(
-        owner_tobj.declared_type_params, _mro_generic_args(owner_value)
+        owner_tobj.get_declared_type_params(), _mro_generic_args(owner_value)
     )
     if not owner_substitutions:
         return {}
@@ -1602,7 +2038,7 @@ def _collect_protocol_self_typevar_map(
     for member in protocol_members:
         receiver_for_match = receiver_value
         if isinstance(tobj.typ, str):
-            symbol = tobj.declared_symbols.get(member)
+            symbol = tobj.get_declared_symbols().get(member)
             if symbol is None:
                 raw_attr = UNINITIALIZED_VALUE
             elif symbol.is_property:
@@ -1767,3 +2203,276 @@ def _is_definitely_class_object_value(value: Value) -> bool:
             return value.typ in {"type", "builtins.type"}
         return False
     return False
+
+
+def _compute_type_params_from_bases(bases: Sequence[Value]) -> Iterable[TypeParam]:
+    # If any base is Protocol or Generic, it determines the type parameter order
+    for base in bases:
+        if isinstance(base, GenericValue) and (
+            is_typing_name(base.typ, "Protocol") or is_typing_name(base.typ, "Generic")
+        ):
+            for arg in base.args:
+                type_param = _extract_type_param(arg)
+                if type_param is not None:
+                    yield type_param
+            return
+
+    # Else we have to walk the bases
+    type_params = []
+    for base in bases:
+        type_params.extend(_compute_type_params_from_base(base))
+    yield from dict.fromkeys(type_params)  # deduplicate while preserving order
+
+
+def _compute_type_params_from_base(base: Value) -> Iterable[TypeParam]:
+    if isinstance(base, SequenceValue):
+        for _, member in base.members:
+            type_param = _extract_type_param(member)
+            if type_param is not None:
+                yield type_param
+            else:
+                yield from _compute_type_params_from_base(member)
+    elif isinstance(base, GenericValue):
+        for arg in base.args:
+            type_param = _extract_type_param(arg)
+            if type_param is not None:
+                yield type_param
+            else:
+                yield from _compute_type_params_from_base(arg)
+
+
+def _extract_type_param(value: Value) -> TypeParam | None:
+    match value:
+        case TypeVarValue(typevar_param=typevar_param):
+            return typevar_param
+        case TypeVarTupleValue(typevar_param=typevar_param):
+            return typevar_param
+        case InputSigValue(input_sig=ParamSpecParam() as param):
+            return param
+        case _:
+            return None
+
+
+def _compute_type_params_from_runtime(
+    typ: type, checker: "pycroscope.checker.Checker"
+) -> list[TypeParam]:
+    runtime_type_params = safe_getattr(typ, "__type_params__", ())
+    if not runtime_type_params:
+        runtime_type_params = safe_getattr(typ, "__parameters__", ())
+    try:
+        runtime_type_params_iter = iter(runtime_type_params)
+    except TypeError:
+        return []
+    type_params: list[TypeParam] = []
+    for type_param in runtime_type_params_iter:
+        try:
+            assert checker._arg_spec_cache is not None
+            type_params.append(
+                make_type_param(type_param, ctx=checker._arg_spec_cache.default_context)
+            )
+        except TypeError:
+            continue
+    return type_params
+
+
+def _replace_invalid_bases(bases: Sequence[Value]) -> Iterable[MroValue]:
+    for base in bases:
+        if isinstance(base, (TypedValue, AnyValue)):
+            yield base
+        elif isinstance(base, KnownValue) and is_typing_name(base.val, "Any"):
+            yield AnyValue(AnySource.explicit)
+        else:
+            print("REPLACED INVALID BASE", repr(base))
+            yield AnyValue(AnySource.inference)
+
+
+def _extract_runtime_direct_bases(
+    typ: type, checker: "pycroscope.checker.Checker"
+) -> Iterable[MroValue]:
+    try:
+        class_dict = typ.__dict__
+        raw_bases = iter(class_dict["__orig_bases__"])
+    except Exception:
+        try:
+            raw_bases = iter(typ.__bases__)
+        except Exception:
+            return []
+    bases = [
+        type_from_runtime(base, visitor=checker, suppress_errors=True)
+        for base in raw_bases
+    ]
+    if is_namedtuple_class(typ):
+        bases = [_replace_tuple(base, typ, checker) for base in bases]
+    return _replace_invalid_bases(bases)
+
+
+def _replace_tuple(
+    base: Value, typ: type, checker: "pycroscope.checker.Checker"
+) -> Value:
+    if base == TypedValue(tuple):
+        if typ.__annotations__:
+            field_types = tuple(typ.__annotations__.values())
+            return SequenceValue(
+                tuple,
+                [
+                    (False, type_from_runtime(field_type, visitor=checker))
+                    for field_type in field_types
+                ],
+            )
+        else:
+            return SequenceValue(
+                tuple, [(False, AnyValue(AnySource.unannotated)) for _ in typ._fields]
+            )
+    return base
+
+
+def _get_mro_entry(
+    mro_value: MroValue,
+    parent_tv_map: TypeVarMap,
+    checker: "pycroscope.checker.Checker",
+) -> MroEntry:
+    match mro_value:
+        case TypedValue():
+            tv_map = _get_tv_map_for_mro(mro_value, parent_tv_map, checker)
+            tobj = mro_value.get_type_object(checker)
+            if isinstance(mro_value, SequenceValue):
+                value = mro_value
+            else:
+                value = None
+            return MroEntry(tobj=tobj, tv_map=tv_map, value=value, is_virtual=False)
+        case AnyValue():
+            return ANY_MRO_ENTRY
+        case _:
+            assert_never(mro_value)
+
+
+def _mark_direct_base_non_virtual(mro: list[MroEntry]) -> list[MroEntry]:
+    if not mro or mro[0].is_any:
+        return mro
+    return [replace(mro[0], is_virtual=False), *mro[1:]]
+
+
+def _mark_entry_virtual_by_runtime_mro(
+    entry: MroEntry, runtime_mro: Sequence[type]
+) -> MroEntry:
+    if entry.is_any or entry.tobj is None:
+        return entry
+    is_in_runtime_mro = any(
+        class_keys_match(entry.tobj.typ, runtime_base) for runtime_base in runtime_mro
+    )
+    return replace(entry, is_virtual=not is_in_runtime_mro)
+
+
+def _get_tv_map_for_mro(
+    mro_value: TypedValue,
+    parent_tv_map: TypeVarMap,
+    checker: "pycroscope.checker.Checker",
+) -> TypeVarMap:
+    tobj = mro_value.get_type_object(checker)
+    params = tobj.get_declared_type_params()
+    if params:
+        if isinstance(mro_value, GenericValue):
+            tv_map = _match_up_generic_params(params, mro_value.args)
+            return {
+                tv: value.substitute_typevars(parent_tv_map)
+                for tv, value in tv_map.items()
+            }
+        else:
+            return {
+                param.typevar: AnyValue(AnySource.generic_argument) for param in params
+            }
+    else:
+        return {}
+
+
+def _make_object_mro_entry(checker: "pycroscope.checker.Checker") -> MroEntry:
+    tobj = checker.make_type_object(object)
+    return MroEntry(tobj=tobj, tv_map={}, value=None, is_virtual=False)
+
+
+def _get_mro_from_mro_value(
+    mro_value: MroValue,
+    parent_tv_map: TypeVarMap,
+    checker: "pycroscope.checker.Checker",
+    *,
+    virtual: bool = False,
+) -> list[MroEntry]:
+    match mro_value:
+        case TypedValue():
+            tobj = mro_value.get_type_object(checker)
+            tv_map = _get_tv_map_for_mro(mro_value, parent_tv_map, checker)
+            mro = tobj.get_mro()
+            mro = [mro_entry.substitute_typevars(tv_map) for mro_entry in mro]
+            if isinstance(mro_value, SequenceValue) and mro_value.typ is tuple:
+                assert mro[0].tobj is not None and mro[0].tobj.typ is tuple, repr(
+                    mro[0]
+                )
+                mro[0] = replace(mro[0], value=mro_value)
+        case AnyValue():
+            mro = [ANY_MRO_ENTRY, _make_object_mro_entry(checker)]
+        case _:
+            assert_never(mro_value)
+    if virtual:
+        mro = [replace(entry, is_virtual=True) for entry in mro]
+    return mro
+
+
+def _match_up_generic_params(
+    type_params: Sequence[TypeParam], generic_args: Sequence[Value]
+) -> TypeVarMap:
+    """Match generic arguments to type parameters,
+    returning a mapping of type variables to values."""
+    seq = match_typevar_arguments(type_params, generic_args)
+    if seq is None:
+        return {
+            param.typevar: default_value_for_type_param(param) for param in type_params
+        }
+    return {param: value for param, value in seq}
+
+
+def _entries_match(a: MroEntry, b: MroEntry) -> bool:
+    if a.is_any:
+        return b.is_any
+    return a.tobj is b.tobj
+
+
+def _linearize_mros(
+    head: MroEntry, tail_mros: Sequence[list[MroEntry]]
+) -> list[MroEntry] | str:
+    """Linearize MROs using the C3 algorithm.
+
+    Returns either an MRO or an error message if the MRO is invalid.
+    """
+    mro = [head]
+    tails = [list(tail) for tail in tail_mros if tail]
+    while tails:
+        candidate = None
+        for i, tail in enumerate(tails):
+            candidate = tail[0]
+            if not any(
+                _entries_match(candidate, other_tail[j])
+                for j, other_tail in enumerate(tails)
+                if i != j
+                for j in range(1, len(other_tail))
+            ):
+                break
+        else:
+            assert candidate is not None
+            # No valid candidate found, MRO is invalid
+            return (
+                f"Cannot create consistent MRO because {candidate.tobj} "
+                f"appears multiple times in conflicting positions"
+            )
+        for other_tail in tails:
+            for entry in other_tail:
+                if _entries_match(candidate, entry) and not entry.is_virtual:
+                    candidate = replace(candidate, is_virtual=False)
+                    break
+            if not candidate.is_virtual:
+                break
+        mro.append(candidate)
+        for tail in tails:
+            if tail and _entries_match(tail[0], candidate):
+                tail.pop(0)
+        tails = [tail for tail in tails if tail]
+    return mro

@@ -65,7 +65,8 @@ ErrorCode = ErrorRegistry(
         Error("bad_unpack", "Error in an unpacking assignment."),
         Error(
             "unsupported_operation",
-            "Usage of an operation such as subscripting on an object that does not support it.",
+            "Usage of an operation such as subscripting on an object that does not"
+            " support it.",
         ),
         Error("not_callable", "Attempt to call an object that is not callable."),
         Error("incompatible_call", "Incompatible arguments to a function call."),

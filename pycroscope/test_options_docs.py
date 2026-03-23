@@ -21,5 +21,5 @@ def test_render_config_options_markdown() -> None:
     assert "{term}`impl`" in rendered
     assert (
         "If any of these functions returns True, we will exclude this object from the "
-        "unused object check."
-    ) in rendered
+        "unused object check." in rendered
+    )

@@ -696,13 +696,9 @@ def _has_relation(
         elif isinstance(right, TypedValue) and right.typ is type:
             return {}
         elif isinstance(right, TypedValue):
-            get_synthetic_class = getattr(ctx, "get_synthetic_class", None)
-            if callable(get_synthetic_class):
-                synthetic_class = get_synthetic_class(right.typ)
-                if synthetic_class is not None:
-                    symbol = synthetic_class.declared_symbols.get("__hash__")
-                    if symbol is not None and symbol.initializer == KnownValue(None):
-                        return CanAssignError(f"{right} is not hashable")
+            symbol = ctx.make_type_object(right.typ).get_declared_symbol("__hash__")
+            if symbol is not None and symbol.initializer == KnownValue(None):
+                return CanAssignError(f"{right} is not hashable")
             if isinstance(right.typ, type):
                 try:
                     mro = list(type.mro(right.typ))
@@ -809,7 +805,7 @@ def _has_relation(
     # Special case for thrift enums
     if isinstance(left, TypedValue):
         left_tobj = left.get_type_object(ctx)
-        if left_tobj.is_thrift_enum and isinstance(right, (TypedValue, KnownValue)):
+        if left_tobj.is_thrift_enum() and isinstance(right, (TypedValue, KnownValue)):
             return _has_relation_thrift_enum(left, right, relation, ctx)
 
     # KnownValue
@@ -1002,7 +998,7 @@ def _has_relation(
             )
             if isinstance(can_assign, CanAssignError):
                 return can_assign
-            if isinstance(left, GenericValue) and left_tobj.is_protocol:
+            if isinstance(left, GenericValue) and left_tobj.is_protocol():
                 translated = _translate_generic_typevar_bounds(left, can_assign, ctx)
                 if translated:
                     return unify_bounds_maps([can_assign, translated])
@@ -1019,7 +1015,7 @@ def _has_relation(
                 if left_tobj.is_instance(right.val):
                     return {}
                 return can_assign
-            if isinstance(left, GenericValue) and left_tobj.is_protocol:
+            if isinstance(left, GenericValue) and left_tobj.is_protocol():
                 translated = _translate_generic_typevar_bounds(left, can_assign, ctx)
                 if translated:
                     return unify_bounds_maps([can_assign, translated])
@@ -2510,16 +2506,16 @@ def _intersect_typed(
     # the irreducible case can happen in certain situations involving generics.
     left_tobj = left.get_type_object(ctx)
     right_tobj = right.get_type_object(ctx)
-    if left_tobj.is_final and not left_tobj.is_assignable_to_type_object(right_tobj):
+    if left_tobj.is_final() and not left_tobj.is_assignable_to_type(right_tobj.typ):
         return NO_RETURN_VALUE
-    if right_tobj.is_final and not right_tobj.is_assignable_to_type_object(left_tobj):
+    if right_tobj.is_final() and not right_tobj.is_assignable_to_type(left_tobj.typ):
         return NO_RETURN_VALUE
 
     # If both types are nominal and are real (non-synthetic) types, we can mirror CPython's logic
     # to check whether a child class can exist at runtime.
     if (
-        not left_tobj.is_protocol
-        and not right_tobj.is_protocol
+        not left_tobj.is_protocol()
+        and not right_tobj.is_protocol()
         and isinstance(left_tobj.typ, type)
         and isinstance(right_tobj.typ, type)
         and not _can_nominal_types_intersect(left_tobj.typ, right_tobj.typ)

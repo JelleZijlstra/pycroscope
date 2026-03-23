@@ -54,7 +54,6 @@ from pycroscope.extensions import CustomCheck, ExternalType
 from pycroscope.safe import (
     is_instance_of_typing_name,
     is_namedtuple_class,
-    is_typing_name,
     safe_equals,
     safe_getattr,
     safe_isinstance,
@@ -417,7 +416,7 @@ def dump_value(value: T) -> T:
     return value
 
 
-def get_mro(typ: object) -> tuple[type, ...]:
+def get_mro(typ: object, *, include_virtual: bool = False) -> tuple[type, ...]:
     """Return the runtime MRO for a class-like object.
 
     During static analysis, pycroscope replaces this with a value-level MRO that
@@ -871,7 +870,7 @@ class TypeAlias:
         return self.type_params
 
 
-def _default_value_for_type_param(type_param: "TypeParam") -> Value:
+def default_value_for_type_param(type_param: "TypeParam") -> Value:
     if type_param.default is not None:
         return type_param.default
     return AnyValue(AnySource.generic_argument)
@@ -932,7 +931,7 @@ def match_typevar_arguments(
         substitutions[type_param.typevar] = argument
 
     def _default_argument(type_param: TypeParam) -> Value:
-        return _default_value_for_type_param(type_param).substitute_typevars(
+        return default_value_for_type_param(type_param).substitute_typevars(
             substitutions
         )
 
@@ -1041,7 +1040,7 @@ class TypeAliasValue(Value):
             # Unsubscripted aliases default each unspecialized parameter.
             substitutions: dict[TypeVarLike, Value] = {}
             for type_param in type_params:
-                substitutions[type_param.typevar] = _default_value_for_type_param(
+                substitutions[type_param.typevar] = default_value_for_type_param(
                     type_param
                 ).substitute_typevars(substitutions)
             val = val.substitute_typevars(substitutions)
@@ -1402,7 +1401,7 @@ class TypedValue(Value):
         self, other: Value, ctx: CanAssignContext, mode: OverlapMode
     ) -> CanAssignError | None:
         self_tobj = self.get_type_object(ctx)
-        if self_tobj.is_thrift_enum:
+        if self_tobj.is_thrift_enum():
             if isinstance(other, (KnownValue, TypedValue)):
                 can_assign = self.can_assign_thrift_enum(other, ctx)
                 if isinstance(can_assign, CanAssignError):
@@ -2117,12 +2116,6 @@ class SyntheticClassObjectValue(Value):
     dataclass_transform_info: "DataclassTransformInfo | None" = field(
         default=None, compare=False, hash=False, repr=False
     )
-    declared_type_params: Sequence[TypeParam] = field(
-        default_factory=tuple, compare=False, hash=False, repr=False
-    )
-    declared_symbols: MutableMapping[str, "ClassSymbol"] = field(
-        default_factory=dict, compare=False, hash=False, repr=False
-    )
     dataclass_field_order: tuple[str, ...] = field(
         default_factory=tuple, compare=False, hash=False, repr=False
     )
@@ -2163,38 +2156,6 @@ class SyntheticClassObjectValue(Value):
                 if self.dataclass_transform_info is not None
                 else None
             ),
-            declared_type_params=tuple(self.declared_type_params),
-            declared_symbols={
-                key: ClassSymbol(
-                    annotation=(
-                        symbol.annotation.substitute_typevars(typevars)
-                        if symbol.annotation is not None
-                        else None
-                    ),
-                    qualifiers=symbol.qualifiers,
-                    is_instance_only=symbol.is_instance_only,
-                    is_method=symbol.is_method,
-                    is_classmethod=symbol.is_classmethod,
-                    is_staticmethod=symbol.is_staticmethod,
-                    returns_self_on_class_access=symbol.returns_self_on_class_access,
-                    property_info=(
-                        symbol.property_info.substitute_typevars(typevars)
-                        if symbol.property_info is not None
-                        else None
-                    ),
-                    initializer=(
-                        symbol.initializer.substitute_typevars(typevars)
-                        if symbol.initializer is not None
-                        else None
-                    ),
-                    dataclass_field=(
-                        symbol.dataclass_field.substitute_typevars(typevars)
-                        if symbol.dataclass_field is not None
-                        else None
-                    ),
-                )
-                for key, symbol in self.declared_symbols.items()
-            },
             dataclass_field_order=tuple(self.dataclass_field_order),
         )
 
@@ -2232,15 +2193,6 @@ class SyntheticClassObjectValue(Value):
             yield from self.dataclass_info.walk_values()
         if self.dataclass_transform_info is not None:
             yield from self.dataclass_transform_info.walk_values()
-        for symbol in self.declared_symbols.values():
-            if symbol.annotation is not None:
-                yield from symbol.annotation.walk_values()
-            if symbol.property_info is not None:
-                yield from symbol.property_info.walk_values()
-            if symbol.initializer is not None:
-                yield from symbol.initializer.walk_values()
-            if symbol.dataclass_field is not None:
-                yield from symbol.dataclass_field.walk_values()
 
     def get_type_value(self) -> Value:
         if isinstance(self.class_type, TypedValue) and isinstance(
@@ -3516,47 +3468,6 @@ def replace_fallback(val: Value) -> BasicType:
     return val
 
 
-def has_any_base_value(val: Value, *, _seen: set[int] | None = None) -> bool:
-    """Whether a base-class value implies dynamic ``Any``-base behavior."""
-    if (
-        isinstance(val, PartialValue)
-        and val.operation is PartialValueOperation.SUBSCRIPT
-    ):
-        root = replace_fallback(val.root)
-        if isinstance(
-            root, (KnownValue, TypedValue, GenericValue, SyntheticClassObjectValue)
-        ):
-            return has_any_base_value(root, _seen=_seen)
-    val = replace_fallback(val)
-    if isinstance(val, MultiValuedValue):
-        return any(has_any_base_value(subval, _seen=_seen) for subval in val.vals)
-    if isinstance(val, AnyValue):
-        return True
-    if isinstance(val, SyntheticClassObjectValue):
-        seen = set() if _seen is None else _seen
-        val_id = id(val)
-        if val_id in seen:
-            return False
-        seen.add(val_id)
-        return any(has_any_base_value(base, _seen=seen) for base in val.base_classes)
-    if isinstance(val, GenericValue):
-        return _is_any_base_type(val.typ)
-    if isinstance(val, TypedValue):
-        return _is_any_base_type(val.typ)
-    if isinstance(val, KnownValue):
-        return _is_any_base_type(val.val)
-    return False
-
-
-def _is_any_base_type(typ: object) -> bool:
-    if is_typing_name(typ, "Any"):
-        return True
-    if isinstance(typ, type):
-        mro = safe_getattr(typ, "__mro__", ())
-        return any(is_typing_name(base, "Any") for base in mro)
-    return False
-
-
 def is_union(val: Value) -> bool:
     return isinstance(val, MultiValuedValue) or (
         isinstance(val, AnnotatedValue) and isinstance(val.value, MultiValuedValue)
@@ -4031,7 +3942,7 @@ def is_iterable(value: Value, ctx: CanAssignContext) -> CanAssignError | Value:
 
 
 def ordered_namedtuple_fields_from_synthetic(
-    synthetic: SyntheticClassObjectValue,
+    synthetic: SyntheticClassObjectValue, ctx: CanAssignContext
 ) -> tuple[str, ...]:
     inherited: list[str] = []
     for base in synthetic.base_classes:
@@ -4043,7 +3954,9 @@ def ordered_namedtuple_fields_from_synthetic(
                     and isinstance(runtime_class.val, type)
                     and is_namedtuple_class(runtime_class.val)
                 ):
-                    inherited.extend(ordered_namedtuple_fields_from_synthetic(subval))
+                    inherited.extend(
+                        ordered_namedtuple_fields_from_synthetic(subval, ctx)
+                    )
             elif isinstance(subval, KnownValue) and isinstance(subval.val, type):
                 fields_obj = safe_getattr(subval.val, "_fields", None)
                 if is_namedtuple_class(subval.val) and isinstance(fields_obj, tuple):
@@ -4067,20 +3980,21 @@ def ordered_namedtuple_fields_from_synthetic(
                     field for field in fields_obj if isinstance(field, str)
                 )
         else:
+            declared_symbols = get_synthetic_declared_symbols(synthetic, ctx)
             allowed_names = {
                 name
-                for name, symbol in synthetic.declared_symbols.items()
+                for name, symbol in declared_symbols.items()
                 if symbol.is_instance_only
                 and not symbol.is_classvar
                 and not symbol.is_initvar
             }
             local_fields.extend(
                 name
-                for name, symbol in synthetic.declared_symbols.items()
+                for name, symbol in declared_symbols.items()
                 if not symbol.is_method and (not allowed_names or name in allowed_names)
             )
             for name in allowed_names:
-                symbol = synthetic.declared_symbols.get(name)
+                symbol = declared_symbols.get(name)
                 if symbol is None or symbol.is_method or name in local_fields:
                     continue
                 local_fields.append(name)
@@ -4104,7 +4018,7 @@ def get_namedtuple_field_value_from_synthetic(
 ) -> Value | None:
     from .annotations import type_from_runtime
 
-    symbol = synthetic_class.declared_symbols.get(field_name)
+    symbol = get_synthetic_declared_symbol(synthetic_class, field_name, ctx)
     if symbol is not None:
         if (
             synthetic_class.namedtuple_info is not None
@@ -4520,10 +4434,25 @@ def _is_property_initializer(value: Value) -> bool:
     )
 
 
+def get_synthetic_declared_symbols(
+    synthetic_class: SyntheticClassObjectValue, ctx: CanAssignContext
+) -> MutableMapping[str, ClassSymbol]:
+    class_type = synthetic_class.class_type
+    if not isinstance(class_type, TypedValue):
+        return {}
+    return ctx.make_type_object(class_type.typ).get_synthetic_declared_symbols()
+
+
+def get_synthetic_declared_symbol(
+    synthetic_class: SyntheticClassObjectValue, name: str, ctx: CanAssignContext
+) -> ClassSymbol | None:
+    return get_synthetic_declared_symbols(synthetic_class, ctx).get(name)
+
+
 def get_synthetic_member_initializer(
-    synthetic_class: SyntheticClassObjectValue, name: str
+    synthetic_class: SyntheticClassObjectValue, name: str, ctx: CanAssignContext
 ) -> Value | None:
-    symbol = synthetic_class.declared_symbols.get(name)
+    symbol = get_synthetic_declared_symbol(synthetic_class, name, ctx)
     if symbol is None:
         return None
     return symbol.initializer

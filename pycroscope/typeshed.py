@@ -23,8 +23,6 @@ from typing import Any, Generic, TypeVar
 import typeshed_client
 from typing_extensions import Protocol
 
-from pycroscope.functions import translate_vararg_type
-
 from .analysis_lib import is_positional_only_arg_name
 from .annotations import (
     Context,
@@ -36,6 +34,7 @@ from .annotations import (
 from .error_code import Error, ErrorCode
 from .extensions import deprecated as deprecated_decorator
 from .extensions import evaluated, overload, real_overload
+from .functions import translate_vararg_type
 from .input_sig import InputSigValue
 from .options import (
     InvalidConfigOption,
@@ -411,8 +410,9 @@ class TypeshedFinder:
                 return True
         return False
 
-    def get_bases(self, typ: type) -> list[Value] | None:
+    def get_bases(self, typ: type | str) -> list[Value] | None:
         """Return the base classes for this type, including generic bases."""
+        assert isinstance(typ, str) or isinstance(typ, type), repr(typ)
         return self.get_bases_for_value(TypedValue(typ))
 
     def get_bases_for_value(self, val: Value) -> list[Value] | None:
@@ -580,10 +580,13 @@ class TypeshedFinder:
         mod, _ = fq_name.rsplit(".", maxsplit=1)
         return self._get_all_attributes_from_info(info, mod)
 
-    def has_stubs(self, typ: type) -> bool:
-        fq_name = self._get_fq_name(typ)
-        if fq_name is None:
-            return False
+    def has_stubs(self, typ: type | str) -> bool:
+        if isinstance(typ, str):
+            fq_name = typ
+        else:
+            fq_name = self._get_fq_name(typ)
+            if fq_name is None:
+                return False
         info = self._get_info_for_name(fq_name)
         return info is not None
 
