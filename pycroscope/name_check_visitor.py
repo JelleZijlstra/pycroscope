@@ -5875,17 +5875,26 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             error_code=ErrorCode.invalid_annotation,
         )
 
-    def _dataclass_slot_names_from_synthetic_class(
-        self, synthetic_class: SyntheticClassObjectValue
+    def _dataclass_slot_names_from_type(
+        self, typ: type | str
     ) -> tuple[str, ...] | None:
+        synthetic_class = self.checker.get_synthetic_class(typ)
+        if synthetic_class is None:
+            return None
         local_names = synthetic_class.dataclass_field_order
+        tobj = self.make_type_object(typ)
         slot_names: list[str] = []
         for name in local_names:
-            symbol = self._get_synthetic_declared_symbol(synthetic_class, name)
+            symbol = tobj.get_declared_symbol(name)
             if symbol is not None and symbol.is_initvar:
                 continue
             slot_names.append(name)
         return tuple(slot_names)
+
+    def _dataclass_slot_names_from_synthetic_class(
+        self, synthetic_class: SyntheticClassObjectValue
+    ) -> tuple[str, ...] | None:
+        return self._dataclass_slot_names_from_type(synthetic_class.class_type.typ)
 
     def _is_dataclass_field_callee(self, callee: Value) -> bool:
         if isinstance(callee, KnownValue) and callee.val is dataclass_field:
@@ -6019,114 +6028,56 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             converter_input_type=converter_input_type,
         )
 
-    def _slot_state_for_synthetic_class(
-        self,
-        synthetic_class: SyntheticClassObjectValue,
-        *,
-        seen: set[int] | None = None,
+    def _slot_state_for_type(
+        self, typ: type | str, *, seen: set[type | str] | None = None
     ) -> tuple[frozenset[str], bool] | None:
+        tobj = self.make_type_object(typ)
+        class_key = tobj.typ
         if seen is None:
             seen = set()
-        synthetic_id = id(synthetic_class)
-        if synthetic_id in seen:
+        if class_key in seen:
             return frozenset(), False
-        seen.add(synthetic_id)
+        seen.add(class_key)
+
+        if class_key is object:
+            return frozenset(), False
+        if isinstance(class_key, type) and attributes.may_have_dynamic_attributes(
+            class_key
+        ):
+            return frozenset(), True
 
         slot_names: set[str] = set()
         has_dict = False
-        slot_value = self._get_synthetic_member_initializer(
-            synthetic_class, "__slots__"
-        )
+        slot_symbol = tobj.get_declared_symbol("__slots__")
+        slot_value = None if slot_symbol is None else slot_symbol.initializer
         if slot_value is not None:
             names = _known_string_sequence_values(slot_value)
             if names is None:
                 return None
-            normalized_names, local_has_dict = _normalize_slot_names(names)
+            normalized_names, has_dict = _normalize_slot_names(names)
             slot_names.update(normalized_names)
-            has_dict = has_dict or local_has_dict
-        elif (
-            synthetic_class.dataclass_info is not None
-            and synthetic_class.dataclass_info.slots is True
-        ):
-            dataclass_slot_names = self._dataclass_slot_names_from_synthetic_class(
-                synthetic_class
-            )
-            if dataclass_slot_names is None:
-                return None
-            slot_names.update(dataclass_slot_names)
         else:
-            has_dict = True
+            synthetic_class = self.checker.get_synthetic_class(class_key)
+            if (
+                synthetic_class is not None
+                and synthetic_class.dataclass_info is not None
+                and synthetic_class.dataclass_info.slots is True
+            ):
+                dataclass_slot_names = self._dataclass_slot_names_from_type(class_key)
+                if dataclass_slot_names is None:
+                    return None
+                slot_names.update(dataclass_slot_names)
+            else:
+                has_dict = True
 
-        for base in synthetic_class.base_classes:
-            base_state = self._slot_state_for_base_value(base, seen=seen)
+        for base_tobj in tobj.get_direct_base_type_objects():
+            base_state = self._slot_state_for_type(base_tobj.typ, seen=seen)
             if base_state is None:
                 return None
             base_slots, base_has_dict = base_state
             slot_names.update(base_slots)
             has_dict = has_dict or base_has_dict
         return frozenset(slot_names), has_dict
-
-    def _slot_state_for_runtime_type(
-        self, typ: type
-    ) -> tuple[frozenset[str], bool] | None:
-        if typ is object:
-            return frozenset(), False
-        if attributes.may_have_dynamic_attributes(typ):
-            return frozenset(), True
-        slot_names: set[str] = set()
-        has_dict = False
-        saw_slots = False
-        for base in typ.__mro__:
-            if base is object:
-                continue
-            if "__slots__" not in base.__dict__:
-                has_dict = True
-                continue
-            names = _slot_names_from_runtime_slots(base.__dict__["__slots__"])
-            if names is None:
-                return None
-            normalized_names, local_has_dict = _normalize_slot_names(names)
-            slot_names.update(normalized_names)
-            has_dict = has_dict or local_has_dict
-            saw_slots = True
-        if not saw_slots:
-            has_dict = True
-        return frozenset(slot_names), has_dict
-
-    def _slot_state_for_base_value(
-        self, value: Value, *, seen: set[int] | None = None
-    ) -> tuple[frozenset[str], bool] | None:
-        value = replace_fallback(value)
-        if isinstance(value, AnnotatedValue):
-            return self._slot_state_for_base_value(value.value, seen=seen)
-        if isinstance(value, SyntheticClassObjectValue):
-            return self._slot_state_for_synthetic_class(value, seen=seen)
-        if isinstance(value, (MultiValuedValue, IntersectionValue)):
-            states = {
-                state
-                for subval in value.vals
-                if (state := self._slot_state_for_base_value(subval, seen=seen))
-                is not None
-            }
-            if len(states) == 1:
-                return next(iter(states))
-            return None
-        if isinstance(value, KnownValue) and isinstance(value.val, type):
-            return self._slot_state_for_runtime_type(value.val)
-        if isinstance(value, TypedValue):
-            return self._slot_state_for_type(value.typ, seen=seen)
-        return None
-
-    # TODO: track this on the type object
-    def _slot_state_for_type(
-        self, typ: type | str, *, seen: set[int] | None = None
-    ) -> tuple[frozenset[str], bool] | None:
-        if isinstance(typ, str):
-            synthetic_class = self.checker.get_synthetic_class(typ)
-            if synthetic_class is None:
-                return None
-            return self._slot_state_for_synthetic_class(synthetic_class, seen=seen)
-        return self._slot_state_for_runtime_type(typ)
 
     def _slot_state_for_instance_value(
         self, value: Value
@@ -6146,7 +6097,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         if isinstance(value, KnownValue):
             if isinstance(value.val, type):
                 return None
-            return self._slot_state_for_runtime_type(type(value.val))
+            return self._slot_state_for_type(type(value.val))
         if isinstance(value, TypedValue):
             if isinstance(value.typ, type) and safe_getattr(
                 value.typ, "__abstractmethods__", None
@@ -7485,16 +7436,12 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         return False
 
     def _synthetic_class_or_bases_use_self_annotations(self, typ: str) -> bool:
-        synthetic_class = self.checker.get_synthetic_class(typ)
-        if synthetic_class is None:
-            return False
-        seen: set[int] = set()
+        seen: set[type | str] = set()
 
-        def visit(synthetic_class: SyntheticClassObjectValue) -> bool:
-            synthetic_id = id(synthetic_class)
-            if synthetic_id in seen:
+        def visit(tobj: TypeObject) -> bool:
+            if tobj.typ in seen:
                 return False
-            seen.add(synthetic_id)
+            seen.add(tobj.typ)
             if any(
                 (
                     symbol.annotation is not None
@@ -7504,25 +7451,18 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     symbol.initializer is not None
                     and _value_contains_self(symbol.initializer)
                 )
-                for symbol in self._get_synthetic_declared_symbols(
-                    synthetic_class
-                ).values()
+                for symbol in tobj.get_declared_symbols().values()
             ):
                 return True
-            for base in synthetic_class.base_classes:
-                base = replace_fallback(base)
-                synthetic_base: SyntheticClassObjectValue | None = None
-                if isinstance(base, SyntheticClassObjectValue):
-                    synthetic_base = base
-                elif isinstance(base, GenericValue) and isinstance(base.typ, str):
-                    synthetic_base = self.checker.get_synthetic_class(base.typ)
-                elif isinstance(base, TypedValue) and isinstance(base.typ, str):
-                    synthetic_base = self.checker.get_synthetic_class(base.typ)
-                if synthetic_base is not None and visit(synthetic_base):
+            for base_tobj in tobj.get_direct_base_type_objects():
+                if isinstance(base_tobj.typ, str):
+                    if visit(base_tobj):
+                        return True
+                elif self._runtime_class_or_bases_use_self_annotations(base_tobj.typ):
                     return True
             return False
 
-        return visit(synthetic_class)
+        return visit(self.make_type_object(typ))
 
     def _current_class_name_from_context(self) -> str | None:
         for context in reversed(self.node_context.contexts):
@@ -7530,33 +7470,16 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 return context.name
         return None
 
-    def _current_class_node_from_context(self) -> ast.ClassDef | None:
-        for context in reversed(self.node_context.contexts):
-            if isinstance(context, ast.ClassDef):
-                return context
-        return None
-
     def _current_class_bases_use_self_annotations(self) -> bool:
-        current_class_node = self._current_class_node_from_context()
-        if current_class_node is None:
+        if self.current_class_key is None:
             return False
-        for base_node in current_class_node.bases:
-            base_value = replace_fallback(self.visit_expression(base_node))
-            synthetic_base: SyntheticClassObjectValue | None = None
-            if isinstance(base_value, SyntheticClassObjectValue):
-                synthetic_base = base_value
-            elif isinstance(base_value, GenericValue) and isinstance(
-                base_value.typ, str
-            ):
-                synthetic_base = self.checker.get_synthetic_class(base_value.typ)
-            elif isinstance(base_value, TypedValue) and isinstance(base_value.typ, str):
-                synthetic_base = self.checker.get_synthetic_class(base_value.typ)
-            if (
-                synthetic_base is not None
-                and self._synthetic_class_or_bases_use_self_annotations(
-                    synthetic_base.name
-                )
-            ):
+        for base_tobj in self.make_type_object(
+            self.current_class_key
+        ).get_direct_base_type_objects():
+            if isinstance(base_tobj.typ, str):
+                if self._synthetic_class_or_bases_use_self_annotations(base_tobj.typ):
+                    return True
+            elif self._runtime_class_or_bases_use_self_annotations(base_tobj.typ):
                 return True
         return False
 
@@ -17625,14 +17548,6 @@ def _callable_first_positional_parameter_type_for_return(
         if parameter_types:
             return unite_values(*parameter_types)
     return _callable_first_positional_parameter_type(signature, checker=checker)
-
-
-def _slot_names_from_runtime_slots(value: object) -> tuple[str, ...] | None:
-    if isinstance(value, str):
-        return (value,)
-    if isinstance(value, (tuple, list, set, frozenset)):
-        return tuple(item for item in value if isinstance(item, str))
-    return None
 
 
 def _get_dataclass_post_init_node(
