@@ -104,7 +104,6 @@ from .value import (
     get_namedtuple_field_value_from_synthetic,
     get_synthetic_member_initializer,
     get_tv_map,
-    has_any_base_value,
     is_union,
     iter_type_params_in_value,
     ordered_namedtuple_fields_from_synthetic,
@@ -1794,7 +1793,8 @@ class Checker:
     def _make_synthetic_constructor_instance_value(
         self, value: SyntheticClassObjectValue, *, apply_default_type_args: bool = True
     ) -> Value:
-        if self._synthetic_class_has_any_base(value):
+        tobj = self.make_type_object(value.class_type.typ)
+        if tobj.has_any_base():
             return value.class_type
         if isinstance(value.class_type, GenericValue):
             return value.class_type
@@ -3131,9 +3131,6 @@ class Checker:
                 )
             specialized_argspec = combined
         return specialized_argspec
-
-    def _synthetic_class_has_any_base(self, value: SyntheticClassObjectValue) -> bool:
-        return any(has_any_base_value(base) for base in value.base_classes)
 
     def _bind_synthetic_method(
         self,

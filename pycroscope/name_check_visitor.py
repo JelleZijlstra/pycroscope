@@ -315,7 +315,6 @@ from .value import (
     get_synthetic_member_initializer,
     get_tv_map,
     get_typevar_variance,
-    has_any_base_value,
     is_async_iterable,
     is_iterable,
     is_union,
@@ -3616,29 +3615,12 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     def _base_class_has_any_base(
         self, base_class: type | str, seen: set[type | str]
     ) -> bool:
-        if isinstance(base_class, type):
-            return has_any_base_value(TypedValue(base_class))
-        if base_class in seen:
-            return False
-        seen.add(base_class)
-
-        synthetic_class = self._synthetic_classes_by_name.get(base_class)
-        if synthetic_class is not None and any(
-            self._base_value_has_any_base(base, seen)
-            for base in synthetic_class.base_classes
-        ):
-            return True
-
-        for ancestor in self.checker.get_generic_bases(base_class):
-            if ancestor != base_class and self._base_class_has_any_base(ancestor, seen):
-                return True
-        return False
+        tobj = self.checker.make_type_object(base_class)
+        return tobj.has_any_base()
 
     def _base_value_has_any_base(
         self, base_value: Value, seen: set[type | str]
     ) -> bool:
-        if has_any_base_value(base_value):
-            return True
         base_value = replace_fallback(base_value)
         if isinstance(base_value, SyntheticClassObjectValue):
             class_type = base_value.class_type
@@ -15508,10 +15490,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             ):
                 if not self._is_dataclass_initvar_attribute(root_type, attr):
                     return self._maybe_get_attr_value(root_type, attr)
-        elif isinstance(root_value, SyntheticClassObjectValue) and isinstance(
-            root_value.class_type, TypedValue
-        ):
-            if any(has_any_base_value(base) for base in root_value.base_classes):
+        elif isinstance(root_value, SyntheticClassObjectValue):
+            tobj = self.checker.make_type_object(root_value.class_type.typ)
+            if tobj.has_any_base():
                 return AnyValue(AnySource.inference)
         elif isinstance(root_value, SubclassValue):
             if isinstance(root_value.typ, TypedValue):

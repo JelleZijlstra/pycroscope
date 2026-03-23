@@ -85,7 +85,6 @@ from .value import (
     default_value_for_type_param,
     freshen_typevars_for_inference,
     get_tv_map,
-    has_any_base_value,
     match_typevar_arguments,
     replace_fallback,
     stringify_object,
@@ -308,13 +307,7 @@ class TypeObject:
         return self._has_stubs
 
     def has_any_base(self) -> bool:
-        # TODO: only use MRO
-        if any(entry.is_any for entry in self.get_mro()):
-            return True
-        synthetic_class = self._checker.get_synthetic_class(self.typ)
-        if synthetic_class is not None:
-            return has_any_base_value(synthetic_class)
-        return False
+        return any(entry.is_any for entry in self.get_mro())
 
     def _compute_declared_symbols(self) -> dict[str, ClassSymbol]:
         import pycroscope.type_object_builder as type_object_builder
