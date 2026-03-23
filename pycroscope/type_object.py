@@ -41,6 +41,7 @@ from .safe import (
 )
 from .signature import (
     BoundMethodSignature,
+    CallContext,
     Impl,
     OverloadedSignature,
     ParameterKind,
@@ -573,6 +574,43 @@ class TypeObject:
         _add_namedtuple_dunder_new_symbol(
             self, fields, constructor_impl=constructor_impl
         )
+
+    def replace_declared_symbols(self, symbols: Mapping[str, ClassSymbol]) -> None:
+        self._ensure_synthetic_class()
+        synthetic_symbols = self.get_synthetic_declared_symbols()
+        synthetic_symbols.clear()
+        synthetic_symbols.update(symbols)
+        if self._declared_symbols is not None:
+            if isinstance(self.typ, type):
+                self._declared_symbols = self._compute_declared_symbols()
+            else:
+                self._declared_symbols = synthetic_symbols
+        self._update_loaded_synthetic_fields()
+        self._protocol_positive_cache.clear()
+
+    def set_runtime_namedtuple(self, runtime_class_value: KnownValue) -> None:
+        import pycroscope.type_object_builder as type_object_builder
+
+        runtime_class = runtime_class_value.val
+        assert isinstance(runtime_class, type), runtime_class
+        namedtuple_fields = self._namedtuple_fields_from_runtime(runtime_class)
+        self.set_base_values((TypedValue(tuple),))
+        self.set_runtime_class(runtime_class_value)
+        self.set_namedtuple_info(
+            NamedTupleInfo(field_names=tuple(field.name for field in namedtuple_fields))
+        )
+        declared_symbols: dict[str, ClassSymbol] = {}
+        type_object_builder._add_runtime_declared_symbols(
+            runtime_class, declared_symbols
+        )
+        self.replace_declared_symbols(declared_symbols)
+        if namedtuple_fields:
+            self.set_namedtuple_fields(
+                namedtuple_fields,
+                constructor_impl=_make_namedtuple_constructor_impl(
+                    self.typ, namedtuple_fields
+                ),
+            )
 
     def _compute_namedtuple_data(self) -> tuple[bool, Sequence[NamedTupleField]]:
         if isinstance(self.typ, type) and is_direct_namedtuple_class(self.typ):
@@ -2666,3 +2704,14 @@ def _add_namedtuple_dunder_new_symbol(
     )
     tobj.add_declared_symbol("__new__", symbol)
     return symbol
+
+
+def _make_namedtuple_constructor_impl(
+    typ: type | str, fields: Sequence[NamedTupleField]
+) -> Impl:
+    def infer_namedtuple_return(ctx: CallContext) -> Value:
+        return SequenceValue(
+            typ, tuple((False, ctx.vars[field.name]) for field in fields)
+        )
+
+    return infer_namedtuple_return
