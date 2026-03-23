@@ -410,6 +410,7 @@ class TestImportFailureHandling(TestNameCheckVisitorBase):
         assert_type(a.method2(), Any)
         assert_type(ClassA.method3(), Any)
 
+    @skip_before((3, 11))
     @assert_passes(run_in_both_module_modes=True)
     def test_any_base_class_preserves_declared_method_type(self):
         from typing import Any
