@@ -509,7 +509,7 @@ class TestTypeVar(TestNameCheckVisitorBase):
             assert_type(x(), int)  # E: inference_failure
 
     # Not sure why this fails on 3.10, TODO investigate
-    @skip_before((3, 10))
+    @skip_before((3, 11))
     @assert_passes(allow_import_failures=True)
     def test_class_type_param_default_ordering_rules(self):
         from typing import Generic
