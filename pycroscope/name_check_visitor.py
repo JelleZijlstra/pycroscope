@@ -3594,24 +3594,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         tobj = self.checker.make_type_object(base_class)
         return tobj.has_any_base()
 
-    def _base_value_has_any_base(
-        self, base_value: Value, seen: set[type | str]
-    ) -> bool:
-        base_value = replace_fallback(base_value)
-        if isinstance(base_value, SyntheticClassObjectValue):
-            class_type = base_value.class_type
-            if isinstance(class_type, TypedValue) and isinstance(class_type.typ, str):
-                return self._base_class_has_any_base(class_type.typ, seen)
-            return False
-        if isinstance(base_value, GenericValue):
-            if isinstance(base_value.typ, str):
-                return self._base_class_has_any_base(base_value.typ, seen)
-            return False
-        if isinstance(base_value, TypedValue):
-            if isinstance(base_value.typ, str):
-                return self._base_class_has_any_base(base_value.typ, seen)
-        return False
-
     def _get_base_class_attributes_for(
         self, current_class: type | str | None, varname: str, node: ast.AST
     ) -> Iterable[tuple[type | str, Value]]:
