@@ -587,15 +587,6 @@ class TypeObject:
             self._mro = self._compute_mro()
         return self._mro
 
-    def _matches_class_key(self, class_key: type | str) -> bool:
-        if class_keys_match(self.typ, class_key):
-            return True
-        return (
-            isinstance(self.typ, type)
-            and isinstance(class_key, type)
-            and safe_issubclass(self.typ, class_key)
-        )
-
     def _get_protocol_members_contributed_by_self(self) -> set[str]:
         if isinstance(self.typ, str) or self._checker.ts_finder.is_protocol(self.typ):
             members = {
@@ -738,13 +729,14 @@ class TypeObject:
                 return entry.tobj, symbol
         return None
 
-    def is_assignable_to_type(self, typ: type) -> bool:
+    def is_assignable_to_type(self, typ: type | str) -> bool:
         return self.is_universally_assignable() or any(
             entry.tobj is not None
             and (
                 entry.tobj.typ == typ
                 or (
                     safe_isinstance(entry.tobj.typ, type)
+                    and safe_isinstance(typ, type)
                     and safe_issubclass(entry.tobj.typ, typ)
                 )
             )

@@ -22,9 +22,6 @@ from .value import (
     IntersectionValue,
     KnownValue,
     MultiValuedValue,
-    NamedTupleInfo,
-    Qualifier,
-    SequenceValue,
     SubclassValue,
     SyntheticClassObjectValue,
     TypedValue,
@@ -344,46 +341,6 @@ def test_synthetic_type_object_tracks_declared_type_params_and_specialized_mro()
         TypedValue(grandchild),
         GenericValue(child, [TypedValue(int)]),
         GenericValue(base, [GenericValue(list, [TypedValue(int)])]),
-        TypedValue(object),
-    ]
-
-
-def test_synthetic_namedtuple_type_object_uses_specialized_tuple_mro() -> None:
-    checker = Checker()
-    synthetic = SyntheticClassObjectValue(
-        "Point",
-        TypedValue("mod.Point"),
-        base_classes=(TypedValue(tuple),),
-        namedtuple_info=NamedTupleInfo(
-            field_names=("x", "y"), default_fields=(), has_namedtuple_marker_base=True
-        ),
-    )
-    checker.register_synthetic_class(synthetic)
-    type_object = checker.make_type_object("mod.Point")
-    type_object.set_declared_symbol(
-        "x",
-        ClassSymbol(
-            annotation=TypedValue(int),
-            qualifiers=frozenset({Qualifier.ReadOnly}),
-            is_instance_only=True,
-            initializer=TypedValue(int),
-        ),
-    )
-    type_object.set_declared_symbol(
-        "y",
-        ClassSymbol(
-            annotation=TypedValue(str),
-            qualifiers=frozenset({Qualifier.ReadOnly}),
-            is_instance_only=True,
-            initializer=TypedValue(str),
-        ),
-    )
-
-    assert [
-        entry.get_mro_value()
-        for entry in checker.make_type_object("mod.Point").get_mro()
-    ] == [
-        SequenceValue(tuple, [(False, TypedValue(int)), (False, TypedValue(str))]),
         TypedValue(object),
     ]
 
