@@ -1,7 +1,8 @@
 """Dataclass-specific helpers."""
 
 from collections.abc import Callable
-from typing import TYPE_CHECKING
+
+import pycroscope
 
 from .signature import (
     ELLIPSIS_PARAM,
@@ -27,9 +28,6 @@ from .value import (
     annotate_value,
     replace_fallback,
 )
-
-if TYPE_CHECKING:
-    from .attributes import AttrContext
 
 
 def set_synthetic_dataclass_info(
@@ -137,14 +135,24 @@ def get_synthetic_match_args_value(
     )
 
 
+def _get_local_synthetic_initializer(
+    type_object: "pycroscope.type_object.TypeObject", name: str
+) -> Value | None:
+    # Dataclass-generated members need to consult only the local synthetic overlay.
+    # Looking at the merged TypeObject view would treat runtime members (such as a
+    # runtime __slots__) as if pycroscope had already synthesized them, which skips
+    # adding the overlay entries that the rest of the checker currently relies on.
+    symbol = type_object.get_synthetic_declared_symbols().get(name)
+    if symbol is None:
+        return None
+    return symbol.initializer
+
+
 def apply_synthetic_attributes(
     synthetic_class: SyntheticClassObjectValue,
     semantics: DataclassInfo | None,
     *,
-    merge_declared_symbol: Callable[
-        [SyntheticClassObjectValue, str, ClassSymbol], None
-    ],
-    get_member_initializer: Callable[[SyntheticClassObjectValue, str], Value | None],
+    type_object: "pycroscope.type_object.TypeObject",
     get_slot_names: Callable[[SyntheticClassObjectValue], tuple[str, ...] | None],
     get_field_parameters: Callable[[SyntheticClassObjectValue], list[SigParameter]],
 ) -> None:
@@ -154,19 +162,18 @@ def apply_synthetic_attributes(
 
     if (
         semantics.slots is True
-        and get_member_initializer(synthetic_class, "__slots__") is None
+        and _get_local_synthetic_initializer(type_object, "__slots__") is None
     ):
         slot_names = get_slot_names(synthetic_class)
         if slot_names is not None:
             slot_value = KnownValue(slot_names)
-            merge_declared_symbol(
-                synthetic_class, "__slots__", ClassSymbol(initializer=slot_value)
+            type_object.add_declared_symbol(
+                "__slots__", ClassSymbol(initializer=slot_value)
             )
 
-    if get_member_initializer(synthetic_class, "__dataclass_fields__") is None:
+    if _get_local_synthetic_initializer(type_object, "__dataclass_fields__") is None:
         dataclass_fields_value = synthesize_dataclass_fields_attribute()
-        merge_declared_symbol(
-            synthetic_class,
+        type_object.add_declared_symbol(
             "__dataclass_fields__",
             ClassSymbol(
                 annotation=dataclass_fields_value,
@@ -175,35 +182,29 @@ def apply_synthetic_attributes(
             ),
         )
 
-    if get_member_initializer(synthetic_class, "__init__") is None:
+    if _get_local_synthetic_initializer(type_object, "__init__") is None:
         init_value = get_synthetic_init_value(
             synthetic_class, get_field_parameters=get_field_parameters
         )
         if init_value is not None:
-            merge_declared_symbol(
-                synthetic_class,
-                "__init__",
-                ClassSymbol(is_method=True, initializer=init_value),
+            type_object.add_declared_symbol(
+                "__init__", ClassSymbol(is_method=True, initializer=init_value)
             )
 
-    if get_member_initializer(synthetic_class, "__match_args__") is None:
+    if _get_local_synthetic_initializer(type_object, "__match_args__") is None:
         match_args_value = get_synthetic_match_args_value(
             synthetic_class, get_field_parameters=get_field_parameters
         )
         if match_args_value is not None:
-            merge_declared_symbol(
-                synthetic_class,
-                "__match_args__",
-                ClassSymbol(initializer=match_args_value),
+            type_object.add_declared_symbol(
+                "__match_args__", ClassSymbol(initializer=match_args_value)
             )
 
-    if get_member_initializer(synthetic_class, "__hash__") is None:
+    if _get_local_synthetic_initializer(type_object, "__hash__") is None:
         hash_value = synthesize_dataclass_hash_attribute(semantics)
         if hash_value is not None:
-            merge_declared_symbol(
-                synthetic_class,
-                "__hash__",
-                ClassSymbol(is_method=True, initializer=hash_value),
+            type_object.add_declared_symbol(
+                "__hash__", ClassSymbol(is_method=True, initializer=hash_value)
             )
 
 
@@ -211,7 +212,7 @@ def maybe_resolve_synthetic_descriptor_attribute(
     synthetic_class: SyntheticClassObjectValue,
     attr_name: str,
     value: Value,
-    ctx: "AttrContext",
+    ctx: "pycroscope.attributes.AttrContext",
     *,
     on_class: bool,
     descriptor_get_type: Callable[..., Value | None],

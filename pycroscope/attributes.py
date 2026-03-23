@@ -1320,6 +1320,11 @@ def _get_attribute_from_typed(
 def _get_runtime_attribute_from_synthetic_class(
     typ: type, generic_args: Sequence[Value], ctx: AttrContext, *, on_class: bool
 ) -> Value:
+    if ctx.attr == "__slots__":
+        try:
+            return KnownValue(getattr(typ, ctx.attr))
+        except Exception:
+            pass
     synthetic_class = ctx.get_synthetic_class(typ)
     if synthetic_class is None:
         return UNINITIALIZED_VALUE
