@@ -280,7 +280,7 @@ class HasAttr(Predicate):
                 return self._intersect_with_value(other, ctx, is_final=True)
             case TypedValue():
                 tobj = ctx.make_type_object(other.typ)
-                return self._intersect_with_value(other, ctx, is_final=tobj.is_final)
+                return self._intersect_with_value(other, ctx, is_final=tobj.is_final())
             case SubclassValue():
                 return self._intersect_with_value(other, ctx, is_final=False)
             case _:
