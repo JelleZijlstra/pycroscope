@@ -587,34 +587,6 @@ class TypeObject:
             self._mro = self._compute_mro()
         return self._mro
 
-    def get_nominal_bases(self) -> tuple[MroValue, ...]:
-        mro_bases = tuple(
-            entry.get_mro_value()
-            for entry in self.get_mro()
-            if (
-                (key := _class_key_from_value(entry.get_mro_value())) is None
-                or not class_keys_match(key, self.typ)
-            )
-        )
-        return (*mro_bases, *self.get_virtual_bases())
-
-    def has_nominal_base(self, class_key: type | str) -> bool:
-        if self._matches_class_key(class_key):
-            return True
-        for base_value in self.get_nominal_bases():
-            base_key = _class_key_from_value(base_value)
-            if base_key is None:
-                continue
-            if class_keys_match(base_key, class_key):
-                return True
-            if (
-                isinstance(base_key, type)
-                and isinstance(class_key, type)
-                and safe_issubclass(base_key, class_key)
-            ):
-                return True
-        return False
-
     def _matches_class_key(self, class_key: type | str) -> bool:
         if class_keys_match(self.typ, class_key):
             return True
@@ -657,14 +629,6 @@ class TypeObject:
             if runtime_names is None or member in runtime_names
             if member not in EXCLUDED_PROTOCOL_MEMBERS and member != "__slots__"
         }
-
-    def _iter_runtime_attribute_types(self) -> Iterator[type]:
-        if isinstance(self.typ, type):
-            yield self.typ
-        for base_value in self.get_nominal_bases():
-            base_key = _class_key_from_value(base_value)
-            if isinstance(base_key, type):
-                yield base_key
 
     def get_declared_type_params(self) -> tuple[TypeParam, ...]:
         if self._declared_type_params is None:
@@ -778,7 +742,7 @@ class TypeObject:
         return self.is_universally_assignable() or any(
             entry.tobj is not None
             and (
-                entry.tobj.typ is typ
+                entry.tobj.typ == typ
                 or (
                     safe_isinstance(entry.tobj.typ, type)
                     and safe_issubclass(entry.tobj.typ, typ)
@@ -786,18 +750,6 @@ class TypeObject:
             )
             for entry in self.get_mro()
         )
-
-    def is_assignable_to_type_object(self, other: "TypeObject") -> bool:
-        if class_keys_match(self.typ, other.typ):
-            return True
-        if isinstance(other.typ, str):
-            return (
-                self.is_universally_assignable()
-                # TODO actually check protocols
-                or other.is_protocol()
-                or self.has_nominal_base(other.typ)
-            )
-        return self.is_assignable_to_type(other.typ)
 
     def can_assign(
         self,
@@ -838,14 +790,9 @@ class TypeObject:
                 return CanAssignError(
                     f"Cannot assign protocol {other_val} to non-protocol {self}"
                 )
-            if isinstance(self.typ, str):
-                if other.has_nominal_base(self.typ):
-                    return {}
-                return CanAssignError(f"Cannot assign {other_val} to {self}")
-            else:
-                if other.is_assignable_to_type(self.typ):
-                    return {}
-                return CanAssignError(f"Cannot assign {other_val} to {self}")
+            if other.is_assignable_to_type(self.typ):
+                return {}
+            return CanAssignError(f"Cannot assign {other_val} to {self}")
         else:
             use_cache = not isinstance(self_val, AnnotatedValue) and not isinstance(
                 other_val, AnnotatedValue
@@ -1220,23 +1167,11 @@ class TypeObject:
         """Whether this type definitely has this attribute."""
         if self.is_protocol():
             return attr in self.get_protocol_members()
-        if attr in self.get_declared_symbols():
-            return True
-        if isinstance(self.typ, type):
-            try:
-                if attr in self.typ.__dict__:
-                    return True
-            except Exception:
-                pass
-        # We don't use ctx.get_attribute because that may have false positives.
-        for base_key in self._iter_runtime_attribute_types():
-            try:
-                present = attr in base_key.__dict__
-            except Exception:
-                present = False
-            if present:
-                return True
-        return False
+        match = self._get_declared_symbol_with_owner(attr, ctx)
+        if match is None:
+            return False
+        _, symbol = match
+        return not symbol.is_instance_only and symbol.initializer is not None
 
     def __str__(self) -> str:
         base = stringify_object(self.typ)

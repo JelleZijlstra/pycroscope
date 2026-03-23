@@ -2506,9 +2506,9 @@ def _intersect_typed(
     # the irreducible case can happen in certain situations involving generics.
     left_tobj = left.get_type_object(ctx)
     right_tobj = right.get_type_object(ctx)
-    if left_tobj.is_final() and not left_tobj.is_assignable_to_type_object(right_tobj):
+    if left_tobj.is_final() and not left_tobj.is_assignable_to_type(right_tobj.typ):
         return NO_RETURN_VALUE
-    if right_tobj.is_final() and not right_tobj.is_assignable_to_type_object(left_tobj):
+    if right_tobj.is_final() and not right_tobj.is_assignable_to_type(left_tobj.typ):
         return NO_RETURN_VALUE
 
     # If both types are nominal and are real (non-synthetic) types, we can mirror CPython's logic
