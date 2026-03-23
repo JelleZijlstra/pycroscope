@@ -131,7 +131,7 @@ def _iter_base_type_values(
     value: Value,
     arg_spec_cache: ArgSpecCache | None,
     seen_known_bases: frozenset[int] = frozenset(),
-) -> Iterator[TypedValue]:
+) -> Iterator[TypedValue | AnyValue]:
     if isinstance(value, PartialValue):
         if value.operation is not PartialValueOperation.SUBSCRIPT:
             return
@@ -178,7 +178,7 @@ def _iter_base_type_values_from_simple(
     value: SimpleType,
     arg_spec_cache: ArgSpecCache | None,
     seen_known_bases: frozenset[int],
-) -> Iterator[TypedValue]:
+) -> Iterator[TypedValue | AnyValue]:
     if isinstance(value, KnownValue):
         if arg_spec_cache is not None:
             base_id = id(value.val)
@@ -214,6 +214,8 @@ def _iter_base_type_values_from_simple(
             PredicateValue,
         ),
     ):
+        if isinstance(value, AnyValue):
+            yield value
         return
     assert_never(value)
 

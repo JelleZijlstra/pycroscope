@@ -665,6 +665,8 @@ class Checker:
             for converted in pycroscope.type_object_builder._iter_base_type_values(
                 base, self.arg_spec_cache
             ):
+                if not isinstance(converted, TypedValue):
+                    continue
                 base_typ = converted.typ
                 # Preserve direct synthetic bases even when we cannot infer a
                 # richer generic mapping for them (common for local synthetic

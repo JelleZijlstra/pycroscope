@@ -4039,6 +4039,16 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             )
             if _is_namedtuple_marker_base(base_value):
                 is_direct_namedtuple = True
+        if base_values:
+            if not any(
+                isinstance(base, KnownValue) and is_typing_name(base.val, "TypedDict")
+                for base in base_values
+            ):
+                tobj.set_direct_bases(
+                    direct_bases_from_values(base_values, self.checker)
+                )
+        else:
+            tobj.set_direct_bases([TypedValue(object)])
         return base_values, base_type_param_variance_infos, is_direct_namedtuple
 
     def visit_ClassDef(self, node: ast.ClassDef) -> Value:

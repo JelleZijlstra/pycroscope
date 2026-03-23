@@ -512,6 +512,10 @@ def _get_attribute_from_subclass(
     if synthetic_attr is not UNINITIALIZED_VALUE:
         return synthetic_attr
     result, provider, should_unwrap = _get_attribute_from_mro(typ, ctx, on_class=True)
+    if result is UNINITIALIZED_VALUE:
+        tobj = ctx.get_can_assign_context().make_type_object(typ)
+        if tobj.has_any_base():
+            return AnyValue(AnySource.from_another)
     if should_unwrap:
         result = _unwrap_value_from_subclass(result, ctx)
     if isinstance(self_value, GenericValue):
@@ -1557,6 +1561,10 @@ def _get_attribute_from_known(obj: object, ctx: AttrContext) -> Value:
             return synthetic_attr
 
     result, _, _ = _get_attribute_from_mro(obj, ctx, on_class=True)
+    if result is UNINITIALIZED_VALUE and safe_isinstance(obj, type):
+        tobj = ctx.get_can_assign_context().make_type_object(obj)
+        if tobj.has_any_base():
+            result = AnyValue(AnySource.from_another)
     if isinstance(result, KnownValue) and (
         safe_isinstance(result.val, types.MethodType)
         or safe_isinstance(result.val, types.BuiltinFunctionType)
