@@ -72,11 +72,7 @@ def test_class_key_from_intersection_with_consistent_key() -> None:
 def test_lookup_declared_symbol_with_owner_handles_synthetic_base() -> None:
     checker = Checker()
     base = SyntheticClassObjectValue("Base", TypedValue("mod.Base"))
-    child = SyntheticClassObjectValue(
-        "Child",
-        TypedValue("mod.Child"),
-        base_classes=(SubclassValue(TypedValue("mod.Base")),),
-    )
+    child = SyntheticClassObjectValue("Child", TypedValue("mod.Child"))
     checker.register_synthetic_class(base)
     checker.register_synthetic_class(child)
     checker.make_type_object("mod.Base").set_declared_symbol(
@@ -203,12 +199,12 @@ def test_synthetic_type_object_tracks_dataclass_fields_without_initializers() ->
     child = SyntheticClassObjectValue(
         "Child",
         TypedValue("mod.Child"),
-        base_classes=(TypedValue("mod.Base"),),
         dataclass_info=dataclass_info,
         dataclass_field_order=("b",),
     )
     checker.register_synthetic_class(base)
     checker.register_synthetic_class(child)
+    checker.make_type_object("mod.Child").set_direct_bases((TypedValue("mod.Base"),))
     checker.make_type_object("mod.Base").set_declared_symbol(
         "a",
         ClassSymbol(annotation=TypedValue(int), dataclass_field=DataclassFieldInfo()),
@@ -241,7 +237,7 @@ def test_type_object_exposes_synthetic_namedtuple_metadata() -> None:
     checker.make_type_object("mod.Base").set_namedtuple_fields(
         [NamedTupleField("x", TypedValue(int), None)]
     )
-    checker.make_type_object("mod.Child").set_base_values((TypedValue("mod.Base"),))
+    checker.make_type_object("mod.Child").set_direct_bases((TypedValue("mod.Base"),))
     checker.make_type_object("mod.Child").set_declared_symbol(
         "label", ClassSymbol(annotation=TypedValue(str), is_instance_only=True)
     )
@@ -512,6 +508,35 @@ def test_get_attribute_substitutes_receiver_args_through_generic_mro() -> None:
     assert attribute is not None
     assert attribute.owner.typ is Base
     assert attribute.value == GenericValue(list, [TypedValue(int)])
+
+
+def test_get_enum_value_type_uses_runtime_members() -> None:
+    import enum
+
+    class Color(enum.Enum):
+        RED = 1
+        CRIMSON = RED
+        BLUE = 2
+
+    checker = Checker()
+    assert_is_value(
+        checker.make_type_object(Color).get_enum_value_type(),
+        KnownValue(1) | KnownValue(2),
+    )
+
+
+def test_get_enum_value_type_falls_back_to_declared_value_annotation() -> None:
+    import enum
+
+    checker = Checker()
+    synthetic = checker.make_synthetic_class("mod.Color")
+    type_object = checker.make_type_object("mod.Color")
+
+    type_object.set_direct_bases((TypedValue(enum.Enum),))
+    type_object.set_declared_symbol("_value_", ClassSymbol(annotation=TypedValue(int)))
+
+    assert synthetic.class_type == TypedValue("mod.Color")
+    assert type_object.get_enum_value_type() == TypedValue(int)
 
 
 def test_get_attribute_applies_classmethod_descriptor_protocol() -> None:

@@ -5,6 +5,7 @@ An object that represents a type.
 """
 
 import collections.abc
+import enum
 import inspect
 import sys
 from collections.abc import (
@@ -228,6 +229,21 @@ def _get_additional_bases(
 
 
 MroValue = TypedValue | AnyValue
+
+
+def direct_bases_from_values(
+    base_values: Sequence[Value], checker: "pycroscope.checker.Checker"
+) -> tuple[MroValue, ...]:
+    import pycroscope.type_object_builder as type_object_builder
+
+    direct_bases = [
+        converted
+        for base in base_values
+        for converted in type_object_builder._iter_base_type_values(
+            base, checker.arg_spec_cache
+        )
+    ]
+    return tuple(_replace_invalid_bases(direct_bases or [TypedValue(object)]))
 
 
 @dataclass(frozen=True)
@@ -496,8 +512,6 @@ class TypeObject:
         return type_object_builder._get_runtime_dataclass_fields(self.typ)
 
     def _get_synthetic_namedtuple_class(self) -> SyntheticClassObjectValue | None:
-        import pycroscope.type_object_builder as type_object_builder
-
         synthetic_class = self._checker.get_synthetic_class(self.typ)
         if synthetic_class is None:
             return None
@@ -505,12 +519,12 @@ class TypeObject:
             return synthetic_class
         if self._get_runtime_namedtuple_class(synthetic_class) is not None:
             return synthetic_class
-        for base in synthetic_class.base_classes:
-            for base_value in type_object_builder._iter_base_type_values(
-                base, self._checker.arg_spec_cache
+        for base_value in self.get_direct_bases():
+            if (
+                isinstance(base_value, TypedValue)
+                and self._checker.make_type_object(base_value.typ).is_namedtuple_like()
             ):
-                if self._checker.make_type_object(base_value.typ).is_namedtuple_like():
-                    return synthetic_class
+                return synthetic_class
         return None
 
     def _get_runtime_namedtuple_class(
@@ -581,21 +595,18 @@ class TypeObject:
     def _iter_synthetic_namedtuple_base_fields(
         self, synthetic_class: SyntheticClassObjectValue
     ) -> Iterator[NamedTupleField]:
-        import pycroscope.type_object_builder as type_object_builder
-
         seen: set[str] = set()
-        for base in synthetic_class.base_classes:
-            for base_value in type_object_builder._iter_base_type_values(
-                base, self._checker.arg_spec_cache
-            ):
-                base_tobj = self._checker.make_type_object(base_value.typ)
-                if not base_tobj.is_namedtuple_like():
+        for base_value in self.get_direct_bases():
+            if not isinstance(base_value, TypedValue):
+                continue
+            base_tobj = self._checker.make_type_object(base_value.typ)
+            if not base_tobj.is_namedtuple_like():
+                continue
+            for field in base_tobj.get_namedtuple_fields():
+                if field.name in seen:
                     continue
-                for field in base_tobj.get_namedtuple_fields():
-                    if field.name in seen:
-                        continue
-                    seen.add(field.name)
-                    yield field
+                seen.add(field.name)
+                yield field
 
     def _get_synthetic_namedtuple_local_field_names(
         self, synthetic_class: SyntheticClassObjectValue, *, has_inherited_fields: bool
@@ -744,7 +755,7 @@ class TypeObject:
         runtime_class = runtime_class_value.val
         assert isinstance(runtime_class, type), runtime_class
         namedtuple_fields = self._namedtuple_fields_from_runtime(runtime_class)
-        self.set_base_values((TypedValue(tuple),))
+        self.set_direct_bases((TypedValue(tuple),))
         self.set_runtime_class(runtime_class_value)
         declared_symbols: dict[str, ClassSymbol] = {}
         type_object_builder._add_runtime_declared_symbols(
@@ -797,12 +808,6 @@ class TypeObject:
 
     def set_direct_bases(self, base_values: Sequence[MroValue]) -> None:
         self._direct_bases = tuple(base_values)
-        self._update_loaded_synthetic_fields()
-        self._protocol_positive_cache.clear()
-
-    def set_base_values(self, base_values: Sequence[Value]) -> None:
-        synthetic_class = self._ensure_synthetic_class()
-        object.__setattr__(synthetic_class, "base_classes", tuple(base_values))
         self._update_loaded_synthetic_fields()
         self._protocol_positive_cache.clear()
 
@@ -964,6 +969,33 @@ class TypeObject:
         if self._is_thrift_enum is None:
             self._is_thrift_enum = self._compute_is_thrift_enum()
         return self._is_thrift_enum
+
+    def get_enum_value_type(self) -> Value | None:
+        if not self.is_assignable_to_type(enum.Enum):
+            return None
+
+        values: list[Value] = []
+        if isinstance(self.typ, type):
+            seen: set[int] = set()
+            try:
+                members = self.typ.__members__.values()
+            except Exception:
+                members = ()
+            for member in members:
+                if not isinstance(member, enum.Enum):
+                    continue
+                member_id = id(member)
+                if member_id in seen:
+                    continue
+                seen.add(member_id)
+                values.append(KnownValue(member.value))
+        if values:
+            return unite_values(*values)
+
+        symbol = self.get_declared_symbol("_value_")
+        if symbol is None:
+            return None
+        return symbol.annotation
 
     def is_universally_assignable(self) -> bool:
         if self._is_universally_assignable is None:

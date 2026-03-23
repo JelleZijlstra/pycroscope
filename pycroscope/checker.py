@@ -48,6 +48,7 @@ from .type_object import (
     DataclassFieldRecord,
     TypeObject,
     class_keys_match,
+    direct_bases_from_values,
     normalize_synthetic_descriptor_attribute,
     runtime_type_generic_alias,
 )
@@ -640,9 +641,7 @@ class Checker:
                 return synthetic_class
         return None
 
-    def make_synthetic_class(
-        self, typ: type | str, *, base_values: Sequence[Value] = ()
-    ) -> SyntheticClassObjectValue:
+    def make_synthetic_class(self, typ: type | str) -> SyntheticClassObjectValue:
         synthetic_class = self.get_synthetic_class(typ)
         if synthetic_class is not None:
             return synthetic_class
@@ -650,9 +649,7 @@ class Checker:
             name = typ.rsplit(".", 1)[-1]
         else:
             name = typ.__name__
-        synthetic_class = SyntheticClassObjectValue(
-            name, TypedValue(typ), base_classes=tuple(base_values)
-        )
+        synthetic_class = SyntheticClassObjectValue(name, TypedValue(typ))
         self.register_synthetic_class(synthetic_class)
         return synthetic_class
 
@@ -684,8 +681,10 @@ class Checker:
                 ).items():
                     merged_generic_bases.setdefault(gb_typ, {}).update(tv_map)
 
-        synthetic_class = self.make_synthetic_class(typ, base_values=base_values)
-        self.make_type_object(typ).set_base_values(base_values)
+        synthetic_class = self.make_synthetic_class(typ)
+        self.make_type_object(typ).set_direct_bases(
+            direct_bases_from_values(base_values, self)
+        )
         merged_copy: _SyntheticGenericBases = {}
         for gb_typ, tv_map in merged_generic_bases.items():
             merged_copy[gb_typ] = dict(tv_map)
@@ -1639,7 +1638,7 @@ class Checker:
             seen.add(type_param.typevar)
             inferred.append(type_param)
 
-        for base in value.base_classes:
+        for base in self.make_type_object(value.class_type.typ).get_direct_bases():
             _record_type_params(base)
         return tuple(inferred)
 
@@ -2164,16 +2163,17 @@ class Checker:
         ordered_names: list[str] = []
         records_by_name: dict[str, DataclassFieldRecord] = {}
         if include_inherited:
-            for base in value.base_classes:
-                for base_value in pycroscope.type_object_builder._iter_base_type_values(
-                    base, self.arg_spec_cache
-                ):
-                    for record in self.make_type_object(
-                        base_value.typ
-                    ).get_dataclass_fields():
-                        if record.field_name not in records_by_name:
-                            ordered_names.append(record.field_name)
-                        records_by_name[record.field_name] = record
+            for base_value in self.make_type_object(
+                value.class_type.typ
+            ).get_direct_bases():
+                if not isinstance(base_value, TypedValue):
+                    continue
+                for record in self.make_type_object(
+                    base_value.typ
+                ).get_dataclass_fields():
+                    if record.field_name not in records_by_name:
+                        ordered_names.append(record.field_name)
+                    records_by_name[record.field_name] = record
 
         local_field_names = value.dataclass_field_order
         type_object = self.make_type_object(value.class_type.typ)

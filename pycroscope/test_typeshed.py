@@ -885,9 +885,7 @@ class TestCheckerGenericBases:
         )
         synthetic = checker.get_synthetic_class(child)
         assert synthetic is not None
-        assert synthetic.base_classes == (
-            SyntheticClassObjectValue("Base", TypedValue(base)),
-        )
+        assert checker.make_type_object(child).get_direct_bases() == (TypedValue(base),)
         assert synthetic.generic_bases == {child: {}, base: {}}
 
     def test_register_synthetic_type_bases_handles_subclass_generic_base(self):

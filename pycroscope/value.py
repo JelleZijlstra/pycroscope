@@ -2096,9 +2096,6 @@ class SyntheticClassObjectValue(Value):
 
     name: str
     class_type: TypedValue | TypedDictValue
-    base_classes: Sequence[Value] = field(
-        default_factory=tuple, compare=False, hash=False, repr=False
-    )
     generic_bases: MutableMapping[type | str, dict[TypeVarLike, Value]] = field(
         default_factory=dict, compare=False, hash=False, repr=False
     )
@@ -2121,9 +2118,6 @@ class SyntheticClassObjectValue(Value):
         return SyntheticClassObjectValue(
             self.name,
             substituted,
-            base_classes=tuple(
-                base.substitute_typevars(typevars) for base in self.base_classes
-            ),
             generic_bases={
                 base_typ: {
                     typevar: value.substitute_typevars(typevars)
@@ -2173,8 +2167,6 @@ class SyntheticClassObjectValue(Value):
     def walk_values(self) -> Iterable["Value"]:
         yield self
         yield from self.class_type.walk_values()
-        for base in self.base_classes:
-            yield from base.walk_values()
         for typevar_map in self.generic_bases.values():
             for value in typevar_map.values():
                 yield from value.walk_values()
@@ -2211,28 +2203,6 @@ class SyntheticClassObjectValue(Value):
 
     def __str__(self) -> str:
         return f"<class {self.name!r}>"
-
-
-class SyntheticEnumMember:
-    """Represents an enum member for synthetic classes."""
-
-    __slots__ = ("enum_name", "member_name", "_value_")
-
-    enum_name: str
-    member_name: str
-    _value_: object
-
-    def __init__(self, enum_name: str, member_name: str, value: object) -> None:
-        self.enum_name = enum_name
-        self.member_name = member_name
-        self._value_ = value
-
-    @property
-    def value(self) -> object:
-        return self._value_
-
-    def __repr__(self) -> str:
-        return f"<{self.enum_name}.{self.member_name}: {self._value_!r}>"
 
 
 @dataclass(unsafe_hash=True, init=False)

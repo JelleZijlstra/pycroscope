@@ -88,16 +88,17 @@ def _get_synthetic_dataclass_fields(
 
     ordered: list[str] = []
     records_by_name: dict[str, DataclassFieldRecord] = {}
-    for base in synthetic_class.base_classes:
-        for base_value in _iter_base_type_values(base, checker._arg_spec_cache):
-            base_type_object = checker.make_type_object(base_value.typ)
-            for record in base_type_object.get_dataclass_fields():
-                if record.field_name not in records_by_name:
-                    ordered.append(record.field_name)
-                records_by_name[record.field_name] = record
+    type_object = checker.make_type_object(synthetic_class.class_type.typ)
+    for base_value in type_object.get_direct_bases():
+        if not isinstance(base_value, TypedValue):
+            continue
+        base_type_object = checker.make_type_object(base_value.typ)
+        for record in base_type_object.get_dataclass_fields():
+            if record.field_name not in records_by_name:
+                ordered.append(record.field_name)
+            records_by_name[record.field_name] = record
 
     local_fields = synthetic_class.dataclass_field_order
-    type_object = checker.make_type_object(synthetic_class.class_type.typ)
     declared_symbols = type_object.get_declared_symbols()
     if not local_fields:
         local_fields = tuple(

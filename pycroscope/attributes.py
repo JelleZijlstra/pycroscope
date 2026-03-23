@@ -85,7 +85,6 @@ from .value import (
     SubclassValue,
     SuperValue,
     SyntheticClassObjectValue,
-    SyntheticEnumMember,
     SyntheticModuleValue,
     TypeAliasValue,
     TypedDictValue,
@@ -1084,8 +1083,6 @@ def _deliteralize_value(value: Value) -> Value:
 
 def _deliteralize_simple_value(value: SimpleType) -> Value:
     if isinstance(value, KnownValue):
-        if isinstance(value.val, SyntheticEnumMember):
-            return value
         return TypedValue(type(value.val))
     if isinstance(
         value,
@@ -1309,7 +1306,9 @@ def _get_attribute_from_typed(
     ctx.record_usage(typ, result)
     result = set_self(result, ctx.get_self_value())
     if ctx.attr in {"value", "_value_"} and safe_issubclass(typ, Enum):
-        enum_value_type = _enum_member_value_type(typ)
+        enum_value_type = (
+            ctx.get_can_assign_context().make_type_object(typ).get_enum_value_type()
+        )
         if enum_value_type is not None:
             return enum_value_type
     if ctx.attr == "name" and safe_issubclass(typ, Enum) and result == TypedValue(str):
@@ -1355,25 +1354,6 @@ def _get_runtime_attribute_from_synthetic_class(
                 direct = _unwrap_value_from_typed(direct, typ, ctx)
             return set_self(direct, ctx.get_self_value())
     return UNINITIALIZED_VALUE
-
-
-def _enum_member_value_type(typ: type[Enum]) -> Value | None:
-    values: list[Value] = []
-    try:
-        members = list(typ)
-    except Exception:
-        return None
-    for member in members:
-        if isinstance(member, SyntheticEnumMember):
-            values.append(KnownValue(member.value))
-            continue
-        try:
-            values.append(KnownValue(member.value))
-        except Exception:
-            return None
-    if not values:
-        return None
-    return unite_values(*values)
 
 
 def _substitute_typevars(
