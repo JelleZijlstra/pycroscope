@@ -4282,9 +4282,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 if self.module is None
                 else set()
             )
-            has_namedtuple_marker_base = any(
-                _is_namedtuple_marker_base(base_value) for base_value in base_values
-            )
             namedtuple_field_names = tuple(
                 statement.target.id
                 for statement in node.body

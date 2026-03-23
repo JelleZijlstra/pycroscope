@@ -88,6 +88,7 @@ from .value import (
     Value,
     default_value_for_type_param,
     freshen_typevars_for_inference,
+    get_namedtuple_field_annotation,
     get_tv_map,
     match_typevar_arguments,
     replace_fallback,
