@@ -128,7 +128,6 @@ from .value import (
     SequenceValue,
     SubclassValue,
     SyntheticClassObjectValue,
-    SyntheticEnumMember,
     TypeAlias,
     TypeAliasValue,
     TypedDictEntry,
@@ -179,7 +178,7 @@ def _is_valid_pep586_literal_value(value: object) -> bool:
         return True
     if type(value) in (int, bool, str, bytes):
         return True
-    if isinstance(value, (enum.Enum, SyntheticEnumMember)):
+    if isinstance(value, enum.Enum):
         return True
     return isinstance(type(value), _ENUM_TYPE)
 

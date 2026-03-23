@@ -88,16 +88,17 @@ def _get_synthetic_dataclass_fields(
 
     ordered: list[str] = []
     records_by_name: dict[str, DataclassFieldRecord] = {}
-    for base in synthetic_class.base_classes:
-        for base_value in _iter_base_type_values(base, checker._arg_spec_cache):
-            base_type_object = checker.make_type_object(base_value.typ)
-            for record in base_type_object.get_dataclass_fields():
-                if record.field_name not in records_by_name:
-                    ordered.append(record.field_name)
-                records_by_name[record.field_name] = record
+    type_object = checker.make_type_object(synthetic_class.class_type.typ)
+    for base_value in type_object.get_direct_bases():
+        if not isinstance(base_value, TypedValue):
+            continue
+        base_type_object = checker.make_type_object(base_value.typ)
+        for record in base_type_object.get_dataclass_fields():
+            if record.field_name not in records_by_name:
+                ordered.append(record.field_name)
+            records_by_name[record.field_name] = record
 
     local_fields = synthetic_class.dataclass_field_order
-    type_object = checker.make_type_object(synthetic_class.class_type.typ)
     declared_symbols = type_object.get_declared_symbols()
     if not local_fields:
         local_fields = tuple(
@@ -130,7 +131,7 @@ def _iter_base_type_values(
     value: Value,
     arg_spec_cache: ArgSpecCache | None,
     seen_known_bases: frozenset[int] = frozenset(),
-) -> Iterator[TypedValue]:
+) -> Iterator[TypedValue | AnyValue]:
     if isinstance(value, PartialValue):
         if value.operation is not PartialValueOperation.SUBSCRIPT:
             return
@@ -177,7 +178,7 @@ def _iter_base_type_values_from_simple(
     value: SimpleType,
     arg_spec_cache: ArgSpecCache | None,
     seen_known_bases: frozenset[int],
-) -> Iterator[TypedValue]:
+) -> Iterator[TypedValue | AnyValue]:
     if isinstance(value, KnownValue):
         if arg_spec_cache is not None:
             base_id = id(value.val)
@@ -196,6 +197,15 @@ def _iter_base_type_values_from_simple(
             value.class_type, arg_spec_cache, seen_known_bases
         )
         return
+    if isinstance(value, SequenceValue) and value.typ is tuple:
+        yield value
+        return
+    if isinstance(value, GenericValue) and value.typ is tuple:
+        if len(value.args) == 1:
+            yield SequenceValue(tuple, [(True, value.args[0])])
+        else:
+            yield SequenceValue(tuple, [(False, arg) for arg in value.args])
+        return
     if isinstance(value, TypedValue):
         yield value
         return
@@ -213,6 +223,8 @@ def _iter_base_type_values_from_simple(
             PredicateValue,
         ),
     ):
+        if isinstance(value, AnyValue):
+            yield value
         return
     assert_never(value)
 
