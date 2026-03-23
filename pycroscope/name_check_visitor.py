@@ -89,7 +89,6 @@ from .annotations import (
     is_typing_name,
     make_type_param,
     make_type_param_from_value,
-    type_from_runtime,
     type_from_value,
     value_from_ast,
 )
@@ -181,7 +180,6 @@ from .signature import (
     Argument,
     BoundArgs,
     BoundMethodSignature,
-    CallContext,
     ConcreteSignature,
     InvalidSignature,
     MaybeSignature,
@@ -312,7 +310,6 @@ from .value import (
     annotate_value,
     concrete_values_from_iterable,
     flatten_values,
-    get_namedtuple_field_annotation,
     get_synthetic_member_initializer,
     get_tv_map,
     get_typevar_variance,
@@ -4106,10 +4103,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     is_variance_declaration_base=is_variance_declaration_base,
                 )
             )
-            if isinstance(base_value, KnownValue) and (
-                base_value.val is collections.namedtuple
-                or is_typing_name(base_value.val, "NamedTuple")
-            ):
+            if _is_namedtuple_marker_base(base_value):
                 is_direct_namedtuple = True
         if isinstance(tobj.typ, str):
             if base_values:
@@ -16366,11 +16360,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         runtime_class = return_value.val
         if not is_namedtuple_class(runtime_class):
             return return_value
-        fields = tuple(
-            field
-            for field in safe_getattr(runtime_class, "_fields", ())
-            if isinstance(field, str)
-        )
         synthetic_name = self._get_synthetic_class_fq_name_from_name(
             runtime_class.__name__
         )
@@ -16383,74 +16372,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             )
             self.checker.register_synthetic_class(synthetic)
         type_object = self.checker.make_type_object(synthetic_name)
-        type_object.set_base_values((TypedValue(tuple),))
-        type_object.set_runtime_class(return_value)
-        type_object.set_namedtuple_info(NamedTupleInfo(field_names=fields))
-        type_object.clear_declared_symbols()
-        defaults = safe_getattr(runtime_class, "_field_defaults", {})
-        namedtuple_fields: list[NamedTupleField] = []
-        for name, attr in tuple(runtime_class.__dict__.items()):
-            if name in fields:
-                field_value = type_from_runtime(
-                    get_namedtuple_field_annotation(runtime_class, name),
-                    visitor=self,
-                    suppress_errors=True,
-                )
-                default_value = KnownValue(defaults[name]) if name in defaults else None
-                namedtuple_fields.append(
-                    NamedTupleField(name, field_value, default_value)
-                )
-                type_object.set_declared_symbol(
-                    name,
-                    ClassSymbol(
-                        annotation=field_value,
-                        qualifiers=frozenset({Qualifier.ReadOnly}),
-                        is_instance_only=True,
-                        initializer=default_value,
-                    ),
-                )
-            elif isinstance(attr, property):
-                type_object.set_declared_symbol(
-                    name,
-                    ClassSymbol(
-                        property_info=PropertyInfo(
-                            AnyValue(AnySource.inference),
-                            setter_type=(
-                                AnyValue(AnySource.inference)
-                                if attr.fset is not None
-                                else None
-                            ),
-                        ),
-                        initializer=KnownValue(attr),
-                    ),
-                )
-            elif callable(attr) or isinstance(attr, (staticmethod, classmethod)):
-                is_staticmethod = isinstance(attr, staticmethod)
-                is_classmethod = isinstance(attr, classmethod)
-                type_object.set_declared_symbol(
-                    name,
-                    ClassSymbol(
-                        is_method=True,
-                        is_classmethod=is_classmethod,
-                        is_staticmethod=is_staticmethod,
-                        initializer=KnownValue(attr),
-                    ),
-                )
-            else:
-                type_object.set_declared_symbol(
-                    name, ClassSymbol(initializer=KnownValue(attr))
-                )
-        if namedtuple_fields:
-
-            def infer_namedtuple_return(ctx: CallContext) -> Value:
-                return SequenceValue(
-                    synthetic_name,
-                    tuple((False, ctx.vars[field.name]) for field in namedtuple_fields),
-                )
-
-            type_object.set_namedtuple_fields(
-                tuple(namedtuple_fields), constructor_impl=infer_namedtuple_return
-            )
+        type_object.set_runtime_namedtuple(return_value)
         return synthetic
 
     def signature_from_value(
