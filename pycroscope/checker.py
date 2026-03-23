@@ -1833,9 +1833,17 @@ class Checker:
             if not isinstance(method, Value):
                 return None
         else:
-            method = get_inherited_synthetic_member_initializer(
-                value, method_name, self
-            ) or self.get_attribute_from_value(value, method_name)
+            if method_name == "__init__":
+                method = self.get_attribute_from_value(value, method_name)
+            else:
+                method = UNINITIALIZED_VALUE
+            if method is UNINITIALIZED_VALUE:
+                method = (
+                    get_inherited_synthetic_member_initializer(value, method_name, self)
+                    or UNINITIALIZED_VALUE
+                )
+            if method is UNINITIALIZED_VALUE and method_name == "__new__":
+                method = self.get_attribute_from_value(value, method_name)
             if method is UNINITIALIZED_VALUE:
                 return None
         method_sig = self.signature_from_value(

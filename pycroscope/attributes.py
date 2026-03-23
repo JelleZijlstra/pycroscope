@@ -792,6 +792,8 @@ def _get_direct_attribute_from_synthetic_class(
     else:
         raw_value = symbol.initializer
     if raw_value is None:
+        if symbol.is_classvar and not symbol.is_method:
+            return AnyValue(AnySource.inference)
         return UNINITIALIZED_VALUE
     result = _normalize_synthetic_class_attribute(
         raw_value,
@@ -799,7 +801,7 @@ def _get_direct_attribute_from_synthetic_class(
             self_value, attr_name, ctx
         ),
     )
-    if _should_deliteralize_synthetic_enum_attr(self_value, attr_name):
+    if _should_deliteralize_synthetic_enum_attr(self_value, attr_name, ctx):
         return _deliteralize_value(result)
     return result
 
@@ -1049,12 +1051,19 @@ def _is_instance_only_enum_attr(value: Value, attr_name: str) -> bool:
 
 
 def _should_deliteralize_synthetic_enum_attr(
-    self_value: SyntheticClassObjectValue, attr_name: str
+    self_value: SyntheticClassObjectValue, attr_name: str, ctx: AttrContext
 ) -> bool:
     class_type = self_value.class_type
     if not isinstance(class_type, TypedValue) or not isinstance(class_type.typ, type):
         return False
     if not safe_issubclass(class_type.typ, Enum):
+        return False
+    symbol = _get_synthetic_declared_symbol(self_value, attr_name, ctx)
+    if (
+        symbol is not None
+        and isinstance(symbol.initializer, KnownValue)
+        and safe_isinstance(symbol.initializer.val, Enum)
+    ):
         return False
     try:
         return attr_name not in class_type.typ.__members__

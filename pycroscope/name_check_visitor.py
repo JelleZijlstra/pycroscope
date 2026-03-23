@@ -5408,6 +5408,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             self._get_synthetic_member_initializer(synthetic_class, "_ignore_")
         )
         member_literal_values: dict[str, object] = {}
+        member_aliases: dict[str, str] = {}
         member_order: list[str] = []
         missing: Value | None = None
 
@@ -5432,6 +5433,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             stmt_forced_member = stmt_forced_member or call_forced_member
             stmt_forced_nonmember = stmt_forced_nonmember or call_forced_nonmember
             value = self._get_synthetic_member_initializer(synthetic_class, member_name)
+            inferred_value = _enum_statement_precise_value(statement, self)
+            if inferred_value is not None:
+                value = inferred_value
             if value is None:
                 value = missing
             if value is missing:
@@ -5491,6 +5495,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 and isinstance(statement.value, ast.Name)
                 and statement.value.id in member_literal_values
             ):
+                member_aliases[member_name] = statement.value.id
                 literal_value = member_literal_values[statement.value.id]
             else:
                 literal_value = _runtime_object_for_enum_member(unwrapped)
@@ -5532,6 +5537,28 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 _set_enum_declared_symbol(member_name, initializer)
             except Exception:
                 continue
+        for member_name, target_name in member_aliases.items():
+            target_symbol = self._get_synthetic_declared_symbol(
+                synthetic_class, target_name
+            )
+            if target_symbol is None or target_symbol.initializer is None:
+                continue
+            self._get_synthetic_type_object(synthetic_class).set_declared_symbol(
+                member_name, target_symbol
+            )
+        for member_name, statement in _iter_enum_assignment_candidates(node):
+            if not isinstance(statement, (ast.Assign, ast.AnnAssign)):
+                continue
+            if not isinstance(statement.value, ast.Name):
+                continue
+            target_symbol = self._get_synthetic_declared_symbol(
+                synthetic_class, statement.value.id
+            )
+            if target_symbol is None or target_symbol.initializer is None:
+                continue
+            self._get_synthetic_type_object(synthetic_class).set_declared_symbol(
+                member_name, target_symbol
+            )
 
     def _check_declared_enum_value_type(
         self, expected_type: Value, actual_value: Value, node: ast.AST
@@ -12504,6 +12531,29 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         )
         if (
             enum_value_type is not None
+            and self.current_function_name is None
+            and isinstance(value, Value)
+        ):
+            unwrapped, forced_member, forced_nonmember = _unwrap_enum_member_wrapper(
+                value
+            )
+            stmt_forced_member, stmt_forced_nonmember = (
+                _enum_statement_member_wrapper_call(node)
+            )
+            forced_member = forced_member or stmt_forced_member
+            forced_nonmember = forced_nonmember or stmt_forced_nonmember
+            if (
+                not forced_nonmember
+                and (
+                    forced_member
+                    or not _is_nonmember_enum_assignment_value(unwrapped, self)
+                )
+                and isinstance(unwrapped, KnownValue)
+                and not isinstance(unwrapped.val, tuple)
+            ):
+                self._check_declared_enum_value_type(enum_value_type, unwrapped, node)
+        if (
+            enum_value_type is not None
             and self.current_function_name is not None
             and isinstance(value, Value)
         ):
@@ -13078,6 +13128,8 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 name_value = value
                 if name_value is None and ann_assign_declared_type is not None:
                     name_value = ann_assign_declared_type
+                if name_value is None and has_classvar:
+                    name_value = AnyValue(AnySource.inference)
                 if self._name_node_to_statement is not None:
                     statement = self.node_context.nearest_enclosing(
                         (ast.stmt, ast.comprehension)
@@ -17257,6 +17309,30 @@ def _enum_statement_member_wrapper_call(statement: ast.AST) -> tuple[bool, bool]
     if isinstance(statement, ast.AnnAssign) and statement.value is not None:
         return _enum_member_wrapper_flags(statement.value)
     return False, False
+
+
+def _enum_statement_precise_value(
+    statement: ast.AST, visitor: NameCheckVisitor
+) -> Value | None:
+    value_node: ast.expr | None = None
+    if isinstance(statement, ast.Assign):
+        value_node = statement.value
+    elif isinstance(statement, ast.AnnAssign):
+        value_node = statement.value
+    if value_node is None:
+        return None
+    if (
+        isinstance(value_node, ast.Name)
+        and visitor.current_enum_members is not None
+        and value_node.id in visitor.current_enum_members.by_name
+    ):
+        return KnownValue(visitor.current_enum_members.by_name[value_node.id])
+    inferred = safe_getattr(value_node, "inferred_value", None)
+    if isinstance(inferred, Value):
+        return inferred
+    with visitor.catch_errors():
+        value = visitor.visit(value_node)
+    return value if isinstance(value, Value) else None
 
 
 def _unwrap_enum_member_wrapper(value: Value) -> tuple[Value, bool, bool]:

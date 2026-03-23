@@ -2319,7 +2319,7 @@ class TestSubclassValue(TestNameCheckVisitorBase):
             cls(1)  # E: incompatible_call
             cls(1, 2)  # E: incompatible_argument
 
-    @assert_passes()
+    @assert_passes(run_in_both_module_modes=True)
     def test_constructor_inherited_generic_init_with_self_annotation(self):
         from typing import Generic, TypeVar
 
@@ -2336,6 +2336,17 @@ class TestSubclassValue(TestNameCheckVisitorBase):
 
         Child(Child(None))
         Child(Base(None))  # E: incompatible_argument
+
+    @assert_passes(allow_import_failures=True)
+    def test_uninitialized_classvar_is_available_on_class_object(self):
+        from typing import Any, ClassVar
+
+        from typing_extensions import assert_type
+
+        class C:
+            x: ClassVar
+
+        assert_type(C.x, Any)
 
     @assert_passes()
     def test_constructor_respects_explicit_init_self_annotation(self):
