@@ -5307,7 +5307,8 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         def exec_body(ns: dict[str, object]) -> None:
             ns["__module__"] = module_name
             ns["__qualname__"] = qualname
-            ns.update(members)
+            for name, value in members.items():
+                ns[name] = value
 
         try:
             return types.new_class(node.name, tuple(runtime_bases), {}, exec_body)
