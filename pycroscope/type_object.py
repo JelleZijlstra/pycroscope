@@ -7,7 +7,14 @@ An object that represents a type.
 import collections.abc
 import inspect
 import sys
-from collections.abc import Iterable, Iterator, Mapping, MutableMapping, Sequence
+from collections.abc import (
+    Callable,
+    Iterable,
+    Iterator,
+    Mapping,
+    MutableMapping,
+    Sequence,
+)
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Literal
 from unittest import mock
@@ -17,7 +24,6 @@ from typing_extensions import assert_never
 import pycroscope
 
 if TYPE_CHECKING:
-    from .checker import Checker
     from .relations import Relation
 
 from .annotations import make_type_param, type_from_runtime
@@ -26,6 +32,7 @@ from .input_sig import (
     InputSigValue,
     coerce_paramspec_specialization_to_input_sig,
 )
+from .options import PyObjectSequenceOption
 from .relations import (
     infer_positional_generic_typevar_map,
     translate_generic_typevar_map,
@@ -138,6 +145,27 @@ EXCLUDED_PROTOCOL_MEMBERS: set[str] = {
 }
 
 
+_BaseProvider = Callable[[type], set[type]]
+
+
+class AdditionalBaseProviders(PyObjectSequenceOption[_BaseProvider]):
+    """Sets functions that provide additional (virtual) base classes for a class.
+    These are used for the purpose of type checking.
+
+    For example, if the following is configured to be used as a base provider:
+
+        def provider(typ: type) -> Set[type]:
+            if typ is B:
+                return {A}
+            return set()
+
+    Then to the type checker `B` is a subclass of `A`.
+
+    """
+
+    name = "additional_base_providers"
+
+
 def runtime_type_generic_alias(typ: type) -> str:
     return f"{typ.__module__}.{typ.__qualname__}"
 
@@ -190,6 +218,15 @@ def _extract_runtime_protocol_members(typ: type) -> set[str]:
     if sys.version_info >= (3, 10) or hasattr(typ, "__annotations__"):
         members |= set(typ.__annotations__)
     return members
+
+
+def _get_additional_bases(
+    checker: "pycroscope.checker.Checker", typ: type
+) -> set[type | str]:
+    bases: set[type | str] = set()
+    for provider in checker.options.get_value_for(AdditionalBaseProviders):
+        bases |= provider(typ)
+    return bases
 
 
 MroValue = TypedValue | AnyValue
@@ -277,7 +314,7 @@ class TypeObject:
     """Represents one logical type, with lazy and incrementally populated metadata."""
 
     typ: type | str
-    _checker: "Checker"
+    _checker: "pycroscope.checker.Checker"
     _direct_bases: tuple[MroValue, ...] | None
     _mro: Sequence[MroEntry] | None
     _declared_type_params: tuple[TypeParam, ...] | None
@@ -295,7 +332,7 @@ class TypeObject:
     _protocol_positive_cache: dict[tuple[Value, Value], BoundsMap]
     _has_stubs: bool | None
 
-    def __init__(self, checker: "Checker", typ: type | str) -> None:
+    def __init__(self, checker: "pycroscope.checker.Checker", typ: type | str) -> None:
         self.typ = typ
         self._checker = checker
         self._synthetic_declared_symbols = None
@@ -539,7 +576,7 @@ class TypeObject:
 
     def _iter_candidate_virtual_bases(self) -> Iterator[type | str]:
         if isinstance(self.typ, type):
-            yield from self._checker.get_additional_bases(self.typ)
+            yield from _get_additional_bases(self._checker, self.typ)
         if self._compute_is_thrift_enum():
             yield int
 
