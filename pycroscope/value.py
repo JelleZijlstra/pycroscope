@@ -3973,6 +3973,7 @@ def tuple_members_from_value_v2(
     value: Value, ctx: CanAssignContext
 ) -> tuple[tuple[bool, Value], ...] | None:
     value = replace_known_sequence_value(value)
+    print("TRY VALUE", value, repr(value))
     if isinstance(value, SequenceValue) and value.typ is tuple:
         return value.members
     elif isinstance(value, TypedValue):
@@ -3987,9 +3988,11 @@ def tuple_members_from_value_v2(
         ]
         maybe_iter = tobj.get_declared_symbol_with_owner("__iter__", ctx)
         if maybe_iter is None:
+            print(" NO ITER", value)
             return None
         owner_tobj, _ = maybe_iter
         if owner_tobj.typ is not tuple:
+            print("OVERRIDES __ITER__ ", value)
             return None  # overrides __iter__
         if tuple_entries:
             seq = tuple_entries[0].value
@@ -3998,6 +4001,7 @@ def tuple_members_from_value_v2(
                 substitutions = tobj.get_substitutions(value.args)
                 seq = seq.substitute_typevars(substitutions)
             return seq.members
+        print("NO TUPL ETERNEITRES", value, mro)
     return None
 
 
