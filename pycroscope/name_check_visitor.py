@@ -2640,6 +2640,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         private: bool = False,
         lookup_node: object = None,
         synthetic_initializer: Value | None | Literal[_UNSET] = _UNSET,
+        record_synthetic_symbol: bool = True,
     ) -> tuple[Value, VarnameOrigin]:
         if lookup_node is None:
             lookup_node = node
@@ -2781,7 +2782,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         if value is None:
             return AnyValue(AnySource.inference), EMPTY_ORIGIN
         origin = current_scope.set(varname, value, lookup_node, self.state)
-        if scope_type == ScopeType.class_scope:
+        if scope_type == ScopeType.class_scope and record_synthetic_symbol:
             resolved_synthetic_initializer = (
                 value if synthetic_initializer is _UNSET else synthetic_initializer
             )
@@ -2858,6 +2859,105 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     ) -> Value | None:
         return get_synthetic_member_initializer(synthetic_class, name, self.checker)
 
+    def _prepare_synthetic_class_binding(
+        self,
+        name: str,
+        initializer: Value | None,
+        *,
+        node: ast.AST | None = None,
+        force_nonmember: bool = False,
+    ) -> tuple[str, Value | None, bool]:
+        synthetic_name = name
+        synthetic_initializer = initializer
+        enum_member_is_method = False
+        if isinstance(self.current_class, (type, str)) and self._is_enum_class_key(
+            self.current_class
+        ):
+            class_name = self._current_class_name_from_context()
+            if class_name is not None:
+                mangled = _mangle_private_enum_name(class_name, name)
+                if mangled is not None:
+                    synthetic_name = mangled
+                    if isinstance(synthetic_initializer, KnownValue):
+                        synthetic_initializer = TypedValue(
+                            type(synthetic_initializer.val)
+                        )
+            if (
+                synthetic_name == name
+                and self.current_function_name is None
+                and not synthetic_name.startswith("_")
+                and synthetic_initializer is not None
+            ):
+                unwrapped, forced_member, forced_nonmember = (
+                    _unwrap_enum_member_wrapper(synthetic_initializer)
+                )
+                forced_nonmember = forced_nonmember or force_nonmember
+                if forced_member or (
+                    not forced_nonmember
+                    and not _is_nonmember_enum_assignment_value(unwrapped, self)
+                ):
+                    synthetic_initializer = (
+                        self._get_enclosing_class_value_for_method()
+                        or TypedValue(self.current_class)
+                    )
+                    enum_member_is_method = isinstance(
+                        node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
+                    )
+                elif forced_nonmember:
+                    synthetic_initializer = unwrapped
+        return synthetic_name, synthetic_initializer, enum_member_is_method
+
+    def _set_complete_synthetic_class_symbol(
+        self,
+        name: str,
+        *,
+        initializer: Value | None = None,
+        node: ast.AST | None = None,
+        annotation: Value | None = None,
+        qualifiers: frozenset[Qualifier] = frozenset(),
+        is_instance_only: bool = False,
+        is_method: bool = False,
+        is_classmethod: bool = False,
+        is_staticmethod: bool = False,
+        returns_self_on_class_access: bool = False,
+        property_info: PropertyInfo | None = None,
+        dataclass_field: DataclassFieldInfo | None = None,
+        force_nonmember: bool = False,
+    ) -> None:
+        synthetic_class = self._get_synthetic_class_for_current_scope()
+        if synthetic_class is None:
+            return
+        synthetic_name, synthetic_initializer, enum_member_is_method = (
+            self._prepare_synthetic_class_binding(
+                name, initializer, node=node, force_nonmember=force_nonmember
+            )
+        )
+        if enum_member_is_method:
+            is_method = False
+            is_classmethod = False
+            is_staticmethod = False
+            returns_self_on_class_access = False
+        if property_info is not None and (
+            synthetic_initializer is None
+            or not _is_property_initializer(synthetic_initializer)
+        ):
+            synthetic_initializer = None
+        self._get_synthetic_type_object(synthetic_class).set_declared_symbol(
+            synthetic_name,
+            ClassSymbol(
+                annotation=annotation,
+                qualifiers=qualifiers,
+                is_instance_only=is_instance_only,
+                is_method=is_method,
+                is_classmethod=is_classmethod,
+                is_staticmethod=is_staticmethod,
+                returns_self_on_class_access=returns_self_on_class_access,
+                property_info=property_info,
+                initializer=synthetic_initializer,
+                dataclass_field=dataclass_field,
+            ),
+        )
+
     def _apply_synthetic_method_symbol_flags(
         self, synthetic_class: SyntheticClassObjectValue, node: ast.ClassDef
     ) -> None:
@@ -2922,6 +3022,118 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             self._apply_synthetic_enum_semantics(node, synthetic_class, class_key)
         self.checker.register_synthetic_class(synthetic_class)
 
+    def _make_updated_synthetic_symbol(
+        self,
+        existing: ClassSymbol | None,
+        *,
+        annotation: Value | None = None,
+        add_qualifiers: Iterable[Qualifier] = (),
+        is_instance_only: bool | None = None,
+        is_method: bool | None = None,
+        is_classmethod: bool | None = None,
+        is_staticmethod: bool | None = None,
+        returns_self_on_class_access: bool | None = None,
+        property_info: PropertyInfo | None = None,
+        initializer: Value | None | Literal[_UNSET] = _UNSET,
+        preserve_existing_initializer: bool = True,
+        property_initializer_must_be_property: bool = False,
+    ) -> ClassSymbol:
+        qualifiers = set(existing.qualifiers if existing is not None else ())
+        qualifiers.update(add_qualifiers)
+        resolved_property_info = (
+            property_info
+            if property_info is not None
+            else existing.property_info if existing is not None else None
+        )
+        if resolved_property_info is not None:
+            if initializer is _UNSET:
+                resolved_initializer = (
+                    existing.initializer
+                    if existing is not None and existing.property_info is not None
+                    else None
+                )
+            elif initializer is not None and (
+                not property_initializer_must_be_property
+                or _is_property_initializer(initializer)
+            ):
+                resolved_initializer = initializer
+            else:
+                resolved_initializer = (
+                    existing.initializer
+                    if existing is not None and existing.property_info is not None
+                    else None
+                )
+            return ClassSymbol(
+                annotation=(
+                    annotation
+                    if annotation is not None
+                    else existing.annotation if existing is not None else None
+                ),
+                qualifiers=frozenset(qualifiers),
+                is_instance_only=(
+                    (existing.is_instance_only if existing is not None else False)
+                    if is_instance_only is None
+                    else is_instance_only
+                ),
+                is_method=False if is_method is None else is_method,
+                is_classmethod=False if is_classmethod is None else is_classmethod,
+                is_staticmethod=False if is_staticmethod is None else is_staticmethod,
+                returns_self_on_class_access=(
+                    False
+                    if returns_self_on_class_access is None
+                    else returns_self_on_class_access
+                ),
+                property_info=resolved_property_info,
+                initializer=resolved_initializer,
+                dataclass_field=(
+                    existing.dataclass_field if existing is not None else None
+                ),
+            )
+        return ClassSymbol(
+            annotation=(
+                annotation
+                if annotation is not None
+                else existing.annotation if existing is not None else None
+            ),
+            qualifiers=frozenset(qualifiers),
+            is_instance_only=(
+                (existing.is_instance_only if existing is not None else False)
+                if is_instance_only is None
+                else is_instance_only
+            ),
+            is_method=(
+                (existing.is_method if existing is not None else False)
+                if is_method is None
+                else is_method
+            ),
+            is_classmethod=(
+                (existing.is_classmethod if existing is not None else False)
+                if is_classmethod is None
+                else is_classmethod
+            ),
+            is_staticmethod=(
+                (existing.is_staticmethod if existing is not None else False)
+                if is_staticmethod is None
+                else is_staticmethod
+            ),
+            returns_self_on_class_access=(
+                (
+                    existing.returns_self_on_class_access
+                    if existing is not None
+                    else False
+                )
+                if returns_self_on_class_access is None
+                else returns_self_on_class_access
+            ),
+            property_info=None,
+            initializer=(
+                existing.initializer
+                if initializer is _UNSET and preserve_existing_initializer and existing
+                else None if initializer is _UNSET else initializer
+            ),
+            dataclass_field=existing.dataclass_field if existing is not None else None,
+        )
+
     def _update_synthetic_declared_symbol(
         self,
         name: str,
@@ -2934,94 +3146,25 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         is_staticmethod: bool | None = None,
         returns_self_on_class_access: bool | None = None,
         property_info: PropertyInfo | None = None,
-        initializer: Value | None = None,
+        initializer: Value | None | Literal[_UNSET] = _UNSET,
     ) -> None:
         synthetic_class = self._ensure_synthetic_class_for_current_scope()
         if synthetic_class is None:
             return
-        existing = self._get_synthetic_declared_symbol(synthetic_class, name)
-        qualifiers = set(existing.qualifiers if existing is not None else ())
-        qualifiers.update(add_qualifiers)
-        resolved_property_info = (
-            property_info
-            if property_info is not None
-            else existing.property_info if existing is not None else None
-        )
-        if resolved_property_info is not None:
-            resolved_is_method = False if is_method is None else is_method
-            resolved_is_classmethod = (
-                False if is_classmethod is None else is_classmethod
-            )
-            resolved_is_staticmethod = (
-                False if is_staticmethod is None else is_staticmethod
-            )
-            resolved_returns_self_on_class_access = (
-                False
-                if returns_self_on_class_access is None
-                else returns_self_on_class_access
-            )
-            resolved_initializer = (
-                initializer
-                if initializer is not None
-                else (
-                    existing.initializer
-                    if existing is not None and existing.property_info is not None
-                    else None
-                )
-            )
-        else:
-            resolved_is_method = (
-                (existing.is_method if existing is not None else False)
-                if is_method is None
-                else is_method
-            )
-            resolved_is_classmethod = (
-                (existing.is_classmethod if existing is not None else False)
-                if is_classmethod is None
-                else is_classmethod
-            )
-            resolved_is_staticmethod = (
-                (existing.is_staticmethod if existing is not None else False)
-                if is_staticmethod is None
-                else is_staticmethod
-            )
-            resolved_returns_self_on_class_access = (
-                (
-                    existing.returns_self_on_class_access
-                    if existing is not None
-                    else False
-                )
-                if returns_self_on_class_access is None
-                else returns_self_on_class_access
-            )
-            resolved_initializer = (
-                initializer
-                if initializer is not None
-                else existing.initializer if existing is not None else None
-            )
-        self._get_synthetic_type_object(synthetic_class).set_declared_symbol(
+        type_object = self._get_synthetic_type_object(synthetic_class)
+        type_object.set_declared_symbol(
             name,
-            ClassSymbol(
-                annotation=(
-                    annotation
-                    if annotation is not None
-                    else existing.annotation if existing is not None else None
-                ),
-                qualifiers=frozenset(qualifiers),
-                is_instance_only=(
-                    (existing.is_instance_only if existing is not None else False)
-                    if is_instance_only is None
-                    else is_instance_only
-                ),
-                is_method=resolved_is_method,
-                is_classmethod=resolved_is_classmethod,
-                is_staticmethod=resolved_is_staticmethod,
-                returns_self_on_class_access=resolved_returns_self_on_class_access,
-                property_info=resolved_property_info,
-                initializer=resolved_initializer,
-                dataclass_field=(
-                    existing.dataclass_field if existing is not None else None
-                ),
+            self._make_updated_synthetic_symbol(
+                type_object.get_declared_symbol(name),
+                annotation=annotation,
+                add_qualifiers=add_qualifiers,
+                is_instance_only=is_instance_only,
+                is_method=is_method,
+                is_classmethod=is_classmethod,
+                is_staticmethod=is_staticmethod,
+                returns_self_on_class_access=returns_self_on_class_access,
+                property_info=property_info,
+                initializer=initializer,
             ),
         )
 
@@ -3038,81 +3181,20 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         returns_self_on_class_access: bool | None = None,
         property_info: PropertyInfo | None = None,
     ) -> None:
-        existing = self._get_synthetic_declared_symbol(synthetic_class, name)
-        resolved_property_info = (
-            property_info
-            if property_info is not None
-            else existing.property_info if existing is not None else None
-        )
-        if resolved_property_info is not None:
-            resolved_is_method = False if is_method is None else is_method
-            resolved_is_classmethod = (
-                False if is_classmethod is None else is_classmethod
-            )
-            resolved_is_staticmethod = (
-                False if is_staticmethod is None else is_staticmethod
-            )
-            resolved_returns_self_on_class_access = (
-                False
-                if returns_self_on_class_access is None
-                else returns_self_on_class_access
-            )
-            resolved_initializer = (
-                initializer
-                if initializer is not None and _is_property_initializer(initializer)
-                else (
-                    existing.initializer
-                    if existing is not None and existing.property_info is not None
-                    else None
-                )
-            )
-        else:
-            resolved_is_method = (
-                (existing.is_method if existing is not None else False)
-                if is_method is None
-                else is_method
-            )
-            resolved_is_classmethod = (
-                (existing.is_classmethod if existing is not None else False)
-                if is_classmethod is None
-                else is_classmethod
-            )
-            resolved_is_staticmethod = (
-                (existing.is_staticmethod if existing is not None else False)
-                if is_staticmethod is None
-                else is_staticmethod
-            )
-            resolved_returns_self_on_class_access = (
-                (
-                    existing.returns_self_on_class_access
-                    if existing is not None
-                    else False
-                )
-                if returns_self_on_class_access is None
-                else returns_self_on_class_access
-            )
-            resolved_initializer = initializer
-        self._get_synthetic_type_object(synthetic_class).set_declared_symbol(
+        type_object = self._get_synthetic_type_object(synthetic_class)
+        type_object.set_declared_symbol(
             name,
-            ClassSymbol(
-                annotation=(
-                    annotation
-                    if annotation is not None
-                    else existing.annotation if existing is not None else None
-                ),
-                qualifiers=existing.qualifiers if existing is not None else frozenset(),
-                is_instance_only=(
-                    existing.is_instance_only if existing is not None else False
-                ),
-                is_method=resolved_is_method,
-                is_classmethod=resolved_is_classmethod,
-                is_staticmethod=resolved_is_staticmethod,
-                returns_self_on_class_access=resolved_returns_self_on_class_access,
-                property_info=resolved_property_info,
-                initializer=resolved_initializer,
-                dataclass_field=(
-                    existing.dataclass_field if existing is not None else None
-                ),
+            self._make_updated_synthetic_symbol(
+                type_object.get_declared_symbol(name),
+                annotation=annotation,
+                is_method=is_method,
+                is_classmethod=is_classmethod,
+                is_staticmethod=is_staticmethod,
+                returns_self_on_class_access=returns_self_on_class_access,
+                property_info=property_info,
+                initializer=initializer,
+                preserve_existing_initializer=False,
+                property_initializer_must_be_property=True,
             ),
         )
 
@@ -3128,51 +3210,11 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         synthetic_class = self._get_synthetic_class_for_current_scope()
         if synthetic_class is None:
             return
-        synthetic_name = name
-        synthetic_initializer = initializer
-        enum_member_is_method = False
-        if isinstance(self.current_class, (type, str)) and self._is_enum_class_key(
-            self.current_class
-        ):
-            class_name = self._current_class_name_from_context()
-            if class_name is not None:
-                mangled = _mangle_private_enum_name(class_name, name)
-                if mangled is not None:
-                    synthetic_name = mangled
-                    if isinstance(synthetic_initializer, KnownValue):
-                        synthetic_initializer = TypedValue(
-                            type(synthetic_initializer.val)
-                        )
-            if (
-                synthetic_name == name
-                and self.current_function_name is None
-                and not synthetic_name.startswith("_")
-                and synthetic_initializer is not None
-            ):
-                unwrapped, forced_member, forced_nonmember = (
-                    _unwrap_enum_member_wrapper(synthetic_initializer)
-                )
-                forced_nonmember = forced_nonmember or force_nonmember
-                if forced_member or (
-                    not forced_nonmember
-                    and not _is_nonmember_enum_assignment_value(unwrapped, self)
-                ):
-                    synthetic_initializer = (
-                        self._get_enclosing_class_value_for_method()
-                        or TypedValue(self.current_class)
-                    )
-                    enum_member_is_method = isinstance(
-                        node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
-                    )
-                elif forced_nonmember:
-                    synthetic_initializer = unwrapped
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and (
-            self._is_property_decorated_function(node)
-        ):
-            self._update_synthetic_declared_symbol(
-                synthetic_name, is_instance_only=False
+        synthetic_name, synthetic_initializer, enum_member_is_method = (
+            self._prepare_synthetic_class_binding(
+                name, initializer, node=node, force_nonmember=force_nonmember
             )
-            return
+        )
         declared_annotation = annotation
         if self.ann_assign_type is not None and self.ann_assign_type[0] is not None:
             declared_annotation = self.ann_assign_type[0]
@@ -3221,20 +3263,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 synthetic_name, is_instance_only=False
             )
 
-    def _is_property_decorated_function(
-        self, node: ast.FunctionDef | ast.AsyncFunctionDef
-    ) -> bool:
-        for decorator in node.decorator_list:
-            if isinstance(decorator, ast.Name) and decorator.id == "property":
-                return True
-            if (
-                isinstance(decorator, ast.Attribute)
-                and decorator.attr in {"setter", "deleter"}
-                and isinstance(decorator.value, ast.Name)
-            ):
-                return True
-        return False
-
     def _merge_synthetic_declared_symbol(
         self, synthetic_class: SyntheticClassObjectValue, name: str, symbol: ClassSymbol
     ) -> None:
@@ -3242,17 +3270,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             name, symbol
         )
 
-    def _record_synthetic_classvar_name(self, name: str) -> None:
-        self._update_synthetic_declared_symbol(
-            name, add_qualifiers={Qualifier.ClassVar}
-        )
-
-    def _record_synthetic_readonly_name(self, name: str) -> None:
-        self._update_synthetic_declared_symbol(
-            name, add_qualifiers={Qualifier.ReadOnly}
-        )
-
-    def _record_synthetic_property_metadata(
+    def _record_complete_synthetic_function_symbol(
         self, node: FunctionDefNode, info: FunctionInfo, function_value: Value
     ) -> None:
         if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
@@ -3266,7 +3284,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         if synthetic_class is None:
             return
 
-        mangled_name = _mangle_class_attribute_name(class_name, node.name)
         decorator_deprecation = self._deprecation_message_from_decorators(
             info.decorators
         )
@@ -3282,13 +3299,11 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 if info.return_annotation is not None
                 else AnyValue(AnySource.unannotated)
             )
-            self._update_synthetic_declared_symbol(
-                mangled_name,
+            self._set_complete_synthetic_class_symbol(
+                node.name,
+                node=node,
                 annotation=getter_value,
-                is_method=False,
-                is_classmethod=False,
-                is_staticmethod=False,
-                returns_self_on_class_access=False,
+                is_instance_only=False,
                 property_info=PropertyInfo(
                     getter_type=getter_value,
                     getter_deprecation=(
@@ -3297,6 +3312,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     ),
                 ),
             )
+            return
 
         setter_target_name: str | None = None
         for decorator in node.decorator_list:
@@ -3308,6 +3324,19 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 setter_target_name = decorator.value.id
                 break
         if setter_target_name is None:
+            is_classmethod, is_staticmethod, returns_self_on_class_access = (
+                self._synthetic_method_symbol_flags(node)
+            )
+            self._set_complete_synthetic_class_symbol(
+                node.name,
+                initializer=function_value,
+                node=node,
+                is_instance_only=False,
+                is_method=True,
+                is_classmethod=is_classmethod,
+                is_staticmethod=is_staticmethod,
+                returns_self_on_class_access=returns_self_on_class_access,
+            )
             return
 
         mangled_target = _mangle_class_attribute_name(class_name, setter_target_name)
@@ -3327,12 +3356,14 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         existing_property_info = (
             existing.property_info if existing is not None else None
         )
-        self._update_synthetic_declared_symbol(
-            mangled_target,
-            is_method=False,
-            is_classmethod=False,
-            is_staticmethod=False,
-            returns_self_on_class_access=False,
+        self._set_complete_synthetic_class_symbol(
+            setter_target_name,
+            node=node,
+            annotation=existing.annotation if existing is not None else None,
+            qualifiers=existing.qualifiers if existing is not None else frozenset(),
+            is_instance_only=(
+                existing.is_instance_only if existing is not None else False
+            ),
             property_info=PropertyInfo(
                 getter_type=(
                     existing_property_info.getter_type
@@ -3547,68 +3578,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             return annotation_expr_from_ast(
                 value_node, visitor=self, suppress_errors=suppress_errors
             ).to_value(allow_qualifiers=True, allow_empty=True)
-
-    def _record_synthetic_dataclass_field_metadata(
-        self,
-        name: str,
-        *,
-        has_default: bool,
-        init: bool,
-        initvar: bool,
-        kw_only: bool,
-        alias: str | None,
-        converter_input_type: Value | None,
-    ) -> None:
-        synthetic_class = self._get_synthetic_class_for_current_scope()
-        if synthetic_class is None:
-            return
-
-        field_order = list(synthetic_class.dataclass_field_order)
-        if name not in field_order:
-            field_order.append(name)
-        self.checker.make_type_object(
-            synthetic_class.class_type.typ
-        ).set_dataclass_field_order(field_order)
-
-        existing = self._get_synthetic_declared_symbol(synthetic_class, name)
-        qualifiers = set(existing.qualifiers if existing is not None else ())
-        if initvar:
-            qualifiers.add(Qualifier.InitVar)
-        else:
-            qualifiers.discard(Qualifier.InitVar)
-        self.checker.make_type_object(
-            synthetic_class.class_type.typ
-        ).set_declared_symbol(
-            name,
-            ClassSymbol(
-                annotation=existing.annotation if existing is not None else None,
-                qualifiers=frozenset(qualifiers),
-                is_instance_only=(
-                    False if Qualifier.ClassVar in qualifiers else not initvar
-                ),
-                is_method=(existing.is_method if existing is not None else False),
-                is_classmethod=(
-                    existing.is_classmethod if existing is not None else False
-                ),
-                is_staticmethod=(
-                    existing.is_staticmethod if existing is not None else False
-                ),
-                returns_self_on_class_access=(
-                    existing.returns_self_on_class_access
-                    if existing is not None
-                    else False
-                ),
-                property_info=existing.property_info if existing is not None else None,
-                initializer=existing.initializer if existing is not None else None,
-                dataclass_field=DataclassFieldInfo(
-                    has_default=has_default,
-                    init=init,
-                    kw_only=kw_only,
-                    alias=alias,
-                    converter_input_type=converter_input_type,
-                ),
-            ),
-        )
 
     def _get_base_class_attributes(
         self, varname: str, node: ast.AST
@@ -8104,8 +8073,10 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                         val,
                         [DataclassTransformExtension(merged_dataclass_transform_info)],
                     )
-                self._set_name_in_scope(node.name, node, val)
-                self._record_synthetic_property_metadata(node, info, val)
+                self._set_name_in_scope(
+                    node.name, node, val, record_synthetic_symbol=False
+                )
+                self._record_complete_synthetic_function_symbol(node, info, val)
 
             if (
                 node.name in METHODS_ALLOWING_NOTIMPLEMENTED
@@ -12639,12 +12610,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 "ClassVar type cannot include type parameters",
                 error_code=ErrorCode.classvar_type_parameters,
             )
-        if (
-            has_classvar
-            and self.scopes.scope_type() == ScopeType.class_scope
-            and isinstance(node.target, ast.Name)
-        ):
-            self._record_synthetic_classvar_name(node.target.id)
         readonly_name: str | None = None
         if Qualifier.ReadOnly in qualifiers:
             if self.scopes.scope_type() == ScopeType.class_scope and isinstance(
@@ -12673,6 +12638,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         kw_only = self.current_dataclass_kw_only_active
         alias: str | None = None
         is_dataclass_field_call = False
+        dataclass_field_info: DataclassFieldInfo | None = None
         dataclass_default_value: Value | None = None
         dataclass_default_factory: Value | None = None
         dataclass_converter_value: Value | None = None
@@ -12921,11 +12887,17 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             initializer_value = None
 
         if dataclass_field_name is not None:
-            self._record_synthetic_dataclass_field_metadata(
-                dataclass_field_name,
+            synthetic_class = self._get_synthetic_class_for_current_scope()
+            if synthetic_class is not None:
+                field_order = list(synthetic_class.dataclass_field_order)
+                if dataclass_field_name not in field_order:
+                    field_order.append(dataclass_field_name)
+                self.checker.make_type_object(
+                    synthetic_class.class_type.typ
+                ).set_dataclass_field_order(field_order)
+            dataclass_field_info = DataclassFieldInfo(
                 has_default=has_default,
                 init=init,
-                initvar=Qualifier.InitVar in qualifiers,
                 kw_only=kw_only,
                 alias=alias,
                 converter_input_type=dataclass_converter_input_type,
@@ -12934,6 +12906,35 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         ann_assign_declared_type = expected_type
         if explicit_type_alias_assignment_value is not None:
             ann_assign_declared_type = explicit_type_alias_assignment_value
+        if self.scopes.scope_type() == ScopeType.class_scope and isinstance(
+            node.target, ast.Name
+        ):
+            symbol_qualifiers = set(qualifiers)
+            if readonly_name == node.target.id:
+                symbol_qualifiers.add(Qualifier.ReadOnly)
+            if is_final:
+                symbol_qualifiers.add(Qualifier.Final)
+            is_instance_only = False
+            if dataclass_field_info is not None:
+                is_instance_only = Qualifier.ClassVar not in symbol_qualifiers and (
+                    Qualifier.InitVar not in symbol_qualifiers
+                )
+            elif is_class_annotation_without_value and not has_classvar:
+                is_instance_only = True
+            self._set_complete_synthetic_class_symbol(
+                node.target.id,
+                initializer=initializer_value,
+                node=node,
+                annotation=ann_assign_declared_type,
+                qualifiers=frozenset(symbol_qualifiers),
+                is_instance_only=is_instance_only,
+                dataclass_field=dataclass_field_info,
+                force_nonmember=(
+                    node.value is None
+                    and self.current_class_key is not None
+                    and self._is_enum_class_key(self.current_class_key)
+                ),
+            )
 
         with (
             override(self, "being_assigned", value),
@@ -12960,6 +12961,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     node.target,
                     value=name_value,
                     synthetic_initializer=initializer_value,
+                    record_synthetic_symbol=False,
                 )
                 if self.annotate:
                     varname = VarnameWithOrigin(node.target.id, origin)
@@ -12972,27 +12974,17 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     )
             else:
                 self.visit(node.target)
-
-        if is_final:
-            if self.scopes.scope_type() == ScopeType.class_scope and isinstance(
-                node.target, ast.Name
-            ):
-                self._update_synthetic_declared_symbol(
-                    node.target.id, add_qualifiers={Qualifier.Final}
-                )
-            elif allowed_instance_final_annotation_target:
-                assert isinstance(node.target, ast.Attribute)
-                self._update_synthetic_declared_symbol(
-                    node.target.attr, add_qualifiers={Qualifier.Final}
-                )
-
-        if readonly_name is not None:
-            self._record_synthetic_readonly_name(readonly_name)
-
-        if is_class_annotation_without_value and not has_classvar:
-            assert isinstance(node.target, ast.Name)
+        if is_final and allowed_instance_final_annotation_target:
+            assert isinstance(node.target, ast.Attribute)
             self._update_synthetic_declared_symbol(
-                node.target.id, is_instance_only=True
+                node.target.attr, add_qualifiers={Qualifier.Final}
+            )
+        if readonly_name is not None and not (
+            self.scopes.scope_type() == ScopeType.class_scope
+            and isinstance(node.target, ast.Name)
+        ):
+            self._update_synthetic_declared_symbol(
+                readonly_name, add_qualifiers={Qualifier.ReadOnly}
             )
 
     def _record_synthetic_typeddict_item(
