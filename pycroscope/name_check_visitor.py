@@ -4259,9 +4259,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                         f"Field {statement.target.id!r} conflicts with base NamedTuple field",
                         error_code=ErrorCode.incompatible_override,
                     )
-            synthetic_base_values = tuple(
-                self._base_values_for_generic_analysis(node, base_values)
-            ) or (KnownValue(object),)
             if synthetic_typeddict is not None:
                 self._validate_typeddict_class_syntax(node)
             elif class_obj is None or is_namedtuple_synthetic:
