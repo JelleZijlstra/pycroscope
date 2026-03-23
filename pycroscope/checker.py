@@ -24,7 +24,7 @@ from .attributes import AttrContext, get_attribute
 from .extensions import get_overloads as get_runtime_overloads
 from .input_sig import InputSigValue, coerce_paramspec_specialization_to_input_sig
 from .node_visitor import Failure
-from .options import Options, PyObjectSequenceOption
+from .options import Options
 from .reexport import ImplicitReexportTracker
 from .safe import safe_getattr, safe_isinstance, safe_issubclass
 from .shared_options import VariableNameValues
@@ -104,26 +104,7 @@ from .value import (
     unite_values,
 )
 
-_BaseProvider = Callable[[type], set[type]]
 _SyntheticGenericBases = dict[type | str, dict[TypeVarLike, Value]]
-
-
-class AdditionalBaseProviders(PyObjectSequenceOption[_BaseProvider]):
-    """Sets functions that provide additional (virtual) base classes for a class.
-    These are used for the purpose of type checking.
-
-    For example, if the following is configured to be used as a base provider:
-
-        def provider(typ: type) -> Set[type]:
-            if typ is B:
-                return {A}
-            return set()
-
-    Then to the type checker `B` is a subclass of `A`.
-
-    """
-
-    name = "additional_base_providers"
 
 
 @dataclass(frozen=True)
@@ -469,12 +450,6 @@ class Checker:
 
     def perform_final_checks(self) -> list[Failure]:
         return self.callable_tracker.check(self)
-
-    def get_additional_bases(self, typ: type) -> set[type | str]:
-        bases: set[type | str] = set()
-        for provider in self.options.get_value_for(AdditionalBaseProviders):
-            bases |= provider(typ)
-        return bases
 
     def _canonical_type_object_key(self, typ: type | str) -> type | str:
         synthetic_class = self.get_synthetic_class(typ)
