@@ -4043,11 +4043,11 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             if not any(
                 isinstance(base, KnownValue) and is_typing_name(base.val, "TypedDict")
                 for base in base_values
-            ):
+            ) and isinstance(tobj.typ, str):
                 tobj.set_direct_bases(
                     direct_bases_from_values(base_values, self.checker)
                 )
-        else:
+        elif isinstance(tobj.typ, str):
             tobj.set_direct_bases([TypedValue(object)])
         return base_values, base_type_param_variance_infos, is_direct_namedtuple
 
@@ -4279,12 +4279,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     synthetic_class_type.typ
                 )
                 tobj.clear_declared_symbols()
-                # TODO: Ideally we would not call set_direct_bases() again here and
-                # would instead reuse the direct bases established earlier in class
-                # base processing.
-                tobj.set_direct_bases(
-                    direct_bases_from_values(synthetic_base_values, self.checker)
-                )
                 tobj.set_is_direct_namedtuple(is_direct_namedtuple)
                 tobj.set_dataclass_info(dataclass_semantics)
                 tobj.set_dataclass_transform_info(dataclass_transform_info)
@@ -4314,12 +4308,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             ):
                 existing = self.checker.make_synthetic_class(class_obj)
                 tobj.clear_declared_symbols()
-                # TODO: Ideally we would not call set_direct_bases() again here and
-                # would instead reuse the direct bases established earlier in class
-                # base processing.
-                tobj.set_direct_bases(
-                    direct_bases_from_values(synthetic_base_values, self.checker)
-                )
                 tobj.set_dataclass_info(dataclass_semantics)
                 tobj.set_dataclass_transform_info(dataclass_transform_info)
                 dataclass_helpers.set_synthetic_dataclass_transform_info(

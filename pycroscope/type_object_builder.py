@@ -197,6 +197,15 @@ def _iter_base_type_values_from_simple(
             value.class_type, arg_spec_cache, seen_known_bases
         )
         return
+    if isinstance(value, SequenceValue) and value.typ is tuple:
+        yield value
+        return
+    if isinstance(value, GenericValue) and value.typ is tuple:
+        if len(value.args) == 1:
+            yield SequenceValue(tuple, [(True, value.args[0])])
+        else:
+            yield SequenceValue(tuple, [(False, arg) for arg in value.args])
+        return
     if isinstance(value, TypedValue):
         yield value
         return
