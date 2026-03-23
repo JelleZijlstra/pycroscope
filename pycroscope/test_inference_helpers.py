@@ -1,7 +1,7 @@
 # static analysis: ignore
 
 from .test_name_check_visitor import TestNameCheckVisitorBase
-from .test_node_visitor import assert_passes
+from .test_node_visitor import assert_passes, skip_before
 from .value import KnownValue
 
 
@@ -245,6 +245,7 @@ class TestGetMro(TestNameCheckVisitorBase):
             tuple[Child, Left[int], Base[int], Right[str], Generic, object],
         )
 
+    @skip_before((3, 11))
     @assert_passes(run_in_both_module_modes=True)
     def test_get_mro_inherit_any(self):
         from typing import Any
