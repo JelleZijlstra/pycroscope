@@ -5223,6 +5223,21 @@ class TestFallbackValueDispatch(TestNameCheckVisitorBase):
             def mutate(self) -> None:
                 self.y = 1  # E: incompatible_assignment
 
+    @assert_passes(run_in_both_module_modes=True)
+    def test_inherited_slots_are_respected(self):
+        class Base:
+            __slots__ = ("x",)
+            x: int
+
+        class Child(Base):
+            __slots__ = ("y",)  # E: incompatible_override
+            y: int
+
+            def mutate(self) -> None:
+                self.x = 1
+                self.y = 2
+                self.z = 3  # E: incompatible_assignment
+
     @assert_passes(allow_import_failures=True)
     def test_conditional_typevar_identity_in_generic_bases(self):
         from random import random
