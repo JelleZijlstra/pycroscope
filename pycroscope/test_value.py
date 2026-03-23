@@ -1099,7 +1099,7 @@ def test_unpack_values() -> None:
     assert unpack_values(t_int_star_str, CTX, 1, None) == [TypedValue(int)]
     assert unpack_values(t_int_star_str, CTX, 1, 0) == [
         TypedValue(int),
-        SequenceValue(list, [(True, TypedValue(str))]),
+        GenericValue(list, [TypedValue(str)]),
     ]
     assert unpack_values(t_int_star_str, CTX, 1, 1) == [
         TypedValue(int),
@@ -1122,7 +1122,7 @@ def test_unpack_values() -> None:
     ]
     assert unpack_values(t_int_star_str_float, CTX, 1, 1) == [
         TypedValue(int),
-        SequenceValue(list, [(True, TypedValue(str))]),
+        GenericValue(list, [TypedValue(str)]),
         TypedValue(float),
     ]
     assert unpack_values(t_int_star_str_float, CTX, 0, 2) == [

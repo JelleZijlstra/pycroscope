@@ -2982,60 +2982,23 @@ class TypeFormValue(Value):
 
 
 @dataclass(frozen=True)
-class HasAttrGuardExtension(Extension):
+class AddPredicateExtension(Extension):
     """An :class:`Extension` used in a function return type. Used to
-    indicate that the function argument named `varname` has an attribute
-    named `attribute_name` of type `attribute_type`.
-
-    Corresponds to :class:`pycroscope.extensions.HasAttrGuard`.
+    indicate that the function argument named `varname` should receive
+    the predicate `predicate`.
 
     """
 
     varname: str
-    attribute_name: Value
-    attribute_type: Value
+    predicate: "Predicate"
 
     def substitute_typevars(self, typevars: TypeVarMap) -> Extension:
-        return HasAttrGuardExtension(
-            self.varname,
-            self.attribute_name.substitute_typevars(typevars),
-            self.attribute_type.substitute_typevars(typevars),
+        return AddPredicateExtension(
+            self.varname, self.predicate.substitute_typevars(typevars)
         )
 
     def walk_values(self) -> Iterable[Value]:
-        yield from self.attribute_name.walk_values()
-        yield from self.attribute_type.walk_values()
-
-
-@dataclass(frozen=True)
-class HasAttrExtension(Extension):
-    """Attached to an object to indicate that it has the given attribute.
-
-    These cannot be created directly from user code, only through the
-    :class:`pycroscope.extensions.HasAttrGuard` mechanism. This is
-    because of potential code like this::
-
-        def f(x: Annotated[object, HasAttr["y", int]]) -> None:
-            return x.y
-
-    Here, we would correctly type check the function body, but we currently
-    have no way to enforce that the function is only called with arguments that
-    obey the constraint.
-
-    """
-
-    attribute_name: Value
-    attribute_type: Value
-
-    def substitute_typevars(self, typevars: TypeVarMap) -> Extension:
-        return HasAttrExtension(
-            self.attribute_name.substitute_typevars(typevars),
-            self.attribute_type.substitute_typevars(typevars),
-        )
-
-    def walk_values(self) -> Iterable[Value]:
-        yield from self.attribute_name.walk_values()
-        yield from self.attribute_type.walk_values()
+        yield from self.predicate.walk_values()
 
 
 @dataclass(frozen=True, eq=False)
@@ -3380,7 +3343,10 @@ class Predicate:
     """Represents a predicate on a value, such as "has an attribute named 'x' of type int"."""
 
     def has_relation(
-        self, other: "GradualType", relation: "pycroscope.relations.Relation"
+        self,
+        other: "GradualType",
+        relation: "pycroscope.relations.Relation",
+        ctx: CanAssignContext,
     ) -> bool:
         """Whether this predicate has the given relation to another GradualType.
 
@@ -3390,22 +3356,29 @@ class Predicate:
         other = replace_fallback(other)
         if isinstance(other, (MultiValuedValue, IntersectionValue)):
             return False
-        return self.has_relation_simple_type(other, relation)
+        return self.has_relation_simple_type(other, relation, ctx)
 
     def has_relation_simple_type(
-        self, other: "SimpleType", relation: "pycroscope.relations.Relation"
+        self,
+        other: "SimpleType",
+        relation: "pycroscope.relations.Relation",
+        ctx: CanAssignContext,
     ) -> bool:
         return False
 
-    def intersect_with(self, other: "GradualType") -> Value | None:
+    def intersect_with(
+        self, other: "GradualType", ctx: CanAssignContext
+    ) -> Value | None:
         """Return a Value representing the intersection of this predicate with another
         GradualType, or None if the intersection is irreducible."""
         other = replace_fallback(other)
         if isinstance(other, (MultiValuedValue, IntersectionValue)):
             return None
-        return self.intersect_with_simple_type(other)
+        return self.intersect_with_simple_type(other, ctx)
 
-    def intersect_with_simple_type(self, other: "SimpleType") -> Value | None:
+    def intersect_with_simple_type(
+        self, other: "SimpleType", ctx: CanAssignContext
+    ) -> Value | None:
         return None
 
     def substitute_typevars(self, typevars: TypeVarMap) -> "Predicate":
@@ -4276,7 +4249,11 @@ def _unpack_sequence_value(
                     *reversed(tail),
                 ]
         else:
-            return [*head, SequenceValue(list, remaining_members), *reversed(tail)]
+            if len(remaining_members) == 1 and remaining_members[0][0]:
+                middle = GenericValue(list, [remaining_members[0][1]])
+            else:
+                middle = SequenceValue(list, remaining_members)
+            return [*head, middle, *reversed(tail)]
 
 
 def replace_known_sequence_value(
@@ -4350,7 +4327,12 @@ def is_overlapping(left: Value, right: Value, ctx: CanAssignContext) -> bool:
     # Fairly permissive checks for now; possibly this can be tightened up later.
     left = _deliteral(left)
     right = _deliteral(right)
-    if isinstance(left, MultiValuedValue) and left.vals:
+    # TODO: we should always do this but that leads to some silly behavior
+    # (it starts thinking about dictionary subclasses that are also sequences)
+    if isinstance(left, PredicateValue) or isinstance(right, PredicateValue):
+        inters = pycroscope.relations.intersect_values(left, right, ctx)
+        return inters is not NO_RETURN_VALUE
+    if isinstance(left, (MultiValuedValue, IntersectionValue)) and left.vals:
         # Swap the operands so we decompose and de-Literal the other union too
         return any(is_overlapping(right, val, ctx) for val in left.vals)
     return left.is_assignable(right, ctx) or right.is_assignable(left, ctx)

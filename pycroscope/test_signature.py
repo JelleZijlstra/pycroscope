@@ -918,7 +918,7 @@ class TestCalls(TestNameCheckVisitorBase):
         def mistyped_args():
             hasattr(True, False)  # E: incompatible_argument
 
-        # The HasAttrGuard gets stripped.
+        # The AddPredicate gets stripped.
         inferred = AnnotatedValue(TypedValue(bool), [cast(Any, ANY)])
 
         def only_on_class(o: object):

@@ -19,7 +19,7 @@ from .error_code import ErrorCode
 from .extensions import assert_type, reveal_locals, reveal_type
 from .format_strings import parse_format_string
 from .maybe_asynq import qcore
-from .predicates import MaxLen, MinLen
+from .predicates import HasAttr, MaxLen, MinLen
 from .regex_check import check_regex_in_value
 from .relations import (
     Relation,
@@ -66,6 +66,7 @@ from .type_object import _class_key_from_value
 from .value import (
     NO_RETURN_VALUE,
     UNINITIALIZED_VALUE,
+    AddPredicateExtension,
     AnnotatedValue,
     AnySource,
     AnyValue,
@@ -76,7 +77,6 @@ from .value import (
     DataclassTransformInfo,
     DictIncompleteValue,
     GenericValue,
-    HasAttrGuardExtension,
     IntersectionValue,
     KnownValue,
     KVPair,
@@ -660,6 +660,9 @@ def _hasattr_impl(ctx: CallContext) -> Value:
     # if the value exists on the type or instance, hasattr should return True
     # don't interpret the opposite to mean it should return False, as the attribute may
     # exist on a child class or get assigned at runtime
+    # TODO: we could be more liberal about inferring True here, e.g with:
+    # is_subtype(PredicateValue(pred), obj, ctx.visitor)
+    # but that leads to too many false positives.
     if isinstance(obj, TypedValue) and obj.get_type_object(ctx.visitor).has_attribute(
         name.val, ctx.visitor
     ):
@@ -668,7 +671,8 @@ def _hasattr_impl(ctx: CallContext) -> Value:
         return_value = KnownValue(True)
     else:
         return_value = TypedValue(bool)
-    metadata = [HasAttrGuardExtension("object", name, AnyValue(AnySource.inference))]
+    pred = HasAttr(name.val, AnyValue(AnySource.inference))
+    metadata = [AddPredicateExtension("object", pred)]
     return AnnotatedValue(return_value, metadata)
 
 

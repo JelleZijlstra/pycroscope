@@ -16,6 +16,8 @@ from typing import Any, ClassVar, get_origin
 import typing_extensions
 from typing_extensions import assert_never
 
+from pycroscope.predicates import HasAttr
+
 if sys.version_info >= (3, 14):
     from annotationlib import Format, get_annotations
 else:
@@ -69,7 +71,6 @@ from .value import (
     CustomCheckExtension,
     GenericBases,
     GenericValue,
-    HasAttrExtension,
     IntersectionValue,
     KnownValue,
     KnownValueWithTypeVars,
@@ -214,12 +215,15 @@ def get_attribute(ctx: AttrContext) -> Value:
     if super_value is not None:
         attribute_value = _get_attribute_from_super_value(super_value, ctx)
         if (
-            isinstance(attribute_value, AnyValue)
-            or attribute_value is UNINITIALIZED_VALUE
-        ) and isinstance(ctx.root_value, AnnotatedValue):
-            for guard in ctx.root_value.get_metadata_of_type(HasAttrExtension):
-                if guard.attribute_name == KnownValue(ctx.attr):
-                    return guard.attribute_type
+            (
+                isinstance(attribute_value, AnyValue)
+                or attribute_value is UNINITIALIZED_VALUE
+            )
+            and isinstance(ctx.root_value, PredicateValue)
+            and isinstance(ctx.root_value.predicate, HasAttr)
+            and ctx.root_value.predicate.attr == ctx.attr
+        ):
+            return ctx.root_value.predicate.value
         return attribute_value
     root_value = replace_fallback(lookup_root_value)
     if isinstance(root_value, KnownValue) and is_typing_name(
@@ -317,11 +321,15 @@ def get_attribute(ctx: AttrContext) -> Value:
     else:
         assert_never(root_value)
     if (
-        isinstance(attribute_value, AnyValue) or attribute_value is UNINITIALIZED_VALUE
-    ) and isinstance(ctx.root_value, AnnotatedValue):
-        for guard in ctx.root_value.get_metadata_of_type(HasAttrExtension):
-            if guard.attribute_name == KnownValue(ctx.attr):
-                return guard.attribute_type
+        (
+            isinstance(attribute_value, AnyValue)
+            or attribute_value is UNINITIALIZED_VALUE
+        )
+        and isinstance(ctx.root_value, PredicateValue)
+        and isinstance(ctx.root_value.predicate, HasAttr)
+        and ctx.root_value.predicate.attr == ctx.attr
+    ):
+        return ctx.root_value.predicate.value
     return attribute_value
 
 

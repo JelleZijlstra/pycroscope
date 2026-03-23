@@ -60,6 +60,7 @@ from .type_evaluation import (
 from .typevar import resolve_bounds_map
 from .value import (
     NO_RETURN_VALUE,
+    AddPredicateExtension,
     AnnotatedValue,
     AnySource,
     AnyValue,
@@ -73,8 +74,6 @@ from .value import (
     ConstraintExtension,
     DictIncompleteValue,
     GenericValue,
-    HasAttrExtension,
-    HasAttrGuardExtension,
     InferenceVarValue,
     IntersectionValue,
     KnownValue,
@@ -949,18 +948,16 @@ class Signature:
                     )
                     constraints.append(constraint)
 
-            return_value, hag = unannotate_value(return_value, HasAttrGuardExtension)
-            for guard in hag:
+            return_value, ape = unannotate_value(return_value, AddPredicateExtension)
+            for guard in ape:
                 if guard.varname in composites:
                     composite = composites[guard.varname]
                     if composite.varname is not None:
                         constraint = Constraint(
                             composite.varname,
-                            ConstraintType.add_annotation,
+                            ConstraintType.intersect_with,
                             True,
-                            HasAttrExtension(
-                                guard.attribute_name, guard.attribute_type
-                            ),
+                            PredicateValue(guard.predicate),
                         )
                         constraints.append(constraint)
 
