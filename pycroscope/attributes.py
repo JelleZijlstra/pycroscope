@@ -80,6 +80,7 @@ from .value import (
     PredicateValue,
     Qualifier,
     SelfT,
+    SequenceValue,
     SimpleType,
     SubclassValue,
     SuperValue,
@@ -240,6 +241,12 @@ def get_attribute(ctx: AttrContext) -> Value:
             and root_value.signature.is_asynq
         ):
             return root_value.get_asynq_value()
+        if isinstance(root_value, SequenceValue):
+            exact_namedtuple_member = _get_namedtuple_member_from_sequence_value(
+                root_value, ctx
+            )
+            if exact_namedtuple_member is not None:
+                return exact_namedtuple_member
         if isinstance(root_value, GenericValue):
             args = root_value.args
         else:
@@ -331,6 +338,25 @@ def get_attribute(ctx: AttrContext) -> Value:
     ):
         return ctx.root_value.predicate.value
     return attribute_value
+
+
+def _get_namedtuple_member_from_sequence_value(
+    root_value: SequenceValue, ctx: AttrContext
+) -> Value | None:
+    if not isinstance(root_value.typ, str):
+        return None
+    type_object = ctx.get_can_assign_context().make_type_object(root_value.typ)
+    if not type_object.is_direct_namedtuple():
+        return None
+    fields = type_object.get_namedtuple_fields()
+    for i, namedtuple_field in enumerate(fields):
+        if namedtuple_field.name != ctx.attr or i >= len(root_value.members):
+            continue
+        is_many, member = root_value.members[i]
+        if is_many:
+            return None
+        return member
+    return None
 
 
 def _extract_super_value(value: Value) -> SuperValue | None:
@@ -752,12 +778,22 @@ def _get_direct_attribute_from_synthetic_class(
     if symbol is None:
         return UNINITIALIZED_VALUE
     if symbol.is_property:
+        class_type = self_value.class_type
+        if isinstance(class_type, TypedValue):
+            can_assign_ctx = ctx.get_can_assign_context()
+            attribute = can_assign_ctx.make_type_object(class_type.typ).get_attribute(
+                attr_name, can_assign_ctx, on_class=True, receiver_value=class_type
+            )
+            if attribute is not None:
+                return attribute.value
         raw_value = symbol.initializer
     elif symbol.annotation is not None and not symbol.is_method:
         raw_value = symbol.annotation
     else:
         raw_value = symbol.initializer
     if raw_value is None:
+        if symbol.is_classvar and not symbol.is_method:
+            return AnyValue(AnySource.inference)
         return UNINITIALIZED_VALUE
     result = _normalize_synthetic_class_attribute(
         raw_value,
@@ -765,7 +801,7 @@ def _get_direct_attribute_from_synthetic_class(
             self_value, attr_name, ctx
         ),
     )
-    if _should_deliteralize_synthetic_enum_attr(self_value, attr_name):
+    if _should_deliteralize_synthetic_enum_attr(self_value, attr_name, ctx):
         return _deliteralize_value(result)
     return result
 
@@ -1015,12 +1051,19 @@ def _is_instance_only_enum_attr(value: Value, attr_name: str) -> bool:
 
 
 def _should_deliteralize_synthetic_enum_attr(
-    self_value: SyntheticClassObjectValue, attr_name: str
+    self_value: SyntheticClassObjectValue, attr_name: str, ctx: AttrContext
 ) -> bool:
     class_type = self_value.class_type
     if not isinstance(class_type, TypedValue) or not isinstance(class_type.typ, type):
         return False
     if not safe_issubclass(class_type.typ, Enum):
+        return False
+    symbol = _get_synthetic_declared_symbol(self_value, attr_name, ctx)
+    if (
+        symbol is not None
+        and isinstance(symbol.initializer, KnownValue)
+        and safe_isinstance(symbol.initializer.val, Enum)
+    ):
         return False
     try:
         return attr_name not in class_type.typ.__members__

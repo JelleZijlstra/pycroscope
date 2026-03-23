@@ -2201,6 +2201,11 @@ class SyntheticClassObjectValue(Value):
             return KnownValue(type(self.class_type.typ))
         return TypedValue(type)
 
+    def get_type_object(
+        self, ctx: CanAssignContext
+    ) -> "pycroscope.type_object.TypeObject":
+        return ctx.make_type_object(self.class_type.typ)
+
     def can_assign(self, other: Value, ctx: CanAssignContext) -> CanAssign:
         if isinstance(self.class_type, TypedValue):
             class_typ = self.class_type.typ
@@ -3188,7 +3193,6 @@ class PropertyInfo:
 @dataclass(frozen=True)
 class NamedTupleInfo:
     field_names: tuple[str, ...] = ()
-    default_fields: tuple[str, ...] = ()
     has_namedtuple_marker_base: bool = False
 
     def walk_values(self) -> Iterable[Value]:
@@ -3945,7 +3949,7 @@ def ordered_namedtuple_fields_from_synthetic(
     synthetic: SyntheticClassObjectValue, ctx: CanAssignContext
 ) -> tuple[str, ...]:
     inherited: list[str] = []
-    for base in synthetic.base_classes:
+    for base in synthetic.base_classes:  # tobj.get_direct_bases():
         for subval in flatten_values(replace_fallback(base)):
             if isinstance(subval, SyntheticClassObjectValue):
                 runtime_class = subval.runtime_class
@@ -4042,21 +4046,20 @@ def get_namedtuple_field_value_from_synthetic(
             visitor=ctx,
             suppress_errors=True,
         )
-    for base_value in synthetic_class.base_classes:
-        for subval in flatten_values(replace_fallback(base_value)):
-            if isinstance(subval, SyntheticClassObjectValue):
-                field_value = get_namedtuple_field_value_from_synthetic(
-                    subval, field_name, ctx
-                )
-                if field_value is not None:
-                    return field_value
-            elif isinstance(subval, KnownValue) and isinstance(subval.val, type):
-                if is_namedtuple_class(subval.val):
-                    return type_from_runtime(
-                        get_namedtuple_field_annotation(subval.val, field_name),
-                        visitor=ctx,
-                        suppress_errors=True,
-                    )
+    tobj = synthetic_class.get_type_object(ctx)
+    for base_value in tobj.get_direct_bases():
+        if not isinstance(base_value, TypedValue):
+            continue
+        tobj = base_value.get_type_object(ctx)
+        symbol = tobj.get_declared_symbol(field_name)
+        if symbol is not None:
+            if (
+                not symbol.is_classvar
+                and not symbol.is_initvar
+                and not symbol.is_method
+            ):
+                return symbol.get_declared_type()
+            return symbol.initializer
     return None
 
 
@@ -4456,6 +4459,37 @@ def get_synthetic_member_initializer(
     if symbol is None:
         return None
     return symbol.initializer
+
+
+def get_inherited_synthetic_member_initializer(
+    synthetic_class: SyntheticClassObjectValue,
+    name: str,
+    ctx: CanAssignContext,
+    *,
+    seen: frozenset[type | str] = frozenset(),
+) -> Value | None:
+    class_type = synthetic_class.class_type
+    if not isinstance(class_type, TypedValue):
+        return None
+    class_key = class_type.typ
+    if class_key in seen:
+        return None
+    seen = seen | {class_key}
+    direct = get_synthetic_member_initializer(synthetic_class, name, ctx)
+    if direct is not None:
+        return direct
+    for base_value in synthetic_class.get_type_object(ctx).get_direct_bases():
+        if not isinstance(base_value, TypedValue):
+            continue
+        base_synthetic = ctx.get_synthetic_class(base_value.typ)
+        if base_synthetic is None:
+            continue
+        inherited = get_inherited_synthetic_member_initializer(
+            base_synthetic, name, ctx, seen=seen
+        )
+        if inherited is not None:
+            return inherited
+    return None
 
 
 @dataclass(frozen=True)

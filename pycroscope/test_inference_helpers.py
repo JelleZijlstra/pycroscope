@@ -163,6 +163,9 @@ class TestGetMro(TestNameCheckVisitorBase):
             x: int
             y: str
 
+        class NTChild(NT):
+            x: int = 42
+
         nt = collections.namedtuple("nt", ["x", "y"])
 
         assert_type(get_mro(Tup), tuple[Tup, tuple[int, str], object])
@@ -173,6 +176,7 @@ class TestGetMro(TestNameCheckVisitorBase):
         )
         assert_type(get_mro(nt), tuple[nt, tuple[Any, Any], object])
         assert_type(get_mro(NT), tuple[NT, tuple[int, str], object])
+        assert_type(get_mro(NTChild), tuple[NTChild, NT, tuple[int, str], object])
 
     @assert_passes(run_in_both_module_modes=True)
     def test_get_mro_multiple_inheritance(self) -> None:

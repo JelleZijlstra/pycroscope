@@ -31,6 +31,7 @@ from .relations import (
     translate_generic_typevar_map,
 )
 from .safe import (
+    is_direct_namedtuple_class,
     is_instance_of_typing_name,
     is_namedtuple_class,
     is_typing_name,
@@ -40,9 +41,11 @@ from .safe import (
 )
 from .signature import (
     BoundMethodSignature,
+    Impl,
     OverloadedSignature,
     ParameterKind,
     Signature,
+    SigParameter,
     mark_ellipsis_style_any_tail_parameters,
 )
 from .value import (
@@ -259,6 +262,13 @@ class DataclassFieldRecord:
     field_info: DataclassFieldInfo
 
 
+@dataclass(frozen=True)
+class NamedTupleField:
+    name: str
+    typ: Value
+    default: Value | None
+
+
 class TypeObject:
     """Represents one logical type, with lazy and incrementally populated metadata."""
 
@@ -275,6 +285,8 @@ class TypeObject:
     _dataclass_fields: tuple[DataclassFieldRecord, ...] | None
     _virtual_bases: list[MroValue] | None
     _is_thrift_enum: bool | None
+    _is_direct_namedtuple: bool | None
+    _namedtuple_fields: Sequence[NamedTupleField] | None
     _is_universally_assignable: bool | None
     _protocol_positive_cache: dict[tuple[Value, Value], BoundsMap]
     _has_stubs: bool | None
@@ -294,6 +306,8 @@ class TypeObject:
         self._dataclass_fields = None
         self._virtual_bases = None
         self._is_thrift_enum = None
+        self._is_direct_namedtuple = None
+        self._namedtuple_fields = None
         self._is_universally_assignable = None
         self._has_stubs = None
 
@@ -463,6 +477,59 @@ class TypeObject:
 
     def _compute_is_universally_assignable(self) -> bool:
         return isinstance(self.typ, type) and issubclass(self.typ, mock.NonCallableMock)
+
+    def is_direct_namedtuple(self) -> bool:
+        if self._is_direct_namedtuple is None:
+            self._is_direct_namedtuple, self._namedtuple_fields = (
+                self._compute_namedtuple_data()
+            )
+        return self._is_direct_namedtuple
+
+    def get_namedtuple_fields(self) -> Sequence[NamedTupleField]:
+        if self._namedtuple_fields is None:
+            self._is_direct_namedtuple, self._namedtuple_fields = (
+                self._compute_namedtuple_data()
+            )
+        if (
+            self._is_direct_namedtuple
+            and self._namedtuple_fields
+            and "__new__" not in self.get_synthetic_declared_symbols()
+        ):
+            _add_namedtuple_dunder_new_symbol(self, self._namedtuple_fields)
+        return self._namedtuple_fields
+
+    def set_namedtuple_fields(
+        self, fields: Sequence[NamedTupleField], *, constructor_impl: Impl | None = None
+    ) -> None:
+        self._is_direct_namedtuple = True
+        self._namedtuple_fields = fields
+        _add_namedtuple_dunder_new_symbol(
+            self, fields, constructor_impl=constructor_impl
+        )
+
+    def _compute_namedtuple_data(self) -> tuple[bool, Sequence[NamedTupleField]]:
+        if isinstance(self.typ, type) and is_direct_namedtuple_class(self.typ):
+            from .annotations import type_from_runtime
+
+            fields: list[NamedTupleField] = []
+            defaults = safe_getattr(self.typ, "_field_defaults", None)
+            annos = safe_getattr(self.typ, "__annotations__", None)
+            for field_name in self.typ._fields:
+                field_type = type_from_runtime(
+                    annos.get(field_name, object) if annos else object,
+                    visitor=self._checker,
+                    suppress_errors=True,
+                )
+                if field_type == TypedValue(object) and not annos:
+                    field_type = AnyValue(AnySource.unannotated)
+                default = (
+                    KnownValue(defaults[field_name])
+                    if isinstance(defaults, Mapping) and field_name in defaults
+                    else None
+                )
+                fields.append(NamedTupleField(field_name, field_type, default))
+            return True, fields
+        return False, ()
 
     def _update_loaded_synthetic_fields(self) -> None:
         if self._mro is not None:
@@ -2476,3 +2543,36 @@ def _linearize_mros(
                 tail.pop(0)
         tails = [tail for tail in tails if tail]
     return mro
+
+
+def _add_namedtuple_dunder_new_symbol(
+    tobj: TypeObject,
+    fields: Sequence[NamedTupleField],
+    *,
+    constructor_impl: Impl | None = None,
+) -> ClassSymbol:
+    parameters = {
+        "__self": SigParameter(name="__self", kind=ParameterKind.POSITIONAL_ONLY)
+    }
+    parameters.update(
+        {
+            field.name: SigParameter(
+                name=field.name,
+                kind=ParameterKind.POSITIONAL_OR_KEYWORD,
+                annotation=field.typ,
+                default=field.default,
+            )
+            for field in fields
+        }
+    )
+    signature = Signature(
+        parameters=parameters, return_value=SelfTVV, impl=constructor_impl
+    )
+    symbol = ClassSymbol(
+        annotation=None,
+        initializer=CallableValue(signature),
+        is_method=True,
+        property_info=None,
+    )
+    tobj.add_declared_symbol("__new__", symbol)
+    return symbol

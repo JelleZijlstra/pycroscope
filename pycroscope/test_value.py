@@ -752,9 +752,7 @@ def test_synthetic_namedtuple_members_without_runtime_class() -> None:
         TypedValue("mod.Point"),
         base_classes=(TypedValue(tuple),),
         namedtuple_info=NamedTupleInfo(
-            field_names=("x", "label"),
-            default_fields=("label",),
-            has_namedtuple_marker_base=True,
+            field_names=("x", "label"), has_namedtuple_marker_base=True
         ),
     )
     checker.register_synthetic_class(point)

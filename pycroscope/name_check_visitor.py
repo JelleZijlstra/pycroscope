@@ -49,6 +49,7 @@ from typing import (
     Annotated,
     Any,
     ClassVar,
+    Literal,
     Optional,
     TypeVar,
     Union,
@@ -180,6 +181,7 @@ from .signature import (
     Argument,
     BoundArgs,
     BoundMethodSignature,
+    CallContext,
     ConcreteSignature,
     InvalidSignature,
     MaybeSignature,
@@ -228,6 +230,7 @@ from .suggested_type import (
 )
 from .type_object import (
     MroValue,
+    NamedTupleField,
     TypeObject,
     TypeObjectAttribute,
     class_keys_match,
@@ -332,6 +335,8 @@ from .value import (
     unpack_values,
 )
 from .yield_checker import YieldChecker
+
+_UNSET = object()
 
 _AST_TYPE_ALIAS = getattr(ast, "TypeAlias", None)
 _TYPE_PARAM_AST_NODE_TYPES = tuple(
@@ -2640,6 +2645,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         *,
         private: bool = False,
         lookup_node: object = None,
+        synthetic_initializer: Value | None | Literal[_UNSET] = _UNSET,
     ) -> tuple[Value, VarnameOrigin]:
         if lookup_node is None:
             lookup_node = node
@@ -2782,9 +2788,12 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             return AnyValue(AnySource.inference), EMPTY_ORIGIN
         origin = current_scope.set(varname, value, lookup_node, self.state)
         if scope_type == ScopeType.class_scope:
+            resolved_synthetic_initializer = (
+                value if synthetic_initializer is _UNSET else synthetic_initializer
+            )
             self._set_synthetic_class_attribute(
                 varname,
-                value,
+                initializer=resolved_synthetic_initializer,
                 node=node,
                 force_nonmember=(
                     isinstance(self.current_statement, ast.AnnAssign)
@@ -2962,8 +2971,8 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         self,
         synthetic_class: SyntheticClassObjectValue,
         name: str,
-        value: Value,
         *,
+        initializer: Value | None = None,
         annotation: Value | None = None,
         is_method: bool | None = None,
         is_classmethod: bool | None = None,
@@ -2991,8 +3000,8 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 else returns_self_on_class_access
             )
             resolved_initializer = (
-                value
-                if _is_property_initializer(value)
+                initializer
+                if initializer is not None and _is_property_initializer(initializer)
                 else (
                     existing.initializer
                     if existing is not None and existing.property_info is not None
@@ -3024,7 +3033,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 if returns_self_on_class_access is None
                 else returns_self_on_class_access
             )
-            resolved_initializer = value
+            resolved_initializer = initializer
         self._get_synthetic_type_object(synthetic_class).set_declared_symbol(
             name,
             ClassSymbol(
@@ -3052,8 +3061,8 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     def _set_synthetic_class_attribute(
         self,
         name: str,
-        value: Value,
         *,
+        initializer: Value | None = None,
         node: ast.AST | None = None,
         annotation: Value | None = None,
         force_nonmember: bool = False,
@@ -3062,7 +3071,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         if synthetic_class is None:
             return
         synthetic_name = name
-        synthetic_value = value
+        synthetic_initializer = initializer
         enum_member_is_method = False
         if isinstance(self.current_class, (type, str)) and self._is_enum_class_key(
             self.current_class
@@ -3072,22 +3081,25 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 mangled = _mangle_private_enum_name(class_name, name)
                 if mangled is not None:
                     synthetic_name = mangled
-                    if isinstance(synthetic_value, KnownValue):
-                        synthetic_value = TypedValue(type(synthetic_value.val))
+                    if isinstance(synthetic_initializer, KnownValue):
+                        synthetic_initializer = TypedValue(
+                            type(synthetic_initializer.val)
+                        )
             if (
                 synthetic_name == name
                 and self.current_function_name is None
                 and not synthetic_name.startswith("_")
+                and synthetic_initializer is not None
             ):
                 unwrapped, forced_member, forced_nonmember = (
-                    _unwrap_enum_member_wrapper(synthetic_value)
+                    _unwrap_enum_member_wrapper(synthetic_initializer)
                 )
                 forced_nonmember = forced_nonmember or force_nonmember
                 if forced_member or (
                     not forced_nonmember
                     and not _is_nonmember_enum_assignment_value(unwrapped, self)
                 ):
-                    synthetic_value = (
+                    synthetic_initializer = (
                         self._get_enclosing_class_value_for_method()
                         or TypedValue(self.current_class)
                     )
@@ -3095,67 +3107,60 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                         node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
                     )
                 elif forced_nonmember:
-                    synthetic_value = unwrapped
-        if not synthetic_name.startswith("%"):
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and (
-                self._is_property_decorated_function(node)
-            ):
-                self._update_synthetic_declared_symbol(
-                    synthetic_name, is_instance_only=False
-                )
-                return
-            declared_annotation = annotation
-            if self.ann_assign_type is not None and self.ann_assign_type[0] is not None:
-                declared_annotation = self.ann_assign_type[0]
-            is_method = isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-            if enum_member_is_method:
-                is_method = False
-            is_classmethod = False
-            is_staticmethod = False
-            returns_self_on_class_access = False
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                is_classmethod, is_staticmethod, returns_self_on_class_access = (
-                    self._synthetic_method_symbol_flags(node)
-                )
-            has_initializer = True
-            if (
-                isinstance(node, ast.AnnAssign)
-                and node.value is None
-                and declared_annotation is not None
-            ):
-                has_initializer = False
-            self._set_synthetic_member_on_class(
-                synthetic_class,
-                synthetic_name,
-                synthetic_value if has_initializer else value,
-                annotation=declared_annotation,
-                is_method=is_method,
-                is_classmethod=is_classmethod,
-                is_staticmethod=is_staticmethod,
-                returns_self_on_class_access=returns_self_on_class_access,
+                    synthetic_initializer = unwrapped
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and (
+            self._is_property_decorated_function(node)
+        ):
+            self._update_synthetic_declared_symbol(
+                synthetic_name, is_instance_only=False
             )
-            if not has_initializer:
-                self._update_synthetic_declared_symbol(synthetic_name, initializer=None)
-            symbol = self._get_synthetic_declared_symbol(
-                synthetic_class, synthetic_name
+            return
+        declared_annotation = annotation
+        if self.ann_assign_type is not None and self.ann_assign_type[0] is not None:
+            declared_annotation = self.ann_assign_type[0]
+        is_method = isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        if enum_member_is_method:
+            is_method = False
+        is_classmethod = False
+        is_staticmethod = False
+        returns_self_on_class_access = False
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            is_classmethod, is_staticmethod, returns_self_on_class_access = (
+                self._synthetic_method_symbol_flags(node)
             )
-            if (
-                force_nonmember
-                and isinstance(node, ast.AnnAssign)
-                and node.value is None
-                and symbol is not None
-                and not symbol.is_classvar
-            ):
-                self._update_synthetic_declared_symbol(
-                    synthetic_name, is_instance_only=True
-                )
-            elif symbol is None or symbol.dataclass_field is None or symbol.is_classvar:
-                self._update_synthetic_declared_symbol(
-                    synthetic_name, is_instance_only=False
-                )
-        else:
-            raise AssertionError(
-                f"unexpected synthetic class metadata attribute {synthetic_name!r}"
+        has_initializer = True
+        if (
+            isinstance(node, ast.AnnAssign)
+            and node.value is None
+            and declared_annotation is not None
+        ):
+            has_initializer = False
+        self._set_synthetic_member_on_class(
+            synthetic_class,
+            synthetic_name,
+            initializer=synthetic_initializer,
+            annotation=declared_annotation,
+            is_method=is_method,
+            is_classmethod=is_classmethod,
+            is_staticmethod=is_staticmethod,
+            returns_self_on_class_access=returns_self_on_class_access,
+        )
+        if not has_initializer:
+            self._update_synthetic_declared_symbol(synthetic_name, initializer=None)
+        symbol = self._get_synthetic_declared_symbol(synthetic_class, synthetic_name)
+        if (
+            force_nonmember
+            and isinstance(node, ast.AnnAssign)
+            and node.value is None
+            and symbol is not None
+            and not symbol.is_classvar
+        ):
+            self._update_synthetic_declared_symbol(
+                synthetic_name, is_instance_only=True
+            )
+        elif symbol is None or symbol.dataclass_field is None or symbol.is_classvar:
+            self._update_synthetic_declared_symbol(
+                synthetic_name, is_instance_only=False
             )
 
     def _is_property_decorated_function(
@@ -4028,9 +4033,10 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
 
     def _visit_bases(
         self, node: ast.ClassDef, tobj: TypeObject
-    ) -> tuple[list[Value], list[_BaseTypeParamVarianceInfo]]:
+    ) -> tuple[list[Value], list[_BaseTypeParamVarianceInfo], bool]:
         base_values = []
         base_type_param_variance_infos: list[_BaseTypeParamVarianceInfo] = []
+        is_direct_namedtuple = False
         for base_node in node.bases:
             local_type_param_polarities: dict[object, set[int]] = {}
             with (
@@ -4048,6 +4054,11 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     is_variance_declaration_base=is_variance_declaration_base,
                 )
             )
+            if isinstance(base_value, KnownValue) and (
+                base_value.val is collections.namedtuple
+                or is_typing_name(base_value.val, "NamedTuple")
+            ):
+                is_direct_namedtuple = True
         if isinstance(tobj.typ, str):
             if base_values:
                 if not any(
@@ -4063,7 +4074,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     )
             else:
                 tobj.set_direct_bases([TypedValue(object)])
-        return base_values, base_type_param_variance_infos
+        return base_values, base_type_param_variance_infos, is_direct_namedtuple
 
     def _translate_base_value(self, value: Value, node: ast.expr) -> MroValue:
         type_value = replace_fallback(type_from_value(value, self, node=node))
@@ -4129,9 +4140,11 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     self.active_type_params.current_annotation_identities()
                 )
                 with self.active_type_params.disallow(disallowed_type_params):
-                    base_values, base_type_param_variance_infos = self._visit_bases(
-                        node, tobj
-                    )
+                    (
+                        base_values,
+                        base_type_param_variance_infos,
+                        is_direct_namedtuple,
+                    ) = self._visit_bases(node, tobj)
             if self._is_checking():
                 self._check_typevartuple_usage_in_type_parameter_bases(
                     node, base_values
@@ -4248,6 +4261,23 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 and statement.simple
                 and statement.value is not None
             )
+            namedtuple_field_sequence_is_valid = True
+            saw_namedtuple_default = False
+            for statement in node.body:
+                if not (
+                    isinstance(statement, ast.AnnAssign)
+                    and isinstance(statement.target, ast.Name)
+                    and statement.simple
+                ):
+                    continue
+                field_name = statement.target.id
+                if field_name.startswith("_"):
+                    namedtuple_field_sequence_is_valid = False
+                    continue
+                has_default = statement.value is not None
+                if saw_namedtuple_default and not has_default:
+                    namedtuple_field_sequence_is_valid = False
+                saw_namedtuple_default = saw_namedtuple_default or has_default
             if (
                 self._is_checking()
                 and namedtuple_base_fields
@@ -4302,7 +4332,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                         synthetic_class,
                         NamedTupleInfo(
                             field_names=namedtuple_field_names,
-                            default_fields=namedtuple_default_fields,
                             has_namedtuple_marker_base=has_namedtuple_marker_base,
                         ),
                     )
@@ -4345,7 +4374,12 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     # Bind the class name while checking its body so references
                     # like "return C.attr" or string annotations mentioning C
                     # resolve even when no runtime class object exists.
-                    self.scopes.set(node.name, synthetic_class, node, self.state)
+                    prebound_class_value: Value = (
+                        KnownValue(class_obj)
+                        if class_obj is not None
+                        else synthetic_class
+                    )
+                    self._set_name_in_scope(node.name, node, prebound_class_value)
             elif (
                 dataclass_semantics is not None or dataclass_transform_info is not None
             ):
@@ -4725,6 +4759,26 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 ),
                 None,
             )
+            if is_direct_namedtuple and isinstance(class_key, str):
+                namedtuple_fields = []
+                if namedtuple_field_sequence_is_valid:
+                    for name in namedtuple_field_names:
+                        symbol = tobj.get_declared_symbol(name)
+                        if symbol is None or symbol.annotation is None:
+                            continue
+                        namedtuple_fields.append(
+                            NamedTupleField(
+                                name,
+                                symbol.annotation,
+                                (
+                                    symbol.initializer
+                                    if name in namedtuple_default_fields
+                                    else None
+                                ),
+                            )
+                        )
+                if namedtuple_fields:
+                    tobj.set_namedtuple_fields(namedtuple_fields)
             if synthetic_typeddict is not None:
                 typeddict_value = self._build_synthetic_typeddict_value(
                     synthetic_typeddict, node
@@ -4752,15 +4806,19 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     # references captured during class analysis (including bases
                     # of later synthetic classes) see the enriched attributes.
                     for name, attr_value in class_attributes.items():
+                        if (
+                            self._get_synthetic_declared_symbol(synthetic_class, name)
+                            is not None
+                        ):
+                            continue
                         self._set_synthetic_member_on_class(
-                            synthetic_class, name, attr_value
+                            synthetic_class, name, initializer=attr_value
                         )
                     if is_namedtuple_synthetic:
                         _set_synthetic_namedtuple_info(
                             synthetic_class,
                             NamedTupleInfo(
                                 field_names=namedtuple_field_names,
-                                default_fields=namedtuple_default_fields,
                                 has_namedtuple_marker_base=has_namedtuple_marker_base,
                             ),
                         )
@@ -4829,8 +4887,15 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 }
                 method_symbol_flags = self._get_synthetic_method_symbol_flags(node)
                 for name, attr_value in class_attributes.items():
+                    if (
+                        self._get_synthetic_declared_symbol(
+                            dataclass_metadata_class, name
+                        )
+                        is not None
+                    ):
+                        continue
                     self._set_synthetic_member_on_class(
-                        dataclass_metadata_class, name, attr_value
+                        dataclass_metadata_class, name, initializer=attr_value
                     )
                 if isinstance(metaclass_value, Value):
                     _set_synthetic_metaclass(dataclass_metadata_class, metaclass_value)
@@ -5152,7 +5217,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             return
 
         saw_default = False
-        has_namedtuple_field_error = False
         for statement in node.body:
             if not (
                 isinstance(statement, ast.AnnAssign)
@@ -5163,7 +5227,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             field_name = statement.target.id
             if has_namedtuple_marker_base:
                 if field_name.startswith("_"):
-                    has_namedtuple_field_error = True
                     self._show_error_if_checking(
                         statement.target,
                         "NamedTuple field names cannot start with an underscore",
@@ -5171,7 +5234,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     )
                 has_default = statement.value is not None
                 if saw_default and not has_default:
-                    has_namedtuple_field_error = True
                     self._show_error_if_checking(
                         statement,
                         "NamedTuple fields without defaults cannot follow fields with defaults",
@@ -5184,8 +5246,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     f"Field {field_name!r} conflicts with base NamedTuple field",
                     error_code=ErrorCode.incompatible_override,
                 )
-        if has_namedtuple_marker_base and has_namedtuple_field_error:
-            return
 
     def _make_enum_related_fallback_class(
         self, node: ast.ClassDef, base_values: Sequence[Value]
@@ -5247,7 +5307,8 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         def exec_body(ns: dict[str, object]) -> None:
             ns["__module__"] = module_name
             ns["__qualname__"] = qualname
-            ns.update(members)
+            for name, value in members.items():
+                ns[name] = value
 
         try:
             return types.new_class(node.name, tuple(runtime_bases), {}, exec_body)
@@ -5348,6 +5409,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             self._get_synthetic_member_initializer(synthetic_class, "_ignore_")
         )
         member_literal_values: dict[str, object] = {}
+        member_aliases: dict[str, str] = {}
         member_order: list[str] = []
         missing: Value | None = None
 
@@ -5355,7 +5417,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             self._set_synthetic_member_on_class(
                 synthetic_class,
                 name,
-                value,
+                initializer=value,
                 is_method=False,
                 is_classmethod=False,
                 is_staticmethod=False,
@@ -5366,7 +5428,15 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             stmt_forced_member, stmt_forced_nonmember = (
                 _enum_statement_member_decorators(statement)
             )
+            call_forced_member, call_forced_nonmember = (
+                _enum_statement_member_wrapper_call(statement)
+            )
+            stmt_forced_member = stmt_forced_member or call_forced_member
+            stmt_forced_nonmember = stmt_forced_nonmember or call_forced_nonmember
             value = self._get_synthetic_member_initializer(synthetic_class, member_name)
+            inferred_value = _enum_statement_precise_value(statement, self)
+            if inferred_value is not None:
+                value = inferred_value
             if value is None:
                 value = missing
             if value is missing:
@@ -5426,6 +5496,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 and isinstance(statement.value, ast.Name)
                 and statement.value.id in member_literal_values
             ):
+                member_aliases[member_name] = statement.value.id
                 literal_value = member_literal_values[statement.value.id]
             else:
                 literal_value = _runtime_object_for_enum_member(unwrapped)
@@ -5467,6 +5538,28 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 _set_enum_declared_symbol(member_name, initializer)
             except Exception:
                 continue
+        for member_name, target_name in member_aliases.items():
+            target_symbol = self._get_synthetic_declared_symbol(
+                synthetic_class, target_name
+            )
+            if target_symbol is None or target_symbol.initializer is None:
+                continue
+            self._get_synthetic_type_object(synthetic_class).set_declared_symbol(
+                member_name, target_symbol
+            )
+        for member_name, statement in _iter_enum_assignment_candidates(node):
+            if not isinstance(statement, (ast.Assign, ast.AnnAssign)):
+                continue
+            if not isinstance(statement.value, ast.Name):
+                continue
+            target_symbol = self._get_synthetic_declared_symbol(
+                synthetic_class, statement.value.id
+            )
+            if target_symbol is None or target_symbol.initializer is None:
+                continue
+            self._get_synthetic_type_object(synthetic_class).set_declared_symbol(
+                member_name, target_symbol
+            )
 
     def _check_declared_enum_value_type(
         self, expected_type: Value, actual_value: Value, node: ast.AST
@@ -5502,7 +5595,8 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         def exec_body(ns: dict[str, object]) -> None:
             ns["__module__"] = module_name
             ns["__qualname__"] = qualname
-            ns.update(members)
+            for name, value in members.items():
+                ns[name] = value
 
         try:
             return types.new_class(node.name, tuple(runtime_bases), {}, exec_body)
@@ -12362,6 +12456,29 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         )
         if (
             enum_value_type is not None
+            and self.current_function_name is None
+            and isinstance(value, Value)
+        ):
+            unwrapped, forced_member, forced_nonmember = _unwrap_enum_member_wrapper(
+                value
+            )
+            stmt_forced_member, stmt_forced_nonmember = (
+                _enum_statement_member_wrapper_call(node)
+            )
+            forced_member = forced_member or stmt_forced_member
+            forced_nonmember = forced_nonmember or stmt_forced_nonmember
+            if (
+                not forced_nonmember
+                and (
+                    forced_member
+                    or not _is_nonmember_enum_assignment_value(unwrapped, self)
+                )
+                and isinstance(unwrapped, KnownValue)
+                and not isinstance(unwrapped.val, tuple)
+            ):
+                self._check_declared_enum_value_type(enum_value_type, unwrapped, node)
+        if (
+            enum_value_type is not None
             and self.current_function_name is not None
             and isinstance(value, Value)
         ):
@@ -12726,18 +12843,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             and isinstance(node.target, ast.Name)
             and self.scopes.scope_type() == ScopeType.class_scope
         )
-        if is_class_annotation_without_value:
-            self._set_synthetic_class_attribute(
-                node.target.id,
-                expected_type or AnyValue(AnySource.error),
-                node=node,
-                annotation=expected_type or AnyValue(AnySource.error),
-                force_nonmember=(
-                    self.current_class_key is not None
-                    and self._is_enum_class_key(self.current_class_key)
-                ),
-            )
-
         if node.value is not None:
             if explicit_type_alias_assignment_value is not None:
                 if self.annotate:
@@ -12754,6 +12859,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     value = KnownValue(alias_runtime_value.typ)
                 else:
                     value = explicit_type_alias_assignment_value
+                initializer_value = value
             else:
                 is_yield = isinstance(node.value, ast.Yield)
                 value = self.visit(node.value)
@@ -12808,6 +12914,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                         alias_keyword.value, str
                     ):
                         alias = alias_keyword.value
+                initializer_value = value
 
                 if expected_type is not None:
                     if (
@@ -12918,6 +13025,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         else:
             is_yield = False
             value = None
+            initializer_value = None
 
         if dataclass_field_name is not None:
             self._record_synthetic_dataclass_field_metadata(
@@ -12939,7 +13047,38 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             self.yield_checker.check_yield_result_assignment(is_yield),
             override(self, "ann_assign_type", (ann_assign_declared_type, is_final)),
         ):
-            self.visit(node.target)
+            if self.scopes.scope_type() == ScopeType.class_scope and isinstance(
+                node.target, ast.Name
+            ):
+                name_value = value
+                if name_value is None and ann_assign_declared_type is not None:
+                    name_value = ann_assign_declared_type
+                if name_value is None and has_classvar:
+                    name_value = AnyValue(AnySource.inference)
+                if self._name_node_to_statement is not None:
+                    statement = self.node_context.nearest_enclosing(
+                        (ast.stmt, ast.comprehension)
+                    )
+                    self._name_node_to_statement[node.target] = statement
+                if name_value is not None:
+                    self.yield_checker.record_assignment(node.target.id)
+                assigned_value, origin = self._set_name_in_scope(
+                    node.target.id,
+                    node.target,
+                    value=name_value,
+                    synthetic_initializer=initializer_value,
+                )
+                if self.annotate:
+                    varname = VarnameWithOrigin(node.target.id, origin)
+                    constraint = Constraint(
+                        varname, ConstraintType.is_truthy, True, None
+                    )
+                    set_inferred_value(
+                        node.target,
+                        annotate_with_constraint(assigned_value, constraint),
+                    )
+            else:
+                self.visit(node.target)
 
         if is_final:
             if self.scopes.scope_type() == ScopeType.class_scope and isinstance(
@@ -16331,11 +16470,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             for field in safe_getattr(runtime_class, "_fields", ())
             if isinstance(field, str)
         )
-        default_fields = tuple(
-            name
-            for name in safe_getattr(runtime_class, "_field_defaults", {})
-            if isinstance(name, str)
-        )
         synthetic_name = self._get_synthetic_class_fq_name_from_name(
             runtime_class.__name__
         )
@@ -16350,13 +16484,10 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         type_object = self.checker.make_type_object(synthetic_name)
         type_object.set_base_values((TypedValue(tuple),))
         _set_synthetic_runtime_class(synthetic, return_value)
-        _set_synthetic_namedtuple_info(synthetic, None)
+        _set_synthetic_namedtuple_info(synthetic, NamedTupleInfo(field_names=fields))
         type_object.clear_declared_symbols()
-        if should_disable_runtime_call_for_namedtuple_class(runtime_class):
-            _set_synthetic_namedtuple_info(
-                synthetic,
-                NamedTupleInfo(field_names=fields, default_fields=default_fields),
-            )
+        defaults = safe_getattr(runtime_class, "_field_defaults", {})
+        namedtuple_fields: list[NamedTupleField] = []
         for name, attr in tuple(runtime_class.__dict__.items()):
             if name in fields:
                 field_value = type_from_runtime(
@@ -16364,13 +16495,17 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     visitor=self,
                     suppress_errors=True,
                 )
+                default_value = KnownValue(defaults[name]) if name in defaults else None
+                namedtuple_fields.append(
+                    NamedTupleField(name, field_value, default_value)
+                )
                 type_object.set_declared_symbol(
                     name,
                     ClassSymbol(
                         annotation=field_value,
                         qualifiers=frozenset({Qualifier.ReadOnly}),
                         is_instance_only=True,
-                        initializer=field_value,
+                        initializer=default_value,
                     ),
                 )
             elif isinstance(attr, property):
@@ -16404,6 +16539,17 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 type_object.set_declared_symbol(
                     name, ClassSymbol(initializer=KnownValue(attr))
                 )
+        if namedtuple_fields:
+
+            def infer_namedtuple_return(ctx: CallContext) -> Value:
+                return SequenceValue(
+                    synthetic_name,
+                    tuple((False, ctx.vars[field.name]) for field in namedtuple_fields),
+                )
+
+            type_object.set_namedtuple_fields(
+                tuple(namedtuple_fields), constructor_impl=infer_namedtuple_return
+            )
         return synthetic
 
     def signature_from_value(
@@ -17046,6 +17192,29 @@ def _iter_enum_assignment_candidates(
             yield statement.name, statement
 
 
+def _enum_member_wrapper_flags(node: ast.AST) -> tuple[bool, bool]:
+    forced_member = False
+    forced_nonmember = False
+    target = node
+    if isinstance(target, ast.Call):
+        target = target.func
+    if isinstance(target, ast.Name):
+        if target.id == "member":
+            forced_member = True
+        elif target.id == "nonmember":
+            forced_nonmember = True
+    elif (
+        isinstance(target, ast.Attribute)
+        and isinstance(target.value, ast.Name)
+        and target.value.id == "enum"
+    ):
+        if target.attr == "member":
+            forced_member = True
+        elif target.attr == "nonmember":
+            forced_nonmember = True
+    return forced_member, forced_nonmember
+
+
 def _enum_statement_member_decorators(statement: ast.AST) -> tuple[bool, bool]:
     if not isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
         return False, False
@@ -17053,24 +17222,42 @@ def _enum_statement_member_decorators(statement: ast.AST) -> tuple[bool, bool]:
     forced_member = False
     forced_nonmember = False
     for decorator in statement.decorator_list:
-        target = decorator
-        if isinstance(target, ast.Call):
-            target = target.func
-        if isinstance(target, ast.Name):
-            if target.id == "member":
-                forced_member = True
-            elif target.id == "nonmember":
-                forced_nonmember = True
-        elif (
-            isinstance(target, ast.Attribute)
-            and isinstance(target.value, ast.Name)
-            and target.value.id == "enum"
-        ):
-            if target.attr == "member":
-                forced_member = True
-            elif target.attr == "nonmember":
-                forced_nonmember = True
+        decorator_member, decorator_nonmember = _enum_member_wrapper_flags(decorator)
+        forced_member = forced_member or decorator_member
+        forced_nonmember = forced_nonmember or decorator_nonmember
     return forced_member, forced_nonmember
+
+
+def _enum_statement_member_wrapper_call(statement: ast.AST) -> tuple[bool, bool]:
+    if isinstance(statement, ast.Assign):
+        return _enum_member_wrapper_flags(statement.value)
+    if isinstance(statement, ast.AnnAssign) and statement.value is not None:
+        return _enum_member_wrapper_flags(statement.value)
+    return False, False
+
+
+def _enum_statement_precise_value(
+    statement: ast.AST, visitor: NameCheckVisitor
+) -> Value | None:
+    value_node: ast.expr | None = None
+    if isinstance(statement, ast.Assign):
+        value_node = statement.value
+    elif isinstance(statement, ast.AnnAssign):
+        value_node = statement.value
+    if value_node is None:
+        return None
+    if (
+        isinstance(value_node, ast.Name)
+        and visitor.current_enum_members is not None
+        and value_node.id in visitor.current_enum_members.by_name
+    ):
+        return KnownValue(visitor.current_enum_members.by_name[value_node.id])
+    inferred = safe_getattr(value_node, "inferred_value", None)
+    if isinstance(inferred, Value):
+        return inferred
+    with visitor.catch_errors():
+        value = visitor.visit(value_node)
+    return value if isinstance(value, Value) else None
 
 
 def _unwrap_enum_member_wrapper(value: Value) -> tuple[Value, bool, bool]:

@@ -108,6 +108,29 @@ class TestEnum(TestNameCheckVisitorBase):
             # TODO: add a check for "Pet.genus" on the class, which should be an error.
             # Currently works differently in importable and unimportable mode.
 
+    @assert_passes(run_in_both_module_modes=True)
+    def test_enum_value_literals_on_class_and_instance(self):
+        from enum import Enum
+
+        from typing_extensions import Literal, assert_type
+
+        class Color(Enum):
+            RED = 1
+            BLUE = 2
+
+        def capybara(color: Color) -> None:
+            assert_type(Color.RED.value, Literal[1])
+            assert_type(color.value, Literal[1, 2])
+
+    @assert_passes(run_in_both_module_modes=True)
+    def test_enum_declared_value_type_checks_member_assignments(self):
+        from enum import Enum
+
+        class Color(Enum):
+            _value_: int
+            RED = 1
+            GREEN = "green"  # E: invalid_annotation
+
     @assert_passes()
     def test_value_assignment_with_nonstandard_receiver_name(self):
         import enum
