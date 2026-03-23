@@ -2,7 +2,7 @@
 
 import inspect
 import sys
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Iterator, Mapping
 from dataclasses import MISSING, replace
 
 from typing_extensions import assert_never
@@ -10,23 +10,15 @@ from typing_extensions import assert_never
 if sys.version_info >= (3, 14):
     from annotationlib import Format, get_annotations
 
-from pycroscope.checker import Checker
-
 from .annotations import (
     _RuntimeAnnotationsContext,
     annotation_expr_from_runtime,
     type_from_runtime,
 )
-from .arg_spec import ArgSpecCache, GenericBases
-from .input_sig import coerce_paramspec_specialization_to_input_sig
+from .arg_spec import ArgSpecCache
+from .checker import Checker
 from .safe import is_namedtuple_class, safe_getattr
-from .type_object import (
-    DataclassFieldRecord,
-    MroValue,
-    _class_key_from_value,
-    class_keys_match,
-    merge_declared_symbol,
-)
+from .type_object import DataclassFieldRecord, merge_declared_symbol
 from .value import (
     AnySource,
     AnyValue,
@@ -36,7 +28,6 @@ from .value import (
     IntersectionValue,
     KnownValue,
     MultiValuedValue,
-    ParamSpecParam,
     PartialValue,
     PartialValueOperation,
     PredicateValue,
@@ -57,8 +48,6 @@ from .value import (
     replace_fallback,
     type_param_to_value,
 )
-
-_SyntheticGenericBases = dict[type | str, dict[TypeVarLike, Value]]
 
 
 def _get_runtime_dataclass_fields(typ: type) -> tuple[DataclassFieldRecord, ...]:
@@ -135,219 +124,6 @@ def _get_synthetic_dataclass_fields(
             ordered.append(field_name)
         records_by_name[field_name] = record
     return tuple(records_by_name[name] for name in ordered)
-
-
-def _get_direct_mro_bases(
-    checker: Checker, typ: type | str
-) -> tuple[list[type | str], tuple[MroValue, ...]]:
-    direct_base_keys = _get_direct_mro_base_keys(checker, typ)
-    if not direct_base_keys:
-        return direct_base_keys, ()
-    generic_bases = _get_generic_bases_for_class_definition(checker, typ)
-    tuple_base = checker._namedtuple_tuple_base(typ)
-    direct_base_values = tuple(
-        _specialize_mro_base_value(
-            checker, base_key, generic_bases=generic_bases, tuple_base=tuple_base
-        )
-        for base_key in direct_base_keys
-    )
-    return direct_base_keys, direct_base_values
-
-
-def _get_direct_mro_base_keys(checker: Checker, typ: type | str) -> list[type | str]:
-    direct_bases: list[type | str] = []
-    synthetic_class = checker.get_synthetic_class(typ)
-    if synthetic_class is not None:
-        for base in synthetic_class.base_classes:
-            for base_value in _iter_base_type_values(base, checker.arg_spec_cache):
-                _append_unique_class_key(direct_bases, base_value.typ)
-    if not direct_bases and isinstance(typ, type):
-        for base in safe_getattr(typ, "__bases__", ()):
-            if isinstance(base, type):
-                _append_unique_class_key(direct_bases, base)
-    elif synthetic_class is None:
-        stub_bases = checker.ts_finder.get_bases_for_value(TypedValue(typ)) or []
-        for base in stub_bases:
-            for base_value in _iter_base_type_values(base, checker.arg_spec_cache):
-                _append_unique_class_key(direct_bases, base_value.typ)
-    if not direct_bases and typ is not object and typ != "builtins.object":
-        direct_bases.append(object)
-    return direct_bases
-
-
-def _specialize_mro_base_value(
-    checker: Checker,
-    base_key: type | str,
-    *,
-    generic_bases: GenericBases,
-    tuple_base: SequenceValue | None = None,
-) -> MroValue:
-    if tuple_base is not None and class_keys_match(base_key, tuple):
-        return tuple_base
-    type_params = tuple(checker.get_type_parameters(base_key))
-    if not type_params:
-        return TypedValue(base_key)
-    tv_map = generic_bases.get(base_key, {})
-    substitutions: dict[TypeVarLike, Value] = {}
-    args: list[Value] = []
-    for type_param in type_params:
-        arg = tv_map.get(type_param.typevar)
-        if arg is None:
-            arg = _default_type_argument_for_param(type_param, substitutions, checker)
-        else:
-            arg = arg.substitute_typevars(substitutions)
-        if isinstance(type_param, ParamSpecParam):
-            arg = coerce_paramspec_specialization_to_input_sig(arg)
-        substitutions[type_param.typevar] = arg
-        args.append(arg)
-    if (
-        base_key is tuple
-        and len(args) == 1
-        and isinstance(args[0], SequenceValue)
-        and args[0].typ is tuple
-    ):
-        return args[0]
-    return GenericValue(base_key, args)
-
-
-def _self_mro_value(
-    typ: type | str,
-    *,
-    declared_type_params: Sequence[TypeParam],
-    direct_base_values: Sequence[Value],
-    tuple_base: SequenceValue | None,
-) -> TypedValue:
-    if tuple_base is not None:
-        return tuple_base
-    if declared_type_params:
-        return GenericValue(
-            typ,
-            [type_param_to_value(type_param) for type_param in declared_type_params],
-        )
-    if len(direct_base_values) == 1 and isinstance(
-        direct_base_values[0], (GenericValue, SequenceValue)
-    ):
-        return direct_base_values[0]
-    return TypedValue(typ)
-
-
-def _mro_substitution_map_for_base(
-    checker: Checker, base_value: Value, type_params: Sequence[TypeParam]
-) -> dict[TypeVarLike, Value]:
-    if not type_params:
-        return {}
-    if isinstance(base_value, SequenceValue) and base_value.typ is tuple:
-        generic_args: Sequence[Value] = (base_value,)
-    elif isinstance(base_value, GenericValue):
-        generic_args = base_value.args
-    else:
-        generic_args = ()
-    specialized_args = checker.arg_spec_cache._specialize_generic_type_params(
-        type_params, generic_args
-    )
-    substitutions: dict[TypeVarLike, Value] = {}
-    for type_param, arg in zip(type_params, specialized_args):
-        if isinstance(type_param, ParamSpecParam):
-            arg = coerce_paramspec_specialization_to_input_sig(arg)
-        substitutions[type_param.typevar] = arg.substitute_typevars(substitutions)
-    return substitutions
-
-
-def _specialize_mro_tail_for_base(
-    checker: Checker,
-    base_value: MroValue,
-    type_params: Sequence[TypeParam],
-    tail: Sequence[MroValue],
-) -> tuple[MroValue, ...]:
-    substitutions = _mro_substitution_map_for_base(checker, base_value, type_params)
-    if not substitutions:
-        return tuple(tail)
-    return tuple(value.substitute_typevars(substitutions) for value in tail)
-
-
-def _merge_mro_value_sequences(
-    checker: Checker, sequences: Sequence[Sequence[MroValue]]
-) -> tuple[MroValue, ...]:
-    pending = [list(sequence) for sequence in sequences if sequence]
-    result: list[MroValue] = []
-    while pending:
-        candidate: MroValue | None = None
-        candidate_key: type | str | None = None
-        for sequence in pending:
-            head = sequence[0]
-            head_key = _class_key_from_value(head)
-            if head_key is None:
-                continue
-            if any(
-                any(
-                    tail_key is not None and class_keys_match(head_key, tail_key)
-                    for tail_key in (_class_key_from_value(tail) for tail in other[1:])
-                )
-                for other in pending
-            ):
-                continue
-            candidate = head
-            candidate_key = head_key
-            break
-        if candidate is None:
-            candidate = pending[0][0]
-            candidate_key = _class_key_from_value(candidate)
-        result.append(candidate)
-        new_pending: list[list[MroValue]] = []
-        for sequence in pending:
-            if sequence and candidate_key is not None:
-                head_key = _class_key_from_value(sequence[0])
-                if head_key is not None and class_keys_match(head_key, candidate_key):
-                    sequence = sequence[1:]
-            elif sequence and sequence[0] == candidate:
-                sequence = sequence[1:]
-            if sequence:
-                new_pending.append(sequence)
-        pending = new_pending
-    return tuple(result)
-
-
-def _get_generic_bases_for_class_definition(
-    checker: Checker, typ: type | str
-) -> GenericBases:
-    synthetic_bases = checker._get_synthetic_generic_bases(typ)
-    if synthetic_bases is None:
-        declared_type_params = tuple(checker.get_type_parameters(typ))
-    else:
-        declared_type_params = checker._get_synthetic_declared_type_params(typ)
-    generic_bases = checker.arg_spec_cache.get_generic_bases(
-        typ, [type_param_to_value(type_param) for type_param in declared_type_params]
-    )
-    merged: _SyntheticGenericBases = {
-        base: dict(tv_map) for base, tv_map in generic_bases.items()
-    }
-    if synthetic_bases is None:
-        checker._augment_namedtuple_generic_bases(typ, merged, {})
-        return merged
-
-    substitution_map = {
-        type_param.typevar: type_param_to_value(type_param)
-        for type_param in declared_type_params
-    }
-    if declared_type_params:
-        merged.setdefault(typ, {})
-        direct_base_map: dict[TypeVarLike, Value] = merged[typ]
-        for type_param in declared_type_params:
-            direct_base_map[type_param.typevar] = substitution_map[type_param.typevar]
-    for base, tv_map in synthetic_bases.items():
-        substituted_tv_map = {
-            tv: value.substitute_typevars(substitution_map)
-            for tv, value in tv_map.items()
-        }
-        merged.setdefault(base, {}).update(substituted_tv_map)
-    checker._augment_namedtuple_generic_bases(typ, merged, substitution_map)
-    return merged
-
-
-def _append_unique_class_key(keys: list[type | str], key: type | str) -> None:
-    if any(class_keys_match(existing, key) for existing in keys):
-        return
-    keys.append(key)
 
 
 def _iter_base_type_values(

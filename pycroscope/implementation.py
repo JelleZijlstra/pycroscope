@@ -27,6 +27,7 @@ from .relations import (
     has_relation,
     intersect_values,
     is_assignable,
+    is_assignable_with_reason,
     is_equivalent,
     is_equivalent_with_reason,
 )
@@ -746,8 +747,15 @@ def _super_impl(ctx: CallContext) -> Value:
     else:
         return AnyValue(AnySource.inference)
 
-    if not tobj.is_assignable_to_type(cls):
-        ctx.show_error("Incompatible arguments to super", ErrorCode.bad_super_call)
+    can_assign = is_assignable_with_reason(
+        TypedValue(tobj.typ), TypedValue(cls), ctx.visitor
+    )
+    if isinstance(can_assign, CanAssignError):
+        ctx.show_error(
+            "Incompatible arguments to super",
+            ErrorCode.bad_super_call,
+            detail=str(can_assign),
+        )
 
     current_class = ctx.visitor.asynq_checker.current_class
     if current_class is not None and cls is not current_class:
@@ -983,10 +991,9 @@ def _sequence_common_getitem_impl(ctx: CallContext, typ: type) -> ImplReturn:
                 ctx.show_error(f"Invalid {typ.__name__} key {key}")
                 return AnyValue(AnySource.error)
         elif isinstance(key, TypedValue):
-            tobj = key.get_type_object(ctx.visitor)
-            if tobj.is_assignable_to_type(int):
+            if is_assignable(TypedValue(int), key, ctx.visitor):
                 return type_arg
-            elif tobj.is_assignable_to_type(slice):
+            elif is_assignable(TypedValue(slice), key, ctx.visitor):
                 if from_tuple_subtype:
                     return TypedValue(tuple)
                 if generated_tuple_sequence and isinstance(

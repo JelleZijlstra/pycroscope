@@ -371,6 +371,7 @@ class TypeObject:
 
     def _compute_mro(self) -> list[MroEntry]:
         direct_bases = self.get_direct_bases()
+        virtual_bases = self.get_virtual_bases()
 
         params = self.get_declared_type_params()
         if params:
@@ -386,6 +387,9 @@ class TypeObject:
         child_mros = [
             _get_mro_from_mro_value(base, parent_tv_map, self._checker)
             for base in direct_bases
+        ] + [
+            _get_mro_from_mro_value(base, parent_tv_map, self._checker, virtual=True)
+            for base in virtual_bases
         ]
         if isinstance(self.typ, str):
             child_mros = [
@@ -449,30 +453,20 @@ class TypeObject:
         return isinstance(self.typ, type) and hasattr(self.typ, "_VALUES_TO_NAMES")
 
     def _compute_virtual_bases(self) -> list[MroValue]:
-        virtual_bases: list[MroValue] = []
-        present_keys = {
-            key
-            for key in (
-                _class_key_from_value(entry.get_mro_value()) for entry in self.get_mro()
-            )
-            if key is not None
+        present_keys = {self.typ} | {
+            val.typ for val in self.get_direct_bases() if isinstance(val, TypedValue)
         }
+        return [
+            TypedValue(key)
+            for key in self._iter_candidate_virtual_bases()
+            if key not in present_keys
+        ]
 
-        def add_virtual_base_key(key: type | str) -> None:
-            if class_keys_match(key, self.typ):
-                return
-            if any(class_keys_match(existing, key) for existing in present_keys):
-                return
-            if any(
-                isinstance(base, TypedValue) and class_keys_match(base.typ, key)
-                for base in virtual_bases
-            ):
-                return
-            virtual_bases.append(TypedValue(key))
-
-        for key in self._iter_additional_nominal_base_keys():
-            add_virtual_base_key(key)
-        return virtual_bases
+    def _iter_candidate_virtual_bases(self) -> Iterator[type | str]:
+        if isinstance(self.typ, type):
+            yield from self._checker.get_additional_bases(self.typ)
+        if self._compute_is_thrift_enum():
+            yield int
 
     def _compute_is_universally_assignable(self) -> bool:
         return isinstance(self.typ, type) and issubclass(self.typ, mock.NonCallableMock)
@@ -488,8 +482,6 @@ class TypeObject:
             self._protocol_members = self._compute_protocol_members()
         if self._dataclass_fields is not None:
             self._dataclass_fields = self._compute_dataclass_fields()
-        if self._virtual_bases is not None:
-            self._virtual_bases = self._compute_virtual_bases()
         if self._is_thrift_enum is not None:
             self._is_thrift_enum = self._compute_is_thrift_enum()
         if self._is_universally_assignable is not None:
@@ -585,6 +577,11 @@ class TypeObject:
             self._direct_bases = self._compute_direct_bases()
         return self._direct_bases
 
+    def get_direct_base_type_objects(self) -> Iterable["TypeObject"]:
+        for base in self.get_direct_bases():
+            if isinstance(base, TypedValue):
+                yield base.get_type_object(self._checker)
+
     def get_mro(self) -> Sequence[MroEntry]:
         if self._mro is None:
             self._mro = self._compute_mro()
@@ -627,69 +624,6 @@ class TypeObject:
             and safe_issubclass(self.typ, class_key)
         )
 
-    def _iter_synthetic_base_keys(self) -> Iterator[type | str]:
-        import pycroscope.type_object_builder as type_object_builder
-
-        synthetic_class = self._checker.get_synthetic_class(self.typ)
-        if synthetic_class is None:
-            return
-        for base in synthetic_class.base_classes:
-            for base_value in type_object_builder._iter_base_type_values(
-                base, self._checker._arg_spec_cache
-            ):
-                yield base_value.typ
-
-    def _get_typeshed_base_keys(self, typ: type | str) -> set[type | str]:
-        import pycroscope.type_object_builder as type_object_builder
-
-        base_values = self._checker.ts_finder.get_bases_recursively(typ)
-        return {
-            base_value.typ
-            for base in base_values
-            for base_value in type_object_builder._iter_base_type_values(
-                base, self._checker._arg_spec_cache
-            )
-        }
-
-    def _get_recursive_typeshed_base_keys(self) -> set[type | str]:
-        seen: set[type | str] = set()
-        to_do = {self.typ}
-        result: set[type | str] = set()
-        while to_do:
-            typ = to_do.pop()
-            if typ in seen:
-                continue
-            bases = self._get_typeshed_base_keys(typ)
-            result |= bases
-            to_do |= bases
-            seen.add(typ)
-        return result
-
-    def _iter_additional_nominal_base_keys(self) -> Iterator[type | str]:
-        if isinstance(self.typ, str):
-            yield from self._get_typeshed_base_keys(self.typ)
-            yield from self._iter_synthetic_base_keys()
-        else:
-            yield from self._checker.get_additional_bases(self.typ)
-            yield from self._get_recursive_typeshed_base_keys()
-        if self._compute_is_thrift_enum():
-            yield int
-
-    def _iter_protocol_parent_type_objects(self) -> Iterator["TypeObject"]:
-        for base_value in self.get_nominal_bases():
-            base_key = _class_key_from_value(base_value)
-            if base_key is None or (
-                base_key in {object, "builtins.object"}
-                or is_typing_name(base_key, "Protocol")
-                or is_typing_name(base_key, "Generic")
-            ):
-                continue
-            if not isinstance(base_value, TypedValue):
-                continue
-            base_type_object = base_value.get_type_object(self._checker)
-            if base_type_object.is_protocol():
-                yield base_type_object
-
     def _get_protocol_members_contributed_by_self(self) -> set[str]:
         if isinstance(self.typ, str) or self._checker.ts_finder.is_protocol(self.typ):
             members = {
@@ -705,8 +639,9 @@ class TypeObject:
 
     def _get_protocol_members_contributed_by_protocol_bases(self) -> set[str]:
         members = set()
-        for base_type_object in self._iter_protocol_parent_type_objects():
-            members |= base_type_object.get_protocol_members()
+        for base_tobj in self.get_direct_base_type_objects():
+            if base_tobj.is_protocol():
+                members |= base_tobj.get_protocol_members()
         return members
 
     def _get_protocol_members_from_overlay(self) -> set[str]:
@@ -840,7 +775,17 @@ class TypeObject:
         return None
 
     def is_assignable_to_type(self, typ: type) -> bool:
-        return self.is_universally_assignable() or self.has_nominal_base(typ)
+        return self.is_universally_assignable() or any(
+            entry.tobj is not None
+            and (
+                entry.tobj.typ is typ
+                or (
+                    safe_isinstance(entry.tobj.typ, type)
+                    and safe_issubclass(entry.tobj.typ, typ)
+                )
+            )
+            for entry in self.get_mro()
+        )
 
     def is_assignable_to_type_object(self, other: "TypeObject") -> bool:
         if class_keys_match(self.typ, other.typ):
@@ -2529,6 +2474,8 @@ def _get_mro_from_mro_value(
     mro_value: MroValue,
     parent_tv_map: TypeVarMap,
     checker: "pycroscope.checker.Checker",
+    *,
+    virtual: bool = False,
 ) -> list[MroEntry]:
     match mro_value:
         case TypedValue():
@@ -2541,11 +2488,13 @@ def _get_mro_from_mro_value(
                     mro[0]
                 )
                 mro[0] = replace(mro[0], value=mro_value)
-            return mro
         case AnyValue():
-            return [ANY_MRO_ENTRY, _make_object_mro_entry(checker)]
+            mro = [ANY_MRO_ENTRY, _make_object_mro_entry(checker)]
         case _:
             assert_never(mro_value)
+    if virtual:
+        mro = [replace(entry, is_virtual=True) for entry in mro]
+    return mro
 
 
 def _match_up_generic_params(
