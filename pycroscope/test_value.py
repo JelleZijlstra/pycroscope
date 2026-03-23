@@ -19,6 +19,7 @@ from .predicates import MinLen
 from .relations import _extract_type_form, intersect_values
 from .signature import ELLIPSIS_PARAM, Signature
 from .stacked_scopes import Composite
+from .type_object import NamedTupleField
 from .value import (
     NO_RETURN_VALUE,
     AnnotatedValue,
@@ -27,19 +28,16 @@ from .value import (
     BoundsMap,
     CallableValue,
     CanAssignError,
-    ClassSymbol,
     GenericValue,
     IntersectionValue,
     KnownValue,
     KVPair,
     MultiValuedValue,
-    NamedTupleInfo,
     OverlapMode,
     OverlappingValue,
     SequenceValue,
     SubclassValue,
     SuperValue,
-    SyntheticClassObjectValue,
     TypedValue,
     TypeIsExtension,
     TypeVarParam,
@@ -747,34 +745,15 @@ def test_synthetic_class_object_value_unresolved_nominal_class() -> None:
 
 def test_synthetic_namedtuple_members_without_runtime_class() -> None:
     checker = Checker()
-    point = SyntheticClassObjectValue(
-        "Point",
-        TypedValue("mod.Point"),
-        base_classes=(TypedValue(tuple),),
-        namedtuple_info=NamedTupleInfo(
-            field_names=("x", "label"), has_namedtuple_marker_base=True
-        ),
-    )
-    checker.register_synthetic_class(point)
     type_object = checker.make_type_object("mod.Point")
-    type_object.set_declared_symbol(
-        "x",
-        ClassSymbol(
-            annotation=TypedValue(int),
-            is_instance_only=True,
-            initializer=TypedValue(int),
-        ),
-    )
-    type_object.set_declared_symbol(
-        "label",
-        ClassSymbol(
-            annotation=TypedValue(str),
-            is_instance_only=True,
-            initializer=TypedValue(str),
-        ),
+    type_object.set_namedtuple_fields(
+        [
+            NamedTupleField("x", TypedValue(int), None),
+            NamedTupleField("label", TypedValue(str), None),
+        ]
     )
 
-    assert value.ordered_namedtuple_fields_from_synthetic(point, checker) == (
+    assert tuple(field.name for field in type_object.get_namedtuple_fields()) == (
         "x",
         "label",
     )

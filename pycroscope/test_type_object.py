@@ -23,7 +23,6 @@ from .value import (
     IntersectionValue,
     KnownValue,
     MultiValuedValue,
-    NamedTupleInfo,
     SubclassValue,
     SyntheticClassObjectValue,
     TypedValue,
@@ -239,27 +238,10 @@ def test_runtime_namedtuple_field_is_readonly() -> None:
 
 def test_type_object_exposes_synthetic_namedtuple_metadata() -> None:
     checker = Checker()
-    base = SyntheticClassObjectValue(
-        "Base",
-        TypedValue("mod.Base"),
-        base_classes=(TypedValue(tuple),),
-        namedtuple_info=NamedTupleInfo(
-            field_names=("x",), has_namedtuple_marker_base=True
-        ),
+    checker.make_type_object("mod.Base").set_namedtuple_fields(
+        [NamedTupleField("x", TypedValue(int), None)]
     )
-    child = SyntheticClassObjectValue(
-        "Child",
-        TypedValue("mod.Child"),
-        base_classes=(TypedValue("mod.Base"),),
-        namedtuple_info=NamedTupleInfo(
-            field_names=("label",), has_namedtuple_marker_base=False
-        ),
-    )
-    checker.register_synthetic_class(base)
-    checker.register_synthetic_class(child)
-    checker.make_type_object("mod.Base").set_declared_symbol(
-        "x", ClassSymbol(annotation=TypedValue(int), is_instance_only=True)
-    )
+    checker.make_type_object("mod.Child").set_base_values((TypedValue("mod.Base"),))
     checker.make_type_object("mod.Child").set_declared_symbol(
         "label", ClassSymbol(annotation=TypedValue(str), is_instance_only=True)
     )

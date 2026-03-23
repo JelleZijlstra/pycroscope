@@ -53,7 +53,6 @@ from pycroscope.error_code import Error
 from pycroscope.extensions import CustomCheck, ExternalType
 from pycroscope.safe import (
     is_instance_of_typing_name,
-    is_namedtuple_class,
     safe_equals,
     safe_getattr,
     safe_isinstance,
@@ -2107,9 +2106,6 @@ class SyntheticClassObjectValue(Value):
         default=None, compare=False, hash=False, repr=False
     )
     metaclass: Value | None = field(default=None, compare=False, hash=False, repr=False)
-    namedtuple_info: "NamedTupleInfo | None" = field(
-        default=None, compare=False, hash=False, repr=False
-    )
     dataclass_info: "DataclassInfo | None" = field(
         default=None, compare=False, hash=False, repr=False
     )
@@ -2145,7 +2141,6 @@ class SyntheticClassObjectValue(Value):
                 if self.metaclass is not None
                 else None
             ),
-            namedtuple_info=self.namedtuple_info,
             dataclass_info=(
                 self.dataclass_info.substitute_typevars(typevars)
                 if self.dataclass_info is not None
@@ -2187,8 +2182,6 @@ class SyntheticClassObjectValue(Value):
             yield from self.runtime_class.walk_values()
         if self.metaclass is not None:
             yield from self.metaclass.walk_values()
-        if self.namedtuple_info is not None:
-            yield from self.namedtuple_info.walk_values()
         if self.dataclass_info is not None:
             yield from self.dataclass_info.walk_values()
         if self.dataclass_transform_info is not None:
@@ -3191,15 +3184,6 @@ class PropertyInfo:
 
 
 @dataclass(frozen=True)
-class NamedTupleInfo:
-    field_names: tuple[str, ...] = ()
-    has_namedtuple_marker_base: bool = False
-
-    def walk_values(self) -> Iterable[Value]:
-        yield from ()
-
-
-@dataclass(frozen=True)
 class DataclassTransformExtension(Extension):
     info: DataclassTransformInfo
 
@@ -3945,153 +3929,12 @@ def is_iterable(value: Value, ctx: CanAssignContext) -> CanAssignError | Value:
     return tv_map.get(T, AnyValue(AnySource.generic_argument))
 
 
-def ordered_namedtuple_fields_from_synthetic(
-    synthetic: SyntheticClassObjectValue, ctx: CanAssignContext
-) -> tuple[str, ...]:
-    inherited: list[str] = []
-    for base in synthetic.base_classes:
-        for subval in flatten_values(replace_fallback(base)):
-            if isinstance(subval, SyntheticClassObjectValue):
-                runtime_class = subval.runtime_class
-                if subval.namedtuple_info is not None or (
-                    isinstance(runtime_class, KnownValue)
-                    and isinstance(runtime_class.val, type)
-                    and is_namedtuple_class(runtime_class.val)
-                ):
-                    inherited.extend(
-                        ordered_namedtuple_fields_from_synthetic(subval, ctx)
-                    )
-            elif isinstance(subval, TypedValue):
-                base_tobj = subval.get_type_object(ctx)
-                if base_tobj.is_namedtuple_like():
-                    inherited.extend(
-                        field.name for field in base_tobj.get_namedtuple_fields()
-                    )
-            elif isinstance(subval, SubclassValue) and isinstance(
-                subval.typ, TypedValue
-            ):
-                base_tobj = subval.typ.get_type_object(ctx)
-                if base_tobj.is_namedtuple_like():
-                    inherited.extend(
-                        field.name for field in base_tobj.get_namedtuple_fields()
-                    )
-            elif isinstance(subval, KnownValue) and isinstance(subval.val, type):
-                fields_obj = safe_getattr(subval.val, "_fields", None)
-                if is_namedtuple_class(subval.val) and isinstance(fields_obj, tuple):
-                    inherited.extend(
-                        field for field in fields_obj if isinstance(field, str)
-                    )
-    local_fields: list[str] = []
-    if synthetic.namedtuple_info is not None and synthetic.namedtuple_info.field_names:
-        if synthetic.namedtuple_info.has_namedtuple_marker_base or not inherited:
-            local_fields.extend(synthetic.namedtuple_info.field_names)
-    else:
-        runtime_class_value = synthetic.runtime_class
-        if (
-            isinstance(runtime_class_value, KnownValue)
-            and isinstance(runtime_class_value.val, type)
-            and is_namedtuple_class(runtime_class_value.val)
-        ):
-            fields_obj = safe_getattr(runtime_class_value.val, "_fields", None)
-            if isinstance(fields_obj, tuple):
-                local_fields.extend(
-                    field for field in fields_obj if isinstance(field, str)
-                )
-        else:
-            declared_symbols = get_synthetic_declared_symbols(synthetic, ctx)
-            allowed_names = {
-                name
-                for name, symbol in declared_symbols.items()
-                if symbol.is_instance_only
-                and not symbol.is_classvar
-                and not symbol.is_initvar
-            }
-            local_fields.extend(
-                name
-                for name, symbol in declared_symbols.items()
-                if not symbol.is_method and (not allowed_names or name in allowed_names)
-            )
-            for name in allowed_names:
-                symbol = declared_symbols.get(name)
-                if symbol is None or symbol.is_method or name in local_fields:
-                    continue
-                local_fields.append(name)
-    ordered_fields: list[str] = []
-    for name in [*inherited, *local_fields]:
-        if name not in ordered_fields:
-            ordered_fields.append(name)
-    return tuple(ordered_fields)
-
-
 def get_namedtuple_field_annotation(namedtuple_type: type, field_name: str) -> object:
     for base in namedtuple_type.__mro__:
         annotations = safe_getattr(base, "__annotations__", None)
         if isinstance(annotations, Mapping) and field_name in annotations:
             return annotations[field_name]
     return typing.Any
-
-
-def get_namedtuple_field_value_from_synthetic(
-    synthetic_class: SyntheticClassObjectValue, field_name: str, ctx: CanAssignContext
-) -> Value | None:
-    from .annotations import type_from_runtime
-
-    symbol = get_synthetic_declared_symbol(synthetic_class, field_name, ctx)
-    if symbol is not None:
-        if (
-            synthetic_class.namedtuple_info is not None
-            and not symbol.is_classvar
-            and not symbol.is_initvar
-            and not symbol.is_method
-        ):
-            return symbol.get_declared_type()
-        if symbol.initializer is not None and not (
-            synthetic_class.namedtuple_info is not None and not symbol.is_method
-        ):
-            return symbol.initializer
-    runtime_class_value = synthetic_class.runtime_class
-    if (
-        isinstance(runtime_class_value, KnownValue)
-        and isinstance(runtime_class_value.val, type)
-        and is_namedtuple_class(runtime_class_value.val)
-    ):
-        return type_from_runtime(
-            get_namedtuple_field_annotation(runtime_class_value.val, field_name),
-            visitor=ctx,
-            suppress_errors=True,
-        )
-    for base_value in synthetic_class.get_type_object(ctx).get_direct_bases():
-        if not isinstance(base_value, TypedValue):
-            continue
-        field = base_value.get_type_object(ctx).get_namedtuple_field(field_name)
-        if field is not None:
-            return field.typ
-    for base_value in synthetic_class.base_classes:
-        for subval in flatten_values(replace_fallback(base_value)):
-            if isinstance(subval, SyntheticClassObjectValue):
-                field_value = get_namedtuple_field_value_from_synthetic(
-                    subval, field_name, ctx
-                )
-                if field_value is not None:
-                    return field_value
-            elif isinstance(subval, TypedValue):
-                field = subval.get_type_object(ctx).get_namedtuple_field(field_name)
-                if field is not None:
-                    return field.typ
-            elif isinstance(subval, SubclassValue) and isinstance(
-                subval.typ, TypedValue
-            ):
-                field = subval.typ.get_type_object(ctx).get_namedtuple_field(field_name)
-                if field is not None:
-                    return field.typ
-            elif isinstance(subval, KnownValue) and isinstance(subval.val, type):
-                if is_namedtuple_class(subval.val):
-                    return type_from_runtime(
-                        get_namedtuple_field_annotation(subval.val, field_name),
-                        visitor=ctx,
-                        suppress_errors=True,
-                    )
-    return None
 
 
 def tuple_members_from_value(

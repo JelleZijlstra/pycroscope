@@ -67,7 +67,6 @@ from .value import (
     IntersectionValue,
     KnownValue,
     MultiValuedValue,
-    NamedTupleInfo,
     ParamSpecParam,
     PredicateValue,
     PropertyInfo,
@@ -89,10 +88,8 @@ from .value import (
     Value,
     default_value_for_type_param,
     freshen_typevars_for_inference,
-    get_namedtuple_field_value_from_synthetic,
     get_tv_map,
     match_typevar_arguments,
-    ordered_namedtuple_fields_from_synthetic,
     replace_fallback,
     stringify_object,
     tuple_members_from_value,
@@ -466,14 +463,9 @@ class TypeObject:
         synthetic_class = self._checker.get_synthetic_class(self.typ)
         if synthetic_class is None:
             return None
-        if synthetic_class.namedtuple_info is not None:
+        if self._is_direct_namedtuple:
             return synthetic_class
-        runtime_class = synthetic_class.runtime_class
-        if (
-            isinstance(runtime_class, KnownValue)
-            and isinstance(runtime_class.val, type)
-            and is_namedtuple_class(runtime_class.val)
-        ):
+        if self._get_runtime_namedtuple_class(synthetic_class) is not None:
             return synthetic_class
         for base in synthetic_class.base_classes:
             for base_value in type_object_builder._iter_base_type_values(
@@ -481,6 +473,18 @@ class TypeObject:
             ):
                 if self._checker.make_type_object(base_value.typ).is_namedtuple_like():
                     return synthetic_class
+        return None
+
+    def _get_runtime_namedtuple_class(
+        self, synthetic_class: SyntheticClassObjectValue
+    ) -> type | None:
+        runtime_class = synthetic_class.runtime_class
+        if (
+            isinstance(runtime_class, KnownValue)
+            and isinstance(runtime_class.val, type)
+            and is_namedtuple_class(runtime_class.val)
+        ):
+            return runtime_class.val
         return None
 
     def _namedtuple_fields_from_runtime(self, typ: type) -> tuple[NamedTupleField, ...]:
@@ -508,21 +512,117 @@ class TypeObject:
     def _compute_synthetic_namedtuple_fields(
         self, synthetic_class: SyntheticClassObjectValue
     ) -> tuple[NamedTupleField, ...]:
-        return tuple(
-            NamedTupleField(
-                field_name,
-                (
-                    get_namedtuple_field_value_from_synthetic(
-                        synthetic_class, field_name, self._checker
-                    )
-                    or AnyValue(AnySource.inference)
-                ),
-                None,
-            )
-            for field_name in ordered_namedtuple_fields_from_synthetic(
-                synthetic_class, self._checker
-            )
+        inherited_fields = tuple(
+            self._iter_synthetic_namedtuple_base_fields(synthetic_class)
         )
+        prefer_declared_type = not inherited_fields
+        field_names = [field.name for field in inherited_fields]
+        for field_name in self._get_synthetic_namedtuple_local_field_names(
+            synthetic_class, has_inherited_fields=bool(inherited_fields)
+        ):
+            if field_name not in field_names:
+                field_names.append(field_name)
+        inherited_by_name = {field.name: field for field in inherited_fields}
+        return tuple(
+            inherited_by_name.get(
+                field_name,
+                NamedTupleField(
+                    field_name,
+                    self._get_synthetic_namedtuple_field_value(
+                        synthetic_class,
+                        field_name,
+                        prefer_declared_type=prefer_declared_type,
+                    )
+                    or AnyValue(AnySource.inference),
+                    None,
+                ),
+            )
+            for field_name in field_names
+        )
+
+    def _iter_synthetic_namedtuple_base_fields(
+        self, synthetic_class: SyntheticClassObjectValue
+    ) -> Iterator[NamedTupleField]:
+        import pycroscope.type_object_builder as type_object_builder
+
+        seen: set[str] = set()
+        for base in synthetic_class.base_classes:
+            for base_value in type_object_builder._iter_base_type_values(
+                base, self._checker.arg_spec_cache
+            ):
+                base_tobj = self._checker.make_type_object(base_value.typ)
+                if not base_tobj.is_namedtuple_like():
+                    continue
+                for field in base_tobj.get_namedtuple_fields():
+                    if field.name in seen:
+                        continue
+                    seen.add(field.name)
+                    yield field
+
+    def _get_synthetic_namedtuple_local_field_names(
+        self, synthetic_class: SyntheticClassObjectValue, *, has_inherited_fields: bool
+    ) -> tuple[str, ...]:
+        runtime_namedtuple_class = self._get_runtime_namedtuple_class(synthetic_class)
+        if runtime_namedtuple_class is not None:
+            return tuple(
+                field.name
+                for field in self._namedtuple_fields_from_runtime(
+                    runtime_namedtuple_class
+                )
+            )
+        if has_inherited_fields:
+            return ()
+        declared_symbols = self.get_synthetic_declared_symbols()
+        allowed_names = {
+            name
+            for name, symbol in declared_symbols.items()
+            if symbol.is_instance_only
+            and not symbol.is_classvar
+            and not symbol.is_initvar
+        }
+        ordered = [
+            name
+            for name, symbol in declared_symbols.items()
+            if not symbol.is_method and (not allowed_names or name in allowed_names)
+        ]
+        for name in allowed_names:
+            symbol = declared_symbols.get(name)
+            if symbol is None or symbol.is_method or name in ordered:
+                continue
+            ordered.append(name)
+        return tuple(ordered)
+
+    def _get_synthetic_namedtuple_field_value(
+        self,
+        synthetic_class: SyntheticClassObjectValue,
+        field_name: str,
+        *,
+        prefer_declared_type: bool,
+    ) -> Value | None:
+        symbol = self.get_synthetic_declared_symbols().get(field_name)
+        if symbol is not None:
+            if (
+                prefer_declared_type
+                and not symbol.is_classvar
+                and not symbol.is_initvar
+                and not symbol.is_method
+            ):
+                return symbol.get_declared_type()
+            if symbol.initializer is not None and not (
+                prefer_declared_type and not symbol.is_method
+            ):
+                return symbol.initializer
+        runtime_namedtuple_class = self._get_runtime_namedtuple_class(synthetic_class)
+        if runtime_namedtuple_class is not None:
+            return type_from_runtime(
+                get_namedtuple_field_annotation(runtime_namedtuple_class, field_name),
+                visitor=self._checker,
+                suppress_errors=True,
+            )
+        for field in self._iter_synthetic_namedtuple_base_fields(synthetic_class):
+            if field.name == field_name:
+                return field.typ
+        return None
 
     def _compute_is_thrift_enum(self) -> bool:
         return isinstance(self.typ, type) and hasattr(self.typ, "_VALUES_TO_NAMES")
@@ -575,6 +675,12 @@ class TypeObject:
             self, fields, constructor_impl=constructor_impl
         )
 
+    def set_is_direct_namedtuple(self, is_direct_namedtuple: bool) -> None:
+        self._is_direct_namedtuple = is_direct_namedtuple
+        if not is_direct_namedtuple and self._namedtuple_fields is None:
+            self._update_loaded_synthetic_fields()
+            self._protocol_positive_cache.clear()
+
     def replace_declared_symbols(self, symbols: Mapping[str, ClassSymbol]) -> None:
         self._ensure_synthetic_class()
         synthetic_symbols = self.get_synthetic_declared_symbols()
@@ -596,9 +702,6 @@ class TypeObject:
         namedtuple_fields = self._namedtuple_fields_from_runtime(runtime_class)
         self.set_base_values((TypedValue(tuple),))
         self.set_runtime_class(runtime_class_value)
-        self.set_namedtuple_info(
-            NamedTupleInfo(field_names=tuple(field.name for field in namedtuple_fields))
-        )
         declared_symbols: dict[str, ClassSymbol] = {}
         type_object_builder._add_runtime_declared_symbols(
             runtime_class, declared_symbols
@@ -701,14 +804,6 @@ class TypeObject:
         # metaclass data directly.
         synthetic_class = self._ensure_synthetic_class()
         object.__setattr__(synthetic_class, "metaclass", metaclass)
-        self._update_loaded_synthetic_fields()
-        self._protocol_positive_cache.clear()
-
-    def set_namedtuple_info(self, info: NamedTupleInfo | None) -> None:
-        # TODO: Remove this once SyntheticClassObjectValue no longer stores
-        # namedtuple metadata directly.
-        synthetic_class = self._ensure_synthetic_class()
-        object.__setattr__(synthetic_class, "namedtuple_info", info)
         self._update_loaded_synthetic_fields()
         self._protocol_positive_cache.clear()
 
