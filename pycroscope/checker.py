@@ -26,7 +26,7 @@ from .input_sig import InputSigValue, coerce_paramspec_specialization_to_input_s
 from .node_visitor import Failure
 from .options import Options, PyObjectSequenceOption
 from .reexport import ImplicitReexportTracker
-from .safe import is_namedtuple_class, safe_getattr, safe_isinstance, safe_issubclass
+from .safe import safe_getattr, safe_isinstance, safe_issubclass
 from .shared_options import VariableNameValues
 from .signature import (
     ANY_SIGNATURE,
@@ -94,12 +94,10 @@ from .value import (
     VariableNameValue,
     flatten_values,
     get_inherited_synthetic_member_initializer,
-    get_namedtuple_field_value_from_synthetic,
     get_synthetic_member_initializer,
     get_tv_map,
     is_union,
     iter_type_params_in_value,
-    ordered_namedtuple_fields_from_synthetic,
     replace_fallback,
     set_self,
     type_param_to_value,
@@ -572,26 +570,6 @@ class Checker:
             return
         type_object.adopt_synthetic_class(synthetic_class)
 
-    def _namedtuple_field_value_for_type(
-        self, typ: type | str, field_name: str
-    ) -> Value:
-        synthetic_class = self.get_synthetic_class(typ)
-        if synthetic_class is not None:
-            field_value = get_namedtuple_field_value_from_synthetic(
-                synthetic_class, field_name, self
-            )
-            if field_value is not None:
-                return field_value
-        if isinstance(typ, type):
-            from .value import get_namedtuple_field_annotation
-
-            return type_from_runtime(
-                get_namedtuple_field_annotation(typ, field_name),
-                visitor=self,
-                suppress_errors=True,
-            )
-        return AnyValue(AnySource.inference)
-
     def get_generic_bases(
         self, typ: type | str, generic_args: Sequence[Value] = ()
     ) -> GenericBases:
@@ -797,116 +775,13 @@ class Checker:
         generic_bases.setdefault(tuple, {})[tuple_type_params[0].typevar] = tuple_base
 
     def _namedtuple_tuple_base(self, typ: type | str) -> SequenceValue | None:
-        synthetic_class = self.get_synthetic_class(typ)
         type_object = self.make_type_object(typ)
-        if type_object.is_direct_namedtuple():
-            field_names = tuple(
-                field.name for field in type_object.get_namedtuple_fields()
-            )
-        elif synthetic_class is not None and self._synthetic_class_is_namedtuple_like(
-            synthetic_class
-        ):
-            field_names = self._namedtuple_tuple_field_names_from_synthetic(
-                synthetic_class
-            )
-        elif isinstance(typ, type) and is_namedtuple_class(typ):
-            field_names = tuple(
-                field
-                for field in safe_getattr(typ, "_fields", ())
-                if isinstance(field, str)
-            )
-        else:
-            field_names = ()
-        if not field_names:
+        if not type_object.is_namedtuple_like():
             return None
-        members = [
-            (False, self._namedtuple_field_value_for_type(typ, field_name))
-            for field_name in field_names
-        ]
-        return SequenceValue(tuple, members)
-
-    def _namedtuple_tuple_field_names_from_synthetic(
-        self,
-        synthetic_class: SyntheticClassObjectValue,
-        *,
-        seen: frozenset[type | str] = frozenset(),
-    ) -> tuple[str, ...]:
-        class_type = synthetic_class.class_type
-        if not isinstance(class_type, TypedValue):
-            return ()
-        class_key = class_type.typ
-        if class_key in seen:
-            return ()
-        seen = seen | {class_key}
-        if synthetic_class.namedtuple_info is not None:
-            return ordered_namedtuple_fields_from_synthetic(synthetic_class, self)
-        runtime_class = synthetic_class.runtime_class
-        if (
-            isinstance(runtime_class, KnownValue)
-            and isinstance(runtime_class.val, type)
-            and is_namedtuple_class(runtime_class.val)
-        ):
-            return tuple(
-                field
-                for field in safe_getattr(runtime_class.val, "_fields", ())
-                if isinstance(field, str)
-            )
-
-        inherited_fields: list[str] = []
-        for base in synthetic_class.base_classes:
-            for base_value in pycroscope.type_object_builder._iter_base_type_values(
-                base, self.arg_spec_cache
-            ):
-                if isinstance(base_value.typ, type) and is_namedtuple_class(
-                    base_value.typ
-                ):
-                    inherited_fields.extend(
-                        field
-                        for field in safe_getattr(base_value.typ, "_fields", ())
-                        if isinstance(field, str) and field not in inherited_fields
-                    )
-                elif isinstance(base_value.typ, str):
-                    base_synthetic = self.get_synthetic_class(base_value.typ)
-                    if (
-                        base_synthetic is not None
-                        and self._synthetic_class_is_namedtuple_like(base_synthetic)
-                    ):
-                        for field in self._namedtuple_tuple_field_names_from_synthetic(
-                            base_synthetic, seen=seen
-                        ):
-                            if field not in inherited_fields:
-                                inherited_fields.append(field)
-        return tuple(inherited_fields)
-
-    def _synthetic_class_is_namedtuple_like(
-        self, synthetic_class: SyntheticClassObjectValue
-    ) -> bool:
-        if synthetic_class.namedtuple_info is not None:
-            return True
-        runtime_class = synthetic_class.runtime_class
-        if (
-            isinstance(runtime_class, KnownValue)
-            and isinstance(runtime_class.val, type)
-            and is_namedtuple_class(runtime_class.val)
-        ):
-            return True
-        for base in synthetic_class.base_classes:
-            for base_value in pycroscope.type_object_builder._iter_base_type_values(
-                base, self.arg_spec_cache
-            ):
-                if isinstance(base_value.typ, type) and is_namedtuple_class(
-                    base_value.typ
-                ):
-                    return True
-                if isinstance(base_value.typ, str):
-                    base_synthetic = self.get_synthetic_class(base_value.typ)
-                    if (
-                        base_synthetic is not None
-                        and base_synthetic is not synthetic_class
-                        and self._synthetic_class_is_namedtuple_like(base_synthetic)
-                    ):
-                        return True
-        return False
+        fields = tuple(type_object.get_namedtuple_fields())
+        if not fields:
+            return None
+        return SequenceValue(tuple, [(False, field.typ) for field in fields])
 
     def _get_synthetic_declared_type_params(
         self, typ: type | str
@@ -2549,8 +2424,11 @@ class Checker:
                             and safe_getattr(value.val, "__new__", None)
                             is object.__new__
                         )
+                        synthetic_type_object = self.make_type_object(
+                            synthetic_class.class_type.typ
+                        )
                         if synthetic_constructor_sig is not None and (
-                            self._synthetic_class_is_namedtuple_like(synthetic_class)
+                            synthetic_type_object.is_namedtuple_like()
                             or synthetic_class.is_dataclass
                             or has_direct_new
                             or has_direct_init
