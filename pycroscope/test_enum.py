@@ -123,6 +123,20 @@ class TestEnum(TestNameCheckVisitorBase):
             assert_type(color.value, Literal[1, 2])
 
     @assert_passes(run_in_both_module_modes=True)
+    def test_enum_alias_preserves_member_literal(self):
+        from enum import Enum
+
+        from typing_extensions import Literal, assert_type
+
+        class Color(Enum):
+            RED = 1
+            CRIMSON = RED
+
+        def capybara() -> None:
+            assert_type(Color.CRIMSON, Literal[Color.RED])
+            assert_type(Color.CRIMSON.value, Literal[1])
+
+    @assert_passes(run_in_both_module_modes=True)
     def test_enum_declared_value_type_checks_member_assignments(self):
         from enum import Enum
 
