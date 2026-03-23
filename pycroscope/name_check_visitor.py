@@ -269,7 +269,6 @@ from .value import (
     KnownValueWithTypeVars,
     KVPair,
     MultiValuedValue,
-    NamedTupleInfo,
     NoReturnConstraintExtension,
     OverlapMode,
     ParamSpecParam,
@@ -2993,8 +2992,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         *,
         metaclass_value: Value | None,
         class_key: type | str | None = None,
-        update_namedtuple_info: bool = False,
-        namedtuple_info: NamedTupleInfo | None = None,
     ) -> None:
         for name, attr_value in class_scope_values.items():
             if name.startswith("%"):
@@ -3005,8 +3002,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 synthetic_class, name, initializer=attr_value
             )
         synthetic_type = self._get_synthetic_type_object(synthetic_class)
-        if update_namedtuple_info:
-            synthetic_type.set_namedtuple_info(namedtuple_info)
         if metaclass_value is not None:
             synthetic_type.set_metaclass(metaclass_value)
         self._apply_synthetic_method_symbol_flags(synthetic_class, node)
@@ -4256,9 +4251,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 if self.module is None
                 else set()
             )
-            has_namedtuple_marker_base = any(
-                _is_namedtuple_marker_base(base_value) for base_value in base_values
-            )
             namedtuple_field_names = tuple(
                 statement.target.id
                 for statement in node.body
@@ -4311,14 +4303,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                         f"Field {statement.target.id!r} conflicts with base NamedTuple field",
                         error_code=ErrorCode.incompatible_override,
                     )
-            namedtuple_info = (
-                NamedTupleInfo(
-                    field_names=namedtuple_field_names,
-                    has_namedtuple_marker_base=has_namedtuple_marker_base,
-                )
-                if is_namedtuple_synthetic
-                else None
-            )
             synthetic_base_values = tuple(
                 self._base_values_for_generic_analysis(node, base_values)
             ) or (KnownValue(object),)
@@ -4340,13 +4324,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 )
                 tobj.clear_declared_symbols()
                 tobj.set_base_values(synthetic_base_values)
+                tobj.set_is_direct_namedtuple(is_direct_namedtuple)
                 tobj.set_dataclass_info(dataclass_semantics)
                 tobj.set_dataclass_transform_info(dataclass_transform_info)
-
-                if namedtuple_info is not None:
-                    self._get_synthetic_type_object(
-                        synthetic_class
-                    ).set_namedtuple_info(namedtuple_info)
                 if dataclass_transform_info is not None:
                     dataclass_helpers.set_synthetic_dataclass_transform_info(
                         synthetic_class, dataclass_transform_info
@@ -4793,8 +4773,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                             else None
                         ),
                         class_key=class_key,
-                        update_namedtuple_info=True,
-                        namedtuple_info=namedtuple_info,
                     )
                     value = synthetic_class
                 if dataclass_semantics is not None:
@@ -12629,7 +12607,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             synthetic_class = self._get_synthetic_class_for_current_scope()
             if (
                 synthetic_class is not None
-                and synthetic_class.namedtuple_info is not None
+                and self._get_synthetic_type_object(
+                    synthetic_class
+                ).is_direct_namedtuple()
             ):
                 readonly_name = node.target.id
         is_current_class_dataclass = self._is_current_class_dataclass()
