@@ -4289,14 +4289,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 tobj.set_is_direct_namedtuple(is_direct_namedtuple)
                 tobj.set_dataclass_info(dataclass_semantics)
                 tobj.set_dataclass_transform_info(dataclass_transform_info)
-                if dataclass_transform_info is not None:
-                    dataclass_helpers.set_synthetic_dataclass_transform_info(
-                        synthetic_class, dataclass_transform_info
-                    )
                 self._apply_synthetic_method_symbol_flags(synthetic_class, node)
-                dataclass_helpers.set_synthetic_dataclass_info(
-                    synthetic_class, dataclass_semantics
-                )
                 self._synthetic_classes_by_name[synthetic_fq_name] = synthetic_class
                 dataclass_metadata_class = synthetic_class
                 if self._is_checking():
@@ -4317,12 +4310,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 tobj.clear_declared_symbols()
                 tobj.set_dataclass_info(dataclass_semantics)
                 tobj.set_dataclass_transform_info(dataclass_transform_info)
-                dataclass_helpers.set_synthetic_dataclass_transform_info(
-                    existing, dataclass_transform_info
-                )
-                dataclass_helpers.set_synthetic_dataclass_info(
-                    existing, dataclass_semantics
-                )
                 dataclass_metadata_class = existing
             generic_class_key = (
                 class_scope_object
@@ -5746,23 +5733,23 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         self._show_error_if_checking(
             node,
             "Class cannot define __slots__ when dataclass slots=True",
-            error_code=ErrorCode.invalid_annotation,
+            error_code=ErrorCode.invalid_dataclass,
         )
 
     def _dataclass_slot_names_from_type(
         self, typ: type | str
     ) -> tuple[str, ...] | None:
-        synthetic_class = self.checker.get_synthetic_class(typ)
-        if synthetic_class is None:
-            return None
-        local_names = synthetic_class.dataclass_field_order
         tobj = self.make_type_object(typ)
+        synthetic_class = self.checker.get_synthetic_class(typ)
+        if synthetic_class is None or not synthetic_class.is_dataclass:
+            return None
+        local_fields = tobj.get_local_dataclass_fields()
         slot_names: list[str] = []
-        for name in local_names:
-            symbol = tobj.get_declared_symbol(name)
+        for record in local_fields:
+            symbol = tobj.get_declared_symbol(record.field_name)
             if symbol is not None and symbol.is_initvar:
                 continue
-            slot_names.append(name)
+            slot_names.append(record.field_name)
         return tuple(slot_names)
 
     def _dataclass_slot_names_from_synthetic_class(
@@ -6194,16 +6181,15 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             node,
         )
 
-        field_order = dataclass_class.dataclass_field_order
-        if not field_order:
+        field_records = self.make_type_object(
+            dataclass_class.class_type.typ
+        ).get_dataclass_fields()
+        if not field_records:
             return
 
         saw_default = False
-        for field_name in field_order:
-            symbol = self._get_synthetic_type_object(
-                dataclass_class
-            ).get_declared_symbol(field_name)
-            field = symbol.dataclass_field if symbol is not None else None
+        for record in field_records:
+            field = record.field_info
             if field is not None and (not field.init or field.kw_only):
                 continue
             if field is not None and field.has_default:
@@ -6213,7 +6199,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 self._show_error_if_checking(
                     error_node,
                     "Dataclass fields without defaults cannot follow fields with defaults",
-                    error_code=ErrorCode.invalid_annotation,
+                    error_code=ErrorCode.invalid_dataclass,
                 )
                 return
 
@@ -12327,7 +12313,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     self._show_error_if_checking(
                         node,
                         "dataclasses.KW_ONLY marker cannot have a default value",
-                        error_code=ErrorCode.invalid_annotation,
+                        error_code=ErrorCode.invalid_dataclass,
                     )
                 if self.annotate:
                     set_inferred_value(node.target, AnyValue(AnySource.inference))

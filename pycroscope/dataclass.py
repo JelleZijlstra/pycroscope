@@ -18,7 +18,6 @@ from .value import (
     CallableValue,
     ClassSymbol,
     DataclassInfo,
-    DataclassTransformInfo,
     GenericValue,
     KnownValue,
     Qualifier,
@@ -28,18 +27,6 @@ from .value import (
     annotate_value,
     replace_fallback,
 )
-
-
-def set_synthetic_dataclass_info(
-    synthetic_class: SyntheticClassObjectValue, semantics: DataclassInfo | None
-) -> None:
-    object.__setattr__(synthetic_class, "dataclass_info", semantics)
-
-
-def set_synthetic_dataclass_transform_info(
-    synthetic_class: SyntheticClassObjectValue, info: DataclassTransformInfo | None
-) -> None:
-    object.__setattr__(synthetic_class, "dataclass_transform_info", info)
 
 
 def synthesize_dataclass_hash_attribute(
@@ -158,7 +145,7 @@ def apply_synthetic_attributes(
 ) -> None:
     if semantics is None:
         return
-    set_synthetic_dataclass_info(synthetic_class, semantics)
+    type_object.set_dataclass_info(semantics)
 
     if (
         semantics.slots is True

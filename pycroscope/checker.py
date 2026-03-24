@@ -45,7 +45,6 @@ from .stacked_scopes import Composite
 from .suggested_type import CallableTracker
 from .type_object import (
     EXCLUDED_PROTOCOL_MEMBERS,
-    DataclassFieldRecord,
     TypeObject,
     class_keys_match,
     direct_bases_from_values,
@@ -63,7 +62,6 @@ from .value import (
     CanAssignContext,
     CanAssignError,
     ClassSymbol,
-    DataclassFieldInfo,
     GenericValue,
     KnownValue,
     KnownValueWithTypeVars,
@@ -2045,15 +2043,9 @@ class Checker:
         return Signature.make([], default_instance_type)
 
     def get_synthetic_dataclass_field_parameters(
-        self,
-        value: SyntheticClassObjectValue,
-        *,
-        include_inherited: bool = True,
-        seen: set[int] | None = None,
+        self, value: SyntheticClassObjectValue
     ) -> list[SigParameter]:
-        entries = self._get_synthetic_dataclass_field_entries(
-            value, include_inherited=include_inherited, seen=seen
-        )
+        entries = self._get_synthetic_dataclass_field_entries(value)
         params: list[SigParameter] = []
         by_name: dict[str, SigParameter] = {}
         for entry in entries:
@@ -2077,9 +2069,7 @@ class Checker:
     def get_synthetic_dataclass_post_init_parameters(
         self, value: SyntheticClassObjectValue
     ) -> list[SigParameter]:
-        entries = self._get_synthetic_dataclass_field_entries(
-            value, include_inherited=True, seen=None
-        )
+        entries = self._get_synthetic_dataclass_field_entries(value)
         return [
             dataclass_replace(
                 entry.parameter, kind=ParameterKind.POSITIONAL_OR_KEYWORD, default=None
@@ -2089,26 +2079,13 @@ class Checker:
         ]
 
     def _get_synthetic_dataclass_field_entries(
-        self,
-        value: SyntheticClassObjectValue,
-        *,
-        include_inherited: bool,
-        seen: set[int] | None,
+        self, value: SyntheticClassObjectValue
     ) -> list[_DataclassFieldEntry]:
-        if seen is None:
-            seen = set()
-        value_id = id(value)
-        if value_id in seen:
-            return []
-        seen.add(value_id)
-
         class_type = value.class_type
         if not isinstance(class_type, TypedValue):
             return []
-        field_records = self._get_ordered_synthetic_dataclass_field_records(
-            value, include_inherited=include_inherited
-        )
         tobj = self.make_type_object(class_type.typ)
+        field_records = tobj.get_dataclass_fields()
 
         entries: list[_DataclassFieldEntry] = []
         for record in field_records:
@@ -2147,49 +2124,6 @@ class Checker:
                 )
             )
         return entries
-
-    def _get_ordered_synthetic_dataclass_field_records(
-        self, value: SyntheticClassObjectValue, *, include_inherited: bool
-    ) -> tuple[DataclassFieldRecord, ...]:
-        ordered_names: list[str] = []
-        records_by_name: dict[str, DataclassFieldRecord] = {}
-        if include_inherited:
-            for base_value in self.make_type_object(
-                value.class_type.typ
-            ).get_direct_bases():
-                if not isinstance(base_value, TypedValue):
-                    continue
-                for record in self.make_type_object(
-                    base_value.typ
-                ).get_dataclass_fields():
-                    if record.field_name not in records_by_name:
-                        ordered_names.append(record.field_name)
-                    records_by_name[record.field_name] = record
-
-        local_field_names = value.dataclass_field_order
-        type_object = self.make_type_object(value.class_type.typ)
-        if not local_field_names:
-            local_field_names = tuple(
-                name
-                for name, symbol in type_object.get_declared_symbols().items()
-                if symbol.dataclass_field is not None
-            )
-        for field_name in local_field_names:
-            symbol = type_object.get_declared_symbol(field_name)
-            if symbol is None:
-                continue
-            record = DataclassFieldRecord(
-                field_name=field_name,
-                field_info=(
-                    symbol.dataclass_field
-                    if symbol.dataclass_field is not None
-                    else DataclassFieldInfo()
-                ),
-            )
-            if field_name not in records_by_name:
-                ordered_names.append(field_name)
-            records_by_name[field_name] = record
-        return tuple(records_by_name[name] for name in ordered_names)
 
     def _synthetic_dataclass_field_annotation(self, attr: Value) -> Value:
         ctx = CheckerAttrContext(

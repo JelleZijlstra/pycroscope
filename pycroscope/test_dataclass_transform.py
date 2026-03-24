@@ -280,7 +280,7 @@ class TestDataclassTransform(TestNameCheckVisitorBase):
         NotSlotted(1).__slots__  # E: undefined_attribute
 
         @model(slots=True)
-        class BadModel:  # E: invalid_annotation
+        class BadModel:  # E: invalid_dataclass
             x: int
             __slots__ = ()
 
@@ -952,7 +952,7 @@ class TestDataclassTransform(TestNameCheckVisitorBase):
             x: int = model_field(factory=lambda: "x")  # E: incompatible_assignment
 
         @create_model()
-        class BadOrder:  # E: invalid_annotation
+        class BadOrder:  # E: invalid_dataclass
             x: int = model_field(factory=lambda: 1)
             y: int
 

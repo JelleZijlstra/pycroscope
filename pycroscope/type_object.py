@@ -505,13 +505,26 @@ class TypeObject:
     def _compute_dataclass_fields(self) -> tuple[DataclassFieldRecord, ...]:
         import pycroscope.type_object_builder as type_object_builder
 
+        synthetic_class = self._checker.get_synthetic_class(self.typ)
+        if synthetic_class is not None and synthetic_class.is_dataclass:
+            ordered_names: list[str] = []
+            records_by_name: dict[str, DataclassFieldRecord] = {}
+            for base_value in self.get_direct_bases():
+                if not isinstance(base_value, TypedValue):
+                    continue
+                for record in self._checker.make_type_object(
+                    base_value.typ
+                ).get_dataclass_fields():
+                    if record.field_name not in records_by_name:
+                        ordered_names.append(record.field_name)
+                    records_by_name[record.field_name] = record
+            for record in self.get_local_dataclass_fields():
+                if record.field_name not in records_by_name:
+                    ordered_names.append(record.field_name)
+                records_by_name[record.field_name] = record
+            return tuple(records_by_name[name] for name in ordered_names)
         if isinstance(self.typ, str):
-            synthetic_class = self._checker.get_synthetic_class(self.typ)
-            if synthetic_class is None:
-                return ()
-            return type_object_builder._get_synthetic_dataclass_fields(
-                self._checker, synthetic_class
-            )
+            return ()
         return type_object_builder._get_runtime_dataclass_fields(self.typ)
 
     def _get_synthetic_namedtuple_class(self) -> SyntheticClassObjectValue | None:
@@ -990,6 +1003,35 @@ class TypeObject:
         if self._dataclass_fields is None:
             self._dataclass_fields = self._compute_dataclass_fields()
         return self._dataclass_fields
+
+    def get_local_dataclass_fields(self) -> tuple[DataclassFieldRecord, ...]:
+        synthetic_class = self._checker.get_synthetic_class(self.typ)
+        if synthetic_class is None or not synthetic_class.is_dataclass:
+            return ()
+        field_names = synthetic_class.dataclass_field_order
+        declared_symbols = self.get_declared_symbols()
+        if not field_names:
+            field_names = tuple(
+                name
+                for name, symbol in declared_symbols.items()
+                if symbol.dataclass_field is not None
+            )
+        records: list[DataclassFieldRecord] = []
+        for field_name in field_names:
+            symbol = self.get_declared_symbol(field_name)
+            if symbol is None:
+                continue
+            records.append(
+                DataclassFieldRecord(
+                    field_name=field_name,
+                    field_info=(
+                        symbol.dataclass_field
+                        if symbol.dataclass_field is not None
+                        else DataclassFieldInfo()
+                    ),
+                )
+            )
+        return tuple(records)
 
     def is_namedtuple_like(self) -> bool:
         return self._get_synthetic_namedtuple_class() is not None or (
