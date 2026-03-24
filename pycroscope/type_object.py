@@ -1010,7 +1010,7 @@ class TypeObject:
         """Return declaration-order dataclass fields defined directly on this class."""
         if self.get_direct_dataclass_info() is None:
             return ()
-        declared_symbols = self.get_declared_symbols()
+        declared_symbols = self.get_synthetic_declared_symbols()
         records: list[DataclassFieldRecord] = []
         for field_name, symbol in declared_symbols.items():
             if symbol.dataclass_field is None:

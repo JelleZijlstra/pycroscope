@@ -222,6 +222,49 @@ def test_synthetic_type_object_tracks_dataclass_fields_without_initializers() ->
     )
 
 
+def test_runtime_type_object_direct_dataclass_fields_ignore_mangled_duplicates() -> (
+    None
+):
+    from dataclasses import dataclass
+
+    @dataclass
+    class Base:
+        value: int
+        __secret: int
+        extra: int = 0
+
+    checker = Checker()
+    type_object = checker.make_type_object(Base)
+    type_object.set_dataclass_info(
+        DataclassInfo(
+            init=True,
+            eq=True,
+            frozen=False,
+            unsafe_hash=False,
+            match_args=True,
+            order=False,
+            slots=False,
+            kw_only_default=False,
+            field_specifiers=(),
+        )
+    )
+    type_object.set_declared_symbol(
+        "value", ClassSymbol(dataclass_field=DataclassFieldInfo())
+    )
+    type_object.set_declared_symbol(
+        "__secret", ClassSymbol(dataclass_field=DataclassFieldInfo())
+    )
+    type_object.set_declared_symbol(
+        "extra", ClassSymbol(dataclass_field=DataclassFieldInfo(has_default=True))
+    )
+
+    assert type_object.get_direct_dataclass_fields() == (
+        DataclassFieldRecord("value", DataclassFieldInfo()),
+        DataclassFieldRecord("__secret", DataclassFieldInfo()),
+        DataclassFieldRecord("extra", DataclassFieldInfo(has_default=True)),
+    )
+
+
 def test_runtime_namedtuple_field_is_readonly() -> None:
     from typing import NamedTuple
 
