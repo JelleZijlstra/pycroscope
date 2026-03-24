@@ -1006,6 +1006,12 @@ class TypeObject:
     def get_direct_dataclass_transform_info(self) -> DataclassTransformInfo | None:
         return self._direct_dataclass_transform_info
 
+    def get_dataclass_frozen_status(self) -> tuple[bool, bool | None]:
+        return self._get_dataclass_status("frozen")
+
+    def get_dataclass_order_status(self) -> tuple[bool, bool | None]:
+        return self._get_dataclass_status("order")
+
     def get_direct_dataclass_fields(self) -> tuple[DataclassFieldRecord, ...]:
         """Return declaration-order dataclass fields defined directly on this class."""
         if self.get_direct_dataclass_info() is None:
@@ -1021,6 +1027,24 @@ class TypeObject:
                 )
             )
         return tuple(records)
+
+    def _get_dataclass_status(
+        self, parameter: Literal["frozen", "order"]
+    ) -> tuple[bool, bool | None]:
+        for entry in self.get_mro():
+            if entry.tobj is None:
+                continue
+            if (dataclass_info := entry.tobj.get_direct_dataclass_info()) is not None:
+                return True, getattr(dataclass_info, parameter)
+            if isinstance(entry.tobj.typ, type):
+                dataclass_params = safe_getattr(
+                    entry.tobj.typ, "__dataclass_params__", None
+                )
+                if dataclass_params is None:
+                    continue
+                value = safe_getattr(dataclass_params, parameter, None)
+                return True, value if isinstance(value, bool) else None
+        return False, None
 
     def is_namedtuple_like(self) -> bool:
         return self._get_synthetic_namedtuple_class() is not None or (
@@ -1725,9 +1749,7 @@ def _is_writable_member(
         return False
     if resolved_access.is_property:
         return resolved_access.property_has_setter
-    return not resolved_access.symbol.is_readonly and not _is_frozen_dataclass(
-        tobj, ctx
-    )
+    return not resolved_access.symbol.is_readonly and not _is_frozen_dataclass(tobj)
 
 
 def _resolve_member_access(
@@ -2242,14 +2264,9 @@ def _specialize_declared_property_value(
     )
 
 
-def _is_frozen_dataclass(tobj: TypeObject, ctx: CanAssignContext) -> bool:
-    if (dataclass_info := tobj.get_direct_dataclass_info()) is not None:
-        return dataclass_info.frozen
-    if isinstance(tobj.typ, type):
-        dataclass_params = safe_getattr(tobj.typ, "__dataclass_params__", None)
-        if safe_getattr(dataclass_params, "frozen", None) is True:
-            return True
-    return False
+def _is_frozen_dataclass(tobj: TypeObject) -> bool:
+    _, frozen = tobj.get_dataclass_frozen_status()
+    return frozen is True
 
 
 def _is_callable_member_value(value: Value, ctx: CanAssignContext) -> bool:

@@ -3034,25 +3034,6 @@ class DataclassInfo:
     kw_only_default: bool
     field_specifiers: tuple[Value, ...]
 
-    def substitute_typevars(self, typevars: TypeVarMap) -> "DataclassInfo":
-        return DataclassInfo(
-            init=self.init,
-            eq=self.eq,
-            frozen=self.frozen,
-            unsafe_hash=self.unsafe_hash,
-            match_args=self.match_args,
-            order=self.order,
-            slots=self.slots,
-            kw_only_default=self.kw_only_default,
-            field_specifiers=tuple(
-                value.substitute_typevars(typevars) for value in self.field_specifiers
-            ),
-        )
-
-    def walk_values(self) -> Iterable[Value]:
-        for field_specifier in self.field_specifiers:
-            yield from field_specifier.walk_values()
-
 
 @dataclass(frozen=True)
 class DataclassFieldInfo:

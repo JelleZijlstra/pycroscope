@@ -135,6 +135,20 @@ class TestDataclass(TestNameCheckVisitorBase):
                 pass
 
     @assert_passes(run_in_both_module_modes=True)
+    def test_frozen_dataclass_base_stays_frozen_in_plain_subclass(self):
+        from dataclasses import dataclass
+
+        @dataclass(frozen=True)
+        class Frozen:
+            value: int
+
+        class Child(Frozen):
+            pass
+
+        def mutate(child: Child) -> None:
+            child.value = 2  # E: incompatible_assignment
+
+    @assert_passes(run_in_both_module_modes=True)
     def test_dataclass_classvar_instance_override_mismatch_after_import_failure(self):
         from dataclasses import dataclass
         from typing import ClassVar

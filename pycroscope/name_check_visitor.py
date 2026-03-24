@@ -5967,30 +5967,12 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     def _get_dataclass_status_for_type(
         self, typ: type | str
     ) -> tuple[bool, bool | None]:
-        dataclass_info = self.make_type_object(typ).get_direct_dataclass_info()
-        if dataclass_info is not None:
-            return True, dataclass_info.frozen
-        if not isinstance(typ, type) or not is_dataclass_type(typ):
-            return False, None
-        dataclass_params = safe_getattr(typ, "__dataclass_params__", None)
-        frozen = safe_getattr(dataclass_params, "frozen", None)
-        if not isinstance(frozen, bool):
-            frozen = None
-        return True, frozen
+        return self.make_type_object(typ).get_dataclass_frozen_status()
 
     def _get_dataclass_order_status_for_type(
         self, typ: type | str
     ) -> tuple[bool, bool | None]:
-        dataclass_info = self.make_type_object(typ).get_direct_dataclass_info()
-        if dataclass_info is not None:
-            return True, dataclass_info.order
-        if not isinstance(typ, type) or not is_dataclass_type(typ):
-            return False, None
-        dataclass_params = safe_getattr(typ, "__dataclass_params__", None)
-        order = safe_getattr(dataclass_params, "order", None)
-        if not isinstance(order, bool):
-            order = None
-        return True, order
+        return self.make_type_object(typ).get_dataclass_order_status()
 
     def _get_dataclass_status_for_class_value(
         self, value: Value
