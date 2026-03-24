@@ -17,7 +17,7 @@ from collections.abc import (
     Sequence,
 )
 from dataclasses import dataclass, replace
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Literal, get_origin
 from unittest import mock
 
 from typing_extensions import assert_never
@@ -1677,6 +1677,13 @@ def _resolve_member_access(
 
 
 def _class_key_from_value(value: Value) -> type | str | None:
+    # This helper is intentionally a little broader than the abstraction we
+    # ultimately want: many callers use it for "what class does this value point
+    # at?" regardless of whether the value is itself a class object/subclass or
+    # an instance of that class. That keeps older call sites simple, but it also
+    # means the helper conflates class-like and instance-like values. Over time
+    # we should tighten callers so class-object queries and instance-type queries
+    # go through more specific helpers.
     keys = list(dict.fromkeys(_iter_class_keys_from_value(value)))
     if len(keys) == 1:
         return keys[0]
@@ -1684,6 +1691,8 @@ def _class_key_from_value(value: Value) -> type | str | None:
 
 
 def _iter_class_keys_from_value(value: Value) -> list[type | str]:
+    if isinstance(value, AnnotatedValue):
+        return _iter_class_keys_from_value(value.value)
     value = replace_fallback(value)
     if isinstance(value, MultiValuedValue):
         keys: list[type | str] = []
@@ -1705,8 +1714,13 @@ def _iter_class_keys_from_simple_value(value: SimpleType) -> list[type | str]:
         return _iter_class_keys_from_value(value.typ)
     if isinstance(value, TypedValue):
         return _typed_class_key(value)
-    if isinstance(value, KnownValue) and isinstance(value.val, type):
-        return [value.val]
+    if isinstance(value, KnownValue):
+        origin = get_origin(value.val)
+        if isinstance(origin, type):
+            return [origin]
+        if isinstance(value.val, type):
+            return [value.val]
+        return []
     if isinstance(
         value,
         (
@@ -1715,7 +1729,6 @@ def _iter_class_keys_from_simple_value(value: SimpleType) -> list[type | str]:
             UnboundMethodValue,
             TypeFormValue,
             PredicateValue,
-            KnownValue,
         ),
     ):
         return []

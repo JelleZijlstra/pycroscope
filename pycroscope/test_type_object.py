@@ -13,6 +13,7 @@ from .type_object import (
     lookup_declared_symbol_with_owner,
 )
 from .value import (
+    AnnotatedValue,
     AnySource,
     AnyValue,
     CallableValue,
@@ -67,6 +68,15 @@ def test_class_key_from_intersection_with_consistent_key() -> None:
         (TypedValue("mod.Base"), SubclassValue(TypedValue("mod.Base")))
     )
     assert _class_key_from_value(value) == "mod.Base"
+
+
+def test_class_key_from_annotated_value() -> None:
+    value = AnnotatedValue(TypedValue("mod.Base"), ())
+    assert _class_key_from_value(value) == "mod.Base"
+
+
+def test_class_key_from_known_generic_alias() -> None:
+    assert _class_key_from_value(KnownValue(list[int])) is list
 
 
 def test_lookup_declared_symbol_with_owner_handles_synthetic_base() -> None:
