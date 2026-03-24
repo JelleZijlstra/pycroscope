@@ -2974,7 +2974,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         class_scope_values: Mapping[str, Value],
         dataclass_semantics: DataclassInfo | None,
         *,
-        metaclass_value: Value | None,
         class_key: type | str | None = None,
     ) -> None:
         synthetic_type = self._get_synthetic_type_object(synthetic_class)
@@ -2991,8 +2990,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             self._set_synthetic_member_on_class(
                 synthetic_class, synthetic_name, initializer=attr_value
             )
-        if metaclass_value is not None:
-            synthetic_type.set_metaclass(metaclass_value)
         self._apply_synthetic_method_symbol_flags(synthetic_class, node)
         dataclass_helpers.apply_synthetic_attributes(
             synthetic_class,
@@ -4031,6 +4028,42 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             tobj.set_direct_bases([TypedValue(object)])
         return base_values, base_type_param_variance_infos, is_direct_namedtuple
 
+    def _process_metaclass(
+        self, keyword_values: Sequence[tuple[ast.keyword, Value]], tobj: TypeObject
+    ) -> None:
+        for keyword, value in keyword_values:
+            if keyword.arg != "metaclass":
+                continue
+
+            if isinstance(value, AnyValue):
+                cooked_metaclass = value
+            elif isinstance(value, KnownValue) and safe_isinstance(value.val, type):
+                cooked_metaclass = TypedValue(value.val)
+            elif isinstance(value, SyntheticClassObjectValue):
+                cooked_metaclass = value.class_type
+            elif value is None:
+                cooked_metaclass = TypedValue(type)
+            else:
+                if isinstance(tobj.typ, str):
+                    self._show_error_if_checking(
+                        keyword.value,
+                        "Cannot determine metaclass",
+                        error_code=ErrorCode.invalid_metaclass,
+                    )
+                cooked_metaclass = AnyValue(AnySource.error)
+            tobj.set_metaclass(cooked_metaclass)
+            if isinstance(replace_fallback(value), GenericValue) or (
+                isinstance(value, PartialValue)
+                and value.operation is PartialValueOperation.SUBSCRIPT
+                and value.runtime_value == TypedValue(types.GenericAlias)
+            ):
+                self._show_error_if_checking(
+                    keyword.value,
+                    "Generic metaclasses are not supported",
+                    error_code=ErrorCode.invalid_metaclass,
+                )
+            return
+
     def visit_ClassDef(self, node: ast.ClassDef) -> Value:
         decorator_values = self.visit_decorator_list(node.decorator_list)
         class_obj = self._get_current_class_object(node)
@@ -4135,8 +4168,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             self._check_for_final_base_classes(node, base_values)
             with self.active_type_params.disallow(disallowed_type_params):
                 keyword_values = [(kw, self.visit(kw.value)) for kw in node.keywords]
-            if self._is_checking():
-                self._check_generic_metaclass_keyword(keyword_values)
+            self._process_metaclass(keyword_values, tobj)
             dataclass_semantics = self._get_class_dataclass_semantics(
                 node,
                 class_obj=class_obj,
@@ -4643,14 +4675,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 _populate_runtime_enum_fallback_class(
                     runtime_enum_fallback_class, class_scope_values
                 )
-            metaclass_value = next(
-                (
-                    value
-                    for keyword, value in keyword_values
-                    if keyword.arg == "metaclass"
-                ),
-                None,
-            )
             if is_direct_namedtuple and isinstance(class_key, str):
                 namedtuple_fields = []
                 if namedtuple_field_sequence_is_valid:
@@ -4694,20 +4718,11 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                         synthetic_class,
                         class_scope_values,
                         dataclass_semantics,
-                        metaclass_value=(
-                            metaclass_value
-                            if isinstance(metaclass_value, Value)
-                            else None
-                        ),
                         class_key=class_key,
                     )
                     value = synthetic_class
                 if dataclass_semantics is not None:
                     dataclass_check_class = synthetic_class
-                if class_scope_values is None and isinstance(metaclass_value, Value):
-                    self._get_synthetic_type_object(synthetic_class).set_metaclass(
-                        metaclass_value
-                    )
                 if synthetic_fq_name is not None:
                     self._synthetic_classes_by_name[synthetic_fq_name] = synthetic_class
             elif (
@@ -4720,9 +4735,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     dataclass_metadata_class,
                     class_scope_values,
                     dataclass_semantics,
-                    metaclass_value=(
-                        metaclass_value if isinstance(metaclass_value, Value) else None
-                    ),
                 )
                 if dataclass_semantics is not None:
                     dataclass_check_class = dataclass_metadata_class
@@ -15594,28 +15606,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             self._show_error_if_checking(
                 error_node, message, error_code=ErrorCode.invalid_annotation
             )
-
-    def _check_generic_metaclass_keyword(
-        self, keyword_values: Sequence[tuple[ast.keyword, Value]]
-    ) -> None:
-        for keyword_node, keyword_value in keyword_values:
-            if keyword_node.arg != "metaclass":
-                continue
-            if not (
-                isinstance(replace_fallback(keyword_value), GenericValue)
-                or (
-                    isinstance(keyword_value, PartialValue)
-                    and keyword_value.operation is PartialValueOperation.SUBSCRIPT
-                    and keyword_value.runtime_value == TypedValue(types.GenericAlias)
-                )
-            ):
-                continue
-            self._show_error_if_checking(
-                keyword_node.value,
-                "Generic metaclasses are not supported",
-                error_code=ErrorCode.unsupported_operation,
-            )
-            return
 
     def _typevar_invalid_bound_message(
         self, value: Value, *, is_constraint: bool = False

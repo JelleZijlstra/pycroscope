@@ -189,6 +189,7 @@ ErrorCode = ErrorRegistry(
             "multiple_dataclass_transform",
             "Multiple dataclass transforms on the same class",
         ),
+        Error("invalid_metaclass", "Invalid metaclass"),
     ]
 )
 

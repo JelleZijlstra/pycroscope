@@ -1662,7 +1662,6 @@ class GenericValue(TypedValue):
             substituted = arg.substitute_typevars(typevars)
             if (
                 self.typ is not tuple
-                and self.typ != "builtins.tuple"
                 and isinstance(arg, SequenceValue)
                 and arg.typ is tuple
                 and any(
@@ -2102,7 +2101,6 @@ class SyntheticClassObjectValue(Value):
     runtime_class: Value | None = field(
         default=None, compare=False, hash=False, repr=False
     )
-    metaclass: Value | None = field(default=None, compare=False, hash=False, repr=False)
     dataclass_info: "DataclassInfo | None" = field(
         default=None, compare=False, hash=False, repr=False
     )
@@ -2128,11 +2126,6 @@ class SyntheticClassObjectValue(Value):
             runtime_class=(
                 self.runtime_class.substitute_typevars(typevars)
                 if self.runtime_class is not None
-                else None
-            ),
-            metaclass=(
-                self.metaclass.substitute_typevars(typevars)
-                if self.metaclass is not None
                 else None
             ),
             dataclass_info=(
@@ -2172,8 +2165,6 @@ class SyntheticClassObjectValue(Value):
                 yield from value.walk_values()
         if self.runtime_class is not None:
             yield from self.runtime_class.walk_values()
-        if self.metaclass is not None:
-            yield from self.metaclass.walk_values()
         if self.dataclass_info is not None:
             yield from self.dataclass_info.walk_values()
         if self.dataclass_transform_info is not None:
@@ -2190,16 +2181,6 @@ class SyntheticClassObjectValue(Value):
         self, ctx: CanAssignContext
     ) -> "pycroscope.type_object.TypeObject":
         return ctx.make_type_object(self.class_type.typ)
-
-    def can_assign(self, other: Value, ctx: CanAssignContext) -> CanAssign:
-        if isinstance(self.class_type, TypedValue):
-            class_typ = self.class_type.typ
-            if isinstance(other, SubclassValue):
-                other = other.typ
-            other = replace_fallback(other)
-            if isinstance(other, GenericValue) and other.typ == class_typ:
-                return {}
-        return super().can_assign(other, ctx)
 
     def __str__(self) -> str:
         return f"<class {self.name!r}>"
@@ -2873,7 +2854,8 @@ class TypeGuardExtension(Extension):
                     )
                     if isinstance(left_can_assign, CanAssignError):
                         return CanAssignError(
-                            "Incompatible types in TypeIs", children=[left_can_assign]
+                            "Incompatible types in TypeGuard",
+                            children=[left_can_assign],
                         )
                     can_assign_maps.append(left_can_assign)
         if not can_assign_maps:

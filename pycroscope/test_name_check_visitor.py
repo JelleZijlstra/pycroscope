@@ -2228,7 +2228,7 @@ class TestSubclassValue(TestNameCheckVisitorBase):
             assert_type(cls("x"), bytes)
 
     @assert_passes()
-    def test_generic_metaclass_is_not_supported(self):
+    def test_invalid_metaclass(self):
         from typing import Generic, TypeVar
 
         T = TypeVar("T")
@@ -2236,7 +2236,13 @@ class TestSubclassValue(TestNameCheckVisitorBase):
         class GenericMeta(type, Generic[T]):
             pass
 
-        class GenericMetaInstance(metaclass=GenericMeta[T]):  # E: unsupported_operation
+        class GenericMetaInstance(metaclass=GenericMeta[T]):  # E: invalid_metaclass
+            pass
+
+        class Why(
+            metaclass=print,  # E: invalid_metaclass
+            flush="complicated" == "to make sure error is on right line",
+        ):
             pass
 
     @assert_passes()
