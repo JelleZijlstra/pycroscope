@@ -14752,7 +14752,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 return
             self._get_attribute_fallback(root, node.attr, node)
             return
-        if attr.is_property and on_class:
+        if attr.is_property and on_class and not attr.is_metaclass_owner:
             self._show_error_if_checking(
                 node,
                 f"Cannot {wording} property {node.attr!r} via class object",
@@ -14784,7 +14784,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 error_code=ErrorCode.incompatible_assignment,
             )
             return
-        if attr.symbol.is_instance_only and on_class:
+        if attr.symbol.is_instance_only and on_class and not attr.is_metaclass_owner:
             self._show_error_if_checking(
                 node,
                 f"Cannot {wording} instance attribute {node.attr!r} via class object",

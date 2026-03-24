@@ -195,6 +195,7 @@ class TypeObjectAttribute:
     owner: "TypeObject"
     is_property: bool
     property_has_setter: bool
+    is_metaclass_owner: bool
 
 
 def get_mro(typ: type) -> Sequence[type]:
@@ -1063,9 +1064,19 @@ class TypeObject:
         on_class: bool,
         receiver_value: TypedValue | None = None,
     ) -> TypeObjectAttribute | None:
+        if on_class:
+            metaclass_attribute = self._get_metaclass_attribute(
+                name, ctx, receiver_value=receiver_value, require_data_descriptor=True
+            )
+            if metaclass_attribute is not None:
+                return metaclass_attribute
         match = self.get_declared_symbol_with_owner(name, ctx)
         if match is None:
-            return None
+            if not on_class:
+                return None
+            return self._get_metaclass_attribute(
+                name, ctx, receiver_value=receiver_value
+            )
         owner, declared_symbol = match
         symbol = _specialize_symbol_for_owner(
             self, owner, declared_symbol, ctx, receiver_value=receiver_value
@@ -1089,7 +1100,40 @@ class TypeObject:
                 if symbol.property_info is not None
                 else False
             ),
+            is_metaclass_owner=False,
         )
+
+    def _get_metaclass_attribute(
+        self,
+        name: str,
+        ctx: CanAssignContext,
+        *,
+        receiver_value: TypedValue | None,
+        require_data_descriptor: bool = False,
+    ) -> TypeObjectAttribute | None:
+        metaclass = self.get_metaclass()
+        match metaclass:
+            case TypedValue():
+                metaclass_tobj = metaclass.get_type_object(self._checker)
+            case AnyValue():
+                return None
+            case _:
+                assert_never(metaclass)
+        metaclass_match = metaclass_tobj.get_declared_symbol_with_owner(name, ctx)
+        if metaclass_match is None:
+            return None
+        # TODO: This only recognizes properties as data descriptors. Extend this
+        # once we model other data descriptors in TypeObject attribute lookup.
+        if require_data_descriptor and not metaclass_match[1].is_property:
+            return None
+        if receiver_value is None:
+            receiver_value = TypedValue(self.typ)
+        attribute = metaclass_tobj.get_attribute(
+            name, ctx, on_class=False, receiver_value=receiver_value
+        )
+        if attribute is None:
+            return None
+        return replace(attribute, is_metaclass_owner=True)
 
     def get_declared_symbol_from_mro(
         self, name: str, ctx: CanAssignContext
@@ -1671,10 +1715,12 @@ def _resolve_member_access(
             owner=tobj,
             is_property=False,
             property_has_setter=False,
+            is_metaclass_owner=False,
         )
     symbol = access.symbol
     owner = access.owner
-    if class_object_access:
+    metaclass_owner = access.is_metaclass_owner
+    if class_object_access and not metaclass_owner:
         property_getter, property_has_setter = None, False
     elif symbol.property_info is not None:
         property_has_setter = access.property_has_setter
@@ -1690,7 +1736,7 @@ def _resolve_member_access(
     else:
         property_getter, property_has_setter = None, False
     is_property = property_getter is not None
-    if class_object_access and symbol.is_property:
+    if class_object_access and symbol.is_property and not metaclass_owner:
         is_property = False
     if (
         not class_object_access
@@ -1705,6 +1751,7 @@ def _resolve_member_access(
     if (
         class_object_access
         and symbol.is_property
+        and not metaclass_owner
         and not _is_property_marker_value(value)
     ):
         value = TypedValue(property)
@@ -1714,6 +1761,7 @@ def _resolve_member_access(
         owner=owner,
         is_property=is_property,
         property_has_setter=property_has_setter,
+        is_metaclass_owner=access.is_metaclass_owner,
     )
 
 
