@@ -719,15 +719,39 @@ class TypeObject:
         self, fields: Sequence[NamedTupleField], *, constructor_impl: Impl | None = None
     ) -> None:
         self._is_direct_namedtuple = True
-        self._namedtuple_fields = fields
+        self._namedtuple_fields = tuple(fields)
+        self._specialize_namedtuple_direct_bases()
         _add_namedtuple_dunder_new_symbol(
-            self, fields, constructor_impl=constructor_impl
+            self, self._namedtuple_fields, constructor_impl=constructor_impl
         )
 
     def set_is_direct_namedtuple(self, is_direct_namedtuple: bool) -> None:
         self._is_direct_namedtuple = is_direct_namedtuple
         if not is_direct_namedtuple and self._namedtuple_fields is None:
             self._invalidate_synthetic_state()
+
+    def _specialize_namedtuple_direct_bases(self) -> None:
+        if not self._namedtuple_fields or self._direct_bases is None:
+            return
+        tuple_base = SequenceValue(
+            tuple, [(False, field.typ) for field in self._namedtuple_fields]
+        )
+        direct_bases: list[MroValue] = []
+        changed = False
+        for base_value in self._direct_bases:
+            if (
+                isinstance(base_value, TypedValue)
+                and not isinstance(base_value, SequenceValue)
+                and base_value.typ is tuple
+            ):
+                direct_bases.append(tuple_base)
+                changed = True
+            else:
+                direct_bases.append(base_value)
+        if changed:
+            self._direct_bases = tuple(direct_bases)
+            self._update_loaded_synthetic_fields()
+            self._protocol_positive_cache.clear()
 
     def _sync_declared_symbols(self) -> None:
         if self._declared_symbols is None:

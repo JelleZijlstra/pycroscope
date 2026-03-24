@@ -4182,10 +4182,8 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             class_scope_object: type | str | None = class_obj
             dataclass_metadata_class: SyntheticClassObjectValue | None = None
             dataclass_check_class: SyntheticClassObjectValue | None = None
-            namedtuple_base_fields = (
-                _namedtuple_base_fields_from_base_values(base_values, self.checker)
-                if self.module is None
-                else set()
+            namedtuple_base_fields = _namedtuple_base_fields_from_base_values(
+                base_values, self.checker
             )
             namedtuple_field_names = tuple(
                 statement.target.id
