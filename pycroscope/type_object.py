@@ -1715,11 +1715,11 @@ def _iter_class_keys_from_simple_value(value: SimpleType) -> list[type | str]:
     if isinstance(value, TypedValue):
         return _typed_class_key(value)
     if isinstance(value, KnownValue):
-        if isinstance(value.val, type):
-            return [value.val]
         origin = get_origin(value.val)
         if isinstance(origin, type):
             return [origin]
+        if isinstance(value.val, type):
+            return [value.val]
         return []
     if isinstance(
         value,
