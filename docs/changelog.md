@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Fix `NamedTuple` subclass handling so overriding inherited fields is reported consistently in both module modes, and `pycroscope.get_mro()` preserves the specialized tuple base in import-failure analysis.
 - Improve deprecated-member diagnostics for inherited properties and `__call__`, so subclasses now inherit those deprecation errors consistently instead of sometimes losing them.
 - Allow subclasses to add `__slots__` entries without triggering `incompatible_override`, while still rejecting writes to attributes that are not declared in inherited slots.
 - Improve `match` fallthrough narrowing for irrefutable class and sequence patterns, so later cases and wildcard fallbacks now exclude values already guaranteed to match earlier branches.

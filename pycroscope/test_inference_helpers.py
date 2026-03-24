@@ -116,7 +116,7 @@ class TestRevealLocals(TestNameCheckVisitorBase):
 
 
 class TestGetMro(TestNameCheckVisitorBase):
-    @assert_passes()
+    @assert_passes(run_in_both_module_modes=True)
     def test_get_mro_simple(self) -> None:
         from typing import Generic, TypeVar
 
@@ -140,7 +140,7 @@ class TestGetMro(TestNameCheckVisitorBase):
         assert_type(get_mro(Child), tuple[Child, Base[int], Generic, object])
         assert_type(get_mro(L), tuple[L, list[int], object])
 
-    @assert_passes()
+    @assert_passes(run_in_both_module_modes=True)
     def test_get_mro_tuple(self) -> None:
         import collections
         from typing import Any, Generic, NamedTuple, TypeVar
@@ -164,7 +164,7 @@ class TestGetMro(TestNameCheckVisitorBase):
             y: str
 
         class NTChild(NT):
-            x: int = 42
+            x: int = 42  # E: incompatible_override
 
         nt = collections.namedtuple("nt", ["x", "y"])
 
