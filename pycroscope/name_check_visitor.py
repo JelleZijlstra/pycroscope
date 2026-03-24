@@ -8804,6 +8804,10 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             and self._is_class_object_attribute_root(root_value.root) is True
         ):
             return self._class_key_from_attribute_root_value(root_value.root)
+        if isinstance(root_value, SubclassValue) and isinstance(
+            root_value.typ, TypeVarValue
+        ):
+            return None
         class_key = _class_key_from_value(root_value)
         if class_key is not None:
             return class_key
