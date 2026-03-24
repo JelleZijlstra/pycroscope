@@ -4028,6 +4028,42 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             tobj.set_direct_bases([TypedValue(object)])
         return base_values, base_type_param_variance_infos, is_direct_namedtuple
 
+    def _process_metaclass(
+        self, keyword_values: Sequence[tuple[ast.keyword, Value]], tobj: TypeObject
+    ) -> None:
+        for keyword, value in keyword_values:
+            if keyword.arg != "metaclass":
+                continue
+
+            if isinstance(value, AnyValue):
+                cooked_metaclass = value
+            elif isinstance(value, KnownValue) and safe_isinstance(value.val, type):
+                cooked_metaclass = TypedValue(value.val)
+            elif isinstance(value, SyntheticClassObjectValue):
+                cooked_metaclass = value.class_type
+            elif value is None:
+                cooked_metaclass = TypedValue(type)
+            else:
+                if isinstance(tobj.typ, str):
+                    self._show_error_if_checking(
+                        keyword.value,
+                        "Cannot determine metaclass",
+                        error_code=ErrorCode.invalid_metaclass,
+                    )
+                cooked_metaclass = AnyValue(AnySource.error)
+            tobj.set_metaclass(cooked_metaclass)
+            if isinstance(replace_fallback(value), GenericValue) or (
+                isinstance(value, PartialValue)
+                and value.operation is PartialValueOperation.SUBSCRIPT
+                and value.runtime_value == TypedValue(types.GenericAlias)
+            ):
+                self._show_error_if_checking(
+                    keyword.value,
+                    "Generic metaclasses are not supported",
+                    error_code=ErrorCode.invalid_metaclass,
+                )
+            return
+
     def visit_ClassDef(self, node: ast.ClassDef) -> Value:
         decorator_values = self.visit_decorator_list(node.decorator_list)
         class_obj = self._get_current_class_object(node)
@@ -4132,35 +4168,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             self._check_for_final_base_classes(node, base_values)
             with self.active_type_params.disallow(disallowed_type_params):
                 keyword_values = [(kw, self.visit(kw.value)) for kw in node.keywords]
-            metaclass_value = next(
-                (
-                    value
-                    for keyword, value in keyword_values
-                    if keyword.arg == "metaclass"
-                ),
-                None,
-            )
-            if isinstance(metaclass_value, AnyValue):
-                cooked_metaclass = metaclass_value
-            elif isinstance(metaclass_value, KnownValue) and safe_isinstance(
-                metaclass_value.val, type
-            ):
-                cooked_metaclass = TypedValue(metaclass_value.val)
-            elif isinstance(metaclass_value, SyntheticClassObjectValue):
-                cooked_metaclass = metaclass_value.class_type
-            elif metaclass_value is None:
-                cooked_metaclass = TypedValue(type)
-            else:
-                if isinstance(class_key, str):
-                    self._show_error_if_checking(
-                        node,
-                        "Cannot determine metaclass",
-                        error_code=ErrorCode.invalid_metaclass,
-                    )
-                cooked_metaclass = AnyValue(AnySource.error)
-            tobj.set_metaclass(cooked_metaclass)
-            if self._is_checking():
-                self._check_generic_metaclass_keyword(keyword_values)
+            self._process_metaclass(keyword_values, tobj)
             dataclass_semantics = self._get_class_dataclass_semantics(
                 node,
                 class_obj=class_obj,
@@ -15598,28 +15606,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             self._show_error_if_checking(
                 error_node, message, error_code=ErrorCode.invalid_annotation
             )
-
-    def _check_generic_metaclass_keyword(
-        self, keyword_values: Sequence[tuple[ast.keyword, Value]]
-    ) -> None:
-        for keyword_node, keyword_value in keyword_values:
-            if keyword_node.arg != "metaclass":
-                continue
-            if not (
-                isinstance(replace_fallback(keyword_value), GenericValue)
-                or (
-                    isinstance(keyword_value, PartialValue)
-                    and keyword_value.operation is PartialValueOperation.SUBSCRIPT
-                    and keyword_value.runtime_value == TypedValue(types.GenericAlias)
-                )
-            ):
-                continue
-            self._show_error_if_checking(
-                keyword_node.value,
-                "Generic metaclasses are not supported",
-                error_code=ErrorCode.invalid_metaclass,
-            )
-            return
 
     def _typevar_invalid_bound_message(
         self, value: Value, *, is_constraint: bool = False
