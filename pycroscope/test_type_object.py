@@ -566,6 +566,61 @@ def test_get_attribute_applies_classmethod_descriptor_protocol() -> None:
     assert not attribute.value.signature.parameters
 
 
+def test_get_attribute_uses_metaclass_members_for_class_object_access() -> None:
+    class Meta(type):
+        answer = 42
+
+        def make(cls) -> int:
+            return 1
+
+    class Box(metaclass=Meta):
+        pass
+
+    checker = Checker()
+    type_object = checker.make_type_object(Box)
+
+    answer_attr = type_object.get_attribute(
+        "answer", checker, on_class=True, receiver_value=TypedValue(Box)
+    )
+    assert answer_attr is not None
+    assert answer_attr.owner.typ is Meta
+    assert answer_attr.value == KnownValue(42)
+
+    instance_answer_attr = type_object.get_attribute(
+        "answer", checker, on_class=False, receiver_value=TypedValue(Box)
+    )
+    assert instance_answer_attr is None
+
+    make_attr = type_object.get_attribute(
+        "make", checker, on_class=True, receiver_value=TypedValue(Box)
+    )
+    assert make_attr is not None
+    assert make_attr.owner.typ is Meta
+    assert isinstance(make_attr.value, CallableValue)
+    assert make_attr.value.signature.return_value == TypedValue(int)
+    assert not make_attr.value.signature.parameters
+
+
+def test_get_attribute_prefers_metaclass_property_on_class_access() -> None:
+    class Meta(type):
+        @property
+        def value(cls) -> int:
+            return 1
+
+    class Box(metaclass=Meta):
+        value = "class value"
+
+    checker = Checker()
+    attribute = checker.make_type_object(Box).get_attribute(
+        "value", checker, on_class=True, receiver_value=TypedValue(Box)
+    )
+
+    assert attribute is not None
+    assert attribute.owner.typ is Meta
+    assert attribute.is_property
+    assert attribute.value == TypedValue(int)
+
+
 class TestNumerics(TestNameCheckVisitorBase):
     @assert_passes()
     def test_float(self):

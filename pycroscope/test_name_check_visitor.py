@@ -2214,6 +2214,38 @@ class TestSubclassValue(TestNameCheckVisitorBase):
             assert_type(enum["x"], bytes)
 
     @assert_passes()
+    def test_metaclass_data_attribute(self):
+        from typing import Literal
+
+        class Meta(type):
+            answer = 1
+
+        class C(metaclass=Meta):
+            pass
+
+        assert_type(C.answer, Literal[1])
+
+    @assert_passes()
+    def test_metaclass_property_overrides_class_attribute(self):
+        from typing import Literal
+
+        class Meta(type):
+            @property
+            def value(self) -> int:
+                return 1
+
+            @value.setter
+            def value(self, new_value: int) -> None:
+                pass
+
+        class C(metaclass=Meta):
+            value = "class value"
+
+        def capybara() -> None:
+            assert_type(C.value, Literal[1])
+            C.value = 3
+
+    @assert_passes()
     def test_metaclass_call(self):
         from typing import Type
 
