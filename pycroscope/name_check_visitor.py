@@ -221,6 +221,7 @@ from .type_object import (
     NamedTupleField,
     TypeObject,
     TypeObjectAttribute,
+    _class_key_from_value,
     class_keys_match,
     direct_bases_from_values,
     get_mro,
@@ -3726,27 +3727,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     detail=str(error),
                 )
 
-    def _base_class_key_from_value(self, base_value: Value) -> type | str | None:
-        base_value = replace_fallback(base_value)
-        if isinstance(base_value, AnnotatedValue):
-            return self._base_class_key_from_value(base_value.value)
-        if isinstance(base_value, SubclassValue) and isinstance(
-            base_value.typ, TypedValue
-        ):
-            return base_value.typ.typ
-        if isinstance(base_value, SyntheticClassObjectValue):
-            class_type = base_value.class_type
-            if isinstance(class_type, TypedValue):
-                return class_type.typ
-            return None
-        if isinstance(base_value, TypedValue):
-            return base_value.typ
-        if isinstance(base_value, KnownValue):
-            if isinstance(base_value.val, type):
-                return base_value.val
-            return None
-        return None
-
     def display_value(self, value: Value) -> str:
         return self.checker.display_value(value)
 
@@ -7142,9 +7122,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         if isinstance(class_key, type):
             return safe_issubclass(class_key, type)
         return any(
-            self._class_key_is_type_subclass(
-                self._base_class_key_from_value(base_value), seen
-            )
+            self._class_key_is_type_subclass(_class_key_from_value(base_value), seen)
             for base_value in self.checker.make_type_object(
                 class_key
             ).get_direct_bases()
@@ -8732,7 +8710,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 return
 
     def _is_final_base_value(self, base_value: Value) -> bool:
-        base_key = self._base_class_key_from_value(base_value)
+        base_key = _class_key_from_value(base_value)
         if base_key is None:
             return False
         if base_key in self.final_class_keys:
@@ -8826,18 +8804,14 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             and self._is_class_object_attribute_root(root_value.root) is True
         ):
             return self._class_key_from_attribute_root_value(root_value.root)
+        class_key = _class_key_from_value(root_value)
+        if class_key is not None:
+            return class_key
         root_value = replace_fallback(root_value)
         if isinstance(root_value, AnnotatedValue):
             return self._class_key_from_attribute_root_value(root_value.value)
         if isinstance(root_value, KnownValue):
-            if isinstance(root_value.val, type):
-                return root_value.val
-            origin = get_origin(root_value.val)
-            if isinstance(origin, type):
-                return origin
             return type(root_value.val)
-        if isinstance(root_value, GenericValue):
-            return root_value.typ
         if isinstance(root_value, MultiValuedValue):
             class_keys = {
                 class_key
@@ -8848,7 +8822,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             if len(class_keys) == 1:
                 return next(iter(class_keys))
             return None
-        return self._base_class_key_from_value(root_value)
+        return None
 
     def _is_allowed_readonly_attribute_initialization(
         self, node: ast.Attribute, root_value: Value
@@ -9034,7 +9008,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             return value
         if isinstance(root_value, KnownValue) and isinstance(root_value.val, type):
             return value
-        class_key = self._base_class_key_from_value(root_value)
+        class_key = _class_key_from_value(root_value)
         if class_key is not None:
             getitem = lookup_declared_symbol_with_owner(class_key, "__getitem__", self)
             if getitem is not None and getitem[0] is not tuple:
@@ -15537,7 +15511,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             for base_value in self.checker.make_type_object(
                 class_key
             ).get_direct_bases():
-                base_key = self._base_class_key_from_value(base_value)
+                base_key = _class_key_from_value(base_value)
                 if base_key is not None:
                     keys.append(base_key)
             return keys
@@ -15856,7 +15830,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             return None
         if self._is_class_object_attribute_root(value) is not True:
             return None
-        class_key = self._base_class_key_from_value(value)
+        class_key = _class_key_from_value(value)
         if class_key is None:
             return None
         if self.checker.make_type_object(class_key).is_protocol():
@@ -16767,21 +16741,10 @@ def _is_namedtuple_marker_base(base_value: Value) -> bool:
 def _type_object_from_base_subvalue(
     base_value: Value, checker: Checker
 ) -> TypeObject | None:
-    base_value = replace_fallback(base_value)
-    if isinstance(base_value, KnownValue):
-        if isinstance(base_value.val, type):
-            return checker.make_type_object(base_value.val)
+    class_key = _class_key_from_value(base_value)
+    if class_key is None:
         return None
-    if isinstance(base_value, SyntheticClassObjectValue):
-        class_type = base_value.class_type
-        if isinstance(class_type, TypedValue):
-            return checker.make_type_object(class_type.typ)
-        return None
-    if isinstance(base_value, TypedValue):
-        return checker.make_type_object(base_value.typ)
-    if isinstance(base_value, SubclassValue) and isinstance(base_value.typ, TypedValue):
-        return checker.make_type_object(base_value.typ.typ)
-    return None
+    return checker.make_type_object(class_key)
 
 
 def _iter_type_objects_from_base_value(
