@@ -2236,7 +2236,7 @@ class TestSubclassValue(TestNameCheckVisitorBase):
         class GenericMeta(type, Generic[T]):
             pass
 
-        class GenericMetaInstance(metaclass=GenericMeta[T]):  # E: unsupported_operation
+        class GenericMetaInstance(metaclass=GenericMeta[T]):  # E: invalid_metaclass
             pass
 
     @assert_passes()

@@ -345,6 +345,7 @@ class TypeObject:
     _is_universally_assignable: bool | None
     _protocol_positive_cache: dict[tuple[Value, Value], BoundsMap]
     _has_stubs: bool | None
+    _metaclass: MroValue | None
 
     def __init__(self, checker: "pycroscope.checker.Checker", typ: type | str) -> None:
         self.typ = typ
@@ -365,6 +366,7 @@ class TypeObject:
         self._namedtuple_fields = None
         self._is_universally_assignable = None
         self._has_stubs = None
+        self._metaclass = None
 
     def adopt_synthetic_class(self, synthetic_class: SyntheticClassObjectValue) -> None:
         self._update_loaded_synthetic_fields()
@@ -870,13 +872,6 @@ class TypeObject:
         self._sync_declared_symbols()
         self._invalidate_synthetic_state()
 
-    def set_metaclass(self, metaclass: Value | None) -> None:
-        # TODO: Remove this once SyntheticClassObjectValue no longer stores
-        # metaclass data directly.
-        synthetic_class = self._ensure_synthetic_class()
-        object.__setattr__(synthetic_class, "metaclass", metaclass)
-        self._invalidate_synthetic_state()
-
     def clear_declared_symbols(self) -> None:
         self._ensure_synthetic_class()
         self.get_synthetic_declared_symbols().clear()
@@ -898,6 +893,22 @@ class TypeObject:
         )
         self._sync_declared_symbols()
         self._invalidate_synthetic_state()
+
+    # TODO: We need to do something more precise here. We currently assume the metaclass
+    # is `type` unless an explicit metaclass was set, but in fact we need to inherit the
+    # metaclass from bases.
+    def get_metaclass(self) -> MroValue:
+        if self._metaclass is None:
+            self._metaclass = self._compute_metaclass()
+        return self._metaclass
+
+    def _compute_metaclass(self) -> MroValue:
+        if isinstance(self.typ, type):
+            return TypedValue(type(self.typ))
+        return TypedValue(type)  # placeholder
+
+    def set_metaclass(self, metaclass: MroValue) -> None:
+        self._metaclass = metaclass
 
     def get_direct_bases(self) -> tuple[MroValue, ...]:
         if self._direct_bases is None:
@@ -2208,16 +2219,15 @@ def _normalize_protocol_initializer_for_relation(
 def _metaclass_key_for_class(
     class_key: type | str, ctx: CanAssignContext
 ) -> type | str | None:
-    synthetic = _get_synthetic_class_for_key(class_key, ctx)
-    if synthetic is not None:
-        metaclass = synthetic.metaclass
-        if isinstance(metaclass, Value):
-            metaclass_key = _class_key_from_value(metaclass)
-            if metaclass_key is not None:
-                return metaclass_key
-    if isinstance(class_key, type):
-        return type(class_key)
-    return None
+    tobj = ctx.make_type_object(class_key)
+    metaclass = tobj.get_metaclass()
+    match metaclass:
+        case TypedValue():
+            return metaclass.typ
+        case AnyValue():
+            return None
+        case _:
+            assert_never(metaclass)
 
 
 def _is_member_from_metaclass(
@@ -2673,7 +2683,6 @@ def _replace_invalid_bases(bases: Sequence[Value]) -> Iterable[MroValue]:
         elif isinstance(base, KnownValue) and is_typing_name(base.val, "Any"):
             yield AnyValue(AnySource.explicit)
         else:
-            print("REPLACED INVALID BASE", repr(base))
             yield AnyValue(AnySource.inference)
 
 

@@ -1853,34 +1853,23 @@ class Checker:
         get_return_override: Callable[[MaybeSignature], Value | None],
         get_call_attribute: Callable[[Value], Value] | None,
     ) -> ConcreteSignature | None:
-        metaclass = value.metaclass
-        if not isinstance(metaclass, Value):
+        tobj = value.get_type_object(self)
+        metaclass = tobj.get_metaclass()
+        if isinstance(metaclass, AnyValue):
             return None
 
-        if isinstance(metaclass, SyntheticClassObjectValue):
+        if isinstance(metaclass.typ, str):
+            meta_tobj = self.make_type_object(metaclass.typ)
             # Ignore the default metaclass call behavior; only use an explicit override.
-            meta_call = (
-                get_synthetic_member_initializer(metaclass, "__call__", self)
-                or UNINITIALIZED_VALUE
-            )
-            if meta_call is UNINITIALIZED_VALUE:
+            symbol = meta_tobj.get_declared_symbol("__call__")
+            if symbol is None or symbol.initializer is None:
                 return None
+            meta_call = symbol.initializer
         else:
-            metaclass_root = replace_fallback(metaclass)
-            if isinstance(metaclass_root, KnownValue) and isinstance(
-                metaclass_root.val, type
-            ):
-                if metaclass_root.val is type:
-                    return None
-                if "__call__" not in safe_getattr(metaclass_root.val, "__dict__", {}):
-                    return None
-            elif isinstance(metaclass_root, TypedValue) and isinstance(
-                metaclass_root.typ, type
-            ):
-                if metaclass_root.typ is type:
-                    return None
-                if "__call__" not in safe_getattr(metaclass_root.typ, "__dict__", {}):
-                    return None
+            if metaclass.typ is type:
+                return None
+            if "__call__" not in safe_getattr(metaclass.typ, "__dict__", {}):
+                return None
             if get_call_attribute is not None:
                 meta_call = get_call_attribute(metaclass)
             else:
