@@ -1007,10 +1007,36 @@ class TypeObject:
         return self._direct_dataclass_transform_info
 
     def get_dataclass_frozen_status(self) -> tuple[bool, bool | None]:
-        return self._get_dataclass_status("frozen")
+        for entry in self.get_mro():
+            if entry.tobj is None:
+                continue
+            if (dataclass_info := entry.tobj.get_direct_dataclass_info()) is not None:
+                return True, dataclass_info.frozen
+            if isinstance(entry.tobj.typ, type):
+                dataclass_params = safe_getattr(
+                    entry.tobj.typ, "__dataclass_params__", None
+                )
+                if dataclass_params is None:
+                    continue
+                frozen = safe_getattr(dataclass_params, "frozen", None)
+                return True, frozen if isinstance(frozen, bool) else None
+        return False, None
 
     def get_dataclass_order_status(self) -> tuple[bool, bool | None]:
-        return self._get_dataclass_status("order")
+        for entry in self.get_mro():
+            if entry.tobj is None:
+                continue
+            if (dataclass_info := entry.tobj.get_direct_dataclass_info()) is not None:
+                return True, dataclass_info.order
+            if isinstance(entry.tobj.typ, type):
+                dataclass_params = safe_getattr(
+                    entry.tobj.typ, "__dataclass_params__", None
+                )
+                if dataclass_params is None:
+                    continue
+                order = safe_getattr(dataclass_params, "order", None)
+                return True, order if isinstance(order, bool) else None
+        return False, None
 
     def get_direct_dataclass_fields(self) -> tuple[DataclassFieldRecord, ...]:
         """Return declaration-order dataclass fields defined directly on this class."""
@@ -1027,24 +1053,6 @@ class TypeObject:
                 )
             )
         return tuple(records)
-
-    def _get_dataclass_status(
-        self, parameter: Literal["frozen", "order"]
-    ) -> tuple[bool, bool | None]:
-        for entry in self.get_mro():
-            if entry.tobj is None:
-                continue
-            if (dataclass_info := entry.tobj.get_direct_dataclass_info()) is not None:
-                return True, getattr(dataclass_info, parameter)
-            if isinstance(entry.tobj.typ, type):
-                dataclass_params = safe_getattr(
-                    entry.tobj.typ, "__dataclass_params__", None
-                )
-                if dataclass_params is None:
-                    continue
-                value = safe_getattr(dataclass_params, parameter, None)
-                return True, value if isinstance(value, bool) else None
-        return False, None
 
     def is_namedtuple_like(self) -> bool:
         return self._get_synthetic_namedtuple_class() is not None or (
