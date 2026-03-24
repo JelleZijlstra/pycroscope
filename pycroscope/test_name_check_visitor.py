@@ -2241,8 +2241,7 @@ class TestSubclassValue(TestNameCheckVisitorBase):
 
         class Why(
             metaclass=print,  # E: invalid_metaclass
-            flush="complicated expression"
-            == "so we can make sure the error is on the right line",
+            flush="complicated" == "to make sure error is on right line",
         ):
             pass
 
