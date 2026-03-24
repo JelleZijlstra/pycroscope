@@ -1123,12 +1123,13 @@ class TestImportFailureHandlingCodeSamples(TestNameCheckVisitorBase):
         class Child(Base):
             label: str = ""
 
-        child = Child(1, 2)
-        assert_type(child, Child)
-        child.x + 1
-        child.label.upper()
-        assert_type(child[0], int)
-        assert_type(child[1], int)
+        def capybara(x: int, y: int):
+            child = Child(x, y)
+            assert_type(child, Child)
+            assert_type(child.x, int)
+            child.label.upper()
+            assert_type(child[0], int)
+            assert_type(child[1], int)
 
         def g(value: Child) -> None:
             x, y = value
@@ -1136,6 +1137,7 @@ class TestImportFailureHandlingCodeSamples(TestNameCheckVisitorBase):
             assert_type(y, int)
 
         def f() -> None:
+            child = Child(1, 2)
             child[2]  # E: incompatible_call
             _x, _y, _label = child  # E: bad_unpack
             Child("")  # E: incompatible_call

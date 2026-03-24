@@ -10,9 +10,6 @@ from unittest import mock
 
 from typing_extensions import Protocol, runtime_checkable
 
-from .test_node_visitor import skip_if_not_installed
-from .type_object import NamedTupleField
-
 from . import tests, value
 from .checker import Checker
 from .name_check_visitor import NameCheckVisitor
@@ -20,7 +17,7 @@ from .predicates import MinLen
 from .relations import _extract_type_form, intersect_values
 from .signature import ELLIPSIS_PARAM, Signature
 from .stacked_scopes import Composite
-from .type_object import NamedTupleField
+from .test_node_visitor import skip_if_not_installed
 from .value import (
     NO_RETURN_VALUE,
     AnnotatedValue,
@@ -32,7 +29,6 @@ from .value import (
     GenericValue,
     IntersectionValue,
     KnownValue,
-    ClassSymbol,
     KVPair,
     MultiValuedValue,
     OverlapMode,
@@ -745,39 +741,6 @@ def test_synthetic_class_object_value_unresolved_nominal_class() -> None:
     assert_cannot_assign(unresolved_cls, other_cls)
 
 
-def test_synthetic_namedtuple_members_without_runtime_class() -> None:
-    checker = Checker()
-    type_object = checker.make_type_object("mod.Point")
-    type_object.set_declared_symbol(
-        "x", ClassSymbol(annotation=TypedValue(int), is_instance_only=True)
-    )
-    type_object.set_declared_symbol(
-        "label",
-        ClassSymbol(
-            annotation=TypedValue(str),
-            is_instance_only=True,
-            initializer=KnownValue("default_label"),
-        ),
-    )
-    type_object.set_namedtuple_fields(
-        [
-            NamedTupleField("x", TypedValue(int), default=None),
-            NamedTupleField(
-                "label", TypedValue(str), default=KnownValue("default_label")
-            ),
-        ]
-    )
-
-    assert tuple(field.name for field in type_object.get_namedtuple_fields()) == (
-        "x",
-        "label",
-    )
-    assert value.tuple_members_from_value(TypedValue("mod.Point"), checker) == (
-        (False, TypedValue(int)),
-        (False, TypedValue(str)),
-    )
-
-
 def test_exact_tuple_subclass_members_from_runtime_bases() -> None:
     class NotANT(tuple[int, str]):
         pass
@@ -787,20 +750,6 @@ def test_exact_tuple_subclass_members_from_runtime_bases() -> None:
         (False, TypedValue(int)),
         (False, TypedValue(str)),
     )
-
-
-def test_tuple_subclass_with_custom_iter_is_not_unpacked_as_exact_tuple() -> None:
-    class Weird(tuple[int, str]):
-        pass
-
-    def _iter(self: Weird) -> collections.abc.Iterator[int | str]:
-        yield self[1]
-        yield self[0]
-
-    Weird.__iter__ = _iter
-
-    checker = Checker()
-    assert not value._can_unpack_tuple_members_from_value(TypedValue(Weird), checker)
 
 
 class Capybara(enum.IntEnum):

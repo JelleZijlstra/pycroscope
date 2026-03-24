@@ -3855,10 +3855,7 @@ def unpack_values(
             )
         return [unite_values(*vals) for vals in zip(*good_subvals)]
     value = replace_known_sequence_value(value)
-    if (
-        _can_unpack_tuple_members_from_value(value, ctx)
-        and (tuple_members := tuple_members_from_value(value, ctx)) is not None
-    ):
+    if (tuple_members := tuple_members_from_value(value, ctx)) is not None:
         value = SequenceValue(tuple, tuple_members)
 
     # We treat the different sequence types differently here.
@@ -3910,70 +3907,7 @@ def get_namedtuple_field_annotation(namedtuple_type: type, field_name: str) -> o
 def tuple_members_from_value(
     value: Value, ctx: CanAssignContext
 ) -> tuple[tuple[bool, Value], ...] | None:
-    def _from_tuple_args(
-        args: Sequence[Value] | None,
-    ) -> tuple[tuple[bool, Value], ...] | None:
-        if args is None:
-            return None
-        if not args:
-            return None
-        if len(args) == 1:
-            arg = replace_known_sequence_value(args[0])
-            if isinstance(arg, SequenceValue) and arg.typ is tuple:
-                return arg.members
-            return ((True, args[0]),)
-        return tuple((False, arg) for arg in args)
-
-    def _can_use_generic_bases() -> bool:
-        checker_ctx = safe_getattr(ctx, "checker", ctx)
-        return safe_getattr(checker_ctx, "_arg_spec_cache", None) is not None
-
-    def _normalize_for_tuple_bases(value: Value) -> Value | None:
-        normalized = replace_fallback(value)
-        if isinstance(normalized, AnnotatedValue):
-            return _normalize_for_tuple_bases(normalized.value)
-        if isinstance(normalized, SequenceValue) and normalized.typ is tuple:
-            return normalized
-        if (
-            isinstance(normalized, GenericValue)
-            and normalized.typ is tuple
-            and len(normalized.args) == 1
-        ):
-            return normalized
-        if isinstance(normalized, KnownValue) and isinstance(normalized.val, tuple):
-            if type(normalized.val) is tuple:
-                return SequenceValue(
-                    tuple,
-                    tuple((False, KnownValue(member)) for member in normalized.val),
-                )
-            return TypedValue(type(normalized.val))
-        if isinstance(normalized, SyntheticClassObjectValue):
-            return normalized.class_type
-        if isinstance(normalized, SubclassValue):
-            return _normalize_for_tuple_bases(normalized.typ)
-        return normalized
-
-    normalized = _normalize_for_tuple_bases(value)
-    if normalized is None:
-        return None
-    if isinstance(normalized, SequenceValue) and normalized.typ is tuple:
-        return normalized.members
-    if isinstance(normalized, GenericValue) and normalized.typ is tuple:
-        if len(normalized.args) == 1:
-            return ((True, normalized.args[0]),)
-        return tuple((False, arg) for arg in normalized.args)
-    if _can_use_generic_bases() and isinstance(normalized, GenericValue):
-        return _from_tuple_args(normalized.get_generic_args_for_type(tuple, ctx))
-    if _can_use_generic_bases() and isinstance(normalized, TypedValue):
-        return _from_tuple_args(normalized.get_generic_args_for_type(tuple, ctx))
-    return None
-
-
-def tuple_members_from_value_v2(
-    value: Value, ctx: CanAssignContext
-) -> tuple[tuple[bool, Value], ...] | None:
     value = replace_known_sequence_value(value)
-    print("TRY VALUE", value, repr(value))
     if isinstance(value, SequenceValue) and value.typ is tuple:
         return value.members
     elif isinstance(value, TypedValue):
@@ -3988,11 +3922,9 @@ def tuple_members_from_value_v2(
         ]
         maybe_iter = tobj.get_declared_symbol_with_owner("__iter__", ctx)
         if maybe_iter is None:
-            print(" NO ITER", value)
             return None
         owner_tobj, _ = maybe_iter
         if owner_tobj.typ is not tuple:
-            print("OVERRIDES __ITER__ ", value)
             return None  # overrides __iter__
         if tuple_entries:
             seq = tuple_entries[0].value
@@ -4001,42 +3933,6 @@ def tuple_members_from_value_v2(
                 substitutions = tobj.get_substitutions(value.args)
                 seq = seq.substitute_typevars(substitutions)
             return seq.members
-        print("NO TUPL ETERNEITRES", value, mro)
-    return None
-
-
-tuple_members_from_value = tuple_members_from_value_v2
-
-
-def _can_unpack_tuple_members_from_value(value: Value, ctx: CanAssignContext) -> bool:
-    from .type_object import lookup_declared_symbol_with_owner
-
-    class_key = _class_key_for_tuple_members(value)
-    if class_key is None:
-        return True
-    iter_method = lookup_declared_symbol_with_owner(class_key, "__iter__", ctx)
-    return iter_method is None or iter_method[0] is tuple
-
-
-def _class_key_for_tuple_members(value: Value) -> type | str | None:
-    value = replace_fallback(value)
-    if isinstance(value, AnnotatedValue):
-        return _class_key_for_tuple_members(value.value)
-    if isinstance(value, SequenceValue) and value.typ is tuple:
-        return None
-    if isinstance(value, SyntheticClassObjectValue):
-        class_type = value.class_type
-        if isinstance(class_type, TypedValue):
-            return class_type.typ
-        return None
-    if isinstance(value, SubclassValue):
-        return _class_key_for_tuple_members(value.typ)
-    if isinstance(value, KnownValue):
-        if isinstance(value.val, tuple) and type(value.val) is not tuple:
-            return type(value.val)
-        return None
-    if isinstance(value, TypedValue):
-        return value.typ
     return None
 
 
