@@ -200,20 +200,12 @@ def test_synthetic_type_object_tracks_dataclass_fields_without_initializers() ->
         kw_only_default=False,
         field_specifiers=(),
     )
-    base = SyntheticClassObjectValue(
-        "Base",
-        TypedValue("mod.Base"),
-        dataclass_info=dataclass_info,
-        dataclass_field_order=("a",),
-    )
-    child = SyntheticClassObjectValue(
-        "Child",
-        TypedValue("mod.Child"),
-        dataclass_info=dataclass_info,
-        dataclass_field_order=("b",),
-    )
+    base = SyntheticClassObjectValue("Base", TypedValue("mod.Base"))
+    child = SyntheticClassObjectValue("Child", TypedValue("mod.Child"))
     checker.register_synthetic_class(base)
     checker.register_synthetic_class(child)
+    checker.make_type_object("mod.Base").set_dataclass_info(dataclass_info)
+    checker.make_type_object("mod.Child").set_dataclass_info(dataclass_info)
     checker.make_type_object("mod.Child").set_direct_bases((TypedValue("mod.Base"),))
     checker.make_type_object("mod.Base").set_declared_symbol(
         "a",

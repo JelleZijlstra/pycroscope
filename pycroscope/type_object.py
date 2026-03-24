@@ -339,6 +339,8 @@ class TypeObject:
     _synthetic_declared_symbols: dict[str, ClassSymbol] | None
     _declared_symbols: MutableMapping[str, ClassSymbol] | None
     _dataclass_fields: tuple[DataclassFieldRecord, ...] | None
+    _direct_dataclass_info: DataclassInfo | None
+    _direct_dataclass_transform_info: DataclassTransformInfo | None
     _virtual_bases: list[MroValue] | None
     _is_thrift_enum: bool | None
     _is_direct_namedtuple: bool | None
@@ -361,6 +363,8 @@ class TypeObject:
         self._is_protocol = None
         self._protocol_members = None
         self._dataclass_fields = None
+        self._direct_dataclass_info = None
+        self._direct_dataclass_transform_info = None
         self._virtual_bases = None
         self._is_thrift_enum = None
         self._is_direct_namedtuple = None
@@ -505,8 +509,7 @@ class TypeObject:
     def _compute_dataclass_fields(self) -> tuple[DataclassFieldRecord, ...]:
         import pycroscope.type_object_builder as type_object_builder
 
-        synthetic_class = self._checker.get_synthetic_class(self.typ)
-        if synthetic_class is not None and synthetic_class.is_dataclass:
+        if self.get_direct_dataclass_info() is not None:
             ordered_names: list[str] = []
             records_by_name: dict[str, DataclassFieldRecord] = {}
             for base_value in self.get_direct_bases():
@@ -518,7 +521,7 @@ class TypeObject:
                     if record.field_name not in records_by_name:
                         ordered_names.append(record.field_name)
                     records_by_name[record.field_name] = record
-            for record in self.get_local_dataclass_fields():
+            for record in self.get_direct_dataclass_fields():
                 if record.field_name not in records_by_name:
                     ordered_names.append(record.field_name)
                 records_by_name[record.field_name] = record
@@ -857,24 +860,16 @@ class TypeObject:
         self._protocol_positive_cache.clear()
 
     def set_dataclass_info(self, dataclass_info: DataclassInfo | None) -> None:
-        synthetic_class = self._ensure_synthetic_class()
-        object.__setattr__(synthetic_class, "dataclass_info", dataclass_info)
+        self._ensure_synthetic_class()
+        self._direct_dataclass_info = dataclass_info
         self._update_loaded_synthetic_fields()
         self._protocol_positive_cache.clear()
 
     def set_dataclass_transform_info(
         self, dataclass_transform_info: DataclassTransformInfo | None
     ) -> None:
-        synthetic_class = self._ensure_synthetic_class()
-        object.__setattr__(
-            synthetic_class, "dataclass_transform_info", dataclass_transform_info
-        )
-        self._update_loaded_synthetic_fields()
-        self._protocol_positive_cache.clear()
-
-    def set_dataclass_field_order(self, field_order: Sequence[str]) -> None:
-        synthetic_class = self._ensure_synthetic_class()
-        object.__setattr__(synthetic_class, "dataclass_field_order", tuple(field_order))
+        self._ensure_synthetic_class()
+        self._direct_dataclass_transform_info = dataclass_transform_info
         self._update_loaded_synthetic_fields()
         self._protocol_positive_cache.clear()
 
@@ -1000,35 +995,29 @@ class TypeObject:
         return self._protocol_members
 
     def get_dataclass_fields(self) -> tuple[DataclassFieldRecord, ...]:
+        """Return dataclass fields for this class and all dataclass bases in MRO order."""
         if self._dataclass_fields is None:
             self._dataclass_fields = self._compute_dataclass_fields()
         return self._dataclass_fields
 
-    def get_local_dataclass_fields(self) -> tuple[DataclassFieldRecord, ...]:
-        synthetic_class = self._checker.get_synthetic_class(self.typ)
-        if synthetic_class is None or not synthetic_class.is_dataclass:
+    def get_direct_dataclass_info(self) -> DataclassInfo | None:
+        return self._direct_dataclass_info
+
+    def get_direct_dataclass_transform_info(self) -> DataclassTransformInfo | None:
+        return self._direct_dataclass_transform_info
+
+    def get_direct_dataclass_fields(self) -> tuple[DataclassFieldRecord, ...]:
+        """Return declaration-order dataclass fields defined directly on this class."""
+        if self.get_direct_dataclass_info() is None:
             return ()
-        field_names = synthetic_class.dataclass_field_order
         declared_symbols = self.get_declared_symbols()
-        if not field_names:
-            field_names = tuple(
-                name
-                for name, symbol in declared_symbols.items()
-                if symbol.dataclass_field is not None
-            )
         records: list[DataclassFieldRecord] = []
-        for field_name in field_names:
-            symbol = self.get_declared_symbol(field_name)
-            if symbol is None:
+        for field_name, symbol in declared_symbols.items():
+            if symbol.dataclass_field is None:
                 continue
             records.append(
                 DataclassFieldRecord(
-                    field_name=field_name,
-                    field_info=(
-                        symbol.dataclass_field
-                        if symbol.dataclass_field is not None
-                        else DataclassFieldInfo()
-                    ),
+                    field_name=field_name, field_info=symbol.dataclass_field
                 )
             )
         return tuple(records)
@@ -2254,13 +2243,11 @@ def _specialize_declared_property_value(
 
 
 def _is_frozen_dataclass(tobj: TypeObject, ctx: CanAssignContext) -> bool:
+    if (dataclass_info := tobj.get_direct_dataclass_info()) is not None:
+        return dataclass_info.frozen
     if isinstance(tobj.typ, type):
         dataclass_params = safe_getattr(tobj.typ, "__dataclass_params__", None)
         if safe_getattr(dataclass_params, "frozen", None) is True:
-            return True
-    elif isinstance(tobj.typ, str):
-        synthetic = _get_synthetic_class_for_key(tobj.typ, ctx)
-        if synthetic is not None and synthetic.dataclass_frozen is True:
             return True
     return False
 

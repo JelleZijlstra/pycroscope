@@ -2101,15 +2101,7 @@ class SyntheticClassObjectValue(Value):
     runtime_class: Value | None = field(
         default=None, compare=False, hash=False, repr=False
     )
-    dataclass_info: "DataclassInfo | None" = field(
-        default=None, compare=False, hash=False, repr=False
-    )
-    dataclass_transform_info: "DataclassTransformInfo | None" = field(
-        default=None, compare=False, hash=False, repr=False
-    )
-    dataclass_field_order: tuple[str, ...] = field(
-        default_factory=tuple, compare=False, hash=False, repr=False
-    )
+    metaclass: Value | None = field(default=None, compare=False, hash=False, repr=False)
 
     def substitute_typevars(self, typevars: TypeVarMap) -> "SyntheticClassObjectValue":
         substituted = self.class_type.substitute_typevars(typevars)
@@ -2128,34 +2120,12 @@ class SyntheticClassObjectValue(Value):
                 if self.runtime_class is not None
                 else None
             ),
-            dataclass_info=(
-                self.dataclass_info.substitute_typevars(typevars)
-                if self.dataclass_info is not None
+            metaclass=(
+                self.metaclass.substitute_typevars(typevars)
+                if self.metaclass is not None
                 else None
             ),
-            dataclass_transform_info=(
-                self.dataclass_transform_info.substitute_typevars(typevars)
-                if self.dataclass_transform_info is not None
-                else None
-            ),
-            dataclass_field_order=tuple(self.dataclass_field_order),
         )
-
-    @property
-    def is_dataclass(self) -> bool:
-        return self.dataclass_info is not None
-
-    @property
-    def dataclass_frozen(self) -> bool | None:
-        if self.dataclass_info is None:
-            return None
-        return self.dataclass_info.frozen
-
-    @property
-    def dataclass_order(self) -> bool | None:
-        if self.dataclass_info is None:
-            return None
-        return self.dataclass_info.order
 
     def walk_values(self) -> Iterable["Value"]:
         yield self
@@ -2165,10 +2135,10 @@ class SyntheticClassObjectValue(Value):
                 yield from value.walk_values()
         if self.runtime_class is not None:
             yield from self.runtime_class.walk_values()
-        if self.dataclass_info is not None:
-            yield from self.dataclass_info.walk_values()
-        if self.dataclass_transform_info is not None:
-            yield from self.dataclass_transform_info.walk_values()
+        if self.metaclass is not None:
+            yield from self.metaclass.walk_values()
+        if self.metaclass is not None:
+            yield from self.metaclass.walk_values()
 
     def get_type_value(self) -> Value:
         if isinstance(self.class_type, TypedValue) and isinstance(

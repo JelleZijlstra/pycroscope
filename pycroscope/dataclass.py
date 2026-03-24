@@ -53,26 +53,14 @@ def synthesize_dataclass_fields_attribute() -> Value:
     return GenericValue(dict, [TypedValue(str), AnyValue(AnySource.explicit)])
 
 
-def dataclass_init_enabled(value: SyntheticClassObjectValue) -> bool:
-    if value.dataclass_info is None:
-        return True
-    return value.dataclass_info.init
-
-
-def dataclass_match_args_enabled(value: SyntheticClassObjectValue) -> bool:
-    if value.dataclass_info is None:
-        return True
-    return value.dataclass_info.match_args
-
-
 def get_synthetic_constructor_signature(
-    value: SyntheticClassObjectValue,
+    type_object: "pycroscope.type_object.TypeObject",
     instance_type: Value,
     *,
-    get_field_parameters: Callable[[SyntheticClassObjectValue], list[SigParameter]],
+    get_field_parameters: Callable[[type | str], list[SigParameter]],
 ) -> Signature | None:
-    params = get_field_parameters(value)
-    if not params and value.dataclass_info is None:
+    params = get_field_parameters(type_object.typ)
+    if not params and type_object.get_direct_dataclass_info() is None:
         return None
     try:
         return Signature.make(params, instance_type)
@@ -81,13 +69,14 @@ def get_synthetic_constructor_signature(
 
 
 def get_synthetic_init_value(
-    value: SyntheticClassObjectValue,
+    type_object: "pycroscope.type_object.TypeObject",
     *,
-    get_field_parameters: Callable[[SyntheticClassObjectValue], list[SigParameter]],
+    get_field_parameters: Callable[[type | str], list[SigParameter]],
 ) -> Value | None:
-    if not dataclass_init_enabled(value):
+    dataclass_info = type_object.get_direct_dataclass_info()
+    if dataclass_info is not None and not dataclass_info.init:
         return None
-    params = get_field_parameters(value)
+    params = get_field_parameters(type_object.typ)
     try:
         signature = Signature.make(
             [
@@ -106,13 +95,14 @@ def get_synthetic_init_value(
 
 
 def get_synthetic_match_args_value(
-    value: SyntheticClassObjectValue,
+    type_object: "pycroscope.type_object.TypeObject",
     *,
-    get_field_parameters: Callable[[SyntheticClassObjectValue], list[SigParameter]],
+    get_field_parameters: Callable[[type | str], list[SigParameter]],
 ) -> Value | None:
-    if not dataclass_match_args_enabled(value):
+    dataclass_info = type_object.get_direct_dataclass_info()
+    if dataclass_info is not None and not dataclass_info.match_args:
         return None
-    params = get_field_parameters(value)
+    params = get_field_parameters(type_object.typ)
     return KnownValue(
         tuple(
             param.name
@@ -141,7 +131,7 @@ def apply_synthetic_attributes(
     *,
     type_object: "pycroscope.type_object.TypeObject",
     get_slot_names: Callable[[SyntheticClassObjectValue], tuple[str, ...] | None],
-    get_field_parameters: Callable[[SyntheticClassObjectValue], list[SigParameter]],
+    get_field_parameters: Callable[[type | str], list[SigParameter]],
 ) -> None:
     if semantics is None:
         return
@@ -171,7 +161,7 @@ def apply_synthetic_attributes(
 
     if _get_local_synthetic_initializer(type_object, "__init__") is None:
         init_value = get_synthetic_init_value(
-            synthetic_class, get_field_parameters=get_field_parameters
+            type_object, get_field_parameters=get_field_parameters
         )
         if init_value is not None:
             type_object.add_declared_symbol(
@@ -180,7 +170,7 @@ def apply_synthetic_attributes(
 
     if _get_local_synthetic_initializer(type_object, "__match_args__") is None:
         match_args_value = get_synthetic_match_args_value(
-            synthetic_class, get_field_parameters=get_field_parameters
+            type_object, get_field_parameters=get_field_parameters
         )
         if match_args_value is not None:
             type_object.add_declared_symbol(
@@ -204,15 +194,13 @@ def maybe_resolve_synthetic_descriptor_attribute(
     on_class: bool,
     descriptor_get_type: Callable[..., Value | None],
 ) -> Value:
+    type_object = ctx.get_can_assign_context().make_type_object(
+        synthetic_class.class_type.typ
+    )
     if (
-        not synthetic_class.is_dataclass
+        type_object.get_direct_dataclass_info() is None
         or (
-            (
-                symbol := ctx.get_can_assign_context()
-                .make_type_object(synthetic_class.class_type.typ)
-                .get_declared_symbol(attr_name)
-            )
-            is not None
+            (symbol := type_object.get_declared_symbol(attr_name)) is not None
             and symbol.is_method
         )
         or (attr_name.startswith("__") and attr_name.endswith("__"))
