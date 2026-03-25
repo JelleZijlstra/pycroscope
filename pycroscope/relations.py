@@ -82,7 +82,6 @@ from pycroscope.value import (
     flatten_values,
     freshen_typevars_for_inference,
     get_type_params_by_typevar,
-    get_typevar_variance,
     gradualize,
     intersect_bounds_maps,
     replace_fallback,
@@ -1219,17 +1218,10 @@ def _has_relation_for_generic_arg(
 
 def _get_generic_variances(
     typ: type | str, num_args: int, ctx: CanAssignContext
-) -> tuple[Variance, ...]:
-    type_params = ctx.get_type_parameters(typ)
-    if len(type_params) == num_args:
-        variances = [type_param.variance for type_param in type_params]
-        return tuple(variances)
-
-    bases = ctx.get_generic_bases(typ)
-    typevar_map = bases.get(typ)
-    if typevar_map is None or len(typevar_map) != num_args:
-        return (Variance.INVARIANT,) * num_args
-    return tuple(get_typevar_variance(typevar) for typevar in typevar_map)
+) -> Sequence[Variance]:
+    tobj = ctx.make_type_object(typ)
+    type_params = tobj.get_declared_type_params()
+    return [param.variance for param in type_params]
 
 
 def _can_assign_type_form(

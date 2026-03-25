@@ -216,6 +216,17 @@ class TestRelations(TestNameCheckVisitorBase):
             assert_type(literal_tuple, tuple[Literal["x"]])
             assert_type(tuple_of_literals, Literal[(("x",),)])
 
+    @assert_passes()
+    def test_callable(self):
+        from collections.abc import Callable as CCallable
+        from typing import Callable as TCallable
+
+        def capybara(x: TCallable[[int], str]) -> None:
+            hutia(x)
+
+        def hutia(x: CCallable[[int], str]) -> None:
+            capybara(x)
+
 
 class TestIntersections(TestNameCheckVisitorBase):
     @assert_passes()

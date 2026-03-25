@@ -287,16 +287,6 @@ def test_protocol() -> None:
     assert_can_assign(tv, KnownValue(X()))
 
 
-def test_callable() -> None:
-    cval = TypedValue(collections.abc.Callable)
-    assert_can_assign(cval, cval)
-
-    gen_val = GenericValue(
-        collections.abc.Callable, [TypedValue(int), KnownValue(None)]
-    )
-    assert_can_assign(gen_val, gen_val)
-
-
 def test_subclass_value() -> None:
     val = SubclassValue(TypedValue(int))
     assert_can_assign(val, KnownValue(int))
