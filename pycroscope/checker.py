@@ -2452,29 +2452,15 @@ class Checker:
             if typ is collections.abc.Callable or typ is types.FunctionType:
                 return ANY_SIGNATURE
             if isinstance(typ, str):
-                synthetic_class = self.get_synthetic_class(typ)
-                if synthetic_class is not None:
-                    synthetic_call = get_synthetic_member_initializer(
-                        synthetic_class, "__call__", self
-                    )
-                    call_symbol = self.make_type_object(
-                        synthetic_class.class_type.typ
-                    ).get_declared_symbol("__call__")
-                    if (
-                        synthetic_call is not None
-                        and call_symbol is not None
-                        and call_symbol.is_method
-                    ):
-                        normalized_call = normalize_synthetic_descriptor_attribute(
-                            synthetic_call
-                        )
-                        if isinstance(normalized_call, CallableValue):
-                            bound = self._bind_synthetic_method(
-                                normalized_call.signature, self_annotation_value=value
-                            )
-                            if bound is not None:
-                                return bound
-                            return normalized_call.signature
+                call_access = self.make_type_object(typ).get_attribute(
+                    "__call__", self, on_class=False, receiver_value=value
+                )
+                if call_access is not None and call_access.symbol.is_method:
+                    if call_access.owner.typ != typ:
+                        return ANY_SIGNATURE
+                    direct_call_sig = self.signature_from_value(call_access.value)
+                    if direct_call_sig is not None:
+                        return direct_call_sig
                 if get_call_attribute is not None:
                     call_method = get_call_attribute(value)
                 else:
@@ -2934,11 +2920,6 @@ class CheckerAttrContext(AttrContext):
 
     def get_synthetic_class(self, typ: type | str) -> SyntheticClassObjectValue | None:
         return self.checker.get_synthetic_class(typ)
-
-    def should_include_synthetic_methods(self) -> bool:
-        # __call__ has dedicated protocol handling in type_object; exposing
-        # synthetic method values here can double-bind callable signatures.
-        return self.attr != "__call__"
 
     def bind_synthetic_instance_attribute(self, attr_name: str, value: Value) -> Value:
         root_value = self.root_value

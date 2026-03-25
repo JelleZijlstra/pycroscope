@@ -94,6 +94,55 @@ class TestDataclass(TestNameCheckVisitorBase):
             y: int  # E: incompatible_override
 
     @assert_passes()
+    def test_classvar_access_on_dataclass_instance_uses_declared_type(self):
+        from dataclasses import dataclass
+        from typing import ClassVar
+
+        @dataclass
+        class DC:
+            a: ClassVar[int] = 0
+            b: str
+
+        dc = DC("")
+        assert_type(dc.a, int)
+        assert_type(DC.a, int)
+
+    @assert_passes(allow_import_failures=True, allow_runtime_module_load_failure=True)
+    def test_classvar_access_after_invalid_dataclasses_uses_declared_type(self):
+        from dataclasses import InitVar, dataclass, field
+        from typing import Callable, ClassVar, assert_type
+
+        @dataclass  # E: invalid_dataclass
+        class DC1:
+            a: int = 0
+            b: int
+
+        @dataclass  # E: invalid_dataclass
+        class DC2:
+            a: int = field(default=1)
+            b: int
+
+        @dataclass  # E: invalid_dataclass
+        class DC3:
+            a: InitVar[int] = 0
+            b: int
+
+        def f(s: str) -> int:
+            return int(s)
+
+        @dataclass
+        class DC:
+            a: ClassVar[int] = 0
+            b: str
+            c: Callable[[str], int] = f
+
+        dc = DC("")
+        assert_type(dc.a, int)
+        assert_type(DC.a, int)
+        assert_type(dc.b, str)
+        assert_type(dc.c, Callable[[str], int])
+
+    @assert_passes()
     def test_frozen_dataclass_disallows_intersection_attribute_assignment(self):
         from dataclasses import dataclass
 

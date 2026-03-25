@@ -601,6 +601,31 @@ def test_get_attribute_applies_classmethod_descriptor_protocol() -> None:
     assert not attribute.value.signature.parameters
 
 
+def test_get_attribute_special_cases_instance_class_and_dict_for_runtime_types() -> (
+    None
+):
+    class Box:
+        pass
+
+    checker = Checker()
+    type_object = checker.make_type_object(Box)
+
+    class_attr = type_object.get_attribute(
+        "__class__", checker, on_class=False, receiver_value=TypedValue(Box)
+    )
+    assert class_attr is not None
+    assert class_attr.owner.typ is Box
+    assert isinstance(class_attr.value, AnyValue)
+    assert class_attr.value.source is AnySource.inference
+
+    dict_attr = type_object.get_attribute(
+        "__dict__", checker, on_class=False, receiver_value=TypedValue(Box)
+    )
+    assert dict_attr is not None
+    assert dict_attr.owner.typ is Box
+    assert dict_attr.value == TypedValue(dict)
+
+
 def test_get_attribute_uses_metaclass_members_for_class_object_access() -> None:
     class Meta(type):
         answer = 42
