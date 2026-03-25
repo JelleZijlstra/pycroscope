@@ -2101,7 +2101,6 @@ class SyntheticClassObjectValue(Value):
     runtime_class: Value | None = field(
         default=None, compare=False, hash=False, repr=False
     )
-    metaclass: Value | None = field(default=None, compare=False, hash=False, repr=False)
 
     def substitute_typevars(self, typevars: TypeVarMap) -> "SyntheticClassObjectValue":
         substituted = self.class_type.substitute_typevars(typevars)
@@ -2120,11 +2119,6 @@ class SyntheticClassObjectValue(Value):
                 if self.runtime_class is not None
                 else None
             ),
-            metaclass=(
-                self.metaclass.substitute_typevars(typevars)
-                if self.metaclass is not None
-                else None
-            ),
         )
 
     def walk_values(self) -> Iterable["Value"]:
@@ -2135,10 +2129,6 @@ class SyntheticClassObjectValue(Value):
                 yield from value.walk_values()
         if self.runtime_class is not None:
             yield from self.runtime_class.walk_values()
-        if self.metaclass is not None:
-            yield from self.metaclass.walk_values()
-        if self.metaclass is not None:
-            yield from self.metaclass.walk_values()
 
     def get_type_value(self) -> Value:
         if isinstance(self.class_type, TypedValue) and isinstance(
