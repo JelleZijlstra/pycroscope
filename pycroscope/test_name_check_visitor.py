@@ -3164,6 +3164,34 @@ class TestTypingConstructNameMatching(TestNameCheckVisitorBase):
             run_in_both_module_modes=True,
         )
 
+    @skip_before((3, 11))
+    def test_typevartuple_overload(self):
+        # Based on generics_typevartuple_overloads.py in the conformance suite
+        self.assert_passes("""
+            from typing import Any, Generic, TypeVar, TypeVarTuple, assert_type, overload
+
+            Shape = TypeVarTuple("Shape")
+            Axis1 = TypeVar("Axis1")
+            Axis2 = TypeVar("Axis2")
+            Axis3 = TypeVar("Axis3")
+
+            class Array(Generic[*Shape]):
+                @overload
+                def transpose(self: "Array[Axis1, Axis2]") -> "Array[Axis2, Axis1]": ...
+
+                @overload
+                def transpose(
+                    self: "Array[Axis1, Axis2, Axis3]",
+                ) -> "Array[Axis3, Axis2, Axis1]": ...
+
+                def transpose(self) -> Any:
+                    raise NotImplementedError
+
+            def func1(a: Array[Axis1, Axis2], b: Array[Axis1, Axis2, Axis3]):
+                assert_type(a.transpose(), Array[Axis2, Axis1])
+                assert_type(b.transpose(), Array[Axis3, Axis2, Axis1])
+            """)
+
 
 class TestImports(TestNameCheckVisitorBase):
     def test_star_import(self):
