@@ -77,6 +77,7 @@ from .value import (
     GenericValue,
     IntersectionValue,
     KnownValue,
+    KnownValueWithTypeVars,
     MultiValuedValue,
     ParamSpecParam,
     PredicateValue,
@@ -1144,13 +1145,51 @@ class TypeObject:
         ctx: CanAssignContext,
         *,
         on_class: bool,
-        receiver_value: TypedValue | None = None,
+        receiver_value: Value | None = None,
     ) -> TypeObjectAttribute | None:
         """Look up an attribute and apply descriptor semantics for this access."""
+        typed_receiver_value = _receiver_type_value(receiver_value)
+        # TODO: Revisit whether __class__ and __dict__ should remain bespoke
+        # get_attribute() special cases instead of falling out of general lookup.
+        if not on_class and name == "__class__":
+            return TypeObjectAttribute(
+                value=AnyValue(AnySource.inference),
+                symbol=ClassSymbol(initializer=AnyValue(AnySource.inference)),
+                owner=self,
+                is_property=False,
+                property_has_setter=False,
+                is_metaclass_owner=False,
+            )
+        if not on_class and name == "__dict__":
+            return TypeObjectAttribute(
+                value=TypedValue(dict),
+                symbol=ClassSymbol(initializer=TypedValue(dict)),
+                owner=self,
+                is_property=False,
+                property_has_setter=False,
+                is_metaclass_owner=False,
+            )
         raw_attribute = self._get_raw_attribute(
-            name, ctx, on_class=on_class, receiver_value=receiver_value
+            name, ctx, on_class=on_class, receiver_value=typed_receiver_value
         )
         if raw_attribute is None:
+            typeshed_attribute = self._get_typeshed_attribute(
+                name, ctx, on_class=on_class, receiver_value=typed_receiver_value
+            )
+            if typeshed_attribute is not None:
+                return typeshed_attribute
+            if isinstance(self.typ, str) and self.has_any_base():
+                unknown_value = AnyValue(AnySource.from_another)
+                return TypeObjectAttribute(
+                    value=unknown_value,
+                    symbol=ClassSymbol(initializer=unknown_value),
+                    owner=self,
+                    is_property=False,
+                    property_has_setter=False,
+                    is_metaclass_owner=False,
+                )
+            return None
+        if raw_attribute.symbol.is_initvar and not on_class:
             return None
         resolved = _resolve_raw_attribute_access(
             self, raw_attribute, ctx, on_class=on_class, receiver_value=receiver_value
@@ -1229,6 +1268,39 @@ class TypeObject:
             ctx,
             receiver_value=receiver_value,
             is_metaclass_owner=True,
+        )
+
+    def _get_typeshed_attribute(
+        self,
+        name: str,
+        ctx: CanAssignContext,
+        *,
+        on_class: bool,
+        receiver_value: TypedValue | None,
+    ) -> TypeObjectAttribute | None:
+        """Return a typeshed-backed attribute when no declared symbol is available."""
+        if not isinstance(self.typ, str):
+            return None
+        value, provider = self._checker.ts_finder.get_attribute_recursively(
+            self.typ, name, on_class=on_class
+        )
+        if value is UNINITIALIZED_VALUE:
+            return None
+        value = _specialize_typeshed_attribute_value(
+            self, value, provider, ctx, receiver_value=receiver_value
+        )
+        owner = self if provider is None else self._checker.make_type_object(provider)
+        signature = ctx.signature_from_value(value)
+        is_method = isinstance(
+            signature, (Signature, OverloadedSignature, BoundMethodSignature)
+        )
+        return TypeObjectAttribute(
+            value=value,
+            symbol=ClassSymbol(initializer=value, is_method=is_method),
+            owner=owner,
+            is_property=False,
+            property_has_setter=False,
+            is_metaclass_owner=False,
         )
 
     def _make_raw_attribute(
@@ -2030,6 +2102,15 @@ def _class_key_and_generic_args_from_type_value(
     return receiver_value.typ, generic_args
 
 
+def _receiver_type_value(receiver_value: Value | None) -> TypedValue | None:
+    if receiver_value is None:
+        return None
+    resolved = replace_fallback(receiver_value)
+    if isinstance(resolved, TypedValue):
+        return resolved
+    return None
+
+
 # TODO: this is basically the same as _match_up_generic_args below
 def _typevar_map_from_generic_args(
     type_params: Sequence[TypeParam], generic_args: Sequence[Value]
@@ -2105,7 +2186,7 @@ def _specialize_self_returning_classmethod(
     raw_attr: Value,
     normalized_attr: Value,
     *,
-    receiver_value: TypedValue | None,
+    receiver_value: Value | None,
     ctx: CanAssignContext,
 ) -> Value:
     if receiver_value is None or not isinstance(normalized_attr, CallableValue):
@@ -2118,10 +2199,15 @@ def _specialize_self_returning_classmethod(
     ):
         return normalized_attr
     receiver_for_self: TypedValue | TypeVarValue
-    if isinstance(receiver_value, GenericValue):
-        receiver_for_self = TypedValue(receiver_value.typ)
-    else:
-        receiver_for_self = receiver_value
+    match receiver_value:
+        case TypeVarValue():
+            receiver_for_self = receiver_value
+        case GenericValue():
+            receiver_for_self = TypedValue(receiver_value.typ)
+        case TypedValue():
+            receiver_for_self = receiver_value
+        case _:
+            return normalized_attr
     inferred = get_tv_map(raw_attr.args[0], SubclassValue(receiver_for_self), ctx)
     if isinstance(inferred, CanAssignError):
         return normalized_attr
@@ -2142,7 +2228,7 @@ def _resolve_raw_attribute_access(
     ctx: CanAssignContext,
     *,
     on_class: bool,
-    receiver_value: TypedValue | None,
+    receiver_value: Value | None,
 ) -> _ResolvedAttributeAccess:
     """Resolve a raw member to the value seen by this attribute access."""
     resolved_descriptor = _resolve_descriptor_access(
@@ -2169,7 +2255,7 @@ def _resolve_descriptor_access(
     ctx: CanAssignContext,
     *,
     on_class: bool,
-    receiver_value: TypedValue | None,
+    receiver_value: Value | None,
 ) -> _ResolvedAttributeAccess | None:
     """Apply built-in and generic descriptor behavior to a raw member."""
     symbol = raw_attribute.symbol
@@ -2197,11 +2283,12 @@ def _resolve_descriptor_access(
         raw_value = _specialize_self_returning_classmethod(
             raw_attribute.raw_value, raw_value, receiver_value=receiver_value, ctx=ctx
         )
-        if receiver_value is not None:
+        typed_receiver_value = _receiver_type_value(receiver_value)
+        if typed_receiver_value is not None and not isinstance(receiver_tobj.typ, str):
             raw_value = _bind_attribute_signature(
                 raw_value,
                 receiver_value=_classmethod_receiver_value_from_type_value(
-                    receiver_value
+                    typed_receiver_value
                 ),
                 ctx=ctx,
             )
@@ -2229,10 +2316,18 @@ def _resolve_descriptor_access(
         and not symbol.is_method
         and not symbol.is_classvar
         and not raw_attribute.is_metaclass_owner
+        and not _descriptor_has_method(raw_attribute.declared_value, "__get__", ctx)
+        and not _descriptor_has_method(raw_attribute.declared_value, "__set__", ctx)
+        and not _descriptor_has_method(raw_attribute.declared_value, "__delete__", ctx)
     ):
         return None
+    descriptor_value = raw_attribute.raw_value
+    if symbol.annotation is not None and _descriptor_has_method(
+        raw_attribute.declared_value, "__get__", ctx
+    ):
+        descriptor_value = raw_attribute.declared_value
     descriptor_get_value = _get_descriptor_get_value(
-        raw_attribute.raw_value,
+        descriptor_value,
         receiver_tobj,
         ctx,
         on_class=on_class,
@@ -2252,7 +2347,7 @@ def _get_nondescriptor_value(
     raw_attribute: _RawTypeObjectAttribute,
     *,
     on_class: bool,
-    receiver_value: TypedValue | None,
+    receiver_value: Value | None,
     ctx: CanAssignContext,
 ) -> Value:
     """Return the fallback value when no descriptor behavior applies."""
@@ -2334,7 +2429,7 @@ def _get_descriptor_get_value(
     ctx: CanAssignContext,
     *,
     on_class: bool,
-    receiver_value: TypedValue | None,
+    receiver_value: Value | None,
     is_metaclass_owner: bool,
 ) -> Value | None:
     """Return the value produced by a descriptor's ``__get__`` call."""
@@ -2455,6 +2550,53 @@ def _substitute_symbol_value(
     if not substitutions:
         return value
     return value.substitute_typevars(substitutions)
+
+
+def _specialize_typeshed_attribute_value(
+    receiver_tobj: TypeObject,
+    value: Value,
+    provider: type | str | None,
+    ctx: CanAssignContext,
+    *,
+    receiver_value: TypedValue | None,
+) -> Value:
+    """Apply receiver/base substitutions to a typeshed-provided attribute value."""
+    generic_args: Sequence[Value]
+    if receiver_value is None:
+        receiver_key = receiver_tobj.typ
+        generic_args = ()
+    else:
+        receiver_key, generic_args = _class_key_and_generic_args_from_type_value(
+            receiver_value
+        )
+    generic_bases = ctx.get_generic_bases(receiver_key, generic_args)
+    if provider is not None and provider in generic_bases:
+        substituted_typevars = {
+            typevar: (
+                coerce_paramspec_specialization_to_input_sig(typevar_value)
+                if is_instance_of_typing_name(typevar, "ParamSpec")
+                else typevar_value
+            )
+            for typevar, typevar_value in generic_bases[provider].items()
+        }
+        value = value.substitute_typevars(substituted_typevars)
+    if generic_args and receiver_key in generic_bases:
+        ordered_typevars = [
+            val.typevar_param.typevar if isinstance(val, TypeVarValue) else None
+            for val in generic_bases[receiver_key].values()
+        ]
+        direct_substitutions = {
+            typevar: arg
+            for typevar, arg in zip(ordered_typevars, generic_args)
+            if typevar is not None
+        }
+        if isinstance(value, KnownValueWithTypeVars):
+            value = KnownValueWithTypeVars(
+                value.val, {**value.typevars, **direct_substitutions}
+            )
+        else:
+            value = value.substitute_typevars(direct_substitutions)
+    return value
 
 
 def _mro_generic_args(value: MroValue) -> Sequence[Value]:
