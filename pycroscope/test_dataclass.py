@@ -135,6 +135,20 @@ class TestDataclass(TestNameCheckVisitorBase):
                 pass
 
     @assert_passes(run_in_both_module_modes=True)
+    def test_frozen_dataclass_base_stays_frozen_in_plain_subclass(self):
+        from dataclasses import dataclass
+
+        @dataclass(frozen=True)
+        class Frozen:
+            value: int
+
+        class Child(Frozen):
+            pass
+
+        def mutate(child: Child) -> None:
+            child.value = 2  # E: incompatible_assignment
+
+    @assert_passes(run_in_both_module_modes=True)
     def test_dataclass_classvar_instance_override_mismatch_after_import_failure(self):
         from dataclasses import dataclass
         from typing import ClassVar
@@ -234,7 +248,7 @@ class TestDataclass(TestNameCheckVisitorBase):
             NotSlotted(1).__slots__  # E: undefined_attribute
 
             @dataclass(slots=True)
-            class DataclassWithSlotsAttribute:  # E: invalid_annotation
+            class DataclassWithSlotsAttribute:  # E: invalid_dataclass
                 x: int
                 __slots__ = ()
 
@@ -351,7 +365,7 @@ class TestDataclass(TestNameCheckVisitorBase):
             @dataclass
             class BadMarker:
                 x: int
-                _: KW_ONLY = 0  # E: invalid_annotation
+                _: KW_ONLY = 0  # E: invalid_dataclass
                 y: int
             """,
             run_in_both_module_modes=True,
@@ -467,22 +481,35 @@ class TestDataclass(TestNameCheckVisitorBase):
                 _ = local
 
         def capybara() -> None:
-            @dataclass  # E: invalid_annotation
+            @dataclass  # E: invalid_dataclass
             class DC1:
                 a: int = 0
                 b: int
 
-            @dataclass  # E: invalid_annotation
+            @dataclass  # E: invalid_dataclass
             class DC2:
                 a: int = field(default=1)
                 b: int
 
-            @dataclass  # E: invalid_annotation
+            @dataclass  # E: invalid_dataclass
             class DC3:
                 a: InitVar[int] = 0
                 b: int
 
             DC4(1, 2)
+
+    @assert_passes()
+    def test_dataclass_inherited_default_order_validation(self):
+        from dataclasses import dataclass
+
+        @dataclass
+        class Base:
+            a: int = 0
+
+        def capybara() -> None:
+            @dataclass  # E: invalid_dataclass
+            class Child(Base):
+                b: int
 
     @assert_passes()
     def test_dataclass_post_init_initvar_semantics(self):

@@ -1331,8 +1331,9 @@ def _get_runtime_attribute_from_synthetic_class(
     synthetic_class = ctx.get_synthetic_class(typ)
     if synthetic_class is None:
         return UNINITIALIZED_VALUE
+    type_object = ctx.get_can_assign_context().make_type_object(typ)
     symbol = _get_synthetic_declared_symbol(synthetic_class, ctx.attr, ctx)
-    if not synthetic_class.is_dataclass:
+    if type_object.get_direct_dataclass_info() is None:
         if _maybe_mangle_private_name(ctx.attr, synthetic_class.name) is None:
             if symbol is None:
                 return UNINITIALIZED_VALUE

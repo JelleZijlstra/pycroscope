@@ -339,6 +339,8 @@ class TypeObject:
     _synthetic_declared_symbols: dict[str, ClassSymbol] | None
     _declared_symbols: MutableMapping[str, ClassSymbol] | None
     _dataclass_fields: tuple[DataclassFieldRecord, ...] | None
+    _direct_dataclass_info: DataclassInfo | None
+    _direct_dataclass_transform_info: DataclassTransformInfo | None
     _virtual_bases: list[MroValue] | None
     _is_thrift_enum: bool | None
     _is_direct_namedtuple: bool | None
@@ -361,6 +363,8 @@ class TypeObject:
         self._is_protocol = None
         self._protocol_members = None
         self._dataclass_fields = None
+        self._direct_dataclass_info = None
+        self._direct_dataclass_transform_info = None
         self._virtual_bases = None
         self._is_thrift_enum = None
         self._is_direct_namedtuple = None
@@ -505,13 +509,25 @@ class TypeObject:
     def _compute_dataclass_fields(self) -> tuple[DataclassFieldRecord, ...]:
         import pycroscope.type_object_builder as type_object_builder
 
+        if self.get_direct_dataclass_info() is not None:
+            ordered_names: list[str] = []
+            records_by_name: dict[str, DataclassFieldRecord] = {}
+            for base_value in self.get_direct_bases():
+                if not isinstance(base_value, TypedValue):
+                    continue
+                for record in self._checker.make_type_object(
+                    base_value.typ
+                ).get_dataclass_fields():
+                    if record.field_name not in records_by_name:
+                        ordered_names.append(record.field_name)
+                    records_by_name[record.field_name] = record
+            for record in self.get_direct_dataclass_fields():
+                if record.field_name not in records_by_name:
+                    ordered_names.append(record.field_name)
+                records_by_name[record.field_name] = record
+            return tuple(records_by_name[name] for name in ordered_names)
         if isinstance(self.typ, str):
-            synthetic_class = self._checker.get_synthetic_class(self.typ)
-            if synthetic_class is None:
-                return ()
-            return type_object_builder._get_synthetic_dataclass_fields(
-                self._checker, synthetic_class
-            )
+            return ()
         return type_object_builder._get_runtime_dataclass_fields(self.typ)
 
     def _get_synthetic_namedtuple_class(self) -> SyntheticClassObjectValue | None:
@@ -844,24 +860,16 @@ class TypeObject:
         self._protocol_positive_cache.clear()
 
     def set_dataclass_info(self, dataclass_info: DataclassInfo | None) -> None:
-        synthetic_class = self._ensure_synthetic_class()
-        object.__setattr__(synthetic_class, "dataclass_info", dataclass_info)
+        self._ensure_synthetic_class()
+        self._direct_dataclass_info = dataclass_info
         self._update_loaded_synthetic_fields()
         self._protocol_positive_cache.clear()
 
     def set_dataclass_transform_info(
         self, dataclass_transform_info: DataclassTransformInfo | None
     ) -> None:
-        synthetic_class = self._ensure_synthetic_class()
-        object.__setattr__(
-            synthetic_class, "dataclass_transform_info", dataclass_transform_info
-        )
-        self._update_loaded_synthetic_fields()
-        self._protocol_positive_cache.clear()
-
-    def set_dataclass_field_order(self, field_order: Sequence[str]) -> None:
-        synthetic_class = self._ensure_synthetic_class()
-        object.__setattr__(synthetic_class, "dataclass_field_order", tuple(field_order))
+        self._ensure_synthetic_class()
+        self._direct_dataclass_transform_info = dataclass_transform_info
         self._update_loaded_synthetic_fields()
         self._protocol_positive_cache.clear()
 
@@ -987,9 +995,64 @@ class TypeObject:
         return self._protocol_members
 
     def get_dataclass_fields(self) -> tuple[DataclassFieldRecord, ...]:
+        """Return dataclass fields for this class and all dataclass bases in MRO order."""
         if self._dataclass_fields is None:
             self._dataclass_fields = self._compute_dataclass_fields()
         return self._dataclass_fields
+
+    def get_direct_dataclass_info(self) -> DataclassInfo | None:
+        return self._direct_dataclass_info
+
+    def get_direct_dataclass_transform_info(self) -> DataclassTransformInfo | None:
+        return self._direct_dataclass_transform_info
+
+    def get_dataclass_frozen_status(self) -> tuple[bool, bool | None]:
+        for entry in self.get_mro():
+            if entry.tobj is None:
+                continue
+            if (dataclass_info := entry.tobj.get_direct_dataclass_info()) is not None:
+                return True, dataclass_info.frozen
+            if isinstance(entry.tobj.typ, type):
+                dataclass_params = safe_getattr(
+                    entry.tobj.typ, "__dataclass_params__", None
+                )
+                if dataclass_params is None:
+                    continue
+                frozen = safe_getattr(dataclass_params, "frozen", None)
+                return True, frozen if isinstance(frozen, bool) else None
+        return False, None
+
+    def get_dataclass_order_status(self) -> tuple[bool, bool | None]:
+        for entry in self.get_mro():
+            if entry.tobj is None:
+                continue
+            if (dataclass_info := entry.tobj.get_direct_dataclass_info()) is not None:
+                return True, dataclass_info.order
+            if isinstance(entry.tobj.typ, type):
+                dataclass_params = safe_getattr(
+                    entry.tobj.typ, "__dataclass_params__", None
+                )
+                if dataclass_params is None:
+                    continue
+                order = safe_getattr(dataclass_params, "order", None)
+                return True, order if isinstance(order, bool) else None
+        return False, None
+
+    def get_direct_dataclass_fields(self) -> tuple[DataclassFieldRecord, ...]:
+        """Return declaration-order dataclass fields defined directly on this class."""
+        if self.get_direct_dataclass_info() is None:
+            return ()
+        declared_symbols = self.get_synthetic_declared_symbols()
+        records: list[DataclassFieldRecord] = []
+        for field_name, symbol in declared_symbols.items():
+            if symbol.dataclass_field is None:
+                continue
+            records.append(
+                DataclassFieldRecord(
+                    field_name=field_name, field_info=symbol.dataclass_field
+                )
+            )
+        return tuple(records)
 
     def is_namedtuple_like(self) -> bool:
         return self._get_synthetic_namedtuple_class() is not None or (
@@ -1694,9 +1757,7 @@ def _is_writable_member(
         return False
     if resolved_access.is_property:
         return resolved_access.property_has_setter
-    return not resolved_access.symbol.is_readonly and not _is_frozen_dataclass(
-        tobj, ctx
-    )
+    return not resolved_access.symbol.is_readonly and not _is_frozen_dataclass(tobj)
 
 
 def _resolve_member_access(
@@ -2211,16 +2272,9 @@ def _specialize_declared_property_value(
     )
 
 
-def _is_frozen_dataclass(tobj: TypeObject, ctx: CanAssignContext) -> bool:
-    if isinstance(tobj.typ, type):
-        dataclass_params = safe_getattr(tobj.typ, "__dataclass_params__", None)
-        if safe_getattr(dataclass_params, "frozen", None) is True:
-            return True
-    elif isinstance(tobj.typ, str):
-        synthetic = _get_synthetic_class_for_key(tobj.typ, ctx)
-        if synthetic is not None and synthetic.dataclass_frozen is True:
-            return True
-    return False
+def _is_frozen_dataclass(tobj: TypeObject) -> bool:
+    _, frozen = tobj.get_dataclass_frozen_status()
+    return frozen is True
 
 
 def _is_callable_member_value(value: Value, ctx: CanAssignContext) -> bool:

@@ -80,53 +80,6 @@ def _runtime_dataclass_field_info(field: object) -> DataclassFieldInfo:
     return DataclassFieldInfo(has_default=has_default, init=init, kw_only=kw_only)
 
 
-def _get_synthetic_dataclass_fields(
-    checker: Checker, synthetic_class: SyntheticClassObjectValue
-) -> tuple[DataclassFieldRecord, ...]:
-    if not synthetic_class.is_dataclass:
-        return ()
-
-    ordered: list[str] = []
-    records_by_name: dict[str, DataclassFieldRecord] = {}
-    type_object = checker.make_type_object(synthetic_class.class_type.typ)
-    for base_value in type_object.get_direct_bases():
-        if not isinstance(base_value, TypedValue):
-            continue
-        base_type_object = checker.make_type_object(base_value.typ)
-        for record in base_type_object.get_dataclass_fields():
-            if record.field_name not in records_by_name:
-                ordered.append(record.field_name)
-            records_by_name[record.field_name] = record
-
-    local_fields = synthetic_class.dataclass_field_order
-    declared_symbols = type_object.get_declared_symbols()
-    if not local_fields:
-        local_fields = tuple(
-            name
-            for name, symbol in declared_symbols.items()
-            if symbol.dataclass_field is not None
-        )
-    class_type = synthetic_class.class_type
-    if not isinstance(class_type, TypedValue):
-        return tuple(records_by_name[name] for name in ordered)
-    for field_name in local_fields:
-        symbol = type_object.get_declared_symbol(field_name)
-        if symbol is None:
-            continue
-        record = DataclassFieldRecord(
-            field_name=field_name,
-            field_info=(
-                symbol.dataclass_field
-                if symbol.dataclass_field is not None
-                else DataclassFieldInfo()
-            ),
-        )
-        if field_name not in records_by_name:
-            ordered.append(field_name)
-        records_by_name[field_name] = record
-    return tuple(records_by_name[name] for name in ordered)
-
-
 def _iter_base_type_values(
     value: Value,
     arg_spec_cache: ArgSpecCache | None,

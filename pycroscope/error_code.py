@@ -132,6 +132,7 @@ ErrorCode = ErrorRegistry(
         Error("incompatible_assignment", "Incompatible variable assignment"),
         Error("invalid_typeddict_key", "Invalid key in TypedDict"),
         Error("invalid_annotation", "Invalid type annotation"),
+        Error("invalid_dataclass", "Invalid dataclass definition"),
         Error(
             "classvar_type_parameters",
             "ClassVar cannot include TypeVar/ParamSpec type parameters",

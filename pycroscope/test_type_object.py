@@ -200,20 +200,12 @@ def test_synthetic_type_object_tracks_dataclass_fields_without_initializers() ->
         kw_only_default=False,
         field_specifiers=(),
     )
-    base = SyntheticClassObjectValue(
-        "Base",
-        TypedValue("mod.Base"),
-        dataclass_info=dataclass_info,
-        dataclass_field_order=("a",),
-    )
-    child = SyntheticClassObjectValue(
-        "Child",
-        TypedValue("mod.Child"),
-        dataclass_info=dataclass_info,
-        dataclass_field_order=("b",),
-    )
+    base = SyntheticClassObjectValue("Base", TypedValue("mod.Base"))
+    child = SyntheticClassObjectValue("Child", TypedValue("mod.Child"))
     checker.register_synthetic_class(base)
     checker.register_synthetic_class(child)
+    checker.make_type_object("mod.Base").set_dataclass_info(dataclass_info)
+    checker.make_type_object("mod.Child").set_dataclass_info(dataclass_info)
     checker.make_type_object("mod.Child").set_direct_bases((TypedValue("mod.Base"),))
     checker.make_type_object("mod.Base").set_declared_symbol(
         "a",
@@ -227,6 +219,49 @@ def test_synthetic_type_object_tracks_dataclass_fields_without_initializers() ->
     assert checker.make_type_object("mod.Child").get_dataclass_fields() == (
         DataclassFieldRecord("a", DataclassFieldInfo()),
         DataclassFieldRecord("b", DataclassFieldInfo()),
+    )
+
+
+def test_runtime_type_object_direct_dataclass_fields_ignore_mangled_duplicates() -> (
+    None
+):
+    from dataclasses import dataclass
+
+    @dataclass
+    class Base:
+        value: int
+        __secret: int
+        extra: int = 0
+
+    checker = Checker()
+    type_object = checker.make_type_object(Base)
+    type_object.set_dataclass_info(
+        DataclassInfo(
+            init=True,
+            eq=True,
+            frozen=False,
+            unsafe_hash=False,
+            match_args=True,
+            order=False,
+            slots=False,
+            kw_only_default=False,
+            field_specifiers=(),
+        )
+    )
+    type_object.set_declared_symbol(
+        "value", ClassSymbol(dataclass_field=DataclassFieldInfo())
+    )
+    type_object.set_declared_symbol(
+        "__secret", ClassSymbol(dataclass_field=DataclassFieldInfo())
+    )
+    type_object.set_declared_symbol(
+        "extra", ClassSymbol(dataclass_field=DataclassFieldInfo(has_default=True))
+    )
+
+    assert type_object.get_direct_dataclass_fields() == (
+        DataclassFieldRecord("value", DataclassFieldInfo()),
+        DataclassFieldRecord("__secret", DataclassFieldInfo()),
+        DataclassFieldRecord("extra", DataclassFieldInfo(has_default=True)),
     )
 
 

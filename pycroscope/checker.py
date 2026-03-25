@@ -45,7 +45,6 @@ from .stacked_scopes import Composite
 from .suggested_type import CallableTracker
 from .type_object import (
     EXCLUDED_PROTOCOL_MEMBERS,
-    DataclassFieldRecord,
     TypeObject,
     class_keys_match,
     direct_bases_from_values,
@@ -63,7 +62,6 @@ from .value import (
     CanAssignContext,
     CanAssignError,
     ClassSymbol,
-    DataclassFieldInfo,
     GenericValue,
     KnownValue,
     KnownValueWithTypeVars,
@@ -1924,6 +1922,7 @@ class Checker:
         has_direct_init = init_symbol is not None and init_symbol.is_method
 
         runtime_class = value.runtime_class or UNINITIALIZED_VALUE
+        dataclass_info = type_object.get_direct_dataclass_info()
         runtime_uses_default_object_constructor = (
             isinstance(runtime_class, KnownValue)
             and isinstance(runtime_class.val, type)
@@ -1939,10 +1938,12 @@ class Checker:
                 (Signature, OverloadedSignature),
             )
             and not self._is_uninformative_constructor_signature(runtime_argspec)
-            and (value.is_dataclass or _signature_has_impl(runtime_argspec))
+            and (dataclass_info is not None or _signature_has_impl(runtime_argspec))
             and not has_direct_new
             and not has_direct_init
-            and not (value.is_dataclass and runtime_uses_default_object_constructor)
+            and not (
+                dataclass_info is not None and runtime_uses_default_object_constructor
+            )
         ):
             return runtime_argspec
 
@@ -1952,7 +1953,7 @@ class Checker:
         instance_type = self._make_synthetic_constructor_instance_value(
             value, apply_default_type_args=False
         )
-        dataclass_init_enabled = dataclass_helpers.dataclass_init_enabled(value)
+        dataclass_init_enabled = dataclass_info is None or dataclass_info.init
 
         metaclass_call = self._get_synthetic_metaclass_call_signature(
             value,
@@ -2000,9 +2001,13 @@ class Checker:
                     and new_sig is None
                 ):
                     return Signature.make([], default_instance_type)
-        if value.is_dataclass and dataclass_init_enabled and not has_direct_init:
+        if (
+            dataclass_info is not None
+            and dataclass_init_enabled
+            and not has_direct_init
+        ):
             dataclass_sig = dataclass_helpers.get_synthetic_constructor_signature(
-                value,
+                type_object,
                 instance_type,
                 get_field_parameters=self.get_synthetic_dataclass_field_parameters,
             )
@@ -2018,9 +2023,9 @@ class Checker:
             return new_sig
         if init_sig is not None:
             return init_sig
-        if value.is_dataclass and dataclass_init_enabled:
+        if dataclass_info is not None and dataclass_init_enabled:
             dataclass_sig = dataclass_helpers.get_synthetic_constructor_signature(
-                value,
+                type_object,
                 instance_type,
                 get_field_parameters=self.get_synthetic_dataclass_field_parameters,
             )
@@ -2045,15 +2050,9 @@ class Checker:
         return Signature.make([], default_instance_type)
 
     def get_synthetic_dataclass_field_parameters(
-        self,
-        value: SyntheticClassObjectValue,
-        *,
-        include_inherited: bool = True,
-        seen: set[int] | None = None,
+        self, typ: type | str
     ) -> list[SigParameter]:
-        entries = self._get_synthetic_dataclass_field_entries(
-            value, include_inherited=include_inherited, seen=seen
-        )
+        entries = self._get_synthetic_dataclass_field_entries(typ)
         params: list[SigParameter] = []
         by_name: dict[str, SigParameter] = {}
         for entry in entries:
@@ -2075,11 +2074,9 @@ class Checker:
         return [*positional_params, *kw_only_params]
 
     def get_synthetic_dataclass_post_init_parameters(
-        self, value: SyntheticClassObjectValue
+        self, typ: type | str
     ) -> list[SigParameter]:
-        entries = self._get_synthetic_dataclass_field_entries(
-            value, include_inherited=True, seen=None
-        )
+        entries = self._get_synthetic_dataclass_field_entries(typ)
         return [
             dataclass_replace(
                 entry.parameter, kind=ParameterKind.POSITIONAL_OR_KEYWORD, default=None
@@ -2089,26 +2086,10 @@ class Checker:
         ]
 
     def _get_synthetic_dataclass_field_entries(
-        self,
-        value: SyntheticClassObjectValue,
-        *,
-        include_inherited: bool,
-        seen: set[int] | None,
+        self, typ: type | str
     ) -> list[_DataclassFieldEntry]:
-        if seen is None:
-            seen = set()
-        value_id = id(value)
-        if value_id in seen:
-            return []
-        seen.add(value_id)
-
-        class_type = value.class_type
-        if not isinstance(class_type, TypedValue):
-            return []
-        field_records = self._get_ordered_synthetic_dataclass_field_records(
-            value, include_inherited=include_inherited
-        )
-        tobj = self.make_type_object(class_type.typ)
+        tobj = self.make_type_object(typ)
+        field_records = tobj.get_dataclass_fields()
 
         entries: list[_DataclassFieldEntry] = []
         for record in field_records:
@@ -2147,49 +2128,6 @@ class Checker:
                 )
             )
         return entries
-
-    def _get_ordered_synthetic_dataclass_field_records(
-        self, value: SyntheticClassObjectValue, *, include_inherited: bool
-    ) -> tuple[DataclassFieldRecord, ...]:
-        ordered_names: list[str] = []
-        records_by_name: dict[str, DataclassFieldRecord] = {}
-        if include_inherited:
-            for base_value in self.make_type_object(
-                value.class_type.typ
-            ).get_direct_bases():
-                if not isinstance(base_value, TypedValue):
-                    continue
-                for record in self.make_type_object(
-                    base_value.typ
-                ).get_dataclass_fields():
-                    if record.field_name not in records_by_name:
-                        ordered_names.append(record.field_name)
-                    records_by_name[record.field_name] = record
-
-        local_field_names = value.dataclass_field_order
-        type_object = self.make_type_object(value.class_type.typ)
-        if not local_field_names:
-            local_field_names = tuple(
-                name
-                for name, symbol in type_object.get_declared_symbols().items()
-                if symbol.dataclass_field is not None
-            )
-        for field_name in local_field_names:
-            symbol = type_object.get_declared_symbol(field_name)
-            if symbol is None:
-                continue
-            record = DataclassFieldRecord(
-                field_name=field_name,
-                field_info=(
-                    symbol.dataclass_field
-                    if symbol.dataclass_field is not None
-                    else DataclassFieldInfo()
-                ),
-            )
-            if field_name not in records_by_name:
-                ordered_names.append(field_name)
-            records_by_name[field_name] = record
-        return tuple(records_by_name[name] for name in ordered_names)
 
     def _synthetic_dataclass_field_annotation(self, attr: Value) -> Value:
         ctx = CheckerAttrContext(
@@ -2395,7 +2333,8 @@ class Checker:
                         )
                         if synthetic_constructor_sig is not None and (
                             synthetic_type_object.is_namedtuple_like()
-                            or synthetic_class.is_dataclass
+                            or synthetic_type_object.get_direct_dataclass_info()
+                            is not None
                             or has_direct_new
                             or has_direct_init
                             or argspec is None
