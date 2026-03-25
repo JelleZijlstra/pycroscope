@@ -1168,6 +1168,10 @@ def _get_attribute_from_typed(
         return KnownValue(typ)
     elif ctx.attr == "__dict__":
         return TypedValue(dict)
+    classvar_type = _get_classvar_attribute_type_from_runtime_annotations(typ, ctx)
+    if classvar_type is not None:
+        ctx.record_usage(typ, classvar_type)
+        return set_self(classvar_type, ctx.get_self_value())
     elif ctx.attr in {"__name__", "__qualname__", "__module__"} and (
         typ in {types.FunctionType, types.BuiltinFunctionType}
     ):
@@ -1467,6 +1471,14 @@ def _get_attribute_from_known(obj: object, ctx: AttrContext) -> Value:
     if hooked_value is not None:
         return hooked_value
 
+    if not safe_isinstance(obj, type):
+        classvar_type = _get_classvar_attribute_type_from_runtime_annotations(
+            type(obj), ctx
+        )
+        if classvar_type is not None:
+            ctx.record_usage(type(obj), classvar_type)
+            return classvar_type
+
     if safe_isinstance(obj, type):
         synthetic_attr = _get_runtime_attribute_from_synthetic_class(
             obj, (), ctx, on_class=True
@@ -1527,6 +1539,46 @@ def _get_triple_from_annotations(
             return None
         if attr_type is not None:
             return (attr_type, typ, False)
+    return None
+
+
+def _get_classvar_attribute_type_from_runtime_annotations(
+    typ: type[object], ctx: AttrContext
+) -> Value | None:
+    """Returns the declared type of a runtime ClassVar attribute, if available."""
+    try:
+        mro = list(type.mro(typ))
+    except Exception:
+        return None
+
+    for base_cls in mro:
+        if ctx.skip_mro and base_cls is not typ:
+            continue
+
+        try:
+            if sys.version_info >= (3, 14):
+                annotations = get_annotations(base_cls, format=Format.FORWARDREF)
+            else:
+                annotations = get_annotations(base_cls)  # pragma: no cover
+        except Exception:
+            continue
+
+        attr_expr = annotation_expr_from_annotations(
+            annotations, ctx.attr, ctx=_RuntimeAnnotationsContext(base_cls)
+        )
+        if attr_expr is None:
+            continue
+
+        attr_type, qualifiers = attr_expr.maybe_unqualify(
+            {Qualifier.ClassVar, Qualifier.Final, Qualifier.InitVar}
+        )
+        if (
+            Qualifier.ClassVar in qualifiers
+            and Qualifier.InitVar not in qualifiers
+            and attr_type is not None
+        ):
+            return attr_type
+
     return None
 
 

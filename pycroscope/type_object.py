@@ -2358,6 +2358,8 @@ def _get_nondescriptor_value(
         unknown_descriptor_means_any=False,
     )
     if not on_class or raw_attribute.is_metaclass_owner:
+        if symbol.is_classvar and symbol.annotation is not None:
+            return raw_attribute.declared_value
         if (
             not symbol.is_classvar
             and not symbol.is_method
