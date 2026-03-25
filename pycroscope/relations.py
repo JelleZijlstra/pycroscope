@@ -282,13 +282,14 @@ def has_relation(
 
 def _specialized_synthetic_class_type(
     synthetic_class: SyntheticClassObjectValue, ctx: CanAssignContext
-) -> TypedValue | TypedDictValue:
-    if not isinstance(synthetic_class.class_type, TypedValue):
-        return synthetic_class.class_type
+) -> TypedValue:
     class_typ = synthetic_class.class_type.typ
-    declared = ctx.get_generic_bases(class_typ).get(class_typ)
+    tobj = synthetic_class.get_type_object(ctx)
+    declared = tobj.get_declared_type_params()
     if declared:
-        return GenericValue(class_typ, declared.values())
+        return GenericValue(
+            class_typ, [type_param_to_value(param) for param in declared]
+        )
     return synthetic_class.class_type
 
 
