@@ -3,6 +3,7 @@
 ## Unreleased
 
 - Fix class-object metaclass lookup so `TypeObject.get_attribute()` now follows Python's class-access rules, including bound metaclass members and metaclass properties overriding same-named class attributes.
+- Improve `TypeObject.get_attribute()` descriptor handling so instance-like access now resolves custom `__get__` descriptors more consistently, and class-object lookup correctly lets metaclass data descriptors win precedence over same-named class attributes.
 - Fix dataclass definition diagnostics so invalid field ordering, conflicting `__slots__`, and `KW_ONLY` defaults now use a dedicated `invalid_dataclass` error, and subclasses reject required fields that follow inherited defaulted fields.
 - Fix `NamedTuple` subclass handling so overriding inherited fields is reported consistently in both module modes, and `pycroscope.get_mro()` preserves the specialized tuple base in import-failure analysis.
 - Improve deprecated-member diagnostics for inherited properties and `__call__`, so subclasses now inherit those deprecation errors consistently instead of sometimes losing them.

@@ -29,6 +29,7 @@ if TYPE_CHECKING:
 
 from .annotations import make_type_param, type_from_runtime
 from .input_sig import (
+    ActualArguments,
     FullSignature,
     InputSigValue,
     coerce_paramspec_specialization_to_input_sig,
@@ -55,8 +56,10 @@ from .signature import (
     ParameterKind,
     Signature,
     SigParameter,
+    check_call_preprocessed,
     mark_ellipsis_style_any_tail_parameters,
 )
+from .stacked_scopes import Composite
 from .value import (
     UNINITIALIZED_VALUE,
     AnnotatedValue,
@@ -196,6 +199,22 @@ class TypeObjectAttribute:
     is_property: bool
     property_has_setter: bool
     is_metaclass_owner: bool
+
+
+@dataclass(frozen=True)
+class _RawTypeObjectAttribute:
+    owner: "TypeObject"
+    symbol: ClassSymbol
+    declared_value: Value
+    raw_value: Value
+    is_metaclass_owner: bool
+
+
+@dataclass(frozen=True)
+class _ResolvedAttributeAccess:
+    value: Value
+    is_property: bool
+    property_has_setter: bool
 
 
 def get_mro(typ: type) -> Sequence[type]:
@@ -1127,53 +1146,71 @@ class TypeObject:
         on_class: bool,
         receiver_value: TypedValue | None = None,
     ) -> TypeObjectAttribute | None:
-        if on_class:
-            metaclass_attribute = self._get_metaclass_attribute(
-                name, ctx, receiver_value=receiver_value, require_data_descriptor=True
-            )
-            if metaclass_attribute is not None:
-                return metaclass_attribute
-        match = self.get_declared_symbol_with_owner(name, ctx)
-        if match is None:
-            if not on_class:
-                return None
-            return self._get_metaclass_attribute(
-                name, ctx, receiver_value=receiver_value
-            )
-        owner, declared_symbol = match
-        symbol = _specialize_symbol_for_owner(
-            self, owner, declared_symbol, ctx, receiver_value=receiver_value
+        """Look up an attribute and apply descriptor semantics for this access."""
+        raw_attribute = self._get_raw_attribute(
+            name, ctx, on_class=on_class, receiver_value=receiver_value
         )
-        value = _get_attribute_value_from_symbol(
-            symbol, ctx, on_class=on_class, receiver_value=receiver_value
+        if raw_attribute is None:
+            return None
+        resolved = _resolve_raw_attribute_access(
+            self, raw_attribute, ctx, on_class=on_class, receiver_value=receiver_value
         )
-        if (
-            symbol.property_info is not None
-            and on_class
-            and (value is UNINITIALIZED_VALUE or not _is_property_marker_value(value))
-        ):
-            value = TypedValue(property)
         return TypeObjectAttribute(
-            value=value,
-            symbol=symbol,
-            owner=owner,
-            is_property=symbol.property_info is not None and not on_class,
-            property_has_setter=(
-                symbol.property_info.setter_type is not None
-                if symbol.property_info is not None
-                else False
-            ),
-            is_metaclass_owner=False,
+            value=resolved.value,
+            symbol=raw_attribute.symbol,
+            owner=raw_attribute.owner,
+            is_property=resolved.is_property,
+            property_has_setter=resolved.property_has_setter,
+            is_metaclass_owner=raw_attribute.is_metaclass_owner,
         )
 
-    def _get_metaclass_attribute(
+    def _get_raw_attribute(
         self,
         name: str,
         ctx: CanAssignContext,
         *,
+        on_class: bool,
         receiver_value: TypedValue | None,
-        require_data_descriptor: bool = False,
-    ) -> TypeObjectAttribute | None:
+    ) -> _RawTypeObjectAttribute | None:
+        """Find the raw member selected by Python lookup precedence."""
+        metaclass_attribute = None
+        if on_class:
+            metaclass_attribute = self._get_raw_metaclass_attribute(
+                name, ctx, receiver_value=receiver_value
+            )
+            if metaclass_attribute is not None and _is_data_descriptor(
+                metaclass_attribute, ctx
+            ):
+                return metaclass_attribute
+        raw_attribute = self._get_raw_declared_attribute(
+            name, ctx, receiver_value=receiver_value
+        )
+        if raw_attribute is not None:
+            return raw_attribute
+        if not on_class:
+            return None
+        return metaclass_attribute
+
+    def _get_raw_declared_attribute(
+        self, name: str, ctx: CanAssignContext, *, receiver_value: TypedValue | None
+    ) -> _RawTypeObjectAttribute | None:
+        """Return the matching class-MRO member without applying descriptors."""
+        match = self.get_declared_symbol_with_owner(name, ctx)
+        if match is None:
+            return None
+        owner, declared_symbol = match
+        return self._make_raw_attribute(
+            owner,
+            declared_symbol,
+            ctx,
+            receiver_value=receiver_value,
+            is_metaclass_owner=False,
+        )
+
+    def _get_raw_metaclass_attribute(
+        self, name: str, ctx: CanAssignContext, *, receiver_value: TypedValue | None
+    ) -> _RawTypeObjectAttribute | None:
+        """Return the matching metaclass member without applying descriptors."""
         metaclass = self.get_metaclass()
         match metaclass:
             case TypedValue():
@@ -1185,18 +1222,39 @@ class TypeObject:
         metaclass_match = metaclass_tobj.get_declared_symbol_with_owner(name, ctx)
         if metaclass_match is None:
             return None
-        # TODO: This only recognizes properties as data descriptors. Extend this
-        # once we model other data descriptors in TypeObject attribute lookup.
-        if require_data_descriptor and not metaclass_match[1].is_property:
-            return None
-        if receiver_value is None:
-            receiver_value = TypedValue(self.typ)
-        attribute = metaclass_tobj.get_attribute(
-            name, ctx, on_class=False, receiver_value=receiver_value
+        owner, declared_symbol = metaclass_match
+        return metaclass_tobj._make_raw_attribute(
+            owner,
+            declared_symbol,
+            ctx,
+            receiver_value=receiver_value,
+            is_metaclass_owner=True,
         )
-        if attribute is None:
-            return None
-        return replace(attribute, is_metaclass_owner=True)
+
+    def _make_raw_attribute(
+        self,
+        owner: "TypeObject",
+        declared_symbol: ClassSymbol,
+        ctx: CanAssignContext,
+        *,
+        receiver_value: TypedValue | None,
+        is_metaclass_owner: bool,
+    ) -> _RawTypeObjectAttribute:
+        """Specialize a located symbol and package the raw stored member state."""
+        symbol = _specialize_symbol_for_owner(
+            self, owner, declared_symbol, ctx, receiver_value=receiver_value
+        )
+        declared_value = symbol.get_effective_type()
+        raw_value = (
+            symbol.initializer if symbol.initializer is not None else declared_value
+        )
+        return _RawTypeObjectAttribute(
+            owner=owner,
+            symbol=symbol,
+            declared_value=declared_value,
+            raw_value=raw_value,
+            is_metaclass_owner=is_metaclass_owner,
+        )
 
     def get_declared_symbol_from_mro(
         self, name: str, ctx: CanAssignContext
@@ -2078,6 +2136,152 @@ def _classmethod_receiver_value_from_type_value(
     return SubclassValue(TypedValue(class_key))
 
 
+def _resolve_raw_attribute_access(
+    receiver_tobj: TypeObject,
+    raw_attribute: _RawTypeObjectAttribute,
+    ctx: CanAssignContext,
+    *,
+    on_class: bool,
+    receiver_value: TypedValue | None,
+) -> _ResolvedAttributeAccess:
+    """Resolve a raw member to the value seen by this attribute access."""
+    resolved_descriptor = _resolve_descriptor_access(
+        receiver_tobj,
+        raw_attribute,
+        ctx,
+        on_class=on_class,
+        receiver_value=receiver_value,
+    )
+    if resolved_descriptor is not None:
+        return resolved_descriptor
+    return _ResolvedAttributeAccess(
+        value=_get_nondescriptor_value(
+            raw_attribute, on_class=on_class, receiver_value=receiver_value, ctx=ctx
+        ),
+        is_property=False,
+        property_has_setter=False,
+    )
+
+
+def _resolve_descriptor_access(
+    receiver_tobj: TypeObject,
+    raw_attribute: _RawTypeObjectAttribute,
+    ctx: CanAssignContext,
+    *,
+    on_class: bool,
+    receiver_value: TypedValue | None,
+) -> _ResolvedAttributeAccess | None:
+    """Apply built-in and generic descriptor behavior to a raw member."""
+    symbol = raw_attribute.symbol
+    descriptor_like_instance_access = not on_class or raw_attribute.is_metaclass_owner
+    if symbol.property_info is not None:
+        property_has_setter = symbol.property_info.setter_type is not None
+        if descriptor_like_instance_access:
+            return _ResolvedAttributeAccess(
+                value=symbol.property_info.getter_type,
+                is_property=True,
+                property_has_setter=property_has_setter,
+            )
+        return _ResolvedAttributeAccess(
+            value=TypedValue(property),
+            is_property=False,
+            property_has_setter=property_has_setter,
+        )
+
+    raw_value = normalize_synthetic_descriptor_attribute(
+        raw_attribute.raw_value,
+        is_self_returning_classmethod=symbol.returns_self_on_class_access,
+        unknown_descriptor_means_any=False,
+    )
+    if symbol.is_classmethod:
+        raw_value = _specialize_self_returning_classmethod(
+            raw_attribute.raw_value, raw_value, receiver_value=receiver_value, ctx=ctx
+        )
+        if receiver_value is not None:
+            raw_value = _bind_attribute_signature(
+                raw_value,
+                receiver_value=_classmethod_receiver_value_from_type_value(
+                    receiver_value
+                ),
+                ctx=ctx,
+            )
+        return _ResolvedAttributeAccess(
+            value=raw_value, is_property=False, property_has_setter=False
+        )
+    if symbol.is_staticmethod:
+        return _ResolvedAttributeAccess(
+            value=raw_value, is_property=False, property_has_setter=False
+        )
+    if (
+        symbol.is_method
+        and not symbol.is_staticmethod
+        and _is_callable_member_value(raw_value, ctx)
+    ):
+        if descriptor_like_instance_access and receiver_value is not None:
+            raw_value = _bind_attribute_signature(
+                raw_value, receiver_value=receiver_value, ctx=ctx
+            )
+        return _ResolvedAttributeAccess(
+            value=raw_value, is_property=False, property_has_setter=False
+        )
+    if (
+        symbol.annotation is not None
+        and not symbol.is_method
+        and not symbol.is_classvar
+        and not raw_attribute.is_metaclass_owner
+    ):
+        return None
+    descriptor_get_value = _get_descriptor_get_value(
+        raw_attribute.raw_value,
+        receiver_tobj,
+        ctx,
+        on_class=on_class,
+        receiver_value=receiver_value,
+        is_metaclass_owner=raw_attribute.is_metaclass_owner,
+    )
+    if descriptor_get_value is None:
+        return None
+    return _ResolvedAttributeAccess(
+        value=descriptor_get_value,
+        is_property=descriptor_like_instance_access,
+        property_has_setter=_descriptor_has_setter(raw_attribute.raw_value, ctx),
+    )
+
+
+def _get_nondescriptor_value(
+    raw_attribute: _RawTypeObjectAttribute,
+    *,
+    on_class: bool,
+    receiver_value: TypedValue | None,
+    ctx: CanAssignContext,
+) -> Value:
+    """Return the fallback value when no descriptor behavior applies."""
+    symbol = raw_attribute.symbol
+    raw_value = normalize_synthetic_descriptor_attribute(
+        raw_attribute.raw_value,
+        is_self_returning_classmethod=symbol.returns_self_on_class_access,
+        unknown_descriptor_means_any=False,
+    )
+    if not on_class or raw_attribute.is_metaclass_owner:
+        if (
+            not symbol.is_classvar
+            and not symbol.is_method
+            and symbol.initializer is None
+        ):
+            return raw_attribute.declared_value
+        if (
+            not symbol.is_classvar
+            and not symbol.is_method
+            and symbol.initializer is not None
+            and symbol.annotation is not None
+        ):
+            return raw_attribute.declared_value
+        return raw_value
+    if not symbol.is_method:
+        return raw_attribute.declared_value
+    return raw_value
+
+
 def _get_attribute_value_from_symbol(
     symbol: ClassSymbol,
     ctx: CanAssignContext,
@@ -2085,51 +2289,164 @@ def _get_attribute_value_from_symbol(
     on_class: bool,
     receiver_value: TypedValue | None,
 ) -> Value:
-    if symbol.property_info is not None:
-        if on_class:
-            return UNINITIALIZED_VALUE
-        return symbol.property_info.getter_type
-    declared_value = symbol.get_effective_type()
-    raw_value = symbol.initializer if symbol.initializer is not None else declared_value
-    raw_value = normalize_synthetic_descriptor_attribute(
-        raw_value,
-        is_self_returning_classmethod=symbol.returns_self_on_class_access,
-        unknown_descriptor_means_any=False,
+    """Compatibility wrapper for callers that still resolve from bare symbols."""
+    raw_attribute = _RawTypeObjectAttribute(
+        owner=(
+            receiver_value.get_type_object(ctx)
+            if receiver_value is not None
+            else ctx.make_type_object(object)
+        ),
+        symbol=symbol,
+        declared_value=symbol.get_effective_type(),
+        raw_value=(
+            symbol.initializer
+            if symbol.initializer is not None
+            else symbol.get_effective_type()
+        ),
+        is_metaclass_owner=False,
     )
-    if symbol.is_classmethod:
-        raw_value = _specialize_self_returning_classmethod(
-            symbol.initializer if symbol.initializer is not None else raw_value,
-            raw_value,
-            receiver_value=receiver_value,
-            ctx=ctx,
-        )
-        if receiver_value is None:
-            return raw_value
-        return _bind_attribute_signature(
-            raw_value,
-            receiver_value=_classmethod_receiver_value_from_type_value(receiver_value),
-            ctx=ctx,
-        )
-    if on_class:
-        if not symbol.is_method:
-            return declared_value
-        return raw_value
-    if not symbol.is_classvar and not symbol.is_method and symbol.initializer is None:
-        return declared_value
-    if symbol.is_method and not symbol.is_staticmethod and not symbol.is_classmethod:
-        if receiver_value is None:
-            return raw_value
-        return _bind_attribute_signature(
-            raw_value, receiver_value=receiver_value, ctx=ctx
-        )
-    if (
-        not symbol.is_classvar
-        and not symbol.is_method
-        and symbol.initializer is not None
-        and symbol.annotation is not None
-    ):
-        return declared_value
-    return raw_value
+    return _resolve_raw_attribute_access(
+        raw_attribute.owner,
+        raw_attribute,
+        ctx,
+        on_class=on_class,
+        receiver_value=receiver_value,
+    ).value
+
+
+def _is_data_descriptor(
+    raw_attribute: _RawTypeObjectAttribute, ctx: CanAssignContext
+) -> bool:
+    """Whether the raw member should win descriptor precedence on lookup."""
+    symbol = raw_attribute.symbol
+    if symbol.property_info is not None:
+        return True
+    if symbol.is_method:
+        return False
+    return _descriptor_has_method(
+        raw_attribute.raw_value, "__set__", ctx
+    ) or _descriptor_has_method(raw_attribute.raw_value, "__delete__", ctx)
+
+
+def _get_descriptor_get_value(
+    descriptor: Value,
+    receiver_tobj: TypeObject,
+    ctx: CanAssignContext,
+    *,
+    on_class: bool,
+    receiver_value: TypedValue | None,
+    is_metaclass_owner: bool,
+) -> Value | None:
+    """Return the value produced by a descriptor's ``__get__`` call."""
+    descriptor_receiver: Value
+    if on_class and not is_metaclass_owner:
+        descriptor_receiver = KnownValue(None)
+    elif receiver_value is not None:
+        descriptor_receiver = receiver_value
+    else:
+        descriptor_receiver = TypedValue(receiver_tobj.typ)
+    match = _descriptor_method_match(
+        descriptor, "__get__", [descriptor_receiver, AnyValue(AnySource.inference)], ctx
+    )
+    if match is None:
+        return None
+    get_signature, _ = match
+    return get_signature.return_value
+
+
+def _descriptor_has_setter(descriptor: Value, ctx: CanAssignContext) -> bool:
+    """Whether the descriptor exposes a ``__set__`` method."""
+    return _descriptor_has_method(descriptor, "__set__", ctx)
+
+
+def _descriptor_has_method(
+    descriptor: Value, method_name: str, ctx: CanAssignContext
+) -> bool:
+    """Whether the descriptor provides a retrievable dunder method."""
+    return _descriptor_method_signature_any(descriptor, method_name, ctx) is not None
+
+
+def _descriptor_method_match(
+    descriptor: Value, method_name: str, args: Sequence[Value], ctx: CanAssignContext
+) -> tuple[Signature, int] | None:
+    """Pick the descriptor overload that accepts the simulated descriptor call."""
+    signature = _descriptor_method_signature_any(descriptor, method_name, ctx)
+    if signature is None:
+        return None
+    selected = _select_matching_descriptor_signature(signature, args, ctx)
+    if selected is not None:
+        return selected, 0
+    selected = _select_matching_descriptor_signature(
+        signature, [descriptor, *args], ctx
+    )
+    if selected is None:
+        return None
+    return selected, 1
+
+
+def _descriptor_method_signature_any(
+    descriptor: Value, method_name: str, ctx: CanAssignContext
+) -> Signature | OverloadedSignature | None:
+    """Retrieve the descriptor dunder signature, if it can be modeled."""
+    descriptor = replace_fallback(descriptor)
+    if isinstance(descriptor, AnnotatedValue):
+        return _descriptor_method_signature_any(descriptor.value, method_name, ctx)
+    if not isinstance(descriptor, (KnownValue, TypedValue, SyntheticClassObjectValue)):
+        return None
+    method_value = ctx.get_attribute_from_value(descriptor, method_name)
+    if method_value is UNINITIALIZED_VALUE:
+        return None
+    return _signature_from_descriptor_attribute(method_value, ctx)
+
+
+def _signature_from_descriptor_attribute(
+    value: Value, ctx: CanAssignContext
+) -> Signature | OverloadedSignature | None:
+    """Extract a concrete callable signature from a descriptor method value."""
+    signature = ctx.signature_from_value(value)
+    if isinstance(signature, BoundMethodSignature):
+        signature = signature.get_signature(ctx=ctx)
+    if isinstance(signature, (Signature, OverloadedSignature)):
+        return signature
+    return None
+
+
+def _select_matching_descriptor_signature(
+    signature: Signature | OverloadedSignature,
+    args: Sequence[Value],
+    ctx: CanAssignContext,
+) -> Signature | None:
+    """Choose the overload compatible with the simulated descriptor call."""
+    if isinstance(signature, Signature):
+        if _descriptor_signature_accepts_args(signature, args, ctx):
+            return signature
+        return None
+    for overload in signature.signatures:
+        if _descriptor_signature_accepts_args(overload, args, ctx):
+            return overload
+    return None
+
+
+def _descriptor_signature_accepts_args(
+    signature: Signature, args: Sequence[Value], ctx: CanAssignContext
+) -> bool:
+    """Cheap yes/no call check for simulated descriptor invocations.
+
+    This intentionally uses the shared signature call checker rather than
+    reimplementing argument assignability rules here. The helper still exists
+    because we need a boolean filter while iterating overloads.
+    """
+    actual_args = ActualArguments(
+        positionals=[(True, Composite(arg)) for arg in args],
+        star_args=None,
+        keywords={},
+        star_kwargs=None,
+        kwargs_required=False,
+        pos_or_keyword_params=frozenset(),
+    )
+    return not isinstance(
+        check_call_preprocessed(signature, actual_args, ctx), CanAssignError
+    )
 
 
 def _substitute_symbol_value(
