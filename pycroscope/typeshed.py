@@ -18,7 +18,7 @@ from enum import EnumMeta
 from functools import lru_cache
 from pathlib import Path
 from types import GeneratorType, MethodDescriptorType, ModuleType
-from typing import Any, Generic, TypeVar
+from typing import Any, Generic, TypeVar, cast
 
 import typeshed_client
 from typing_extensions import Protocol
@@ -858,8 +858,12 @@ class TypeshedFinder:
         if is_property:
             getter_type: Value = AnyValue(AnySource.inference)
             if all(defn.returns is not None for defn in method_nodes):
+                return_nodes = [cast(ast.expr, defn.returns) for defn in method_nodes]
                 getter_type = unite_values(
-                    *(self._parse_type(defn.returns, mod) for defn in method_nodes)
+                    *(
+                        self._parse_type(return_node, mod)
+                        for return_node in return_nodes
+                    )
                 )
             return ClassSymbol(
                 qualifiers=qualifiers,

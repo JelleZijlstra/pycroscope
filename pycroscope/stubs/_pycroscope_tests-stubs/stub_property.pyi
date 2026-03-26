@@ -1,0 +1,3 @@
+class C:
+    @property
+    def name(self) -> str: ...

@@ -205,8 +205,6 @@ class TypeObjectAttribute:
 class _RawTypeObjectAttribute:
     owner: "TypeObject"
     symbol: ClassSymbol
-    runtime_symbol: ClassSymbol | None
-    typeshed_symbol: ClassSymbol | None
     declared_value: Value
     raw_value: Value
     is_metaclass_owner: bool
@@ -1299,8 +1297,6 @@ class TypeObject:
         return _RawTypeObjectAttribute(
             owner=owner,
             symbol=symbol,
-            runtime_symbol=runtime_symbol,
-            typeshed_symbol=typeshed_symbol,
             declared_value=declared_value,
             raw_value=raw_value,
             is_metaclass_owner=is_metaclass_owner,
@@ -2480,8 +2476,6 @@ def _get_attribute_value_from_symbol(
             else ctx.make_type_object(object)
         ),
         symbol=symbol,
-        runtime_symbol=symbol,
-        typeshed_symbol=None,
         declared_value=symbol.get_effective_type(),
         raw_value=(
             symbol.initializer

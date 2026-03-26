@@ -1,13 +1,11 @@
 # static analysis: ignore
 
-import importlib
 import sys
-import tempfile
-from pathlib import Path
+from types import ModuleType
 from typing import TypeVar
 
 from .checker import Checker
-from .options import Options
+from .test_config import TEST_OPTIONS
 from .test_name_check_visitor import TestNameCheckVisitorBase
 from .test_node_visitor import assert_passes
 from .type_object import (
@@ -17,7 +15,6 @@ from .type_object import (
     _should_use_permissive_dunder_hash,
     lookup_declared_symbol_with_owner,
 )
-from .typeshed import StubPath
 from .value import (
     AnnotatedValue,
     AnySource,
@@ -41,21 +38,32 @@ from .value import (
 T = TypeVar("T")
 
 
-def _make_stubbed_runtime_module(temp_dir: Path, module_name: str) -> type:
-    runtime_pkg = temp_dir / module_name
-    runtime_pkg.mkdir()
-    (runtime_pkg / "__init__.py").write_text(
-        "class C:\n" "    @property\n" "    def name(self):\n" "        return 1\n"
-    )
-    stub_pkg = temp_dir / f"{module_name}-stubs"
-    stub_pkg.mkdir()
-    (stub_pkg / "__init__.pyi").write_text(
-        "class C:\n" "    @property\n" "    def name(self) -> str: ...\n"
-    )
-    sys.path.insert(0, str(temp_dir))
-    sys.modules.pop(module_name, None)
-    module = importlib.import_module(module_name)
-    return module.C
+def _make_runtime_property_class(module_name: str) -> type:
+    class C:
+        @property
+        def name(self):
+            return 1
+
+    package_path = ""
+    for package_piece in module_name.split(".")[:-1]:
+        package_path = (
+            f"{package_path}.{package_piece}" if package_path else package_piece
+        )
+        package = sys.modules.get(package_path)
+        if package is None:
+            package = ModuleType(package_path)
+            package.__path__ = []
+            sys.modules[package_path] = package
+    C.__module__ = module_name
+    C.__qualname__ = "C"
+    module = ModuleType(module_name)
+    module.__package__ = module_name.rpartition(".")[0]
+    module.C = C
+    sys.modules[module_name] = module
+    if module.__package__:
+        parent = sys.modules[module.__package__]
+        setattr(parent, module_name.rsplit(".", maxsplit=1)[1], module)
+    return C
 
 
 def test_protocol_member_str_order_is_deterministic() -> None:
@@ -121,24 +129,20 @@ def test_lookup_declared_symbol_with_owner_handles_synthetic_base() -> None:
 
 
 def test_lookup_declared_symbol_with_owner_merges_typeshed_property_info() -> None:
-    with tempfile.TemporaryDirectory() as temp_dir_str:
-        temp_dir = Path(temp_dir_str)
-        module_name = "_pycroscope_stub_property"
-        try:
-            runtime_class = _make_stubbed_runtime_module(temp_dir, module_name)
-            checker = Checker(
-                raw_options=Options.from_option_list([StubPath([temp_dir])])
-            )
-            match = lookup_declared_symbol_with_owner(runtime_class, "name", checker)
+    module_name = "_pycroscope_tests.stub_property"
+    try:
+        runtime_class = _make_runtime_property_class(module_name)
+        checker = Checker(raw_options=TEST_OPTIONS)
+        match = lookup_declared_symbol_with_owner(runtime_class, "name", checker)
 
-            assert match is not None
-            owner, symbol = match
-            assert owner is runtime_class
-            assert symbol.property_info is not None
-            assert symbol.property_info.getter_type == TypedValue(str)
-        finally:
-            sys.modules.pop(module_name, None)
-            sys.path.remove(str(temp_dir))
+        assert match is not None
+        owner, symbol = match
+        assert owner is runtime_class
+        assert symbol.property_info is not None
+        assert symbol.property_info.getter_type == TypedValue(str)
+    finally:
+        sys.modules.pop(module_name, None)
+        sys.modules.pop("_pycroscope_tests", None)
 
 
 def test_runtime_mro_marks_typeshed_only_bases_virtual() -> None:
@@ -830,31 +834,26 @@ class TestNumerics(TestNameCheckVisitorBase):
 
 class TestSyntheticType(TestNameCheckVisitorBase):
     def test_protocol_uses_typeshed_type_for_runtime_property(self):
-        with tempfile.TemporaryDirectory() as temp_dir_str:
-            temp_dir = Path(temp_dir_str)
-            module_name = "_pycroscope_stub_property_proto"
-            try:
-                _make_stubbed_runtime_module(temp_dir, module_name)
-                self.assert_passes(
-                    f"""
-                    from typing import Protocol
-                    from {module_name} import C
+        module_name = "_pycroscope_tests.stub_property"
+        try:
+            _make_runtime_property_class(module_name)
+            self.assert_passes("""
+                from typing import Protocol
+                from _pycroscope_tests.stub_property import C
 
-                    class WantsIntName(Protocol):
-                        @property
-                        def name(self) -> int: ...
+                class WantsIntName(Protocol):
+                    @property
+                    def name(self) -> int: ...
 
-                    def takes(value: WantsIntName) -> None:
-                        pass
+                def takes(value: WantsIntName) -> None:
+                    pass
 
-                    def capybara(path: C) -> None:
-                        takes(path)  # E: incompatible_argument
-                    """,
-                    stub_path=[temp_dir],
-                )
-            finally:
-                sys.modules.pop(module_name, None)
-                sys.path.remove(str(temp_dir))
+                def capybara(path: C) -> None:
+                    takes(path)  # E: incompatible_argument
+                """)
+        finally:
+            sys.modules.pop(module_name, None)
+            sys.modules.pop("_pycroscope_tests", None)
 
     @assert_passes(run_in_both_module_modes=True)
     def test_synthetic_namedtuple_field_is_readonly_without_runtime_class() -> None:
