@@ -8955,6 +8955,17 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             type_call_key, attr_name
         ):
             return True
+        concrete_root = replace_fallback(root_composite.value)
+        if (
+            isinstance(concrete_root, (TypedValue, GenericValue))
+            and isinstance(concrete_root.typ, type)
+            and safe_issubclass(concrete_root.typ, type)
+        ):
+            # A bare metatype instance such as ``type`` or a custom metaclass
+            # annotation represents instances of that metaclass, not a specific
+            # class whose instance-only members should be rejected via plain
+            # class-object lookup rules.
+            return False
         if not self._is_subscripted_class_alias_value(root_composite.value):
             class_key = self._class_key_from_attribute_root_value(root_composite.value)
             if (

@@ -1018,7 +1018,9 @@ class Checker:
         if isinstance(typ, str):
             return typ.rsplit(".", maxsplit=1)[-1]
         if isinstance(typ, type):
-            return typ.__name__
+            name = safe_getattr(typ, "__name__", None)
+            if isinstance(name, str):
+                return name
         return None
 
     def _bind_constructor_like_signature(

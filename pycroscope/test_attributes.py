@@ -579,6 +579,18 @@ class TestAttributes(TestNameCheckVisitorBase):
             Alias.unknown  # E: undefined_attribute
 
     @assert_passes()
+    def test_metatype_instance_attributes(self):
+        from typing import Any
+
+        def capybara(typ: type) -> None:
+            assert_type(typ.__name__, str)
+            assert_type(typ.__qualname__, str)
+            assert_type(typ.__module__, str)
+            assert_type(typ.__annotations__, dict[str, Any])
+            assert_type(typ.__bases__, tuple[type, ...])
+            assert_type(typ.__mro__, tuple[type, ...])
+
+    @assert_passes()
     def test_enum_value_type(self):
         import enum
 
