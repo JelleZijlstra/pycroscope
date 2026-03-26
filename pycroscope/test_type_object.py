@@ -97,6 +97,19 @@ def test_lookup_declared_symbol_with_owner_handles_synthetic_base() -> None:
     assert symbol.annotation == TypedValue(int)
 
 
+def test_lookup_declared_symbol_with_owner_merges_typeshed_property_info() -> None:
+    from pathlib import Path
+
+    checker = Checker()
+    match = lookup_declared_symbol_with_owner(Path, "name", checker)
+
+    assert match is not None
+    owner, symbol = match
+    assert owner in Path.__mro__
+    assert symbol.property_info is not None
+    assert symbol.property_info.getter_type == TypedValue(str)
+
+
 def test_runtime_mro_marks_typeshed_only_bases_virtual() -> None:
     from collections.abc import MutableSequence
 
@@ -785,6 +798,21 @@ class TestNumerics(TestNameCheckVisitorBase):
 
 
 class TestSyntheticType(TestNameCheckVisitorBase):
+    @assert_passes()
+    def test_protocol_uses_typeshed_type_for_runtime_property(self):
+        from pathlib import Path
+        from typing import Protocol
+
+        class WantsIntName(Protocol):
+            @property
+            def name(self) -> int: ...
+
+        def takes(value: WantsIntName) -> None:
+            pass
+
+        def capybara(path: Path) -> None:
+            takes(path)  # E: incompatible_argument
+
     @assert_passes(run_in_both_module_modes=True)
     def test_synthetic_namedtuple_field_is_readonly_without_runtime_class() -> None:
         from typing import NamedTuple

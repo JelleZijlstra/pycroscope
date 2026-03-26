@@ -77,7 +77,6 @@ from .value import (
     GenericValue,
     IntersectionValue,
     KnownValue,
-    KnownValueWithTypeVars,
     MultiValuedValue,
     ParamSpecParam,
     PredicateValue,
@@ -206,6 +205,8 @@ class TypeObjectAttribute:
 class _RawTypeObjectAttribute:
     owner: "TypeObject"
     symbol: ClassSymbol
+    runtime_symbol: ClassSymbol | None
+    typeshed_symbol: ClassSymbol | None
     declared_value: Value
     raw_value: Value
     is_metaclass_owner: bool
@@ -1173,11 +1174,6 @@ class TypeObject:
             name, ctx, on_class=on_class, receiver_value=typed_receiver_value
         )
         if raw_attribute is None:
-            typeshed_attribute = self._get_typeshed_attribute(
-                name, ctx, on_class=on_class, receiver_value=typed_receiver_value
-            )
-            if typeshed_attribute is not None:
-                return typeshed_attribute
             if isinstance(self.typ, str) and self.has_any_base():
                 unknown_value = AnyValue(AnySource.from_another)
                 return TypeObjectAttribute(
@@ -1234,13 +1230,14 @@ class TypeObject:
         self, name: str, ctx: CanAssignContext, *, receiver_value: TypedValue | None
     ) -> _RawTypeObjectAttribute | None:
         """Return the matching class-MRO member without applying descriptors."""
-        match = self.get_declared_symbol_with_owner(name, ctx)
+        match = self._get_declared_symbol_sources_with_owner(name)
         if match is None:
             return None
-        owner, declared_symbol = match
+        owner, runtime_symbol, typeshed_symbol = match
         return self._make_raw_attribute(
             owner,
-            declared_symbol,
+            runtime_symbol,
+            typeshed_symbol,
             ctx,
             receiver_value=receiver_value,
             is_metaclass_owner=False,
@@ -1258,71 +1255,52 @@ class TypeObject:
                 return None
             case _:
                 assert_never(metaclass)
-        metaclass_match = metaclass_tobj.get_declared_symbol_with_owner(name, ctx)
+        metaclass_match = metaclass_tobj._get_declared_symbol_sources_with_owner(name)
         if metaclass_match is None:
             return None
-        owner, declared_symbol = metaclass_match
+        owner, runtime_symbol, typeshed_symbol = metaclass_match
         return metaclass_tobj._make_raw_attribute(
             owner,
-            declared_symbol,
+            runtime_symbol,
+            typeshed_symbol,
             ctx,
             receiver_value=receiver_value,
             is_metaclass_owner=True,
         )
 
-    def _get_typeshed_attribute(
-        self,
-        name: str,
-        ctx: CanAssignContext,
-        *,
-        on_class: bool,
-        receiver_value: TypedValue | None,
-    ) -> TypeObjectAttribute | None:
-        """Return a typeshed-backed attribute when no declared symbol is available."""
-        if not isinstance(self.typ, str):
-            return None
-        value, provider = self._checker.ts_finder.get_attribute_recursively(
-            self.typ, name, on_class=on_class
-        )
-        if value is UNINITIALIZED_VALUE:
-            return None
-        value = _specialize_typeshed_attribute_value(
-            self, value, provider, ctx, receiver_value=receiver_value
-        )
-        owner = self if provider is None else self._checker.make_type_object(provider)
-        signature = ctx.signature_from_value(value)
-        is_method = isinstance(
-            signature, (Signature, OverloadedSignature, BoundMethodSignature)
-        )
-        return TypeObjectAttribute(
-            value=value,
-            symbol=ClassSymbol(initializer=value, is_method=is_method),
-            owner=owner,
-            is_property=False,
-            property_has_setter=False,
-            is_metaclass_owner=False,
-        )
-
     def _make_raw_attribute(
         self,
         owner: "TypeObject",
-        declared_symbol: ClassSymbol,
+        runtime_symbol: ClassSymbol | None,
+        typeshed_symbol: ClassSymbol | None,
         ctx: CanAssignContext,
         *,
         receiver_value: TypedValue | None,
         is_metaclass_owner: bool,
     ) -> _RawTypeObjectAttribute:
         """Specialize a located symbol and package the raw stored member state."""
-        symbol = _specialize_symbol_for_owner(
-            self, owner, declared_symbol, ctx, receiver_value=receiver_value
-        )
+        if runtime_symbol is not None:
+            runtime_symbol = _specialize_symbol_for_owner(
+                self, owner, runtime_symbol, ctx, receiver_value=receiver_value
+            )
+        if typeshed_symbol is not None:
+            typeshed_symbol = _specialize_symbol_for_owner(
+                self, owner, typeshed_symbol, ctx, receiver_value=receiver_value
+            )
+        symbol = _merge_runtime_and_typeshed_symbol(runtime_symbol, typeshed_symbol)
+        assert symbol is not None
         declared_value = symbol.get_effective_type()
+        raw_source = runtime_symbol if runtime_symbol is not None else symbol
         raw_value = (
-            symbol.initializer if symbol.initializer is not None else declared_value
+            raw_source.initializer
+            if raw_source.initializer is not None
+            else declared_value
         )
         return _RawTypeObjectAttribute(
             owner=owner,
             symbol=symbol,
+            runtime_symbol=runtime_symbol,
+            typeshed_symbol=typeshed_symbol,
             declared_value=declared_value,
             raw_value=raw_value,
             is_metaclass_owner=is_metaclass_owner,
@@ -1337,16 +1315,37 @@ class TypeObject:
     def get_declared_symbol_with_owner(
         self, name: str, ctx: CanAssignContext
     ) -> tuple["TypeObject", ClassSymbol] | None:
-        symbol = self.get_declared_symbols().get(name)
-        if symbol is not None:
-            return self, symbol
+        match = self._get_declared_symbol_sources_with_owner(name)
+        if match is None:
+            return None
+        owner, runtime_symbol, typeshed_symbol = match
+        symbol = _merge_runtime_and_typeshed_symbol(runtime_symbol, typeshed_symbol)
+        if symbol is None:
+            return None
+        return owner, symbol
+
+    def _get_declared_symbol_sources_with_owner(
+        self, name: str
+    ) -> tuple["TypeObject", ClassSymbol | None, ClassSymbol | None] | None:
+        runtime_symbol, typeshed_symbol = self._get_direct_lookup_symbol_sources(name)
+        if runtime_symbol is not None or typeshed_symbol is not None:
+            return self, runtime_symbol, typeshed_symbol
         for entry in self.get_mro():
             if entry.tobj is None:
                 return None
-            symbol = entry.tobj.get_declared_symbols().get(name)
-            if symbol is not None:
-                return entry.tobj, symbol
+            runtime_symbol, typeshed_symbol = (
+                entry.tobj._get_direct_lookup_symbol_sources(name)
+            )
+            if runtime_symbol is not None or typeshed_symbol is not None:
+                return entry.tobj, runtime_symbol, typeshed_symbol
         return None
+
+    def _get_direct_lookup_symbol_sources(
+        self, name: str
+    ) -> tuple[ClassSymbol | None, ClassSymbol | None]:
+        return self.get_declared_symbols().get(
+            name
+        ), self._checker.ts_finder.get_direct_symbol(self.typ, name)
 
     def is_assignable_to_type(self, typ: type | str) -> bool:
         return self.is_universally_assignable() or any(
@@ -1561,26 +1560,10 @@ class TypeObject:
                     # In static fallback mode, synthetic protocol members may not have
                     # a retrievable attribute type. Keep enforcing member presence.
                     expected = AnyValue(AnySource.inference)
-                if not class_object_check:
-                    specialized_expected, _ = _specialize_declared_property_value(
-                        self, member, expected, ctx
-                    )
-                    if specialized_expected is not None:
-                        expected = specialized_expected
                 if protocol_self_typevar_map:
                     expected = expected.substitute_typevars(protocol_self_typevar_map)
                 expected = expected.substitute_typevars({SelfT: other_val})
                 actual = ctx.get_attribute_from_value(other_val, member)
-                if (
-                    not class_object_check
-                    and actual is not UNINITIALIZED_VALUE
-                    and other_type_obj is not None
-                ):
-                    specialized_actual, _ = _specialize_declared_property_value(
-                        other_type_obj, member, actual, ctx
-                    )
-                    if specialized_actual is not None:
-                        actual = specialized_actual
                 if (
                     class_object_check
                     and other_type_key is not None
@@ -1822,6 +1805,89 @@ class TypeObject:
 
 def _prefer_existing_symbol_type(existing: Value, new: Value) -> bool:
     return isinstance(new, AnyValue) and new.source is AnySource.inference
+
+
+def _merge_symbol_type_information(
+    runtime_value: Value | None, typeshed_value: Value | None
+) -> Value | None:
+    if runtime_value is None:
+        return typeshed_value
+    if typeshed_value is None:
+        return runtime_value
+    if isinstance(typeshed_value, AnyValue) and not isinstance(runtime_value, AnyValue):
+        return runtime_value
+    return typeshed_value
+
+
+def _merge_runtime_and_typeshed_property_info(
+    runtime_info: PropertyInfo | None, typeshed_info: PropertyInfo | None
+) -> PropertyInfo | None:
+    if runtime_info is None:
+        return typeshed_info
+    if typeshed_info is None:
+        return runtime_info
+    return PropertyInfo(
+        getter_type=(
+            _merge_symbol_type_information(
+                runtime_info.getter_type, typeshed_info.getter_type
+            )
+            or runtime_info.getter_type
+        ),
+        setter_type=_merge_symbol_type_information(
+            runtime_info.setter_type, typeshed_info.setter_type
+        ),
+        getter_deprecation=(
+            typeshed_info.getter_deprecation or runtime_info.getter_deprecation
+        ),
+        setter_deprecation=(
+            typeshed_info.setter_deprecation or runtime_info.setter_deprecation
+        ),
+    )
+
+
+def _merge_runtime_and_typeshed_symbol(
+    runtime_symbol: ClassSymbol | None, typeshed_symbol: ClassSymbol | None
+) -> ClassSymbol | None:
+    if runtime_symbol is None:
+        return typeshed_symbol
+    if typeshed_symbol is None:
+        return runtime_symbol
+    property_info = (
+        _merge_runtime_and_typeshed_property_info(
+            runtime_symbol.property_info, typeshed_symbol.property_info
+        )
+        if runtime_symbol.property_info is not None
+        else runtime_symbol.property_info
+    )
+    return ClassSymbol(
+        annotation=_merge_symbol_type_information(
+            runtime_symbol.annotation, typeshed_symbol.annotation
+        ),
+        qualifiers=runtime_symbol.qualifiers | typeshed_symbol.qualifiers,
+        is_instance_only=(
+            runtime_symbol.is_instance_only or typeshed_symbol.is_instance_only
+        ),
+        is_method=runtime_symbol.is_method,
+        is_classmethod=runtime_symbol.is_classmethod,
+        is_staticmethod=runtime_symbol.is_staticmethod,
+        returns_self_on_class_access=(
+            runtime_symbol.returns_self_on_class_access
+            or (
+                typeshed_symbol.returns_self_on_class_access
+                if runtime_symbol.is_method
+                else False
+            )
+        ),
+        property_info=property_info,
+        initializer=_merge_symbol_type_information(
+            runtime_symbol.initializer, typeshed_symbol.initializer
+        ),
+        dataclass_field=(
+            runtime_symbol.dataclass_field
+            if runtime_symbol.dataclass_field is not None
+            else typeshed_symbol.dataclass_field
+        ),
+    )
 
 
 def _merge_symbol_initializer(
@@ -2279,37 +2345,41 @@ def _resolve_descriptor_access(
         is_self_returning_classmethod=symbol.returns_self_on_class_access,
         unknown_descriptor_means_any=False,
     )
+    typed_descriptor_value = _get_typed_descriptor_value(raw_attribute, raw_value, ctx)
     if symbol.is_classmethod:
-        raw_value = _specialize_self_returning_classmethod(
-            raw_attribute.raw_value, raw_value, receiver_value=receiver_value, ctx=ctx
+        typed_descriptor_value = _specialize_self_returning_classmethod(
+            raw_attribute.raw_value,
+            typed_descriptor_value,
+            receiver_value=receiver_value,
+            ctx=ctx,
         )
         typed_receiver_value = _receiver_type_value(receiver_value)
         if typed_receiver_value is not None and not isinstance(receiver_tobj.typ, str):
-            raw_value = _bind_attribute_signature(
-                raw_value,
+            typed_descriptor_value = _bind_attribute_signature(
+                typed_descriptor_value,
                 receiver_value=_classmethod_receiver_value_from_type_value(
                     typed_receiver_value
                 ),
                 ctx=ctx,
             )
         return _ResolvedAttributeAccess(
-            value=raw_value, is_property=False, property_has_setter=False
+            value=typed_descriptor_value, is_property=False, property_has_setter=False
         )
     if symbol.is_staticmethod:
         return _ResolvedAttributeAccess(
-            value=raw_value, is_property=False, property_has_setter=False
+            value=typed_descriptor_value, is_property=False, property_has_setter=False
         )
     if (
         symbol.is_method
         and not symbol.is_staticmethod
-        and _is_callable_member_value(raw_value, ctx)
+        and _is_callable_member_value(typed_descriptor_value, ctx)
     ):
         if descriptor_like_instance_access and receiver_value is not None:
-            raw_value = _bind_attribute_signature(
-                raw_value, receiver_value=receiver_value, ctx=ctx
+            typed_descriptor_value = _bind_attribute_signature(
+                typed_descriptor_value, receiver_value=receiver_value, ctx=ctx
             )
         return _ResolvedAttributeAccess(
-            value=raw_value, is_property=False, property_has_setter=False
+            value=typed_descriptor_value, is_property=False, property_has_setter=False
         )
     if (
         symbol.annotation is not None
@@ -2379,6 +2449,22 @@ def _get_nondescriptor_value(
     return raw_value
 
 
+def _get_typed_descriptor_value(
+    raw_attribute: _RawTypeObjectAttribute, raw_value: Value, ctx: CanAssignContext
+) -> Value:
+    initializer = raw_attribute.symbol.initializer
+    if initializer is None:
+        return raw_value
+    typed_value = normalize_synthetic_descriptor_attribute(
+        initializer,
+        is_self_returning_classmethod=raw_attribute.symbol.returns_self_on_class_access,
+        unknown_descriptor_means_any=False,
+    )
+    if _is_callable_member_value(typed_value, ctx):
+        return typed_value
+    return raw_value
+
+
 def _get_attribute_value_from_symbol(
     symbol: ClassSymbol,
     ctx: CanAssignContext,
@@ -2394,6 +2480,8 @@ def _get_attribute_value_from_symbol(
             else ctx.make_type_object(object)
         ),
         symbol=symbol,
+        runtime_symbol=symbol,
+        typeshed_symbol=None,
         declared_value=symbol.get_effective_type(),
         raw_value=(
             symbol.initializer
@@ -2554,53 +2642,6 @@ def _substitute_symbol_value(
     return value.substitute_typevars(substitutions)
 
 
-def _specialize_typeshed_attribute_value(
-    receiver_tobj: TypeObject,
-    value: Value,
-    provider: type | str | None,
-    ctx: CanAssignContext,
-    *,
-    receiver_value: TypedValue | None,
-) -> Value:
-    """Apply receiver/base substitutions to a typeshed-provided attribute value."""
-    generic_args: Sequence[Value]
-    if receiver_value is None:
-        receiver_key = receiver_tobj.typ
-        generic_args = ()
-    else:
-        receiver_key, generic_args = _class_key_and_generic_args_from_type_value(
-            receiver_value
-        )
-    generic_bases = ctx.get_generic_bases(receiver_key, generic_args)
-    if provider is not None and provider in generic_bases:
-        substituted_typevars = {
-            typevar: (
-                coerce_paramspec_specialization_to_input_sig(typevar_value)
-                if is_instance_of_typing_name(typevar, "ParamSpec")
-                else typevar_value
-            )
-            for typevar, typevar_value in generic_bases[provider].items()
-        }
-        value = value.substitute_typevars(substituted_typevars)
-    if generic_args and receiver_key in generic_bases:
-        ordered_typevars = [
-            val.typevar_param.typevar if isinstance(val, TypeVarValue) else None
-            for val in generic_bases[receiver_key].values()
-        ]
-        direct_substitutions = {
-            typevar: arg
-            for typevar, arg in zip(ordered_typevars, generic_args)
-            if typevar is not None
-        }
-        if isinstance(value, KnownValueWithTypeVars):
-            value = KnownValueWithTypeVars(
-                value.val, {**value.typevars, **direct_substitutions}
-            )
-        else:
-            value = value.substitute_typevars(direct_substitutions)
-    return value
-
-
 def _mro_generic_args(value: MroValue) -> Sequence[Value]:
     if isinstance(value, SequenceValue) and value.typ is tuple:
         return (value,)
@@ -2705,31 +2746,6 @@ def _is_property_marker_value(value: Value) -> bool:
         and isinstance(value.val, property)
         or isinstance(value, TypedValue)
         and value.typ is property
-    )
-
-
-def _specialize_declared_property_value(
-    receiver_tobj: TypeObject | None, member: str, value: Value, ctx: CanAssignContext
-) -> tuple[Value | None, bool]:
-    if receiver_tobj is None:
-        return None, False
-    match = receiver_tobj.get_declared_symbol_with_owner(member, ctx)
-    if match is None:
-        return None, False
-    owner_tobj, symbol = match
-    if symbol.property_info is None:
-        return None, False
-    substitutions = _get_symbol_owner_substitutions_from_type_objects(
-        receiver_tobj, owner_tobj, ctx
-    )
-    if value is not UNINITIALIZED_VALUE and not _is_property_marker_value(value):
-        return (
-            _substitute_symbol_value(value, substitutions),
-            symbol.property_info.setter_type is not None,
-        )
-    return (
-        _substitute_symbol_value(symbol.property_info.getter_type, substitutions),
-        symbol.property_info.setter_type is not None,
     )
 
 

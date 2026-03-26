@@ -192,6 +192,54 @@ class TestTypeshedClient(TestNameCheckVisitorBase):
             staticmethod, "__isabstractmethod__", on_class=False
         )
 
+    def test_get_direct_symbol(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir_str:
+            temp_dir = Path(temp_dir_str)
+            (temp_dir / "sample.pyi").write_text(textwrap.dedent("""
+                from typing import final
+
+                class C:
+                    x: int
+
+                    @property
+                    def name(self) -> str: ...
+
+                    @classmethod
+                    def make(cls) -> "C": ...
+
+                    @staticmethod
+                    @final
+                    def build() -> int: ...
+                """))
+            (temp_dir / "VERSIONS").write_text("sample: 3.8\n")
+            (temp_dir / "@python2").mkdir()
+
+            tsf = TypeshedFinder(Checker(), verbose=True)
+            search_context = get_search_context(typeshed=temp_dir, search_path=[])
+            tsf.resolver = Resolver(search_context)
+
+            attr = tsf.get_direct_symbol("sample.C", "x")
+            assert attr is not None
+            assert attr.annotation == TypedValue(int)
+            assert attr.is_instance_only
+
+            prop = tsf.get_direct_symbol("sample.C", "name")
+            assert prop is not None
+            assert prop.property_info is not None
+            assert prop.property_info.getter_type == TypedValue(str)
+
+            make = tsf.get_direct_symbol("sample.C", "make")
+            assert make is not None
+            assert make.is_method
+            assert make.is_classmethod
+            assert isinstance(make.initializer, CallableValue)
+
+            build = tsf.get_direct_symbol("sample.C", "build")
+            assert build is not None
+            assert build.is_method
+            assert build.is_staticmethod
+            assert tsf.get_direct_symbol("sample.C", "missing") is None
+
     def test_override_typeshed_path(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir_str:
             temp_dir = Path(temp_dir_str)
