@@ -1852,8 +1852,11 @@ def _merge_runtime_and_typeshed_symbol(
         _merge_runtime_and_typeshed_property_info(
             runtime_symbol.property_info, typeshed_symbol.property_info
         )
-        if runtime_symbol.property_info is not None
-        else runtime_symbol.property_info
+        if (
+            runtime_symbol.property_info is not None
+            or typeshed_symbol.property_info is not None
+        )
+        else None
     )
     return ClassSymbol(
         annotation=_merge_symbol_type_information(
@@ -2402,6 +2405,12 @@ def _resolve_descriptor_access(
     )
     if descriptor_get_value is None:
         return None
+    if (
+        descriptor_like_instance_access
+        and isinstance(descriptor_get_value, AnyValue)
+        and symbol.annotation is not None
+    ):
+        descriptor_get_value = raw_attribute.declared_value
     return _ResolvedAttributeAccess(
         value=descriptor_get_value,
         is_property=descriptor_like_instance_access,

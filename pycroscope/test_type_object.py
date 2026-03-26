@@ -784,6 +784,51 @@ def test_get_attribute_prefers_metaclass_data_descriptor_on_class_access() -> No
     assert attribute.value == TypedValue(int)
 
 
+def test_get_attribute_uses_typeshed_types_for_type_descriptors() -> None:
+    checker = Checker()
+    type_object = checker.make_type_object(int)
+
+    name_attr = type_object.get_attribute(
+        "__name__", checker, on_class=True, receiver_value=TypedValue(int)
+    )
+    assert name_attr is not None
+    assert name_attr.is_metaclass_owner
+    assert name_attr.is_property
+    assert name_attr.value == TypedValue(str)
+
+    qualname_attr = type_object.get_attribute(
+        "__qualname__", checker, on_class=True, receiver_value=TypedValue(int)
+    )
+    assert qualname_attr is not None
+    assert qualname_attr.is_metaclass_owner
+    assert qualname_attr.is_property
+    assert qualname_attr.value == TypedValue(str)
+
+    module_attr = type_object.get_attribute(
+        "__module__", checker, on_class=True, receiver_value=TypedValue(int)
+    )
+    assert module_attr is not None
+    assert module_attr.is_metaclass_owner
+    assert module_attr.is_property
+    assert module_attr.value == TypedValue(str)
+
+    mro_attr = type_object.get_attribute(
+        "__mro__", checker, on_class=True, receiver_value=TypedValue(int)
+    )
+    assert mro_attr is not None
+    assert mro_attr.is_metaclass_owner
+    assert mro_attr.is_property
+    assert mro_attr.value == GenericValue(tuple, [TypedValue(type)])
+
+    bases_attr = type_object.get_attribute(
+        "__bases__", checker, on_class=True, receiver_value=TypedValue(int)
+    )
+    assert bases_attr is not None
+    assert bases_attr.is_metaclass_owner
+    assert bases_attr.is_property
+    assert bases_attr.value == GenericValue(tuple, [TypedValue(type)])
+
+
 class TestNumerics(TestNameCheckVisitorBase):
     @assert_passes()
     def test_float(self):
