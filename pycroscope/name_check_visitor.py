@@ -4473,7 +4473,10 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                         node.bases, registered_type_param_values
                     )
                 )
-            tobj.set_declared_type_params(tuple(registered_type_param_values))
+            if registered_type_param_values:
+                tobj.set_declared_type_params(tuple(registered_type_param_values))
+            else:
+                tobj.clear_declared_type_params()
             method_type_params = (
                 type_param_values
                 if type_param_values
@@ -6180,27 +6183,27 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 )
                 return
 
-    def _synthetic_type_params_for_variance(
-        self, typ: type | str, arity: int
-    ) -> Sequence[TypeVarLike] | None:
-        if not isinstance(typ, str):
-            return None
-        for base in self.checker.make_type_object(typ).get_direct_bases():
-            runtime_annotation = self._runtime_annotation_from_value(base)
-            origin = typing.get_origin(runtime_annotation)
-            if origin is None or not (
-                is_typing_name(origin, "Generic") or is_typing_name(origin, "Protocol")
-            ):
-                continue
-            type_params = typing.get_args(runtime_annotation)
-            if len(type_params) != arity:
-                continue
-            if all(
-                is_instance_of_typing_name(type_param, "TypeVar")
-                for type_param in type_params
-            ):
-                return type_params
+    def _type_params_for_variance_class_key(
+        self, class_key: type | str, arity: int
+    ) -> Sequence[TypeParam] | None:
+        type_params = self.make_type_object(class_key).get_declared_type_params()
+        if len(type_params) == arity:
+            return type_params
         return None
+
+    def _type_parameter_class_key(self, value: Value) -> type | str | None:
+        candidate = replace_fallback(value)
+        if isinstance(candidate, KnownValue):
+            origin = typing.get_origin(candidate.val)
+            if not isinstance(candidate.val, (type, str)) and not isinstance(
+                origin, (type, str)
+            ):
+                return None
+        elif not isinstance(
+            candidate, (GenericValue, SyntheticClassObjectValue, TypedValue)
+        ):
+            return None
+        return _class_key_from_value(candidate)
 
     def _value_for_variance_annotation(self, annotation: ast.expr) -> Value:
         annotation_expr = annotation_expr_from_ast(
@@ -6850,21 +6853,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         return count
 
     def _is_type_parameter_base(self, value: Value) -> bool:
-        for subval in flatten_values(replace_fallback(value)):
-            candidate: object
-            if isinstance(subval, SyntheticClassObjectValue):
-                subval = subval.class_type
-            if isinstance(subval, GenericValue):
-                candidate = subval.typ
-            elif isinstance(subval, TypedValue):
-                candidate = subval.typ
-            elif isinstance(subval, KnownValue):
-                candidate = subval.val
-            else:
-                continue
-            origin = get_origin(candidate)
-            if origin is not None:
-                candidate = origin
+        for candidate, _ in self._iter_type_parameter_base_candidates(value):
             if is_typing_name(candidate, "Generic") or is_typing_name(
                 candidate, "Protocol"
             ):
@@ -6872,53 +6861,48 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         return False
 
     def _type_parameter_base_has_runtime_args(self, value: Value) -> bool:
-        for subval in flatten_values(replace_fallback(value)):
-            candidate: object
-            if isinstance(subval, SyntheticClassObjectValue):
-                subval = subval.class_type
-            if isinstance(subval, GenericValue):
-                if (
-                    is_typing_name(subval.typ, "Generic")
-                    or is_typing_name(subval.typ, "Protocol")
-                ) and subval.args:
-                    return True
-                candidate = subval.typ
-            elif isinstance(subval, TypedValue):
-                candidate = subval.typ
-            elif isinstance(subval, KnownValue):
-                candidate = subval.val
-            else:
-                continue
-            origin = get_origin(candidate)
-            if origin is None:
-                continue
-            if not (
-                is_typing_name(origin, "Generic") or is_typing_name(origin, "Protocol")
-            ):
-                continue
-            if get_args(candidate):
+        for candidate, args in self._iter_type_parameter_base_candidates(value):
+            if (
+                is_typing_name(candidate, "Generic")
+                or is_typing_name(candidate, "Protocol")
+            ) and args:
                 return True
         return False
 
     def _is_generic_type_parameter_base(self, value: Value) -> bool:
-        for subval in flatten_values(replace_fallback(value)):
-            candidate: object
-            if isinstance(subval, SyntheticClassObjectValue):
-                subval = subval.class_type
-            if isinstance(subval, GenericValue):
-                candidate = subval.typ
-            elif isinstance(subval, TypedValue):
-                candidate = subval.typ
-            elif isinstance(subval, KnownValue):
-                candidate = subval.val
-            else:
-                continue
-            origin = get_origin(candidate)
-            if origin is not None:
-                candidate = origin
+        for candidate, _ in self._iter_type_parameter_base_candidates(value):
             if is_typing_name(candidate, "Generic"):
                 return True
         return False
+
+    def _iter_type_parameter_base_candidates(
+        self, value: Value
+    ) -> Iterable[tuple[object, Sequence[object]]]:
+        for subval in flatten_values(replace_fallback(value)):
+            candidate = self._type_parameter_base_candidate(subval)
+            if candidate is not None:
+                yield candidate
+
+    def _type_parameter_base_candidate(
+        self, value: Value
+    ) -> tuple[object, Sequence[object]] | None:
+        if isinstance(value, SyntheticClassObjectValue):
+            value = value.class_type
+        if isinstance(value, GenericValue):
+            candidate: object = value.typ
+            args: Sequence[object] = value.args
+        elif isinstance(value, TypedValue):
+            candidate = value.typ
+            args = ()
+        elif isinstance(value, KnownValue):
+            candidate = value.val
+            args = ()
+        else:
+            return None
+        origin = get_origin(candidate)
+        if origin is not None:
+            return origin, get_args(candidate)
+        return candidate, args
 
     def _check_protocol_base_validity(
         self, node: ast.ClassDef, base_values: Sequence[Value]
@@ -6937,25 +6921,14 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             )
 
     def _is_valid_non_protocol_base_for_protocol(self, base_value: Value) -> bool:
-        for subval in flatten_values(replace_fallback(base_value)):
-            if isinstance(subval, SyntheticClassObjectValue):
-                subval = subval.class_type
-            if isinstance(subval, TypedValue):
-                typ = subval.typ
-                if is_typing_name(typ, "Generic"):
-                    return True
-                if isinstance(typ, str):
-                    return self.checker.make_type_object(typ).is_protocol()
-                if isinstance(typ, type):
-                    # For runtime classes, let runtime semantics decide.
-                    return True
-                continue
-            if isinstance(subval, KnownValue):
-                if is_typing_name(subval.val, "Generic"):
-                    return True
-                if isinstance(subval.val, type):
-                    # For runtime classes, let runtime semantics decide.
-                    return True
+        for candidate, _ in self._iter_type_parameter_base_candidates(base_value):
+            if is_typing_name(candidate, "Generic"):
+                return True
+            if isinstance(candidate, str):
+                return self.checker.make_type_object(candidate).is_protocol()
+            if isinstance(candidate, type):
+                # For runtime classes, let runtime semantics decide.
+                return True
         return True
 
     def _get_local_object(self, name: str, node: ast.AST) -> Value:
@@ -13705,15 +13678,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             type_params = root_value.alias.get_type_params()
             return type_params if len(type_params) == arity else None
         candidate = replace_fallback(root_value)
-        if isinstance(candidate, SyntheticClassObjectValue):
-            tobj = self.checker.make_type_object(candidate.class_type.typ)
-            type_params = tobj.get_declared_type_params()
-            if len(type_params) == arity:
-                return type_params
-            if isinstance(candidate.class_type, TypedValue):
-                type_params = self.get_type_parameters(candidate.class_type.typ)
-                return type_params if len(type_params) == arity else None
-            return None
         if isinstance(candidate, SubclassValue):
             return self._type_params_for_variance_root(
                 root_node,
@@ -13721,33 +13685,17 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 slice_node,
                 allow_ast_fallback=allow_ast_fallback,
             )
-        if isinstance(candidate, GenericValue):
-            type_params = self.get_type_parameters(candidate.typ)
-            if len(type_params) == arity:
+        class_key = self._type_parameter_class_key(candidate)
+        if class_key is not None:
+            type_params = self._type_params_for_variance_class_key(class_key, arity)
+            if type_params is not None:
                 return type_params
-            synthetic = self._synthetic_type_params_for_variance(candidate.typ, arity)
-            if synthetic is not None:
-                return [
-                    make_type_param(type_param, visitor=self)
-                    for type_param in synthetic
-                ]
-            return None
-        if isinstance(candidate, TypedValue):
-            type_params = self.get_type_parameters(candidate.typ)
-            return type_params if len(type_params) == arity else None
-        if isinstance(candidate, KnownValue):
-            known = candidate.val
-            if isinstance(known, (type, str)):
-                type_params = self.get_type_parameters(known)
-                return type_params if len(type_params) == arity else None
-            origin = typing.get_origin(known)
-            if isinstance(origin, (type, str)):
-                type_params = self.get_type_parameters(origin)
-                return type_params if len(type_params) == arity else None
         if isinstance(root_node, ast.Name):
             synthetic_name = self._get_referenced_synthetic_class_fq_name(root_node.id)
-            type_params = self.get_type_parameters(synthetic_name)
-            if len(type_params) == arity:
+            type_params = self._type_params_for_variance_class_key(
+                synthetic_name, arity
+            )
+            if type_params is not None:
                 return type_params
         if allow_ast_fallback:
             fallback_root_value = value_from_ast(
@@ -14021,18 +13969,10 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         return (value,)
 
     def _has_single_typevartuple_parameter(self, value: Value) -> bool:
-        class_type: type | str | None = None
-        if isinstance(value, KnownValue) and isinstance(value.val, type):
-            class_type = value.val
-        elif isinstance(value, SyntheticClassObjectValue) and isinstance(
-            value.class_type, TypedValue
-        ):
-            class_type = value.class_type.typ
-        elif isinstance(value, TypedValue):
-            class_type = value.typ
-        if class_type is None:
+        class_key = self._type_parameter_class_key(value)
+        if class_key is None:
             return False
-        type_parameters = self.get_type_parameters(class_type)
+        type_parameters = self.make_type_object(class_key).get_declared_type_params()
         return len(type_parameters) == 1 and isinstance(
             type_parameters[0], TypeVarTupleParam
         )
