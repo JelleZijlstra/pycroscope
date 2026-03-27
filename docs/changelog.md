@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Fix two false positives around runtime analysis: subscripting ordinary values annotated with a type alias no longer looks like type-alias specialization, and unresolved `match` value patterns now fall back cleanly instead of reporting internal errors.
 - Improve `TypeObject` attribute lookup for stub-backed members so runtime classes now merge direct stub symbols with runtime descriptors, preserving runtime descriptor shape while using stub type information for properties and other attributes.
 - Fix class-object metaclass lookup so `TypeObject.get_attribute()` now follows Python's class-access rules, including bound metaclass members and metaclass properties overriding same-named class attributes.
 - Improve `TypeObject.get_attribute()` descriptor handling so instance-like access now resolves custom `__get__` descriptors more consistently, and class-object lookup correctly lets metaclass data descriptors win precedence over same-named class attributes.

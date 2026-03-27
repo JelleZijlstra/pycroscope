@@ -13751,18 +13751,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 )
                 runtime_type_alias: TypeAliasValue | None = None
                 if not self.in_annotation:
-                    if isinstance(stripped_root.value, TypeAliasValue):
-                        runtime_type_alias = stripped_root.value
-                    elif isinstance(node.value, ast.Name):
-                        _, defining_scope, _ = self.scopes.get_with_scope(
-                            node.value.id, node.value, self.state, can_assign_ctx=self
-                        )
-                        if defining_scope is not None:
-                            declared_type = defining_scope.get_declared_type(
-                                node.value.id
-                            )
-                            if isinstance(declared_type, TypeAliasValue):
-                                runtime_type_alias = declared_type
+                    runtime_type_alias = self._get_value_position_type_alias_symbol(
+                        stripped_root, node.value
+                    )
                 if runtime_type_alias is not None:
                     # Value-position specialization of a declared type alias should
                     # use the recorded alias metadata rather than the raw runtime
@@ -14112,6 +14103,17 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             members,
             TypedValue(types.GenericAlias),
         )
+
+    def _get_value_position_type_alias_symbol(
+        self, root_composite: Composite, node: ast.expr
+    ) -> TypeAliasValue | None:
+        # Only the alias symbol itself should preserve type-alias specialization
+        # behavior in value position. Ordinary values annotated with an alias type
+        # should behave like their underlying runtime values.
+        if _is_type_alias_specialization_symbol_composite(root_composite):
+            assert isinstance(root_composite.value, TypeAliasValue)
+            return root_composite.value
+        return None
 
     def _get_dunder(
         self, node: ast.AST | None, callee_val: Value, method_name: str
@@ -17468,6 +17470,12 @@ def _is_type_alias_symbol_composite(root_composite: Composite) -> bool:
     if not isinstance(root_composite.value, TypeAliasValue):
         return False
     if not root_composite.value.uses_type_alias_object_semantics:
+        return False
+    return _is_type_alias_specialization_symbol_composite(root_composite)
+
+
+def _is_type_alias_specialization_symbol_composite(root_composite: Composite) -> bool:
+    if not isinstance(root_composite.value, TypeAliasValue):
         return False
     varname = root_composite.varname
     return varname is not None and varname.varname == root_composite.value.name

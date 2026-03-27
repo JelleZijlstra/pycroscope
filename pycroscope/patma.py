@@ -246,11 +246,9 @@ class PatmaVisitor(ast.NodeVisitor):
         self._match_value_cache[id(node)] = pattern_val
         self.check_impossible_pattern(node, pattern_val)
         if not isinstance(pattern_val, KnownValue):
-            self.visitor.show_error(
-                node,
-                f"Match value is not a literal: {pattern_val}",
-                ErrorCode.internal_error,
-            )
+            # Value patterns can depend on runtime values. If we cannot resolve the
+            # pattern to a literal statically, avoid narrowing but do not report an
+            # internal error.
             return NULL_CONSTRAINT
 
         return self.make_constraint(

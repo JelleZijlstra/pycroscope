@@ -260,6 +260,29 @@ class TestImportFailureHandling(TestNameCheckVisitorBase):
 
         assert_type(Box[int]().clone(), Box[int])
 
+    @assert_passes(run_in_both_module_modes=True)
+    def test_subscript_value_annotated_with_type_alias(self):
+        from typing import TypeAlias
+
+        from typing_extensions import assert_type
+
+        TagsByType: TypeAlias = dict[type[int], list[int]]
+
+        def f(by_type: TagsByType) -> None:
+            assert_type(by_type[int], list[int])
+
+    @assert_passes(run_in_both_module_modes=True)
+    def test_alias_symbol_still_supports_value_position_specialization(self):
+        from typing import TypeVar
+
+        from typing_extensions import TypeAliasType
+
+        T = TypeVar("T")
+        ListAlias = TypeAliasType("ListAlias", list[T], type_params=(T,))
+
+        def f() -> None:
+            print(ListAlias[int].__value__)
+
     @assert_passes(allow_runtime_module_load_failure=True)
     def test_import_failure_is_ignorable(self):
         a = 1  # static analysis: ignore[import_failed]

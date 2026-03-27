@@ -203,6 +203,16 @@ class TestPatma(TestNameCheckVisitorBase):
                     assert_type(p2, Literal[Planet.earth])
                     assert_type(p, Literal[Planet.earth])
 
+    @assert_passes(allow_import_failures=True)
+    def test_unknown_match_value_does_not_internal_error(self):
+        # static analysis: ignore[import_failed]
+        from missing import E
+
+        def capybara(x: object):
+            match x:
+                case E.a:
+                    pass
+
     @assert_passes()
     def test_exhaustive(self):
         def f(x: object) -> int:
