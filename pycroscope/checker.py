@@ -682,15 +682,17 @@ class Checker:
                     merged_generic_bases.setdefault(gb_typ, {}).update(tv_map)
 
         synthetic_class = self.make_synthetic_class(typ)
-        self.make_type_object(typ).set_direct_bases(
-            direct_bases_from_values(base_values, self)
-        )
+        type_object = self.make_type_object(typ)
+        type_object.set_direct_bases(direct_bases_from_values(base_values, self))
         merged_copy: _SyntheticGenericBases = {}
         for gb_typ, tv_map in merged_generic_bases.items():
             merged_copy[gb_typ] = dict(tv_map)
         synthetic_class.generic_bases.clear()
         synthetic_class.generic_bases.update(merged_copy)
-        self.make_type_object(typ).set_declared_type_params(declared_type_params)
+        if declared_type_params:
+            type_object.set_declared_type_params(declared_type_params)
+        else:
+            type_object.clear_declared_type_params()
 
     def register_synthetic_protocol_members(
         self, typ: type | str, members: set[str]

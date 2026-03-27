@@ -407,6 +407,19 @@ def test_synthetic_type_object_tracks_declared_type_params_and_specialized_mro()
     ]
 
 
+def test_synthetic_type_object_infers_declared_type_params_from_bases() -> None:
+    checker = Checker()
+    base = "test.Base"
+    child = "test.Child"
+    type_param = TypeVarParam(T)
+    checker.register_synthetic_type_bases(base, [], declared_type_params=[type_param])
+    checker.register_synthetic_type_bases(
+        child, [GenericValue(base, [TypeVarValue(type_param)])]
+    )
+
+    assert checker.make_type_object(child).get_declared_type_params() == (type_param,)
+
+
 def test_direct_synthetic_declared_symbol_mutation_updates_type_object_view() -> None:
     checker = Checker()
     synthetic = SyntheticClassObjectValue("Impl", TypedValue("mod.Impl"))

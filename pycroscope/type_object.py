@@ -437,11 +437,7 @@ class TypeObject:
         if isinstance(self.typ, type):
             return tuple(_compute_type_params_from_runtime(self.typ, self._checker))
 
-        return ()
-        # TODO:
-        # raise ValueError(
-        #     f"type_params not yet computed for synthetic class {self.typ!r}"
-        # )
+        return tuple(_compute_type_params_from_bases(self.get_direct_bases()))
 
     def _compute_direct_bases(self) -> tuple[MroValue, ...]:
         if self.typ is object:
@@ -876,6 +872,11 @@ class TypeObject:
 
     def set_declared_type_params(self, type_params: Sequence[TypeParam]) -> None:
         self._declared_type_params = tuple(type_params)
+        self._update_loaded_synthetic_fields()
+        self._protocol_positive_cache.clear()
+
+    def clear_declared_type_params(self) -> None:
+        self._declared_type_params = None
         self._update_loaded_synthetic_fields()
         self._protocol_positive_cache.clear()
 
