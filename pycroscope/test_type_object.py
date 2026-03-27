@@ -1,8 +1,11 @@
 # static analysis: ignore
 
+import sys
+from types import ModuleType
 from typing import TypeVar
 
 from .checker import Checker
+from .test_config import TEST_OPTIONS
 from .test_name_check_visitor import TestNameCheckVisitorBase
 from .test_node_visitor import assert_passes
 from .type_object import (
@@ -33,6 +36,34 @@ from .value import (
 )
 
 T = TypeVar("T")
+
+
+def _make_runtime_property_class(module_name: str) -> type:
+    class C:
+        @property
+        def name(self):
+            return 1
+
+    package_path = ""
+    for package_piece in module_name.split(".")[:-1]:
+        package_path = (
+            f"{package_path}.{package_piece}" if package_path else package_piece
+        )
+        package = sys.modules.get(package_path)
+        if package is None:
+            package = ModuleType(package_path)
+            package.__path__ = []
+            sys.modules[package_path] = package
+    C.__module__ = module_name
+    C.__qualname__ = "C"
+    module = ModuleType(module_name)
+    module.__package__ = module_name.rpartition(".")[0]
+    module.C = C
+    sys.modules[module_name] = module
+    if module.__package__:
+        parent = sys.modules[module.__package__]
+        setattr(parent, module_name.rsplit(".", maxsplit=1)[1], module)
+    return C
 
 
 def test_protocol_member_str_order_is_deterministic() -> None:
@@ -95,6 +126,23 @@ def test_lookup_declared_symbol_with_owner_handles_synthetic_base() -> None:
     owner, symbol = match
     assert owner == "mod.Base"
     assert symbol.annotation == TypedValue(int)
+
+
+def test_lookup_declared_symbol_with_owner_merges_typeshed_property_info() -> None:
+    module_name = "_pycroscope_tests.stub_property"
+    try:
+        runtime_class = _make_runtime_property_class(module_name)
+        checker = Checker(raw_options=TEST_OPTIONS)
+        match = lookup_declared_symbol_with_owner(runtime_class, "name", checker)
+
+        assert match is not None
+        owner, symbol = match
+        assert owner is runtime_class
+        assert symbol.property_info is not None
+        assert symbol.property_info.getter_type == TypedValue(str)
+    finally:
+        sys.modules.pop(module_name, None)
+        sys.modules.pop("_pycroscope_tests", None)
 
 
 def test_runtime_mro_marks_typeshed_only_bases_virtual() -> None:
@@ -749,6 +797,51 @@ def test_get_attribute_prefers_metaclass_data_descriptor_on_class_access() -> No
     assert attribute.value == TypedValue(int)
 
 
+def test_get_attribute_uses_typeshed_types_for_type_descriptors() -> None:
+    checker = Checker()
+    type_object = checker.make_type_object(int)
+
+    name_attr = type_object.get_attribute(
+        "__name__", checker, on_class=True, receiver_value=TypedValue(int)
+    )
+    assert name_attr is not None
+    assert name_attr.is_metaclass_owner
+    assert name_attr.is_property
+    assert name_attr.value == TypedValue(str)
+
+    qualname_attr = type_object.get_attribute(
+        "__qualname__", checker, on_class=True, receiver_value=TypedValue(int)
+    )
+    assert qualname_attr is not None
+    assert qualname_attr.is_metaclass_owner
+    assert qualname_attr.is_property
+    assert qualname_attr.value == TypedValue(str)
+
+    module_attr = type_object.get_attribute(
+        "__module__", checker, on_class=True, receiver_value=TypedValue(int)
+    )
+    assert module_attr is not None
+    assert module_attr.is_metaclass_owner
+    assert module_attr.is_property
+    assert module_attr.value == TypedValue(str)
+
+    mro_attr = type_object.get_attribute(
+        "__mro__", checker, on_class=True, receiver_value=TypedValue(int)
+    )
+    assert mro_attr is not None
+    assert mro_attr.is_metaclass_owner
+    assert mro_attr.is_property
+    assert mro_attr.value == GenericValue(tuple, [TypedValue(type)])
+
+    bases_attr = type_object.get_attribute(
+        "__bases__", checker, on_class=True, receiver_value=TypedValue(int)
+    )
+    assert bases_attr is not None
+    assert bases_attr.is_metaclass_owner
+    assert bases_attr.is_property
+    assert bases_attr.value == GenericValue(tuple, [TypedValue(type)])
+
+
 class TestNumerics(TestNameCheckVisitorBase):
     @assert_passes()
     def test_float(self):
@@ -798,6 +891,28 @@ class TestNumerics(TestNameCheckVisitorBase):
 
 
 class TestSyntheticType(TestNameCheckVisitorBase):
+    def test_protocol_uses_typeshed_type_for_runtime_property(self):
+        module_name = "_pycroscope_tests.stub_property"
+        try:
+            _make_runtime_property_class(module_name)
+            self.assert_passes("""
+                from typing import Protocol
+                from _pycroscope_tests.stub_property import C
+
+                class WantsIntName(Protocol):
+                    @property
+                    def name(self) -> int: ...
+
+                def takes(value: WantsIntName) -> None:
+                    pass
+
+                def capybara(path: C) -> None:
+                    takes(path)  # E: incompatible_argument
+                """)
+        finally:
+            sys.modules.pop(module_name, None)
+            sys.modules.pop("_pycroscope_tests", None)
+
     @assert_passes(run_in_both_module_modes=True)
     def test_synthetic_namedtuple_field_is_readonly_without_runtime_class() -> None:
         from typing import NamedTuple

@@ -18,7 +18,7 @@ from enum import EnumMeta
 from functools import lru_cache
 from pathlib import Path
 from types import GeneratorType, MethodDescriptorType, ModuleType
-from typing import Any, Generic, TypeVar
+from typing import Any, Generic, TypeVar, cast
 
 import typeshed_client
 from typing_extensions import Protocol
@@ -60,10 +60,12 @@ from .value import (
     AnyValue,
     CallableValue,
     CanAssignContext,
+    ClassSymbol,
     DeprecatedExtension,
     Extension,
     GenericValue,
     KnownValue,
+    PropertyInfo,
     Qualifier,
     SubclassValue,
     SyntheticClassObjectValue,
@@ -84,9 +86,13 @@ from .value import (
     replace_fallback,
     type_param_to_value,
     unannotate_value,
+    unite_values,
 )
 
 PROPERTY_LIKE = {KnownValue(property), KnownValue(types.DynamicClassAttribute)}
+_CLASS_SYMBOL_ALLOWED_QUALIFIERS = frozenset(
+    {Qualifier.ClassVar, Qualifier.Final, Qualifier.ReadOnly, Qualifier.InitVar}
+)
 
 if sys.version_info >= (3, 11):
     from enum import property as enum_property
@@ -204,6 +210,9 @@ class TypeshedFinder:
         default_factory=dict, repr=False, init=False
     )
     _attribute_cache: dict[tuple[str, str, bool], Value] = field(
+        default_factory=dict, repr=False, init=False
+    )
+    _direct_symbol_cache: dict[tuple[str, str], ClassSymbol | None] = field(
         default_factory=dict, repr=False, init=False
     )
     _active_infos: list[typeshed_client.resolver.ResolvedName] = field(
@@ -527,6 +536,24 @@ class TypeshedFinder:
             self._attribute_cache[key] = val
             return val
 
+    def get_direct_symbol(self, typ: type | str, attr: str) -> ClassSymbol | None:
+        """Return the symbol declared directly on this class in stubs."""
+        if isinstance(typ, str):
+            fq_name = typ
+        else:
+            fq_name = self._get_fq_name(typ)
+            if fq_name is None:
+                return None
+        key = (fq_name, attr)
+        try:
+            return self._direct_symbol_cache[key]
+        except KeyError:
+            info = self._get_info_for_name(fq_name)
+            mod, _ = fq_name.rsplit(".", maxsplit=1)
+            symbol = self._get_direct_symbol_from_info(info, mod, attr)
+            self._direct_symbol_cache[key] = symbol
+            return symbol
+
     def get_attribute_recursively(
         self, fq_name: str, attr: str, *, on_class: bool
     ) -> tuple[Value, type | str | None]:
@@ -709,6 +736,199 @@ class TypeshedFinder:
                 return None
             return None  # TODO maybe we need this for aliased methods
         return None
+
+    def _get_direct_symbol_from_info(
+        self, info: typeshed_client.resolver.ResolvedName, mod: str, attr: str
+    ) -> ClassSymbol | None:
+        if info is None:
+            return None
+        if isinstance(info, typeshed_client.ImportedInfo):
+            return self._get_direct_symbol_from_info(
+                info.info, ".".join(info.source_module), attr
+            )
+        if not (
+            isinstance(info, typeshed_client.NameInfo)
+            and isinstance(info.ast, ast.ClassDef)
+            and info.child_nodes
+            and attr in info.child_nodes
+        ):
+            return None
+        return self._symbol_from_child_info(info.child_nodes[attr], mod)
+
+    def _symbol_from_child_info(
+        self, info: typeshed_client.resolver.ResolvedName, mod: str
+    ) -> ClassSymbol | None:
+        if info is None:
+            return None
+        if isinstance(info, typeshed_client.ImportedInfo):
+            return self._symbol_from_child_info(info.info, ".".join(info.source_module))
+        if not isinstance(info, typeshed_client.NameInfo):
+            return None
+        node = info.ast
+        if isinstance(node, ast.AnnAssign):
+            return self._symbol_from_annassign(node, mod)
+        if isinstance(node, ast.Assign):
+            return self._symbol_from_assign(node, mod)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            return self._symbol_from_function_node(node, mod)
+        if isinstance(node, typeshed_client.OverloadedName):
+            return self._symbol_from_overloaded_node(node, mod)
+        if isinstance(node, ast.ClassDef):
+            return ClassSymbol(initializer=AnyValue(AnySource.inference))
+        return None
+
+    def _symbol_from_annassign(
+        self, node: ast.AnnAssign, mod: str
+    ) -> ClassSymbol | None:
+        expr = self._parse_annotation(node.annotation, mod)
+        annotation, qualifiers = expr.maybe_unqualify(_CLASS_SYMBOL_ALLOWED_QUALIFIERS)
+        initializer = self._initializer_from_stub_assignment(node.value, mod)
+        return ClassSymbol(
+            annotation=(
+                annotation
+                if annotation is not None
+                else AnyValue(AnySource.incomplete_annotation)
+            ),
+            qualifiers=frozenset(qualifiers),
+            is_instance_only=(
+                Qualifier.ClassVar not in qualifiers
+                and Qualifier.InitVar not in qualifiers
+            ),
+            initializer=initializer,
+        )
+
+    def _symbol_from_assign(self, node: ast.Assign, mod: str) -> ClassSymbol | None:
+        return ClassSymbol(
+            initializer=(
+                self._initializer_from_stub_assignment(node.value, mod)
+                or AnyValue(AnySource.inference)
+            )
+        )
+
+    def _symbol_from_function_node(
+        self, node: ast.FunctionDef | ast.AsyncFunctionDef, mod: str
+    ) -> ClassSymbol | None:
+        is_property, is_classmethod, is_staticmethod, qualifiers, deprecated = (
+            self._analyze_stub_method_decorators(node, mod)
+        )
+        if is_property:
+            getter_type = (
+                self._parse_type(node.returns, mod)
+                if node.returns is not None
+                else AnyValue(AnySource.unannotated)
+            )
+            return ClassSymbol(
+                qualifiers=qualifiers,
+                property_info=PropertyInfo(
+                    getter_type=getter_type, getter_deprecation=deprecated
+                ),
+                initializer=TypedValue(property),
+            )
+        sig = self._get_signature_from_func_def(node, None, mod)
+        initializer: Value
+        if sig is None:
+            initializer = AnyValue(AnySource.inference)
+        else:
+            initializer = CallableValue(sig)
+            if deprecated is not None:
+                initializer = annotate_value(
+                    initializer, [DeprecatedExtension(deprecated)]
+                )
+        return ClassSymbol(
+            qualifiers=qualifiers,
+            is_method=True,
+            is_classmethod=is_classmethod,
+            is_staticmethod=is_staticmethod,
+            initializer=initializer,
+        )
+
+    def _symbol_from_overloaded_node(
+        self, node: typeshed_client.OverloadedName, mod: str
+    ) -> ClassSymbol | None:
+        method_nodes = [
+            defn
+            for defn in node.definitions
+            if isinstance(defn, (ast.FunctionDef, ast.AsyncFunctionDef))
+        ]
+        if not method_nodes:
+            return None
+        is_property, is_classmethod, is_staticmethod, qualifiers, deprecated = (
+            self._analyze_stub_method_decorators(method_nodes[0], mod)
+        )
+        if is_property:
+            getter_type: Value = AnyValue(AnySource.inference)
+            if all(defn.returns is not None for defn in method_nodes):
+                return_nodes = [cast(ast.expr, defn.returns) for defn in method_nodes]
+                getter_type = unite_values(
+                    *(
+                        self._parse_type(return_node, mod)
+                        for return_node in return_nodes
+                    )
+                )
+            return ClassSymbol(
+                qualifiers=qualifiers,
+                property_info=PropertyInfo(
+                    getter_type=getter_type, getter_deprecation=deprecated
+                ),
+                initializer=TypedValue(property),
+            )
+        value = self._get_value_from_child_info(
+            node, mod, on_class=False, parent_name="<overload>"
+        )
+        if isinstance(value, AnnotationExpr):
+            value, _ = value.unqualify()
+        if deprecated is not None:
+            value = annotate_value(value, [DeprecatedExtension(deprecated)])
+        return ClassSymbol(
+            qualifiers=qualifiers,
+            is_method=True,
+            is_classmethod=is_classmethod,
+            is_staticmethod=is_staticmethod,
+            initializer=value,
+        )
+
+    def _analyze_stub_method_decorators(
+        self, node: ast.FunctionDef | ast.AsyncFunctionDef, mod: str
+    ) -> tuple[bool, bool, bool, frozenset[Qualifier], str | None]:
+        is_property = False
+        is_classmethod = False
+        is_staticmethod = False
+        qualifiers: set[Qualifier] = set()
+        deprecated = None
+        for decorator_node in node.decorator_list:
+            decorator_value = self._parse_expr(decorator_node, mod)
+            if decorator_value in PROPERTY_LIKE:
+                is_property = True
+            elif decorator_value == KnownValue(classmethod):
+                is_classmethod = True
+            elif decorator_value == KnownValue(staticmethod):
+                is_staticmethod = True
+            elif isinstance(decorator_value, KnownValue) and is_typing_name(
+                decorator_value.val, "final"
+            ):
+                qualifiers.add(Qualifier.Final)
+            elif isinstance(
+                extension := self._extract_extension_from_decorator(decorator_value),
+                DeprecatedExtension,
+            ):
+                deprecated = extension.deprecation_message
+        return (
+            is_property,
+            is_classmethod,
+            is_staticmethod,
+            frozenset(qualifiers),
+            deprecated,
+        )
+
+    def _initializer_from_stub_assignment(
+        self, node: ast.AST | None, mod: str
+    ) -> Value | None:
+        if node is None:
+            return None
+        value = self._parse_expr(node, mod)
+        if value == KnownValue(...):
+            return None
+        return value
 
     def _has_own_attribute(self, typ: type | str, attr: str) -> bool:
         # Special case since otherwise we think every object has every attribute
