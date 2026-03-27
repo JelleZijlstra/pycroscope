@@ -813,6 +813,21 @@ class _SyntheticTypedDictContext:
     )
 
 
+@dataclass
+class _CurrentNamedTupleField:
+    name: str
+    has_default: bool
+
+
+@dataclass
+class _CurrentNamedTupleInfo:
+    is_direct: bool
+    base_field_names: frozenset[str]
+    saw_default: bool = False
+    is_valid: bool = True
+    fields: list[_CurrentNamedTupleField] = dataclass_field(default_factory=list)
+
+
 class ComprehensionLengthInferenceLimit(IntegerOption):
     """If we iterate over something longer than this, we don't try to infer precise
     types for comprehensions. Increasing this can hurt performance."""
@@ -2149,6 +2164,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     checker: Checker
     collector: CallSiteCollector | None
     current_class: type | str | None
+    current_type_object: TypeObject | None
     current_dataclass_info: DataclassInfo | None
     current_dataclass_kw_only_active: bool
     current_class_key: type | str | None
@@ -2158,6 +2174,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     current_function: object | None
     current_function_info: FunctionInfo | None
     current_function_name: str | None
+    current_namedtuple_info: _CurrentNamedTupleInfo | None
     current_synthetic_typeddict: _SyntheticTypedDictContext | None
     error_for_implicit_any: bool
     expected_return_value: Value | None
@@ -2225,11 +2242,13 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         self.match_subject = Composite(AnyValue(AnySource.inference))
         # current class (for inferring the type of cls and self arguments)
         self.current_class = None
+        self.current_type_object = None
         self.current_dataclass_info = None
         self.current_dataclass_kw_only_active = False
         self.current_class_key = None
         self.active_type_params = ActiveTypeParams(self)
         self.in_type_alias_definition = False
+        self.current_namedtuple_info = None
         self.current_synthetic_typeddict = None
         self.current_function_name = None
         self.current_function_info = None
@@ -4201,7 +4220,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 and not node.keywords
             ):
                 if is_namedtuple_synthetic:
-                    self._validate_namedtuple_related_fallback_class(node, base_values)
+                    self._check_namedtuple_related_fallback_bases(node, base_values)
                 if not is_namedtuple_synthetic:
                     runtime_enum_fallback_class = (
                         self._make_enum_related_fallback_class(node, base_values)
@@ -4213,58 +4232,14 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             namedtuple_base_fields = _namedtuple_base_fields_from_base_values(
                 base_values, self.checker
             )
-            namedtuple_field_names = tuple(
-                statement.target.id
-                for statement in node.body
-                if isinstance(statement, ast.AnnAssign)
-                and isinstance(statement.target, ast.Name)
-                and statement.simple
-            )
-            namedtuple_default_fields = tuple(
-                statement.target.id
-                for statement in node.body
-                if isinstance(statement, ast.AnnAssign)
-                and isinstance(statement.target, ast.Name)
-                and statement.simple
-                and statement.value is not None
-            )
-            namedtuple_field_sequence_is_valid = True
-            saw_namedtuple_default = False
-            for statement in node.body:
-                if not (
-                    isinstance(statement, ast.AnnAssign)
-                    and isinstance(statement.target, ast.Name)
-                    and statement.simple
-                ):
-                    continue
-                field_name = statement.target.id
-                if field_name.startswith("_"):
-                    namedtuple_field_sequence_is_valid = False
-                    continue
-                has_default = statement.value is not None
-                if saw_namedtuple_default and not has_default:
-                    namedtuple_field_sequence_is_valid = False
-                saw_namedtuple_default = saw_namedtuple_default or has_default
-            if (
-                self._is_checking()
-                and namedtuple_base_fields
-                and not any(
-                    _is_namedtuple_marker_base(base_value) for base_value in base_values
+            namedtuple_info = (
+                _CurrentNamedTupleInfo(
+                    is_direct=is_direct_namedtuple,
+                    base_field_names=frozenset(namedtuple_base_fields),
                 )
-            ):
-                for statement in node.body:
-                    if not (
-                        isinstance(statement, ast.AnnAssign)
-                        and isinstance(statement.target, ast.Name)
-                        and statement.simple
-                        and statement.target.id in namedtuple_base_fields
-                    ):
-                        continue
-                    self._show_error_if_checking(
-                        statement.target,
-                        f"Field {statement.target.id!r} conflicts with base NamedTuple field",
-                        error_code=ErrorCode.incompatible_override,
-                    )
+                if is_direct_namedtuple or namedtuple_base_fields
+                else None
+            )
             if synthetic_typeddict is not None:
                 self._validate_typeddict_class_syntax(node)
             elif class_obj is None or is_namedtuple_synthetic:
@@ -4551,6 +4526,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 ),
                 self.active_type_params.disallow(disallowed_type_params),
                 override(self, "current_synthetic_typeddict", synthetic_typeddict),
+                override(self, "current_type_object", tobj),
                 override(self, "current_class_key", class_key),
                 override(self, "current_dataclass_info", dataclass_semantics),
                 override(
@@ -4562,6 +4538,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                         else False
                     ),
                 ),
+                override(self, "current_namedtuple_info", namedtuple_info),
                 self.active_type_params.push_class_type_params(class_scope_type_params),
                 self.active_type_params.push_class_type_param_variance_collection(
                     class_type_param_polarities, is_protocol_class=is_protocol_class
@@ -4661,24 +4638,24 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 _populate_runtime_enum_fallback_class(
                     runtime_enum_fallback_class, class_scope_values
                 )
-            if is_direct_namedtuple and isinstance(class_key, str):
+            if (
+                namedtuple_info is not None
+                and namedtuple_info.is_direct
+                and namedtuple_info.is_valid
+                and isinstance(class_key, str)
+            ):
                 namedtuple_fields = []
-                if namedtuple_field_sequence_is_valid:
-                    for name in namedtuple_field_names:
-                        symbol = tobj.get_declared_symbol(name)
-                        if symbol is None or symbol.annotation is None:
-                            continue
-                        namedtuple_fields.append(
-                            NamedTupleField(
-                                name,
-                                symbol.annotation,
-                                (
-                                    symbol.initializer
-                                    if name in namedtuple_default_fields
-                                    else None
-                                ),
-                            )
+                for field in namedtuple_info.fields:
+                    symbol = tobj.get_declared_symbol(field.name)
+                    if symbol is None or symbol.annotation is None:
+                        continue
+                    namedtuple_fields.append(
+                        NamedTupleField(
+                            field.name,
+                            symbol.annotation,
+                            symbol.initializer if field.has_default else None,
                         )
+                    )
                 if namedtuple_fields:
                     tobj.set_namedtuple_fields(namedtuple_fields)
             if synthetic_typeddict is not None:
@@ -4961,11 +4938,10 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             return origin is not None and is_typing_name(origin, "Generic")
         return False
 
-    def _validate_namedtuple_related_fallback_class(
+    def _check_namedtuple_related_fallback_bases(
         self, node: ast.ClassDef, base_values: Sequence[Value]
     ) -> None:
         has_namedtuple_marker_base = False
-        namedtuple_base_fields: set[str] = set()
         invalid_non_generic_bases: list[ast.expr] = []
         for base_node, base_value in zip(node.bases, base_values):
             if _is_namedtuple_marker_base(base_value):
@@ -4975,15 +4951,12 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 base_value
             ):
                 continue
-            namedtuple_base_fields.update(
-                _namedtuple_base_fields_from_base_values((base_value,), self.checker)
-            )
             if has_namedtuple_marker_base and not self._is_namedtuple_generic_base(
                 base_value
             ):
                 invalid_non_generic_bases.append(base_node)
 
-        if not has_namedtuple_marker_base and not namedtuple_base_fields:
+        if not has_namedtuple_marker_base:
             return
 
         if invalid_non_generic_bases:
@@ -4993,38 +4966,36 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     "NamedTuple classes may only inherit from NamedTuple and Generic",
                     error_code=ErrorCode.invalid_base,
                 )
-            return
 
-        saw_default = False
-        for statement in node.body:
-            if not (
-                isinstance(statement, ast.AnnAssign)
-                and isinstance(statement.target, ast.Name)
-                and statement.simple
-            ):
-                continue
-            field_name = statement.target.id
-            if has_namedtuple_marker_base:
-                if field_name.startswith("_"):
-                    self._show_error_if_checking(
-                        statement.target,
-                        "NamedTuple field names cannot start with an underscore",
-                        error_code=ErrorCode.invalid_annotation,
-                    )
-                has_default = statement.value is not None
-                if saw_default and not has_default:
-                    self._show_error_if_checking(
-                        statement,
-                        "NamedTuple fields without defaults cannot follow fields with defaults",
-                        error_code=ErrorCode.invalid_annotation,
-                    )
-                saw_default = saw_default or has_default
-            elif field_name in namedtuple_base_fields:
+    def _record_namedtuple_class_field(self, node: ast.AnnAssign) -> None:
+        info = self.current_namedtuple_info
+        if info is None or not isinstance(node.target, ast.Name) or not node.simple:
+            return
+        field_name = node.target.id
+        if info.is_direct:
+            if field_name.startswith("_"):
+                info.is_valid = False
                 self._show_error_if_checking(
-                    statement.target,
-                    f"Field {field_name!r} conflicts with base NamedTuple field",
-                    error_code=ErrorCode.incompatible_override,
+                    node.target,
+                    "NamedTuple field names cannot start with an underscore",
+                    error_code=ErrorCode.invalid_annotation,
                 )
+            has_default = node.value is not None
+            if info.saw_default and not has_default:
+                info.is_valid = False
+                self._show_error_if_checking(
+                    node,
+                    "NamedTuple fields without defaults cannot follow fields with defaults",
+                    error_code=ErrorCode.invalid_annotation,
+                )
+            info.saw_default = info.saw_default or has_default
+            info.fields.append(_CurrentNamedTupleField(field_name, has_default))
+        elif field_name in info.base_field_names:
+            self._show_error_if_checking(
+                node.target,
+                f"Field {field_name!r} conflicts with base NamedTuple field",
+                error_code=ErrorCode.incompatible_override,
+            )
 
     def _make_enum_related_fallback_class(
         self, node: ast.ClassDef, base_values: Sequence[Value]
@@ -7237,34 +7208,30 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         self.checker.runtime_class_self_annotation_cache[typ] = False
         return False
 
-    def _synthetic_class_or_bases_use_self_annotations(self, typ: str) -> bool:
-        seen: set[type | str] = set()
-
-        def visit(tobj: TypeObject) -> bool:
-            if tobj.typ in seen:
-                return False
-            seen.add(tobj.typ)
-            if any(
-                (
-                    symbol.annotation is not None
-                    and _value_contains_self(symbol.annotation)
-                )
-                or (
-                    symbol.initializer is not None
-                    and _value_contains_self(symbol.initializer)
-                )
-                for symbol in tobj.get_declared_symbols().values()
-            ):
-                return True
-            for base_tobj in tobj.get_direct_base_type_objects():
-                if isinstance(base_tobj.typ, str):
-                    if visit(base_tobj):
-                        return True
-                elif self._runtime_class_or_bases_use_self_annotations(base_tobj.typ):
-                    return True
+    def _type_object_or_bases_use_self_annotations(
+        self, tobj: TypeObject, seen: set[type | str] | None = None
+    ) -> bool:
+        if seen is None:
+            seen = set()
+        if tobj.typ in seen:
             return False
-
-        return visit(self.make_type_object(typ))
+        seen.add(tobj.typ)
+        if any(
+            (symbol.annotation is not None and _value_contains_self(symbol.annotation))
+            or (
+                symbol.initializer is not None
+                and _value_contains_self(symbol.initializer)
+            )
+            for symbol in tobj.get_declared_symbols().values()
+        ):
+            return True
+        for base_tobj in tobj.get_direct_base_type_objects():
+            if isinstance(base_tobj.typ, str):
+                if self._type_object_or_bases_use_self_annotations(base_tobj, seen):
+                    return True
+            elif self._runtime_class_or_bases_use_self_annotations(base_tobj.typ):
+                return True
+        return False
 
     def _current_class_name_from_context(self) -> str | None:
         for context in reversed(self.node_context.contexts):
@@ -7279,7 +7246,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             self.current_class_key
         ).get_direct_base_type_objects():
             if isinstance(base_tobj.typ, str):
-                if self._synthetic_class_or_bases_use_self_annotations(base_tobj.typ):
+                if self._type_object_or_bases_use_self_annotations(base_tobj):
                     return True
             elif self._runtime_class_or_bases_use_self_annotations(base_tobj.typ):
                 return True
@@ -7673,8 +7640,8 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                         and isinstance(enclosing_class, TypedValue)
                         and isinstance(enclosing_class.typ, str)
                         and (
-                            self._synthetic_class_or_bases_use_self_annotations(
-                                enclosing_class.typ
+                            self._type_object_or_bases_use_self_annotations(
+                                self.make_type_object(enclosing_class.typ)
                             )
                             or self._current_class_bases_use_self_annotations()
                         )
@@ -12430,6 +12397,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             )
             expected_type = AnyValue(AnySource.error)
 
+        if self.scopes.scope_type() is ScopeType.class_scope:
+            self._record_namedtuple_class_field(node)
+
         # TODO: handle TypeAlias and ClassVar
         is_final = Qualifier.Final in qualifiers
         has_classvar = Qualifier.ClassVar in qualifiers
@@ -12465,12 +12435,10 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             and isinstance(node.target, ast.Name)
             and not has_classvar
         ):
-            synthetic_class = self._get_synthetic_class_for_current_scope()
+            current_type_object = self.current_type_object
             if (
-                synthetic_class is not None
-                and self._get_synthetic_type_object(
-                    synthetic_class
-                ).is_direct_namedtuple()
+                current_type_object is not None
+                and current_type_object.is_direct_namedtuple()
             ):
                 readonly_name = node.target.id
         is_current_class_dataclass = self._is_current_class_dataclass()
