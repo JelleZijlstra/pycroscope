@@ -56,6 +56,7 @@ from .value import (
     PredicateValue,
     ReferencingValue,
     SubclassValue,
+    TypeAliasValue,
     TypedValue,
     TypeVarMap,
     TypeVarParam,
@@ -839,7 +840,18 @@ class Scope:
             if isinstance(existing, ReferencingValue):
                 existing.scope.set(existing.name, value, node, state)
             elif (
-                type(existing) is TypedValue
+                state is VisitorState.check_names
+                and isinstance(existing, AnyValue)
+                and isinstance(value, TypeAliasValue)
+            ):
+                # In import-failure mode, the collect pass may only discover an
+                # imprecise Any for a type alias assignment. Preserve the precise
+                # alias value computed in the check pass so later lookups can rely
+                # on the resolved value instead of falling back to declarations.
+                self.variables[varname] = value
+            elif (
+                isinstance(existing, TypedValue)
+                and type(existing) is TypedValue
                 and isinstance(value, TypedValue)
                 # TODO constraints for type(...) is
                 # static analysis: ignore[attribute_is_never_set]
