@@ -3516,11 +3516,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         return identities
 
     def _node_contains_type_param_reference(self, node: ast.AST) -> bool:
-        for subnode in ast.walk(node):
-            if not isinstance(subnode, ast.Name) or not isinstance(
-                subnode.ctx, ast.Load
-            ):
-                continue
+        for subnode, _ in _iter_loaded_name_nodes(node):
             resolved, _ = self.resolve_name(
                 subnode, error_node=subnode, suppress_errors=True
             )
@@ -12986,35 +12982,13 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 return True
             return False
 
-        def walk(node: ast.AST, *, allow_string_parse: bool = True) -> None:
-            if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load):
-                resolved, _ = self.resolve_name(
-                    node, error_node=node, suppress_errors=True
-                )
-                if record_from_resolved(resolved, node):
-                    return
-                for type_param in extracted_by_name.get(node.id, ()):
-                    record_type_param(type_param)
-                    return
-                return
-            if (
-                allow_string_parse
-                and isinstance(node, ast.Constant)
-                and isinstance(node.value, str)
-            ):
-                parse_source = node.value
-                if "\n" in parse_source or "\r" in parse_source:
-                    parse_source = f"({parse_source})"
-                try:
-                    parsed = ast.parse(parse_source, mode="eval")
-                except SyntaxError:
-                    return
-                walk(parsed.body, allow_string_parse=False)
-                return
-            for child in ast.iter_child_nodes(node):
-                walk(child, allow_string_parse=allow_string_parse)
-
-        walk(value_node)
+        for node, _ in _iter_loaded_name_nodes(value_node, allow_string_parse=True):
+            resolved, _ = self.resolve_name(node, error_node=node, suppress_errors=True)
+            if record_from_resolved(resolved, node):
+                continue
+            for type_param in extracted_by_name.get(node.id, ()):
+                record_type_param(type_param)
+                break
         for type_param in extracted_type_params:
             record_type_param(type_param)
         return tuple(type_params)
@@ -13290,11 +13264,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             return type_from_value(self.visit(node), self, node)
 
         def _pep695_type_param_expr_contains_type_param(self, node: ast.AST) -> bool:
-            for subnode in ast.walk(node):
-                if not isinstance(subnode, ast.Name) or not isinstance(
-                    subnode.ctx, ast.Load
-                ):
-                    continue
+            for subnode, _ in _iter_loaded_name_nodes(node):
                 resolved, _ = self.resolve_name(
                     subnode, error_node=subnode, suppress_errors=True
                 )
@@ -16119,12 +16089,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         synthetic_name = self._get_synthetic_class_fq_name_from_name(
             runtime_class.__name__
         )
-        synthetic = self.checker.get_synthetic_class(synthetic_name)
-        if synthetic is None:
-            synthetic = SyntheticClassObjectValue(
-                runtime_class.__name__, TypedValue(synthetic_name)
-            )
-            self.checker.register_synthetic_class(synthetic)
+        synthetic = self.checker.make_synthetic_class(synthetic_name)
         type_object = self.checker.make_type_object(synthetic_name)
         type_object.set_runtime_namedtuple(return_value)
         return synthetic
@@ -16703,40 +16668,10 @@ def _enum_ignore_names(value: Value | None) -> set[str]:
         for subval in value.vals:
             intersection_names |= _enum_ignore_names(subval)
         return intersection_names
-    if isinstance(value, KnownValue):
-        if isinstance(value.val, str):
-            return set(value.val.split())
-        if isinstance(value.val, (list, tuple, set)):
-            return {elt for elt in value.val if isinstance(elt, str)}
-        return set()
-    if isinstance(value, SequenceValue):
-        members = value.get_member_sequence()
-        if members is None:
-            return set()
-        sequence_names: set[str] = set()
-        for member in members:
-            member = replace_fallback(member)
-            if isinstance(member, KnownValue) and isinstance(member.val, str):
-                sequence_names.add(member.val)
-            else:
-                return set()
-        return sequence_names
-    if isinstance(
-        value,
-        (
-            AnyValue,
-            SyntheticClassObjectValue,
-            SyntheticModuleValue,
-            UnboundMethodValue,
-            TypedValue,
-            SubclassValue,
-            TypeFormValue,
-            PredicateValue,
-        ),
-    ):
-        return set()
-    assert_never(value)
-    return set()
+    if isinstance(value, KnownValue) and isinstance(value.val, str):
+        return set(value.val.split())
+    names = _known_string_sequence_from_simple_value(value)
+    return set(names) if names is not None else set()
 
 
 def _iter_enum_assignment_candidates(
@@ -17007,31 +16942,9 @@ def _class_body_defines_slots(node: ast.ClassDef) -> bool:
     return False
 
 
-def _known_string_sequence_values(value: Value | None) -> tuple[str, ...] | None:
-    if value is None:
-        return None
-    value = replace_fallback(value)
-    if isinstance(value, MultiValuedValue):
-        members = [_known_string_sequence_values(subval) for subval in value.vals]
-        if not members or any(member is None for member in members):
-            return None
-        first = members[0]
-        assert first is not None
-        if all(member == first for member in members[1:]):
-            return first
-        return None
-    if isinstance(value, IntersectionValue):
-        intersection_members: list[tuple[str, ...]] = []
-        for subval in value.vals:
-            member = _known_string_sequence_values(subval)
-            if member is not None:
-                intersection_members.append(member)
-        if not intersection_members:
-            return None
-        first_member = intersection_members[0]
-        if all(member == first_member for member in intersection_members[1:]):
-            return first_member
-        return None
+def _known_string_sequence_from_simple_value(
+    value: SimpleType,
+) -> tuple[str, ...] | None:
     if isinstance(value, KnownValue):
         raw = value.val
         if isinstance(raw, str):
@@ -17067,6 +16980,34 @@ def _known_string_sequence_values(value: Value | None) -> tuple[str, ...] | None
         return None
     assert_never(value)
     return None
+
+
+def _known_string_sequence_values(value: Value | None) -> tuple[str, ...] | None:
+    if value is None:
+        return None
+    value = replace_fallback(value)
+    if isinstance(value, MultiValuedValue):
+        members = [_known_string_sequence_values(subval) for subval in value.vals]
+        if not members or any(member is None for member in members):
+            return None
+        first = members[0]
+        assert first is not None
+        if all(member == first for member in members[1:]):
+            return first
+        return None
+    if isinstance(value, IntersectionValue):
+        intersection_members: list[tuple[str, ...]] = []
+        for subval in value.vals:
+            member = _known_string_sequence_values(subval)
+            if member is not None:
+                intersection_members.append(member)
+        if not intersection_members:
+            return None
+        first_member = intersection_members[0]
+        if all(member == first_member for member in intersection_members[1:]):
+            return first_member
+        return None
+    return _known_string_sequence_from_simple_value(value)
 
 
 def _normalize_slot_names(raw_names: Iterable[str]) -> tuple[tuple[str, ...], bool]:
@@ -17559,12 +17500,36 @@ def _get_runtime_type_alias_value_node(node: ast.Call) -> ast.AST | None:
 
 
 def _runtime_type_alias_self_reference(value_node: ast.AST, name: str) -> bool:
-    return any(
-        isinstance(subnode, ast.Name)
-        and isinstance(subnode.ctx, ast.Load)
-        and subnode.id == name
-        for subnode in ast.walk(value_node)
-    )
+    return any(subnode.id == name for subnode, _ in _iter_loaded_name_nodes(value_node))
+
+
+def _iter_loaded_name_nodes(
+    value_node: ast.AST,
+    *,
+    allow_string_parse: bool = False,
+    guard_union_slices: bool = False,
+) -> Iterable[tuple[ast.Name, bool]]:
+    def walk(
+        node: ast.AST, guarded: bool, allow_string_parse: bool
+    ) -> Iterable[tuple[ast.Name, bool]]:
+        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load):
+            yield node, guarded
+            return
+        if guard_union_slices and isinstance(node, ast.Subscript):
+            yield from walk(node.value, guarded, allow_string_parse)
+            yield from walk(
+                node.slice, not _is_union_subscript_root(node.value), allow_string_parse
+            )
+            return
+        if allow_string_parse and isinstance(node, ast.Constant):
+            parsed = _parse_string_annotation_expr(node.value, node)
+            if parsed is not None:
+                yield from walk(parsed, guarded, False)
+                return
+        for child in ast.iter_child_nodes(node):
+            yield from walk(child, guarded, allow_string_parse)
+
+    yield from walk(value_node, False, allow_string_parse)
 
 
 def build_stacked_scopes(
@@ -17603,38 +17568,13 @@ def build_stacked_scopes(
 
 
 def _collect_unguarded_type_alias_refs(value_node: ast.AST) -> set[str]:
-    refs: set[str] = set()
-
-    def walk(node: ast.AST, guarded: bool, allow_string_parse: bool = True) -> None:
-        if isinstance(node, ast.Subscript):
-            walk(node.value, guarded, allow_string_parse)
-            walk(
-                node.slice, not _is_union_subscript_root(node.value), allow_string_parse
-            )
-            return
-        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load):
-            if not guarded:
-                refs.add(node.id)
-            return
-        if (
-            allow_string_parse
-            and isinstance(node, ast.Constant)
-            and isinstance(node.value, str)
-        ):
-            parse_source = node.value
-            if "\n" in parse_source or "\r" in parse_source:
-                parse_source = f"({parse_source})"
-            try:
-                parsed = ast.parse(parse_source, mode="eval")
-            except SyntaxError:
-                return
-            walk(parsed.body, guarded, False)
-            return
-        for child in ast.iter_child_nodes(node):
-            walk(child, guarded, allow_string_parse)
-
-    walk(value_node, False)
-    return refs
+    return {
+        node.id
+        for node, guarded in _iter_loaded_name_nodes(
+            value_node, allow_string_parse=True, guard_union_slices=True
+        )
+        if not guarded
+    }
 
 
 def _is_union_subscript_root(node: ast.expr) -> bool:
