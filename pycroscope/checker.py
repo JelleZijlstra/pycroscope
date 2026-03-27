@@ -542,7 +542,7 @@ class Checker:
         synthetic_class = self.get_synthetic_class(typ)
         if synthetic_class is None:
             return
-        type_object.adopt_synthetic_class(synthetic_class)
+        type_object.adopt_synthetic_class()
 
     def get_generic_bases(
         self, typ: type | str, generic_args: Sequence[Value] = ()
