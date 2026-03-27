@@ -392,7 +392,7 @@ class TypeObject:
         self._has_stubs = None
         self._metaclass = None
 
-    def adopt_synthetic_class(self, synthetic_class: SyntheticClassObjectValue) -> None:
+    def adopt_synthetic_class(self) -> None:
         self._update_loaded_synthetic_fields()
         self._protocol_positive_cache.clear()
 
@@ -856,7 +856,7 @@ class TypeObject:
 
     def _ensure_synthetic_class(self) -> SyntheticClassObjectValue:
         synthetic_class = self._checker.make_synthetic_class(self.typ)
-        self.adopt_synthetic_class(synthetic_class)
+        self.adopt_synthetic_class()
         return synthetic_class
 
     def get_synthetic_declared_symbols(self) -> MutableMapping[str, ClassSymbol]:
@@ -3020,140 +3020,120 @@ def _collect_protocol_self_typevar_map(
     """
     tv_map: dict[TypeVarLike, Value] = {}
     for member in protocol_members:
-        receiver_for_match = receiver_value
-        if isinstance(tobj.typ, str):
-            symbol = tobj.get_declared_symbols().get(member)
-            if symbol is None:
-                raw_attr = UNINITIALIZED_VALUE
-            elif symbol.is_property:
-                raw_attr = symbol.get_effective_type()
-            elif symbol.initializer is not None:
-                raw_attr = symbol.initializer
-            else:
-                raw_attr = UNINITIALIZED_VALUE
-            if raw_attr is UNINITIALIZED_VALUE:
-                continue
-            raw_attr = replace_fallback(raw_attr)
-            if isinstance(raw_attr, GenericValue) and raw_attr.typ is classmethod:
-                if not raw_attr.args:
-                    continue
-                self_annotation = SubclassValue.make(raw_attr.args[0])
-                receiver_key = _class_key_from_value(receiver_value)
-                if receiver_key is not None:
-                    class_object = _class_object_value_for_key(receiver_key, ctx)
-                else:
-                    class_object = None
-                if class_object is not None:
-                    receiver_for_match = class_object
-                else:
-                    receiver_for_match = SubclassValue.make(
-                        receiver_value.get_type_value()
-                    )
-            elif isinstance(raw_attr, GenericValue) and raw_attr.typ is staticmethod:
-                continue
-            else:
-                signature = _as_concrete_signature(
-                    ctx.signature_from_value(raw_attr), ctx
-                )
-                if signature is None:
-                    continue
-                signatures = (
-                    signature.signatures
-                    if isinstance(signature, OverloadedSignature)
-                    else [signature]
-                )
-                self_annotation = None
-                for concrete in signatures:
-                    parameters = list(concrete.parameters.values())
-                    if parameters:
-                        self_annotation = parameters[0].annotation
-                        break
-                if self_annotation is None:
-                    continue
-        else:
-            descriptor = inspect.getattr_static(tobj.typ, member, UNINITIALIZED_VALUE)
-            if descriptor is UNINITIALIZED_VALUE:
-                continue
-            if isinstance(descriptor, property):
-                callable_obj = descriptor.fget
-            elif isinstance(descriptor, staticmethod):
-                callable_obj = None
-            elif isinstance(descriptor, classmethod):
-                callable_obj = descriptor.__func__
-                receiver_key = _class_key_from_value(receiver_value)
-                if receiver_key is not None:
-                    class_object = _class_object_value_for_key(receiver_key, ctx)
-                else:
-                    class_object = None
-                if class_object is not None:
-                    receiver_for_match = class_object
-                else:
-                    receiver_for_match = SubclassValue.make(
-                        receiver_value.get_type_value()
-                    )
-            elif inspect.isfunction(descriptor):
-                callable_obj = descriptor
-            else:
-                callable_obj = None
-            if callable_obj is None:
-                continue
-            signature = _as_concrete_signature(
-                ctx.signature_from_value(KnownValue(callable_obj)), ctx
-            )
-            if signature is None:
-                continue
-            signatures = (
-                signature.signatures
-                if isinstance(signature, OverloadedSignature)
-                else [signature]
-            )
-            for concrete in signatures:
-                parameters = list(concrete.parameters.values())
-                if not parameters:
-                    continue
-                self_annotation = parameters[0].annotation
-                if not any(
-                    isinstance(subvalue, TypeVarValue)
-                    for subvalue in self_annotation.walk_values()
-                ):
-                    continue
-                inferred = get_tv_map(self_annotation, receiver_for_match, ctx)
-                if isinstance(inferred, CanAssignError):
-                    continue
-                translated = translate_generic_typevar_map(
-                    self_annotation, inferred, ctx
-                )
-                if not translated:
-                    translated = infer_positional_generic_typevar_map(
-                        self_annotation, receiver_for_match, ctx
-                    )
-                for typevar, value in {**inferred, **translated}.items():
-                    existing = tv_map.get(typevar)
-                    if existing is None:
-                        tv_map[typevar] = value
-                    elif existing != value:
-                        tv_map[typevar] = unite_values(existing, value)
+        match = tobj.get_declared_symbol_with_owner(member, ctx)
+        if match is None:
             continue
-        if not any(
-            isinstance(subvalue, TypeVarValue)
-            for subvalue in self_annotation.walk_values()
-        ):
+        _, symbol = match
+        collected = _get_protocol_receiver_annotation(
+            symbol, receiver_value=receiver_value, ctx=ctx
+        )
+        if collected is None:
             continue
-        inferred = get_tv_map(self_annotation, receiver_for_match, ctx)
-        if isinstance(inferred, CanAssignError):
-            continue
-        translated = translate_generic_typevar_map(self_annotation, inferred, ctx)
-        if not translated:
-            translated = infer_positional_generic_typevar_map(
-                self_annotation, receiver_for_match, ctx
-            )
-        for typevar, value in {**inferred, **translated}.items():
-            existing = tv_map.get(typevar)
-            if existing is None:
-                tv_map[typevar] = value
-            elif existing != value:
-                tv_map[typevar] = unite_values(existing, value)
+        self_annotation, receiver_for_match = collected
+        tv_map = _merge_protocol_receiver_typevars(
+            tv_map, self_annotation, receiver_for_match, ctx
+        )
     return tv_map
+
+
+def _get_protocol_receiver_annotation(
+    symbol: ClassSymbol, *, receiver_value: Value, ctx: CanAssignContext
+) -> tuple[Value, Value] | None:
+    if symbol.is_staticmethod or symbol.initializer is None:
+        return None
+    if symbol.is_classmethod:
+        receiver_for_match = _protocol_classmethod_receiver_value(receiver_value, ctx)
+        raw_attr = replace_fallback(symbol.initializer)
+        if isinstance(raw_attr, GenericValue) and raw_attr.typ is classmethod:
+            if not raw_attr.args:
+                return None
+            return SubclassValue.make(raw_attr.args[0]), receiver_for_match
+    else:
+        receiver_for_match = receiver_value
+    callable_obj = _get_protocol_member_callable(symbol)
+    if callable_obj is None:
+        return None
+    signature = _as_concrete_signature(ctx.signature_from_value(callable_obj), ctx)
+    if signature is None:
+        return None
+    self_annotation = _get_first_parameter_annotation(signature)
+    if self_annotation is None:
+        return None
+    return self_annotation, receiver_for_match
+
+
+def _get_protocol_member_callable(symbol: ClassSymbol) -> Value | None:
+    initializer = symbol.initializer
+    if initializer is None:
+        return None
+    if symbol.is_property:
+        initializer = replace_fallback(initializer)
+        if (
+            isinstance(initializer, KnownValue)
+            and isinstance(initializer.val, property)
+            and initializer.val.fget is not None
+        ):
+            return KnownValue(initializer.val.fget)
+        return None
+    return normalize_synthetic_descriptor_attribute(
+        initializer,
+        is_self_returning_classmethod=symbol.returns_self_on_class_access,
+        unknown_descriptor_means_any=False,
+    )
+
+
+def _get_first_parameter_annotation(
+    signature: Signature | OverloadedSignature,
+) -> Value | None:
+    signatures = (
+        signature.signatures
+        if isinstance(signature, OverloadedSignature)
+        else [signature]
+    )
+    for concrete in signatures:
+        parameters = list(concrete.parameters.values())
+        if parameters:
+            return parameters[0].annotation
+    return None
+
+
+def _protocol_classmethod_receiver_value(
+    receiver_value: Value, ctx: CanAssignContext
+) -> Value:
+    receiver_key = _class_key_from_value(receiver_value)
+    if receiver_key is not None:
+        class_object = _class_object_value_for_key(receiver_key, ctx)
+        if class_object is not None:
+            return class_object
+    return SubclassValue.make(receiver_value.get_type_value())
+
+
+def _merge_protocol_receiver_typevars(
+    tv_map: dict[TypeVarLike, Value],
+    self_annotation: Value,
+    receiver_for_match: Value,
+    ctx: CanAssignContext,
+) -> dict[TypeVarLike, Value]:
+    if not any(
+        isinstance(subvalue, TypeVarValue) for subvalue in self_annotation.walk_values()
+    ):
+        return tv_map
+    inferred = get_tv_map(self_annotation, receiver_for_match, ctx)
+    if isinstance(inferred, CanAssignError):
+        return tv_map
+    translated = translate_generic_typevar_map(self_annotation, inferred, ctx)
+    if not translated:
+        translated = infer_positional_generic_typevar_map(
+            self_annotation, receiver_for_match, ctx
+        )
+    merged = dict(tv_map)
+    for typevar, value in {**inferred, **translated}.items():
+        existing = merged.get(typevar)
+        if existing is None:
+            merged[typevar] = value
+        elif existing != value:
+            merged[typevar] = unite_values(existing, value)
+    return merged
 
 
 def _should_use_permissive_dunder_hash(val: Value) -> bool:
