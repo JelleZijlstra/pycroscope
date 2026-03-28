@@ -7672,14 +7672,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 self_instance_value = bound_self_type_from_class_key(enclosing_class)
                 substitutions: TypeVarMap = {SelfT: self_instance_value}
                 uses_self_annotation = (
-                    (
-                        return_annotation is not None
-                        and return_annotation.substitute_typevars(substitutions)
-                        != return_annotation
-                    )
+                    _value_contains_self(return_annotation)
                     or any(
-                        param_info.param.annotation.substitute_typevars(substitutions)
-                        != param_info.param.annotation
+                        _value_contains_self(param_info.param.annotation)
                         for param_info in params[1:]
                     )
                     or (

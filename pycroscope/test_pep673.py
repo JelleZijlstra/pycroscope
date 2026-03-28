@@ -48,6 +48,21 @@ class TestPEP673(TestNameCheckVisitorBase):
             assert_type(Y.from_config(), Y)
 
     @assert_passes()
+    def test_implicit_receiver_is_bound_self_in_method_body(self):
+        from typing_extensions import Self, assert_type
+
+        class Shape:
+            def set_scale(self, scale: float) -> Self:
+                assert_type(self, Self)
+                self.scale = scale
+                return self
+
+            @classmethod
+            def from_config(cls) -> Self:
+                assert_type(cls, type[Self])
+                return cls()
+
+    @assert_passes()
     def test_self_annotated_receiver_attribute_assignment(self):
         from typing_extensions import Self
 
