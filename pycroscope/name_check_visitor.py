@@ -2163,7 +2163,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     checker: Checker
     collector: CallSiteCollector | None
     current_class: type | str | None
-    current_type_object: TypeObject | None
+    current_tobj: TypeObject | None
     current_dataclass_info: DataclassInfo | None
     current_dataclass_kw_only_active: bool
     current_class_key: type | str | None
@@ -2241,7 +2241,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         self.match_subject = Composite(AnyValue(AnySource.inference))
         # current class (for inferring the type of cls and self arguments)
         self.current_class = None
-        self.current_type_object = None
+        self.current_tobj = None
         self.current_dataclass_info = None
         self.current_dataclass_kw_only_active = False
         self.current_class_key = None
@@ -3663,9 +3663,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     def _check_for_incompatible_overrides(
         self, varname: str, node: ast.AST, value: Value
     ) -> None:
-        if self.current_class is None:
+        if self.current_tobj is None:
             return
-        if self._is_current_class_dataclass() and varname == "__post_init__":
+        if self.current_tobj.is_dataclass() and varname == "__post_init__":
             # Dataclasses synthesize the expected __post_init__ contract from InitVar
             # fields, so generic override rules are too strict here.
             return
@@ -3679,49 +3679,55 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             return
         if varname.startswith("__") and not varname.endswith("__"):
             return
-        is_annotated_assignment = (
-            isinstance(self.current_statement, ast.AnnAssign)
-            and isinstance(self.current_statement.target, ast.Name)
-            and self.current_statement.target.id == varname
-        )
-        base_attributes = list(self._get_base_class_attributes(varname, node))
-        child_is_classvar = is_annotated_assignment and self._is_direct_classvar_member(
-            self.current_class, varname
-        )
-        saw_final_member = False
-        for base_class, base_value in base_attributes:
-            if self._is_final_member(base_class, varname, base_value):
-                saw_final_member = True
+        my_attr = self.current_tobj.get_attribute(varname, self, on_class=False)
+        if my_attr is not None:
+            my_symbol = my_attr.symbol
+            my_value = my_attr.value
+        else:
+            my_symbol = None
+            my_value = value
+        for base in self.current_tobj.get_direct_bases():
+            if isinstance(base, AnyValue):
+                continue
+            base_tobj = self.checker.make_type_object(base.typ)
+            base_attr = base_tobj.get_attribute(varname, self, on_class=False)
+            if base_attr is None:
+                continue
+            print(varname, base_attr.owner, base_attr.symbol)
+            if base_attr.symbol.is_final:
                 self._show_error_if_checking(
                     node,
                     f"Cannot override final attribute {varname}",
-                    ErrorCode.invalid_annotation,
+                    ErrorCode.incompatible_override,
                 )
-        if saw_final_member:
-            return
-        for base_class, base_value in base_attributes:
-            if is_annotated_assignment:
-                base_is_classvar = self._is_direct_classvar_member(base_class, varname)
-                base_is_instance_only = self._is_direct_instance_only_member(
-                    base_class, varname
+                continue
+            if (
+                base_attr.symbol.is_instance_only
+                and my_symbol is not None
+                and my_symbol.is_classvar
+            ):
+                self._show_error_if_checking(
+                    node,
+                    f"Class variable {varname} cannot override instance variable from"
+                    f" base class {base_attr.owner}",
+                    ErrorCode.incompatible_override,
                 )
-                if child_is_classvar and not base_is_classvar and base_is_instance_only:
-                    self._show_error_if_checking(
-                        node,
-                        f"Class variable {varname} cannot override instance variable from"
-                        f" base class {base_class}",
-                        ErrorCode.incompatible_override,
-                    )
-                    continue
-                if base_is_classvar and not child_is_classvar:
-                    self._show_error_if_checking(
-                        node,
-                        f"Instance variable {varname} cannot override class variable from"
-                        f" base class {base_class}",
-                        ErrorCode.incompatible_override,
-                    )
-                    continue
-            can_assign = self._can_assign_to_base(base_value, value, base_class, node)
+                continue
+            if base_attr.symbol.is_classvar and (
+                my_symbol is None or not my_symbol.is_classvar
+            ):
+                self._show_error_if_checking(
+                    node,
+                    f"Instance variable {varname} cannot override class variable from"
+                    f" base class {base_attr.owner}",
+                    ErrorCode.incompatible_override,
+                )
+                continue
+
+            base_value = base_attr.value
+            can_assign = self._can_assign_to_base(
+                base_value, my_value, base_tobj.typ, node
+            )
             if isinstance(can_assign, CanAssignError):
                 error = CanAssignError(
                     children=[
@@ -3732,7 +3738,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 )
                 self._show_error_if_checking(
                     node,
-                    f"Value of {varname} incompatible with base class {base_class}",
+                    f"Value of {varname} incompatible with base class {base_attr.owner}",
                     ErrorCode.incompatible_override,
                     detail=str(error),
                 )
@@ -4524,7 +4530,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 ),
                 self.active_type_params.disallow(disallowed_type_params),
                 override(self, "current_synthetic_typeddict", synthetic_typeddict),
-                override(self, "current_type_object", tobj),
+                override(self, "current_tobj", tobj),
                 override(self, "current_class_key", class_key),
                 override(self, "current_dataclass_info", dataclass_semantics),
                 override(
@@ -12387,11 +12393,8 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             and isinstance(node.target, ast.Name)
             and not has_classvar
         ):
-            current_type_object = self.current_type_object
-            if (
-                current_type_object is not None
-                and current_type_object.is_direct_namedtuple()
-            ):
+            current_tobj = self.current_tobj
+            if current_tobj is not None and current_tobj.is_direct_namedtuple():
                 readonly_name = node.target.id
         is_current_class_dataclass = self._is_current_class_dataclass()
         has_default = node.value is not None
