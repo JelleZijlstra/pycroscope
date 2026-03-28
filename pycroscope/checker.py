@@ -2553,6 +2553,9 @@ class Checker:
             else:
                 return None
         elif isinstance(value, IntersectionValue):
+            # TODO: This is only a stopgap. Callable intersections should not reuse
+            # overload semantics, and the logic likely belongs in the call-checking
+            # path rather than signature_from_value().
             sigs = [
                 self.signature_from_value(
                     subval,
