@@ -9915,7 +9915,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 if isinstance(source_module, KnownValue) and isinstance(
                     source_module.val, types.ModuleType
                 ):
-                    for name, val in source_module.val.__dict__.items():
+                    for name, val in list(source_module.val.__dict__.items()):
                         if name.startswith("_"):
                             continue
                         with (
@@ -15305,6 +15305,12 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             return True
         concrete_value = replace_fallback(callee_value)
         if isinstance(concrete_value, MultiValuedValue):
+            emitted = False
+            for subval in concrete_value.vals:
+                if self._check_call_target_deprecation_inner(callee_node, subval):
+                    emitted = True
+            return emitted
+        if isinstance(concrete_value, IntersectionValue):
             emitted = False
             for subval in concrete_value.vals:
                 if self._check_call_target_deprecation_inner(callee_node, subval):

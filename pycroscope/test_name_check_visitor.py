@@ -1362,6 +1362,15 @@ class TestImportFailureHandlingCodeSamples(TestNameCheckVisitorBase):
             p.x = 2  # E: incompatible_assignment
             del p.x  # E: incompatible_assignment
 
+    @assert_passes()
+    def test_namedtuple_subclass_classmethod_forward_ref(self):
+        from collections import namedtuple
+
+        class BasicAuth(namedtuple("BasicAuth", ["login", "password", "encoding"])):
+            @classmethod
+            def decode(cls, auth_header: str, encoding: str = "latin1") -> "BasicAuth":
+                return cls(auth_header, "", encoding)
+
     @assert_passes(run_in_both_module_modes=True)
     def test_exact_tuple_subclass_operations(self):
         from typing_extensions import assert_type
@@ -1778,6 +1787,28 @@ class TestNameCheckVisitor(TestNameCheckVisitorBase):
                 print(not_in.typing)
             """,
         )
+
+    def test_star_import_snapshots_module_dict(self):
+        self.assert_passes("""
+            import sys
+            import types
+            from typing import Final, Literal
+
+            module = types.ModuleType("test_star_import_snapshots_module_dict")
+
+            class MutatingAnnotations(dict):
+                def __getitem__(self, key):
+                    module.extra = 3
+                    return super().__getitem__(key)
+
+            module.exported = 1
+            module.__annotations__ = MutatingAnnotations({"exported": Final[int]})
+            sys.modules[module.__name__] = module
+
+            from test_star_import_snapshots_module_dict import *
+
+            assert_type(exported, Literal[1])
+            """)
 
     @assert_passes()
     def test_undefined_name_in_return(self):

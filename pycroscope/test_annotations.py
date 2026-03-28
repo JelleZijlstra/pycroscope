@@ -2494,6 +2494,18 @@ class TestTypeAlias(TestNameCheckVisitorBase):
             assert_type(x, Callable[[int, str, str], None])
 
     @assert_passes()
+    def test_implicit_type_alias_ignores_invalid_container_expressions(self):
+        default_banner_parts = ["Python %s" % "3.14"]
+        update_rules = [(lambda a, b: True, int)]
+        type_pprinters = {int: lambda value: value}
+
+    @assert_passes()
+    def test_implicit_type_alias_ignores_attribute_on_invalid_root(self):
+        import re
+
+        is_cid = re.compile(rb"\w\w\w\w").match
+
+    @assert_passes()
     def test_unspecialized_two_param_alias_defaults_type_params_to_any(self):
         from typing import Any, TypeVar
 

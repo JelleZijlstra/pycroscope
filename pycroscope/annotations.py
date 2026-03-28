@@ -597,8 +597,9 @@ def value_from_ast(
 ) -> Value:
     if ctx is None:
         ctx = _DefaultContext(visitor, ast_node)
-    val = _Visitor(ctx).visit(ast_node)
-    if val is None:
+    try:
+        val = _Visitor(ctx).visit(ast_node)
+    except _UnsupportedAnnotationExpression:
         if error_on_unrecognized:
             ctx.show_error("Invalid type annotation", node=ast_node)
         return AnyValue(AnySource.error)
@@ -2576,15 +2577,17 @@ class DecoratorValue(Value):
     args: tuple[Value, ...]
 
 
+class _UnsupportedAnnotationExpression(Exception):
+    pass
+
+
 class _Visitor(ast.NodeVisitor):
     def __init__(self, ctx: Context) -> None:
         self.ctx = ctx
 
-    def generic_visit(self, node: ast.AST) -> None:
+    def generic_visit(self, node: ast.AST) -> Value:
         if isinstance(node, ast.expr):
-            # Unsupported annotation expression: let callers turn this into a
-            # normal "invalid annotation" error rather than crashing.
-            return None
+            raise _UnsupportedAnnotationExpression
         raise NotImplementedError(f"no visitor implemented for {node!r}")
 
     def visit_Name(self, node: ast.Name) -> Value:
@@ -2609,7 +2612,7 @@ class _Visitor(ast.NodeVisitor):
             _SUBSCRIPT_RUNTIME_TYPE,
         )
 
-    def visit_Attribute(self, node: ast.Attribute) -> Value | None:
+    def visit_Attribute(self, node: ast.Attribute) -> Value:
         root_value = self.visit(node.value)
         return self.ctx.get_attribute(root_value, node)
 
@@ -2626,17 +2629,15 @@ class _Visitor(ast.NodeVisitor):
         return SequenceValue(set, elts)
 
     def visit_Dict(self, node: ast.Dict) -> Any:
-        keys = [self.visit(key) if key is not None else None for key in node.keys]
-        values = [self.visit(value) for value in node.values]
         kvpairs = []
-        for key, value in zip(keys, values):
-            if key is None:
+        for key_node, value_node in zip(node.keys, node.values):
+            if key_node is None:
                 # Just skip ** unpacking in stubs for now.
                 kvpairs.append(
                     KVPair(AnyValue(AnySource.inference), AnyValue(AnySource.inference))
                 )
-            else:
-                kvpairs.append(KVPair(key, value))
+                continue
+            kvpairs.append(KVPair(self.visit(key_node), self.visit(value_node)))
         return DictIncompleteValue(dict, kvpairs)
 
     def visit_Constant(self, node: ast.Constant) -> Value:
@@ -2645,7 +2646,7 @@ class _Visitor(ast.NodeVisitor):
     def visit_Expr(self, node: ast.Expr) -> Value:
         return self.visit(node.value)
 
-    def visit_BinOp(self, node: ast.BinOp) -> Value | None:
+    def visit_BinOp(self, node: ast.BinOp) -> Value:
         if isinstance(node.op, ast.BitOr):
             return PartialValue(
                 PartialValueOperation.SUBSCRIPT,
@@ -2654,8 +2655,7 @@ class _Visitor(ast.NodeVisitor):
                 (self.visit(node.left), self.visit(node.right)),
                 _UNION_RUNTIME_TYPE,
             )
-        else:
-            return None
+        raise _UnsupportedAnnotationExpression
 
     def visit_Starred(self, node: ast.Starred) -> Value:
         value = self.visit(node.value)
@@ -2663,7 +2663,7 @@ class _Visitor(ast.NodeVisitor):
             PartialValueOperation.UNPACK, value, node, (), _UNPACK_RUNTIME_TYPE
         )
 
-    def visit_UnaryOp(self, node: ast.UnaryOp) -> Value | None:
+    def visit_UnaryOp(self, node: ast.UnaryOp) -> Value:
         # Only int and float negation on literals are supported.
         if isinstance(node.op, ast.USub):
             operand = self.visit(node.operand)
@@ -2671,12 +2671,12 @@ class _Visitor(ast.NodeVisitor):
                 operand.val, (int, float)
             ):
                 return KnownValue(-operand.val)
-        return None
+        raise _UnsupportedAnnotationExpression
 
-    def visit_Call(self, node: ast.Call) -> Value | None:
+    def visit_Call(self, node: ast.Call) -> Value:
         func = self.visit(node.func)
         if not isinstance(func, KnownValue):
-            return None
+            raise _UnsupportedAnnotationExpression
         if func.val == NewType:
             arg_values = [self.visit(arg) for arg in node.args]
             kwarg_values = [(kw.arg, self.visit(kw.value)) for kw in node.keywords]
@@ -2686,7 +2686,7 @@ class _Visitor(ast.NodeVisitor):
                 if isinstance(arg_value, KnownValue):
                     args.append(arg_value.val)
                 else:
-                    return None
+                    raise _UnsupportedAnnotationExpression
             for name, kwarg_value in kwarg_values:
                 if name is None:
                     if isinstance(kwarg_value, KnownValue) and isinstance(
@@ -2694,12 +2694,12 @@ class _Visitor(ast.NodeVisitor):
                     ):
                         kwargs.update(kwarg_value.val)
                     else:
-                        return None
+                        raise _UnsupportedAnnotationExpression
                 else:
                     if isinstance(kwarg_value, KnownValue):
                         kwargs[name] = kwarg_value.val
                     else:
-                        return None
+                        raise _UnsupportedAnnotationExpression
             return KnownValue(func.val(*args, **kwargs))
         elif is_typing_name(func.val, "TypeVar"):
             arg_values = [self.visit(arg) for arg in node.args]
@@ -2708,11 +2708,11 @@ class _Visitor(ast.NodeVisitor):
                 self.ctx.show_error(
                     "TypeVar() requires at least one argument", node=node
                 )
-                return None
+                return AnyValue(AnySource.error)
             name_val = arg_values[0]
             if not isinstance(name_val, KnownValue):
                 self.ctx.show_error("TypeVar name must be a literal", node=node.args[0])
-                return None
+                return AnyValue(AnySource.error)
 
             def _typevar_arg_to_type(arg_value: Value) -> Value:
                 # String bounds/constraints may contain forward refs to names that
@@ -2739,7 +2739,7 @@ class _Visitor(ast.NodeVisitor):
                         self.ctx.show_error(
                             f"TypeVar kwarg {name} must be a bool literal", node=node
                         )
-                        return None
+                        return AnyValue(AnySource.error)
                     if name == "covariant":
                         covariant = kwarg_value.val
                     elif name == "contravariant":
@@ -2752,7 +2752,7 @@ class _Visitor(ast.NodeVisitor):
                     default = _typevar_arg_to_type(kwarg_value)
                 else:
                     self.ctx.show_error(f"Unrecognized TypeVar kwarg {name}", node=node)
-                    return None
+                    return AnyValue(AnySource.error)
             try:
                 kwargs = {"covariant": covariant, "contravariant": contravariant}
                 if infer_variance:
@@ -2765,7 +2765,7 @@ class _Visitor(ast.NodeVisitor):
                     tv = typing.cast(TypeVarType, TypeVar(name_val.val, **kwargs))
             except Exception as e:
                 self.ctx.show_error(str(e), node=node)
-                return None
+                return AnyValue(AnySource.error)
             if covariant:
                 variance = Variance.COVARIANT
             elif contravariant:
@@ -2788,17 +2788,17 @@ class _Visitor(ast.NodeVisitor):
                 self.ctx.show_error(
                     "ParamSpec() requires at least one argument", node=node
                 )
-                return None
+                return AnyValue(AnySource.error)
             name_val = arg_values[0]
             if not isinstance(name_val, KnownValue):
                 self.ctx.show_error(
                     "ParamSpec name must be a literal", node=node.args[0]
                 )
-                return None
+                return AnyValue(AnySource.error)
             for name, _ in kwarg_values:
                 # TODO support defaults
                 self.ctx.show_error(f"Unrecognized ParamSpec kwarg {name}", node=node)
-                return None
+                return AnyValue(AnySource.error)
             tv = ParamSpec(name_val.val)
             return InputSigValue(ParamSpecParam(tv))
         elif is_typing_name(func.val, "deprecated") or func.val is deprecated:
@@ -2806,15 +2806,14 @@ class _Visitor(ast.NodeVisitor):
                 self.ctx.show_error(
                     "deprecated() does not accept keyword arguments", node=node
                 )
-                return None
+                return AnyValue(AnySource.error)
             arg_values = tuple(self.visit(arg) for arg in node.args)
             return DecoratorValue(deprecated, arg_values)
         elif isinstance(func.val, type):
             if func.val is object:
                 return AnyValue(AnySource.inference)
             return TypedValue(func.val)
-        else:
-            return None
+        raise _UnsupportedAnnotationExpression
 
 
 def _is_tuple(typ: object) -> bool:

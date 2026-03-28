@@ -636,6 +636,14 @@ class Checker:
         for key in self._iter_generic_override_keys(typ):
             synthetic_class = self.synthetic_classes.get(key)
             if synthetic_class is not None:
+                if key != typ and isinstance(typ, type):
+                    runtime_class = synthetic_class.runtime_class
+                    if (
+                        isinstance(runtime_class, KnownValue)
+                        and isinstance(runtime_class.val, type)
+                        and runtime_class.val is not typ
+                    ):
+                        continue
                 return synthetic_class
         return None
 

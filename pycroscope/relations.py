@@ -2372,7 +2372,7 @@ def _intersect_typevar_value(
         for constraint in left.typevar_param.constraints
     ):
         return result
-    return IntersectionValue((left, result))
+    return gradualize(_flatten_intersection(left, result, ctx=ctx))
 
 
 def _intersect_alias(

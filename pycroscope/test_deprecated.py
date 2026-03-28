@@ -145,6 +145,22 @@ class TestRuntime(TestNameCheckVisitorBase):
             Invocable()()  # E: deprecated
 
     @assert_passes()
+    def test_intersection_dunder_call(self):
+        from pycroscope.extensions import Intersection, deprecated
+
+        class DeprecatedInvocable:
+            @deprecated("Deprecated")
+            def __call__(self) -> None:
+                pass
+
+        class PlainInvocable:
+            def __call__(self) -> None:
+                pass
+
+        def capybara(value: Intersection[DeprecatedInvocable, PlainInvocable]) -> None:
+            value()  # E: deprecated  # E: not_callable
+
+    @assert_passes()
     def test_inherited_property(self):
         from pycroscope.extensions import deprecated
 
