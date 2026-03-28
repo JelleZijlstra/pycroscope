@@ -373,9 +373,9 @@ class TestPEP673(TestNameCheckVisitorBase):
         from typing_extensions import Self
 
         def foo(bar: Self) -> Self: ...  # E: invalid_annotation
-        def qualified_foo(
-            bar: typing_ext.Self,
-        ) -> typing_ext.Self: ...  # E: invalid_annotation
+
+        # E: invalid_annotation
+        def qualified_foo(bar: typing_ext.Self) -> typing_ext.Self: ...
 
         _bar: Self  # E: invalid_annotation
         TupleSelf: TypeAlias = tuple[Self]  # E: invalid_annotation
