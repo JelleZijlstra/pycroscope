@@ -620,9 +620,8 @@ def _get_attribute_from_synthetic_typed_value(
         return UNINITIALIZED_VALUE
     can_assign_ctx = ctx.get_can_assign_context()
     type_object = can_assign_ctx.make_type_object(root_value.typ)
-    receiver_value = ctx.root_value
     attribute = type_object.get_attribute(
-        ctx.attr, can_assign_ctx, on_class=False, receiver_value=receiver_value
+        ctx.attr, can_assign_ctx, on_class=False, receiver_value=ctx.root_value
     )
     if attribute is None:
         return UNINITIALIZED_VALUE

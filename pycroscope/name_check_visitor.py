@@ -2143,7 +2143,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     _pending_overload_blocks: dict[int, _PendingOverloadBlock]
     _synthetic_classes_by_name: dict[str, SyntheticClassObjectValue]
     _synthetic_abstract_methods: dict[str, set[str]]
-    _synthetic_final_methods: dict[str, set[str]]
     _dataclass_field_call_options_by_node: dict[int, _DataclassFieldCallOptions]
     _function_decorator_kinds_by_node: dict[
         ast.FunctionDef | ast.AsyncFunctionDef, frozenset[FunctionDecorator]
@@ -2318,7 +2317,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         self._pending_overload_blocks = {}
         self._synthetic_classes_by_name = {}
         self._synthetic_abstract_methods = {}
-        self._synthetic_final_methods = {}
         self._dataclass_field_call_options_by_node = {}
         self._function_decorator_kinds_by_node = {}
         self._function_returns_self_by_node = {}
@@ -7955,15 +7953,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                         node, error_code=ErrorCode.override_does_not_override
                     )
         if (
-            FunctionDecorator.final in info.decorator_kinds
-            and FunctionDecorator.overload not in info.decorator_kinds
-            and isinstance(self.current_class, str)
-            and self.scopes.scope_type() is ScopeType.class_scope
-        ):
-            self._synthetic_final_methods.setdefault(self.current_class, set()).add(
-                node.name
-            )
-        if (
             self._is_checking()
             and isinstance(self.current_class, str)
             and self.scopes.scope_type() is ScopeType.class_scope
@@ -8350,10 +8339,8 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         ]
 
         placement_error = False
-        effective_is_final = False
         effective_is_override = False
         if impl_info is not None:
-            effective_is_final = FunctionDecorator.final in impl_info.decorator_kinds
             effective_is_override = (
                 FunctionDecorator.override in impl_info.decorator_kinds
             )
@@ -8419,42 +8406,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     representative_node, error_code=ErrorCode.override_does_not_override
                 )
 
-        if class_context is not None and self._is_final_base_method(
-            class_context, pending_block.name, representative_node
-        ):
-            self._show_error_if_checking(
-                representative_node,
-                "Cannot override a final method",
-                error_code=ErrorCode.invalid_annotation,
-            )
-
-        if effective_is_final and isinstance(class_context, str):
-            self._synthetic_final_methods.setdefault(class_context, set()).add(
-                pending_block.name
-            )
         return should_check_consistency
-
-    def _is_final_base_method(
-        self, current_class: type | str, method_name: str, node: ast.AST
-    ) -> bool:
-        for base_class in self.checker.get_generic_bases(current_class):
-            if isinstance(
-                base_class, str
-            ) and method_name in self._synthetic_final_methods.get(base_class, set()):
-                return True
-        for base_class, base_value in self._get_base_class_attributes_for(
-            current_class, method_name, node
-        ):
-            if isinstance(
-                base_class, str
-            ) and method_name in self._synthetic_final_methods.get(base_class, set()):
-                return True
-            for subval in flatten_values(base_value, unwrap_annotated=True):
-                if isinstance(subval, KnownValue) and safe_getattr(
-                    subval.val, "__final__", False
-                ):
-                    return True
-        return False
 
     def _signature_for_overload_consistency(
         self, info: FunctionInfo, computed_function: Value
