@@ -810,7 +810,7 @@ class TestAttributes(TestNameCheckVisitorBase):
 
         class Descriptor(Generic[T]):
             def __get__(self, instance: object | None, owner: Any) -> T | Self:
-                return cast(T | Self, self if instance is None else instance)
+                return self if instance is None else cast(Any, instance)
 
         class Related:
             name: str
