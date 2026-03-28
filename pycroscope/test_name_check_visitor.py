@@ -1362,14 +1362,17 @@ class TestImportFailureHandlingCodeSamples(TestNameCheckVisitorBase):
             p.x = 2  # E: incompatible_assignment
             del p.x  # E: incompatible_assignment
 
-    @assert_passes()
     def test_namedtuple_subclass_classmethod_forward_ref(self):
-        from collections import namedtuple
+        self.assert_passes("""
+            from collections import namedtuple
 
-        class BasicAuth(namedtuple("BasicAuth", ["login", "password", "encoding"])):
-            @classmethod
-            def decode(cls, auth_header: str, encoding: str = "latin1") -> "BasicAuth":
-                return cls(auth_header, "", encoding)
+            class BasicAuth(namedtuple("BasicAuth", ["login", "password", "encoding"])):
+                @classmethod
+                def decode(
+                    cls, auth_header: str, encoding: str = "latin1"
+                ) -> "BasicAuth":
+                    return cls(auth_header, "", encoding)
+        """)
 
     @assert_passes(run_in_both_module_modes=True)
     def test_exact_tuple_subclass_operations(self):
