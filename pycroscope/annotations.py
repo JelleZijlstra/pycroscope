@@ -124,6 +124,7 @@ from .value import (
     PartialValue,
     PartialValueOperation,
     Qualifier,
+    SelfT,
     SelfTVV,
     SequenceValue,
     SubclassValue,
@@ -173,6 +174,17 @@ _PARTIAL_CALL_TYPE_PARAM_CACHE: WeakKeyDictionary[ast.AST, TypeVarLike] = (
 )
 
 
+def bound_self_type_from_class_key(
+    current_class_key: Value | type | str,
+) -> TypeVarValue:
+    bound = (
+        current_class_key
+        if isinstance(current_class_key, Value)
+        else TypedValue(current_class_key)
+    )
+    return TypeVarValue(TypeVarParam(SelfT, bound=bound))
+
+
 def _is_valid_pep586_literal_value(value: object) -> bool:
     if value is None:
         return True
@@ -194,6 +206,9 @@ class AnnotationVisitor(ErrorContext, CanAssignContext, Protocol):
         raise NotImplementedError
 
     def invalid_self_annotation_message(self, annotation: ast.AST) -> str | None:
+        raise NotImplementedError
+
+    def get_bound_self_type(self) -> Value | None:
         raise NotImplementedError
 
     def get_type_alias_cache(self) -> dict[object, TypeAlias]:
@@ -265,6 +280,13 @@ class Context:
         return None
 
     def invalid_self_annotation_message(self, node: ast.AST) -> str | None:
+        return None
+
+    def get_bound_self_type(self) -> Value | None:
+        if self.visitor is not None:
+            return self.visitor.get_bound_self_type()
+        if isinstance(self.can_assign_ctx, AnnotationVisitor):
+            return self.can_assign_ctx.get_bound_self_type()
         return None
 
     def maybe_show_invalid_self_annotation(self, node: ast.AST | None = None) -> None:
@@ -758,7 +780,7 @@ def _type_from_runtime(val: Any, ctx: Context) -> Value:
     elif is_typing_name(val, "NoReturn") or is_typing_name(val, "Never"):
         return NO_RETURN_VALUE
     elif is_typing_name(val, "Self"):
-        return SelfTVV
+        return ctx.get_bound_self_type() or SelfTVV
     elif is_typing_name(val, "LiteralString"):
         return TypedValue(str, literal_only=True)
     elif hasattr(val, "__supertype__"):
@@ -2569,6 +2591,11 @@ class _RuntimeAnnotationsContext(Context):
         if self.visitor is None:
             return None
         return self.visitor.invalid_self_annotation_message(node)
+
+    def get_bound_self_type(self) -> Value | None:
+        if isinstance(self.owner, type):
+            return bound_self_type_from_class_key(self.owner)
+        return super().get_bound_self_type()
 
 
 @dataclass(frozen=True)

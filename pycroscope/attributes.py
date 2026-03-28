@@ -28,11 +28,12 @@ from .annotated_types import EnumName
 from .annotations import (
     _RuntimeAnnotationsContext,
     annotation_expr_from_annotations,
+    bound_self_type_from_class_key,
     type_from_runtime,
 )
 from .input_sig import coerce_paramspec_specialization_to_input_sig
 from .options import Options, PyObjectSequenceOption
-from .relations import Relation, has_relation
+from .relations import Relation, has_relation, subtract_values
 from .safe import (
     is_async_fn,
     is_bound_classmethod,
@@ -53,7 +54,9 @@ from .type_object import (
     MroValue,
     _class_key_from_value,
     _get_attribute_value_from_symbol,
+    _get_cached_property_return_type,
     _is_property_marker_value,
+    _shield_nested_self_typevars,
     _specialize_symbol_for_owner,
     class_keys_match,
     lookup_declared_symbol_with_owner,
@@ -90,11 +93,11 @@ from .value import (
     TypedDictValue,
     TypedValue,
     TypeFormValue,
-    TypeVarParam,
     TypeVarValue,
     UnboundMethodValue,
     Value,
     annotate_value,
+    receiver_to_self_type,
     replace_fallback,
     set_self,
     stringify_object,
@@ -284,9 +287,7 @@ def get_attribute(ctx: AttrContext) -> Value:
                     ) and _is_synthetic_self_classmethod_attribute(
                         synthetic_class, ctx.attr, ctx
                     ):
-                        self_value = TypeVarValue(
-                            TypeVarParam(SelfT, bound=root_value.typ)
-                        )
+                        self_value = bound_self_type_from_class_key(root_value.typ)
                     attribute_value = set_self(attribute_value, self_value)
             else:
                 attribute_value = AnyValue(AnySource.inference)
@@ -775,10 +776,9 @@ def _get_direct_attribute_from_synthetic_instance(
     symbol = _get_synthetic_declared_symbol(self_value, attr_name, ctx)
     if (
         symbol is not None
-        and symbol.is_instance_only
+        and not symbol.is_method
         and not symbol.is_classvar
         and not symbol.is_initvar
-        and not symbol.is_method
     ):
         return symbol.get_effective_type()
     return _get_direct_attribute_from_synthetic_class(self_value, attr_name, ctx)
@@ -792,18 +792,23 @@ def _get_synthetic_declared_symbol(
         return None
     can_assign_ctx = ctx.get_can_assign_context()
     type_object = can_assign_ctx.make_type_object(class_type.typ)
-    symbol = type_object.get_declared_symbol(attr_name)
+    symbol = type_object.get_synthetic_declared_symbols().get(attr_name)
     if symbol is not None:
         return symbol
     mangled = _maybe_mangle_private_name(attr_name, self_value.name)
     if mangled is None:
         return None
-    return type_object.get_declared_symbol(mangled)
+    return type_object.get_synthetic_declared_symbols().get(mangled)
 
 
 def _synthetic_descriptor_get_type(
     descriptor: Value, *, on_class: bool, instance_value: Value, ctx: AttrContext
 ) -> Value | None:
+    cached_property_return = _get_cached_property_return_type(
+        descriptor, ctx.get_can_assign_context()
+    )
+    if cached_property_return is not None:
+        return cached_property_return
     match = _synthetic_descriptor_method_match(
         descriptor,
         "__get__",
@@ -816,7 +821,14 @@ def _synthetic_descriptor_get_type(
     if match is None:
         return None
     get_signature, _ = match
-    return get_signature.return_value
+    return_value = get_signature.return_value
+    if not on_class:
+        return_value = subtract_values(
+            return_value,
+            receiver_to_self_type(descriptor),
+            ctx.get_can_assign_context(),
+        )
+    return return_value
 
 
 def _synthetic_descriptor_method_match(
@@ -846,11 +858,17 @@ def _synthetic_descriptor_method_signature_any(
         )
     if not isinstance(descriptor, (KnownValue, TypedValue, SyntheticClassObjectValue)):
         return None
+    descriptor, restore_typevars = _shield_nested_self_typevars(descriptor)
     method_ctx = ctx.clone_for_attribute_lookup(Composite(descriptor), method_name)
     method_value = get_attribute(method_ctx)
     if method_value is UNINITIALIZED_VALUE:
         return None
-    return _signature_from_synthetic_attribute(method_value, method_ctx)
+    signature = _signature_from_synthetic_attribute(method_value, method_ctx)
+    if signature is None:
+        return None
+    if restore_typevars:
+        signature = signature.substitute_typevars(restore_typevars)
+    return signature
 
 
 def _signature_from_synthetic_attribute(
@@ -1245,6 +1263,14 @@ def _get_runtime_attribute_from_synthetic_class(
             return KnownValue(getattr(typ, ctx.attr))
         except Exception:
             pass
+    if on_class and safe_issubclass(typ, Enum):
+        try:
+            runtime_enum_member = getattr(typ, ctx.attr)
+        except Exception:
+            pass
+        else:
+            if safe_isinstance(runtime_enum_member, Enum):
+                return KnownValue(runtime_enum_member)
     synthetic_class = ctx.get_synthetic_class(typ)
     if synthetic_class is None:
         return UNINITIALIZED_VALUE
@@ -1256,7 +1282,11 @@ def _get_runtime_attribute_from_synthetic_class(
                 return UNINITIALIZED_VALUE
             if on_class and symbol.is_instance_only:
                 return UNINITIALIZED_VALUE
-            if not on_class and not symbol.is_instance_only:
+            if (
+                not on_class
+                and not symbol.is_instance_only
+                and (symbol.is_method or symbol.is_classvar)
+            ):
                 return UNINITIALIZED_VALUE
 
     if symbol is None or not symbol.is_method:
@@ -1269,6 +1299,27 @@ def _get_runtime_attribute_from_synthetic_class(
                 synthetic_class, ctx.attr, ctx
             )
         if direct is not UNINITIALIZED_VALUE:
+            direct = dataclass_helpers.maybe_resolve_synthetic_descriptor_attribute(
+                synthetic_class,
+                ctx.attr,
+                direct,
+                ctx,
+                on_class=on_class,
+                descriptor_value=(symbol.initializer if symbol is not None else None),
+                descriptor_get_type=_synthetic_descriptor_get_type,
+            )
+        if direct is not UNINITIALIZED_VALUE:
+            if not on_class and symbol is not None and symbol.property_info is not None:
+                try:
+                    descriptor = inspect.getattr_static(typ, ctx.attr)
+                except AttributeError:
+                    descriptor = None
+                if isinstance(
+                    descriptor, property
+                ) and _should_resolve_runtime_property_from_argspec(
+                    descriptor, symbol.property_info.getter_type
+                ):
+                    return ctx.get_property_type_from_argspec(descriptor)
             direct = _substitute_typevars(typ, generic_args, direct, typ, ctx)
             if on_class:
                 direct = _unwrap_value_from_subclass(direct, ctx)

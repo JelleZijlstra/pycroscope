@@ -192,6 +192,7 @@ def maybe_resolve_synthetic_descriptor_attribute(
     ctx: "pycroscope.attributes.AttrContext",
     *,
     on_class: bool,
+    descriptor_value: Value | None = None,
     descriptor_get_type: Callable[..., Value | None],
 ) -> Value:
     type_object = ctx.get_can_assign_context().make_type_object(
@@ -206,11 +207,28 @@ def maybe_resolve_synthetic_descriptor_attribute(
         or (attr_name.startswith("__") and attr_name.endswith("__"))
     ):
         return value
+    descriptor_candidate = descriptor_value if descriptor_value is not None else value
+    normalized_candidate = replace_fallback(descriptor_candidate)
+    if isinstance(normalized_candidate, AnnotatedValue):
+        normalized_candidate = replace_fallback(normalized_candidate.value)
+    if not isinstance(normalized_candidate, (KnownValue, SyntheticClassObjectValue)):
+        if not isinstance(normalized_candidate, TypedValue):
+            return value
+        descriptor_type = ctx.get_can_assign_context().make_type_object(
+            normalized_candidate.typ
+        )
+        if descriptor_type.get_declared_symbol("__get__") is None:
+            return value
     resolved = descriptor_get_type(
-        value, on_class=on_class, instance_value=ctx.get_self_value(), ctx=ctx
+        descriptor_candidate,
+        on_class=on_class,
+        instance_value=ctx.get_self_value(),
+        ctx=ctx,
     )
     if resolved is not None:
         return resolved
+    if descriptor_value is not None:
+        return value
     if not on_class and isinstance(value, AnnotatedValue):
         inner_value = replace_fallback(value.value)
         if isinstance(inner_value, KnownValue):

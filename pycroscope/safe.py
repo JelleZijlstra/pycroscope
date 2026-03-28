@@ -110,10 +110,19 @@ def safe_in(item: T, collection: Container[T]) -> bool:
 
 def is_namedtuple_class(value: object) -> typing_extensions.TypeIs[type]:
     """Return whether value is a namedtuple-like runtime class."""
+    if not (safe_isinstance(value, type) and safe_issubclass(value, tuple)):
+        return False
+    fields = safe_getattr(value, "_fields", None)
+    if isinstance(fields, tuple):
+        return True
+    annotations = safe_getattr(value, "__annotations__", None)
     return (
-        safe_isinstance(value, type)
-        and safe_issubclass(value, tuple)
-        and isinstance(safe_getattr(value, "_fields", None), tuple)
+        isinstance(annotations, dict)
+        and bool(annotations)
+        and isinstance(safe_getattr(value, "_field_defaults", None), dict)
+        and callable(safe_getattr(value, "_make", None))
+        and callable(safe_getattr(value, "_replace", None))
+        and callable(safe_getattr(value, "_asdict", None))
     )
 
 

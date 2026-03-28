@@ -208,6 +208,63 @@ class TestPEP673(TestNameCheckVisitorBase):
             assert_type(c.set_value(3), Container[int])
 
     @assert_passes()
+    def test_generic_descriptor_preserves_owner_self(self):
+        from typing import Generic, TypeVar, cast, overload
+
+        from typing_extensions import Self, assert_type
+
+        T = TypeVar("T")
+
+        class Field(Generic[T]):
+            def __init__(self, name: str | None = None) -> None:
+                pass
+
+            @overload
+            def __get__(self, obj: None, objtype: object = None) -> Self: ...
+
+            @overload
+            def __get__(self, obj: object, objtype: object = None) -> T: ...
+
+            def __get__(self, obj: object | None, objtype: object = None) -> T | Self:
+                return cast(T | Self, self if obj is None else obj)
+
+        class Model:
+            parent = Field[Self | None]("parent_id")
+
+            def get(self) -> Self | None:
+                return self.parent
+
+        def capybara(model: Model) -> None:
+            assert_type(model.parent, Model | None)
+
+    @assert_passes(allow_import_failures=True)
+    def test_generic_descriptor_preserves_owner_self_without_runtime_module(self):
+        from typing import Generic, TypeVar, cast, overload
+
+        from typing_extensions import Self
+
+        T = TypeVar("T")
+
+        class Field(Generic[T]):
+            def __init__(self, name: str | None = None) -> None:
+                pass
+
+            @overload
+            def __get__(self, obj: None, objtype: object = None) -> Self: ...
+
+            @overload
+            def __get__(self, obj: object, objtype: object = None) -> T: ...
+
+            def __get__(self, obj: object | None, objtype: object = None) -> T | Self:
+                return cast(T | Self, self if obj is None else obj)
+
+        class Model:
+            parent = Field[Self | None]("parent_id")
+
+            def get(self) -> Self | None:
+                return self.parent
+
+    @assert_passes()
     def test_classvar(self):
         from typing import ClassVar, List
 

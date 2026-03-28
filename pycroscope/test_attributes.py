@@ -800,6 +800,32 @@ class TestAttributes(TestNameCheckVisitorBase):
         def capybara(base: Base) -> None:
             assert_type(base.reveal(), None)
 
+    @assert_passes()
+    def test_descriptor_instance_access_strips_descriptor_self(self):
+        from typing import Any, Generic, TypeVar, cast
+
+        from typing_extensions import Self, assert_type
+
+        T = TypeVar("T")
+
+        class Descriptor(Generic[T]):
+            def __get__(self, instance: object | None, owner: Any) -> T | Self:
+                return cast(T | Self, self if instance is None else instance)
+
+        class Related:
+            name: str
+
+        class Model:
+            related = Descriptor[Related | None]()
+
+            def get_name(self) -> str | None:
+                if self.related is not None:
+                    return self.related.name
+                return None
+
+        def capybara(model: Model) -> None:
+            assert_type(model.related, Related | None)
+
     @assert_passes(allow_import_failures=True)
     def test_synthetic_generic_descriptor_and_private_attributes(self):
         from typing import Any, Generic, TypeVar, overload

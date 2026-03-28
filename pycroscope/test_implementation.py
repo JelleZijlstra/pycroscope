@@ -522,6 +522,20 @@ class TestCast(TestNameCheckVisitorBase):
             assert_type(cast("List[str]", 1), list[str])
 
     @assert_passes()
+    def test_self(self):
+        from typing import cast
+
+        from typing_extensions import Self
+
+        class A:
+            parent: object | None
+
+            def get(self) -> Self | None:
+                if self.parent is not None:
+                    return cast(Self, self.parent)
+                return None
+
+    @assert_passes()
     def test_undefined_name(self):
         from typing import List, cast
 
