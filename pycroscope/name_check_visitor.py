@@ -15816,7 +15816,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             callee_wrapped, return_value, node
         )
         return_value = self._maybe_convert_local_namedtuple_class(
-            callee_wrapped, return_value
+            callee_wrapped, return_value, node
         )
 
         if return_value is NO_RETURN_VALUE and node is not None:
@@ -16051,7 +16051,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         )
 
     def _maybe_convert_local_namedtuple_class(
-        self, callee: Value, return_value: Value
+        self, callee: Value, return_value: Value, node: ast.AST | None
     ) -> Value:
         if self.scopes.scope_type() == ScopeType.module_scope:
             return return_value
@@ -16062,9 +16062,17 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         runtime_class = return_value.val
         if not is_namedtuple_class(runtime_class):
             return return_value
-        synthetic_name = self._get_synthetic_class_fq_name_from_name(
-            runtime_class.__name__
-        )
+        if isinstance(node, ast.Call) and isinstance(
+            self.current_statement, ast.ClassDef
+        ):
+            synthetic_name = (
+                f"{self._get_synthetic_class_fq_name(self.current_statement)}"
+                f".__namedtuple_base_{node.lineno}_{node.col_offset}"
+            )
+        else:
+            synthetic_name = self._get_synthetic_class_fq_name_from_name(
+                runtime_class.__name__
+            )
         synthetic = self.checker.make_synthetic_class(synthetic_name)
         type_object = self.checker.make_type_object(synthetic_name)
         type_object.set_runtime_namedtuple(return_value)
