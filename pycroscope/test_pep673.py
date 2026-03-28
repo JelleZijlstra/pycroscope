@@ -297,7 +297,7 @@ class TestPEP673(TestNameCheckVisitorBase):
 
     @assert_passes()
     def test_generic_descriptor_preserves_owner_self(self):
-        from typing import Generic, TypeVar, cast, overload
+        from typing import Any, Generic, TypeVar, cast, overload
 
         from typing_extensions import Self, assert_type
 
@@ -314,7 +314,7 @@ class TestPEP673(TestNameCheckVisitorBase):
             def __get__(self, obj: object, objtype: object = None) -> T: ...
 
             def __get__(self, obj: object | None, objtype: object = None) -> T | Self:
-                return cast(T | Self, self if obj is None else obj)
+                return self if obj is None else cast(Any, obj)
 
         class Model:
             parent = Field[Self | None]("parent_id")
@@ -327,7 +327,7 @@ class TestPEP673(TestNameCheckVisitorBase):
 
     @assert_passes(allow_import_failures=True)
     def test_generic_descriptor_preserves_owner_self_without_runtime_module(self):
-        from typing import Generic, TypeVar, cast, overload
+        from typing import Any, Generic, TypeVar, cast, overload
 
         from typing_extensions import Self
 
@@ -344,7 +344,7 @@ class TestPEP673(TestNameCheckVisitorBase):
             def __get__(self, obj: object, objtype: object = None) -> T: ...
 
             def __get__(self, obj: object | None, objtype: object = None) -> T | Self:
-                return cast(T | Self, self if obj is None else obj)
+                return self if obj is None else cast(Any, obj)
 
         class Model:
             parent = Field[Self | None]("parent_id")

@@ -17860,6 +17860,8 @@ def _is_valid_implicit_type_alias_name_value(value: Value) -> bool:
         return False
     if isinstance(value, TypeAliasValue):
         return True
+    if _is_self_expression_value(value):
+        return True
     value = replace_fallback(value)
     if isinstance(value, MultiValuedValue):
         return all(
