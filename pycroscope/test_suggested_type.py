@@ -1,8 +1,10 @@
 # static analysis: ignore
+import collections.abc
 from unittest import mock
 
 from .annotated_types import MinLen
 from .error_code import ErrorCode
+from .input_sig import ELLIPSIS, InputSigValue
 from .stacked_scopes import Composite
 from .suggested_type import prepare_type, should_suggest_type
 from .test_name_check_visitor import TestNameCheckVisitorBase
@@ -11,6 +13,7 @@ from .value import (
     NO_RETURN_VALUE,
     AnySource,
     AnyValue,
+    GenericValue,
     IntersectionValue,
     KnownValue,
     PredicateValue,
@@ -83,6 +86,17 @@ def test_prepare_type() -> None:
         None
     ) | TypedValue(str)
     assert prepare_type(KnownValue(True) | KnownValue(False)) == TypedValue(bool)
+
+
+def test_prepare_type_converts_input_sig_to_any() -> None:
+    assert prepare_type(InputSigValue(ELLIPSIS)) == AnyValue(AnySource.inference)
+    assert prepare_type(
+        GenericValue(
+            collections.abc.Callable, [InputSigValue(ELLIPSIS), TypedValue(int)]
+        )
+    ) == GenericValue(
+        collections.abc.Callable, [AnyValue(AnySource.inference), TypedValue(int)]
+    )
 
 
 def test_prepare_type_intersection() -> None:

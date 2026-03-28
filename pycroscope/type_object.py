@@ -364,6 +364,8 @@ class TypeObject:
     _is_thrift_enum: bool | None
     _is_direct_namedtuple: bool | None
     _namedtuple_fields: Sequence[NamedTupleField] | None
+    _computing_namedtuple_data: bool
+    _resolving_synthetic_namedtuple_class: bool
     _is_universally_assignable: bool | None
     _protocol_positive_cache: dict[tuple[Value, Value], BoundsMap]
     _has_stubs: bool | None
@@ -388,6 +390,8 @@ class TypeObject:
         self._is_thrift_enum = None
         self._is_direct_namedtuple = None
         self._namedtuple_fields = None
+        self._computing_namedtuple_data = False
+        self._resolving_synthetic_namedtuple_class = False
         self._is_universally_assignable = None
         self._has_stubs = None
         self._metaclass = None
@@ -546,20 +550,28 @@ class TypeObject:
         return type_object_builder._get_runtime_dataclass_fields(self.typ)
 
     def _get_synthetic_namedtuple_class(self) -> SyntheticClassObjectValue | None:
-        synthetic_class = self._checker.get_synthetic_class(self.typ)
-        if synthetic_class is None:
+        if self._resolving_synthetic_namedtuple_class:
             return None
-        if self._is_direct_namedtuple:
-            return synthetic_class
-        if self._get_runtime_namedtuple_class(synthetic_class) is not None:
-            return synthetic_class
-        for base_value in self.get_direct_bases():
-            if (
-                isinstance(base_value, TypedValue)
-                and self._checker.make_type_object(base_value.typ).is_namedtuple_like()
-            ):
+        self._resolving_synthetic_namedtuple_class = True
+        try:
+            synthetic_class = self._checker.get_synthetic_class(self.typ)
+            if synthetic_class is None:
+                return None
+            if self._is_direct_namedtuple:
                 return synthetic_class
-        return None
+            if self._get_runtime_namedtuple_class(synthetic_class) is not None:
+                return synthetic_class
+            for base_value in self.get_direct_bases():
+                if (
+                    isinstance(base_value, TypedValue)
+                    and self._checker.make_type_object(
+                        base_value.typ
+                    ).is_namedtuple_like()
+                ):
+                    return synthetic_class
+            return None
+        finally:
+            self._resolving_synthetic_namedtuple_class = False
 
     def _get_runtime_namedtuple_class(
         self, synthetic_class: SyntheticClassObjectValue
@@ -596,10 +608,15 @@ class TypeObject:
         return tuple(fields)
 
     def _compute_synthetic_namedtuple_fields(
-        self, synthetic_class: SyntheticClassObjectValue
+        self,
+        synthetic_class: SyntheticClassObjectValue,
+        *,
+        include_inherited_fields: bool = True,
     ) -> tuple[NamedTupleField, ...]:
-        inherited_fields = tuple(
-            self._iter_synthetic_namedtuple_base_fields(synthetic_class)
+        inherited_fields = (
+            tuple(self._iter_synthetic_namedtuple_base_fields(synthetic_class))
+            if include_inherited_fields
+            else ()
         )
         prefer_declared_type = not inherited_fields
         field_names = [field.name for field in inherited_fields]
@@ -632,6 +649,8 @@ class TypeObject:
         seen: set[str] = set()
         for base_value in self.get_direct_bases():
             if not isinstance(base_value, TypedValue):
+                continue
+            if class_keys_match(base_value.typ, self.typ):
                 continue
             base_tobj = self._checker.make_type_object(base_value.typ)
             if not base_tobj.is_namedtuple_like():
@@ -731,16 +750,34 @@ class TypeObject:
 
     def is_direct_namedtuple(self) -> bool:
         if self._is_direct_namedtuple is None:
-            self._is_direct_namedtuple, self._namedtuple_fields = (
-                self._compute_namedtuple_data()
-            )
+            if self._computing_namedtuple_data:
+                is_direct, _ = self._compute_namedtuple_data(
+                    include_inherited_fields=False
+                )
+                return is_direct
+            self._computing_namedtuple_data = True
+            try:
+                self._is_direct_namedtuple, self._namedtuple_fields = (
+                    self._compute_namedtuple_data()
+                )
+            finally:
+                self._computing_namedtuple_data = False
         return self._is_direct_namedtuple
 
     def get_namedtuple_fields(self) -> Sequence[NamedTupleField]:
         if self._namedtuple_fields is None:
-            self._is_direct_namedtuple, self._namedtuple_fields = (
-                self._compute_namedtuple_data()
-            )
+            if self._computing_namedtuple_data:
+                _, fields = self._compute_namedtuple_data(
+                    include_inherited_fields=False
+                )
+                return fields
+            self._computing_namedtuple_data = True
+            try:
+                self._is_direct_namedtuple, self._namedtuple_fields = (
+                    self._compute_namedtuple_data()
+                )
+            finally:
+                self._computing_namedtuple_data = False
         if (
             self._is_direct_namedtuple
             and self._namedtuple_fields
@@ -828,12 +865,19 @@ class TypeObject:
                 ),
             )
 
-    def _compute_namedtuple_data(self) -> tuple[bool, Sequence[NamedTupleField]]:
+    def _compute_namedtuple_data(
+        self, *, include_inherited_fields: bool = True
+    ) -> tuple[bool, Sequence[NamedTupleField]]:
         if isinstance(self.typ, type) and is_direct_namedtuple_class(self.typ):
             return True, self._namedtuple_fields_from_runtime(self.typ)
         synthetic_class = self._get_synthetic_namedtuple_class()
         if synthetic_class is not None:
-            return False, self._compute_synthetic_namedtuple_fields(synthetic_class)
+            return (
+                False,
+                self._compute_synthetic_namedtuple_fields(
+                    synthetic_class, include_inherited_fields=include_inherited_fields
+                ),
+            )
         if isinstance(self.typ, type) and is_namedtuple_class(self.typ):
             return False, self._namedtuple_fields_from_runtime(self.typ)
         return False, ()

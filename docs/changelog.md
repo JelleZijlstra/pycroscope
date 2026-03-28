@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Fix several internal-error crashes and false positives when analyzing large projects: pycroscope now degrades ParamSpec input-signature placeholders safely in suggested-type generation, avoids treating ordinary container literals with unsupported elements as crashing implicit type aliases, snapshots `from module import *` exports before lazy annotation work can mutate the source module dictionary, and no longer reports callable intersections as `not_callable`.
+
 - Fix two false positives around runtime analysis: subscripting ordinary values annotated with a type alias no longer looks like type-alias specialization, and unresolved `match` value patterns now fall back cleanly instead of reporting internal errors.
 - Improve `TypeObject` attribute lookup for stub-backed members so runtime classes now merge direct stub symbols with runtime descriptors, preserving runtime descriptor shape while using stub type information for properties and other attributes.
 - Fix class-object metaclass lookup so `TypeObject.get_attribute()` now follows Python's class-access rules, including bound metaclass members and metaclass properties overriding same-named class attributes.

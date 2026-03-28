@@ -911,6 +911,14 @@ def test_typevar_intersection_preserves_typevar() -> None:
     assert_can_assign(typevar_value, MultiValuedValue([narrowed_int, narrowed_str]))
 
 
+def test_typevar_intersection_distributes_over_union() -> None:
+    typevar_value = TypeVarValue(TypeVarParam(typing.TypeVar("T")))
+    assert intersect_values(typevar_value, TypedValue(int) | TypedValue(str), CTX) == (
+        value.IntersectionValue((typevar_value, TypedValue(int)))
+        | value.IntersectionValue((typevar_value, TypedValue(str)))
+    )
+
+
 def test_constrained_typevar_intersection_simplifies() -> None:
     anystr_value = TypeVarValue(
         TypeVarParam(

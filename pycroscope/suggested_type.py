@@ -202,6 +202,10 @@ def _should_suggest_simple_type(value: SimpleType) -> bool:
 
 def prepare_type(value: Value, ctx: CanAssignContext | None = None) -> Value:
     """Simplify a type to turn it into a suggestion."""
+    from .input_sig import InputSigValue
+
+    if isinstance(value, InputSigValue):
+        return AnyValue(AnySource.inference)
     value = replace_known_sequence_value(value)
     value = replace_fallback(value)
     if isinstance(value, MultiValuedValue):

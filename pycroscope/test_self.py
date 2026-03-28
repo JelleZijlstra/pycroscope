@@ -221,6 +221,50 @@ def test_self_check_reports_unused_attributes() -> None:
     )
 
 
+def test_self_check_visits_decorated_namedtuple_subclass_method() -> None:
+    code = textwrap.dedent("""
+        from pycroscope.test_node_visitor import assert_passes
+
+        class T:
+            @assert_passes()
+            def test_example(self) -> None:
+                from collections import namedtuple
+
+                class BasicAuth(
+                    namedtuple("BasicAuth", ["login", "password", "encoding"])
+                ):
+                    @classmethod
+                    def decode(
+                        cls, auth_header: str, encoding: str = "latin1"
+                    ) -> "BasicAuth":
+                        return cls(auth_header, "", encoding)
+    """)
+    filename = "capybara_module.py"
+    tree = ast.parse(code.encode("utf-8"), filename)
+    settings = PycroscopeVisitor._get_default_settings()
+    if settings is not None:
+        settings[ErrorCode.implicit_any] = False
+    kwargs: dict[str, object] = {"settings": settings, "files": [filename]}
+    kwargs = dict(PycroscopeVisitor.prepare_constructor_kwargs(kwargs))
+    visitor = PycroscopeVisitor(
+        filename, code, tree, annotate=True, module=_make_module(code), **kwargs
+    )
+    failures = visitor.check()
+    assert not failures
+    missing = [
+        node
+        for node in ast.walk(tree)
+        if (
+            hasattr(node, "lineno")
+            and hasattr(node, "col_offset")
+            and not hasattr(node, "inferred_value")
+            and not isinstance(node, (ast.keyword, ast.arg))
+            and 8 <= getattr(node, "lineno", 0) <= 13
+        )
+    ]
+    assert not missing
+
+
 @skip_if_not_installed("asynq")
 def test_all() -> None:
     _check_all_files_with_annotations()
