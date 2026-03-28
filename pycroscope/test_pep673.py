@@ -208,6 +208,79 @@ class TestPEP673(TestNameCheckVisitorBase):
             assert_type(c.set_value(3), Container[int])
 
     @assert_passes()
+    def test_qualified_self(self):
+        import typing
+
+        class Node:
+            next: typing.Self | None = None
+
+            def get(self) -> typing.Self | None:
+                return self.next
+
+        class Child(Node):
+            pass
+
+        def capybara(node: Node, child: Child):
+            assert_type(node.next, Node | None)
+            assert_type(node.get(), Node | None)
+            assert_type(child.next, Child | None)
+            assert_type(child.get(), Child | None)
+
+    @assert_passes()
+    def test_generic_classmethod_preserves_type_arguments(self):
+        from typing import Any, Generic, TypeVar
+
+        from typing_extensions import Self
+
+        T = TypeVar("T")
+
+        class Box(Generic[T]):
+            @classmethod
+            def make(cls) -> Self:
+                return cls()
+
+        def capybara() -> None:
+            assert_type(Box.make(), Box[Any])
+            assert_type(Box[int].make(), Box[int])
+
+    @assert_passes()
+    def test_classmethod_self_attribute_assignment(self):
+        from typing_extensions import Self, assert_type
+
+        class Base:
+            current: Self | None = None
+
+            @classmethod
+            def set_current(cls, value: Self | None) -> None:
+                cls.current = value
+
+            @classmethod
+            def get_current(cls) -> Self | None:
+                return cls.current
+
+        class Child(Base):
+            pass
+
+        def capybara(child: Child) -> None:
+            Child.set_current(child)
+            assert_type(Child.get_current(), Child | None)
+
+    @assert_passes()
+    def test_self_union_is_stable_in_method_body(self):
+        from typing_extensions import Self, assert_type
+
+        class Base:
+            def echo(self, value: Self | None) -> Self | None:
+                assert_type(value, Self | None)
+                return value
+
+        class Child(Base):
+            pass
+
+        def capybara(child: Child) -> None:
+            assert_type(child.echo(child), Child | None)
+
+    @assert_passes()
     def test_generic_descriptor_preserves_owner_self(self):
         from typing import Generic, TypeVar, cast, overload
 
@@ -278,12 +351,14 @@ class TestPEP673(TestNameCheckVisitorBase):
 
     @assert_passes(run_in_both_module_modes=True)
     def test_invalid_self_contexts(self):
+        import typing
         from typing import Any, TypeAlias, TypeVar
         from typing import TypeAlias as TAlias
 
         from typing_extensions import Self
 
         def foo(bar: Self) -> Self: ...  # E: invalid_annotation
+        def qualified_foo(bar: typing.Self) -> typing.Self: ...  # E: invalid_annotation
 
         _bar: Self  # E: invalid_annotation
         TupleSelf: TypeAlias = tuple[Self]  # E: invalid_annotation

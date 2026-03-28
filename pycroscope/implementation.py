@@ -14,12 +14,7 @@ import typing_extensions
 import pycroscope
 
 from . import runtime
-from .annotations import (
-    annotation_expr_from_value,
-    bound_self_type_from_class_key,
-    is_typevarlike,
-    type_from_value,
-)
+from .annotations import annotation_expr_from_value, is_typevarlike, type_from_value
 from .error_code import ErrorCode
 from .extensions import assert_type, reveal_locals, reveal_type
 from .format_strings import parse_format_string
@@ -106,6 +101,7 @@ from .value import (
     TypeVarValue,
     Value,
     assert_is_value,
+    bound_self_type_from_class_key,
     concrete_values_from_iterable,
     dump_value,
     flatten_values,

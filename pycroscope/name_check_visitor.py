@@ -74,7 +74,6 @@ from .annotations import (
     annotation_expr_from_ast,
     annotation_expr_from_runtime,
     annotation_expr_from_value,
-    bound_self_type_from_class_key,
     has_invalid_paramspec_usage,
     is_context_manager_type,
     is_instance_of_typing_name,
@@ -300,6 +299,7 @@ from .value import (
     Variance,
     _is_property_initializer,
     annotate_value,
+    bound_self_type_from_class_key,
     concrete_values_from_iterable,
     flatten_values,
     get_tv_map,
@@ -8932,6 +8932,41 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             return isinstance(get_origin(value.val), type)
         return False
 
+    def _specialized_self_value_from_generic_alias_partial(
+        self, value: PartialValue
+    ) -> Value | None:
+        if (
+            value.operation is not PartialValueOperation.SUBSCRIPT
+            or value.runtime_value != TypedValue(types.GenericAlias)
+        ):
+            return None
+        normalized_members: list[Value] = []
+        for member in value.members:
+            normalized = type_from_value(member, self, value.node, suppress_errors=True)
+            if (
+                isinstance(normalized, AnyValue)
+                and normalized.source is AnySource.error
+            ):
+                sequence_normalized = replace_known_sequence_value(member)
+                if sequence_normalized != member:
+                    normalized = sequence_normalized
+                elif isinstance(member, TypedValue):
+                    normalized = member
+            normalized_members.append(normalized)
+        members = tuple(normalized_members)
+        root = replace_fallback(value.root)
+        if isinstance(root, SyntheticClassObjectValue):
+            if isinstance(root.class_type, TypedValue):
+                return replace(
+                    root, class_type=GenericValue(root.class_type.typ, members)
+                )
+            return None
+        if isinstance(root, KnownValue) and isinstance(root.val, type):
+            return GenericValue(root.val, members)
+        if isinstance(root, TypedValue):
+            return GenericValue(root.typ, members)
+        return None
+
     def _should_check_plain_class_object_instance_member_access(
         self, class_key: type | str
     ) -> bool:
@@ -14927,16 +14962,25 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         Returns :data:`pycroscope.value.UNINITIALIZED_VALUE` if the attribute cannot be found.
 
         """
+        resolved_self_value = self_value
+        lookup_root_value: Value | None = None
         if (
             isinstance(root_composite.value, PartialValue)
             and root_composite.value.operation is PartialValueOperation.SUBSCRIPT
             and root_composite.value.runtime_value == TypedValue(types.GenericAlias)
         ):
-            root_composite = Composite(
-                root_composite.value.root, root_composite.varname, root_composite.node
+            specialized_self_value = (
+                self._specialized_self_value_from_generic_alias_partial(
+                    root_composite.value
+                )
             )
-        resolved_self_value = self_value
-        lookup_root_value: Value | None = None
+            lookup_root_value = (
+                specialized_self_value
+                if specialized_self_value is not None
+                else root_composite.value.root
+            )
+            if resolved_self_value is None:
+                resolved_self_value = specialized_self_value
         if isinstance(root_composite.value, TypeVarValue):
             resolved_self_value = root_composite.value
             lookup_root_value = root_composite.value.get_fallback_value()
@@ -17459,7 +17503,7 @@ def _value_contains_self(value: Value | None) -> bool:
     if value is None:
         return False
     for subvalue in value.walk_values():
-        if _is_self_value(subvalue):
+        if _is_self_type_value(subvalue):
             return True
     return False
 
@@ -17471,9 +17515,9 @@ def _base_expression_contains_self(value: Value) -> bool:
         return _base_expression_contains_self(value.root) or any(
             _base_expression_contains_self(member) for member in value.members
         )
-    value = replace_fallback(value)
-    if _is_self_value(value):
+    if _is_self_expression_value(value):
         return True
+    value = replace_fallback(value)
     if isinstance(value, GenericValue):
         return any(_base_expression_contains_self(arg) for arg in value.args)
     if isinstance(value, SubclassValue):
@@ -17485,9 +17529,11 @@ def _base_expression_contains_self(value: Value) -> bool:
     return False
 
 
-def _is_self_value(value: Value) -> bool:
-    if isinstance(value, TypeVarValue):
-        return value.typevar_param.typevar is SelfT
+def _is_self_type_value(value: Value) -> bool:
+    return isinstance(value, TypeVarValue) and value.typevar_param.typevar is SelfT
+
+
+def _is_self_expression_value(value: Value) -> bool:
     return isinstance(value, KnownValue) and is_typing_name(value.val, "Self")
 
 

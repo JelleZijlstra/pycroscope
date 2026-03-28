@@ -28,7 +28,6 @@ from .annotated_types import EnumName
 from .annotations import (
     _RuntimeAnnotationsContext,
     annotation_expr_from_annotations,
-    bound_self_type_from_class_key,
     type_from_runtime,
 )
 from .input_sig import coerce_paramspec_specialization_to_input_sig
@@ -97,6 +96,7 @@ from .value import (
     UnboundMethodValue,
     Value,
     annotate_value,
+    bound_self_type_from_class_key,
     receiver_to_self_type,
     replace_fallback,
     set_self,

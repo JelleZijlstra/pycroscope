@@ -124,7 +124,6 @@ from .value import (
     PartialValue,
     PartialValueOperation,
     Qualifier,
-    SelfT,
     SelfTVV,
     SequenceValue,
     SubclassValue,
@@ -148,6 +147,7 @@ from .value import (
     Value,
     Variance,
     annotate_value,
+    bound_self_type_from_class_key,
     get_typevar_variance,
     iter_type_params_in_value,
     match_typevar_arguments,
@@ -172,17 +172,6 @@ _ENUM_TYPE = getattr(enum, "EnumType", enum.EnumMeta)
 _PARTIAL_CALL_TYPE_PARAM_CACHE: WeakKeyDictionary[ast.AST, TypeVarLike] = (
     WeakKeyDictionary()
 )
-
-
-def bound_self_type_from_class_key(
-    current_class_key: Value | type | str,
-) -> TypeVarValue:
-    bound = (
-        current_class_key
-        if isinstance(current_class_key, Value)
-        else TypedValue(current_class_key)
-    )
-    return TypeVarValue(TypeVarParam(SelfT, bound=bound))
 
 
 def _is_valid_pep586_literal_value(value: object) -> bool:
