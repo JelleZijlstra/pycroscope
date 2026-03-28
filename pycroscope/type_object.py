@@ -194,11 +194,26 @@ def _as_concrete_signature(
 @dataclass(frozen=True)
 class TypeObjectAttribute:
     value: Value
+    declared_value: Value
+    raw_value: Value
     symbol: ClassSymbol
     owner: "TypeObject"
     is_property: bool
     property_has_setter: bool
     is_metaclass_owner: bool
+
+    @property
+    def override_value(self) -> Value:
+        if self.symbol.is_property:
+            return self.raw_value
+        if self.symbol.is_method:
+            return normalize_synthetic_descriptor_attribute(
+                self.raw_value,
+                is_self_returning_classmethod=self.symbol.returns_self_on_class_access,
+            )
+        if self.symbol.annotation is not None:
+            return self.declared_value
+        return self.raw_value
 
 
 @dataclass(frozen=True)
@@ -1070,20 +1085,6 @@ class TypeObject:
     def get_direct_dataclass_transform_info(self) -> DataclassTransformInfo | None:
         return self._direct_dataclass_transform_info
 
-    def is_dataclass(self) -> bool:
-        for entry in self.get_mro():
-            if entry.tobj is None:
-                continue
-            if entry.tobj.get_direct_dataclass_info() is not None:
-                return True
-            if isinstance(entry.tobj.typ, type):
-                dataclass_params = safe_getattr(
-                    entry.tobj.typ, "__dataclass_params__", None
-                )
-                if dataclass_params is not None:
-                    return True
-        return False
-
     def get_dataclass_frozen_status(self) -> tuple[bool, bool | None]:
         for entry in self.get_mro():
             if entry.tobj is None:
@@ -1212,6 +1213,8 @@ class TypeObject:
         if not on_class and name == "__class__":
             return TypeObjectAttribute(
                 value=AnyValue(AnySource.inference),
+                declared_value=AnyValue(AnySource.inference),
+                raw_value=AnyValue(AnySource.inference),
                 symbol=ClassSymbol(initializer=AnyValue(AnySource.inference)),
                 owner=self,
                 is_property=False,
@@ -1221,6 +1224,8 @@ class TypeObject:
         if not on_class and name == "__dict__":
             return TypeObjectAttribute(
                 value=TypedValue(dict),
+                declared_value=TypedValue(dict),
+                raw_value=TypedValue(dict),
                 symbol=ClassSymbol(initializer=TypedValue(dict)),
                 owner=self,
                 is_property=False,
@@ -1235,6 +1240,8 @@ class TypeObject:
                 unknown_value = AnyValue(AnySource.from_another)
                 return TypeObjectAttribute(
                     value=unknown_value,
+                    declared_value=unknown_value,
+                    raw_value=unknown_value,
                     symbol=ClassSymbol(initializer=unknown_value),
                     owner=self,
                     is_property=False,
@@ -1249,6 +1256,8 @@ class TypeObject:
         )
         return TypeObjectAttribute(
             value=resolved.value,
+            declared_value=raw_attribute.declared_value,
+            raw_value=raw_attribute.raw_value,
             symbol=raw_attribute.symbol,
             owner=raw_attribute.owner,
             is_property=resolved.is_property,
@@ -2026,6 +2035,8 @@ def _resolve_member_access(
     if access is None:
         return TypeObjectAttribute(
             value=resolved_value,
+            declared_value=resolved_value,
+            raw_value=resolved_value,
             symbol=ClassSymbol(initializer=resolved_value),
             owner=tobj,
             is_property=False,
@@ -2072,6 +2083,8 @@ def _resolve_member_access(
         value = TypedValue(property)
     return TypeObjectAttribute(
         value=value,
+        declared_value=access.declared_value,
+        raw_value=access.raw_value,
         symbol=symbol,
         owner=owner,
         is_property=is_property,
@@ -2232,6 +2245,10 @@ def _receiver_type_value(receiver_value: Value | None) -> TypedValue | None:
     resolved = replace_fallback(receiver_value)
     if isinstance(resolved, TypedValue):
         return resolved
+    if isinstance(resolved, KnownValue):
+        if isinstance(resolved.val, type):
+            return TypedValue(resolved.val)
+        return TypedValue(type(resolved.val))
     return None
 
 
