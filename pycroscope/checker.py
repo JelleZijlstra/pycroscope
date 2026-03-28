@@ -13,6 +13,7 @@ from collections.abc import Callable, Generator, Iterable, Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import InitVar, dataclass, field
 from dataclasses import replace as dataclass_replace
+from itertools import chain
 from typing import TypeVar, cast
 
 import pycroscope
@@ -63,6 +64,7 @@ from .value import (
     CanAssignError,
     ClassSymbol,
     GenericValue,
+    IntersectionValue,
     KnownValue,
     KnownValueWithTypeVars,
     MultiValuedValue,
@@ -242,6 +244,12 @@ def _set_signature_allow_call(
         )
 
     return _map_maybe_signature(signature, transform)
+
+
+def _strip_signature_deprecation(signature: MaybeSignature) -> MaybeSignature:
+    return _map_maybe_signature(
+        signature, lambda sig: dataclass_replace(sig, deprecated=None)
+    )
 
 
 def _signature_has_return_annotation(signature: ConcreteSignature) -> bool:
@@ -2544,6 +2552,28 @@ class Checker:
                 return ANY_SIGNATURE
             else:
                 return None
+        elif isinstance(value, IntersectionValue):
+            sigs = [
+                self.signature_from_value(
+                    subval,
+                    get_return_override=get_return_override,
+                    get_call_attribute=get_call_attribute,
+                )
+                for subval in value.vals
+            ]
+            if any(sig is None for sig in sigs):
+                return None
+            concrete_sigs = list(
+                chain.from_iterable(_iter_signature_variants(sig) for sig in sigs)
+            )
+            if not concrete_sigs:
+                return None
+            if any(sig is ANY_SIGNATURE for sig in concrete_sigs):
+                return ANY_SIGNATURE
+            combined = _combine_signatures(concrete_sigs)
+            if combined is None:
+                return None
+            return _strip_signature_deprecation(combined)
         else:
             return None
 

@@ -158,7 +158,7 @@ class TestRuntime(TestNameCheckVisitorBase):
                 pass
 
         def capybara(value: Intersection[DeprecatedInvocable, PlainInvocable]) -> None:
-            value()  # E: deprecated  # E: not_callable
+            value()  # E: deprecated
 
     @assert_passes()
     def test_inherited_property(self):
