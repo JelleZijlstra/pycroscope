@@ -224,12 +224,12 @@ class TestPEP673(TestNameCheckVisitorBase):
 
     @assert_passes()
     def test_qualified_self(self):
-        import typing
+        import typing_extensions as typing_ext
 
         class Node:
-            next: typing.Self | None = None
+            next: typing_ext.Self | None = None
 
-            def get(self) -> typing.Self | None:
+            def get(self) -> typing_ext.Self | None:
                 return self.next
 
         class Child(Node):
@@ -366,14 +366,16 @@ class TestPEP673(TestNameCheckVisitorBase):
 
     @assert_passes(run_in_both_module_modes=True)
     def test_invalid_self_contexts(self):
-        import typing
         from typing import Any, TypeAlias, TypeVar
         from typing import TypeAlias as TAlias
 
+        import typing_extensions as typing_ext
         from typing_extensions import Self
 
         def foo(bar: Self) -> Self: ...  # E: invalid_annotation
-        def qualified_foo(bar: typing.Self) -> typing.Self: ...  # E: invalid_annotation
+        def qualified_foo(
+            bar: typing_ext.Self,
+        ) -> typing_ext.Self: ...  # E: invalid_annotation
 
         _bar: Self  # E: invalid_annotation
         TupleSelf: TypeAlias = tuple[Self]  # E: invalid_annotation
