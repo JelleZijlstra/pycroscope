@@ -1971,6 +1971,9 @@ class Checker:
 
         type_object = self.make_type_object(value.class_type.typ)
         if type_object.is_namedtuple_like():
+            # Materialize namedtuple fields before reading synthetic constructor
+            # symbols. This lazily installs the synthetic __new__ used for generic
+            # NamedTuple specializations in fallback analysis.
             type_object.get_namedtuple_fields()
         new_symbol = type_object.get_declared_symbol("__new__")
         init_symbol = type_object.get_declared_symbol("__init__")
