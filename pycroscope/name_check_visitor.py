@@ -2899,13 +2899,18 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             return self.checker.make_synthetic_class(current_class)
         return None
 
-    def _get_current_synthetic_type_object(self) -> TypeObject | None:
+    def _get_current_synthetic_overlay_type_object(self) -> TypeObject | None:
+        # This is intentionally narrower than self.current_tobj: current_tobj tracks
+        # the class currently being analyzed, while this helper answers whether that
+        # class currently has a synthetic overlay. Callers that mutate synthetic
+        # symbols must preserve that distinction until we can remove overlays
+        # entirely.
         synthetic_class = self._get_synthetic_class_for_current_scope()
         if synthetic_class is None:
             return None
         return synthetic_class.get_type_object(self.checker)
 
-    def _ensure_current_synthetic_type_object(self) -> TypeObject | None:
+    def _ensure_current_synthetic_overlay_type_object(self) -> TypeObject | None:
         synthetic_class = self._ensure_synthetic_class_for_current_scope()
         if synthetic_class is None:
             return None
@@ -2984,7 +2989,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         dataclass_field: DataclassFieldInfo | None = None,
         force_nonmember: bool = False,
     ) -> None:
-        type_object = self._get_current_synthetic_type_object()
+        type_object = self._get_current_synthetic_overlay_type_object()
         if type_object is None:
             return
         synthetic_name, synthetic_initializer, enum_member_is_method = (
@@ -3202,7 +3207,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         property_info: PropertyInfo | None = None,
         initializer: Value | None | Literal[_UNSET] = _UNSET,
     ) -> None:
-        type_object = self._ensure_current_synthetic_type_object()
+        type_object = self._ensure_current_synthetic_overlay_type_object()
         if type_object is None:
             return
         type_object.set_declared_symbol(
@@ -3358,7 +3363,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         class_name = self._current_class_name_from_context()
         if class_name is None:
             return
-        synthetic_type = self._get_current_synthetic_type_object()
+        synthetic_type = self._get_current_synthetic_overlay_type_object()
         if synthetic_type is None:
             return
 
