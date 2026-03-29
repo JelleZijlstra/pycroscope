@@ -2090,6 +2090,9 @@ class ActiveTypeParams:
         self, error_node: ast.AST, type_param: TypeParam
     ) -> None:
         identity = type_param.typevar
+        narrowed_error_node = self._narrow_type_param_error_node(error_node, identity)
+        if narrowed_error_node is not error_node:
+            return
         for policy in self._legacy_policies:
             if policy.triggered:
                 continue
@@ -2097,7 +2100,7 @@ class ActiveTypeParams:
                 continue
             policy.triggered = True
             self._show_error(
-                error_node,
+                narrowed_error_node,
                 policy.message,
                 error_code=ErrorCode.invalid_annotation,
                 report_in_collecting=policy.report_in_collecting,
@@ -2108,7 +2111,7 @@ class ActiveTypeParams:
             return
         if any(identity in disallowed for disallowed in self._disallowed_identities):
             self.visitor._show_error_if_checking(
-                error_node,
+                narrowed_error_node,
                 "Type parameter is not valid in this annotation context",
                 error_code=ErrorCode.invalid_annotation,
             )
@@ -2118,10 +2121,24 @@ class ActiveTypeParams:
         if identity in self.current_annotation_identities():
             return
         self.visitor._show_error_if_checking(
-            error_node,
+            narrowed_error_node,
             "Type parameter is not valid in this annotation context",
             error_code=ErrorCode.invalid_annotation,
         )
+
+    # TODO: this is silly, find a better solution to prevent duplicate errors
+    def _narrow_type_param_error_node(self, node: ast.AST, identity: object) -> ast.AST:
+        if isinstance(node, ast.Name):
+            return node
+        for subnode in ast.walk(node):
+            if not isinstance(subnode, ast.Name):
+                continue
+            resolved, _ = self.visitor.resolve_name(
+                subnode, error_node=subnode, suppress_errors=True
+            )
+            if _type_param_identity(resolved, self.visitor) is identity:
+                return subnode
+        return node
 
 
 @used  # exposed as an API
@@ -3327,10 +3344,16 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             is_classmethod, is_staticmethod, returns_self_on_class_access = (
                 self._synthetic_method_symbol_flags(node)
             )
+            qualifiers = (
+                frozenset({Qualifier.Final})
+                if FunctionDecorator.final in info.decorator_kinds
+                else frozenset()
+            )
             self._set_complete_synthetic_class_symbol(
                 node.name,
                 initializer=function_value,
                 node=node,
+                qualifiers=qualifiers,
                 is_instance_only=False,
                 is_method=True,
                 is_classmethod=is_classmethod,
@@ -3673,7 +3696,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     ) -> None:
         if self.current_tobj is None:
             return
-        if self._is_current_class_dataclass() and varname == "__post_init__":
+        if self.current_tobj.is_dataclass() and varname == "__post_init__":
             # Dataclasses synthesize the expected __post_init__ contract from InitVar
             # fields, so generic override rules are too strict here.
             return
@@ -3714,16 +3737,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             )
             if base_attr is None:
                 continue
-            if base_typevar_map:
-                base_attr = replace(
-                    base_attr,
-                    value=base_attr.value.substitute_typevars(base_typevar_map),
-                    declared_value=base_attr.declared_value.substitute_typevars(
-                        base_typevar_map
-                    ),
-                    raw_value=base_attr.raw_value.substitute_typevars(base_typevar_map),
-                )
-            if self._is_final_member(base_class, varname, base_attr.raw_value):
+            if base_attr.symbol.is_final:
                 self._show_error_if_checking(
                     node,
                     f"Cannot override final attribute {varname}",

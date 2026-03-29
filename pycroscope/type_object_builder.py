@@ -275,9 +275,12 @@ def _add_runtime_declared_symbols(typ: type, symbols: dict[str, ClassSymbol]) ->
                     or inspect.isfunction(raw_value)
                     or inspect.ismethoddescriptor(raw_value)
                 )
+            qualifiers = set(existing.qualifiers if existing is not None else ())
+            if _is_runtime_member_final(raw_value):
+                qualifiers.add(Qualifier.Final)
             symbols[name] = ClassSymbol(
                 annotation=existing.annotation if existing is not None else None,
-                qualifiers=existing.qualifiers if existing is not None else frozenset(),
+                qualifiers=frozenset(qualifiers),
                 is_instance_only=(
                     existing.is_instance_only if existing is not None else False
                 ),
@@ -292,6 +295,22 @@ def _add_runtime_declared_symbols(typ: type, symbols: dict[str, ClassSymbol]) ->
                     existing.dataclass_field if existing is not None else None
                 ),
             )
+
+
+def _is_runtime_member_final(raw_value: object) -> bool:
+    if safe_getattr(raw_value, "__final__", False):
+        return True
+    if isinstance(raw_value, property):
+        return any(
+            safe_getattr(accessor, "__final__", False)
+            for accessor in (raw_value.fget, raw_value.fset, raw_value.fdel)
+            if accessor is not None
+        )
+    if isinstance(raw_value, (classmethod, staticmethod)):
+        return safe_getattr(
+            safe_getattr(raw_value, "__func__", None), "__final__", False
+        )
+    return False
 
 
 def _add_synthetic_declared_symbols(

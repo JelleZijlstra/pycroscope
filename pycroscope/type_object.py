@@ -1085,6 +1085,20 @@ class TypeObject:
     def get_direct_dataclass_transform_info(self) -> DataclassTransformInfo | None:
         return self._direct_dataclass_transform_info
 
+    def is_dataclass(self) -> bool:
+        for entry in self.get_mro():
+            if entry.tobj is None:
+                continue
+            if entry.tobj.get_direct_dataclass_info() is not None:
+                return True
+            if isinstance(entry.tobj.typ, type):
+                dataclass_params = safe_getattr(
+                    entry.tobj.typ, "__dataclass_params__", None
+                )
+                if dataclass_params is not None:
+                    return True
+        return False
+
     def get_dataclass_frozen_status(self) -> tuple[bool, bool | None]:
         for entry in self.get_mro():
             if entry.tobj is None:
