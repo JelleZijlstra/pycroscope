@@ -79,6 +79,7 @@ from pycroscope.value import (
     Value,
     VariableNameValue,
     Variance,
+    default_value_for_type_param,
     flatten_values,
     freshen_typevars_for_inference,
     get_type_params_by_typevar,
@@ -287,9 +288,15 @@ def _specialized_synthetic_class_type(
     tobj = synthetic_class.get_type_object(ctx)
     declared = tobj.get_declared_type_params()
     if declared:
-        return GenericValue(
-            class_typ, [type_param_to_value(param) for param in declared]
-        )
+        substitutions: dict[TypeVarLike, Value] = {}
+        specialized_args: list[Value] = []
+        for param in declared:
+            specialized_arg = default_value_for_type_param(param).substitute_typevars(
+                substitutions
+            )
+            substitutions[param.typevar] = specialized_arg
+            specialized_args.append(specialized_arg)
+        return GenericValue(class_typ, specialized_args)
     return synthetic_class.class_type
 
 
