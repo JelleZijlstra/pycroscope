@@ -7,6 +7,7 @@
 - Fix several `Self` edge cases so generic classmethods preserve class arguments like `Box[int].make() -> Box[int]`, `Self | None` stays stable inside method bodies, and `cls` attribute writes using `Self` no longer produce false positives.
 
 - Fix generic `NamedTuple` subclasses in import-failure analysis so inherited tuple fields and synthetic methods now keep specialized type arguments, which restores checks like tuple-style indexing and constructor argument validation for classes such as `class Child(Base[int]): ...`.
+- Fix importable-mode runtime `NamedTuple` constructor inference so runtime classes preserve their concrete return types and tuple behavior without relying on fallback-analysis side effects.
 
 - Fix `Self` handling in class-body descriptor expressions so pycroscope now preserves owner-bound `Self` types in both importable and fallback analysis, instead of relying on syntax-specific workarounds.
 

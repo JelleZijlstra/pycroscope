@@ -3673,10 +3673,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         child_is_classvar = child_symbol is not None and child_symbol.is_classvar
         child_override_value = self._normalize_override_child_value(value)
 
-        # TODO: if we don't call this the signature of some namedtuples doesn't get
-        # inferred correctly for some reason.
-        self.checker.get_generic_bases(self.current_class)
-
         for base_value in self.current_tobj.get_direct_bases():
             if isinstance(base_value, AnyValue):
                 continue
