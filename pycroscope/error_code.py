@@ -191,6 +191,7 @@ ErrorCode = ErrorRegistry(
             "Multiple dataclass transforms on the same class",
         ),
         Error("invalid_metaclass", "Invalid metaclass"),
+        Error("invalid_specialization", "Invalid specialization of generic type"),
     ]
 )
 

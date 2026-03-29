@@ -1256,6 +1256,7 @@ class TypeObject:
         ctx: CanAssignContext,
         *,
         on_class: bool,
+        is_special_lookup: bool = False,
         receiver_value: Value | None = None,
     ) -> TypeObjectAttribute | None:
         """Look up an attribute and apply descriptor semantics for this access."""
@@ -1285,7 +1286,11 @@ class TypeObject:
                 is_metaclass_owner=False,
             )
         raw_attribute = self._get_raw_attribute(
-            name, ctx, on_class=on_class, receiver_value=typed_receiver_value
+            name,
+            ctx,
+            on_class=on_class,
+            receiver_value=typed_receiver_value,
+            is_special_lookup=is_special_lookup,
         )
         if raw_attribute is None:
             if isinstance(self.typ, str) and self.has_any_base():
@@ -1323,6 +1328,7 @@ class TypeObject:
         ctx: CanAssignContext,
         *,
         on_class: bool,
+        is_special_lookup: bool = False,
         receiver_value: TypedValue | None,
     ) -> _RawTypeObjectAttribute | None:
         """Find the raw member selected by Python lookup precedence."""
@@ -1331,8 +1337,8 @@ class TypeObject:
             metaclass_attribute = self._get_raw_metaclass_attribute(
                 name, ctx, receiver_value=receiver_value
             )
-            if metaclass_attribute is not None and _is_data_descriptor(
-                metaclass_attribute, ctx
+            if metaclass_attribute is not None and (
+                is_special_lookup or _is_data_descriptor(metaclass_attribute, ctx)
             ):
                 return metaclass_attribute
         raw_attribute = self._get_raw_declared_attribute(

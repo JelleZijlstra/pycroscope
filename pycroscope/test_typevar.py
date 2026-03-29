@@ -575,7 +575,7 @@ class TestTypeVar(TestNameCheckVisitorBase):
             assert_type(p1, SomethingWithNoDefaults[int, str])
             assert_type(p2, SomethingWithNoDefaults[int, bool])
 
-        MyAlias[bool, int]  # E: invalid_annotation
+        MyAlias[bool, int]  # E: invalid_specialization
 
         class SubclassMe(Generic[T1, DefaultStrT]):
             x: DefaultStrT
@@ -590,7 +590,7 @@ class TestTypeVar(TestNameCheckVisitorBase):
         class Foo(SubclassMe[float]): ...
 
         assert_type(Foo().x, str)
-        Foo[str]  # E: invalid_annotation
+        Foo[str]  # E: invalid_specialization
 
         class Baz(Generic[DefaultIntT, DefaultStrT]): ...
 

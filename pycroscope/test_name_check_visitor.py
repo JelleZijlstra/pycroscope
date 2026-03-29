@@ -562,7 +562,7 @@ class TestImportFailureHandling(TestNameCheckVisitorBase):
         ListAlias: TypeAlias = list
         ListOrSetAlias: TypeAlias = list | set
         _x: list[str] = ListAlias()
-        _x2: ListAlias[int]  # E: invalid_annotation
+        _x2: ListAlias[int]  # E: invalid_specialization
         _x3 = ListOrSetAlias()  # E: not_callable
 
     @assert_passes(run_in_both_module_modes=True)
@@ -689,14 +689,14 @@ class TestImportFailureHandlingCodeSamples(TestNameCheckVisitorBase):
             assert_type(iter(l), Iterator[int])
             assert_type(l.__contains__(1), bool)
 
-        _linked_list_invalid: LinkedList[int, int]  # E: invalid_annotation
+        _linked_list_invalid: LinkedList[int, int]  # E: invalid_specialization
 
         class MyDict(Mapping[str, T]): ...
 
         def test_my_dict(d: MyDict[int]):
             assert_type(d["a"], int)
 
-        _my_dict_invalid: MyDict[int, int]  # E: invalid_annotation
+        _my_dict_invalid: MyDict[int, int]  # E: invalid_specialization
 
         class BadClass1(Generic[T, T]):  # E: invalid_base
             pass
@@ -720,6 +720,27 @@ class TestImportFailureHandlingCodeSamples(TestNameCheckVisitorBase):
         class Parent(Grandparent[T1, T2]): ...
 
         class BadChild(Parent[T1, T2], Grandparent[T2, T1]): ...  # E: invalid_base
+
+    @assert_passes(run_in_both_module_modes=True)
+    def test_type_specialization_with_metaclass_getitem(self):
+        from typing_extensions import assert_type
+
+        class MyMeta(type):
+            def __getitem__(self, key: object) -> int:
+                return id(key)
+
+        class MyClass(metaclass=MyMeta): ...
+
+        class MyClass2(metaclass=MyMeta):
+            def __getitem__(self, key: object) -> str:
+                return str(id(key))
+
+        def capybara(x: object) -> None:
+            assert_type(MyClass[x], int)
+
+        def hutia(x: object, y: MyClass2) -> None:
+            assert_type(MyClass2[x], int)
+            assert_type(y[x], str)
 
     @assert_passes(allow_import_failures=True)
     def test_generic_instance_attribute_preserves_type_args_after_import_failure(self):

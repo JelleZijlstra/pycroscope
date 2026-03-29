@@ -1619,7 +1619,8 @@ def _validate_type_alias_arg_values(
     if matched_args is None:
         ctx.show_error(
             f"Expected {len(type_params)} type arguments for type alias,"
-            f" got {len(args_vals)}"
+            f" got {len(args_vals)}",
+            error_code=ErrorCode.invalid_specialization,
         )
         return normalized_args
     for i, (type_param, arg) in enumerate(matched_args):
@@ -1635,7 +1636,10 @@ def _validate_type_alias_arg_values(
         if type_param.bound is not None and not _is_alias_arg_compatible_with_bound(
             type_param.bound, arg, ctx
         ):
-            ctx.show_error(f"Type argument {arg} is not compatible with {type_param}")
+            ctx.show_error(
+                f"Type argument {arg} is not compatible with {type_param}",
+                error_code=ErrorCode.invalid_specialization,
+            )
         elif type_param.constraints and not _is_alias_arg_compatible_with_constraints(
             type_param.constraints, arg, ctx
         ):
@@ -1643,7 +1647,8 @@ def _validate_type_alias_arg_values(
                 str(constraint) for constraint in type_param.constraints
             )
             ctx.show_error(
-                f"Type argument {arg} is not compatible with constraints ({constraint_list})"
+                f"Type argument {arg} is not compatible with constraints ({constraint_list})",
+                error_code=ErrorCode.invalid_specialization,
             )
     return normalized_args
 

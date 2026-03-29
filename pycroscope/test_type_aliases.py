@@ -345,7 +345,7 @@ class TestTypeAliasType(TestNameCheckVisitorBase):
 
             ok1: Alias[str, ..., int, str]
             ok2: Alias[str, [int, str], int]
-            bad: Alias[int, ...]  # E: invalid_annotation
+            bad: Alias[int, ...]  # E: invalid_specialization
         """)
 
     @skip_before((3, 12))
@@ -528,8 +528,8 @@ class TestTypeAliasType(TestNameCheckVisitorBase):
             type RecursiveWithBounds[S: int, T: str, **P] = (
                 Callable[P, T] | list[S] | list[RecursiveWithBounds[S, T, P]]
             )
-            bad_s: RecursiveWithBounds[str, str, ...]  # E: invalid_annotation
-            bad_t: RecursiveWithBounds[int, int, ...]  # E: invalid_annotation
+            bad_s: RecursiveWithBounds[str, str, ...]  # E: invalid_specialization
+            bad_t: RecursiveWithBounds[int, int, ...]  # E: invalid_specialization
 
             type Circular1 = Circular1  # E: invalid_annotation
             type Circular2[T] = T | Circular2[str]  # E: invalid_annotation
