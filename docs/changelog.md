@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Fix fallback-mode generic class-object assignability so synthetic classes now honor declared type-parameter defaults when compared against annotations like `type[Bar[str]]`.
+
 - Fix several `Self` edge cases so generic classmethods preserve class arguments like `Box[int].make() -> Box[int]`, `Self | None` stays stable inside method bodies, and `cls` attribute writes using `Self` no longer produce false positives.
 
 - Fix `Self` handling in class-body descriptor expressions so pycroscope now preserves owner-bound `Self` types in both importable and fallback analysis, instead of relying on syntax-specific workarounds.
