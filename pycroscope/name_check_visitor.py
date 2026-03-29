@@ -2232,7 +2232,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     state: VisitorState
     unused_finder: UnusedObjectFinder | None
     final_class_keys: set[type | str]
-    final_member_names_by_class: dict[type | str, set[str]]
     final_members_initialized_in_init: dict[type | str, set[str]]
     final_members_requiring_init: dict[type | str, dict[str, ast.AST]]
     enum_class_keys: set[type | str]
@@ -2361,7 +2360,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         self._method_cache = {}
         self._statement_types = set()
         self.final_class_keys = set()
-        self.final_member_names_by_class = {}
         self.final_members_initialized_in_init = {}
         self.final_members_requiring_init = {}
         self.enum_class_keys = set()
@@ -2437,7 +2435,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     ) -> ConcreteSignature | None:
         return self.checker.get_signature(obj, is_asynq=is_asynq)
 
-    def __reduce_ex__(self, proto: object) -> object:
+    def __reduce_ex__(self, proto: object) -> tuple[type[object], tuple[object, ...]]:
         # Only pickle the attributes needed to get error reporting working
         return self.__class__, (self.filename, self.contents, self.tree, self.settings)
 
@@ -3553,13 +3551,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         symbol = self._get_direct_declared_symbol(class_key, attr_name)
         return symbol is not None and symbol.is_classvar
 
-    def _is_direct_instance_only_member(
-        self, class_key: type | str, attr_name: str
-    ) -> bool:
-        return self._is_instance_only_symbol(
-            self._get_direct_declared_symbol(class_key, attr_name)
-        )
-
     def _is_direct_readonly_member(self, class_key: type | str, attr_name: str) -> bool:
         symbol = self._get_direct_declared_symbol(class_key, attr_name)
         return symbol is not None and symbol.is_readonly
@@ -3664,13 +3655,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             return annotation_expr_from_ast(
                 value_node, visitor=self, suppress_errors=suppress_errors
             ).to_value(allow_qualifiers=True, allow_empty=True)
-
-    def _get_base_class_attributes(
-        self, varname: str, node: ast.AST
-    ) -> Iterable[tuple[type | str, Value]]:
-        yield from self._get_base_class_attributes_for(
-            self.current_class, varname, node
-        )
 
     def _has_base_attribute(self, varname: str, node: ast.AST) -> bool:
         return self._has_base_attribute_for(self.current_class, varname, node)
@@ -7900,12 +7884,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                         "@final should be applied only to the overload implementation",
                         error_code=ErrorCode.invalid_annotation,
                     )
-                class_key = self.current_class_key
-                if class_key is not None and (
-                    FunctionDecorator.overload not in info.decorator_kinds
-                    or self.filename.endswith(".pyi")
-                ):
-                    self._record_final_member(class_key, node.name)
 
             if node.returns is None:
                 self._show_error_if_checking(
@@ -8487,8 +8465,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                         "@final should appear only on the first overload",
                         error_code=ErrorCode.invalid_annotation,
                     )
-                else:
-                    effective_is_final = True
             if overload_override_positions:
                 if overload_override_positions != [0]:
                     placement_error = True
@@ -8672,9 +8648,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             return False
         _, qualifiers = annotation_expr.maybe_unqualify(set(Qualifier))
         return Qualifier.ClassVar in qualifiers
-
-    def _record_final_member(self, class_key: type | str, member_name: str) -> None:
-        self.final_member_names_by_class.setdefault(class_key, set()).add(member_name)
 
     def _check_for_final_base_classes(
         self, node: ast.ClassDef, base_values: Sequence[Value]
@@ -9041,28 +9014,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         if members is None:
             return value
         return SequenceValue(tuple, members)
-
-    def _is_final_member(
-        self, class_key: type | str, member_name: str, initializer: Value | None = None
-    ) -> bool:
-        if member_name in self.final_member_names_by_class.get(class_key, set()):
-            return True
-        if isinstance(class_key, type):
-            class_dict = safe_getattr(class_key, "__dict__", {})
-            if isinstance(class_dict, Mapping):
-                runtime_member = class_dict.get(member_name)
-                if getattr(runtime_member, "__final__", False):
-                    return True
-        if isinstance(initializer, KnownValue) and getattr(
-            initializer.val, "__final__", False
-        ):
-            return True
-        if isinstance(class_key, str):
-            try:
-                return self.checker.ts_finder.is_final_attribute(class_key, member_name)
-            except Exception:
-                return False
-        return False
 
     def _is_final_imported_name(self, source_module: Value, alias_name: str) -> bool:
         if not isinstance(source_module, KnownValue):
@@ -12589,7 +12540,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         if is_final and self.scopes.scope_type() == ScopeType.class_scope:
             class_key = self.current_class_key
             if class_key is not None and isinstance(node.target, ast.Name):
-                self._record_final_member(class_key, node.target.id)
                 if node.value is None and (
                     has_classvar or not is_current_class_dataclass
                 ):
@@ -12611,8 +12561,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     "Final instance attributes may be declared only in __init__",
                     error_code=ErrorCode.invalid_annotation,
                 )
-            elif self.current_class_key is not None:
-                self._record_final_member(self.current_class_key, node.target.attr)
 
         is_class_annotation_without_value = (
             node.value is None
@@ -16483,12 +16431,14 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         return parser
 
     @classmethod
-    def get_description_for_error_code(cls, error_code: Error) -> str:
-        return error_code.description
+    # static analysis: ignore[incompatible_override]
+    def get_description_for_error_code(cls, code: Error) -> str:
+        return code.description
 
     @classmethod
+    # static analysis: ignore[incompatible_override]
     def get_default_directories(
-        cls, checker: Checker, **kwargs: Any
+        cls, *, checker: Checker, **kwargs: Any
     ) -> tuple[str, ...]:
         paths = checker.options.get_value_for(Paths)
         return tuple(str(path) for path in paths)
@@ -16543,9 +16493,10 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         return kwargs["checker"].perform_final_checks()
 
     @classmethod
+    # static analysis: ignore[incompatible_override]
     def _run_on_files(
         cls,
-        files: list[str],
+        files: Iterable[str],
         *,
         checker: Checker,
         find_unused: bool = False,
