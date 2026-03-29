@@ -50,7 +50,6 @@ from .value import (
     ParamSpecKwargsValue,
     ParamSpecParam,
     Qualifier,
-    SelfT,
     SubclassValue,
     TypeAliasValue,
     TypedDictValue,
@@ -62,6 +61,7 @@ from .value import (
     TypeVarValue,
     Value,
     annotate_value,
+    bound_self_type_from_class_key,
     freshen_typevars_for_inference,
     get_tv_map,
     is_async_iterable,
@@ -532,7 +532,7 @@ def compute_parameters(
                         )
         elif is_self:
             assert enclosing_class is not None
-            self_tv_value = TypeVarValue(TypeVarParam(SelfT, bound=enclosing_class))
+            self_tv_value = bound_self_type_from_class_key(enclosing_class)
             if is_classmethod or node.name in IMPLICIT_CLASSMETHODS:
                 value = SubclassValue(self_tv_value)
             else:

@@ -2656,6 +2656,17 @@ class TypeVarTupleValue(Value):
 SelfTVV = TypeVarValue(TypeVarParam(SelfT))
 
 
+def bound_self_type_from_class_key(
+    current_class_key: Value | type | str,
+) -> TypeVarValue:
+    bound = (
+        current_class_key
+        if isinstance(current_class_key, Value)
+        else TypedValue(current_class_key)
+    )
+    return TypeVarValue(TypeVarParam(SelfT, bound=bound))
+
+
 def receiver_to_self_type(self_value: Value) -> Value:
     if isinstance(self_value, KnownValueWithTypeVars) and SelfT in self_value.typevars:
         return receiver_to_self_type(self_value.typevars[SelfT])

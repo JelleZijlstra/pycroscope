@@ -299,6 +299,7 @@ from .value import (
     Variance,
     _is_property_initializer,
     annotate_value,
+    bound_self_type_from_class_key,
     concrete_values_from_iterable,
     flatten_values,
     get_tv_map,
@@ -2783,6 +2784,28 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     ):
                         current_scope.variables[varname] = value
                         return value, EMPTY_ORIGIN
+                if (
+                    scope_type == ScopeType.class_scope
+                    and self._is_checking()
+                    and value is not None
+                    and record_synthetic_symbol
+                ):
+                    resolved_synthetic_initializer = (
+                        value
+                        if synthetic_initializer is _UNSET
+                        else synthetic_initializer
+                    )
+                    self._set_synthetic_class_attribute(
+                        varname,
+                        initializer=resolved_synthetic_initializer,
+                        node=node,
+                        force_nonmember=(
+                            isinstance(self.current_statement, ast.AnnAssign)
+                            and self.current_statement.value is None
+                            and self.current_class_key is not None
+                            and self._is_enum_class_key(self.current_class_key)
+                        ),
+                    )
                 return existing, EMPTY_ORIGIN
         if scope_type == ScopeType.class_scope:
             if value is not None:
@@ -3154,7 +3177,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         type_object.set_declared_symbol(
             name,
             self._make_updated_synthetic_symbol(
-                type_object.get_declared_symbol(name),
+                type_object.get_synthetic_declared_symbols().get(name),
                 annotation=annotation,
                 add_qualifiers=add_qualifiers,
                 is_instance_only=is_instance_only,
@@ -3184,7 +3207,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         type_object.set_declared_symbol(
             name,
             self._make_updated_synthetic_symbol(
-                type_object.get_declared_symbol(name),
+                type_object.get_synthetic_declared_symbols().get(name),
                 annotation=annotation,
                 is_method=is_method,
                 is_classmethod=is_classmethod,
@@ -3206,7 +3229,16 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         annotation: Value | None = None,
         force_nonmember: bool = False,
     ) -> None:
+        declared_annotation = annotation
+        if self.ann_assign_type is not None and self.ann_assign_type[0] is not None:
+            declared_annotation = self.ann_assign_type[0]
         synthetic_class = self._get_synthetic_class_for_current_scope()
+        if (
+            synthetic_class is None
+            and isinstance(self.current_class, type)
+            and self._initializer_needs_runtime_synthetic_overlay(initializer)
+        ):
+            synthetic_class = self.checker.make_synthetic_class(self.current_class)
         if synthetic_class is None:
             return
         synthetic_name, synthetic_initializer, enum_member_is_method = (
@@ -3214,9 +3246,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 name, initializer, node=node, force_nonmember=force_nonmember
             )
         )
-        declared_annotation = annotation
-        if self.ann_assign_type is not None and self.ann_assign_type[0] is not None:
-            declared_annotation = self.ann_assign_type[0]
         is_method = isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
         if enum_member_is_method:
             is_method = False
@@ -3263,6 +3292,32 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             self._update_synthetic_declared_symbol(
                 synthetic_name, is_instance_only=False
             )
+
+    def _initializer_needs_runtime_synthetic_overlay(self, value: Value | None) -> bool:
+        if value is None:
+            return False
+        value = replace_fallback(value)
+        if isinstance(value, AnnotatedValue):
+            return self._initializer_needs_runtime_synthetic_overlay(value.value)
+        if isinstance(
+            value,
+            (
+                GenericValue,
+                SequenceValue,
+                DictIncompleteValue,
+                TypedDictValue,
+                TypeVarValue,
+                TypeVarTupleValue,
+                PartialValue,
+            ),
+        ):
+            return True
+        if isinstance(value, (MultiValuedValue, IntersectionValue)):
+            return any(
+                self._initializer_needs_runtime_synthetic_overlay(subval)
+                for subval in value.vals
+            )
+        return False
 
     def _record_complete_synthetic_function_symbol(
         self, node: FunctionDefNode, info: FunctionInfo, function_value: Value
@@ -7614,19 +7669,12 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 and isinstance(params[0].node, ast.arg)
                 and params[0].node.annotation is None
             ):
-                self_instance_value = TypeVarValue(
-                    TypeVarParam(SelfT, bound=enclosing_class)
-                )
+                self_instance_value = bound_self_type_from_class_key(enclosing_class)
                 substitutions: TypeVarMap = {SelfT: self_instance_value}
                 uses_self_annotation = (
-                    (
-                        return_annotation is not None
-                        and return_annotation.substitute_typevars(substitutions)
-                        != return_annotation
-                    )
+                    _value_contains_self(return_annotation)
                     or any(
-                        param_info.param.annotation.substitute_typevars(substitutions)
-                        != param_info.param.annotation
+                        _value_contains_self(param_info.param.annotation)
                         for param_info in params[1:]
                     )
                     or (
@@ -8066,6 +8114,15 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 [type_param_to_value(type_param) for type_param in type_params],
             )
         return class_value
+
+    def get_bound_self_type(self) -> Value | None:
+        if (
+            enclosing_class := self._get_enclosing_class_value_for_method()
+        ) is not None:
+            return bound_self_type_from_class_key(enclosing_class)
+        if self.current_class_key is None:
+            return None
+        return bound_self_type_from_class_key(self.current_class_key)
 
     def _get_pending_overload_signature(
         self, node: FunctionDefNode
@@ -8869,6 +8926,41 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         if isinstance(value, KnownValue):
             return isinstance(get_origin(value.val), type)
         return False
+
+    def _specialized_self_value_from_generic_alias_partial(
+        self, value: PartialValue
+    ) -> Value | None:
+        if (
+            value.operation is not PartialValueOperation.SUBSCRIPT
+            or value.runtime_value != TypedValue(types.GenericAlias)
+        ):
+            return None
+        normalized_members: list[Value] = []
+        for member in value.members:
+            normalized = type_from_value(member, self, value.node, suppress_errors=True)
+            if (
+                isinstance(normalized, AnyValue)
+                and normalized.source is AnySource.error
+            ):
+                sequence_normalized = replace_known_sequence_value(member)
+                if sequence_normalized != member:
+                    normalized = sequence_normalized
+                elif isinstance(member, TypedValue):
+                    normalized = member
+            normalized_members.append(normalized)
+        members = tuple(normalized_members)
+        root = replace_fallback(value.root)
+        if isinstance(root, SyntheticClassObjectValue):
+            if isinstance(root.class_type, TypedValue):
+                return replace(
+                    root, class_type=GenericValue(root.class_type.typ, members)
+                )
+            return None
+        if isinstance(root, KnownValue) and isinstance(root.val, type):
+            return GenericValue(root.val, members)
+        if isinstance(root, TypedValue):
+            return GenericValue(root.typ, members)
+        return None
 
     def _should_check_plain_class_object_instance_member_access(
         self, class_key: type | str
@@ -11402,18 +11494,25 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 self.expected_return_value, value, Relation.ASSIGNABLE, self
             )
             expected_return_values = tuple(self.expected_return_value.walk_values())
+            contains_self_typevar = any(
+                isinstance(subval, TypeVarValue)
+                and subval.typevar_param.typevar is SelfT
+                for subval in expected_return_values
+            )
             should_retry_with_tv_map = isinstance(can_assign, CanAssignError) and (
                 any(
                     isinstance(subval, TypeVarValue)
                     for subval in expected_return_values
                 )
                 and (
-                    not any(
-                        isinstance(subval, TypeVarValue)
-                        and subval.typevar_param.typevar is SelfT
-                        for subval in expected_return_values
+                    not contains_self_typevar
+                    or (
+                        node.value is not None
+                        and (
+                            self._is_current_method_receiver_node(node.value)
+                            or _value_carries_self_binding(value)
+                        )
                     )
-                    or _value_carries_self_binding(value)
                 )
             )
             if should_retry_with_tv_map:
@@ -14858,16 +14957,25 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         Returns :data:`pycroscope.value.UNINITIALIZED_VALUE` if the attribute cannot be found.
 
         """
+        resolved_self_value = self_value
+        lookup_root_value: Value | None = None
         if (
             isinstance(root_composite.value, PartialValue)
             and root_composite.value.operation is PartialValueOperation.SUBSCRIPT
             and root_composite.value.runtime_value == TypedValue(types.GenericAlias)
         ):
-            root_composite = Composite(
-                root_composite.value.root, root_composite.varname, root_composite.node
+            specialized_self_value = (
+                self._specialized_self_value_from_generic_alias_partial(
+                    root_composite.value
+                )
             )
-        resolved_self_value = self_value
-        lookup_root_value: Value | None = None
+            lookup_root_value = (
+                specialized_self_value
+                if specialized_self_value is not None
+                else root_composite.value.root
+            )
+            if resolved_self_value is None:
+                resolved_self_value = specialized_self_value
         if isinstance(root_composite.value, TypeVarValue):
             resolved_self_value = root_composite.value
             lookup_root_value = root_composite.value.get_fallback_value()
@@ -16081,6 +16189,22 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     def signature_from_value(
         self, value: Value, node: ast.AST | None = None
     ) -> MaybeSignature:
+        if (
+            self.current_dataclass_info is not None
+            and isinstance(value, KnownValue)
+            and value.val is self.current_class
+        ):
+            synthetic_class = self._ensure_synthetic_class_for_current_scope()
+            if synthetic_class is not None:
+                dataclass_helpers.apply_synthetic_attributes(
+                    synthetic_class,
+                    self.current_dataclass_info,
+                    type_object=self._get_synthetic_type_object(synthetic_class),
+                    get_slot_names=self._dataclass_slot_names_from_synthetic_class,
+                    get_field_parameters=self.checker.get_synthetic_dataclass_field_parameters,
+                )
+                value = synthetic_class
+
         def get_call_attribute(value: Value) -> Value:
             return self.get_attribute(
                 Composite(value),
@@ -17374,7 +17498,7 @@ def _value_contains_self(value: Value | None) -> bool:
     if value is None:
         return False
     for subvalue in value.walk_values():
-        if _is_self_value(subvalue):
+        if _is_self_type_value(subvalue):
             return True
     return False
 
@@ -17386,9 +17510,9 @@ def _base_expression_contains_self(value: Value) -> bool:
         return _base_expression_contains_self(value.root) or any(
             _base_expression_contains_self(member) for member in value.members
         )
-    value = replace_fallback(value)
-    if _is_self_value(value):
+    if _is_self_expression_value(value):
         return True
+    value = replace_fallback(value)
     if isinstance(value, GenericValue):
         return any(_base_expression_contains_self(arg) for arg in value.args)
     if isinstance(value, SubclassValue):
@@ -17400,9 +17524,11 @@ def _base_expression_contains_self(value: Value) -> bool:
     return False
 
 
-def _is_self_value(value: Value) -> bool:
-    if isinstance(value, TypeVarValue):
-        return value.typevar_param.typevar is SelfT
+def _is_self_type_value(value: Value) -> bool:
+    return isinstance(value, TypeVarValue) and value.typevar_param.typevar is SelfT
+
+
+def _is_self_expression_value(value: Value) -> bool:
     return isinstance(value, KnownValue) and is_typing_name(value.val, "Self")
 
 
@@ -17733,6 +17859,8 @@ def _is_valid_implicit_type_alias_name_value(value: Value) -> bool:
             )
         return False
     if isinstance(value, TypeAliasValue):
+        return True
+    if _is_self_expression_value(value):
         return True
     value = replace_fallback(value)
     if isinstance(value, MultiValuedValue):

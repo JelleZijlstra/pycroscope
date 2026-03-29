@@ -395,6 +395,20 @@ def _has_relation(
             return unify_bounds_maps(bounds_maps)
         return CanAssignError(f"{right} is not {relation.description} {left}")
     if isinstance(right, TypeVarValue):
+        if right.typevar_param.typevar is SelfT and isinstance(left, MultiValuedValue):
+            bounds_maps = []
+            errors = []
+            for val in left.vals:
+                can_assign = _has_relation(gradualize(val), right, relation, ctx)
+                if isinstance(can_assign, CanAssignError):
+                    errors.append(can_assign)
+                else:
+                    bounds_maps.append(can_assign)
+            if not bounds_maps:
+                return CanAssignError(
+                    f"{right} is not {relation.description} {left}", children=errors
+                )
+            return intersect_bounds_maps(bounds_maps)
         return _has_relation(
             left, gradualize(right.get_upper_bound_value()), relation, ctx
         )

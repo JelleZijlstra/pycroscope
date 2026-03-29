@@ -48,6 +48,21 @@ class TestPEP673(TestNameCheckVisitorBase):
             assert_type(Y.from_config(), Y)
 
     @assert_passes()
+    def test_implicit_receiver_is_bound_self_in_method_body(self):
+        from typing_extensions import Self, assert_type
+
+        class Shape:
+            def set_scale(self, scale: float) -> Self:
+                assert_type(self, Self)
+                self.scale = scale
+                return self
+
+            @classmethod
+            def from_config(cls) -> Self:
+                assert_type(cls, type[Self])
+                return cls()
+
+    @assert_passes()
     def test_self_annotated_receiver_attribute_assignment(self):
         from typing_extensions import Self
 
@@ -208,6 +223,136 @@ class TestPEP673(TestNameCheckVisitorBase):
             assert_type(c.set_value(3), Container[int])
 
     @assert_passes()
+    def test_qualified_self(self):
+        import typing_extensions as typing_ext
+
+        class Node:
+            next: typing_ext.Self | None = None
+
+            def get(self) -> typing_ext.Self | None:
+                return self.next
+
+        class Child(Node):
+            pass
+
+        def capybara(node: Node, child: Child):
+            assert_type(node.next, Node | None)
+            assert_type(node.get(), Node | None)
+            assert_type(child.next, Child | None)
+            assert_type(child.get(), Child | None)
+
+    @assert_passes()
+    def test_generic_classmethod_preserves_type_arguments(self):
+        from typing import Any, Generic, TypeVar
+
+        from typing_extensions import Self
+
+        T = TypeVar("T")
+
+        class Box(Generic[T]):
+            @classmethod
+            def make(cls) -> Self:
+                return cls()
+
+        def capybara() -> None:
+            assert_type(Box.make(), Box[Any])
+            assert_type(Box[int].make(), Box[int])
+
+    @assert_passes()
+    def test_classmethod_self_attribute_assignment(self):
+        from typing_extensions import Self, assert_type
+
+        class Base:
+            current: Self | None = None
+
+            @classmethod
+            def set_current(cls, value: Self | None) -> None:
+                cls.current = value
+
+            @classmethod
+            def get_current(cls) -> Self | None:
+                return cls.current
+
+        class Child(Base):
+            pass
+
+        def capybara(child: Child) -> None:
+            Child.set_current(child)
+            assert_type(Child.get_current(), Child | None)
+
+    @assert_passes()
+    def test_self_union_is_stable_in_method_body(self):
+        from typing_extensions import Self, assert_type
+
+        class Base:
+            def echo(self, value: Self | None) -> Self | None:
+                assert_type(value, Self | None)
+                return value
+
+        class Child(Base):
+            pass
+
+        def capybara(child: Child) -> None:
+            assert_type(child.echo(child), Child | None)
+
+    @assert_passes()
+    def test_generic_descriptor_preserves_owner_self(self):
+        from typing import Any, Generic, TypeVar, cast, overload
+
+        from typing_extensions import Self, assert_type
+
+        T = TypeVar("T")
+
+        class Field(Generic[T]):
+            def __init__(self, name: str | None = None) -> None:
+                pass
+
+            @overload
+            def __get__(self, obj: None, objtype: object = None) -> Self: ...
+
+            @overload
+            def __get__(self, obj: object, objtype: object = None) -> T: ...
+
+            def __get__(self, obj: object | None, objtype: object = None) -> T | Self:
+                return self if obj is None else cast(Any, obj)
+
+        class Model:
+            parent = Field[Self | None]("parent_id")
+
+            def get(self) -> Self | None:
+                return self.parent
+
+        def capybara(model: Model) -> None:
+            assert_type(model.parent, Model | None)
+
+    @assert_passes(allow_import_failures=True)
+    def test_generic_descriptor_preserves_owner_self_without_runtime_module(self):
+        from typing import Any, Generic, TypeVar, cast, overload
+
+        from typing_extensions import Self
+
+        T = TypeVar("T")
+
+        class Field(Generic[T]):
+            def __init__(self, name: str | None = None) -> None:
+                pass
+
+            @overload
+            def __get__(self, obj: None, objtype: object = None) -> Self: ...
+
+            @overload
+            def __get__(self, obj: object, objtype: object = None) -> T: ...
+
+            def __get__(self, obj: object | None, objtype: object = None) -> T | Self:
+                return self if obj is None else cast(Any, obj)
+
+        class Model:
+            parent = Field[Self | None]("parent_id")
+
+            def get(self) -> Self | None:
+                return self.parent
+
+    @assert_passes()
     def test_classvar(self):
         from typing import ClassVar, List
 
@@ -224,9 +369,13 @@ class TestPEP673(TestNameCheckVisitorBase):
         from typing import Any, TypeAlias, TypeVar
         from typing import TypeAlias as TAlias
 
+        import typing_extensions as typing_ext
         from typing_extensions import Self
 
         def foo(bar: Self) -> Self: ...  # E: invalid_annotation
+
+        # E: invalid_annotation
+        def qualified_foo(bar: typing_ext.Self) -> typing_ext.Self: ...
 
         _bar: Self  # E: invalid_annotation
         TupleSelf: TypeAlias = tuple[Self]  # E: invalid_annotation

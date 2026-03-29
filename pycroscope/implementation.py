@@ -87,6 +87,7 @@ from .value import (
     PartialValueOperation,
     PredicateValue,
     Qualifier,
+    SelfT,
     SequenceValue,
     SubclassValue,
     SuperValue,
@@ -100,6 +101,7 @@ from .value import (
     TypeVarValue,
     Value,
     assert_is_value,
+    bound_self_type_from_class_key,
     concrete_values_from_iterable,
     dump_value,
     flatten_values,
@@ -2138,7 +2140,17 @@ def _str_format_impl(ctx: CallContext) -> Value:
 
 def _cast_impl(ctx: CallContext) -> Value:
     typ = ctx.vars["typ"]
-    return type_from_value(typ, visitor=ctx.visitor, node=ctx.node)
+    result = type_from_value(typ, visitor=ctx.visitor, node=ctx.node)
+    enclosing_class = ctx.visitor._get_enclosing_class_value_for_method()
+    current_class_bound: Value | type | str | None = (
+        enclosing_class
+        if enclosing_class is not None
+        else ctx.visitor.current_class_key
+    )
+    if current_class_bound is not None:
+        bound_self = bound_self_type_from_class_key(current_class_bound)
+        result = result.substitute_typevars({SelfT: bound_self})
+    return result
 
 
 def _type_from_typeform_arg(
