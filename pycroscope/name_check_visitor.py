@@ -3781,14 +3781,17 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             )
         )
         child_override_value = self._normalize_override_child_value(value)
-        for base_class, base_typevar_map in self.checker.get_generic_bases(
-            self.current_class
-        ).items():
-            if class_keys_match(base_class, self.current_class):
+
+        # TODO: if we don't call this the signature of some namedtuples doesn't get
+        # inferred correctly for some reason.
+        self.checker.get_generic_bases(self.current_class)
+
+        for base_value in self.current_tobj.get_direct_bases():
+            if isinstance(base_value, AnyValue):
                 continue
-            base_tobj = self.checker.make_type_object(base_class)
+            base_tobj = self.checker.make_type_object(base_value.typ)
             base_attr = base_tobj.get_attribute(
-                varname, self, on_class=False, receiver_value=TypedValue(base_class)
+                varname, self, on_class=False, receiver_value=base_value
             )
             if base_attr is None:
                 continue
@@ -3820,7 +3823,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     continue
 
             can_assign = self._can_assign_to_base(
-                base_attr.override_value, child_override_value, base_class, node
+                base_attr.override_value, child_override_value, base_value.typ, node
             )
             if isinstance(can_assign, CanAssignError):
                 error = CanAssignError(
