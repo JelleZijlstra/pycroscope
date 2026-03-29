@@ -287,6 +287,19 @@ def direct_bases_from_values(
     return tuple(_replace_invalid_bases(direct_bases or [TypedValue(object)]))
 
 
+def _iter_base_type_objects(
+    base_value: Value, checker: "pycroscope.checker.Checker"
+) -> Iterator["TypeObject"]:
+    import pycroscope.type_object_builder as type_object_builder
+
+    for converted in type_object_builder._iter_base_type_values(
+        base_value, checker.arg_spec_cache
+    ):
+        if isinstance(converted, AnyValue):
+            continue
+        yield converted.get_type_object(checker)
+
+
 @dataclass(frozen=True)
 class MroEntry:
     tobj: "TypeObject | None"  # None only for is_any=True entries
@@ -679,7 +692,22 @@ class TypeObject:
             base_tobj = self._checker.make_type_object(base_value.typ)
             if not base_tobj.is_namedtuple_like():
                 continue
+            substitutions = (
+                base_tobj.get_substitutions(base_value.args)
+                if isinstance(base_value, GenericValue)
+                else {}
+            )
             for field in base_tobj.get_namedtuple_fields():
+                if substitutions:
+                    field = replace(
+                        field,
+                        typ=field.typ.substitute_typevars(substitutions),
+                        default=(
+                            field.default.substitute_typevars(substitutions)
+                            if field.default is not None
+                            else None
+                        ),
+                    )
                 if field.name in seen:
                     continue
                 seen.add(field.name)
