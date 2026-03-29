@@ -13908,15 +13908,8 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
 
         members = self._maybe_unpack_tuple(index)
         normalized_members = tuple(_normalize_member(member) for member in members)
-        if self.checker.get_synthetic_class(synthetic_typ) is None:
-            return None
-        type_parameters = self.checker.get_type_parameters(synthetic_typ)
-        synthetic_class = self.checker.get_synthetic_class(synthetic_typ)
         tobj = self.checker.make_type_object(synthetic_typ)
-        if not type_parameters and synthetic_class is not None:
-            type_parameters = list(
-                self.checker._infer_synthetic_type_params(synthetic_class)
-            )
+        type_parameters = tobj.get_declared_type_params()
         has_explicit_class_getitem = "__class_getitem__" in tobj.get_declared_symbols()
         if (
             not type_parameters
@@ -13930,39 +13923,28 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     type_parameters, list(normalized_members), self, node=node
                 )
             )
-        generic_bases = self.checker.get_generic_bases(synthetic_typ, ())
-        synthetic_base_key = next(
-            (
-                base_typ
-                for base_typ in generic_bases
-                if class_keys_match(base_typ, synthetic_typ)
-            ),
-            None,
-        )
-        if synthetic_base_key is None and type_parameters:
-            synthetic_base_key = synthetic_typ
         if (
             not type_parameters
             and normalized_members
-            and synthetic_base_key is not None
+            and not has_explicit_class_getitem
         ):
-            has_fully_specialized_generic_base = any(
-                not class_keys_match(base_typ, synthetic_typ)
-                and isinstance(base_typ, str)
-                and tv_map
-                and all(
-                    not isinstance(tv_value, (TypeVarValue, InputSigValue))
-                    for tv_value in tv_map.values()
-                )
-                for base_typ, tv_map in generic_bases.items()
+            meta_getitem = tobj.get_attribute(
+                "__getitem__", self, on_class=True, is_special_lookup=True
             )
-            if has_fully_specialized_generic_base and not has_explicit_class_getitem:
-                self._show_error_if_checking(
-                    node,
-                    f"{stringify_object(synthetic_typ)} cannot be further subscripted",
-                    error_code=ErrorCode.invalid_annotation,
-                )
-                return AnyValue(AnySource.error)
+            if meta_getitem is not None:
+                synthetic_class = self.checker.get_synthetic_class(synthetic_typ)
+                if synthetic_class is not None:
+                    return self.check_call(
+                        node,
+                        meta_getitem.value,
+                        [Composite(synthetic_class), Composite(index, None, node)],
+                    )
+            self._show_error_if_checking(
+                node,
+                f"{stringify_object(synthetic_typ)} cannot be further subscripted",
+                error_code=ErrorCode.invalid_specialization,
+            )
+            return AnyValue(AnySource.error)
         variadic_type_param_indexes = [
             i
             for i, type_param in enumerate(type_parameters)
@@ -14010,7 +13992,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                         f"{stringify_object(synthetic_typ)}"
                     )
             self._show_error_if_checking(
-                node, expected_type_arg_message, error_code=ErrorCode.invalid_annotation
+                node,
+                expected_type_arg_message,
+                error_code=ErrorCode.invalid_specialization,
             )
             return AnyValue(AnySource.error)
         return PartialValue(

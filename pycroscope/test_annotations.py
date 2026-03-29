@@ -2473,9 +2473,9 @@ class TestTypeAlias(TestNameCheckVisitorBase):
             assert_type(value, Callable[..., None])
 
         try:
-            _bad1: GenericAlias[int, int]  # E: invalid_annotation
+            _bad1: GenericAlias[int, int]  # E: invalid_specialization
             _bad2: ConcatenateAlias[int, int]  # E: invalid_annotation
-            _bad3: ListAlias[int]  # E: invalid_annotation
+            _bad3: ListAlias[int]  # E: invalid_specialization
         except TypeError:
             pass
 
