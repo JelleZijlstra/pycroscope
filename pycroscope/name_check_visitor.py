@@ -14831,9 +14831,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             error_code=ErrorCode.deprecated,
         )
 
-    def _method_deprecation_message(
-        self, root_value: Value, attr_name: str
-    ) -> str | None:
+    def _iter_distinct_attribute_root_class_keys(
+        self, root_value: Value
+    ) -> Iterable[type | str]:
         seen_keys: set[type | str] = set()
         for subvalue in flatten_values(
             replace_fallback(root_value), unwrap_annotated=True
@@ -14842,28 +14842,42 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             if class_key is None or class_key in seen_keys:
                 continue
             seen_keys.add(class_key)
-            if (
-                message := self._method_deprecation_message_for_class_key(
-                    class_key, attr_name
-                )
-            ) is not None:
-                return message
-        return None
+            yield class_key
 
-    def _method_deprecation_message_for_class_key(
-        self, class_key: type | str, attr_name: str
+    def _deprecation_message_for_attribute(
+        self, root_value: Value, attr_name: str, *, is_property: bool, is_setter: bool
     ) -> str | None:
-        match = self._get_type_object_attribute_match_for_class_key(
-            class_key, attr_name
-        )
-        if match is None:
-            return None
-        candidate, attribute = match
-        if attribute.symbol.property_info is not None:
-            return None
-        owner = attribute.owner.typ
-        if isinstance(owner, type):
-            class_dict = safe_getattr(owner, "__dict__", None)
+        for class_key in self._iter_distinct_attribute_root_class_keys(root_value):
+            match = self._get_type_object_attribute_match_for_class_key(
+                class_key, attr_name
+            )
+            if match is None:
+                continue
+            candidate, attribute = match
+            symbol = attribute.symbol
+            owner = attribute.owner.typ
+            class_dict = (
+                safe_getattr(owner, "__dict__", None)
+                if isinstance(owner, type)
+                else None
+            )
+            if is_property:
+                if symbol.property_info is None:
+                    continue
+                if isinstance(class_dict, Mapping):
+                    descriptor = class_dict.get(candidate)
+                    if isinstance(descriptor, property):
+                        accessor = descriptor.fset if is_setter else descriptor.fget
+                        deprecated = safe_getattr(accessor, "__deprecated__", None)
+                        if safe_isinstance(deprecated, str):
+                            return deprecated
+                return (
+                    symbol.property_info.setter_deprecation
+                    if is_setter
+                    else symbol.property_info.getter_deprecation
+                )
+            if symbol.property_info is not None:
+                continue
             if isinstance(class_dict, Mapping):
                 member = class_dict.get(candidate)
                 if isinstance(member, (staticmethod, classmethod)):
@@ -14872,54 +14886,22 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     message = self._deprecation_message_from_value(KnownValue(member))
                     if message is not None:
                         return message
-        value = attribute.symbol.initializer or attribute.value
-        return self._deprecation_message_from_value(value)
+            value = symbol.initializer or attribute.value
+            return self._deprecation_message_from_value(value)
+        return None
+
+    def _method_deprecation_message(
+        self, root_value: Value, attr_name: str
+    ) -> str | None:
+        return self._deprecation_message_for_attribute(
+            root_value, attr_name, is_property=False, is_setter=False
+        )
 
     def _property_deprecation_message(
         self, root_value: Value, attr_name: str, *, is_setter: bool
     ) -> str | None:
-        seen_keys: set[type | str] = set()
-        for subvalue in flatten_values(
-            replace_fallback(root_value), unwrap_annotated=True
-        ):
-            class_key = self._class_key_from_attribute_root_value(subvalue)
-            if class_key is None or class_key in seen_keys:
-                continue
-            seen_keys.add(class_key)
-            if (
-                message := self._property_deprecation_message_for_class_key(
-                    class_key, attr_name, is_setter=is_setter
-                )
-            ) is not None:
-                return message
-        return None
-
-    def _property_deprecation_message_for_class_key(
-        self, class_key: type | str, attr_name: str, *, is_setter: bool
-    ) -> str | None:
-        match = self._get_type_object_attribute_match_for_class_key(
-            class_key, attr_name
-        )
-        if match is None:
-            return None
-        candidate, attribute = match
-        symbol = attribute.symbol
-        if symbol.property_info is None:
-            return None
-        owner = attribute.owner.typ
-        if isinstance(owner, type):
-            class_dict = safe_getattr(owner, "__dict__", None)
-            if isinstance(class_dict, Mapping):
-                descriptor = class_dict.get(candidate)
-                if isinstance(descriptor, property):
-                    accessor = descriptor.fset if is_setter else descriptor.fget
-                    deprecated = safe_getattr(accessor, "__deprecated__", None)
-                    if safe_isinstance(deprecated, str):
-                        return deprecated
-        return (
-            symbol.property_info.setter_deprecation
-            if is_setter
-            else symbol.property_info.getter_deprecation
+        return self._deprecation_message_for_attribute(
+            root_value, attr_name, is_property=True, is_setter=is_setter
         )
 
     def _property_attr_candidates(
@@ -16410,13 +16392,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             return AnyValue(AnySource.inference)
 
     def _is_dataclass_initvar_attribute(self, typ: type, attr_name: str) -> bool:
-        synthetic = self.checker.get_synthetic_class(typ)
-        if synthetic is not None:
-            symbol = self._get_synthetic_type_object(synthetic).get_declared_symbol(
-                attr_name
-            )
-            if symbol is not None and symbol.is_initvar:
-                return True
+        symbol = self.make_type_object(typ).get_declared_symbol(attr_name)
+        if symbol is not None and symbol.is_initvar:
+            return True
         return _is_runtime_initvar_attribute(typ, attr_name)
 
     # Finding unused objects
