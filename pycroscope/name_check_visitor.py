@@ -964,6 +964,16 @@ class IgnoredForIncompatibleOverride(StringSequenceOption):
 
 
 _IGNORED_OVERRIDE_METADATA_ATTRIBUTES = {
+    # Exempt from LSP
+    "__init__",
+    "__new__",
+    "__init_subclass__",
+    # TODO: do we really need this?
+    "__hash__",
+    # __slots__ is cumulative across inheritance, so subclasses may add
+    # slot names even when the literal value differs from the base class.
+    "__slots__",
+    # type attributes
     "__annotations__",
     "__module__",
     "__name__",
@@ -3755,12 +3765,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             # Dataclasses synthesize the expected __post_init__ contract from InitVar
             # fields, so generic override rules are too strict here.
             return
-        if varname == "__slots__":
-            # __slots__ is cumulative across inheritance, so subclasses may add
-            # slot names even when the literal value differs from the base class.
-            return
-        if varname in {"__init__", "__new__", "__hash__", "__init_subclass__"}:
-            return
         if varname in self.options.get_value_for(IgnoredForIncompatibleOverride):
             return
         if varname in _IGNORED_OVERRIDE_METADATA_ATTRIBUTES:
@@ -3769,17 +3773,8 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             return
         if self.current_class is None:
             return
-        is_annotated_assignment = (
-            isinstance(self.current_statement, ast.AnnAssign)
-            and isinstance(self.current_statement.target, ast.Name)
-            and self.current_statement.target.id == varname
-        )
-        child_is_classvar = (
-            is_annotated_assignment
-            and self._annotation_has_classvar_qualifier(
-                self.current_statement.annotation
-            )
-        )
+        child_symbol = self.current_tobj.get_declared_symbol(varname)
+        child_is_classvar = child_symbol is not None and child_symbol.is_classvar
         child_override_value = self._normalize_override_child_value(value)
 
         # TODO: if we don't call this the signature of some namedtuples doesn't get
@@ -3802,25 +3797,26 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     ErrorCode.invalid_annotation,
                 )
                 continue
-            if is_annotated_assignment:
-                if child_is_classvar and self._is_instance_only_symbol(
-                    base_attr.symbol
-                ):
-                    self._show_error_if_checking(
-                        node,
-                        f"Class variable {varname} cannot override instance variable from"
-                        f" base class {base_attr.owner}",
-                        ErrorCode.incompatible_override,
-                    )
-                    continue
-                if base_attr.symbol.is_classvar and not child_is_classvar:
-                    self._show_error_if_checking(
-                        node,
-                        f"Instance variable {varname} cannot override class variable from"
-                        f" base class {base_attr.owner}",
-                        ErrorCode.incompatible_override,
-                    )
-                    continue
+            if child_is_classvar and base_attr.symbol.is_instance_only:
+                self._show_error_if_checking(
+                    node,
+                    f"Class variable {varname} cannot override instance variable from"
+                    f" base class {base_attr.owner}",
+                    ErrorCode.incompatible_override,
+                )
+                continue
+            if (
+                base_attr.symbol.is_classvar
+                and child_symbol is not None
+                and child_symbol.is_instance_only
+            ):
+                self._show_error_if_checking(
+                    node,
+                    f"Instance variable {varname} cannot override class variable from"
+                    f" base class {base_attr.owner}",
+                    ErrorCode.incompatible_override,
+                )
+                continue
 
             can_assign = self._can_assign_to_base(
                 base_attr.override_value, child_override_value, base_value.typ, node
@@ -3871,6 +3867,11 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         base_class: type | str,
         node: ast.AST,
     ) -> CanAssign:
+        # TODO: This is still a bit ad hoc. I think the right way to do it would be to
+        # check all three operations: get, set, and delete. For each of them, what's
+        # allowed on the base should be allowed on the child. Though we'll still need
+        # some mild special casing of callables so pycroscope sees different functions as
+        # compatible.
         if base_value is UNINITIALIZED_VALUE:
             return {}
         if isinstance(base_value, KnownValue):
