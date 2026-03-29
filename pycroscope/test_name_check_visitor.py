@@ -1098,6 +1098,7 @@ class TestImportFailureHandlingCodeSamples(TestNameCheckVisitorBase):
         def capybara(p: Point) -> tuple[int, int, str]:
             exact: tuple[int, int, str] = p
             return exact
+
     @assert_passes()
     def test_len_narrowing_on_tuple_union(self):
         from typing import TypeAlias
