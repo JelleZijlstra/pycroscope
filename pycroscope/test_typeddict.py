@@ -621,6 +621,222 @@ class TestTypedDict(TestNameCheckVisitorBase):
             assert_type(closed_empty.popitem()[1], Never)
 
 
+class TestTypedDictImportFailures(TestNameCheckVisitorBase):
+    @assert_passes(run_in_both_module_modes=True)
+    def test_typeddict_fallback_after_import_failure(self):
+        from typing import TypedDict
+
+        from typing_extensions import NotRequired, ReadOnly, Required
+
+        class F1(TypedDict):
+            a: Required[int]
+            b: ReadOnly[NotRequired[int]]
+            c: ReadOnly[Required[int]]
+
+        class TD_A1(TypedDict):
+            x: int
+            y: ReadOnly[int]
+
+        class TD_A2(TypedDict):
+            x: float
+            y: ReadOnly[float]
+
+        class TD_B1(TypedDict):
+            x: ReadOnly[NotRequired[int]]
+            y: ReadOnly[Required[int]]
+
+        class TD_B2(TypedDict):
+            x: ReadOnly[Required[int]]
+            y: ReadOnly[NotRequired[int]]
+
+        def capybara() -> None:
+            class F3(F1):
+                a: ReadOnly[int]  # E: invalid_annotation
+
+            class F4(F1):
+                a: NotRequired[int]  # E: invalid_annotation
+
+            class F5(F1):
+                b: ReadOnly[Required[int]]
+
+            class F6(F1):
+                c: ReadOnly[NotRequired[int]]  # E: invalid_annotation
+
+            class TD_A(TD_A1, TD_A2): ...  # E: invalid_base
+
+            class TD_B(TD_B1, TD_B2): ...  # E: invalid_base
+
+    @assert_passes(run_in_both_module_modes=True)
+    def test_typeddict_extra_items_and_unpack_after_import_failure(self):
+        from typing_extensions import TypedDict, Unpack
+
+        class Movie(TypedDict, extra_items=bool):
+            name: str
+
+        MovieFunctional = TypedDict("MovieFunctional", {"name": str}, extra_items=bool)
+
+        a: Movie = {"name": "Blade Runner", "year": 1982}  # E: incompatible_assignment
+        # E: incompatible_assignment
+        b: MovieFunctional = {"name": "Blade Runner", "year": 1982}
+
+        class MovieNoExtra(TypedDict):
+            name: str
+
+        class MovieExtra(TypedDict, extra_items=int):
+            name: str
+
+        def unpack_no_extra(**kwargs: Unpack[MovieNoExtra]) -> None: ...
+
+        def unpack_extra(**kwargs: Unpack[MovieExtra]) -> None: ...
+
+        # E: incompatible_call
+        unpack_no_extra(name="No Country for Old Men", year=2007)
+        unpack_extra(name="No Country for Old Men", year=2007)
+
+    @assert_passes(run_in_both_module_modes=True)
+    def test_typeddict_class_syntax_after_import_failure(self):
+        from typing import TypedDict
+
+        class Movie(TypedDict):
+            director: "Person"
+
+        class Person(TypedDict):
+            name: str
+
+        def capybara() -> None:
+            class BadTypedDict1(TypedDict):
+                name: str
+
+                def method(self):  # E: invalid_annotation
+                    pass
+
+            class BadTypedDict2(TypedDict, metaclass=type):  # E: invalid_annotation
+                name: str
+
+            class BadTypedDict3(TypedDict, other=True):  # E: invalid_annotation
+                name: str
+
+    @assert_passes(run_in_both_module_modes=True)
+    def test_synthetic_typeddict_inheritance_edge_cases_after_import_failure(self):
+        from typing_extensions import NotRequired, ReadOnly, TypedDict
+
+        class ClosedBase(TypedDict, closed=True):
+            name: str
+
+        class BadClosedChild(ClosedBase):
+            year: int  # E: invalid_annotation
+
+        class ReadOnlyExtraBase(TypedDict, extra_items=ReadOnly[int]):
+            name: str
+
+        class BadReadOnlyExtraChild(ReadOnlyExtraBase):
+            year: str  # E: invalid_annotation
+
+        class MutableExtraBase(TypedDict, extra_items=int):
+            name: str
+
+        class BadRequiredExtraChild(MutableExtraBase):
+            year: int  # E: invalid_annotation
+
+        class BadOptionalExtraChild(MutableExtraBase):
+            year: NotRequired[str]  # E: invalid_annotation
+
+        class MutableBase(TypedDict):
+            x: int
+
+        class BadMutableOverride(MutableBase):
+            x: float  # E: invalid_annotation
+
+        class MutableLeft(TypedDict):
+            x: int
+
+        class ReadOnlyRight(TypedDict):
+            x: ReadOnly[int]
+
+        class BadBaseMutability(MutableLeft, ReadOnlyRight): ...  # E: invalid_base
+
+        class ReadOnlyLeft(TypedDict):
+            x: ReadOnly[int]
+
+        class ReadOnlyWrongType(TypedDict):
+            x: ReadOnly[str]
+
+        class BadReadonlyTypes(ReadOnlyLeft, ReadOnlyWrongType): ...  # E: invalid_base
+
+        class OptionalRight(TypedDict):
+            x: NotRequired[int]
+
+        class BadBaseRequiredness(MutableLeft, OptionalRight): ...  # E: invalid_base
+
+
+class TestTypedDictFunctionScope(TestNameCheckVisitorBase):
+    @assert_passes()
+    def test_function_scope_typeddict_readonly_inheritance(self):
+        from typing import TypedDict
+
+        from typing_extensions import NotRequired, ReadOnly, Required
+
+        def run() -> None:
+            class F1(TypedDict):
+                a: Required[int]
+                b: ReadOnly[NotRequired[int]]
+                c: ReadOnly[Required[int]]
+
+            class F3(F1):
+                a: ReadOnly[int]  # E: invalid_annotation
+
+            class F4(F1):
+                a: NotRequired[int]  # E: invalid_annotation
+
+            class F5(F1):
+                b: ReadOnly[Required[int]]
+
+            class F6(F1):
+                c: ReadOnly[NotRequired[int]]  # E: invalid_annotation
+
+            class TD_A1(TypedDict):
+                x: int
+                y: ReadOnly[int]
+
+            class TD_A2(TypedDict):
+                x: float
+                y: ReadOnly[float]
+
+            class TD_A(TD_A1, TD_A2): ...  # E: invalid_base
+
+            class TD_B1(TypedDict):
+                x: ReadOnly[NotRequired[int]]
+                y: ReadOnly[Required[int]]
+
+            class TD_B2(TypedDict):
+                x: ReadOnly[Required[int]]
+                y: ReadOnly[NotRequired[int]]
+
+            class TD_B(TD_B1, TD_B2): ...  # E: invalid_base
+
+    @assert_passes()
+    def test_function_scope_typeddict_values(self):
+        from typing import TypedDict
+
+        from typing_extensions import NotRequired, ReadOnly, Required
+
+        def run() -> None:
+            class OptionalName(TypedDict):
+                name: ReadOnly[NotRequired[str]]
+
+            class RequiredName(OptionalName):
+                name: ReadOnly[Required[str]]
+
+            d: RequiredName = {}  # E: incompatible_assignment
+            print(d)
+
+            class Movie(TypedDict):
+                title: ReadOnly[str]
+
+            movie: Movie = {"title": ""}
+            movie["title"] = "x"  # E: readonly_typeddict
+
+
 class TestReadOnly(TestNameCheckVisitorBase):
     @assert_passes()
     def test_basic(self):

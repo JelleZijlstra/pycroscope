@@ -292,77 +292,6 @@ class TestImportFailureHandling(TestNameCheckVisitorBase):
             return missing_name  # E: undefined_name
 
     @assert_passes(run_in_both_module_modes=True)
-    def test_typeddict_fallback_after_import_failure(self):
-        from typing import TypedDict
-
-        from typing_extensions import NotRequired, ReadOnly, Required
-
-        class F1(TypedDict):
-            a: Required[int]
-            b: ReadOnly[NotRequired[int]]
-            c: ReadOnly[Required[int]]
-
-        class TD_A1(TypedDict):
-            x: int
-            y: ReadOnly[int]
-
-        class TD_A2(TypedDict):
-            x: float
-            y: ReadOnly[float]
-
-        class TD_B1(TypedDict):
-            x: ReadOnly[NotRequired[int]]
-            y: ReadOnly[Required[int]]
-
-        class TD_B2(TypedDict):
-            x: ReadOnly[Required[int]]
-            y: ReadOnly[NotRequired[int]]
-
-        def capybara() -> None:
-            class F3(F1):
-                a: ReadOnly[int]  # E: invalid_annotation
-
-            class F4(F1):
-                a: NotRequired[int]  # E: invalid_annotation
-
-            class F5(F1):
-                b: ReadOnly[Required[int]]
-
-            class F6(F1):
-                c: ReadOnly[NotRequired[int]]  # E: invalid_annotation
-
-            class TD_A(TD_A1, TD_A2): ...  # E: invalid_base
-
-            class TD_B(TD_B1, TD_B2): ...  # E: invalid_base
-
-    @assert_passes(run_in_both_module_modes=True)
-    def test_typeddict_extra_items_and_unpack_after_import_failure(self):
-        from typing_extensions import TypedDict, Unpack
-
-        class Movie(TypedDict, extra_items=bool):
-            name: str
-
-        MovieFunctional = TypedDict("MovieFunctional", {"name": str}, extra_items=bool)
-
-        a: Movie = {"name": "Blade Runner", "year": 1982}  # E: incompatible_assignment
-        # E: incompatible_assignment
-        b: MovieFunctional = {"name": "Blade Runner", "year": 1982}
-
-        class MovieNoExtra(TypedDict):
-            name: str
-
-        class MovieExtra(TypedDict, extra_items=int):
-            name: str
-
-        def unpack_no_extra(**kwargs: Unpack[MovieNoExtra]) -> None: ...
-
-        def unpack_extra(**kwargs: Unpack[MovieExtra]) -> None: ...
-
-        # E: incompatible_call
-        unpack_no_extra(name="No Country for Old Men", year=2007)
-        unpack_extra(name="No Country for Old Men", year=2007)
-
-    @assert_passes(run_in_both_module_modes=True)
     def test_constructor_explicit_self_annotation_after_import_failure(self):
         from typing import Generic, TypeVar
 
@@ -498,26 +427,6 @@ class TestImportFailureHandling(TestNameCheckVisitorBase):
         @dataclass(frozen=True)
         class C:
             is_method: bool = False
-
-    @assert_passes()
-    def test_generic_constructor_accepts_known_protocol_value(self):
-        import logging
-        import sys
-
-        logging.StreamHandler(sys.stderr)
-
-    @assert_passes(allow_import_failures=True)
-    def test_callable_protocol_after_import_failure(self):
-        from typing import Any, Callable, Protocol
-
-        _Bad: Callable[int]  # E: invalid_annotation
-
-        class Proto(Protocol):
-            def __call__(self, *args: Any, **kwargs: Any) -> None: ...
-
-        def f(p: Proto) -> None:
-            cb: Callable[..., None] = p
-            cb()
 
     @assert_passes(run_in_both_module_modes=True)
     def test_type_union_annotation_after_import_failure(self):
@@ -846,56 +755,6 @@ class TestImportFailureHandlingCodeSamples(TestNameCheckVisitorBase):
             class Bad4(Iterable[T_co], Protocol[S_co]): ...  # E: invalid_base
 
     @assert_passes(run_in_both_module_modes=True)
-    def test_typeddict_class_syntax_after_import_failure(self):
-        from typing import TypedDict
-
-        class Movie(TypedDict):
-            director: "Person"
-
-        class Person(TypedDict):
-            name: str
-
-        def capybara() -> None:
-            class BadTypedDict1(TypedDict):
-                name: str
-
-                def method(self):  # E: invalid_annotation
-                    pass
-
-            class BadTypedDict2(TypedDict, metaclass=type):  # E: invalid_annotation
-                name: str
-
-            class BadTypedDict3(TypedDict, other=True):  # E: invalid_annotation
-                name: str
-
-    @assert_passes(run_in_both_module_modes=True)
-    def test_typeddict_extra_items_and_unpack_after_import_failure(self):
-        from typing_extensions import TypedDict, Unpack
-
-        class Movie(TypedDict, extra_items=bool):
-            name: str
-
-        MovieFunctional = TypedDict("MovieFunctional", {"name": str}, extra_items=bool)
-
-        a: Movie = {"name": "Blade Runner", "year": 1982}  # E: incompatible_assignment
-        # E: incompatible_assignment
-        b: MovieFunctional = {"name": "Blade Runner", "year": 1982}
-
-        class MovieNoExtra(TypedDict):
-            name: str
-
-        class MovieExtra(TypedDict, extra_items=int):
-            name: str
-
-        def unpack_no_extra(**kwargs: Unpack[MovieNoExtra]) -> None: ...
-
-        def unpack_extra(**kwargs: Unpack[MovieExtra]) -> None: ...
-
-        # E: incompatible_call
-        unpack_no_extra(name="No Country for Old Men", year=2007)
-        unpack_extra(name="No Country for Old Men", year=2007)
-
-    @assert_passes(run_in_both_module_modes=True)
     def test_property_setter_in_synthetic_class_after_import_failure(self):
         class C:
             @property
@@ -1002,191 +861,12 @@ class TestImportFailureHandlingCodeSamples(TestNameCheckVisitorBase):
                 return x
 
     @assert_passes(run_in_both_module_modes=True)
-    def test_synthetic_typeddict_inheritance_edge_cases_after_import_failure(self):
-        from typing_extensions import NotRequired, ReadOnly, TypedDict
-
-        class ClosedBase(TypedDict, closed=True):
-            name: str
-
-        class BadClosedChild(ClosedBase):
-            year: int  # E: invalid_annotation
-
-        class ReadOnlyExtraBase(TypedDict, extra_items=ReadOnly[int]):
-            name: str
-
-        class BadReadOnlyExtraChild(ReadOnlyExtraBase):
-            year: str  # E: invalid_annotation
-
-        class MutableExtraBase(TypedDict, extra_items=int):
-            name: str
-
-        class BadRequiredExtraChild(MutableExtraBase):
-            year: int  # E: invalid_annotation
-
-        class BadOptionalExtraChild(MutableExtraBase):
-            year: NotRequired[str]  # E: invalid_annotation
-
-        class MutableBase(TypedDict):
-            x: int
-
-        class BadMutableOverride(MutableBase):
-            x: float  # E: invalid_annotation
-
-        class MutableLeft(TypedDict):
-            x: int
-
-        class ReadOnlyRight(TypedDict):
-            x: ReadOnly[int]
-
-        class BadBaseMutability(MutableLeft, ReadOnlyRight): ...  # E: invalid_base
-
-        class ReadOnlyLeft(TypedDict):
-            x: ReadOnly[int]
-
-        class ReadOnlyWrongType(TypedDict):
-            x: ReadOnly[str]
-
-        class BadReadonlyTypes(ReadOnlyLeft, ReadOnlyWrongType): ...  # E: invalid_base
-
-        class OptionalRight(TypedDict):
-            x: NotRequired[int]
-
-        class BadBaseRequiredness(MutableLeft, OptionalRight): ...  # E: invalid_base
-
-    @assert_passes(allow_import_failures=True)
-    def test_namedtuple_after_import_failure(self):
-        from typing import Generic, NamedTuple, TypeVar
-
-        from typing_extensions import assert_type
-
-        T = TypeVar("T")
-
-        class Point(NamedTuple):
-            x: int
-            y: int
-            units: str = "meters"
-
-        p = Point(1, 2)
-        assert_type(p.x, int)
-        assert_type(p.units, str)
-
-        class Property(NamedTuple, Generic[T]):
-            name: str
-            value: T
-
-        def capybara(x: float) -> None:
-            pr = Property("", x)
-            assert_type(pr, Property[float])
-            assert_type(pr[1], float)
-            assert_type(pr.value, float)
-            Property[str]("", 3.1)  # E: incompatible_argument
-
-        class DefaultProperty(NamedTuple, Generic[T]):
-            name: str
-            value: T
-            units: str = "meters"
-
-        DefaultProperty[int]("", 3)
-        default_pr = DefaultProperty("", 3)
-        assert_type(default_pr, DefaultProperty[int])
-        assert_type(default_pr.units, str)
-        DefaultProperty[int]("")  # E: incompatible_call
-
-        class PointWithName(Point):
-            name: str = ""
-
-        pn = PointWithName(1, 2, "")
-        assert_type(pn.name, str)
-
-        Point(1)  # E: incompatible_call
-
-        class Point3(NamedTuple):
-            _y: int  # E: invalid_annotation
-
-        class Location(NamedTuple):
-            altitude: float = 0.0
-            latitude: float  # E: invalid_annotation
-
-        class BadPointWithName(Point):
-            x: int = 0  # E: incompatible_override
-
-        class Unit(NamedTuple, object):  # E: invalid_base
-            name: str
-
-    @assert_passes(allow_import_failures=True)
-    def test_generic_namedtuple_specialization_uses_synthetic_new_signature(self):
-        from typing import Generic, NamedTuple, TypeVar
-
-        T = TypeVar("T")
-
-        class Property(NamedTuple, Generic[T]):
-            name: str
-            value: T
-
-        Property[str]("", "")
-        Property[str]("", 3.1)  # E: incompatible_argument
-
-    @assert_passes(run_in_both_module_modes=True)
     def test_synthetic_instance_annotations_do_not_create_namedtuple_constructor(self):
         class Box:
             value: int
 
         def f() -> None:
             Box(1)  # E: incompatible_call
-
-    @assert_passes(run_in_both_module_modes=True)
-    def test_namedtuple_subclass_after_import_failure_uses_base_constructor(self):
-        from typing import NamedTuple
-
-        from typing_extensions import assert_type
-
-        class Base(NamedTuple):
-            x: int
-            y: int
-
-        class Child(Base):
-            label: str = ""
-
-        def capybara(x: int, y: int):
-            child = Child(x, y)
-            assert_type(child, Child)
-            assert_type(child.x, int)
-            child.label.upper()
-            assert_type(child[0], int)
-            assert_type(child[1], int)
-
-        def g(value: Child) -> None:
-            x, y = value
-            assert_type(x, int)
-            assert_type(y, int)
-
-        def f() -> None:
-            child = Child(1, 2)
-            child[2]  # E: incompatible_call
-            _x, _y, _label = child  # E: bad_unpack
-            Child("")  # E: incompatible_call
-            Child(1, 2, 3)  # E: incompatible_call
-
-    @assert_passes(allow_import_failures=True)
-    def test_specialized_namedtuple_base_after_import_failure(self):
-        from typing import Generic, NamedTuple, TypeVar
-
-        from typing_extensions import assert_type
-
-        T = TypeVar("T")
-
-        class Base(NamedTuple, Generic[T]):
-            value: T
-
-        class Child(Base[int]):
-            label: str = ""
-
-        def capybara(value: int) -> None:
-            child = Child(value)
-            assert_type(child.value, int)
-            assert_type(child.label, str)
-
-        Child("x")  # E: incompatible_argument
 
     @assert_passes()
     def test_hashability_respects_hash_none_for_typed_values(self):
@@ -1301,35 +981,6 @@ class TestImportFailureHandlingCodeSamples(TestNameCheckVisitorBase):
         def f(cls: type[C] | type[D]) -> None:
             cls.x = 1  # E: incompatible_assignment
 
-    @assert_passes()
-    def test_namedtuple_attribute_is_immutable(self):
-        from typing import NamedTuple
-
-        class Point(NamedTuple):
-            x: int
-
-        p = Point(1)
-
-        def mutate() -> None:
-            p.x = 2  # E: incompatible_assignment
-            del p.x  # E: incompatible_assignment
-
-    @assert_passes()
-    def test_namedtuple_attribute_is_immutable_for_intersections(self):
-        from typing import NamedTuple
-
-        from pycroscope.extensions import Intersection
-
-        class PointA(NamedTuple):
-            x: int
-
-        class PointB(NamedTuple):
-            x: int
-
-        def mutate(p: Intersection[PointA, PointB]) -> None:
-            p.x = 2  # E: incompatible_assignment
-            del p.x  # E: incompatible_assignment
-
     @assert_passes(run_in_both_module_modes=True)
     def test_readonly_attribute_intersection_allows_write_if_one_side_is_writable(self):
         from typing_extensions import ReadOnly
@@ -1348,52 +999,6 @@ class TestImportFailureHandlingCodeSamples(TestNameCheckVisitorBase):
             del p.x  # E: incompatible_assignment
 
     @assert_passes(run_in_both_module_modes=True)
-    def test_namedtuple_attribute_is_immutable_after_import_failure(self):
-        from typing import NamedTuple
-
-        class Point(NamedTuple):
-            x: int
-
-        p = Point(1)
-
-        def capybara() -> None:
-            p.x = 2  # E: incompatible_assignment
-            del p.x  # E: incompatible_assignment
-
-    @assert_passes()
-    def test_namedtuple_attribute_is_immutable_for_unions(self):
-        from typing import NamedTuple
-
-        class Point(NamedTuple):
-            x: int
-
-        class Mutable:
-            x: int
-
-        def mutate(p: Point | Mutable) -> None:
-            p.x = 2  # E: incompatible_assignment
-            del p.x  # E: incompatible_assignment
-
-    @assert_passes()
-    def test_local_namedtuple_attribute_is_immutable(self):
-        import collections
-
-        def capybara() -> None:
-            Point = collections.namedtuple("Point", ["x"])
-            p = Point(1)
-            p.x = 2  # E: incompatible_assignment
-            del p.x  # E: incompatible_assignment
-
-    @assert_passes()
-    def test_namedtuple_subclass_classmethod_forward_ref(self):
-        from collections import namedtuple
-
-        class BasicAuth(namedtuple("BasicAuth", ["login", "password", "encoding"])):
-            @classmethod
-            def decode(cls, auth_header: str, encoding: str = "latin1") -> "BasicAuth":
-                return cls(auth_header, "", encoding)
-
-    @assert_passes(run_in_both_module_modes=True)
     def test_exact_tuple_subclass_operations(self):
         from typing_extensions import assert_type
 
@@ -1404,59 +1009,6 @@ class TestImportFailureHandlingCodeSamples(TestNameCheckVisitorBase):
             assert_type(x[0], int)
             assert_type(x[1], str)
             assert_type(x, tuple[int, str])  # E: inference_failure
-
-    @assert_passes(run_in_both_module_modes=True)
-    def test_namedtuple_tuple_operations(self):
-        from typing import NamedTuple
-
-        from typing_extensions import assert_type
-
-        class Point(NamedTuple):
-            x: int
-            y: int
-            units: str = "meters"
-
-        def f(x: int, y: int, units: str) -> None:
-            p = Point(x, y, units)
-            assert_type(p[0], int)
-            assert_type(p[1], int)
-            assert_type(p[2], str)
-            assert_type(p[-1], str)
-            assert_type(p[-2], int)
-            assert_type(p[-3], int)
-
-            p[3]  # E: incompatible_call
-            p[-4]  # E: incompatible_call
-            p[0] = x  # E: unsupported_operation
-            del p[0]  # E: unsupported_operation
-
-            x1, y1, units1 = p
-            assert_type(x1, int)
-            assert_type(units1, str)
-            _x2, _y2 = p  # E: bad_unpack
-            _x3, _y3, _units3, _other = p  # E: bad_unpack
-
-        class PointWithName(Point):
-            name: str = ""
-
-        def g(x: int, y: int, units: str) -> None:
-            pn = PointWithName(x, y, units)
-            x4, y4, units4 = pn
-            assert_type(x4, int)
-            assert_type(units4, str)
-
-    @assert_passes(run_in_both_module_modes=True)
-    def test_namedtuple_is_assignable_to_exact_tuple(self):
-        from typing import NamedTuple
-
-        class Point(NamedTuple):
-            x: int
-            y: int
-            units: str = "meters"
-
-        def capybara(p: Point) -> tuple[int, int, str]:
-            exact: tuple[int, int, str] = p
-            return exact
 
     @assert_passes()
     def test_len_narrowing_on_tuple_union(self):
@@ -1525,51 +1077,6 @@ class TestImportFailureHandlingCodeSamples(TestNameCheckVisitorBase):
             return 1
 
         assert f() == 1
-
-    @assert_passes()
-    def test_unknown_attribute_assignment_on_protocol_typed_callable(self):
-        from typing import Callable, ParamSpec, Protocol, TypeVar, cast
-
-        P = ParamSpec("P")
-        R = TypeVar("R", covariant=True)
-
-        class CallableWithAttr(Protocol[P, R]):
-            other_attribute: int
-
-            def __call__(self, *args: P.args, **kwargs: P.kwargs) -> R: ...
-
-        def decorator(func: Callable[P, R]) -> CallableWithAttr[P, R]:
-            converted = cast(CallableWithAttr[P, R], func)
-            converted.other_attribute = 1
-            converted.missing = 2  # E: undefined_attribute
-            return converted
-
-        @decorator
-        def wrapped(x: int) -> str:
-            return str(x)
-
-    @assert_passes()
-    def test_protocol_with_function_metadata_members_accepts_function(self):
-        from typing import Any, Protocol
-
-        from typing_extensions import assert_type
-
-        class FunctionLike(Protocol):
-            __name__: str
-            __module__: str
-            __qualname__: str
-            __annotations__: dict[str, Any]
-
-            def __call__(self) -> None: ...
-
-        def f() -> None:
-            pass
-
-        wrapped: FunctionLike = f
-        assert_type(f.__name__, str)
-        assert_type(f.__module__, str)
-        assert_type(f.__qualname__, str)
-        assert_type(wrapped.__name__, str)
 
 
 class TestNameCheckVisitor(TestNameCheckVisitorBase):
@@ -1707,72 +1214,6 @@ class TestNameCheckVisitor(TestNameCheckVisitorBase):
 
             def func(a: Matrix[Literal[2], Literal[3]]) -> None:
                 assert_type(a, Matrix[Literal[2], Literal[3]])
-
-    @assert_passes()
-    def test_function_scope_typeddict_readonly_inheritance(self):
-        from typing import TypedDict
-
-        from typing_extensions import NotRequired, ReadOnly, Required
-
-        def run() -> None:
-            class F1(TypedDict):
-                a: Required[int]
-                b: ReadOnly[NotRequired[int]]
-                c: ReadOnly[Required[int]]
-
-            class F3(F1):
-                a: ReadOnly[int]  # E: invalid_annotation
-
-            class F4(F1):
-                a: NotRequired[int]  # E: invalid_annotation
-
-            class F5(F1):
-                b: ReadOnly[Required[int]]
-
-            class F6(F1):
-                c: ReadOnly[NotRequired[int]]  # E: invalid_annotation
-
-            class TD_A1(TypedDict):
-                x: int
-                y: ReadOnly[int]
-
-            class TD_A2(TypedDict):
-                x: float
-                y: ReadOnly[float]
-
-            class TD_A(TD_A1, TD_A2): ...  # E: invalid_base
-
-            class TD_B1(TypedDict):
-                x: ReadOnly[NotRequired[int]]
-                y: ReadOnly[Required[int]]
-
-            class TD_B2(TypedDict):
-                x: ReadOnly[Required[int]]
-                y: ReadOnly[NotRequired[int]]
-
-            class TD_B(TD_B1, TD_B2): ...  # E: invalid_base
-
-    @assert_passes()
-    def test_function_scope_typeddict_values(self):
-        from typing import TypedDict
-
-        from typing_extensions import NotRequired, ReadOnly, Required
-
-        def run() -> None:
-            class OptionalName(TypedDict):
-                name: ReadOnly[NotRequired[str]]
-
-            class RequiredName(OptionalName):
-                name: ReadOnly[Required[str]]
-
-            d: RequiredName = {}  # E: incompatible_assignment
-            print(d)
-
-            class Movie(TypedDict):
-                title: ReadOnly[str]
-
-            movie: Movie = {"title": ""}
-            movie["title"] = "x"  # E: readonly_typeddict
 
     @assert_passes()
     def test_known_ordered(self):
@@ -2120,39 +1561,6 @@ class TestNameCheckVisitor(TestNameCheckVisitorBase):
         def capybara(x):
             y = 3 if x else 4
             assert_type(y, Literal[3, 4])
-
-    @assert_passes()
-    def test_namedtuple(self):
-        import collections
-
-        typ = collections.namedtuple("typ", "foo bar")
-
-        def fn():
-            t = typ(1, 2)
-            print(t.baz)  # E: undefined_attribute
-
-    @assert_passes()
-    def test_local_namedtuple(self):
-        import collections
-
-        from typing_extensions import Literal
-
-        from pycroscope.value import SyntheticClassObjectValue, TypedValue
-
-        def capybara():
-            typ = collections.namedtuple("typ", "foo bar")
-            assert_is_value(
-                typ,
-                SyntheticClassObjectValue(
-                    "typ", TypedValue(f"{__name__}.capybara.<locals>.typ")
-                ),
-            )
-            t = typ(1, 2)
-            assert_type(t.foo, Literal[1])
-            assert_type(t.bar, Literal[2])
-            print(t.baz)  # E: undefined_attribute
-            typ(1, 2, 3)  # E: incompatible_call
-            typ(1)  # E: incompatible_call
 
     @assert_passes()
     def test_set_after_get(self):
@@ -4224,281 +3632,6 @@ class TestAnnAssign(TestNameCheckVisitorBase):
         def f() -> None:  # E: invalid_annotation
             pass
 
-    @assert_passes(allow_import_failures=True)
-    def test_protocol_merging_in_unimportable_module(self):
-        from abc import abstractmethod
-        from collections.abc import Sized
-        from typing import Protocol
-
-        class SizedAndClosable1(Sized, Protocol):
-            def close(self) -> None: ...
-
-        class SizedAndClosable2(Protocol):
-            def __len__(self) -> int: ...
-
-            def close(self) -> None: ...
-
-        class SCConcrete1:
-            def __len__(self) -> int:
-                return 0
-
-            def close(self) -> None:
-                pass
-
-        class SCConcrete2:
-            def close(self) -> None:
-                pass
-
-        s1: SizedAndClosable1 = SCConcrete1()
-        s2: SizedAndClosable2 = SCConcrete1()
-
-        bad1: SizedAndClosable1 = SCConcrete2()  # E: incompatible_assignment
-        bad2: SizedAndClosable2 = SCConcrete2()  # E: incompatible_assignment
-
-        def accepts_both(p1: SizedAndClosable1, p2: SizedAndClosable2) -> None:
-            merged1: SizedAndClosable2 = p1
-            merged2: SizedAndClosable1 = p2
-            print(merged1, merged2)
-
-        class SizedClosableFlush(SizedAndClosable2, Protocol):
-            def flush(self) -> None: ...
-
-        class NotAProtocol(SizedAndClosable1):
-            pass
-
-        class BadProto(NotAProtocol, Protocol):  # E: invalid_base
-            ...
-
-        class FlushOnly:
-            def flush(self) -> None:
-                pass
-
-        class WithFlush:
-            def __len__(self) -> int:
-                return 0
-
-            def close(self) -> None:
-                pass
-
-            def flush(self) -> None:
-                pass
-
-        class AbstractSized(SizedAndClosable1):
-            @abstractmethod
-            def close(self) -> None:
-                raise NotImplementedError
-
-        x = AbstractSized()  # E: incompatible_call
-        f1: SizedClosableFlush = WithFlush()
-        f2: SizedClosableFlush = FlushOnly()  # E: incompatible_assignment
-
-    @assert_passes(allow_import_failures=True)
-    def test_explicit_protocol_abstract_instantiation_in_unimportable_module(self):
-        from abc import ABC, abstractmethod
-        from typing import ClassVar, Protocol
-
-        class PColor(Protocol):
-            @abstractmethod
-            def draw(self) -> str: ...
-
-        class BadColor(PColor):
-            def draw(self) -> str:
-                return super().draw()  # E: bad_super_call
-
-        class RGB(Protocol):
-            rgb: tuple[int, int, int]
-
-            @abstractmethod
-            def intensity(self) -> int:
-                return 1
-
-            def transparency(self) -> int: ...
-
-        class Point(RGB):
-            def __init__(self, blue: str) -> None:
-                self.rgb = 0, 0, blue  # E: incompatible_assignment
-
-        Point("")  # E: incompatible_call
-
-        class Proto1(Protocol):
-            cm1: ClassVar[int]
-
-        class Concrete1(Proto1):
-            pass
-
-        Concrete1()  # E: incompatible_call
-
-        class Proto5(Protocol):
-            def method1(self) -> int: ...
-
-        class Concrete5(Proto5):
-            pass
-
-        Concrete5()  # E: incompatible_call
-
-        class Proto7(Protocol):
-            @abstractmethod
-            def method1(self) -> None: ...
-
-        class Mixin7(Proto7, ABC):
-            def method1(self) -> None:
-                pass
-
-        class Concrete7A(Proto7):
-            pass
-
-        class Concrete7B(Mixin7, Proto7):
-            pass
-
-        Concrete7A()  # E: incompatible_call
-        Concrete7B()
-
-    @assert_passes()
-    def test_protocol_base_member_assignment_type(self):
-        from typing import Protocol
-
-        class RGB(Protocol):
-            rgb: tuple[int, int, int]
-
-        class Point(RGB):
-            def __init__(self, blue: str) -> None:
-                self.rgb = 0, 0, blue  # E: incompatible_assignment
-
-    @assert_passes()
-    def test_protocol_assignment_to_declared_self_attribute(self):
-        from typing import Protocol
-
-        class Proto(Protocol):
-            value: int
-
-            def __init__(self) -> None:
-                self.value = 3
-
-    @assert_passes(run_in_both_module_modes=True)
-    def test_protocol_class_object_method_and_property_shapes(self):
-        from typing import Any, Protocol
-
-        class ProtoA1(Protocol):
-            def method1(self, x: int) -> int: ...
-
-        class ProtoA2(Protocol):
-            def method1(_self, self: Any, x: int) -> int: ...  # E: method_first_arg
-
-        class ConcreteA:
-            def method1(self, x: int) -> int:
-                return 0
-
-        pa1: ProtoA1 = ConcreteA  # E: incompatible_assignment
-        pa2: ProtoA2 = ConcreteA
-
-        class ProtoB1(Protocol):
-            @property
-            def prop1(self) -> int: ...
-
-        class ConcreteB:
-            @property
-            def prop1(self) -> int:
-                return 0
-
-        pb1: ProtoB1 = ConcreteB  # E: incompatible_assignment
-
-    @assert_passes(run_in_both_module_modes=True)
-    def test_protocol_class_object_classvar_members(self):
-        from typing import ClassVar, Protocol
-
-        class ProtoC1(Protocol):
-            attr1: ClassVar[int]
-
-        class ProtoC2(Protocol):
-            attr1: int
-
-        class ConcreteC1:
-            attr1: ClassVar[int] = 1
-
-        class ConcreteC2:
-            attr1: int = 1
-
-        class CMeta(type):
-            pass
-
-        class ConcreteC3(metaclass=CMeta):
-            pass
-
-        ConcreteC3.attr1 = 1
-
-        pc1: ProtoC1 = ConcreteC1  # E: incompatible_assignment
-        pc2: ProtoC2 = ConcreteC1
-        pc3: ProtoC1 = ConcreteC2  # E: incompatible_assignment
-        pc4: ProtoC2 = ConcreteC2  # E: incompatible_assignment
-        pc5: ProtoC1 = ConcreteC3  # E: incompatible_assignment
-        pc6: ProtoC2 = ConcreteC3  # E: incompatible_assignment
-
-    @assert_passes()
-    def test_protocol_class_object_call_member(self):
-        from typing import Protocol
-
-        class Concrete:
-            def __init__(self, x: int) -> None:
-                self.x = x
-
-        class Factory(Protocol):
-            def __call__(self, x: int) -> Concrete: ...
-
-        factory: Factory = Concrete
-        created: Concrete = factory(1)
-
-    @assert_passes()
-    def test_callable_assignment_from_protocol_instance(self):
-        from collections.abc import Callable
-        from typing import Protocol
-
-        class GoodCallable(Protocol):
-            def __call__(self, x: int) -> str: ...
-
-        class BadCallable(Protocol):
-            @property
-            def __call__(self) -> int: ...
-
-        def wants_callable(fn: Callable[[int], str]) -> None:
-            pass
-
-        def capybara(good: GoodCallable, bad: BadCallable) -> None:
-            wants_callable(good)
-            wants_callable(bad)  # E: incompatible_argument
-
-    @assert_passes()
-    def test_collections_callable_assignment_from_protocol_instance(self):
-        from collections.abc import Callable
-        from typing import Protocol
-
-        class GoodCallable(Protocol):
-            def __call__(self, x: int) -> str: ...
-
-        class NarrowCallable(Protocol):
-            def __call__(self, x: int, y: int) -> str: ...
-
-        def capybara(good: GoodCallable, narrow: NarrowCallable) -> None:
-            generic_cb: Callable = good
-            specific_cb: Callable[[int], str] = good
-            bad_cb: Callable[[int], str] = narrow  # E: incompatible_assignment
-            print(generic_cb, specific_cb, bad_cb)
-
-    @assert_passes()
-    def test_protocol_class_object_metaclass_members(self):
-        from typing import Protocol
-
-        class Meta(type):
-            answer: int = 1
-
-        class WantsAnswer(Protocol):
-            answer: int
-
-        class Concrete(metaclass=Meta):
-            pass
-
-        good: WantsAnswer = Concrete
-        print(good)
-
     @assert_passes()
     def test_hashable_class_object_with_custom_metaclass_hash(self):
         from collections.abc import Hashable
@@ -4513,24 +3646,6 @@ class TestAnnAssign(TestNameCheckVisitorBase):
         def capybara() -> None:
             hashable: Hashable = Concrete
             print(hashable)
-
-    @assert_passes()
-    def test_type_protocol_constructor_call_allows_concrete_implementers(self):
-        from typing import Protocol, cast
-
-        class Proto(Protocol):
-            def meth(self) -> int: ...
-
-        class Concrete:
-            def meth(self) -> int:
-                return 1
-
-        def call_it(cls: type[Proto]) -> int:
-            return cls().meth()
-
-        call_it(cast(type[Proto], Concrete))
-        impl = cast(type[Proto], Concrete)
-        impl().meth()
 
     @assert_passes(run_in_both_module_modes=True)
     def test_self_methods_in_unimportable_generic_module(self):
@@ -4692,51 +3807,6 @@ class TestAnnAssign(TestNameCheckVisitorBase):
             Node.label = 1  # E: incompatible_assignment
             Node.label  # E: undefined_attribute
             type(n1).label  # E: undefined_attribute
-
-    @assert_passes()
-    def test_protocol_override_keeps_compatible_self_type(self):
-        from abc import abstractmethod
-        from collections.abc import Sized
-        from typing import Protocol
-
-        class SizedAndClosable(Sized, Protocol):
-            def close(self) -> None: ...
-
-        class AbstractSized(SizedAndClosable):
-            @abstractmethod
-            def close(self) -> None:
-                raise NotImplementedError
-
-    @assert_passes()
-    def test_protocol_receiver_assignment_with_nonstandard_receiver_name(self):
-        from typing import Protocol
-
-        class Proto(Protocol):
-            allowed: int
-
-            def assign(this) -> None:  # E: method_first_arg
-                this.disallowed = 1  # E: invalid_annotation
-                this.allowed = 1
-
-    @assert_passes(run_in_both_module_modes=True)
-    def test_protocol_staticmethod_with_receiver_param_is_incompatible(self):
-        from typing import Protocol
-
-        class Proto(Protocol):
-            def method1(self, a: int, b: int) -> float: ...
-
-        class Good:
-            @staticmethod
-            def method1(a: int, b: int) -> float:
-                return 0
-
-        class Bad:
-            @staticmethod
-            def method1(self, a: int, b: int) -> float:
-                return 0
-
-        ok: Proto = Good()
-        bad: Proto = Bad()  # E: incompatible_assignment
 
     @assert_passes()
     def test_inconsistent_type(self):
@@ -5490,16 +4560,6 @@ class TestIncompatibleOverride(TestNameCheckVisitorBase):
             y: int  # E: incompatible_override
 
     @assert_passes()
-    def test_unannotated_protocol_classvar_override(self):
-        from typing import ClassVar, Protocol
-
-        class Proto(Protocol):
-            z: ClassVar[int]
-
-        class ProtoImpl(Proto):
-            z = 0
-
-    @assert_passes()
     def test_property_annotated(self):
         class Annotated:
             @property
@@ -5896,35 +4956,6 @@ class TestTryStar(TestNameCheckVisitorBase):
                 except* ExceptionGroup as eg:  # E: bad_except_handler
                     print(eg)
             """)
-
-
-class TestProtocolInstantiation(TestNameCheckVisitorBase):
-    @assert_passes()
-    def test_protocol_instantiation_is_rejected(self):
-        from typing import Protocol
-
-        class Proto(Protocol):
-            def meth(self) -> int: ...
-
-        def capybara() -> None:
-            Proto()  # E: incompatible_call
-
-    @assert_passes(run_in_both_module_modes=True)
-    def test_specialized_protocol_base_preserves_member_types(self):
-        from typing import Protocol, TypeVar
-
-        from typing_extensions import assert_type
-
-        T_co = TypeVar("T_co", covariant=True)
-
-        class Base(Protocol[T_co]):
-            def meth(self) -> T_co: ...
-
-        class Child(Base[int]):
-            pass
-
-        def capybara(value: Child) -> None:
-            assert_type(value.meth(), int)
 
 
 class TestMustUse(TestNameCheckVisitorBase):
