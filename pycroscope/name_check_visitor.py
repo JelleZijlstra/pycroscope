@@ -3636,88 +3636,20 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             ).to_value(allow_qualifiers=True, allow_empty=True)
 
     def _has_base_attribute(self, varname: str, node: ast.AST) -> bool:
-        return self._has_base_attribute_for(self.current_class, varname, node)
-
-    def _has_base_attribute_for(
-        self, current_class: type | str | None, varname: str, node: ast.AST
-    ) -> bool:
-        for base_class, base_value in self._get_base_class_attributes_for(
-            current_class, varname, node
-        ):
-            base_value = replace_fallback(base_value)
-            if isinstance(base_value, AnyValue):
-                if self._base_class_has_any_base(base_class, set()):
-                    return True
-                continue
-            return True
-        if current_class is None:
+        if self.current_tobj is None:
             return False
-        return self._base_class_has_any_base(current_class, set())
-
-    def _base_class_has_any_base(
-        self, base_class: type | str, seen: set[type | str]
-    ) -> bool:
-        tobj = self.checker.make_type_object(base_class)
-        return tobj.has_any_base()
-
-    def _get_base_class_attributes_for(
-        self, current_class: type | str | None, varname: str, node: ast.AST
-    ) -> Iterable[tuple[type | str, Value]]:
-        if current_class is None:
-            return
-        if isinstance(current_class, str):
-            for base_class_value in self.checker.make_type_object(
-                current_class
-            ).get_direct_bases():
-                if not isinstance(base_class_value, TypedValue):
-                    continue
-                base_class = base_class_value.typ
-                if class_keys_match(base_class, current_class):
-                    continue
-                root_value = (
-                    self._synthetic_classes_by_name.get(base_class, base_class_value)
-                    if isinstance(base_class, str)
-                    else base_class_value
-                )
-                ctx = _AttrContext(
-                    Composite(root_value),
-                    None,
-                    varname,
-                    self,
-                    node=node,
-                    skip_mro=True,
-                    skip_unwrap=True,
-                    record_reads=False,
-                )
-                base_value = attributes.get_attribute(ctx)
-                if base_value is not UNINITIALIZED_VALUE:
-                    yield base_class, base_value
-        for base_class, base_typevar_map in self.checker.get_generic_bases(
-            current_class
-        ).items():
-            if class_keys_match(base_class, current_class):
-                continue
-            if isinstance(base_class, str):
-                base_class_value: Value = self._synthetic_classes_by_name.get(
-                    base_class, TypedValue(base_class)
-                )
-            else:
-                base_class_value = TypedValue(base_class)
-            ctx = _AttrContext(
-                Composite(base_class_value),
-                None,
-                varname,
-                self,
-                node=node,
-                skip_mro=True,
-                skip_unwrap=True,
-                record_reads=False,
+        if self.current_tobj.has_any_base():
+            return True
+        for base_value in self.current_tobj.get_direct_bases():
+            if isinstance(base_value, AnyValue):
+                return True
+            base_tobj = self.checker.make_type_object(base_value.typ)
+            attr = base_tobj.get_attribute(
+                varname, self, on_class=False, receiver_value=base_value
             )
-            base_value = attributes.get_attribute(ctx)
-            if base_value is not UNINITIALIZED_VALUE:
-                if base_typevar_map:
-                    base_value = base_value.substitute_typevars(base_typevar_map)
-                yield base_class, base_value
+            if attr is not None:
+                return True
+        return False
 
     def _check_for_incompatible_overrides(
         self, varname: str, node: ast.AST, value: Value
@@ -8414,11 +8346,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         ]
 
         placement_error = False
-        effective_is_override = False
         if impl_info is not None:
-            effective_is_override = (
-                FunctionDecorator.override in impl_info.decorator_kinds
-            )
             if overload_final_positions:
                 placement_error = True
                 self._show_error_if_checking(
@@ -8454,30 +8382,8 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                         overloads[idx].node,
                         error_code=ErrorCode.invalid_override_decorator,
                     )
-                else:
-                    effective_is_override = True
         if placement_error:
             should_check_consistency = False
-
-        representative_node = impl_node if impl_node is not None else overloads[0].node
-        class_context: type | str | None
-        if pending_block.scope.scope_type is ScopeType.class_scope and isinstance(
-            pending_block.scope.scope_object, (type, str)
-        ):
-            class_context = pending_block.scope.scope_object
-        else:
-            class_context = None
-        if effective_is_override:
-            if class_context is None:
-                self._show_error_if_checking(
-                    representative_node, error_code=ErrorCode.invalid_override_decorator
-                )
-            elif not self._has_base_attribute_for(
-                class_context, pending_block.name, representative_node
-            ):
-                self._show_error_if_checking(
-                    representative_node, error_code=ErrorCode.override_does_not_override
-                )
 
         return should_check_consistency
 
