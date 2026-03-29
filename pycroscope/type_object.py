@@ -6,6 +6,7 @@ An object that represents a type.
 
 import collections.abc
 import enum
+import functools
 import inspect
 import sys
 from collections.abc import (
@@ -17,7 +18,7 @@ from collections.abc import (
     Sequence,
 )
 from dataclasses import dataclass, replace
-from typing import TYPE_CHECKING, Literal, get_origin
+from typing import TYPE_CHECKING, Literal, TypeVar, get_origin
 from unittest import mock
 
 from typing_extensions import assert_never
@@ -37,6 +38,7 @@ from .input_sig import (
 from .options import PyObjectSequenceOption
 from .relations import (
     infer_positional_generic_typevar_map,
+    subtract_values,
     translate_generic_typevar_map,
 )
 from .safe import (
@@ -93,6 +95,7 @@ from .value import (
     TypeParam,
     TypeVarLike,
     TypeVarMap,
+    TypeVarParam,
     TypeVarTupleValue,
     TypeVarValue,
     UnboundMethodValue,
@@ -102,6 +105,7 @@ from .value import (
     get_namedtuple_field_annotation,
     get_tv_map,
     match_typevar_arguments,
+    receiver_to_self_type,
     replace_fallback,
     stringify_object,
     tuple_members_from_value,
@@ -145,6 +149,8 @@ EXCLUDED_PROTOCOL_MEMBERS: set[str] = {
     "__static_attributes__",
     "__firstlineno__",
 }
+
+_DescriptorNestedSelfT = TypeVar("_DescriptorNestedSelfT")
 
 
 _BaseProvider = Callable[[type], set[type]]
@@ -604,7 +610,10 @@ class TypeObject:
         fields: list[NamedTupleField] = []
         defaults = safe_getattr(typ, "_field_defaults", None)
         annos = safe_getattr(typ, "__annotations__", None)
-        for field_name in safe_getattr(typ, "_fields", ()):
+        fields_obj = safe_getattr(typ, "_fields", None)
+        if not isinstance(fields_obj, tuple):
+            fields_obj = tuple(annos) if isinstance(annos, Mapping) else ()
+        for field_name in fields_obj:
             if not isinstance(field_name, str):
                 continue
             field_type = type_from_runtime(
@@ -848,6 +857,7 @@ class TypeObject:
             self._declared_symbols = self.get_synthetic_declared_symbols()
 
     def _invalidate_synthetic_state(self) -> None:
+        self._checker.arg_spec_cache.invalidate_for_type(self.typ)
         self._update_loaded_synthetic_fields()
         self._protocol_positive_cache.clear()
 
@@ -2244,6 +2254,55 @@ def normalize_synthetic_descriptor_attribute(
     return value
 
 
+def _shield_nested_self_typevars(value: Value) -> tuple[Value, TypeVarMap]:
+    """Prevent method receiver binding from capturing nested owner ``Self`` values."""
+    first_self_typevar = next(
+        (
+            subval
+            for subval in value.walk_values()
+            if isinstance(subval, TypeVarValue)
+            and subval.typevar_param.typevar is SelfT
+        ),
+        None,
+    )
+    if first_self_typevar is None:
+        return value, {}
+    placeholder = TypeVarValue(
+        TypeVarParam(
+            _DescriptorNestedSelfT,
+            bound=first_self_typevar.typevar_param.bound,
+            default=first_self_typevar.typevar_param.default,
+            constraints=first_self_typevar.typevar_param.constraints,
+            variance=first_self_typevar.typevar_param.variance,
+        )
+    )
+    return value.substitute_typevars({SelfT: placeholder}), {
+        _DescriptorNestedSelfT: first_self_typevar
+    }
+
+
+def _get_cached_property_return_type(
+    descriptor: Value, ctx: CanAssignContext
+) -> Value | None:
+    descriptor = replace_fallback(descriptor)
+    if isinstance(descriptor, AnnotatedValue):
+        descriptor = replace_fallback(descriptor.value)
+    if not (
+        isinstance(descriptor, KnownValue)
+        and isinstance(descriptor.val, functools.cached_property)
+    ):
+        return None
+    func = safe_getattr(descriptor.val, "func", None)
+    if func is None:
+        return None
+    signature = ctx.get_signature(func)
+    if isinstance(signature, Signature):
+        return signature.return_value
+    if isinstance(signature, OverloadedSignature):
+        return unite_values(*(sig.return_value for sig in signature.signatures))
+    return None
+
+
 def _class_key_and_generic_args_from_type_value(
     receiver_value: TypedValue,
 ) -> tuple[type | str, Sequence[Value]]:
@@ -2616,6 +2675,9 @@ def _get_descriptor_get_value(
     is_metaclass_owner: bool,
 ) -> Value | None:
     """Return the value produced by a descriptor's ``__get__`` call."""
+    cached_property_return = _get_cached_property_return_type(descriptor, ctx)
+    if cached_property_return is not None:
+        return cached_property_return
     descriptor_receiver: Value
     if on_class and not is_metaclass_owner:
         descriptor_receiver = KnownValue(None)
@@ -2629,7 +2691,12 @@ def _get_descriptor_get_value(
     if match is None:
         return None
     get_signature, _ = match
-    return get_signature.return_value
+    return_value = get_signature.return_value
+    if not on_class:
+        return_value = subtract_values(
+            return_value, receiver_to_self_type(descriptor), ctx
+        )
+    return return_value
 
 
 def _descriptor_has_setter(descriptor: Value, ctx: CanAssignContext) -> bool:
@@ -2671,10 +2738,16 @@ def _descriptor_method_signature_any(
         return _descriptor_method_signature_any(descriptor.value, method_name, ctx)
     if not isinstance(descriptor, (KnownValue, TypedValue, SyntheticClassObjectValue)):
         return None
+    descriptor, restore_typevars = _shield_nested_self_typevars(descriptor)
     method_value = ctx.get_attribute_from_value(descriptor, method_name)
     if method_value is UNINITIALIZED_VALUE:
         return None
-    return _signature_from_descriptor_attribute(method_value, ctx)
+    signature = _signature_from_descriptor_attribute(method_value, ctx)
+    if signature is None:
+        return None
+    if restore_typevars:
+        signature = signature.substitute_typevars(restore_typevars)
+    return signature
 
 
 def _signature_from_descriptor_attribute(

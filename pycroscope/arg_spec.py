@@ -430,6 +430,11 @@ class ArgSpecCache:
         for obj, argspec in default_argspecs.items():
             self.known_argspecs[obj] = argspec
 
+    def invalidate_for_type(self, typ: type | str) -> None:
+        self.known_argspecs.pop(typ, None)
+        self.generic_bases_cache.pop(typ, None)
+        self.type_params_cache.pop(typ, None)
+
     def from_signature(
         self,
         sig: inspect.Signature,
@@ -710,8 +715,8 @@ class ArgSpecCache:
             hashable = True
 
         if (
-            not self._did_load_default_argspecs_with_cache
-            and not self._loading_default_argspecs_with_cache
+            self._did_load_default_argspecs_with_cache is False
+            and self._loading_default_argspecs_with_cache is False
             and implementation.uses_default_argspecs_with_cache(obj)
         ):
             self._loading_default_argspecs_with_cache = True
@@ -1106,7 +1111,15 @@ class ArgSpecCache:
     def _namedtuple_constructor_signature(
         self, obj: type, type_params: Sequence[TypeParam]
     ) -> Signature:
-        fields = tuple(getattr(obj, "_fields", ()))
+        fields_obj = safe_getattr(obj, "_fields", None)
+        if isinstance(fields_obj, tuple):
+            fields = tuple(field for field in fields_obj if isinstance(field, str))
+        else:
+            annotations = safe_getattr(obj, "__annotations__", None)
+            if isinstance(annotations, dict):
+                fields = tuple(field for field in annotations if isinstance(field, str))
+            else:
+                fields = ()
         defaults = tuple(getattr(obj.__new__, "__defaults__", ()) or ())
         first_default_idx = len(fields) - len(defaults)
         defaults_by_field = {

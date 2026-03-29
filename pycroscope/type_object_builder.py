@@ -382,5 +382,8 @@ def _runtime_namedtuple_field_names(typ: type) -> tuple[str, ...]:
         return ()
     fields_obj = safe_getattr(typ, "_fields", None)
     if not isinstance(fields_obj, tuple):
+        annos = safe_getattr(typ, "__annotations__", None)
+        if isinstance(annos, Mapping):
+            return tuple(name for name in annos if isinstance(name, str))
         return ()
     return tuple(name for name in fields_obj if isinstance(name, str))
