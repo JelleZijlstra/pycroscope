@@ -963,6 +963,24 @@ class IgnoredForIncompatibleOverride(StringSequenceOption):
     default_value = ["__init__", "__eq__", "__ne__"]
 
 
+_IGNORED_OVERRIDE_METADATA_ATTRIBUTES = {
+    # Exempt from LSP
+    "__init__",
+    "__new__",
+    "__init_subclass__",
+    # TODO: do we really need this?
+    "__hash__",
+    # __slots__ is cumulative across inheritance, so subclasses may add
+    # slot names even when the literal value differs from the base class.
+    "__slots__",
+    # type attributes
+    "__annotations__",
+    "__module__",
+    "__name__",
+    "__qualname__",
+}
+
+
 class IgnoredUnusedAttributes(StringSequenceOption):
     """When these attributes are unused, they are not listed as such by the unused attribute
     finder."""
@@ -2083,6 +2101,9 @@ class ActiveTypeParams:
         self, error_node: ast.AST, type_param: TypeParam
     ) -> None:
         identity = type_param.typevar
+        narrowed_error_node = self._narrow_type_param_error_node(error_node, identity)
+        if narrowed_error_node is not error_node:
+            return
         for policy in self._legacy_policies:
             if policy.triggered:
                 continue
@@ -2090,7 +2111,7 @@ class ActiveTypeParams:
                 continue
             policy.triggered = True
             self._show_error(
-                error_node,
+                narrowed_error_node,
                 policy.message,
                 error_code=ErrorCode.invalid_annotation,
                 report_in_collecting=policy.report_in_collecting,
@@ -2101,7 +2122,7 @@ class ActiveTypeParams:
             return
         if any(identity in disallowed for disallowed in self._disallowed_identities):
             self.visitor._show_error_if_checking(
-                error_node,
+                narrowed_error_node,
                 "Type parameter is not valid in this annotation context",
                 error_code=ErrorCode.invalid_annotation,
             )
@@ -2111,10 +2132,24 @@ class ActiveTypeParams:
         if identity in self.current_annotation_identities():
             return
         self.visitor._show_error_if_checking(
-            error_node,
+            narrowed_error_node,
             "Type parameter is not valid in this annotation context",
             error_code=ErrorCode.invalid_annotation,
         )
+
+    # TODO: this is silly, find a better solution to prevent duplicate errors
+    def _narrow_type_param_error_node(self, node: ast.AST, identity: object) -> ast.AST:
+        if isinstance(node, ast.Name):
+            return node
+        for subnode in ast.walk(node):
+            if not isinstance(subnode, ast.Name):
+                continue
+            resolved, _ = self.visitor.resolve_name(
+                subnode, error_node=subnode, suppress_errors=True
+            )
+            if _type_param_identity(resolved, self.visitor) is identity:
+                return subnode
+        return node
 
 
 @used  # exposed as an API
@@ -2144,7 +2179,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     _pending_overload_blocks: dict[int, _PendingOverloadBlock]
     _synthetic_classes_by_name: dict[str, SyntheticClassObjectValue]
     _synthetic_abstract_methods: dict[str, set[str]]
-    _synthetic_final_methods: dict[str, set[str]]
     _dataclass_field_call_options_by_node: dict[int, _DataclassFieldCallOptions]
     _function_decorator_kinds_by_node: dict[
         ast.FunctionDef | ast.AsyncFunctionDef, frozenset[FunctionDecorator]
@@ -2165,7 +2199,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     checker: Checker
     collector: CallSiteCollector | None
     current_class: type | str | None
-    current_type_object: TypeObject | None
+    current_tobj: TypeObject | None
     current_dataclass_info: DataclassInfo | None
     current_dataclass_kw_only_active: bool
     current_class_key: type | str | None
@@ -2198,7 +2232,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     state: VisitorState
     unused_finder: UnusedObjectFinder | None
     final_class_keys: set[type | str]
-    final_member_names_by_class: dict[type | str, set[str]]
     final_members_initialized_in_init: dict[type | str, set[str]]
     final_members_requiring_init: dict[type | str, dict[str, ast.AST]]
     enum_class_keys: set[type | str]
@@ -2243,7 +2276,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         self.match_subject = Composite(AnyValue(AnySource.inference))
         # current class (for inferring the type of cls and self arguments)
         self.current_class = None
-        self.current_type_object = None
+        self.current_tobj = None
         self.current_dataclass_info = None
         self.current_dataclass_kw_only_active = False
         self.current_class_key = None
@@ -2319,7 +2352,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         self._pending_overload_blocks = {}
         self._synthetic_classes_by_name = {}
         self._synthetic_abstract_methods = {}
-        self._synthetic_final_methods = {}
         self._dataclass_field_call_options_by_node = {}
         self._function_decorator_kinds_by_node = {}
         self._function_returns_self_by_node = {}
@@ -2328,7 +2360,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         self._method_cache = {}
         self._statement_types = set()
         self.final_class_keys = set()
-        self.final_member_names_by_class = {}
         self.final_members_initialized_in_init = {}
         self.final_members_requiring_init = {}
         self.enum_class_keys = set()
@@ -2404,7 +2435,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     ) -> ConcreteSignature | None:
         return self.checker.get_signature(obj, is_asynq=is_asynq)
 
-    def __reduce_ex__(self, proto: object) -> object:
+    def __reduce_ex__(self, proto: object) -> tuple[type[object], tuple[object, ...]]:
         # Only pickle the attributes needed to get error reporting working
         return self.__class__, (self.filename, self.contents, self.tree, self.settings)
 
@@ -3376,10 +3407,16 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             is_classmethod, is_staticmethod, returns_self_on_class_access = (
                 self._synthetic_method_symbol_flags(node)
             )
+            qualifiers = (
+                frozenset({Qualifier.Final})
+                if FunctionDecorator.final in info.decorator_kinds
+                else frozenset()
+            )
             self._set_complete_synthetic_class_symbol(
                 node.name,
                 initializer=function_value,
                 node=node,
+                qualifiers=qualifiers,
                 is_instance_only=False,
                 is_method=True,
                 is_classmethod=is_classmethod,
@@ -3514,13 +3551,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         symbol = self._get_direct_declared_symbol(class_key, attr_name)
         return symbol is not None and symbol.is_classvar
 
-    def _is_direct_instance_only_member(
-        self, class_key: type | str, attr_name: str
-    ) -> bool:
-        return self._is_instance_only_symbol(
-            self._get_direct_declared_symbol(class_key, attr_name)
-        )
-
     def _is_direct_readonly_member(self, class_key: type | str, attr_name: str) -> bool:
         symbol = self._get_direct_declared_symbol(class_key, attr_name)
         return symbol is not None and symbol.is_readonly
@@ -3626,13 +3656,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 value_node, visitor=self, suppress_errors=suppress_errors
             ).to_value(allow_qualifiers=True, allow_empty=True)
 
-    def _get_base_class_attributes(
-        self, varname: str, node: ast.AST
-    ) -> Iterable[tuple[type | str, Value]]:
-        yield from self._get_base_class_attributes_for(
-            self.current_class, varname, node
-        )
-
     def _has_base_attribute(self, varname: str, node: ast.AST) -> bool:
         return self._has_base_attribute_for(self.current_class, varname, node)
 
@@ -3720,79 +3743,94 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     def _check_for_incompatible_overrides(
         self, varname: str, node: ast.AST, value: Value
     ) -> None:
-        if self.current_class is None:
+        if self.current_tobj is None:
             return
-        if self._is_current_class_dataclass() and varname == "__post_init__":
+        if varname == "__post_init__" and self.current_tobj.is_dataclass():
             # Dataclasses synthesize the expected __post_init__ contract from InitVar
             # fields, so generic override rules are too strict here.
             return
-        if varname == "__slots__":
-            # __slots__ is cumulative across inheritance, so subclasses may add
-            # slot names even when the literal value differs from the base class.
-            return
-        if varname in {"__init__", "__new__", "__hash__", "__init_subclass__"}:
-            return
         if varname in self.options.get_value_for(IgnoredForIncompatibleOverride):
+            return
+        if varname in _IGNORED_OVERRIDE_METADATA_ATTRIBUTES:
             return
         if varname.startswith("__") and not varname.endswith("__"):
             return
-        is_annotated_assignment = (
-            isinstance(self.current_statement, ast.AnnAssign)
-            and isinstance(self.current_statement.target, ast.Name)
-            and self.current_statement.target.id == varname
-        )
-        base_attributes = list(self._get_base_class_attributes(varname, node))
-        child_is_classvar = is_annotated_assignment and self._is_direct_classvar_member(
-            self.current_class, varname
-        )
-        saw_final_member = False
-        for base_class, base_value in base_attributes:
-            if self._is_final_member(base_class, varname, base_value):
-                saw_final_member = True
+        if self.current_class is None:
+            return
+        child_symbol = self.current_tobj.get_declared_symbol(varname)
+        child_is_classvar = child_symbol is not None and child_symbol.is_classvar
+        child_override_value = self._normalize_override_child_value(value)
+
+        # TODO: if we don't call this the signature of some namedtuples doesn't get
+        # inferred correctly for some reason.
+        self.checker.get_generic_bases(self.current_class)
+
+        for base_value in self.current_tobj.get_direct_bases():
+            if isinstance(base_value, AnyValue):
+                continue
+            base_tobj = self.checker.make_type_object(base_value.typ)
+            base_attr = base_tobj.get_attribute(
+                varname, self, on_class=False, receiver_value=base_value
+            )
+            if base_attr is None:
+                continue
+            if base_attr.symbol.is_final:
                 self._show_error_if_checking(
                     node,
                     f"Cannot override final attribute {varname}",
                     ErrorCode.invalid_annotation,
                 )
-        if saw_final_member:
-            return
-        for base_class, base_value in base_attributes:
-            if is_annotated_assignment:
-                base_is_classvar = self._is_direct_classvar_member(base_class, varname)
-                base_is_instance_only = self._is_direct_instance_only_member(
-                    base_class, varname
+                continue
+            if child_is_classvar and base_attr.symbol.is_instance_only:
+                self._show_error_if_checking(
+                    node,
+                    f"Class variable {varname} cannot override instance variable from"
+                    f" base class {base_attr.owner}",
+                    ErrorCode.incompatible_override,
                 )
-                if child_is_classvar and not base_is_classvar and base_is_instance_only:
-                    self._show_error_if_checking(
-                        node,
-                        f"Class variable {varname} cannot override instance variable from"
-                        f" base class {base_class}",
-                        ErrorCode.incompatible_override,
-                    )
-                    continue
-                if base_is_classvar and not child_is_classvar:
-                    self._show_error_if_checking(
-                        node,
-                        f"Instance variable {varname} cannot override class variable from"
-                        f" base class {base_class}",
-                        ErrorCode.incompatible_override,
-                    )
-                    continue
-            can_assign = self._can_assign_to_base(base_value, value, base_class, node)
+                continue
+            if (
+                base_attr.symbol.is_classvar
+                and child_symbol is not None
+                and child_symbol.is_instance_only
+            ):
+                self._show_error_if_checking(
+                    node,
+                    f"Instance variable {varname} cannot override class variable from"
+                    f" base class {base_attr.owner}",
+                    ErrorCode.incompatible_override,
+                )
+                continue
+
+            can_assign = self._can_assign_to_base(
+                base_attr.override_value, child_override_value, base_value.typ, node
+            )
             if isinstance(can_assign, CanAssignError):
                 error = CanAssignError(
                     children=[
-                        CanAssignError(f"Base class: {self.display_value(base_value)}"),
-                        CanAssignError(f"Child class: {self.display_value(value)}"),
+                        CanAssignError(
+                            f"Base class: {self.display_value(base_attr.override_value)}"
+                        ),
+                        CanAssignError(
+                            f"Child class: {self.display_value(child_override_value)}"
+                        ),
                         can_assign,
                     ]
                 )
                 self._show_error_if_checking(
                     node,
-                    f"Value of {varname} incompatible with base class {base_class}",
+                    f"Value of {varname} incompatible with base class {base_attr.owner}",
                     ErrorCode.incompatible_override,
                     detail=str(error),
                 )
+
+    def _normalize_override_child_value(self, value: Value) -> Value:
+        resolved = replace_fallback(value)
+        if isinstance(resolved, KnownValue) and isinstance(
+            resolved.val, types.MethodType
+        ):
+            return KnownValue(resolved.val.__func__)
+        return value
 
     def display_value(self, value: Value) -> str:
         return self.checker.display_value(value)
@@ -3813,6 +3851,11 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         base_class: type | str,
         node: ast.AST,
     ) -> CanAssign:
+        # TODO: This is still a bit ad hoc. I think the right way to do it would be to
+        # check all three operations: get, set, and delete. For each of them, what's
+        # allowed on the base should be allowed on the child. Though we'll still need
+        # some mild special casing of callables so pycroscope sees different functions as
+        # compatible.
         if base_value is UNINITIALIZED_VALUE:
             return {}
         if isinstance(base_value, KnownValue):
@@ -4581,7 +4624,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 ),
                 self.active_type_params.disallow(disallowed_type_params),
                 override(self, "current_synthetic_typeddict", synthetic_typeddict),
-                override(self, "current_type_object", tobj),
+                override(self, "current_tobj", tobj),
                 override(self, "current_class_key", class_key),
                 override(self, "current_dataclass_info", dataclass_semantics),
                 override(
@@ -7841,12 +7884,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                         "@final should be applied only to the overload implementation",
                         error_code=ErrorCode.invalid_annotation,
                     )
-                class_key = self.current_class_key
-                if class_key is not None and (
-                    FunctionDecorator.overload not in info.decorator_kinds
-                    or self.filename.endswith(".pyi")
-                ):
-                    self._record_final_member(class_key, node.name)
 
             if node.returns is None:
                 self._show_error_if_checking(
@@ -8002,15 +8039,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     self._show_error_if_checking(
                         node, error_code=ErrorCode.override_does_not_override
                     )
-        if (
-            FunctionDecorator.final in info.decorator_kinds
-            and FunctionDecorator.overload not in info.decorator_kinds
-            and isinstance(self.current_class, str)
-            and self.scopes.scope_type() is ScopeType.class_scope
-        ):
-            self._synthetic_final_methods.setdefault(self.current_class, set()).add(
-                node.name
-            )
         if (
             self._is_checking()
             and isinstance(self.current_class, str)
@@ -8407,10 +8435,8 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         ]
 
         placement_error = False
-        effective_is_final = False
         effective_is_override = False
         if impl_info is not None:
-            effective_is_final = FunctionDecorator.final in impl_info.decorator_kinds
             effective_is_override = (
                 FunctionDecorator.override in impl_info.decorator_kinds
             )
@@ -8439,8 +8465,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                         "@final should appear only on the first overload",
                         error_code=ErrorCode.invalid_annotation,
                     )
-                else:
-                    effective_is_final = True
             if overload_override_positions:
                 if overload_override_positions != [0]:
                     placement_error = True
@@ -8476,42 +8500,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     representative_node, error_code=ErrorCode.override_does_not_override
                 )
 
-        if class_context is not None and self._is_final_base_method(
-            class_context, pending_block.name, representative_node
-        ):
-            self._show_error_if_checking(
-                representative_node,
-                "Cannot override a final method",
-                error_code=ErrorCode.invalid_annotation,
-            )
-
-        if effective_is_final and isinstance(class_context, str):
-            self._synthetic_final_methods.setdefault(class_context, set()).add(
-                pending_block.name
-            )
         return should_check_consistency
-
-    def _is_final_base_method(
-        self, current_class: type | str, method_name: str, node: ast.AST
-    ) -> bool:
-        for base_class in self.checker.get_generic_bases(current_class):
-            if isinstance(
-                base_class, str
-            ) and method_name in self._synthetic_final_methods.get(base_class, set()):
-                return True
-        for base_class, base_value in self._get_base_class_attributes_for(
-            current_class, method_name, node
-        ):
-            if isinstance(
-                base_class, str
-            ) and method_name in self._synthetic_final_methods.get(base_class, set()):
-                return True
-            for subval in flatten_values(base_value, unwrap_annotated=True):
-                if isinstance(subval, KnownValue) and safe_getattr(
-                    subval.val, "__final__", False
-                ):
-                    return True
-        return False
 
     def _signature_for_overload_consistency(
         self, info: FunctionInfo, computed_function: Value
@@ -8659,9 +8648,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             return False
         _, qualifiers = annotation_expr.maybe_unqualify(set(Qualifier))
         return Qualifier.ClassVar in qualifiers
-
-    def _record_final_member(self, class_key: type | str, member_name: str) -> None:
-        self.final_member_names_by_class.setdefault(class_key, set()).add(member_name)
 
     def _check_for_final_base_classes(
         self, node: ast.ClassDef, base_values: Sequence[Value]
@@ -9028,28 +9014,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         if members is None:
             return value
         return SequenceValue(tuple, members)
-
-    def _is_final_member(
-        self, class_key: type | str, member_name: str, initializer: Value | None = None
-    ) -> bool:
-        if member_name in self.final_member_names_by_class.get(class_key, set()):
-            return True
-        if isinstance(class_key, type):
-            class_dict = safe_getattr(class_key, "__dict__", {})
-            if isinstance(class_dict, Mapping):
-                runtime_member = class_dict.get(member_name)
-                if getattr(runtime_member, "__final__", False):
-                    return True
-        if isinstance(initializer, KnownValue) and getattr(
-            initializer.val, "__final__", False
-        ):
-            return True
-        if isinstance(class_key, str):
-            try:
-                return self.checker.ts_finder.is_final_attribute(class_key, member_name)
-            except Exception:
-                return False
-        return False
 
     def _is_final_imported_name(self, source_module: Value, alias_name: str) -> bool:
         if not isinstance(source_module, KnownValue):
@@ -12534,11 +12498,8 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             and isinstance(node.target, ast.Name)
             and not has_classvar
         ):
-            current_type_object = self.current_type_object
-            if (
-                current_type_object is not None
-                and current_type_object.is_direct_namedtuple()
-            ):
+            current_tobj = self.current_tobj
+            if current_tobj is not None and current_tobj.is_direct_namedtuple():
                 readonly_name = node.target.id
         is_current_class_dataclass = self._is_current_class_dataclass()
         has_default = node.value is not None
@@ -12579,7 +12540,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         if is_final and self.scopes.scope_type() == ScopeType.class_scope:
             class_key = self.current_class_key
             if class_key is not None and isinstance(node.target, ast.Name):
-                self._record_final_member(class_key, node.target.id)
                 if node.value is None and (
                     has_classvar or not is_current_class_dataclass
                 ):
@@ -12601,8 +12561,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     "Final instance attributes may be declared only in __init__",
                     error_code=ErrorCode.invalid_annotation,
                 )
-            elif self.current_class_key is not None:
-                self._record_final_member(self.current_class_key, node.target.attr)
 
         is_class_annotation_without_value = (
             node.value is None
@@ -16451,12 +16409,14 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         return parser
 
     @classmethod
-    def get_description_for_error_code(cls, error_code: Error) -> str:
-        return error_code.description
+    # static analysis: ignore[incompatible_override]
+    def get_description_for_error_code(cls, code: Error) -> str:
+        return code.description
 
     @classmethod
+    # static analysis: ignore[incompatible_override]
     def get_default_directories(
-        cls, checker: Checker, **kwargs: Any
+        cls, *, checker: Checker, **kwargs: Any
     ) -> tuple[str, ...]:
         paths = checker.options.get_value_for(Paths)
         return tuple(str(path) for path in paths)
@@ -16511,9 +16471,10 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         return kwargs["checker"].perform_final_checks()
 
     @classmethod
+    # static analysis: ignore[incompatible_override]
     def _run_on_files(
         cls,
-        files: list[str],
+        files: Iterable[str],
         *,
         checker: Checker,
         find_unused: bool = False,

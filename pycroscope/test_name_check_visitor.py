@@ -942,6 +942,7 @@ class TestImportFailureHandlingCodeSamples(TestNameCheckVisitorBase):
             def other(self) -> int:
                 return super().method()
 
+    @skip_before((3, 11))  # @final doesn't set __final__ in 3.10
     @assert_passes(run_in_both_module_modes=True)
     def test_overloaded_override_and_final_after_import_failure(self):
         from typing import final, overload
@@ -4149,6 +4150,7 @@ class TestAnnAssign(TestNameCheckVisitorBase):
             def method(this, value: object) -> None:  # E: method_first_arg
                 this.x = value  # E: incompatible_assignment
 
+    @skip_before((3, 11))  # @final doesn't set __final__ in 3.10
     @assert_passes(run_in_both_module_modes=True)
     def test_final_decorator_in_unimportable_module(self):
         from typing import final

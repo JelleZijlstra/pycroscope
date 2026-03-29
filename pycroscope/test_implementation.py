@@ -78,7 +78,7 @@ class TestSuperCall(TestNameCheckVisitorBase):
 
         class Canaanimys(Gaudeamus):
             @classmethod
-            def eat(cls, grass):
+            def eat(cls, grass):  # E: incompatible_override
                 super().eat(grass)  # E: incompatible_call
 
     @assert_passes()
