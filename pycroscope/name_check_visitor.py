@@ -6369,7 +6369,8 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             if self.checker.make_type_object(class_scope_object).is_protocol():
                 return True
         return any(
-            _is_protocol_base(base_value, self.checker) for base_value in base_values
+            self._is_protocol_type_parameter_base(base_value)
+            for base_value in base_values
         )
 
     def _align_type_params_with_runtime_class(
@@ -6922,6 +6923,12 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 return True
         return False
 
+    def _is_protocol_type_parameter_base(self, value: Value) -> bool:
+        for candidate, _ in self._iter_type_parameter_base_candidates(value):
+            if is_typing_name(candidate, "Protocol"):
+                return True
+        return False
+
     def _iter_type_parameter_base_candidates(
         self, value: Value
     ) -> Iterable[tuple[object, Sequence[object]]]:
@@ -6955,11 +6962,12 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         self, node: ast.ClassDef, base_values: Sequence[Value]
     ) -> None:
         if not any(
-            _is_protocol_base(base_value, self.checker) for base_value in base_values
+            self._is_protocol_type_parameter_base(base_value)
+            for base_value in base_values
         ):
             return
         for base_node, base_value in zip(node.bases, base_values):
-            if _is_protocol_base(base_value, self.checker):
+            if self._is_protocol_type_parameter_base(base_value):
                 continue
             if self._is_valid_non_protocol_base_for_protocol(base_value):
                 continue
@@ -17333,13 +17341,6 @@ def _count_starred_type_param_args(slice_node: ast.AST) -> int:
     if isinstance(slice_node, ast.Tuple):
         return sum(isinstance(elt, ast.Starred) for elt in slice_node.elts)
     return int(isinstance(slice_node, ast.Starred))
-
-
-def _is_protocol_base(base_value: Value, checker: Checker) -> bool:
-    return any(
-        tobj.is_protocol()
-        for tobj in _iter_type_objects_from_base_value(base_value, checker)
-    )
 
 
 def _mangle_class_attribute_name(class_name: str, attribute_name: str) -> str:
