@@ -3751,7 +3751,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     ) -> None:
         if self.current_tobj is None:
             return
-        if self.current_tobj.is_dataclass() and varname == "__post_init__":
+        if varname == "__post_init__" and self.current_tobj.is_dataclass():
             # Dataclasses synthesize the expected __post_init__ contract from InitVar
             # fields, so generic override rules are too strict here.
             return
