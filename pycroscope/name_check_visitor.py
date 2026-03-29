@@ -222,6 +222,7 @@ from .type_object import (
     TypeObject,
     TypeObjectAttribute,
     _class_key_from_value,
+    _iter_base_type_objects,
     class_keys_match,
     direct_bases_from_values,
     get_mro,
@@ -6367,7 +6368,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         if isinstance(class_scope_object, (type, str)):
             if self.checker.make_type_object(class_scope_object).is_protocol():
                 return True
-        return any(_is_protocol_base(base_value) for base_value in base_values)
+        return any(
+            _is_protocol_base(base_value, self.checker) for base_value in base_values
+        )
 
     def _align_type_params_with_runtime_class(
         self, class_obj: type | None, type_params: Sequence[TypeParam]
@@ -6951,10 +6954,12 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     def _check_protocol_base_validity(
         self, node: ast.ClassDef, base_values: Sequence[Value]
     ) -> None:
-        if not any(_is_protocol_base(base_value) for base_value in base_values):
+        if not any(
+            _is_protocol_base(base_value, self.checker) for base_value in base_values
+        ):
             return
         for base_node, base_value in zip(node.bases, base_values):
-            if _is_protocol_base(base_value):
+            if _is_protocol_base(base_value, self.checker):
                 continue
             if self._is_valid_non_protocol_base_for_protocol(base_value):
                 continue
@@ -8641,24 +8646,18 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 return
 
     def _is_final_base_value(self, base_value: Value) -> bool:
-        base_key = _class_key_from_value(base_value)
-        if base_key is None:
-            return False
-        if base_key in self.final_class_keys:
-            return True
-        if isinstance(base_key, type):
-            if safe_issubclass(base_key, enum.Enum):
+        for tobj in _iter_type_objects_from_base_value(base_value, self.checker):
+            if tobj.typ in self.final_class_keys:
+                return True
+            if isinstance(tobj.typ, type) and safe_issubclass(tobj.typ, enum.Enum):
                 try:
-                    if bool(base_key.__members__):
+                    if bool(tobj.typ.__members__):
                         return True
                 except Exception:
                     pass
-            if getattr(base_key, "__final__", False):
+            if tobj.is_final():
                 return True
-        try:
-            return self.checker.ts_finder.is_final(base_key)
-        except Exception:
-            return False
+        return False
 
     def _check_for_uninitialized_final_members(self, class_key: type | str) -> None:
         if not self._is_checking():
@@ -16624,22 +16623,10 @@ def _is_namedtuple_marker_base(base_value: Value) -> bool:
     )
 
 
-def _type_object_from_base_subvalue(
-    base_value: Value, checker: Checker
-) -> TypeObject | None:
-    class_key = _class_key_from_value(base_value)
-    if class_key is None:
-        return None
-    return checker.make_type_object(class_key)
-
-
 def _iter_type_objects_from_base_value(
     base_value: Value, checker: Checker
 ) -> Iterable[TypeObject]:
-    for subval in flatten_values(replace_fallback(base_value)):
-        tobj = _type_object_from_base_subvalue(subval, checker)
-        if tobj is not None:
-            yield tobj
+    yield from _iter_base_type_objects(base_value, checker)
 
 
 def _is_namedtuple_like_base_value(base_value: Value, checker: Checker) -> bool:
@@ -17348,37 +17335,11 @@ def _count_starred_type_param_args(slice_node: ast.AST) -> int:
     return int(isinstance(slice_node, ast.Starred))
 
 
-def _is_protocol_base(base_value: Value) -> bool:
-    if isinstance(base_value, InputSigValue):
-        return False
-    if base_value in (VOID, UNINITIALIZED_VALUE) or isinstance(
-        base_value, ReferencingValue
-    ):
-        return False
-    base_value = replace_fallback(base_value)
-    if isinstance(base_value, MultiValuedValue):
-        return any(_is_protocol_base(subval) for subval in base_value.vals)
-    if isinstance(base_value, IntersectionValue):
-        return any(_is_protocol_base(subval) for subval in base_value.vals)
-    if isinstance(base_value, SyntheticClassObjectValue):
-        return _is_protocol_base(base_value.class_type)
-    if isinstance(base_value, KnownValue):
-        return is_typing_name(base_value.val, "Protocol")
-    if isinstance(base_value, TypedValue):
-        return is_typing_name(base_value.typ, "Protocol")
-    if isinstance(
-        base_value,
-        (
-            AnyValue,
-            SyntheticModuleValue,
-            UnboundMethodValue,
-            SubclassValue,
-            TypeFormValue,
-            PredicateValue,
-        ),
-    ):
-        return False
-    assert_never(base_value)
+def _is_protocol_base(base_value: Value, checker: Checker) -> bool:
+    return any(
+        tobj.is_protocol()
+        for tobj in _iter_type_objects_from_base_value(base_value, checker)
+    )
 
 
 def _mangle_class_attribute_name(class_name: str, attribute_name: str) -> str:

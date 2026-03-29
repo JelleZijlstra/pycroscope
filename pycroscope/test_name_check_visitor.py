@@ -1167,6 +1167,27 @@ class TestImportFailureHandlingCodeSamples(TestNameCheckVisitorBase):
             Child("")  # E: incompatible_call
             Child(1, 2, 3)  # E: incompatible_call
 
+    @assert_passes(allow_import_failures=True)
+    def test_specialized_namedtuple_base_after_import_failure(self):
+        from typing import Generic, NamedTuple, TypeVar
+
+        from typing_extensions import assert_type
+
+        T = TypeVar("T")
+
+        class Base(NamedTuple, Generic[T]):
+            value: T
+
+        class Child(Base[int]):
+            label: str = ""
+
+        def capybara(value: int) -> None:
+            child = Child(value)
+            assert_type(child.value, int)
+            assert_type(child.label, str)
+
+        Child("x")  # E: incompatible_argument
+
     @assert_passes()
     def test_hashability_respects_hash_none_for_typed_values(self):
         from typing import Hashable
@@ -5887,6 +5908,23 @@ class TestProtocolInstantiation(TestNameCheckVisitorBase):
 
         def capybara() -> None:
             Proto()  # E: incompatible_call
+
+    @assert_passes(run_in_both_module_modes=True)
+    def test_specialized_protocol_base_preserves_member_types(self):
+        from typing import Protocol, TypeVar
+
+        from typing_extensions import assert_type
+
+        T_co = TypeVar("T_co", covariant=True)
+
+        class Base(Protocol[T_co]):
+            def meth(self) -> T_co: ...
+
+        class Child(Base[int]):
+            pass
+
+        def capybara(value: Child) -> None:
+            assert_type(value.meth(), int)
 
 
 class TestMustUse(TestNameCheckVisitorBase):

@@ -4201,6 +4201,12 @@ def get_inherited_synthetic_member_initializer(
             base_synthetic, name, ctx, seen=seen
         )
         if inherited is not None:
+            if isinstance(base_value, GenericValue):
+                substitutions = base_synthetic.get_type_object(ctx).get_substitutions(
+                    base_value.args
+                )
+                if substitutions:
+                    inherited = inherited.substitute_typevars(substitutions)
             return inherited
     return None
 
