@@ -540,6 +540,22 @@ class TestTypeVar(TestNameCheckVisitorBase):
             Generic[Unpack[Ts], DefaultAfterVariadic]
         ): ...
 
+    @assert_passes(run_in_both_module_modes=True)
+    def test_class_assignability_with_defaults(self):
+        from typing import Generic
+
+        from typing_extensions import TypeVar
+
+        T1 = TypeVar("T1")
+        DefaultStrT = TypeVar("DefaultStrT", default=str)
+
+        class SubclassMe(Generic[T1, DefaultStrT]):
+            x: DefaultStrT
+
+        class Bar(SubclassMe[int, DefaultStrT]): ...
+
+        x1: type[Bar[str]] = Bar  # ok
+
     @assert_passes(allow_import_failures=True)
     def test_generic_default_specialization_after_import_failure(self):
         from typing import Generic, TypeAlias
@@ -566,6 +582,8 @@ class TestTypeVar(TestNameCheckVisitorBase):
 
         class Bar(SubclassMe[int, DefaultStrT]): ...
 
+        x1: type[Bar[str]] = Bar  # ok
+        x2: type[Bar[int]] = Bar  # E: incompatible_assignment
         assert_type(Bar(), Bar[str])
         assert_type(Bar[bool](), Bar[bool])
 
