@@ -1222,7 +1222,9 @@ def _get_generic_variances(
 ) -> Sequence[Variance]:
     tobj = ctx.make_type_object(typ)
     type_params = tobj.get_declared_type_params()
-    return [param.variance for param in type_params]
+    if len(type_params) == num_args:
+        return [param.variance for param in type_params]
+    return (Variance.INVARIANT,) * num_args
 
 
 def _can_assign_type_form(
