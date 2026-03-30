@@ -432,9 +432,6 @@ class Checker:
     )
     vnv_map: dict[str, VariableNameValue] = field(default_factory=dict)
     type_alias_cache: dict[object, TypeAlias] = field(default_factory=dict)
-    runtime_callable_self_annotation_cache: dict[object, bool] = field(
-        default_factory=dict, init=False, repr=False
-    )
     runtime_class_self_annotation_cache: dict[type, bool] = field(
         default_factory=dict, init=False, repr=False
     )
