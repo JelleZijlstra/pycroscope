@@ -1369,6 +1369,7 @@ def _extract_type_form(value: Value, ctx: CanAssignContext) -> Value | CanAssign
             IntersectionValue,
             OverlappingValue,
             SyntheticModuleValue,
+            TypeVarTupleBindingValue,
             TypeVarTupleValue,
             UnboundMethodValue,
             SuperValue,
@@ -2364,6 +2365,7 @@ def _intersect_wrapper(
     if isinstance(left, TypeVarValue):
         return _intersect_typevar_value(left, right, ctx)
     left_inner = left.get_fallback_value()
+    assert left_inner is not None
     result = _intersect_values_inner(left_inner, right, ctx)
     if result is NO_RETURN_VALUE:
         return NO_RETURN_VALUE

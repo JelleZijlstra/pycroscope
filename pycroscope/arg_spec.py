@@ -678,13 +678,12 @@ class ArgSpecCache:
                     generic_bases = self._get_generic_bases_cached(class_obj)
                     if generic_bases and generic_bases.get(class_obj):
                         generic_base = generic_bases[class_obj]
-                        return GenericValue(
-                            class_obj,
-                            [
-                                generic_base.get_value(type_param)
-                                for type_param in self.get_type_parameters(class_obj)
-                            ],
-                        )
+                        generic_args: list[Value] = []
+                        for type_param in self.get_type_parameters(class_obj):
+                            arg = generic_base.get_value(type_param)
+                            assert arg is not None
+                            generic_args.append(arg)
+                        return GenericValue(class_obj, generic_args)
                     return TypedValue(class_obj)
         if parameter.kind in (
             inspect.Parameter.POSITIONAL_ONLY,

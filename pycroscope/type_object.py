@@ -737,7 +737,7 @@ class TypeObject:
             substitutions = (
                 base_tobj.get_substitutions(base_value.args)
                 if isinstance(base_value, GenericValue)
-                else {}
+                else TypeVarMap()
             )
             for field in base_tobj.get_namedtuple_fields():
                 if substitutions:

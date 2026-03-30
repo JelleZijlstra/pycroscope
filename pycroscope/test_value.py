@@ -251,8 +251,8 @@ def test_typed_value() -> None:
 
 
 def test_typevarmap_preserves_fixed_typevartuple_bindings() -> None:
-    ts = TypeVarTuple("Ts")
-    param = TypeVarTupleParam(ts)
+    Ts = TypeVarTuple("Ts")
+    param = TypeVarTupleParam(Ts)
     tv_map = TypeVarMap().with_typevartuple(
         param, ((False, TypedValue(str)), (False, TypedValue(int)))
     )
@@ -267,8 +267,8 @@ def test_typevarmap_preserves_fixed_typevartuple_bindings() -> None:
 
 
 def test_typevarmap_preserves_open_typevartuple_bindings() -> None:
-    ts = TypeVarTuple("Ts")
-    param = TypeVarTupleParam(ts)
+    Ts = TypeVarTuple("Ts")
+    param = TypeVarTupleParam(Ts)
     tv_map = TypeVarMap().with_typevartuple(param, ((True, TypedValue(str)),))
 
     assert tv_map.get_typevartuple(param) == ((True, TypedValue(str)),)

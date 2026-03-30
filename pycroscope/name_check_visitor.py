@@ -808,7 +808,7 @@ class _AttrContext(CheckerAttrContext):
                 generic_bases = self.checker.get_generic_bases(
                     synthetic_typ, generic_args
                 )
-                declared = generic_bases.get(synthetic_typ, {})
+                declared = generic_bases.get(synthetic_typ, TypeVarMap())
                 if declared:
                     bound_signature = bound_signature.substitute_typevars(declared)
                 return CallableValue(bound_signature)

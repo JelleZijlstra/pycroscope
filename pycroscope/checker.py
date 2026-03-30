@@ -797,12 +797,13 @@ class Checker:
         if substitution_map:
             tuple_base = tuple_base.substitute_typevars(substitution_map)
             assert isinstance(tuple_base, SequenceValue)
-        tuple_type_params = self.arg_spec_cache.get_type_parameters(tuple)
+        tuple_type: type = tuple
+        tuple_type_params = self.arg_spec_cache.get_type_parameters(tuple_type)
         if len(tuple_type_params) != 1:
             return
-        generic_bases[tuple] = generic_bases.get(tuple, TypeVarMap()).with_value(
-            tuple_type_params[0], tuple_base
-        )
+        generic_bases[tuple_type] = generic_bases.get(
+            tuple_type, TypeVarMap()
+        ).with_value(tuple_type_params[0], tuple_base)
 
     def _namedtuple_tuple_base(self, typ: type | str) -> SequenceValue | None:
         type_object = self.make_type_object(typ)

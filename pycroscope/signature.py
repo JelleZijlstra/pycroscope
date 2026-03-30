@@ -1639,13 +1639,13 @@ class Signature:
             and not self.inferable_typevars
             and self._return_key in self.typevars_of_params
         ):
-            zero_arg_defaults = TypeVarMap(
-                typevars={
-                    typevar: AnyValue(AnySource.generic_argument)
-                    for typevar in self.typevars_of_params[self._return_key]
-                    if _should_widen_constructor_typevar(typevar)
-                }
-            )
+            zero_arg_defaults = TypeVarMap()
+            for typevar in self.typevars_of_params[self._return_key]:
+                if not _should_widen_constructor_typevar(typevar):
+                    continue
+                zero_arg_defaults = _with_typevar_map_value(
+                    zero_arg_defaults, typevar, AnyValue(AnySource.generic_argument)
+                )
             if zero_arg_defaults:
                 return_value = return_value.substitute_typevars(zero_arg_defaults)
 
@@ -3448,9 +3448,7 @@ def _try_match_typevartuple_var_positional(
         if len(actual_members) != len(expected_members):
             return CanAssignError(f"parameter {param.name!r} is not accepted")
         bounds_maps: list[BoundsMap] = []
-        for index, ((_is_many, expected), actual) in enumerate(
-            zip(expected_members, actual_members)
-        ):
+        for (_is_many, expected), actual in zip(expected_members, actual_members):
             tv_map = has_relation(
                 expected,
                 _widen_typevartuple_inferred_value(actual),
@@ -3484,7 +3482,7 @@ def _try_match_typevartuple_var_positional(
         ]
         if len(tv_entries) != 1:
             return None
-        bounds_maps: list[BoundsMap] = []
+        repeated_bounds_maps: list[BoundsMap] = []
         for actual_member in actual_members:
             actual_member = replace_known_sequence_value(actual_member)
             if (
@@ -3507,8 +3505,8 @@ def _try_match_typevartuple_var_positional(
                 return None
             if isinstance(tv_map, CanAssignError):
                 return tv_map
-            bounds_maps.append(tv_map)
-        return unify_bounds_maps(bounds_maps)
+            repeated_bounds_maps.append(tv_map)
+        return unify_bounds_maps(repeated_bounds_maps)
 
     return _match_typevartuple_var_positional_members(
         param_name=param.name,
