@@ -409,7 +409,11 @@ def _synthetic_descriptor_set_type(descriptor: Value, ctx: AttrContext) -> Value
 
 
 def _matches_constructor_receiver_annotation(
-    annotation: Value, actual: Value, ctx: CanAssignContext
+    annotation: Value,
+    actual: Value,
+    ctx: CanAssignContext,
+    *,
+    enforce_nongeneric_match: bool,
 ) -> bool:
     if is_assignable(annotation, actual, ctx):
         return True
@@ -444,7 +448,7 @@ def _matches_constructor_receiver_annotation(
         and class_keys_match(root.typ, actual_root.typ)
         and len(root.args) == len(actual_root.args)
     ):
-        return False
+        return not enforce_nongeneric_match
     for expected_arg, actual_arg in zip(root.args, actual_root.args):
         expected_root = replace_fallback(expected_arg)
         if isinstance(expected_root, (AnyValue, TypeVarValue)):
@@ -1448,7 +1452,7 @@ class Checker:
             ):
                 return True
             if _matches_constructor_receiver_annotation(
-                self_annotation, instance_type, self
+                self_annotation, instance_type, self, enforce_nongeneric_match=False
             ):
                 return True
         return not checked
@@ -1482,7 +1486,10 @@ class Checker:
                     cls_annotation_root = replace_fallback(cls_annotation)
                     if not isinstance(cls_annotation_root, AnyValue):
                         return _matches_constructor_receiver_annotation(
-                            cls_annotation, class_type_value, self
+                            cls_annotation,
+                            class_type_value,
+                            self,
+                            enforce_nongeneric_match=True,
                         )
         new_sig: MaybeSignature = self._get_runtime_overloaded_method_signature(
             origin, "__new__"
@@ -1505,7 +1512,7 @@ class Checker:
             checked = True
             cls_annotation = params[0].annotation.substitute_typevars(typevar_map)
             if _matches_constructor_receiver_annotation(
-                cls_annotation, class_type_value, self
+                cls_annotation, class_type_value, self, enforce_nongeneric_match=True
             ):
                 return True
         return not checked
@@ -1578,7 +1585,10 @@ class Checker:
                 continue
             checked = True
             if _matches_constructor_receiver_annotation(
-                params[0].annotation, class_type_value, self
+                params[0].annotation,
+                class_type_value,
+                self,
+                enforce_nongeneric_match=True,
             ):
                 return True
         return not checked
@@ -1765,7 +1775,10 @@ class Checker:
                     and enforce_self_compatibility
                     and source_self_annotation is not None
                     and not _matches_constructor_receiver_annotation(
-                        source_self_annotation, bound_self_value, self
+                        source_self_annotation,
+                        bound_self_value,
+                        self,
+                        enforce_nongeneric_match=False,
                     )
                 ):
                     had_incompatible_self_annotation = True
