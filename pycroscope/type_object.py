@@ -100,7 +100,6 @@ from .value import (
     _with_typevar_map_value,
     default_value_for_type_param,
     freshen_typevars_for_inference,
-    get_namedtuple_field_annotation,
     get_single_typevartuple_param,
     get_tv_map,
     match_typevar_arguments,
@@ -433,6 +432,7 @@ class TypeObject:
     _direct_dataclass_info: DataclassInfo | None
     _direct_dataclass_transform_info: DataclassTransformInfo | None
     _virtual_bases: list[MroValue] | None
+    _virtual_symbols: dict[str, ClassSymbol] | None
     _is_thrift_enum: bool | None
     _is_direct_namedtuple: bool | None
     _namedtuple_fields: Sequence[NamedTupleField] | None
@@ -459,6 +459,7 @@ class TypeObject:
         self._direct_dataclass_info = None
         self._direct_dataclass_transform_info = None
         self._virtual_bases = None
+        self._virtual_symbols = None
         self._is_thrift_enum = None
         self._is_direct_namedtuple = None
         self._namedtuple_fields = None
@@ -486,17 +487,15 @@ class TypeObject:
         direct_symbols: dict[str, ClassSymbol] = {}
         if isinstance(self.typ, type):
             type_object_builder._add_runtime_declared_symbols(self.typ, direct_symbols)
+        if self._virtual_symbols is not None:
+            type_object_builder._add_synthetic_declared_symbols(
+                self._virtual_symbols, direct_symbols
+            )
         synthetic_class = self._checker.get_synthetic_class(self.typ)
         if synthetic_class is not None:
             synthetic_symbols: Mapping[str, ClassSymbol] = (
                 self.get_synthetic_declared_symbols()
             )
-            if isinstance(self.typ, type) and synthetic_class.runtime_class is not None:
-                synthetic_symbols = {
-                    name: symbol
-                    for name, symbol in synthetic_symbols.items()
-                    if name in direct_symbols
-                }
             type_object_builder._add_synthetic_declared_symbols(
                 synthetic_symbols, direct_symbols
             )
@@ -633,8 +632,6 @@ class TypeObject:
                 return None
             if self._is_direct_namedtuple:
                 return synthetic_class
-            if self._get_runtime_namedtuple_class(synthetic_class) is not None:
-                return synthetic_class
             for base_value in self.get_direct_bases():
                 if (
                     isinstance(base_value, TypedValue)
@@ -646,18 +643,6 @@ class TypeObject:
             return None
         finally:
             self._resolving_synthetic_namedtuple_class = False
-
-    def _get_runtime_namedtuple_class(
-        self, synthetic_class: SyntheticClassObjectValue
-    ) -> type | None:
-        runtime_class = synthetic_class.runtime_class
-        if (
-            isinstance(runtime_class, KnownValue)
-            and isinstance(runtime_class.val, type)
-            and is_namedtuple_class(runtime_class.val)
-        ):
-            return runtime_class.val
-        return None
 
     def _namedtuple_fields_from_runtime(self, typ: type) -> tuple[NamedTupleField, ...]:
         fields: list[NamedTupleField] = []
@@ -756,14 +741,6 @@ class TypeObject:
     def _get_synthetic_namedtuple_local_field_names(
         self, synthetic_class: SyntheticClassObjectValue, *, has_inherited_fields: bool
     ) -> tuple[str, ...]:
-        runtime_namedtuple_class = self._get_runtime_namedtuple_class(synthetic_class)
-        if runtime_namedtuple_class is not None:
-            return tuple(
-                field.name
-                for field in self._namedtuple_fields_from_runtime(
-                    runtime_namedtuple_class
-                )
-            )
         if has_inherited_fields:
             return ()
         declared_symbols = self.get_synthetic_declared_symbols()
@@ -806,13 +783,6 @@ class TypeObject:
                 prefer_declared_type and not symbol.is_method
             ):
                 return symbol.initializer
-        runtime_namedtuple_class = self._get_runtime_namedtuple_class(synthetic_class)
-        if runtime_namedtuple_class is not None:
-            return type_from_runtime(
-                get_namedtuple_field_annotation(runtime_namedtuple_class, field_name),
-                visitor=self._checker,
-                suppress_errors=True,
-            )
         for field in self._iter_synthetic_namedtuple_base_fields(synthetic_class):
             if field.name == field_name:
                 return field.typ
@@ -919,7 +889,7 @@ class TypeObject:
     def _sync_declared_symbols(self) -> None:
         if self._declared_symbols is None:
             return
-        if isinstance(self.typ, type):
+        if isinstance(self.typ, type) or self._virtual_symbols is not None:
             self._declared_symbols = self._compute_declared_symbols()
         else:
             self._declared_symbols = self.get_synthetic_declared_symbols()
@@ -937,6 +907,11 @@ class TypeObject:
         self._sync_declared_symbols()
         self._invalidate_synthetic_state()
 
+    def replace_virtual_symbols(self, symbols: Mapping[str, ClassSymbol]) -> None:
+        self._virtual_symbols = dict(symbols)
+        self._sync_declared_symbols()
+        self._invalidate_synthetic_state()
+
     def set_runtime_namedtuple(self, runtime_class_value: KnownValue) -> None:
         import pycroscope.type_object_builder as type_object_builder
 
@@ -944,12 +919,11 @@ class TypeObject:
         assert isinstance(runtime_class, type), runtime_class
         namedtuple_fields = self._namedtuple_fields_from_runtime(runtime_class)
         self.set_direct_bases((TypedValue(tuple),))
-        self.set_runtime_class(runtime_class_value)
         declared_symbols: dict[str, ClassSymbol] = {}
         type_object_builder._add_runtime_declared_symbols(
             runtime_class, declared_symbols
         )
-        self.replace_declared_symbols(declared_symbols)
+        self.replace_virtual_symbols(declared_symbols)
         if namedtuple_fields:
             self.set_namedtuple_fields(
                 namedtuple_fields,
@@ -1029,14 +1003,6 @@ class TypeObject:
         self._direct_dataclass_transform_info = dataclass_transform_info
         self._update_loaded_synthetic_fields()
         self._protocol_positive_cache.clear()
-
-    def set_runtime_class(self, runtime_class: Value | None) -> None:
-        # TODO: Remove this once SyntheticClassObjectValue no longer stores runtime
-        # class data directly.
-        synthetic_class = self._ensure_synthetic_class()
-        object.__setattr__(synthetic_class, "runtime_class", runtime_class)
-        self._sync_declared_symbols()
-        self._invalidate_synthetic_state()
 
     def clear_declared_symbols(self) -> None:
         self._ensure_synthetic_class()
@@ -1310,7 +1276,7 @@ class TypeObject:
 
     def get_declared_symbols(self) -> MutableMapping[str, ClassSymbol]:
         if self._declared_symbols is None:
-            if isinstance(self.typ, str):
+            if isinstance(self.typ, str) and self._virtual_symbols is None:
                 self._declared_symbols = self.get_synthetic_declared_symbols()
             else:
                 self._declared_symbols = self._compute_declared_symbols()

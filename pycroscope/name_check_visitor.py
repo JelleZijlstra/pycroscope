@@ -5069,11 +5069,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     ) -> type | None:
         base = replace_fallback(base_value)
         if allow_synthetic_class_base and isinstance(base, SyntheticClassObjectValue):
-            runtime_class = base.runtime_class
-            if isinstance(runtime_class, KnownValue) and isinstance(
-                runtime_class.val, type
-            ):
-                return runtime_class.val
             class_type = base.class_type
             if isinstance(class_type, TypedValue) and isinstance(class_type.typ, type):
                 return class_type.typ
@@ -15568,12 +15563,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 callee.root.val, type
             ):
                 runtime_class = callee.root.val
-            elif isinstance(callee.root, SyntheticClassObjectValue):
-                runtime_value = callee.root.runtime_class
-                if isinstance(runtime_value, KnownValue) and isinstance(
-                    runtime_value.val, type
-                ):
-                    runtime_class = runtime_value.val
             callee_args = [
                 (
                     TypedValue(member.val)
@@ -15657,14 +15646,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             ):
                 origin = callee.root.class_type.typ
                 allow_annotated_specialization = True
-                runtime_class = callee.root.runtime_class
-                preserve_exact_type_args = (
-                    isinstance(runtime_class, KnownValue)
-                    and isinstance(runtime_class.val, type)
-                    and self.checker._runtime_has_explicit_new_return_annotation(
-                        runtime_class.val
-                    )
-                )
+                preserve_exact_type_args = False
             elif isinstance(callee.root, TypedValue) and isinstance(
                 callee.root.typ, type
             ):

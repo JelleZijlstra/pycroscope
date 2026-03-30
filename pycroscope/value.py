@@ -2542,27 +2542,14 @@ class SyntheticClassObjectValue(Value):
 
     name: str
     class_type: TypedValue | TypedDictValue
-    runtime_class: Value | None = field(
-        default=None, compare=False, hash=False, repr=False
-    )
 
     def substitute_typevars(self, typevars: TypeVarMap) -> "SyntheticClassObjectValue":
         substituted = self.class_type.substitute_typevars(typevars)
-        return SyntheticClassObjectValue(
-            self.name,
-            substituted,
-            runtime_class=(
-                self.runtime_class.substitute_typevars(typevars)
-                if self.runtime_class is not None
-                else None
-            ),
-        )
+        return SyntheticClassObjectValue(self.name, substituted)
 
     def walk_values(self) -> Iterable["Value"]:
         yield self
         yield from self.class_type.walk_values()
-        if self.runtime_class is not None:
-            yield from self.runtime_class.walk_values()
 
     def get_type_value(self) -> Value:
         if isinstance(self.class_type, TypedValue) and isinstance(
