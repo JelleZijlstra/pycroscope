@@ -1280,13 +1280,13 @@ class TestOverload(TestNameCheckVisitorBase):
         from typing import overload
 
         @overload
-        def single(x: int) -> int: ...  # E: invalid_annotation
+        def single(x: int) -> int: ...  # E: invalid_overload
 
         def single(x: int) -> int:
             return x
 
         @overload
-        def missing_impl(x: int) -> int: ...  # E: invalid_annotation
+        def missing_impl(x: int) -> int: ...  # E: invalid_overload
 
         @overload
         def missing_impl(x: str) -> str: ...
@@ -1298,7 +1298,7 @@ class TestOverload(TestNameCheckVisitorBase):
         class MixedOverloadKinds:
             @overload
             @staticmethod
-            def same_name(x: int) -> int: ...  # E: invalid_annotation
+            def same_name(x: int) -> int: ...  # E: invalid_overload
 
             @overload
             @classmethod
@@ -1318,7 +1318,7 @@ class TestOverload(TestNameCheckVisitorBase):
             def same_name(x: str) -> str: ...
 
             @classmethod
-            def same_name(cls, x: int | str) -> int | str:  # E: invalid_annotation
+            def same_name(cls, x: int | str) -> int | str:  # E: invalid_overload
                 return x
 
     @assert_passes()
@@ -1330,7 +1330,7 @@ class TestOverload(TestNameCheckVisitorBase):
         class BadPlacement:
             @overload
             @final
-            def with_final(self, x: int) -> int: ...  # E: invalid_annotation
+            def with_final(self, x: int) -> int: ...  # E: invalid_final
 
             @overload
             def with_final(self, x: str) -> str: ...

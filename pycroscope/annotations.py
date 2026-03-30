@@ -290,7 +290,7 @@ class Context:
         if id(node) in self._invalid_self_nodes:
             return
         self._invalid_self_nodes.add(id(node))
-        self.show_error(message, ErrorCode.invalid_annotation, node=node)
+        self.show_error(message, ErrorCode.invalid_self_usage, node=node)
 
     def handle_undefined_name(self, name: str) -> Value:
         if self.should_allow_undefined_names and not self.should_suppress_errors:
@@ -737,7 +737,9 @@ def _type_from_runtime(val: Any, ctx: Context) -> Value:
             extra_keys_val = None
             extra_readonly = False
         else:
-            extra_keys_val, qualifiers = extra_keys.unqualify({Qualifier.ReadOnly})
+            extra_keys_val, qualifiers = extra_keys.unqualify(
+                {Qualifier.ReadOnly}, qualifier_error_code=ErrorCode.invalid_qualifier
+            )
             extra_readonly = Qualifier.ReadOnly in qualifiers
         return TypedDictValue(
             {
@@ -1782,6 +1784,7 @@ def _get_typeddict_value(
     val, qualifiers = ann_expr.unqualify(
         {Qualifier.ReadOnly, Qualifier.Required, Qualifier.NotRequired},
         mutually_exclusive_qualifiers=((Qualifier.Required, Qualifier.NotRequired),),
+        qualifier_error_code=ErrorCode.invalid_qualifier,
     )
     if required_keys is None:
         required = total

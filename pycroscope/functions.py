@@ -442,7 +442,9 @@ def compute_parameters(
                 parameter_index=idx, is_staticmethod=is_staticmethod
             ):
                 value = ctx.expr_of_annotation(arg.annotation)
-            inner_value, _ = value.maybe_unqualify(set(Qualifier))
+            inner_value, _ = value.maybe_unqualify(
+                set(Qualifier), qualifier_error_code=ErrorCode.invalid_qualifier
+            )
             if (
                 inner_value is not None
                 and not (
@@ -470,7 +472,7 @@ def compute_parameters(
                     ctx.show_error(
                         arg,
                         "ParamSpec cannot be used in this annotation context",
-                        error_code=ErrorCode.invalid_annotation,
+                        error_code=ErrorCode.invalid_paramspec_usage,
                     )
                 else:
                     ctx.show_error(
@@ -497,7 +499,7 @@ def compute_parameters(
                     ctx.show_error(
                         arg,
                         "ParamSpec cannot be used in this annotation context",
-                        error_code=ErrorCode.invalid_annotation,
+                        error_code=ErrorCode.invalid_paramspec_usage,
                     )
                     value = AnyValue(AnySource.error)
                 elif default is not None and inner_value is not None:
@@ -528,7 +530,7 @@ def compute_parameters(
                             arg,
                             "Class-scoped type variables are not allowed in __init__"
                             " self annotation",
-                            error_code=ErrorCode.invalid_annotation,
+                            error_code=ErrorCode.invalid_self_usage,
                         )
         elif is_self:
             assert enclosing_class is not None
@@ -579,13 +581,13 @@ def compute_parameters(
                     ctx.show_error(
                         arg,
                         "ParamSpec cannot be used in this annotation context",
-                        error_code=ErrorCode.invalid_annotation,
+                        error_code=ErrorCode.invalid_paramspec_usage,
                     )
             else:
                 ctx.show_error(
                     arg,
                     f"ParamSpec.args must be used on *args, not {arg.arg}",
-                    error_code=ErrorCode.invalid_annotation,
+                    error_code=ErrorCode.invalid_paramspec_usage,
                 )
         elif isinstance(value, ParamSpecKwargsValue):
             if kind is ParameterKind.VAR_KEYWORD:
@@ -593,7 +595,7 @@ def compute_parameters(
                     ctx.show_error(
                         arg,
                         "ParamSpec cannot be used in this annotation context",
-                        error_code=ErrorCode.invalid_annotation,
+                        error_code=ErrorCode.invalid_paramspec_usage,
                     )
                 elif seen_paramspec_args is not None:
                     _, ps_args = seen_paramspec_args
@@ -601,14 +603,14 @@ def compute_parameters(
                         ctx.show_error(
                             arg,
                             "The same ParamSpec must be used on *args and **kwargs",
-                            error_code=ErrorCode.invalid_annotation,
+                            error_code=ErrorCode.invalid_paramspec_usage,
                         )
                         seen_paramspec_args = None
                     elif paramspec_args_has_intervening_param:
                         ctx.show_error(
                             arg,
                             "ParamSpec.args and ParamSpec.kwargs must be adjacent",
-                            error_code=ErrorCode.invalid_annotation,
+                            error_code=ErrorCode.invalid_paramspec_usage,
                         )
                         seen_paramspec_args = None
                     else:
@@ -617,13 +619,13 @@ def compute_parameters(
                     ctx.show_error(
                         arg,
                         "ParamSpec.kwargs must be used together with ParamSpec.args",
-                        error_code=ErrorCode.invalid_annotation,
+                        error_code=ErrorCode.invalid_paramspec_usage,
                     )
             else:
                 ctx.show_error(
                     arg,
                     f"ParamSpec.kwargs must be used on **kwargs, not {arg.arg}",
-                    error_code=ErrorCode.invalid_annotation,
+                    error_code=ErrorCode.invalid_paramspec_usage,
                 )
         elif kind is ParameterKind.VAR_KEYWORD and isinstance(value, TypedDictValue):
             overlapping_params = [
@@ -642,7 +644,7 @@ def compute_parameters(
             ctx.show_error(
                 arg,
                 "ParamSpec.args must be used together with ParamSpec.kwargs",
-                error_code=ErrorCode.invalid_annotation,
+                error_code=ErrorCode.invalid_paramspec_usage,
             )
             seen_paramspec_args = None
 
@@ -655,7 +657,7 @@ def compute_parameters(
         ctx.show_error(
             ps_args_arg,
             "ParamSpec.args must be used together with ParamSpec.kwargs",
-            error_code=ErrorCode.invalid_annotation,
+            error_code=ErrorCode.invalid_paramspec_usage,
         )
 
     return params

@@ -49,7 +49,7 @@ import typing_extensions
 from typing_extensions import NoDefault, Protocol, assert_never
 
 import pycroscope
-from pycroscope.error_code import Error
+from pycroscope.error_code import Error, ErrorCode
 from pycroscope.extensions import CustomCheck, ExternalType
 from pycroscope.safe import (
     is_instance_of_typing_name,
@@ -4247,7 +4247,11 @@ class AnnotationExpr:
         )
 
     def to_value(
-        self, *, allow_qualifiers: bool = False, allow_empty: bool = False
+        self,
+        *,
+        allow_qualifiers: bool = False,
+        allow_empty: bool = False,
+        qualifier_error_code: Error = ErrorCode.invalid_qualifier,
     ) -> Value:
         if self._value is None:
             if allow_empty:
@@ -4255,13 +4259,17 @@ class AnnotationExpr:
             else:
                 innermost, node = self.qualifiers[-1]
                 self.ctx.show_error(
-                    f"Invalid bare {innermost.name} annotation", node=node
+                    f"Invalid bare {innermost.name} annotation",
+                    node=node,
+                    error_code=qualifier_error_code,
                 )
                 return AnyValue(AnySource.error)
         if not allow_qualifiers:
             for qualifier, node in self.qualifiers:
                 self.ctx.show_error(
-                    f"Unexpected {qualifier.name} annotation", node=node
+                    f"Unexpected {qualifier.name} annotation",
+                    node=node,
+                    error_code=qualifier_error_code,
                 )
         if self.metadata:
             return annotate_value(self._value, self.metadata)
@@ -4272,14 +4280,20 @@ class AnnotationExpr:
         allowed_qualifiers: Container[Qualifier] = frozenset(),
         *,
         mutually_exclusive_qualifiers: Collection[Collection[Qualifier]] = (),
+        qualifier_error_code: Error = ErrorCode.invalid_qualifier,
     ) -> tuple[Value, set[Qualifier]]:
         value, qualifiers = self.maybe_unqualify(
             allowed_qualifiers,
             mutually_exclusive_qualifiers=mutually_exclusive_qualifiers,
+            qualifier_error_code=qualifier_error_code,
         )
         if value is None:
             innermost, node = self.qualifiers[-1]
-            self.ctx.show_error(f"Invalid bare {innermost.name} annotation", node=node)
+            self.ctx.show_error(
+                f"Invalid bare {innermost.name} annotation",
+                node=node,
+                error_code=qualifier_error_code,
+            )
             return AnyValue(AnySource.error), set()
         return value, qualifiers
 
@@ -4288,6 +4302,7 @@ class AnnotationExpr:
         allowed_qualifiers: Container[Qualifier] = frozenset(),
         *,
         mutually_exclusive_qualifiers: Collection[Collection[Qualifier]] = (),
+        qualifier_error_code: Error = ErrorCode.invalid_qualifier,
     ) -> tuple[Value | None, set[Qualifier]]:
         qualifiers = set()
         qualifier_counts: dict[Qualifier, int] = {}
@@ -4299,13 +4314,16 @@ class AnnotationExpr:
                 qualifiers.add(qualifier)
             else:
                 self.ctx.show_error(
-                    f"Unexpected {qualifier.name} annotation", node=node
+                    f"Unexpected {qualifier.name} annotation",
+                    node=node,
+                    error_code=qualifier_error_code,
                 )
         for qualifier, count in qualifier_counts.items():
             if count > 1:
                 self.ctx.show_error(
                     f"{qualifier.name}[] cannot be nested",
                     node=qualifier_nodes.get(qualifier),
+                    error_code=qualifier_error_code,
                 )
         for qualifier_group in mutually_exclusive_qualifiers:
             present = [
@@ -4321,7 +4339,11 @@ class AnnotationExpr:
                 else:
                     members = ", ".join(f"{qualifier.name}[]" for qualifier in present)
                     message = f"{members} cannot be nested together"
-                self.ctx.show_error(message, node=qualifier_nodes[present[0]])
+                self.ctx.show_error(
+                    message,
+                    node=qualifier_nodes[present[0]],
+                    error_code=qualifier_error_code,
+                )
         if self._value is None:
             return None, qualifiers
         if self.metadata:

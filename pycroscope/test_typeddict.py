@@ -353,7 +353,7 @@ class TestTypedDict(TestNameCheckVisitorBase):
         class BadTypedDict(TypedDict):
             name: str
 
-            def method(self):  # E: invalid_annotation
+            def method(self):  # E: invalid_typeddict
                 pass
 
         T = TypeVar("T")
@@ -651,16 +651,16 @@ class TestTypedDictImportFailures(TestNameCheckVisitorBase):
 
         def capybara() -> None:
             class F3(F1):
-                a: ReadOnly[int]  # E: invalid_annotation
+                a: ReadOnly[int]  # E: invalid_typeddict
 
             class F4(F1):
-                a: NotRequired[int]  # E: invalid_annotation
+                a: NotRequired[int]  # E: invalid_typeddict
 
             class F5(F1):
                 b: ReadOnly[Required[int]]
 
             class F6(F1):
-                c: ReadOnly[NotRequired[int]]  # E: invalid_annotation
+                c: ReadOnly[NotRequired[int]]  # E: invalid_typeddict
 
             class TD_A(TD_A1, TD_A2): ...  # E: invalid_base
 
@@ -707,13 +707,13 @@ class TestTypedDictImportFailures(TestNameCheckVisitorBase):
             class BadTypedDict1(TypedDict):
                 name: str
 
-                def method(self):  # E: invalid_annotation
+                def method(self):  # E: invalid_typeddict
                     pass
 
-            class BadTypedDict2(TypedDict, metaclass=type):  # E: invalid_annotation
+            class BadTypedDict2(TypedDict, metaclass=type):  # E: invalid_typeddict
                 name: str
 
-            class BadTypedDict3(TypedDict, other=True):  # E: invalid_annotation
+            class BadTypedDict3(TypedDict, other=True):  # E: invalid_typeddict
                 name: str
 
     @assert_passes(run_in_both_module_modes=True)
@@ -724,28 +724,28 @@ class TestTypedDictImportFailures(TestNameCheckVisitorBase):
             name: str
 
         class BadClosedChild(ClosedBase):
-            year: int  # E: invalid_annotation
+            year: int  # E: invalid_typeddict
 
         class ReadOnlyExtraBase(TypedDict, extra_items=ReadOnly[int]):
             name: str
 
         class BadReadOnlyExtraChild(ReadOnlyExtraBase):
-            year: str  # E: invalid_annotation
+            year: str  # E: invalid_typeddict
 
         class MutableExtraBase(TypedDict, extra_items=int):
             name: str
 
         class BadRequiredExtraChild(MutableExtraBase):
-            year: int  # E: invalid_annotation
+            year: int  # E: invalid_typeddict
 
         class BadOptionalExtraChild(MutableExtraBase):
-            year: NotRequired[str]  # E: invalid_annotation
+            year: NotRequired[str]  # E: invalid_typeddict
 
         class MutableBase(TypedDict):
             x: int
 
         class BadMutableOverride(MutableBase):
-            x: float  # E: invalid_annotation
+            x: float  # E: invalid_typeddict
 
         class MutableLeft(TypedDict):
             x: int
@@ -783,16 +783,16 @@ class TestTypedDictFunctionScope(TestNameCheckVisitorBase):
                 c: ReadOnly[Required[int]]
 
             class F3(F1):
-                a: ReadOnly[int]  # E: invalid_annotation
+                a: ReadOnly[int]  # E: invalid_typeddict
 
             class F4(F1):
-                a: NotRequired[int]  # E: invalid_annotation
+                a: NotRequired[int]  # E: invalid_typeddict
 
             class F5(F1):
                 b: ReadOnly[Required[int]]
 
             class F6(F1):
-                c: ReadOnly[NotRequired[int]]  # E: invalid_annotation
+                c: ReadOnly[NotRequired[int]]  # E: invalid_typeddict
 
             class TD_A1(TypedDict):
                 x: int
@@ -908,16 +908,16 @@ class TestReadOnly(TestNameCheckVisitorBase):
             c: ReadOnly[Required[int]]
 
         class F3(F1):
-            a: ReadOnly[int]  # E: invalid_annotation
+            a: ReadOnly[int]  # E: invalid_typeddict
 
         class F4(F1):
-            a: NotRequired[int]  # E: invalid_annotation
+            a: NotRequired[int]  # E: invalid_typeddict
 
         class F5(F1):
             b: ReadOnly[Required[int]]
 
         class F6(F1):
-            c: ReadOnly[NotRequired[int]]  # E: invalid_annotation
+            c: ReadOnly[NotRequired[int]]  # E: invalid_typeddict
 
         class TD_A1(TypedDict):
             x: int

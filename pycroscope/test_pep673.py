@@ -372,32 +372,32 @@ class TestPEP673(TestNameCheckVisitorBase):
         import typing_extensions as typing_ext
         from typing_extensions import Self
 
-        def foo(bar: Self) -> Self: ...  # E: invalid_annotation
+        def foo(bar: Self) -> Self: ...  # E: invalid_self_usage
 
-        # E: invalid_annotation
+        # E: invalid_self_usage
         def qualified_foo(bar: typing_ext.Self) -> typing_ext.Self: ...
 
-        _bar: Self  # E: invalid_annotation
-        TupleSelf: TypeAlias = tuple[Self]  # E: invalid_annotation
-        AliasTupleSelf: TAlias = tuple[Self]  # E: invalid_annotation
+        _bar: Self  # E: invalid_self_usage
+        TupleSelf: TypeAlias = tuple[Self]  # E: invalid_self_usage
+        AliasTupleSelf: TAlias = tuple[Self]  # E: invalid_self_usage
 
         TFoo = TypeVar("TFoo", bound="Foo")
 
         class Foo:
-            # E: invalid_annotation
+            # E: invalid_self_usage
             def has_existing_self_annotation(self: TFoo) -> Self:
                 raise NotImplementedError
 
             @staticmethod
-            def make() -> Self:  # E: invalid_annotation
+            def make() -> Self:  # E: invalid_self_usage
                 raise NotImplementedError
 
             @staticmethod
-            def return_parameter(foo: Self) -> Self:  # E: invalid_annotation
+            def return_parameter(foo: Self) -> Self:  # E: invalid_self_usage
                 raise NotImplementedError
 
         class Meta(type):
-            def __new__(cls, *args: Any) -> Self:  # E: invalid_annotation
+            def __new__(cls, *args: Any) -> Self:  # E: invalid_self_usage
                 raise NotImplementedError
 
     @assert_passes(run_in_both_module_modes=True)
@@ -408,7 +408,7 @@ class TestPEP673(TestNameCheckVisitorBase):
             try:
 
                 @staticmethod
-                def make() -> Self:  # E: invalid_annotation
+                def make() -> Self:  # E: invalid_self_usage
                     raise NotImplementedError
 
             finally:
