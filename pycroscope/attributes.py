@@ -1703,11 +1703,6 @@ def _get_attribute_from_known(obj: object, ctx: AttrContext) -> Value:
             return classvar_type
 
     if safe_isinstance(obj, type):
-        receiver_value = (
-            ctx.lookup_root_value
-            if ctx.lookup_root_value is not None
-            else ctx.root_value
-        )
         if (
             (bound_self_type := _get_bound_self_type_from_ctx(ctx)) is not None
             and (bound_self_key := _class_key_from_value(bound_self_type)) is not None

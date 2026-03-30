@@ -2598,10 +2598,12 @@ def _rewrite_self_returning_classmethod_signature(
             and class_keys_match(root.val, receiver_key)
         ):
             return receiver_for_self
-        if isinstance(root, SubclassValue) and class_keys_match(
-            _class_key_from_value(root.typ), receiver_key
+        if (
+            isinstance(root, SubclassValue)
+            and (subclass_key := _class_key_from_value(root.typ)) is not None
+            and class_keys_match(subclass_key, receiver_key)
         ):
-            return SubclassValue(receiver_for_self)
+            return SubclassValue.make(receiver_for_self)
         return return_value
 
     if isinstance(signature, Signature):
@@ -2686,7 +2688,9 @@ def _resolve_descriptor_access(
             ctx=ctx,
         )
         typed_receiver_value = _receiver_type_value(receiver_value, ctx)
-        if typed_receiver_value is not None:
+        if typed_receiver_value is not None and not _is_prebound_synthetic_classmethod(
+            raw_attribute.raw_value
+        ):
             typed_descriptor_value = _bind_attribute_signature(
                 typed_descriptor_value,
                 receiver_value=typed_receiver_value,
@@ -2758,6 +2762,11 @@ def _resolve_descriptor_access(
         is_property=descriptor_like_instance_access,
         property_has_setter=_descriptor_has_setter(raw_attribute.raw_value, ctx),
     )
+
+
+def _is_prebound_synthetic_classmethod(value: Value) -> bool:
+    value = replace_fallback(value)
+    return isinstance(value, GenericValue) and value.typ is classmethod
 
 
 def _get_nondescriptor_value(
@@ -3387,7 +3396,7 @@ def _collect_protocol_self_typevar_map(
             continue
         _, symbol = match
         collected = _get_protocol_receiver_annotation(
-            symbol, receiver_value=receiver_value, ctx=ctx
+            tobj, symbol, receiver_value=receiver_value, ctx=ctx
         )
         if collected is None:
             continue
@@ -3399,7 +3408,11 @@ def _collect_protocol_self_typevar_map(
 
 
 def _get_protocol_receiver_annotation(
-    symbol: ClassSymbol, *, receiver_value: Value, ctx: CanAssignContext
+    owner_tobj: TypeObject,
+    symbol: ClassSymbol,
+    *,
+    receiver_value: Value,
+    ctx: CanAssignContext,
 ) -> tuple[Value, Value] | None:
     if symbol.is_staticmethod or symbol.initializer is None:
         return None
@@ -3421,7 +3434,27 @@ def _get_protocol_receiver_annotation(
     self_annotation = _get_first_parameter_annotation(signature)
     if self_annotation is None:
         return None
+    if (
+        isinstance(self_annotation, AnyValue)
+        and self_annotation.source is AnySource.unannotated
+    ):
+        self_annotation = _default_protocol_receiver_annotation(owner_tobj, symbol)
     return self_annotation, receiver_for_match
+
+
+def _default_protocol_receiver_annotation(
+    owner_tobj: TypeObject, symbol: ClassSymbol
+) -> Value:
+    params = owner_tobj.get_declared_type_params()
+    if params:
+        owner_value: Value = GenericValue(
+            owner_tobj.typ, [type_param_to_value(param) for param in params]
+        )
+    else:
+        owner_value = TypedValue(owner_tobj.typ)
+    if symbol.is_classmethod:
+        return SubclassValue.make(owner_value)
+    return owner_value
 
 
 def _get_protocol_member_callable(symbol: ClassSymbol) -> Value | None:
@@ -3462,6 +3495,11 @@ def _get_first_parameter_annotation(
 def _protocol_classmethod_receiver_value(
     receiver_value: Value, ctx: CanAssignContext
 ) -> Value:
+    if not _is_definitely_class_object_value(receiver_value):
+        receiver_type = _receiver_type_value(receiver_value, ctx)
+        if receiver_type is not None:
+            return SubclassValue.make(receiver_type)
+        return SubclassValue.make(receiver_value.get_type_value())
     receiver_key = _class_key_from_value(receiver_value)
     if receiver_key is not None:
         class_object = _class_object_value_for_key(receiver_key, ctx)
