@@ -52,11 +52,11 @@ class TestNamedTuple(TestNameCheckVisitorBase):
         Point(1)  # E: incompatible_call
 
         class Point3(NamedTuple):
-            _y: int  # E: invalid_annotation
+            _y: int  # E: invalid_namedtuple
 
         class Location(NamedTuple):
             altitude: float = 0.0
-            latitude: float  # E: invalid_annotation
+            latitude: float  # E: invalid_namedtuple
 
         class BadPointWithName(Point):
             x: int = 0  # E: incompatible_override
