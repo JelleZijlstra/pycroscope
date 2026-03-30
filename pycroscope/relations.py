@@ -919,134 +919,92 @@ def _has_relation(
             # it is assignable regardless of concrete K/V parameters.
             return {}
         if isinstance(right, TypedValue):
-            left_tobj = left.get_type_object(ctx)
             right_tobj = right.get_type_object(ctx)
-            left_tv_map = left_tobj.get_substitutions(left.args)
-            right_tv_map = right_tobj.get_substitutions_for_base(
+            generic_args = right_tobj.get_generic_args_for_base(
                 left.typ, right.args if isinstance(right, GenericValue) else ()
             )
-            if right_tv_map is not None:
-                bounds_maps = []
-                strict_invariant = not isinstance(
-                    right, (SequenceValue, DictIncompleteValue)
-                )
-                for type_param in left_tobj.get_declared_type_params():
-                    left_arg = left_tv_map.get(
-                        type_param.typevar, AnyValue(AnySource.inference)
-                    )
-                    right_arg = right_tv_map.get(
-                        type_param.typevar, AnyValue(AnySource.inference)
-                    )
-                    variance = type_param.variance
-                    can_assign = _has_relation_for_generic_arg(
-                        left_arg,
-                        right_arg,
-                        relation,
-                        variance,
-                        ctx,
-                        strict_invariant=strict_invariant,
-                    )
-                    print(
-                        "HAS RELATION",
-                        left_arg,
-                        right_arg,
-                        relation,
-                        variance,
-                        can_assign,
-                    )
-                    if isinstance(can_assign, CanAssignError):
-                        return CanAssignError(
-                            f"{right} is not {relation.description} {left}",
-                            children=[can_assign],
+            if generic_args is not None:
+                comparison_left = left
+                left_tobj = left.get_type_object(ctx)
+                declared_type_params = left_tobj.get_declared_type_params()
+                if len(left.args) != len(generic_args):
+                    if len(comparison_left.args) == 1:
+                        unpacked_left = _unpack_fixed_tuple_generic_arg(
+                            comparison_left.args[0]
                         )
-                    bounds_maps.append(can_assign)
-                return unify_bounds_maps(bounds_maps)
-
-        # if isinstance(right, TypedValue):
-        #     generic_args = right.get_generic_args_for_type(left.typ, ctx)
-        #     # If we don't think it's a generic base, try super;
-        #     # runtime isinstance() may disagree.
-        #     if generic_args is not None:
-        #         comparison_left = left
-        #         declared_type_params = ctx.get_type_parameters(left.typ)
-        #         if len(left.args) != len(generic_args):
-        #             if len(comparison_left.args) == 1:
-        #                 unpacked_left = _unpack_fixed_tuple_generic_arg(
-        #                     comparison_left.args[0]
-        #                 )
-        #                 if unpacked_left is not None and len(unpacked_left) == len(
-        #                     generic_args
-        #                 ):
-        #                     comparison_left = GenericValue(left.typ, unpacked_left)
-        #             if len(generic_args) == 1:
-        #                 unpacked_generic_args = _unpack_fixed_tuple_generic_arg(
-        #                     generic_args[0]
-        #                 )
-        #                 if unpacked_generic_args is not None and len(
-        #                     comparison_left.args
-        #                 ) == len(unpacked_generic_args):
-        #                     generic_args = unpacked_generic_args
-        #             packed_generic_args = _pack_typevartuple_generic_args(
-        #                 declared_type_params, generic_args
-        #             )
-        #             packed_left_args = _pack_typevartuple_generic_args(
-        #                 declared_type_params, left.args
-        #             )
-        #             if packed_generic_args is not None and len(left.args) == len(
-        #                 packed_generic_args
-        #             ):
-        #                 generic_args = packed_generic_args
-        #             elif (
-        #                 packed_left_args is not None
-        #                 and packed_generic_args is not None
-        #                 and len(packed_left_args) == len(packed_generic_args)
-        #             ):
-        #                 comparison_left = GenericValue(left.typ, packed_left_args)
-        #                 generic_args = packed_generic_args
-        #             elif (
-        #                 any(
-        #                     isinstance(type_param, TypeVarTupleParam)
-        #                     for type_param in declared_type_params
-        #                 )
-        #                 and not any(
-        #                     isinstance(arg, TypeVarTupleValue) for arg in left.args
-        #                 )
-        #                 and not _contains_error_any_in_sequence(
-        #                     [*left.args, *generic_args]
-        #                 )
-        #             ):
-        #                 return CanAssignError(
-        #                     f"{right} is not {relation.description} to {left}"
-        #                 )
-        #         if len(comparison_left.args) == len(generic_args):
-        #             variances = _get_generic_variances(
-        #                 comparison_left.typ, len(comparison_left.args), ctx
-        #             )
-        #             strict_invariant = not isinstance(
-        #                 right, (SequenceValue, DictIncompleteValue)
-        #             )
-        #             bounds_maps = []
-        #             for i, (my_arg, their_arg, variance) in enumerate(
-        #                 zip(comparison_left.args, generic_args, variances)
-        #             ):
-        #                 can_assign = _has_relation_for_generic_arg(
-        #                     my_arg,
-        #                     their_arg,
-        #                     relation,
-        #                     variance,
-        #                     ctx,
-        #                     strict_invariant=strict_invariant,
-        #                 )
-        #                 if isinstance(can_assign, CanAssignError):
-        #                     return _maybe_specify_error_for_generic(
-        #                         i, comparison_left, right, can_assign, relation, ctx
-        #                     )
-        #                 bounds_maps.append(can_assign)
-        #             if not bounds_maps:
-        #                 return CanAssignError(
-        #                     f"{right} is not {relation.description} to {left}"
-        #                 )
-        #             return unify_bounds_maps(bounds_maps)
+                        if unpacked_left is not None and len(unpacked_left) == len(
+                            generic_args
+                        ):
+                            comparison_left = GenericValue(left.typ, unpacked_left)
+                    if len(generic_args) == 1:
+                        unpacked_generic_args = _unpack_fixed_tuple_generic_arg(
+                            generic_args[0]
+                        )
+                        if unpacked_generic_args is not None and len(
+                            comparison_left.args
+                        ) == len(unpacked_generic_args):
+                            generic_args = unpacked_generic_args
+                    packed_generic_args = _pack_typevartuple_generic_args(
+                        declared_type_params, generic_args
+                    )
+                    packed_left_args = _pack_typevartuple_generic_args(
+                        declared_type_params, left.args
+                    )
+                    if packed_generic_args is not None and len(left.args) == len(
+                        packed_generic_args
+                    ):
+                        generic_args = packed_generic_args
+                    elif (
+                        packed_left_args is not None
+                        and packed_generic_args is not None
+                        and len(packed_left_args) == len(packed_generic_args)
+                    ):
+                        comparison_left = GenericValue(left.typ, packed_left_args)
+                        generic_args = packed_generic_args
+                    elif (
+                        any(
+                            isinstance(type_param, TypeVarTupleParam)
+                            for type_param in declared_type_params
+                        )
+                        and not any(
+                            isinstance(arg, TypeVarTupleValue) for arg in left.args
+                        )
+                        and not _contains_error_any_in_sequence(
+                            [*left.args, *generic_args]
+                        )
+                    ):
+                        return CanAssignError(
+                            f"{right} is not {relation.description} to {left}"
+                        )
+                if len(comparison_left.args) == len(generic_args):
+                    variances = _get_generic_variances(
+                        comparison_left.typ, len(comparison_left.args), ctx
+                    )
+                    strict_invariant = not isinstance(
+                        right, (SequenceValue, DictIncompleteValue)
+                    )
+                    bounds_maps = []
+                    for i, (my_arg, their_arg, variance) in enumerate(
+                        zip(comparison_left.args, generic_args, variances)
+                    ):
+                        can_assign = _has_relation_for_generic_arg(
+                            my_arg,
+                            their_arg,
+                            relation,
+                            variance,
+                            ctx,
+                            strict_invariant=strict_invariant,
+                        )
+                        if isinstance(can_assign, CanAssignError):
+                            return _maybe_specify_error_for_generic(
+                                i, comparison_left, right, can_assign, relation, ctx
+                            )
+                        bounds_maps.append(can_assign)
+                    if not bounds_maps:
+                        return CanAssignError(
+                            f"{right} is not {relation.description} to {left}"
+                        )
+                    return unify_bounds_maps(bounds_maps)
 
     if isinstance(left, TypedValue):
         left_tobj = left.get_type_object(ctx)

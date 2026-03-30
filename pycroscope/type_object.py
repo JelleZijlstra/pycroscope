@@ -96,6 +96,7 @@ from .value import (
     TypeVarLike,
     TypeVarMap,
     TypeVarParam,
+    TypeVarTupleParam,
     TypeVarTupleValue,
     TypeVarValue,
     UnboundMethodValue,
@@ -107,6 +108,7 @@ from .value import (
     match_typevar_arguments,
     receiver_to_self_type,
     replace_fallback,
+    replace_known_sequence_value,
     stringify_object,
     tuple_members_from_value,
     type_param_to_value,
@@ -351,11 +353,7 @@ class MroEntry:
         assert self.tobj is not None
         if self.tv_map:
             return GenericValue(
-                self.tobj.typ,
-                [
-                    self.tv_map[param.typevar]
-                    for param in self.tobj.get_declared_type_params()
-                ],
+                self.tobj.typ, _generic_args_from_tv_map(self.tobj, self.tv_map)
             )
         return TypedValue(self.tobj.typ)
 
@@ -363,6 +361,27 @@ class MroEntry:
 ANY_MRO_ENTRY = MroEntry(
     None, {}, value=AnyValue(AnySource.inference), is_virtual=False
 )
+
+
+def _generic_args_from_tv_map(tobj: "TypeObject", tv_map: TypeVarMap) -> list[Value]:
+    args: list[Value] = []
+    for param in tobj.get_declared_type_params():
+        arg = tv_map[param.typevar]
+        if isinstance(param, TypeVarTupleParam):
+            normalized_arg = replace_known_sequence_value(arg)
+            if (
+                tobj.typ is not tuple
+                and isinstance(normalized_arg, SequenceValue)
+                and normalized_arg.typ is tuple
+                and all(not is_many for is_many, _ in normalized_arg.members)
+            ):
+                if normalized_arg.members:
+                    args.extend(member for _, member in normalized_arg.members)
+                else:
+                    args.append(normalized_arg)
+                continue
+        args.append(arg)
+    return args
 
 
 @dataclass(frozen=True)
@@ -1112,6 +1131,16 @@ class TypeObject:
                 return mro_entry.tobj.get_substitutions(())
             return mro_entry.tobj.get_substitutions(mro_value.args)
         return None
+
+    def get_generic_args_for_base(
+        self, base: type | str, args: Sequence[Value]
+    ) -> list[Value] | None:
+        substitutions = self.get_substitutions_for_base(base, args)
+        if substitutions is None:
+            return None
+        return _generic_args_from_tv_map(
+            self._checker.make_type_object(base), substitutions
+        )
 
     def is_final(self) -> bool:
         if self._is_final is None:

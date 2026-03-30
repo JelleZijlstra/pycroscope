@@ -27,10 +27,12 @@ from .value import (
     IntersectionValue,
     KnownValue,
     MultiValuedValue,
+    SequenceValue,
     SubclassValue,
     SyntheticClassObjectValue,
     TypedValue,
     TypeVarParam,
+    TypeVarTupleValue,
     TypeVarValue,
     assert_is_value,
 )
@@ -413,6 +415,35 @@ def test_runtime_type_object_tracks_declared_type_params_and_specialized_mro() -
         TypedValue(Generic),
         TypedValue(object),
     ]
+
+
+def test_variadic_runtime_type_object_keeps_unpacked_self_mro_args() -> None:
+    if sys.version_info < (3, 11):
+        return
+
+    from typing import Generic, TypeVarTuple
+
+    Shape = TypeVarTuple("Shape")
+
+    class Array(Generic[*Shape]):
+        pass
+
+    checker = Checker()
+    array_object = checker.make_type_object(Array)
+
+    mro_value = array_object.get_mro()[0].get_mro_value()
+    assert isinstance(mro_value, GenericValue)
+    assert mro_value.typ is Array
+    assert len(mro_value.args) == 1
+    assert isinstance(mro_value.args[0], TypeVarTupleValue)
+    assert mro_value.args[0].typevar is Shape
+    assert array_object.get_substitutions_for_base(
+        Array, [TypedValue(int), TypedValue(str)]
+    ) == {
+        Shape: SequenceValue(
+            tuple, [(False, TypedValue(int)), (False, TypedValue(str))]
+        )
+    }
 
 
 def test_synthetic_type_object_tracks_declared_type_params_and_specialized_mro() -> (
