@@ -97,6 +97,7 @@ from .value import (
     TypedDictValue,
     TypedValue,
     TypeFormValue,
+    TypeVarMap,
     TypeVarParam,
     TypeVarValue,
     Value,
@@ -2149,7 +2150,7 @@ def _cast_impl(ctx: CallContext) -> Value:
     )
     if current_class_bound is not None:
         bound_self = bound_self_type_from_class_key(current_class_bound)
-        result = result.substitute_typevars({SelfT: bound_self})
+        result = result.substitute_typevars(TypeVarMap(typevars={SelfT: bound_self}))
     return result
 
 

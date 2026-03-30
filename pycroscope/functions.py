@@ -180,7 +180,9 @@ class FunctionInfo:
         if isinstance(self.node, ast.AsyncFunctionDef):
             tv_map = get_tv_map(AsyncGeneratorValue, self.return_annotation, ctx)
             if not isinstance(tv_map, CanAssignError):
-                return tv_map.get(SendT, AnyValue(AnySource.generic_argument))
+                return tv_map.get_typevar(
+                    TypeVarParam(SendT), AnyValue(AnySource.generic_argument)
+                )
             # If the return annotation is a non-Generator Iterable, assume the send
             # type is None.
             iterable_val = is_async_iterable(self.return_annotation, ctx)
@@ -190,7 +192,9 @@ class FunctionInfo:
         else:
             tv_map = get_tv_map(GeneratorValue, self.return_annotation, ctx)
             if not isinstance(tv_map, CanAssignError):
-                return tv_map.get(SendT, AnyValue(AnySource.generic_argument))
+                return tv_map.get_typevar(
+                    TypeVarParam(SendT), AnyValue(AnySource.generic_argument)
+                )
             # If the return annotation is a non-Generator Iterable, assume the send
             # type is None.
             iterable_val = is_iterable(self.return_annotation, ctx)
@@ -203,7 +207,9 @@ class FunctionInfo:
             return AnyValue(AnySource.unannotated)
         tv_map = get_tv_map(GeneratorValue, self.return_annotation, ctx)
         if not isinstance(tv_map, CanAssignError):
-            return tv_map.get(ReturnT, AnyValue(AnySource.generic_argument))
+            return tv_map.get_typevar(
+                TypeVarParam(ReturnT), AnyValue(AnySource.generic_argument)
+            )
         # If the return annotation is a non-Generator Iterable, assume the return
         # type is None.
         iterable_val = is_iterable(self.return_annotation, ctx)

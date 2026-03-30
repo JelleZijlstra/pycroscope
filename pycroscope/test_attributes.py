@@ -3,6 +3,7 @@ from typing import Dict, Union
 
 import pytest
 
+from .extensions import LiteralOnly
 from .test_name_check_visitor import TestNameCheckVisitorBase
 from .test_node_visitor import (
     assert_passes,
@@ -15,12 +16,22 @@ from .value import (
     AnnotatedValue,
     AnySource,
     AnyValue,
+    CustomCheckExtension,
     GenericValue,
     KnownValue,
+    SelfT,
+    TypeVarMap,
     assert_is_value,
 )
 
 _global_dict: Dict[Union[int, str], bytes] = {}
+EXPECTED_ASCII_TYPEVARS = TypeVarMap(
+    typevars={
+        SelfT: AnnotatedValue(
+            KnownValue("ascii"), [CustomCheckExtension(LiteralOnly())]
+        )
+    }
+)
 
 
 def test_normalize_synthetic_descriptor_attribute_empty_args() -> None:
@@ -301,20 +312,14 @@ class TestAttributes(TestNameCheckVisitorBase):
         from typing_extensions import Annotated, Literal
 
         from pycroscope.extensions import LiteralOnly
-        from pycroscope.value import CustomCheckExtension, KnownValueWithTypeVars, SelfT
+        from pycroscope.test_attributes import EXPECTED_ASCII_TYPEVARS
+        from pycroscope.value import KnownValueWithTypeVars
 
         def capybara():
             encoding: Annotated[Literal["ascii"], LiteralOnly()] = "ascii"
             assert_is_value(
                 encoding.encode,
-                KnownValueWithTypeVars(
-                    encoding.encode,
-                    {
-                        SelfT: AnnotatedValue(
-                            KnownValue("ascii"), [CustomCheckExtension(LiteralOnly())]
-                        )
-                    },
-                ),
+                KnownValueWithTypeVars(encoding.encode, EXPECTED_ASCII_TYPEVARS),
             )
 
     @skip_before((3, 12))

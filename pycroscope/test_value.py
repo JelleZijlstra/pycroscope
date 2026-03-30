@@ -8,7 +8,7 @@ import typing
 from typing import NewType
 from unittest import mock
 
-from typing_extensions import Protocol, runtime_checkable
+from typing_extensions import Protocol, TypeVarTuple, runtime_checkable
 
 from . import tests, value
 from .checker import Checker
@@ -38,7 +38,10 @@ from .value import (
     SuperValue,
     TypedValue,
     TypeIsExtension,
+    TypeVarMap,
     TypeVarParam,
+    TypeVarTupleBindingValue,
+    TypeVarTupleParam,
     TypeVarValue,
     Value,
     concrete_values_from_iterable,
@@ -245,6 +248,33 @@ def test_typed_value() -> None:
 
     assert_cannot_assign(float_val, SubclassValue(TypedValue(float)))
     assert_can_assign(TypedValue(type), SubclassValue(TypedValue(float)))
+
+
+def test_typevarmap_preserves_fixed_typevartuple_bindings() -> None:
+    Ts = TypeVarTuple("Ts")
+    param = TypeVarTupleParam(Ts)
+    tv_map = TypeVarMap().with_typevartuple(
+        param, ((False, TypedValue(str)), (False, TypedValue(int)))
+    )
+
+    assert tv_map.get_typevartuple(param) == (
+        (False, TypedValue(str)),
+        (False, TypedValue(int)),
+    )
+    assert tv_map.get_value(param) == TypeVarTupleBindingValue(
+        ((False, TypedValue(str)), (False, TypedValue(int)))
+    )
+
+
+def test_typevarmap_preserves_open_typevartuple_bindings() -> None:
+    Ts = TypeVarTuple("Ts")
+    param = TypeVarTupleParam(Ts)
+    tv_map = TypeVarMap().with_typevartuple(param, ((True, TypedValue(str)),))
+
+    assert tv_map.get_typevartuple(param) == ((True, TypedValue(str)),)
+    assert tv_map.get_value(param) == TypeVarTupleBindingValue(
+        ((True, TypedValue(str)),)
+    )
 
 
 def test_get_generic_args_for_type_with_super() -> None:

@@ -7,7 +7,7 @@ from typing import TypeVar
 from .checker import Checker
 from .test_config import TEST_OPTIONS
 from .test_name_check_visitor import TestNameCheckVisitorBase
-from .test_node_visitor import assert_passes
+from .test_node_visitor import assert_passes, skip_before
 from .type_object import (
     DataclassFieldRecord,
     NamedTupleField,
@@ -31,6 +31,9 @@ from .value import (
     SyntheticClassObjectValue,
     TypedValue,
     TypeVarParam,
+    TypeVarTupleBindingValue,
+    TypeVarTupleParam,
+    TypeVarTupleValue,
     TypeVarValue,
     assert_is_value,
 )
@@ -413,6 +416,86 @@ def test_runtime_type_object_tracks_declared_type_params_and_specialized_mro() -
         TypedValue(Generic),
         TypedValue(object),
     ]
+
+
+def test_variadic_runtime_type_object_keeps_unpacked_self_mro_args() -> None:
+    if sys.version_info < (3, 11):
+        return
+
+    ns: dict[str, object] = {}
+    exec(
+        """
+from typing import Generic, TypeVarTuple
+
+Shape = TypeVarTuple("Shape")
+
+class Array(Generic[*Shape]):
+    pass
+""",
+        ns,
+        ns,
+    )
+    Shape = ns["Shape"]
+    Array = ns["Array"]
+
+    checker = Checker()
+    array_object = checker.make_type_object(Array)
+
+    mro_value = array_object.get_mro()[0].get_mro_value()
+    assert isinstance(mro_value, GenericValue)
+    assert mro_value.typ is Array
+    assert len(mro_value.args) == 1
+    assert isinstance(mro_value.args[0], TypeVarTupleValue)
+    assert mro_value.args[0].typevar is Shape
+    substitutions = array_object.get_substitutions_for_base(
+        Array, [TypedValue(int), TypedValue(str)]
+    )
+    assert substitutions.get_typevartuple(TypeVarTupleParam(Shape)) == (
+        (False, TypedValue(int)),
+        (False, TypedValue(str)),
+    )
+    assert substitutions.get_value(
+        TypeVarTupleParam(Shape)
+    ) == TypeVarTupleBindingValue(((False, TypedValue(int)), (False, TypedValue(str))))
+
+
+def test_variadic_runtime_type_object_preserves_packed_base_substitutions() -> None:
+    if sys.version_info < (3, 11):
+        return
+
+    ns: dict[str, object] = {}
+    exec(
+        """
+from typing import Generic, TypeVarTuple
+
+Shape = TypeVarTuple("Shape")
+
+class Base(Generic[*Shape]):
+    pass
+
+class Child(Base[*Shape], Generic[*Shape]):
+    pass
+""",
+        ns,
+        ns,
+    )
+    Shape = ns["Shape"]
+    Base = ns["Base"]
+    Child = ns["Child"]
+
+    checker = Checker()
+    child_object = checker.make_type_object(Child)
+
+    substitutions = child_object.get_substitutions_for_base(
+        Base, [TypedValue(int), TypedValue(str)]
+    )
+    assert substitutions.get_typevartuple(TypeVarTupleParam(Shape)) == (
+        (False, TypedValue(int)),
+        (False, TypedValue(str)),
+    )
+    assert substitutions.get_value(
+        TypeVarTupleParam(Shape)
+    ) == TypeVarTupleBindingValue(((False, TypedValue(int)), (False, TypedValue(str))))
 
 
 def test_synthetic_type_object_tracks_declared_type_params_and_specialized_mro() -> (
@@ -1133,6 +1216,38 @@ class TestSyntheticType(TestNameCheckVisitorBase):
             as_callable: TypeAliasWithP[P] = proto
             as_protocol: ProtocolWithP[P] = ta
             print(as_callable, as_protocol)
+
+    @skip_before((3, 11))
+    def test_protocol_receiver_constraints_with_typevartuple(self):
+        self.assert_passes(
+            """
+            from typing import Generic, Protocol, TypeVar, TypeVarTuple
+
+            T_co = TypeVar("T_co", covariant=True)
+            Ts = TypeVarTuple("Ts")
+
+            class Box(Generic[T_co, *Ts]):
+                def head(self) -> T_co:
+                    raise NotImplementedError
+
+                def tail(self) -> tuple[*Ts]:
+                    raise NotImplementedError
+
+            class Proto(Protocol[T_co, *Ts]):
+                def head(self: Box[T_co, *Ts]) -> T_co: ...
+
+                def tail(self: Box[T_co, *Ts]) -> tuple[*Ts]: ...
+
+            def wants_proto(proto: Proto[int, str, bool]) -> None:
+                print(proto)
+
+            def capybara(box: Box[int, str, bool]) -> None:
+                as_proto: Proto[int, str, bool] = box
+                wants_proto(box)
+                wants_proto(as_proto)
+            """,
+            run_in_both_module_modes=True,
+        )
 
     @assert_passes(run_in_both_module_modes=True)
     def test_callable_annotation_protocol_interop(self):

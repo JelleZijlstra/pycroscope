@@ -105,11 +105,17 @@ from .value import (
     TypeVarLike,
     TypeVarMap,
     TypeVarParam,
+    TypeVarTupleBindingValue,
     TypeVarTupleValue,
     TypeVarValue,
     UnboundMethodValue,
     UpperBound,
     Value,
+    _get_typevar_map_value,
+    _has_typevar_map_value,
+    _iter_typevar_map_items,
+    _typevar_map_from_varlike_pairs,
+    _with_typevar_map_value,
     annotate_value,
     concrete_values_from_iterable,
     flatten_values,
@@ -716,7 +722,9 @@ class Signature:
         for constraint_values in itertools.product(
             *(constrained_typevars[typevar] for typevar in typevars)
         ):
-            typevar_map: TypeVarMap = dict(zip(typevars, constraint_values))
+            typevar_map = _typevar_map_from_varlike_pairs(
+                zip(typevars, constraint_values)
+            )
             signature = self.substitute_typevars(typevar_map)
             if not any(existing == signature for existing in specialized):
                 specialized.append(signature)
@@ -760,9 +768,10 @@ class Signature:
                 if isinstance(tv_map, CanAssignError):
                     return False
                 for tv, constraints in constrained_typevars.items():
-                    if tv not in tv_map:
+                    if not _has_typevar_map_value(tv_map, tv):
                         continue
-                    solution = tv_map[tv]
+                    solution = _get_typevar_map_value(tv_map, tv)
+                    assert solution is not None
                     if all(solution != constraint for constraint in constraints):
                         return False
                     existing = solutions_by_tv[tv]
@@ -1386,7 +1395,9 @@ class Signature:
     def get_default_return(self, source: AnySource = AnySource.error) -> CallReturn:
         return_value = self.return_value
         if self._return_key in self.typevars_of_params:
-            typevar_values = {tv: AnyValue(source) for tv in self.all_typevars}
+            typevar_values = _typevar_map_from_varlike_pairs(
+                (tv, AnyValue(source)) for tv in self.all_typevars
+            )
             return_value = return_value.substitute_typevars(typevar_values)
         return CallReturn(return_value, is_error=True, sig=self)
 
@@ -1511,7 +1522,7 @@ class Signature:
             ctx.visitor.record_call(self.callable, variables)
 
         return_value = self.return_value
-        typevar_values: dict[TypeVarLike, Value] = {}
+        typevar_values = TypeVarMap()
         if self.inferable_typevars:
             inference_signature = self.freshen_typevars_for_inference()
             bounds_maps = []
@@ -1532,7 +1543,7 @@ class Signature:
                 ctx.can_assign_ctx,
                 all_typevars=inference_signature.inferable_typevars,
             )
-            typevar_values = dict(resolved_typevar_values)
+            typevar_values = resolved_typevar_values
             for param_name, (_position, composite) in bound_args.items():
                 param = self.parameters[param_name]
                 param_tv_map = relations.get_tv_map(
@@ -1543,28 +1554,48 @@ class Signature:
                 )
                 if isinstance(param_tv_map, CanAssignError):
                     continue
-                for typevar, value in param_tv_map.items():
-                    if isinstance(typevar_values.get(typevar), AnyValue):
-                        typevar_values[typevar] = value
+                for typevar, value in _iter_typevar_map_items(param_tv_map):
+                    if isinstance(
+                        _get_typevar_map_value(typevar_values, typevar), AnyValue
+                    ) or (
+                        is_instance_of_typing_name(typevar, "TypeVarTuple")
+                        and _is_placeholder_typevartuple_solution(
+                            _get_typevar_map_value(typevar_values, typevar)
+                        )
+                    ):
+                        typevar_values = _with_typevar_map_value(
+                            typevar_values, typevar, value
+                        )
             if SelfT in self.inferable_typevars and self.parameters:
                 first_param_name = next(iter(self.parameters))
                 if first_param_name in bound_args and isinstance(
-                    typevar_values.get(SelfT), AnyValue
+                    _get_typevar_map_value(typevar_values, SelfT), AnyValue
                 ):
                     self_value = bound_args[first_param_name][1].value
-                    if (
-                        isinstance(self_value, KnownValueWithTypeVars)
-                        and SelfT in self_value.typevars
-                    ):
-                        typevar_values[SelfT] = self_value.typevars[SelfT]
+                    if isinstance(
+                        self_value, KnownValueWithTypeVars
+                    ) and self_value.typevars.has_typevar(TypeVarParam(SelfT)):
+                        self_binding = self_value.typevars.get_typevar(
+                            TypeVarParam(SelfT)
+                        )
+                        assert self_binding is not None
+                        typevar_values = typevar_values.with_typevar(
+                            TypeVarParam(SelfT), self_binding
+                        )
                     elif isinstance(self_value, SubclassValue):
-                        typevar_values[SelfT] = self_value.typ
+                        typevar_values = typevar_values.with_typevar(
+                            TypeVarParam(SelfT), self_value.typ
+                        )
                     elif isinstance(self_value, KnownValue) and isinstance(
                         self_value.val, type
                     ):
-                        typevar_values[SelfT] = TypedValue(self_value.val)
+                        typevar_values = typevar_values.with_typevar(
+                            TypeVarParam(SelfT), TypedValue(self_value.val)
+                        )
                     else:
-                        typevar_values[SelfT] = self_value
+                        typevar_values = typevar_values.with_typevar(
+                            TypeVarParam(SelfT), self_value
+                        )
             should_widen_constructor_typevars = ctx.visitor is not None and (
                 _should_widen_constructor_typevar_solutions(self.callable, return_value)
                 or (
@@ -1576,19 +1607,22 @@ class Signature:
                 )
             )
             if should_widen_constructor_typevars:
-                typevar_values = {
-                    typevar: (
-                        _widen_constructor_typevar_solution(
-                            value,
-                            literal_runtime_type=_get_constructor_literal_runtime_type(
-                                resolved_bounds_map.get(typevar, ())
-                            ),
-                        )
-                        if _should_widen_constructor_typevar(typevar)
-                        else value
+                typevar_values = _typevar_map_from_varlike_pairs(
+                    (
+                        typevar,
+                        (
+                            _widen_constructor_typevar_solution(
+                                value,
+                                literal_runtime_type=_get_constructor_literal_runtime_type(
+                                    resolved_bounds_map.get(typevar, ())
+                                ),
+                            )
+                            if _should_widen_constructor_typevar(typevar)
+                            else value
+                        ),
                     )
-                    for typevar, value in typevar_values.items()
-                }
+                    for typevar, value in _iter_typevar_map_items(typevar_values)
+                )
             if errors:
                 self.show_call_error(
                     "Cannot resolve type variables",
@@ -1605,19 +1639,21 @@ class Signature:
             and not self.inferable_typevars
             and self._return_key in self.typevars_of_params
         ):
-            zero_arg_defaults = {
-                typevar: AnyValue(AnySource.generic_argument)
-                for typevar in self.typevars_of_params[self._return_key]
-                if _should_widen_constructor_typevar(typevar)
-            }
+            zero_arg_defaults = TypeVarMap()
+            for typevar in self.typevars_of_params[self._return_key]:
+                if not _should_widen_constructor_typevar(typevar):
+                    continue
+                zero_arg_defaults = _with_typevar_map_value(
+                    zero_arg_defaults, typevar, AnyValue(AnySource.generic_argument)
+                )
             if zero_arg_defaults:
                 return_value = return_value.substitute_typevars(zero_arg_defaults)
 
-        param_typevar_values = {
-            typevar: value
-            for typevar, value in typevar_values.items()
-            if not is_instance_of_typing_name(typevar, "TypeVarTuple")
-        }
+        param_typevar_values = TypeVarMap(
+            typevars={
+                typevar: value for typevar, value in typevar_values.iter_typevars()
+            }
+        )
 
         had_error = False
         used_any = False
@@ -1872,9 +1908,8 @@ class Signature:
             if param.kind is ParameterKind.PARAM_SPEC:
                 input_sig = assert_input_sig(param.annotation)
                 if isinstance(input_sig, ParamSpecParam):
-                    tv = input_sig.param_spec
-                    if tv in typevars:
-                        replacement_value = typevars[tv]
+                    replacement_value = typevars.get_value(input_sig)
+                    if replacement_value is not None:
                         replacement_value = (
                             coerce_paramspec_specialization_to_input_sig(
                                 replacement_value
@@ -2025,7 +2060,7 @@ class Signature:
         else:
             solved_typevars = {
                 typevar
-                for typevar, value in typevars.items()
+                for typevar, value in _iter_typevar_map_items(typevars)
                 if not _is_identity_typevar_solution(typevar, value)
             }
             inferable_typevars = {
@@ -2203,13 +2238,13 @@ class Signature:
             if isinstance(tv_map, CanAssignError):
                 return None
         else:
-            tv_map = {}
-        if SelfT not in tv_map and self_value is None:
+            tv_map = TypeVarMap()
+        if not _has_typevar_map_value(tv_map, SelfT) and self_value is None:
             derived_self = _self_type_from_annotation(self_annotation)
             if derived_self is not None:
-                tv_map = {**tv_map, SelfT: derived_self}
-        if self_value is not None and SelfT not in tv_map:
-            tv_map = {**tv_map, SelfT: self_value}
+                tv_map = tv_map.with_typevar(TypeVarParam(SelfT), derived_self)
+        if self_value is not None and not _has_typevar_map_value(tv_map, SelfT):
+            tv_map = tv_map.with_typevar(TypeVarParam(SelfT), self_value)
         if tv_map:
             new_params = {
                 param.name: param.substitute_typevars(tv_map) for param in new_params
@@ -2246,7 +2281,7 @@ class Signature:
         )
         solved_typevars = {
             typevar
-            for typevar, value in tv_map.items()
+            for typevar, value in _iter_typevar_map_items(tv_map)
             if not _is_identity_typevar_solution(typevar, value)
         }
         remaining_param_typevars = {
@@ -2259,7 +2294,10 @@ class Signature:
             for typevar in self.inferable_typevars
             if typevar in signature.all_typevars
             and typevar not in solved_typevars
-            and (typevar not in tv_map or typevar in remaining_param_typevars)
+            and (
+                not _has_typevar_map_value(tv_map, typevar)
+                or typevar in remaining_param_typevars
+            )
         }
         if inferable_typevars == signature.inferable_typevars:
             return signature
@@ -2276,7 +2314,7 @@ class Signature:
         return replace(self, return_value=return_value)
 
     def freshen_typevars_for_inference(self) -> "Signature":
-        inference_map: dict[TypeVarLike, Value] = {}
+        inference_map = TypeVarMap()
         for value in [
             *(param.annotation for param in self.parameters.values()),
             self.return_value,
@@ -2286,9 +2324,10 @@ class Signature:
                     isinstance(type_param, TypeVarParam)
                     and type_param.typevar in self.inferable_typevars
                 ):
-                    inference_map.setdefault(
-                        type_param.typevar, InferenceVarValue(type_param)
-                    )
+                    if not inference_map.has_typevar(type_param):
+                        inference_map = inference_map.with_typevar(
+                            type_param, InferenceVarValue(type_param)
+                        )
         if not inference_map:
             return self
         return self.substitute_typevars(inference_map, infer_substituted_typevars=True)
@@ -2548,8 +2587,12 @@ def _preprocess_kwargs_no_mvv(
         if isinstance(mapping_tv_map, CanAssignError):
             ctx.on_error(f"{value} is not a mapping", detail=str(mapping_tv_map))
             return None
-        key_type = mapping_tv_map.get(K, AnyValue(AnySource.generic_argument))
-        value_type = mapping_tv_map.get(V, AnyValue(AnySource.generic_argument))
+        key_type = mapping_tv_map.get_typevar(
+            TypeVarParam(K), AnyValue(AnySource.generic_argument)
+        )
+        value_type = mapping_tv_map.get_typevar(
+            TypeVarParam(V), AnyValue(AnySource.generic_argument)
+        )
         return _preprocess_kwargs_kv_pairs(
             [KVPair(key_type, value_type, is_many=True)], ctx
         )
@@ -3207,6 +3250,19 @@ def _widen_typevartuple_inferred_simple_value(value: SimpleType) -> Value:
     assert_never(value)
 
 
+def _is_placeholder_typevartuple_solution(value: Value | None) -> bool:
+    if value is None:
+        return False
+    if isinstance(value, TypeVarTupleBindingValue):
+        members = value.binding
+    else:
+        value = replace_known_sequence_value(value)
+        if not isinstance(value, SequenceValue) or value.typ is not tuple:
+            return False
+        members = value.members
+    return len(members) == 1 and members[0][0] and isinstance(members[0][1], AnyValue)
+
+
 def _try_typevartuple_callable_relation(
     left: Signature,
     right: Signature,
@@ -3388,12 +3444,31 @@ def _try_match_typevartuple_var_positional(
     if actual_members is None:
         return None
 
+    if all(not is_many for is_many, _ in expected_members):
+        if len(actual_members) != len(expected_members):
+            return CanAssignError(f"parameter {param.name!r} is not accepted")
+        bounds_maps: list[BoundsMap] = []
+        for (_is_many, expected), actual in zip(expected_members, actual_members):
+            tv_map = has_relation(
+                expected,
+                _widen_typevartuple_inferred_value(actual),
+                Relation.ASSIGNABLE,
+                ctx,
+            )
+            if isinstance(tv_map, CanAssignError):
+                return CanAssignError(
+                    f"type of parameter {param.name!r} is incompatible", [tv_map]
+                )
+            bounds_maps.append(tv_map)
+        return unify_bounds_maps(bounds_maps)
+
     # Handle *args: tuple[<element>] where <element> includes a TypeVarTuple.
     # In this form, every runtime argument must match the same element type, so
     # we accumulate constraints from each positional argument.
     if (
         len(expected_members) == 1
         and expected_members[0][0]
+        and not isinstance(expected_members[0][1], TypeVarTupleValue)
         and _contains_typevartuple(expected_members[0][1])
     ):
         expected = expected_members[0][1]
@@ -3407,7 +3482,7 @@ def _try_match_typevartuple_var_positional(
         ]
         if len(tv_entries) != 1:
             return None
-        bounds_maps: list[BoundsMap] = []
+        repeated_bounds_maps: list[BoundsMap] = []
         for actual_member in actual_members:
             actual_member = replace_known_sequence_value(actual_member)
             if (
@@ -3430,8 +3505,8 @@ def _try_match_typevartuple_var_positional(
                 return None
             if isinstance(tv_map, CanAssignError):
                 return tv_map
-            bounds_maps.append(tv_map)
-        return unify_bounds_maps(bounds_maps)
+            repeated_bounds_maps.append(tv_map)
+        return unify_bounds_maps(repeated_bounds_maps)
 
     return _match_typevartuple_var_positional_members(
         param_name=param.name,
@@ -3529,9 +3604,13 @@ def _contains_typevartuple(value: Value) -> bool:
 def _extract_var_positional_members(
     annotation: Value,
 ) -> tuple[tuple[bool, Value], ...] | None:
-    annotation = replace_known_sequence_value(annotation)
     if isinstance(annotation, AnnotatedValue):
         annotation = annotation.value
+    if isinstance(annotation, TypeVarTupleValue):
+        return ((True, annotation),)
+    if isinstance(annotation, TypeVarTupleBindingValue):
+        return annotation.binding
+    annotation = replace_known_sequence_value(annotation)
     if isinstance(annotation, SequenceValue) and annotation.typ is tuple:
         return annotation.members
     if (
@@ -3550,6 +3629,8 @@ def _extract_var_positional_members(
         inner = replace_known_sequence_value(annotation.members[0])
         if isinstance(inner, SequenceValue) and inner.typ is tuple:
             return inner.members
+        if isinstance(inner, TypeVarTupleBindingValue):
+            return inner.binding
         if isinstance(inner, TypeVarTupleValue):
             return ((True, inner),)
         if (
@@ -3565,6 +3646,8 @@ def _extract_var_positional_members(
         inner = replace_known_sequence_value(annotation.root)
         if isinstance(inner, SequenceValue) and inner.typ is tuple:
             return inner.members
+        if isinstance(inner, TypeVarTupleBindingValue):
+            return inner.binding
         if isinstance(inner, TypeVarTupleValue):
             return ((True, inner),)
         if (
@@ -4162,7 +4245,9 @@ def has_relation_var_keyword(
             return CanAssignError(
                 f"{kwargs_annotation} is not a mapping type", [mapping_tv_map]
             )
-        key_arg = mapping_tv_map.get(K, AnyValue(AnySource.generic_argument))
+        key_arg = mapping_tv_map.get_typevar(
+            TypeVarParam(K), AnyValue(AnySource.generic_argument)
+        )
         can_assign = has_relation(key_arg, KnownValue(my_param.name), relation, ctx)
         if isinstance(can_assign, CanAssignError):
             return CanAssignError(
@@ -4170,7 +4255,9 @@ def has_relation_var_keyword(
                 [can_assign],
             )
         bounds_maps.append(can_assign)
-        value_arg = mapping_tv_map.get(V, AnyValue(AnySource.generic_argument))
+        value_arg = mapping_tv_map.get_typevar(
+            TypeVarParam(V), AnyValue(AnySource.generic_argument)
+        )
         can_assign = has_relation(value_arg, my_annotation, relation, ctx)
         if isinstance(can_assign, CanAssignError):
             return CanAssignError(
@@ -4192,4 +4279,6 @@ def _get_var_keyword_value_type(
     mapping_tv_map = relations.get_tv_map(MappingValue, annotation, relation, ctx)
     if isinstance(mapping_tv_map, CanAssignError):
         return None
-    return mapping_tv_map.get(V, AnyValue(AnySource.generic_argument))
+    return mapping_tv_map.get_typevar(
+        TypeVarParam(V), AnyValue(AnySource.generic_argument)
+    )
