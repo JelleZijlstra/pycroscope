@@ -30,6 +30,20 @@ class TestImport(TestNameCheckVisitorBase):
                 assert_is_value(extensions, KnownValue(P.extensions))
                 assert_is_value(assert_error, KnownValue(P.extensions.assert_error))
 
+    @assert_passes()
+    def test_import_from_missing_name(self):
+        def capybara():
+            pass  # E: import_failed
+
+    def test_import_star_from_missing_module(self):
+        self.assert_passes(
+            """
+            if False:
+                from definitely_missing_pycroscope_module import *  # E: invalid_import
+            """,
+            allow_import_failures=True,
+        )
+
     def test_import_star(self):
         self.assert_passes("""
             import pycroscope as P
