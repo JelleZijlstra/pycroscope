@@ -347,3 +347,15 @@ class TestAnnotated(TestNameCheckVisitorBase):
 
             want_float_or_int(make_union_in_annotated())
             want_float_or_int(x)
+
+
+class TestIteration(TestNameCheckVisitorBase):
+    @assert_passes()
+    def test_iterate_literals(self):
+        from collections.abc import Sequence
+
+        from typing_extensions import Literal, assert_type
+
+        def capybara(x: Sequence[Literal[0, 1, 2]]) -> None:
+            for i in x:
+                assert_type(i, Literal[0, 1, 2])

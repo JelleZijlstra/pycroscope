@@ -1096,6 +1096,23 @@ class TypeObject:
             return {}
         return _match_up_generic_params(params, args)
 
+    def get_substitutions_for_base(
+        self, base: type | str, args: Sequence[Value]
+    ) -> TypeVarMap | None:
+        for mro_entry in self.get_mro():
+            if mro_entry.tobj is None:
+                continue
+            mro_value = mro_entry.get_mro_value()
+            if not isinstance(mro_value, TypedValue):
+                continue
+            if mro_value.typ != base:
+                continue
+            mro_value = mro_value.substitute_typevars(self.get_substitutions(args))
+            if not isinstance(mro_value, GenericValue):
+                return mro_entry.tobj.get_substitutions(())
+            return mro_entry.tobj.get_substitutions(mro_value.args)
+        return None
+
     def is_final(self) -> bool:
         if self._is_final is None:
             self._is_final = self._compute_is_final()
