@@ -2412,9 +2412,16 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         return self.active_type_params.current_class_type_params()
 
     def get_synthetic_class(self, typ: type | str) -> SyntheticClassObjectValue | None:
-        if isinstance(typ, type):
-            return self._get_synthetic_class_for_runtime_type(typ)
-        return self._synthetic_classes_by_name.get(typ)
+        synthetic_class = self.checker.get_synthetic_class(typ)
+        if synthetic_class is not None:
+            return synthetic_class
+        if isinstance(typ, str):
+            return self._synthetic_classes_by_name.get(typ)
+        return self._synthetic_classes_by_name.get(
+            f"{typ.__module__}.{typ.__qualname__}"
+        ) or self._synthetic_classes_by_name.get(
+            self._get_synthetic_class_fq_name_from_name(typ.__name__)
+        )
 
     def make_type_object(self, typ: type | str) -> TypeObject:
         return self.checker.make_type_object(typ)
@@ -2898,56 +2905,22 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             )
         return value, origin
 
-    def _get_synthetic_class_for_current_scope(
-        self,
-    ) -> SyntheticClassObjectValue | None:
-        current_class = self.current_class
-        if isinstance(current_class, str):
-            return self._synthetic_classes_by_name.get(current_class)
-        if isinstance(current_class, type):
-            return self._get_synthetic_class_for_runtime_type(current_class)
-        return None
-
-    def _get_synthetic_class_for_runtime_type(
-        self, typ: type
-    ) -> SyntheticClassObjectValue | None:
-        synthetic_class = self.checker.get_synthetic_class(typ)
-        if synthetic_class is not None:
-            return synthetic_class
-        synthetic_class = self._synthetic_classes_by_name.get(
-            f"{typ.__module__}.{typ.__qualname__}"
-        )
-        if synthetic_class is not None:
-            return synthetic_class
-        return self._synthetic_classes_by_name.get(
-            self._get_synthetic_class_fq_name_from_name(typ.__name__)
-        )
-
-    def _ensure_synthetic_class_for_current_scope(
-        self,
-    ) -> SyntheticClassObjectValue | None:
-        synthetic_class = self._get_synthetic_class_for_current_scope()
-        if synthetic_class is not None:
-            return synthetic_class
-        current_class = self.current_class
-        if isinstance(current_class, type):
-            return self.checker.make_synthetic_class(current_class)
-        return None
-
-    def _get_current_synthetic_overlay_type_object(self) -> TypeObject | None:
+    def _current_synthetic_overlay_type_object(
+        self, *, ensure_runtime_overlay: bool = False
+    ) -> TypeObject | None:
         # This is intentionally narrower than self.current_tobj: current_tobj tracks
         # the class currently being analyzed, while this helper answers whether that
         # class currently has a synthetic overlay. Callers that mutate synthetic
         # symbols must preserve that distinction until we can remove overlays
         # entirely.
-        synthetic_class = self._get_synthetic_class_for_current_scope()
-        if synthetic_class is None:
+        current_class = self.current_class
+        if current_class is None:
             return None
-        return synthetic_class.get_type_object(self.checker)
-
-    def _ensure_current_synthetic_overlay_type_object(self) -> TypeObject | None:
-        synthetic_class = self._ensure_synthetic_class_for_current_scope()
+        synthetic_class = self.get_synthetic_class(current_class)
         if synthetic_class is None:
+            if ensure_runtime_overlay and isinstance(current_class, type):
+                self.checker.make_synthetic_class(current_class)
+                return self.checker.make_type_object(current_class)
             return None
         return synthetic_class.get_type_object(self.checker)
 
@@ -3024,7 +2997,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         dataclass_field: DataclassFieldInfo | None = None,
         force_nonmember: bool = False,
     ) -> None:
-        type_object = self._get_current_synthetic_overlay_type_object()
+        type_object = self._current_synthetic_overlay_type_object()
         if type_object is None:
             return
         synthetic_name, synthetic_initializer, enum_member_is_method = (
@@ -3132,8 +3105,14 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         preserve_existing_initializer: bool = True,
         property_initializer_must_be_property: bool = False,
     ) -> ClassSymbol:
+        base = existing or ClassSymbol()
         qualifiers = set(existing.qualifiers if existing is not None else ())
         qualifiers.update(add_qualifiers)
+        annotation = annotation if annotation is not None else base.annotation
+        is_instance_only = (
+            base.is_instance_only if is_instance_only is None else is_instance_only
+        )
+        dataclass_field = base.dataclass_field
         resolved_property_info = (
             property_info
             if property_info is not None
@@ -3142,9 +3121,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         if resolved_property_info is not None:
             if initializer is _UNSET:
                 resolved_initializer = (
-                    existing.initializer
-                    if existing is not None and existing.property_info is not None
-                    else None
+                    base.initializer if base.property_info is not None else None
                 )
             elif initializer is not None and (
                 not property_initializer_must_be_property
@@ -3153,22 +3130,12 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 resolved_initializer = initializer
             else:
                 resolved_initializer = (
-                    existing.initializer
-                    if existing is not None and existing.property_info is not None
-                    else None
+                    base.initializer if base.property_info is not None else None
                 )
             return ClassSymbol(
-                annotation=(
-                    annotation
-                    if annotation is not None
-                    else existing.annotation if existing is not None else None
-                ),
+                annotation=annotation,
                 qualifiers=frozenset(qualifiers),
-                is_instance_only=(
-                    (existing.is_instance_only if existing is not None else False)
-                    if is_instance_only is None
-                    else is_instance_only
-                ),
+                is_instance_only=is_instance_only,
                 is_method=False if is_method is None else is_method,
                 is_classmethod=False if is_classmethod is None else is_classmethod,
                 is_staticmethod=False if is_staticmethod is None else is_staticmethod,
@@ -3179,53 +3146,31 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 ),
                 property_info=resolved_property_info,
                 initializer=resolved_initializer,
-                dataclass_field=(
-                    existing.dataclass_field if existing is not None else None
-                ),
+                dataclass_field=dataclass_field,
             )
         return ClassSymbol(
-            annotation=(
-                annotation
-                if annotation is not None
-                else existing.annotation if existing is not None else None
-            ),
+            annotation=annotation,
             qualifiers=frozenset(qualifiers),
-            is_instance_only=(
-                (existing.is_instance_only if existing is not None else False)
-                if is_instance_only is None
-                else is_instance_only
-            ),
-            is_method=(
-                (existing.is_method if existing is not None else False)
-                if is_method is None
-                else is_method
-            ),
+            is_instance_only=is_instance_only,
+            is_method=base.is_method if is_method is None else is_method,
             is_classmethod=(
-                (existing.is_classmethod if existing is not None else False)
-                if is_classmethod is None
-                else is_classmethod
+                base.is_classmethod if is_classmethod is None else is_classmethod
             ),
             is_staticmethod=(
-                (existing.is_staticmethod if existing is not None else False)
-                if is_staticmethod is None
-                else is_staticmethod
+                base.is_staticmethod if is_staticmethod is None else is_staticmethod
             ),
             returns_self_on_class_access=(
-                (
-                    existing.returns_self_on_class_access
-                    if existing is not None
-                    else False
-                )
+                base.returns_self_on_class_access
                 if returns_self_on_class_access is None
                 else returns_self_on_class_access
             ),
             property_info=None,
             initializer=(
-                existing.initializer
-                if initializer is _UNSET and preserve_existing_initializer and existing
+                base.initializer
+                if initializer is _UNSET and preserve_existing_initializer
                 else None if initializer is _UNSET else initializer
             ),
-            dataclass_field=existing.dataclass_field if existing is not None else None,
+            dataclass_field=dataclass_field,
         )
 
     def _update_synthetic_declared_symbol(
@@ -3242,7 +3187,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         property_info: PropertyInfo | None = None,
         initializer: Value | None | Literal[_UNSET] = _UNSET,
     ) -> None:
-        type_object = self._ensure_current_synthetic_overlay_type_object()
+        type_object = self._current_synthetic_overlay_type_object(
+            ensure_runtime_overlay=True
+        )
         if type_object is None:
             return
         type_object.set_declared_symbol(
@@ -3302,16 +3249,13 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         declared_annotation = annotation
         if self.ann_assign_type is not None and self.ann_assign_type[0] is not None:
             declared_annotation = self.ann_assign_type[0]
-        synthetic_class = self._get_synthetic_class_for_current_scope()
-        if (
-            synthetic_class is None
-            and isinstance(self.current_class, type)
-            and self._initializer_needs_runtime_synthetic_overlay(initializer)
-        ):
-            synthetic_class = self.checker.make_synthetic_class(self.current_class)
-        if synthetic_class is None:
+        type_object = self._current_synthetic_overlay_type_object(
+            ensure_runtime_overlay=self._initializer_needs_runtime_synthetic_overlay(
+                initializer
+            )
+        )
+        if type_object is None:
             return
-        type_object = synthetic_class.get_type_object(self.checker)
         synthetic_name, synthetic_initializer, enum_member_is_method = (
             self._prepare_synthetic_class_binding(
                 name, initializer, node=node, force_nonmember=force_nonmember
@@ -3398,7 +3342,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         class_name = self._current_class_name_from_context()
         if class_name is None:
             return
-        synthetic_type = self._get_current_synthetic_overlay_type_object()
+        synthetic_type = self._current_synthetic_overlay_type_object()
         if synthetic_type is None:
             return
 
@@ -15824,11 +15768,18 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             and isinstance(value, KnownValue)
             and value.val is self.current_class
         ):
-            synthetic_class = self._ensure_synthetic_class_for_current_scope()
-            if synthetic_class is not None:
+            type_object = self._current_synthetic_overlay_type_object(
+                ensure_runtime_overlay=True
+            )
+            synthetic_class = (
+                self.get_synthetic_class(self.current_class)
+                if self.current_class is not None
+                else None
+            )
+            if synthetic_class is not None and type_object is not None:
                 dataclass_helpers.apply_synthetic_attributes(
                     self.current_dataclass_info,
-                    type_object=synthetic_class.get_type_object(self.checker),
+                    type_object=type_object,
                     get_slot_names=self._dataclass_slot_names_from_type,
                     get_field_parameters=self.checker.get_synthetic_dataclass_field_parameters,
                 )
@@ -16302,24 +16253,10 @@ def _is_newtype_base_value(base_value: Value) -> bool:
 
 def _is_type_alias_base_value(base_value: Value) -> bool:
     for subval in flatten_values(base_value, unwrap_annotated=True):
-        if isinstance(subval, TypeAliasValue):
-            if subval.uses_type_alias_object_semantics:
-                return True
-            continue
-        if isinstance(subval, KnownValue) and (
-            is_typing_name(subval.val, "TypeAliasType")
-            or is_instance_of_typing_name(subval.val, "TypeAliasType")
-        ):
+        if _is_type_alias_object_value(subval):
             return True
-        subval = replace_fallback(subval)
-        if isinstance(subval, TypeAliasValue):
-            if subval.uses_type_alias_object_semantics:
-                return True
-            continue
-        if isinstance(subval, KnownValue) and (
-            is_typing_name(subval.val, "TypeAliasType")
-            or is_instance_of_typing_name(subval.val, "TypeAliasType")
-        ):
+        fallback = replace_fallback(subval)
+        if fallback is not subval and _is_type_alias_object_value(fallback):
             return True
     return False
 
@@ -17199,12 +17136,22 @@ def _is_dataclass_classvar_final(expr: AnnotationExpr) -> bool:
 
 def _is_typealiastype_value(value: Value) -> bool:
     for subval in flatten_values(value, unwrap_annotated=True):
-        if isinstance(subval, KnownValue) and (
-            is_typing_name(subval.val, "TypeAliasType")
-            or is_instance_of_typing_name(subval.val, "TypeAliasType")
-        ):
+        if _is_typealiastype_known_value(subval):
             return True
     return False
+
+
+def _is_type_alias_object_value(value: Value) -> bool:
+    return (
+        isinstance(value, TypeAliasValue) and value.uses_type_alias_object_semantics
+    ) or _is_typealiastype_known_value(value)
+
+
+def _is_typealiastype_known_value(value: Value) -> bool:
+    return isinstance(value, KnownValue) and (
+        is_typing_name(value.val, "TypeAliasType")
+        or is_instance_of_typing_name(value.val, "TypeAliasType")
+    )
 
 
 def _is_type_alias_symbol_composite(root_composite: Composite) -> bool:
