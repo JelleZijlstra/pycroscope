@@ -126,11 +126,10 @@ def _get_local_synthetic_initializer(
 
 
 def apply_synthetic_attributes(
-    synthetic_class: SyntheticClassObjectValue,
     semantics: DataclassInfo | None,
     *,
     type_object: "pycroscope.type_object.TypeObject",
-    get_slot_names: Callable[[SyntheticClassObjectValue], tuple[str, ...] | None],
+    get_slot_names: Callable[[type | str], tuple[str, ...] | None],
     get_field_parameters: Callable[[type | str], list[SigParameter]],
 ) -> None:
     if semantics is None:
@@ -141,7 +140,7 @@ def apply_synthetic_attributes(
         semantics.slots is True
         and _get_local_synthetic_initializer(type_object, "__slots__") is None
     ):
-        slot_names = get_slot_names(synthetic_class)
+        slot_names = get_slot_names(type_object.typ)
         if slot_names is not None:
             slot_value = KnownValue(slot_names)
             type_object.add_declared_symbol(
