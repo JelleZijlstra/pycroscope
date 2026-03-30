@@ -46,7 +46,7 @@ full = ["asynq", "qcore>=0.5.1", "ast_decompiler>=0.4.0", "codemod"]
 docs = [
   "myst-parser==4.0.0",
   "sphinx==7.4.7",
-  "pygments==2.19.1",
+  "pygments==2.20.0",
 ]
 
 [project.urls]
