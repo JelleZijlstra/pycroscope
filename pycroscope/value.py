@@ -2542,9 +2542,6 @@ class SyntheticClassObjectValue(Value):
 
     name: str
     class_type: TypedValue | TypedDictValue
-    generic_bases: MutableMapping[type | str, TypeVarMap] = field(
-        default_factory=dict, compare=False, hash=False, repr=False
-    )
     runtime_class: Value | None = field(
         default=None, compare=False, hash=False, repr=False
     )
@@ -2554,13 +2551,6 @@ class SyntheticClassObjectValue(Value):
         return SyntheticClassObjectValue(
             self.name,
             substituted,
-            generic_bases={
-                base_typ: _typevar_map_from_varlike_pairs(
-                    (typevar, value.substitute_typevars(typevars))
-                    for typevar, value in _iter_typevar_map_items(tv_map)
-                )
-                for base_typ, tv_map in self.generic_bases.items()
-            },
             runtime_class=(
                 self.runtime_class.substitute_typevars(typevars)
                 if self.runtime_class is not None
@@ -2571,9 +2561,6 @@ class SyntheticClassObjectValue(Value):
     def walk_values(self) -> Iterable["Value"]:
         yield self
         yield from self.class_type.walk_values()
-        for typevar_map in self.generic_bases.values():
-            for _, value in _iter_typevar_map_items(typevar_map):
-                yield from value.walk_values()
         if self.runtime_class is not None:
             yield from self.runtime_class.walk_values()
 
