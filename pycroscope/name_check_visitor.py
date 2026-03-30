@@ -376,7 +376,7 @@ def _consistent_value_result(
             )
             if result is None and ignore_none:
                 continue
-            if result not in results:
+            if not any(existing == result for existing in results):
                 results.append(result)
         if len(results) == 1:
             return results[0]
@@ -5942,24 +5942,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             has_dict = has_dict or base_has_dict
         return frozenset(slot_names), has_dict
 
-    def _slot_state_for_instance_value(
-        self, value: Value
-    ) -> tuple[frozenset[str], bool] | None:
-        return _consistent_value_result(
-            value, self._slot_state_for_instance_leaf, ignore_none=True
-        )
-
-    def _slot_state_for_instance_leaf(
-        self, value: Value
-    ) -> tuple[frozenset[str], bool] | None:
-        root_info = _attribute_root_class_info(value)
-        if root_info.is_class_object is True or root_info.class_key is None:
-            return None
-        if isinstance(value, TypedValue) and isinstance(value.typ, type):
-            if safe_getattr(value.typ, "__abstractmethods__", None):
-                return None
-        return self._slot_state_for_type(root_info.class_key)
-
     def _get_dataclass_status_for_type(
         self, typ: type | str
     ) -> tuple[bool, bool | None]:
@@ -5982,21 +5964,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     ) -> tuple[bool, bool | None]:
         root_info = _attribute_root_class_info(value)
         if root_info.is_class_object is not True or root_info.class_key is None:
-            return False, None
-        return self._get_dataclass_status_for_type(root_info.class_key)
-
-    def _get_dataclass_status_for_instance_value(
-        self, value: Value
-    ) -> tuple[bool, bool | None]:
-        return _consistent_value_result(
-            value, self._get_dataclass_status_for_instance_leaf
-        ) or (False, None)
-
-    def _get_dataclass_status_for_instance_leaf(
-        self, value: Value
-    ) -> tuple[bool, bool | None]:
-        root_info = _attribute_root_class_info(value)
-        if root_info.is_class_object is True or root_info.class_key is None:
             return False, None
         return self._get_dataclass_status_for_type(root_info.class_key)
 
