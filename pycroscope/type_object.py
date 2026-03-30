@@ -18,7 +18,7 @@ from collections.abc import (
     Sequence,
 )
 from dataclasses import dataclass, replace
-from typing import TYPE_CHECKING, Literal, TypeVar, get_origin
+from typing import TYPE_CHECKING, Literal, get_origin
 from unittest import mock
 
 from typing_extensions import assert_never
@@ -107,6 +107,7 @@ from .value import (
     receiver_to_self_type,
     replace_fallback,
     replace_known_sequence_value,
+    shield_nested_self_typevars,
     stringify_object,
     substitute_typevartuple_binding,
     tuple_members_from_value,
@@ -152,9 +153,6 @@ EXCLUDED_PROTOCOL_MEMBERS: set[str] = {
     "__static_attributes__",
     "__firstlineno__",
 }
-
-_DescriptorNestedSelfT = TypeVar("_DescriptorNestedSelfT")
-
 
 _BaseProvider = Callable[[type], set[type]]
 
@@ -2363,33 +2361,6 @@ def normalize_synthetic_descriptor_attribute(
     return value
 
 
-def _shield_nested_self_typevars(value: Value) -> tuple[Value, TypeVarMap]:
-    """Prevent method receiver binding from capturing nested owner ``Self`` values."""
-    first_self_typevar = next(
-        (
-            subval
-            for subval in value.walk_values()
-            if isinstance(subval, TypeVarValue)
-            and subval.typevar_param.typevar is SelfT
-        ),
-        None,
-    )
-    if first_self_typevar is None:
-        return value, TypeVarMap()
-    placeholder = TypeVarValue(
-        TypeVarParam(
-            _DescriptorNestedSelfT,
-            bound=first_self_typevar.typevar_param.bound,
-            default=first_self_typevar.typevar_param.default,
-            constraints=first_self_typevar.typevar_param.constraints,
-            variance=first_self_typevar.typevar_param.variance,
-        )
-    )
-    return value.substitute_typevars(
-        TypeVarMap(typevars={SelfT: placeholder})
-    ), TypeVarMap(typevars={_DescriptorNestedSelfT: first_self_typevar})
-
-
 def _get_cached_property_return_type(
     descriptor: Value, ctx: CanAssignContext
 ) -> Value | None:
@@ -2846,7 +2817,7 @@ def _descriptor_method_signature_any(
         return _descriptor_method_signature_any(descriptor.value, method_name, ctx)
     if not isinstance(descriptor, (KnownValue, TypedValue, SyntheticClassObjectValue)):
         return None
-    descriptor, restore_typevars = _shield_nested_self_typevars(descriptor)
+    descriptor, restore_typevars = shield_nested_self_typevars(descriptor)
     method_value = ctx.get_attribute_from_value(descriptor, method_name)
     if method_value is UNINITIALIZED_VALUE:
         return None

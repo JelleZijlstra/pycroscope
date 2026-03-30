@@ -223,6 +223,126 @@ class TestPEP673(TestNameCheckVisitorBase):
             assert_type(c.set_value(3), Container[int])
 
     @assert_passes()
+    def test_self_preserved_inside_generic_receiver_method(self):
+        from typing import Generic, TypeVar
+
+        from typing_extensions import Self, assert_type
+
+        T = TypeVar("T", bound="Model")
+
+        class Query(Generic[T]):
+            def filter(self) -> "Query[T]":
+                raise NotImplementedError
+
+        class Model:
+            @classmethod
+            def select(cls) -> Query[Self]:
+                raise NotImplementedError
+
+            @classmethod
+            def select_valid(cls) -> Query[Self]:
+                q = cls.select()
+                assert_type(q, Query[Self])
+                q2 = q.filter()
+                assert_type(q2, Query[Self])
+                return q2
+
+        class SubModel(Model):
+            pass
+
+        def capybara() -> None:
+            assert_type(SubModel.select_valid(), Query[SubModel])
+
+    @assert_passes()
+    def test_self_preserved_inside_generic_receiver_method_without_self_return(self):
+        from typing import Generic, TypeVar
+
+        from typing_extensions import Self, assert_type
+
+        T = TypeVar("T", bound="Model")
+
+        class Getter(Generic[T]):
+            def get_one(self) -> T | None:
+                raise NotImplementedError
+
+        class Model:
+            @classmethod
+            def getter(cls) -> Getter[Self]:
+                raise NotImplementedError
+
+            @classmethod
+            def get_one(cls) -> Self | None:
+                getter = cls.getter()
+                assert_type(getter, Getter[Self])
+                result = getter.get_one()
+                assert_type(result, Self | None)
+                return result
+
+        class SubModel(Model):
+            pass
+
+        def capybara() -> None:
+            assert_type(SubModel.get_one(), SubModel | None)
+
+    @assert_passes()
+    def test_self_preserved_inside_imported_generic_receiver_method(self):
+        import sys
+        import types
+
+        from typing_extensions import Self, assert_type
+
+        mod = types.ModuleType("_runtime_self_inline")
+        exec(
+            "\n".join(
+                [
+                    "from typing import Generic, TypeVar",
+                    "",
+                    'T = TypeVar("T")',
+                    "",
+                    "class Query(Generic[T]):",
+                    '    def filter(self) -> "Query[T]":',
+                    "        raise NotImplementedError",
+                    "",
+                    "class Getter(Generic[T]):",
+                    "    def get_one(self) -> T | None:",
+                    "        raise NotImplementedError",
+                ]
+            ),
+            mod.__dict__,
+        )
+        sys.modules[mod.__name__] = mod
+
+        from _runtime_self_inline import Getter, Query
+
+        class Model:
+            @classmethod
+            def select(cls) -> Query[Self]:
+                raise NotImplementedError
+
+            @classmethod
+            def getter(cls) -> Getter[Self]:
+                raise NotImplementedError
+
+            @classmethod
+            def select_valid(cls) -> Query[Self]:
+                q = cls.select()
+                assert_type(q.filter(), Query[Self])
+                return q.filter()
+
+            @classmethod
+            def get_one(cls) -> Self | None:
+                getter = cls.getter()
+                assert_type(getter.get_one(), Self | None)
+                return getter.get_one()
+
+        class SubModel(Model):
+            pass
+
+        def capybara() -> None:
+            assert_type(SubModel.select_valid(), Query[SubModel])
+            assert_type(SubModel.get_one(), SubModel | None)
+
+    @assert_passes()
     def test_qualified_self(self):
         import typing_extensions as typing_ext
 
