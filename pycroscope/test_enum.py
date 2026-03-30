@@ -84,6 +84,52 @@ class TestEnum(TestNameCheckVisitorBase):
         x: int = Example.b
         assert_type(Example.c, Literal[Example.c])
 
+    @skip_before((3, 11))
+    @assert_passes()
+    def test_member_and_nonmember_helpers_on_additional_statement_shapes(self):
+        import enum
+
+        from typing_extensions import Literal, assert_type
+
+        class Example(enum.Enum):
+            first = enum.member(1)
+            helper: object = enum.nonmember(2)
+            second: object = enum.member(3)
+
+            @enum.nonmember
+            def utility(self) -> int:
+                return 1
+
+            @enum.member
+            def generated(self) -> int:
+                return 3
+
+        assert_type(Example.first, Literal[Example.first])
+        assert_type(Example.generated, Literal[Example.generated])
+        assert_type(Example.helper, object)
+        assert_type(Example.second, Literal[Example.second])
+
+        def capybara(member: Example) -> None:
+            assert_type(member.utility(), int)
+
+    @skip_before((3, 11))
+    @assert_passes()
+    def test_member_and_nonmember_helper_alias_values(self):
+        import enum
+
+        from typing_extensions import Literal, assert_type
+
+        member_wrapper = enum.member
+        nonmember_wrapper = enum.nonmember
+
+        class Example(enum.Enum):
+            first = member_wrapper(1)
+            helper = nonmember_wrapper(2)
+
+        assert_type(Example.first, Literal[Example.first])
+        assert_type(Example.first.value, Literal[1])
+        assert_type(Example.helper, int)
+
     @assert_passes(run_in_both_module_modes=True)
     def test_annotated_nonmember_attributes_can_be_assigned_in_init(self):
         from enum import Enum

@@ -2461,6 +2461,17 @@ class TestSubclassValue(TestNameCheckVisitorBase):
         assert_type(Box[int](), Box[list[int]])
         assert_type(Box[str](), Box[list[str]])
 
+    @assert_passes()
+    def test_named_generic_alias_factory_preserves_specialized_return(self):
+        from typing_extensions import assert_type
+
+        ListFactory = list[int]
+        DictFactory = dict[str, int]
+
+        def capybara() -> None:
+            assert_type(ListFactory(), list[int])
+            assert_type(DictFactory(), dict[str, int])
+
     @assert_passes(allow_import_failures=True)
     def test_unimportable_constructor_subscript_preserves_explicit_new_return(self):
         import does_not_exist  # noqa: F401
@@ -3857,6 +3868,15 @@ class TestFStrings(TestNameCheckVisitorBase):
         def capybara(x):
             y = f"{x} stuff"
             assert_type(y, str)
+
+    @assert_passes()
+    def test_large_literal_union_fstring_falls_back_to_str(self):
+        from typing_extensions import Literal
+
+        def capybara(ab: Literal["a", "b"]) -> None:
+            assert_type(
+                f"{ab}{ab}{ab}{ab}{ab}{ab}{ab}{ab}{ab}{ab}{ab}{ab}{ab}{ab}{ab}{ab}", str
+            )
 
     @assert_passes()
     def test_formatted_value_conversions_and_dynamic_spec(self):

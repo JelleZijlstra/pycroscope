@@ -1018,6 +1018,64 @@ class TestCallable(TestNameCheckVisitorBase):
             g(h)  # E: incompatible_argument
 
     @assert_passes()
+    def test_literal_runtime_value_indices(self):
+        from typing import Any
+
+        from typing_extensions import Literal
+
+        def make() -> Any:
+            return 1
+
+        x = make()
+
+        def take_tuple(value: Literal[(1, 2)]) -> None:
+            pass
+
+        def take_any(value: Literal[x]) -> None:
+            pass
+
+        def outer(flag: bool) -> None:
+            local = 1 if flag else 2
+
+            def inner(value: Literal[local]) -> None:
+                pass
+
+            inner(1)
+            inner(2)
+
+        take_any(1)
+
+    @assert_passes()
+    def test_literal_runtime_value_indices_from_named_tuple_members(self):
+        from typing_extensions import Literal
+
+        a = 1
+        b = 2
+
+        def take_named_members(value: Literal[a, b]) -> None:
+            pass
+
+        take_named_members(1)
+        take_named_members(2)
+
+    @assert_passes(allow_import_failures=True)
+    def test_literal_runtime_value_indices_from_unimportable_any(self):
+        from typing import Any
+
+        import does_not_exist  # noqa: F401
+        from typing_extensions import Literal
+
+        def make() -> Any:
+            return 1
+
+        x = make()
+
+        def take_any(value: Literal[x]) -> None:
+            pass
+
+        take_any(1)
+
+    @assert_passes()
     def test_asynq_callable_incompatible(self):
         from typing import Callable
 
