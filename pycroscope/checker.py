@@ -33,7 +33,6 @@ from .options import Options
 from .reexport import ImplicitReexportTracker
 from .relations import infer_positional_generic_typevar_map, is_assignable
 from .safe import (
-    hasattr_static,
     is_direct_namedtuple_class,
     is_typing_name,
     safe_getattr,
@@ -710,14 +709,6 @@ class Checker:
         for key in self._iter_generic_override_keys(typ):
             synthetic_class = self.synthetic_classes.get(key)
             if synthetic_class is not None:
-                if key != typ and isinstance(typ, type):
-                    runtime_class = synthetic_class.runtime_class
-                    if (
-                        isinstance(runtime_class, KnownValue)
-                        and isinstance(runtime_class.val, type)
-                        and runtime_class.val is not typ
-                    ):
-                        continue
                 return synthetic_class
         return None
 
@@ -1719,15 +1710,6 @@ class Checker:
         ):
             binding_self_annotation = None
         if use_direct_method and method_name in {"__new__", "__init__"}:
-            runtime_class = value.runtime_class
-            if isinstance(runtime_class, KnownValue) and isinstance(
-                runtime_class.val, type
-            ):
-                runtime_overloads = self._get_runtime_overloaded_method_signature(
-                    runtime_class.val, method_name
-                )
-                if runtime_overloads is not None:
-                    method_sig = runtime_overloads
             resolved_method = self.get_attribute_from_value(value, method_name)
             if resolved_method is not UNINITIALIZED_VALUE:
                 resolved_sig = self.signature_from_value(
@@ -1951,41 +1933,7 @@ class Checker:
         has_direct_new = new_symbol is not None and new_symbol.is_method
         has_direct_init = init_symbol is not None and init_symbol.is_method
 
-        runtime_class = value.runtime_class or UNINITIALIZED_VALUE
         dataclass_info = type_object.get_direct_dataclass_info()
-        runtime_uses_default_object_constructor = (
-            isinstance(runtime_class, KnownValue)
-            and isinstance(runtime_class.val, type)
-            and safe_getattr(runtime_class.val, "__init__", None) is object.__init__
-            and safe_getattr(runtime_class.val, "__new__", None) is object.__new__
-        )
-        if (
-            isinstance(runtime_class, KnownValue)
-            and isinstance(
-                runtime_argspec := self._as_concrete_signature(
-                    self.arg_spec_cache.get_argspec(runtime_class.val)
-                ),
-                (Signature, OverloadedSignature),
-            )
-            and not self._is_uninformative_constructor_signature(runtime_argspec)
-            and (
-                dataclass_info is not None
-                or _signature_has_impl(runtime_argspec)
-                or (
-                    hasattr_static(runtime_class.val, "__signature__")
-                    and safe_isinstance(
-                        safe_getattr(runtime_class.val, "__signature__", None),
-                        inspect.Signature,
-                    )
-                )
-            )
-            and not has_direct_new
-            and not has_direct_init
-            and not (
-                dataclass_info is not None and runtime_uses_default_object_constructor
-            )
-        ):
-            return runtime_argspec
 
         default_instance_type = self._make_synthetic_constructor_instance_value(
             value, apply_default_type_args=apply_default_type_args
@@ -2040,10 +1988,6 @@ class Checker:
                     and inherited_init_root.val is object.__init__
                     and new_sig is None
                 ):
-                    if isinstance(runtime_class, KnownValue) and isinstance(
-                        runtime_class.val, type
-                    ):
-                        return None
                     return Signature.make([], default_instance_type)
         if (
             dataclass_info is not None
@@ -2091,10 +2035,6 @@ class Checker:
                 and not self._is_uninformative_constructor_signature(concrete)
             ):
                 return concrete
-        if isinstance(runtime_class, KnownValue) and isinstance(
-            runtime_class.val, type
-        ):
-            return None
         return Signature.make([], default_instance_type)
 
     def get_synthetic_dataclass_field_parameters(
@@ -2544,36 +2484,13 @@ class Checker:
                         )
                     )
                 return Signature.make(params, value.class_type)
-            runtime_class = value.runtime_class
-            runtime_argspec: MaybeSignature = None
-            if isinstance(runtime_class, KnownValue) and isinstance(
-                runtime_class.val, type
-            ):
-                runtime_argspec = self.arg_spec_cache.get_argspec(runtime_class.val)
             constructor_sig = self._get_synthetic_constructor_signature(
                 value,
                 get_return_override=get_return_override,
                 get_call_attribute=get_call_attribute,
             )
             if constructor_sig is not None:
-                runtime_concrete_argspec = self._as_concrete_signature(runtime_argspec)
-                if (
-                    isinstance(
-                        runtime_concrete_argspec, (Signature, OverloadedSignature)
-                    )
-                    and not self._is_uninformative_constructor_signature(
-                        runtime_concrete_argspec
-                    )
-                    and self._is_uninformative_constructor_signature(constructor_sig)
-                ):
-                    return runtime_concrete_argspec
                 return constructor_sig
-            if isinstance(runtime_class, KnownValue) and isinstance(
-                runtime_class.val, type
-            ):
-                argspec = runtime_argspec
-                if argspec is not None:
-                    return argspec
             if value.class_type.typ is tuple:
                 # Probably an unknown namedtuple
                 return ANY_SIGNATURE
@@ -2756,18 +2673,6 @@ class Checker:
                 get_call_attribute=get_call_attribute,
             ):
                 preserve_exact_return = True
-            runtime_class = root.runtime_class
-            if (
-                isinstance(runtime_class, KnownValue)
-                and isinstance(runtime_class.val, type)
-                and self._runtime_has_explicit_new_return_annotation(runtime_class.val)
-            ):
-                runtime_constructor_sig = self._get_runtime_constructor_signature(
-                    runtime_class.val
-                )
-                if runtime_constructor_sig is not None:
-                    origin_argspec = runtime_constructor_sig
-                    preserve_exact_return = True
         elif isinstance(root, TypedValue) and isinstance(root.typ, str):
             class_type = root.typ
             synthetic_class = self.get_synthetic_class(root.typ)
@@ -2912,37 +2817,6 @@ class Checker:
             )
         ):
             return _make_incompatible_constructor_signature(specialized_instance_type)
-        runtime_class_for_synthetic = None
-        if synthetic_root is not None and not isinstance(class_type, type):
-            runtime_class = synthetic_root.runtime_class
-            if isinstance(runtime_class, KnownValue) and isinstance(
-                runtime_class.val, type
-            ):
-                runtime_class_for_synthetic = runtime_class.val
-        if runtime_class_for_synthetic is not None:
-            runtime_type_params = self.get_type_parameters(runtime_class_for_synthetic)
-            runtime_typevar_map = _typevar_map_from_varlike_pairs(
-                (param.typevar, member)
-                for param, member in zip(runtime_type_params, member_values)
-                if not isinstance(param, ParamSpecParam)
-            )
-            runtime_specialized_instance_type: Value
-            if member_values:
-                runtime_specialized_instance_type = GenericValue(
-                    runtime_class_for_synthetic, member_values
-                )
-            else:
-                runtime_specialized_instance_type = TypedValue(
-                    runtime_class_for_synthetic
-                )
-            if not self._runtime_new_cls_annotation_matches(
-                runtime_class_for_synthetic,
-                class_type_value=SubclassValue.make(runtime_specialized_instance_type),
-                typevar_map=runtime_typevar_map,
-            ):
-                return _make_incompatible_constructor_signature(
-                    specialized_instance_type
-                )
         if isinstance(class_type, type):
             if not self._runtime_init_self_annotation_matches(
                 class_type,
