@@ -222,7 +222,9 @@ from .type_object import (
     TypeObject,
     TypeObjectAttribute,
     _class_key_from_value,
+    _is_definitely_class_object_value,
     _iter_base_type_objects,
+    _receiver_key_from_value,
     class_keys_match,
     direct_bases_from_values,
     get_mro,
@@ -337,6 +339,8 @@ _TYPE_PARAM_AST_NODE_TYPES = tuple(
     if isinstance(typ, type)
 )
 
+_TValueResult = TypeVar("_TValueResult")
+
 if sys.version_info >= (3, 11):
     TryNode = ast.Try | ast.TryStar
 else:
@@ -355,6 +359,29 @@ def _strip_predicate_intersection(value: Value) -> Value:
     if len(vals) == 1:
         return vals[0]
     return IntersectionValue(tuple(vals))
+
+
+def _consistent_value_result(
+    value: Value,
+    evaluator: Callable[[Value], _TValueResult | None],
+    *,
+    ignore_none: bool = False,
+) -> _TValueResult | None:
+    value = replace_fallback(value)
+    if isinstance(value, (MultiValuedValue, IntersectionValue)):
+        results: list[_TValueResult | None] = []
+        for subval in value.vals:
+            result = _consistent_value_result(
+                subval, evaluator, ignore_none=ignore_none
+            )
+            if result is None and ignore_none:
+                continue
+            if result not in results:
+                results.append(result)
+        if len(results) == 1:
+            return results[0]
+        return None
+    return evaluator(value)
 
 
 def _drop_uninitialized_value(value: Value) -> Value:
@@ -5918,29 +5945,20 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     def _slot_state_for_instance_value(
         self, value: Value
     ) -> tuple[frozenset[str], bool] | None:
-        value = replace_fallback(value)
-        if isinstance(value, AnnotatedValue):
-            return self._slot_state_for_instance_value(value.value)
-        if isinstance(value, (MultiValuedValue, IntersectionValue)):
-            states = {
-                state
-                for subval in value.vals
-                if (state := self._slot_state_for_instance_value(subval)) is not None
-            }
-            if len(states) == 1:
-                return next(iter(states))
+        return _consistent_value_result(
+            value, self._slot_state_for_instance_leaf, ignore_none=True
+        )
+
+    def _slot_state_for_instance_leaf(
+        self, value: Value
+    ) -> tuple[frozenset[str], bool] | None:
+        root_info = _attribute_root_class_info(value)
+        if root_info.is_class_object is True or root_info.class_key is None:
             return None
-        if isinstance(value, KnownValue):
-            if isinstance(value.val, type):
+        if isinstance(value, TypedValue) and isinstance(value.typ, type):
+            if safe_getattr(value.typ, "__abstractmethods__", None):
                 return None
-            return self._slot_state_for_type(type(value.val))
-        if isinstance(value, TypedValue):
-            if isinstance(value.typ, type) and safe_getattr(
-                value.typ, "__abstractmethods__", None
-            ):
-                return None
-            return self._slot_state_for_type(value.typ)
-        return None
+        return self._slot_state_for_type(root_info.class_key)
 
     def _get_dataclass_status_for_type(
         self, typ: type | str
@@ -5955,84 +5973,52 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     def _get_dataclass_status_for_class_value(
         self, value: Value
     ) -> tuple[bool, bool | None]:
-        value = replace_fallback(value)
-        if isinstance(value, AnnotatedValue):
-            return self._get_dataclass_status_for_class_value(value.value)
-        if isinstance(value, (MultiValuedValue, IntersectionValue)):
-            statuses = {
-                self._get_dataclass_status_for_class_value(subval)
-                for subval in value.vals
-            }
-            if len(statuses) == 1:
-                return next(iter(statuses))
+        return _consistent_value_result(
+            value, self._get_dataclass_status_for_class_leaf
+        ) or (False, None)
+
+    def _get_dataclass_status_for_class_leaf(
+        self, value: Value
+    ) -> tuple[bool, bool | None]:
+        root_info = _attribute_root_class_info(value)
+        if root_info.is_class_object is not True or root_info.class_key is None:
             return False, None
-        if isinstance(value, SyntheticClassObjectValue) and isinstance(
-            value.class_type, TypedValue
-        ):
-            return self._get_dataclass_status_for_type(value.class_type.typ)
-        if isinstance(value, SubclassValue) and isinstance(value.typ, TypedValue):
-            return self._get_dataclass_status_for_type(value.typ.typ)
-        if isinstance(value, KnownValue):
-            if isinstance(value.val, type):
-                return self._get_dataclass_status_for_type(value.val)
-            return False, None
-        if isinstance(value, TypedValue):
-            return self._get_dataclass_status_for_type(value.typ)
-        return False, None
+        return self._get_dataclass_status_for_type(root_info.class_key)
 
     def _get_dataclass_status_for_instance_value(
         self, value: Value
     ) -> tuple[bool, bool | None]:
-        value = replace_fallback(value)
-        if isinstance(value, AnnotatedValue):
-            return self._get_dataclass_status_for_instance_value(value.value)
-        if isinstance(value, (MultiValuedValue, IntersectionValue)):
-            statuses = {
-                self._get_dataclass_status_for_instance_value(subval)
-                for subval in value.vals
-            }
-            if len(statuses) == 1:
-                return next(iter(statuses))
+        return _consistent_value_result(
+            value, self._get_dataclass_status_for_instance_leaf
+        ) or (False, None)
+
+    def _get_dataclass_status_for_instance_leaf(
+        self, value: Value
+    ) -> tuple[bool, bool | None]:
+        root_info = _attribute_root_class_info(value)
+        if root_info.is_class_object is True or root_info.class_key is None:
             return False, None
-        if isinstance(value, KnownValue):
-            if isinstance(value.val, type):
-                return False, None
-            return self._get_dataclass_status_for_type(type(value.val))
-        if isinstance(value, TypedValue):
-            return self._get_dataclass_status_for_type(value.typ)
-        return False, None
+        return self._get_dataclass_status_for_type(root_info.class_key)
 
     def _get_dataclass_order_info_for_instance_value(
         self, value: Value
     ) -> tuple[type | str, bool | None] | None:
-        value = replace_fallback(value)
-        if isinstance(value, AnnotatedValue):
-            return self._get_dataclass_order_info_for_instance_value(value.value)
-        if isinstance(value, (MultiValuedValue, IntersectionValue)):
-            infos = {
-                info
-                for subval in value.vals
-                if (info := self._get_dataclass_order_info_for_instance_value(subval))
-                is not None
-            }
-            if len(infos) == 1:
-                return next(iter(infos))
+        return _consistent_value_result(
+            value, self._get_dataclass_order_info_for_instance_leaf, ignore_none=True
+        )
+
+    def _get_dataclass_order_info_for_instance_leaf(
+        self, value: Value
+    ) -> tuple[type | str, bool | None] | None:
+        root_info = _attribute_root_class_info(value)
+        if root_info.is_class_object is True or root_info.class_key is None:
             return None
-        if isinstance(value, KnownValue):
-            if isinstance(value.val, type):
-                return None
-            typ: type | str = type(value.val)
-            is_dataclass, order = self._get_dataclass_order_status_for_type(typ)
-            if not is_dataclass:
-                return None
-            return typ, order
-        if isinstance(value, TypedValue):
-            typ = value.typ
-            is_dataclass, order = self._get_dataclass_order_status_for_type(typ)
-            if not is_dataclass:
-                return None
-            return typ, order
-        return None
+        is_dataclass, order = self._get_dataclass_order_status_for_type(
+            root_info.class_key
+        )
+        if not is_dataclass:
+            return None
+        return root_info.class_key, order
 
     def _check_dataclass_order_comparison(
         self, op: ast.cmpop, lhs: Value, rhs: Value, parent_node: ast.AST
@@ -6164,6 +6150,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
 
     def _type_parameter_class_key(self, value: Value) -> type | str | None:
         candidate = replace_fallback(value)
+        class_key = _receiver_key_from_value(candidate)
+        if class_key is None:
+            return None
         if isinstance(candidate, KnownValue):
             origin = typing.get_origin(candidate.val)
             if not isinstance(candidate.val, (type, str)) and not isinstance(
@@ -6174,7 +6163,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             candidate, (GenericValue, SyntheticClassObjectValue, TypedValue)
         ):
             return None
-        return _class_key_from_value(candidate)
+        return class_key
 
     def _value_for_variance_annotation(self, annotation: ast.expr) -> Value:
         annotation_expr = annotation_expr_from_ast(
@@ -16828,29 +16817,6 @@ def _merge_attribute_root_class_info(
     )
 
 
-def _is_class_object_simple_value(value: SimpleType) -> bool:
-    if isinstance(value, KnownValue):
-        return isinstance(value.val, type) or isinstance(get_origin(value.val), type)
-    if isinstance(value, (SyntheticClassObjectValue, SubclassValue)):
-        return True
-    if isinstance(value, TypedValue):
-        if isinstance(value.typ, type):
-            return safe_issubclass(value.typ, type)
-        return isinstance(value.typ, str) and value.typ in {"builtins.type", "type"}
-    if isinstance(
-        value,
-        (
-            AnyValue,
-            SyntheticModuleValue,
-            UnboundMethodValue,
-            TypeFormValue,
-            PredicateValue,
-        ),
-    ):
-        return False
-    assert_never(value)
-
-
 def _attribute_root_class_info(value: Value) -> _AttributeRootClassInfo:
     if isinstance(value, PartialValue):
         if value.operation is PartialValueOperation.SUBSCRIPT:
@@ -16867,14 +16833,9 @@ def _attribute_root_class_info(value: Value) -> _AttributeRootClassInfo:
         return _merge_attribute_root_class_info(
             _attribute_root_class_info(subval) for subval in value.vals
         )
-    if isinstance(value, KnownValue):
-        return _AttributeRootClassInfo(
-            class_key=_class_key_from_value(value) or type(value.val),
-            is_class_object=_is_class_object_simple_value(value),
-        )
     return _AttributeRootClassInfo(
-        class_key=_class_key_from_value(value),
-        is_class_object=_is_class_object_simple_value(value),
+        class_key=_receiver_key_from_value(value),
+        is_class_object=_is_definitely_class_object_value(value),
     )
 
 
@@ -17603,9 +17564,11 @@ def _is_valid_implicit_type_alias_name_value(value: Value) -> bool:
     if isinstance(value, AnyValue):
         return False
     if isinstance(value, KnownValue):
-        return _is_class_object_simple_value(value) or _is_typing_alias_value(value.val)
+        return _is_definitely_class_object_value(value) or _is_typing_alias_value(
+            value.val
+        )
     if isinstance(value, SimpleType):
-        return _is_class_object_simple_value(value)
+        return _is_definitely_class_object_value(value)
     return False
 
 
