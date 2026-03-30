@@ -33,7 +33,9 @@ class TestImport(TestNameCheckVisitorBase):
     @assert_passes()
     def test_import_from_missing_name(self):
         def capybara():
-            pass  # E: import_failed
+            from pycroscope import definitely_missing_name  # E: import_failed
+
+            print(definitely_missing_name)
 
     def test_import_star_from_missing_module(self):
         self.assert_passes(
