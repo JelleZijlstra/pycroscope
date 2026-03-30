@@ -55,7 +55,6 @@ from .type_object import (
     _get_attribute_value_from_symbol,
     _get_cached_property_return_type,
     _is_property_marker_value,
-    _shield_nested_self_typevars,
     _specialize_symbol_for_owner,
     class_keys_match,
     lookup_declared_symbol_with_owner,
@@ -102,6 +101,7 @@ from .value import (
     receiver_to_self_type,
     replace_fallback,
     set_self,
+    shield_nested_self_typevars,
     stringify_object,
     unite_values,
 )
@@ -853,7 +853,7 @@ def _synthetic_descriptor_method_signature_any(
         )
     if not isinstance(descriptor, (KnownValue, TypedValue, SyntheticClassObjectValue)):
         return None
-    descriptor, restore_typevars = _shield_nested_self_typevars(descriptor)
+    descriptor, restore_typevars = shield_nested_self_typevars(descriptor)
     method_ctx = ctx.clone_for_attribute_lookup(Composite(descriptor), method_name)
     method_value = get_attribute(method_ctx)
     if method_value is UNINITIALIZED_VALUE:
@@ -1142,6 +1142,17 @@ def _contains_self_typevar(value: Value) -> bool:
     )
 
 
+def _is_synthetic_instance_method_attribute(
+    typ: type, attr_name: str, ctx: AttrContext
+) -> bool:
+    symbol = (
+        ctx.get_can_assign_context()
+        .make_type_object(typ)
+        .get_declared_symbol_from_mro(attr_name, ctx.get_can_assign_context())
+    )
+    return symbol is not None and symbol.is_method
+
+
 def _get_attribute_from_typed(
     typ: type, generic_args: Sequence[Value], ctx: AttrContext
 ) -> Value:
@@ -1168,12 +1179,17 @@ def _get_attribute_from_typed(
                 synthetic_result, ctx
             )
         if synthetic_result is not UNINITIALIZED_VALUE:
+            is_bound_method = _is_synthetic_instance_method_attribute(
+                typ, ctx.attr, ctx
+            )
             synthetic_result = ctx.bind_synthetic_instance_attribute(
                 ctx.attr, synthetic_result
             )
             synthetic_result = _substitute_typevars(
                 typ, generic_args, synthetic_result, typ, ctx
             )
+            if is_bound_method:
+                return synthetic_result
             return set_self(synthetic_result, ctx.get_self_value())
 
     # First check values that are special in Python

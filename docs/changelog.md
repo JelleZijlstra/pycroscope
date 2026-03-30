@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Fix a `Self` regression for generic receiver methods, so calls like `Query[Self].filter() -> Query[Self]` and `Getter[Self].get_one() -> Self | None` no longer get widened to nested receiver types during fallback analysis.
+
 - Fix a user-visible regression in large project analysis so pycroscope no longer prints stray internal `__getitem__` debug lines, and avoids internal errors when stub lookup touches runtime objects whose `__getattr__` methods can raise project-specific exceptions.
 
 - Split overloaded annotation diagnostics into narrower ones: pycroscope now uses `invalid_self_usage`, `invalid_paramspec_usage`, and `invalid_qualifier` for those specific mistakes, keeps other bad annotation forms under `invalid_annotation`, uses declaration-specific codes like `invalid_typeddict`/`invalid_namedtuple`/`invalid_overload`/`invalid_final`/`invalid_type_alias`/`invalid_protocol`/`invalid_type_parameter`, reports duplicate type-alias statements as `already_declared`, and reports calling `Annotated` aliases as `not_callable`.

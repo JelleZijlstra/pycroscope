@@ -3114,6 +3114,7 @@ class TypeVarTupleBindingValue(Value):
 
 
 SelfTVV = TypeVarValue(TypeVarParam(SelfT))
+_NestedSelfT = TypeVar("_NestedSelfT")
 
 
 def bound_self_type_from_class_key(
@@ -3125,6 +3126,33 @@ def bound_self_type_from_class_key(
         else TypedValue(current_class_key)
     )
     return TypeVarValue(TypeVarParam(SelfT, bound=bound))
+
+
+def shield_nested_self_typevars(value: Value) -> tuple[Value, TypeVarMap]:
+    """Protect nested ``Self`` values while specializing an outer receiver."""
+    first_self_typevar = next(
+        (
+            subval
+            for subval in value.walk_values()
+            if isinstance(subval, TypeVarValue)
+            and subval.typevar_param.typevar is SelfT
+        ),
+        None,
+    )
+    if first_self_typevar is None:
+        return value, TypeVarMap()
+    placeholder = TypeVarValue(
+        TypeVarParam(
+            _NestedSelfT,
+            bound=first_self_typevar.typevar_param.bound,
+            default=first_self_typevar.typevar_param.default,
+            constraints=first_self_typevar.typevar_param.constraints,
+            variance=first_self_typevar.typevar_param.variance,
+        )
+    )
+    return value.substitute_typevars(
+        TypeVarMap(typevars={SelfT: placeholder})
+    ), TypeVarMap(typevars={_NestedSelfT: first_self_typevar})
 
 
 def receiver_to_self_type(self_value: Value) -> Value:
@@ -3156,8 +3184,20 @@ def receiver_to_self_type(self_value: Value) -> Value:
     return self_value
 
 
+def _has_nested_self_typevar(value: Value) -> bool:
+    value = replace_fallback(value)
+    return not (
+        isinstance(value, TypeVarValue) and value.typevar_param.typevar is SelfT
+    ) and any(
+        isinstance(subval, TypeVarValue) and subval.typevar_param.typevar is SelfT
+        for subval in value.walk_values()
+    )
+
+
 def set_self(value: Value, self_value: Value) -> Value:
     self_type = receiver_to_self_type(self_value)
+    if isinstance(value, UnboundMethodValue) and _has_nested_self_typevar(self_type):
+        return value
     if isinstance(value, KnownValueWithTypeVars):
         merged_typevars = value.typevars.with_typevar(TypeVarParam(SelfT), self_type)
         return KnownValueWithTypeVars(value.val, merged_typevars)
