@@ -3184,8 +3184,20 @@ def receiver_to_self_type(self_value: Value) -> Value:
     return self_value
 
 
+def _has_nested_self_typevar(value: Value) -> bool:
+    value = replace_fallback(value)
+    return not (
+        isinstance(value, TypeVarValue) and value.typevar_param.typevar is SelfT
+    ) and any(
+        isinstance(subval, TypeVarValue) and subval.typevar_param.typevar is SelfT
+        for subval in value.walk_values()
+    )
+
+
 def set_self(value: Value, self_value: Value) -> Value:
     self_type = receiver_to_self_type(self_value)
+    if isinstance(value, UnboundMethodValue) and _has_nested_self_typevar(self_type):
+        return value
     if isinstance(value, KnownValueWithTypeVars):
         merged_typevars = value.typevars.with_typevar(TypeVarParam(SelfT), self_type)
         return KnownValueWithTypeVars(value.val, merged_typevars)
