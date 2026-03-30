@@ -150,74 +150,74 @@ class TypeVarMap:
     def __bool__(self) -> bool:
         return bool(self._typevars or self._paramspecs or self._typevartuples)
 
-    @typing.overload
+    @typing_extensions.overload
     def get_typevar(self, type_param: "TypeVarParam") -> "Value | None": ...
 
-    @typing.overload
+    @typing_extensions.overload
     def get_typevar(self, type_param: "TypeVarParam", default: T) -> "Value | T": ...
 
     def get_typevar(
-        self, type_param: "TypeVarParam", default: object = None
-    ) -> "Value | object":
+        self, type_param: "TypeVarParam", default: T | None = None
+    ) -> "Value | T | None":
         return self._typevars.get(type_param.typevar, default)
 
     def has_typevar(self, type_param: "TypeVarParam") -> bool:
         return type_param.typevar in self._typevars
 
-    @typing.overload
+    @typing_extensions.overload
     def get_paramspec(
         self, type_param: "ParamSpecParam"
     ) -> "pycroscope.input_sig.InputSig | None": ...
 
-    @typing.overload
+    @typing_extensions.overload
     def get_paramspec(
         self, type_param: "ParamSpecParam", default: T
     ) -> "pycroscope.input_sig.InputSig | T": ...
 
     def get_paramspec(
-        self, type_param: "ParamSpecParam", default: object = None
-    ) -> "pycroscope.input_sig.InputSig | object":
+        self, type_param: "ParamSpecParam", default: T | None = None
+    ) -> "pycroscope.input_sig.InputSig | T | None":
         return self._paramspecs.get(type_param.param_spec, default)
 
     def has_paramspec(self, type_param: "ParamSpecParam") -> bool:
         return type_param.param_spec in self._paramspecs
 
-    @typing.overload
+    @typing_extensions.overload
     def get_typevartuple(
         self, type_param: "TypeVarTupleParam"
     ) -> "SequenceMembers | None": ...
 
-    @typing.overload
+    @typing_extensions.overload
     def get_typevartuple(
         self, type_param: "TypeVarTupleParam", default: T
     ) -> "SequenceMembers | T": ...
 
     def get_typevartuple(
-        self, type_param: "TypeVarTupleParam", default: object = None
-    ) -> "SequenceMembers | object":
+        self, type_param: "TypeVarTupleParam", default: T | None = None
+    ) -> "SequenceMembers | T | None":
         return self._typevartuples.get(type_param.typevar, default)
 
     def has_typevartuple(self, type_param: "TypeVarTupleParam") -> bool:
         return type_param.typevar in self._typevartuples
 
-    @typing.overload
+    @typing_extensions.overload
     def get_value(self, type_param: "TypeParam") -> "Value | None": ...
 
-    @typing.overload
+    @typing_extensions.overload
     def get_value(self, type_param: "TypeParam", default: T) -> "Value | T": ...
 
     def get_value(
-        self, type_param: "TypeParam", default: object = None
-    ) -> "Value | object":
+        self, type_param: "TypeParam", default: T | None = None
+    ) -> "Value | T | None":
         if isinstance(type_param, TypeVarParam):
-            return self.get_typevar(type_param, default)
+            return self._typevars.get(type_param.typevar, default)
         if isinstance(type_param, ParamSpecParam):
-            paramspec = self.get_paramspec(type_param, default)
+            paramspec = self._paramspecs.get(type_param.param_spec, default)
             if paramspec is default:
                 return default
             assert _is_paramspec_substitution(paramspec), paramspec
             return self._paramspec_to_value(paramspec)
-        typevartuple = self.get_typevartuple(type_param, default)
+        typevartuple = self._typevartuples.get(type_param.typevar, default)
         if typevartuple is default:
             return default
         assert _is_sequence_members(typevartuple), typevartuple
@@ -432,27 +432,35 @@ def _iter_typevar_map_items(
         yield typevartuple, typevartuple_binding_to_value(binding)
 
 
-@typing.overload
+@typing_extensions.overload
 def _get_typevar_map_value(
     typevars: TypeVarMap, typevar: TypeVarLike
 ) -> "Value | None": ...
 
 
-@typing.overload
+@typing_extensions.overload
 def _get_typevar_map_value(
     typevars: TypeVarMap, typevar: TypeVarLike, default: T
 ) -> "Value | T": ...
 
 
 def _get_typevar_map_value(
-    typevars: TypeVarMap, typevar: TypeVarLike, default: object = None
-) -> "Value | object":
+    typevars: TypeVarMap, typevar: TypeVarLike, default: T | None = None
+) -> "Value | T | None":
     if is_instance_of_typing_name(typevar, "TypeVar"):
-        return typevars.get_typevar(TypeVarParam(typevar), default)
+        return typevars._typevars.get(typevar, default)
     if is_instance_of_typing_name(typevar, "ParamSpec"):
-        return typevars.get_value(ParamSpecParam(typevar), default)
+        paramspec = typevars._paramspecs.get(typevar, default)
+        if paramspec is default:
+            return default
+        assert _is_paramspec_substitution(paramspec), paramspec
+        return TypeVarMap._paramspec_to_value(paramspec)
     if is_instance_of_typing_name(typevar, "TypeVarTuple"):
-        return typevars.get_value(TypeVarTupleParam(typevar), default)
+        binding = typevars._typevartuples.get(typevar, default)
+        if binding is default:
+            return default
+        assert _is_sequence_members(binding), binding
+        return typevartuple_binding_to_value(binding)
     raise TypeError(f"Unrecognized type parameter {typevar!r}")
 
 
