@@ -5462,12 +5462,13 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             field_specifiers=tuple(field_specifier_values),
         )
 
-    def _get_dataclass_transform_info_from_synthetic_class(
-        self, value: SyntheticClassObjectValue
+    def _get_dataclass_transform_info_from_class_key(
+        self, class_key: type | str
     ) -> DataclassTransformInfo | None:
-        return self.make_type_object(
-            value.class_type.typ
-        ).get_direct_dataclass_transform_info()
+        info = self.make_type_object(class_key).get_direct_dataclass_transform_info()
+        if info is not None or isinstance(class_key, str):
+            return info
+        return self._get_dataclass_transform_info_from_runtime_object(class_key)
 
     def _get_dataclass_transform_info_from_value(
         self, value: Value
@@ -5508,8 +5509,17 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 return None
             return _merge_dataclass_transform_infos(infos)
         if isinstance(value, SyntheticClassObjectValue):
-            return self._get_dataclass_transform_info_from_synthetic_class(value)
+            if isinstance(value.class_type, TypedValue):
+                return self._get_dataclass_transform_info_from_class_key(
+                    value.class_type.typ
+                )
+            return None
         if isinstance(value, KnownValue):
+            if isinstance(value.val, type):
+                if (
+                    info := self._get_dataclass_transform_info_from_class_key(value.val)
+                ) is not None:
+                    return info
             if (
                 info := self._get_dataclass_transform_info_from_runtime_object(
                     value.val
@@ -5518,30 +5528,12 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 return info
             origin = safe_getattr(value.val, "__origin__", None)
             if isinstance(origin, type):
-                synthetic_class = self.checker.get_synthetic_class(origin)
-                if (
-                    synthetic_class is not None
-                    and (
-                        synthetic_info := self._get_dataclass_transform_info_from_synthetic_class(
-                            synthetic_class
-                        )
-                    )
-                    is not None
-                ):
-                    return synthetic_info
-                return self._get_dataclass_transform_info_from_runtime_object(origin)
+                return self._get_dataclass_transform_info_from_class_key(origin)
             return None
         if isinstance(value, SubclassValue) and isinstance(value.typ, TypedValue):
             return self._get_dataclass_transform_info_from_value(value.typ)
         if isinstance(value, TypedValue):
-            if isinstance(value.typ, str):
-                synthetic_class = self.checker.get_synthetic_class(value.typ)
-                if synthetic_class is None:
-                    return None
-                return self._get_dataclass_transform_info_from_synthetic_class(
-                    synthetic_class
-                )
-            return self._get_dataclass_transform_info_from_runtime_object(value.typ)
+            return self._get_dataclass_transform_info_from_class_key(value.typ)
         return None
 
     def _get_class_transform_provider_info(
@@ -8644,35 +8636,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     def _class_key_from_attribute_root_value(
         self, root_value: Value
     ) -> type | str | None:
-        if (
-            isinstance(root_value, PartialValue)
-            and root_value.operation is PartialValueOperation.SUBSCRIPT
-            and self._is_class_object_attribute_root(root_value.root) is True
-        ):
-            return self._class_key_from_attribute_root_value(root_value.root)
-        if isinstance(root_value, SubclassValue) and isinstance(
-            root_value.typ, TypeVarValue
-        ):
-            return None
-        class_key = _class_key_from_value(root_value)
-        if class_key is not None:
-            return class_key
-        root_value = replace_fallback(root_value)
-        if isinstance(root_value, AnnotatedValue):
-            return self._class_key_from_attribute_root_value(root_value.value)
-        if isinstance(root_value, KnownValue):
-            return type(root_value.val)
-        if isinstance(root_value, MultiValuedValue):
-            class_keys = {
-                class_key
-                for subval in root_value.vals
-                if (class_key := self._class_key_from_attribute_root_value(subval))
-                is not None
-            }
-            if len(class_keys) == 1:
-                return next(iter(class_keys))
-            return None
-        return None
+        return _attribute_root_class_info(root_value).class_key
 
     def _is_allowed_readonly_attribute_initialization(
         self, node: ast.Attribute, root_value: Value
@@ -8693,66 +8657,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         return False
 
     def _is_class_object_attribute_root(self, value: Value) -> bool | None:
-        if (
-            isinstance(value, PartialValue)
-            and value.operation is PartialValueOperation.SUBSCRIPT
-            and self._is_class_object_attribute_root(value.root) is True
-        ):
-            # Preserve class-object-ness for subscripted class objects such as C[T].
-            return True
-        value = replace_fallback(value)
-        if isinstance(value, AnnotatedValue):
-            return self._is_class_object_attribute_root(value.value)
-        if isinstance(value, MultiValuedValue):
-            kinds = {
-                result
-                for subval in value.vals
-                if (result := self._is_class_object_attribute_root(subval)) is not None
-            }
-            if len(kinds) == 1:
-                return next(iter(kinds))
-            return None
-        if isinstance(value, IntersectionValue):
-            kinds = {
-                result
-                for subval in value.vals
-                if (result := self._is_class_object_attribute_root(subval)) is not None
-            }
-            if len(kinds) == 1:
-                return next(iter(kinds))
-            return None
-        if isinstance(value, KnownValue):
-            if isinstance(value.val, type):
-                return True
-            return isinstance(get_origin(value.val), type)
-        if isinstance(value, SyntheticClassObjectValue):
-            return True
-        if isinstance(value, SubclassValue):
-            return True
-        if isinstance(value, TypedValue):
-            if isinstance(value.typ, type):
-                return safe_issubclass(value.typ, type)
-            if isinstance(value.typ, str):
-                return value.typ in {"builtins.type", "type"}
-            return False
-        if isinstance(value, GenericValue):
-            if isinstance(value.typ, type):
-                return safe_issubclass(value.typ, type)
-            if isinstance(value.typ, str):
-                return value.typ in {"builtins.type", "type"}
-            return False
-        if isinstance(
-            value,
-            (
-                AnyValue,
-                SyntheticModuleValue,
-                UnboundMethodValue,
-                TypeFormValue,
-                PredicateValue,
-            ),
-        ):
-            return False
-        assert_never(value)
+        return _attribute_root_class_info(value).is_class_object
 
     def _class_key_from_type_call_expr(
         self, call_expr: ast.AST | None
@@ -8785,27 +8690,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         with self.catch_errors():
             argument_value = self.composite_from_node(call_node.args[0]).value
         return self._class_key_from_attribute_root_value(argument_value)
-
-    def _is_subscripted_class_alias_value(self, value: Value) -> bool:
-        if (
-            isinstance(value, PartialValue)
-            and value.operation is PartialValueOperation.SUBSCRIPT
-        ):
-            return self._is_class_object_attribute_root(value.root) is True
-        value = replace_fallback(value)
-        if isinstance(value, AnnotatedValue):
-            return self._is_subscripted_class_alias_value(value.value)
-        if isinstance(value, MultiValuedValue):
-            return any(
-                self._is_subscripted_class_alias_value(subval) for subval in value.vals
-            )
-        if isinstance(value, IntersectionValue):
-            return any(
-                self._is_subscripted_class_alias_value(subval) for subval in value.vals
-            )
-        if isinstance(value, KnownValue):
-            return isinstance(get_origin(value.val), type)
-        return False
 
     def _specialized_self_value_from_generic_alias_partial(
         self, value: PartialValue
@@ -8874,21 +8758,19 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             # class whose instance-only members should be rejected via plain
             # class-object lookup rules.
             return False
-        if not self._is_subscripted_class_alias_value(root_composite.value):
-            class_key = self._class_key_from_attribute_root_value(root_composite.value)
+        root_info = _attribute_root_class_info(root_composite.value)
+        if not root_info.is_subscripted_class_alias:
             if (
-                class_key is None
-                or self._is_class_object_attribute_root(root_composite.value)
-                is not True
+                root_info.class_key is None
+                or root_info.is_class_object is not True
                 or not self._should_check_plain_class_object_instance_member_access(
-                    class_key
+                    root_info.class_key
                 )
             ):
                 return False
-            return self._is_instance_only_member(class_key, attr_name)
-        class_key = self._class_key_from_attribute_root_value(root_composite.value)
-        return class_key is not None and self._is_instance_only_member(
-            class_key, attr_name
+            return self._is_instance_only_member(root_info.class_key, attr_name)
+        return root_info.class_key is not None and self._is_instance_only_member(
+            root_info.class_key, attr_name
         )
 
     def _maybe_replace_tuple_subtype_with_tuple_sequence(self, value: Value) -> Value:
@@ -14288,16 +14170,16 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 use_fallback=True,
                 ignore_none=self.options.get_value_for(IgnoreNoneAttributes),
             )
+            root_info = _attribute_root_class_info(root_composite.value)
             if (
                 node.attr == "__slots__"
-                and self._is_class_object_attribute_root(root_composite.value) is True
+                and root_info.is_class_object is True
+                and root_info.class_key is not None
                 and (
-                    class_key := self._class_key_from_attribute_root_value(
-                        root_composite.value
+                    synthetic_class := self.checker.get_synthetic_class(
+                        root_info.class_key
                     )
                 )
-                is not None
-                and (synthetic_class := self.checker.get_synthetic_class(class_key))
                 is not None
                 and self._get_declared_symbol_initializer(
                     synthetic_class.get_type_object(self.checker), "__slots__"
@@ -14972,18 +14854,14 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             self_value=resolved_self_value,
         )
         result = attributes.get_attribute(ctx)
+        root_info = _attribute_root_class_info(root_composite.value)
         if (
             result is UNINITIALIZED_VALUE
             and self.current_class_key is not None
-            and self._is_class_object_attribute_root(root_composite.value) is True
+            and root_info.is_class_object is True
             and (current_class_name := self._current_class_name_from_context())
             is not None
-            and (
-                root_class_key := self._class_key_from_attribute_root_value(
-                    root_composite.value
-                )
-            )
-            is not None
+            and (root_class_key := root_info.class_key) is not None
             and class_keys_match(root_class_key, self.current_class_key)
         ):
             mangled_attr = _mangle_class_attribute_name(current_class_name, attr)
@@ -15599,17 +15477,17 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             # ``type[Proto]`` may refer to concrete implementers. Rejecting calls
             # here causes spurious "Cannot instantiate protocol class" errors.
             return None
-        if self._is_class_object_attribute_root(value) is not True:
+        root_info = _attribute_root_class_info(value)
+        if root_info.is_class_object is not True:
             return None
-        class_key = self._class_key_from_attribute_root_value(value)
-        if class_key is None:
+        if root_info.class_key is None:
             return None
-        if self.checker.make_type_object(class_key).is_protocol():
+        if self.checker.make_type_object(root_info.class_key).is_protocol():
             if isinstance(value, SyntheticClassObjectValue):
                 return value.name
-            if isinstance(class_key, type):
-                return class_key.__name__
-            return class_key.rsplit(".", 1)[-1]
+            if isinstance(root_info.class_key, type):
+                return root_info.class_key.__name__
+            return root_info.class_key.rsplit(".", 1)[-1]
         return None
 
     def _is_non_instantiable_union_runtime_value(self, value: Value) -> bool:
@@ -16928,6 +16806,78 @@ def _known_string_sequence_values(value: Value | None) -> tuple[str, ...] | None
     return _known_string_sequence_from_simple_value(value)
 
 
+@dataclass(frozen=True)
+class _AttributeRootClassInfo:
+    class_key: type | str | None
+    is_class_object: bool | None
+    is_subscripted_class_alias: bool = False
+
+
+def _merge_attribute_root_class_info(
+    infos: Iterable[_AttributeRootClassInfo],
+) -> _AttributeRootClassInfo:
+    infos = tuple(infos)
+    class_keys = {info.class_key for info in infos if info.class_key is not None}
+    kinds = {info.is_class_object for info in infos if info.is_class_object is not None}
+    return _AttributeRootClassInfo(
+        class_key=next(iter(class_keys)) if len(class_keys) == 1 else None,
+        is_class_object=next(iter(kinds)) if len(kinds) == 1 else None,
+        is_subscripted_class_alias=any(
+            info.is_subscripted_class_alias for info in infos
+        ),
+    )
+
+
+def _is_class_object_simple_value(value: SimpleType) -> bool:
+    if isinstance(value, KnownValue):
+        return isinstance(value.val, type) or isinstance(get_origin(value.val), type)
+    if isinstance(value, (SyntheticClassObjectValue, SubclassValue)):
+        return True
+    if isinstance(value, TypedValue):
+        if isinstance(value.typ, type):
+            return safe_issubclass(value.typ, type)
+        return isinstance(value.typ, str) and value.typ in {"builtins.type", "type"}
+    if isinstance(
+        value,
+        (
+            AnyValue,
+            SyntheticModuleValue,
+            UnboundMethodValue,
+            TypeFormValue,
+            PredicateValue,
+        ),
+    ):
+        return False
+    assert_never(value)
+
+
+def _attribute_root_class_info(value: Value) -> _AttributeRootClassInfo:
+    if isinstance(value, PartialValue):
+        if value.operation is PartialValueOperation.SUBSCRIPT:
+            root_info = _attribute_root_class_info(value.root)
+            if root_info.is_class_object is True:
+                return replace(root_info, is_subscripted_class_alias=True)
+        value = value.runtime_value
+    if isinstance(value, AnnotatedValue):
+        return _attribute_root_class_info(value.value)
+    if isinstance(value, SubclassValue) and isinstance(value.typ, TypeVarValue):
+        return _AttributeRootClassInfo(class_key=None, is_class_object=True)
+    value = replace_fallback(value)
+    if isinstance(value, (MultiValuedValue, IntersectionValue)):
+        return _merge_attribute_root_class_info(
+            _attribute_root_class_info(subval) for subval in value.vals
+        )
+    if isinstance(value, KnownValue):
+        return _AttributeRootClassInfo(
+            class_key=_class_key_from_value(value) or type(value.val),
+            is_class_object=_is_class_object_simple_value(value),
+        )
+    return _AttributeRootClassInfo(
+        class_key=_class_key_from_value(value),
+        is_class_object=_is_class_object_simple_value(value),
+    )
+
+
 def _normalize_slot_names(raw_names: Iterable[str]) -> tuple[tuple[str, ...], bool]:
     names: list[str] = []
     has_dict = False
@@ -17648,24 +17598,14 @@ def _is_valid_implicit_type_alias_name_value(value: Value) -> bool:
         return all(
             _is_valid_implicit_type_alias_name_value(subval) for subval in value.vals
         )
-    if isinstance(
-        value, (SyntheticClassObjectValue, TypeFormValue, TypeVarValue, SubclassValue)
-    ):
+    if isinstance(value, (TypeFormValue, TypeVarValue, SubclassValue)):
         return True
-    if isinstance(value, TypedValue):
-        if isinstance(value.typ, type):
-            return safe_issubclass(value.typ, type)
-        return isinstance(value.typ, str) and value.typ in {"builtins.type", "type"}
-    if isinstance(value, GenericValue):
-        if isinstance(value.typ, type):
-            return safe_issubclass(value.typ, type)
-        return isinstance(value.typ, str) and value.typ in {"builtins.type", "type"}
     if isinstance(value, AnyValue):
         return False
     if isinstance(value, KnownValue):
-        return isinstance(value.val, (type, GenericAlias)) or _is_typing_alias_value(
-            value.val
-        )
+        return _is_class_object_simple_value(value) or _is_typing_alias_value(value.val)
+    if isinstance(value, SimpleType):
+        return _is_class_object_simple_value(value)
     return False
 
 
