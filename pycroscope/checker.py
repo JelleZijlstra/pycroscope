@@ -34,6 +34,7 @@ from .reexport import ImplicitReexportTracker
 from .safe import (
     hasattr_static,
     is_direct_namedtuple_class,
+    is_typing_name,
     safe_getattr,
     safe_isinstance,
     safe_issubclass,
@@ -101,10 +102,8 @@ from .value import (
     UnboundMethodValue,
     Value,
     VariableNameValue,
-    _get_typevar_map_value,
     _iter_typevar_map_items,
     _typevar_map_from_varlike_pairs,
-    _with_typevar_map_value,
     flatten_values,
     get_inherited_synthetic_member_initializer,
     get_single_typevartuple_param,
@@ -580,12 +579,8 @@ class Checker:
         self, typ: type | str, generic_args: Sequence[Value] = ()
     ) -> GenericBases:
         generic_bases = self.arg_spec_cache.get_generic_bases(typ, generic_args)
-        synthetic_bases = self._get_synthetic_generic_bases(typ)
+        declared_type_params = tuple(self.get_type_parameters(typ))
         substitution_map = TypeVarMap()
-        if synthetic_bases is None:
-            declared_type_params = tuple(self.get_type_parameters(typ))
-        else:
-            declared_type_params = self._get_synthetic_declared_type_params(typ)
         specialized_args = self.arg_spec_cache._specialize_generic_type_params(
             declared_type_params, generic_args
         )
@@ -609,35 +604,21 @@ class Checker:
         merged: _SyntheticGenericBases = {
             base: tv_map for base, tv_map in generic_bases.items()
         }
-        if synthetic_bases is None:
-            self._augment_namedtuple_generic_bases(typ, merged, substitution_map)
-            return merged
-
-        if declared_type_params:
-            if typ not in merged:
-                merged[typ] = TypeVarMap()
-            direct_base_map = merged[typ]
-            for type_param in declared_type_params:
-                runtime_typevar = type_param.typevar
-                substitution = _get_typevar_map_value(substitution_map, runtime_typevar)
-                if substitution is not None:
-                    direct_base_map = _with_typevar_map_value(
-                        direct_base_map, runtime_typevar, substitution
-                    )
-            merged[typ] = direct_base_map
-        for base, tv_map in synthetic_bases.items():
-            substituted_tv_map = _typevar_map_from_varlike_pairs(
-                (tv, value.substitute_typevars(substitution_map))
-                for tv, value in _iter_typevar_map_items(tv_map)
-            )
-            if base not in merged:
-                merged[base] = TypeVarMap()
-            merged[base] = merged[base].merge(substituted_tv_map)
+        synthetic_bases = self._get_type_object_generic_bases(typ)
+        if synthetic_bases is not None:
+            for base, tv_map in synthetic_bases.items():
+                substituted_tv_map = _typevar_map_from_varlike_pairs(
+                    (tv, value.substitute_typevars(substitution_map))
+                    for tv, value in _iter_typevar_map_items(tv_map)
+                )
+                if base not in merged:
+                    merged[base] = TypeVarMap()
+                merged[base] = merged[base].merge(substituted_tv_map)
         self._augment_namedtuple_generic_bases(typ, merged, substitution_map)
         return merged
 
     def get_type_parameters(self, typ: type | str) -> list[TypeParam]:
-        declared_type_params = self._get_synthetic_declared_type_params(typ)
+        declared_type_params = self.make_type_object(typ).get_declared_type_params()
         if declared_type_params:
             return list(declared_type_params)
         synthetic_class = self.get_synthetic_class(typ)
@@ -711,39 +692,9 @@ class Checker:
         *,
         declared_type_params: Sequence[TypeParam] = (),
     ) -> None:
-        merged_generic_bases: _SyntheticGenericBases = {typ: TypeVarMap()}
-        for base in base_values:
-            for converted in pycroscope.type_object_builder._iter_base_type_values(
-                base, self.arg_spec_cache
-            ):
-                if not isinstance(converted, TypedValue):
-                    continue
-                base_typ = converted.typ
-                # Preserve direct synthetic bases even when we cannot infer a
-                # richer generic mapping for them (common for local synthetic
-                # classes with no typeshed entry).
-                merged_generic_bases.setdefault(base_typ, TypeVarMap())
-                if isinstance(converted, SequenceValue) and converted.typ is tuple:
-                    generic_args = (converted,)
-                else:
-                    generic_args = (
-                        converted.args if isinstance(converted, GenericValue) else ()
-                    )
-                for gb_typ, tv_map in self.get_generic_bases(
-                    base_typ, generic_args
-                ).items():
-                    merged_generic_bases[gb_typ] = merged_generic_bases.get(
-                        gb_typ, TypeVarMap()
-                    ).merge(tv_map)
-
-        synthetic_class = self.make_synthetic_class(typ)
+        self.make_synthetic_class(typ)
         type_object = self.make_type_object(typ)
         type_object.set_direct_bases(direct_bases_from_values(base_values, self))
-        merged_copy: _SyntheticGenericBases = {}
-        for gb_typ, tv_map in merged_generic_bases.items():
-            merged_copy[gb_typ] = tv_map
-        synthetic_class.generic_bases.clear()
-        synthetic_class.generic_bases.update(merged_copy)
         if declared_type_params:
             type_object.set_declared_type_params(declared_type_params)
         else:
@@ -773,17 +724,24 @@ class Checker:
         if isinstance(typ, type):
             yield runtime_type_generic_alias(typ)
 
-    def _get_synthetic_generic_bases(
+    def _get_type_object_generic_bases(
         self, typ: type | str
     ) -> _SyntheticGenericBases | None:
-        synthetic_class = self.get_synthetic_class(typ)
-        if synthetic_class is None:
+        if self.get_synthetic_class(typ) is None:
             return None
-        if synthetic_class.generic_bases:
-            return dict(synthetic_class.generic_bases)
-        if self.make_type_object(typ).get_declared_type_params():
-            return {}
-        return None
+        generic_bases: _SyntheticGenericBases = {}
+        for entry in self.make_type_object(typ).get_mro():
+            if entry.is_any or entry.tobj is None:
+                continue
+            base_typ = entry.tobj.typ
+            if (
+                base_typ is object
+                or is_typing_name(base_typ, "Generic")
+                or is_typing_name(base_typ, "Protocol")
+            ):
+                continue
+            generic_bases[base_typ] = entry.tv_map
+        return generic_bases
 
     def _augment_namedtuple_generic_bases(
         self,
@@ -813,12 +771,6 @@ class Checker:
         if not fields:
             return None
         return SequenceValue(tuple, [(False, field.typ) for field in fields])
-
-    def _get_synthetic_declared_type_params(
-        self, typ: type | str
-    ) -> tuple[TypeParam, ...]:
-        tobj = self.make_type_object(typ)
-        return tobj.get_declared_type_params()
 
     def get_signature(
         self, obj: object, is_asynq: bool = False

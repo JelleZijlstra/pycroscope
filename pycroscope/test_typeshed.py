@@ -951,18 +951,6 @@ class TestCheckerGenericBases:
             base: TypeVarMap(typevars={T: TypedValue(int)}),
         }
 
-    def test_register_synthetic_type_bases_updates_synthetic_class(self):
-        checker = Checker()
-        base = "test.Base"
-        child = "test.Child"
-        checker.register_synthetic_type_bases(
-            child, [SyntheticClassObjectValue("Base", TypedValue(base))]
-        )
-        synthetic = checker.get_synthetic_class(child)
-        assert synthetic is not None
-        assert checker.make_type_object(child).get_direct_bases() == (TypedValue(base),)
-        assert synthetic.generic_bases == {child: TypeVarMap(), base: TypeVarMap()}
-
     def test_register_synthetic_type_bases_handles_subclass_generic_base(self):
         checker = Checker()
         base = "test.Base"
