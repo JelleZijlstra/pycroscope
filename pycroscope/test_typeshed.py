@@ -13,7 +13,7 @@ import typing
 import urllib.parse
 from collections.abc import Collection, MutableSequence, Reversible, Sequence, Set
 from pathlib import Path
-from typing import Generic, List, NewType, Type, TypeVar, Union
+from typing import Any, Generic, List, NewType, Type, TypeVar, Union
 from urllib.error import HTTPError
 
 import pytest
