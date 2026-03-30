@@ -899,14 +899,6 @@ class TypeObject:
         self._update_loaded_synthetic_fields()
         self._protocol_positive_cache.clear()
 
-    def replace_declared_symbols(self, symbols: Mapping[str, ClassSymbol]) -> None:
-        self._ensure_synthetic_class()
-        synthetic_symbols = self.get_synthetic_declared_symbols()
-        synthetic_symbols.clear()
-        synthetic_symbols.update(symbols)
-        self._sync_declared_symbols()
-        self._invalidate_synthetic_state()
-
     def replace_virtual_symbols(self, symbols: Mapping[str, ClassSymbol]) -> None:
         self._virtual_symbols = dict(symbols)
         self._sync_declared_symbols()
