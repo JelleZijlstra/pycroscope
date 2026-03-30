@@ -42,7 +42,7 @@ from .options import (
     Options,
     PathSequenceOption,
 )
-from .safe import hasattr_static, is_typing_name, safe_isinstance
+from .safe import hasattr_static, is_typing_name, safe_getattr, safe_isinstance
 from .shared_options import ImportPaths
 from .signature import (
     ConcreteSignature,
@@ -302,27 +302,36 @@ class TypeshedFinder:
             hasattr_static(obj, "__qualname__")
             and hasattr_static(obj, "__name__")
             and hasattr_static(obj, "__module__")
-            and isinstance(obj.__qualname__, str)
-            and obj.__qualname__ != obj.__name__
-            and "." in obj.__qualname__
         ):
-            parent_name, own_name = obj.__qualname__.rsplit(".", maxsplit=1)
-            # Work around the stub using the wrong name.
-            # TODO we should be able to resolve this anyway.
-            if parent_name == "EnumType" and obj.__module__ == "enum":
-                parent_fqn = "enum.EnumMeta"
-            else:
-                parent_fqn = f"{obj.__module__}.{parent_name}"
-            parent_info = self._get_info_for_name(parent_fqn)
-            if parent_info is not None:
-                maybe_info = self._get_child_info(parent_info, own_name, obj.__module__)
-                if maybe_info is not None:
-                    info, mod = maybe_info
-                    fq_name = f"{parent_fqn}.{own_name}"
-                    sig = self._get_signature_from_info(
-                        info, obj, fq_name, mod, allow_call=allow_call
+            qualname = safe_getattr(obj, "__qualname__", None)
+            obj_name = safe_getattr(obj, "__name__", None)
+            module_name = safe_getattr(obj, "__module__", None)
+            if (
+                isinstance(qualname, str)
+                and isinstance(obj_name, str)
+                and isinstance(module_name, str)
+                and qualname != obj_name
+                and "." in qualname
+            ):
+                parent_name, own_name = qualname.rsplit(".", maxsplit=1)
+                # Work around the stub using the wrong name.
+                # TODO we should be able to resolve this anyway.
+                if parent_name == "EnumType" and module_name == "enum":
+                    parent_fqn = "enum.EnumMeta"
+                else:
+                    parent_fqn = f"{module_name}.{parent_name}"
+                parent_info = self._get_info_for_name(parent_fqn)
+                if parent_info is not None:
+                    maybe_info = self._get_child_info(
+                        parent_info, own_name, module_name
                     )
-                    return sig
+                    if maybe_info is not None:
+                        info, mod = maybe_info
+                        fq_name = f"{parent_fqn}.{own_name}"
+                        sig = self._get_signature_from_info(
+                            info, obj, fq_name, mod, allow_call=allow_call
+                        )
+                        return sig
 
         fq_name = self._get_fq_name(obj)
         if fq_name is None:
@@ -1020,8 +1029,13 @@ class TypeshedFinder:
             )
         elif isinstance(info, typeshed_client.NameInfo):
             # Note that this doesn't handle names inherited from base classes
-            if info.child_nodes and obj.__name__ in info.child_nodes:
-                child_info = info.child_nodes[obj.__name__]
+            obj_name = safe_getattr(obj, "__name__", None)
+            if (
+                info.child_nodes
+                and isinstance(obj_name, str)
+                and obj_name in info.child_nodes
+            ):
+                child_info = info.child_nodes[obj_name]
                 return self._get_signature_from_info(
                     child_info, obj, fq_name, mod, objclass, allow_call=allow_call
                 )
@@ -1037,19 +1051,19 @@ class TypeshedFinder:
         # It claims to be io.open, but typeshed puts it in builtins
         if obj is open:
             return "builtins.open"
-        try:
-            module_name = obj.__module__
-            if module_name is None:
-                module_name = "builtins"
-            fq_name = ".".join([module_name, obj.__qualname__])
-            # Avoid looking for stubs we won't find anyway.
-            if not _obj_from_qualname_is(module_name, obj.__qualname__, obj):
-                self.log("Ignoring invalid name", fq_name)
-                return None
-            return _TYPING_ALIASES.get(fq_name, fq_name)
-        except (AttributeError, TypeError):
+        module_name = safe_getattr(obj, "__module__", None)
+        if module_name is None:
+            module_name = "builtins"
+        qualname = safe_getattr(obj, "__qualname__", None)
+        if not isinstance(module_name, str) or not isinstance(qualname, str):
             self.log("Ignoring object without module or qualname", obj)
             return None
+        fq_name = ".".join([module_name, qualname])
+        # Avoid looking for stubs we won't find anyway.
+        if not _obj_from_qualname_is(module_name, qualname, obj):
+            self.log("Ignoring invalid name", fq_name)
+            return None
+        return _TYPING_ALIASES.get(fq_name, fq_name)
 
     def _sig_from_value(self, val: Value) -> ConcreteSignature | None:
         if isinstance(val, UninitializedValue):
