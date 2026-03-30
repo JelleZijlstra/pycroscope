@@ -775,12 +775,9 @@ class _AttrContext(CheckerAttrContext):
         if symbol is None or not symbol.is_method:
             return super().bind_synthetic_instance_attribute(attr_name, value)
         if synthetic_class is not None:
-            if symbol is not None and symbol.is_classmethod:
-                # classmethod attributes are already descriptor-adjusted by
-                # synthetic attribute normalization; binding again drops one
-                # real parameter.
+            if symbol.is_classmethod:
                 return super().bind_synthetic_instance_attribute(attr_name, value)
-            if symbol is not None and symbol.initializer is not None:
+            if symbol.initializer is not None:
                 raw_attr = replace_fallback(symbol.initializer)
                 if (
                     isinstance(raw_attr, GenericValue)
@@ -789,9 +786,6 @@ class _AttrContext(CheckerAttrContext):
                     isinstance(raw_attr, KnownValue)
                     and isinstance(raw_attr.val, (classmethod, staticmethod))
                 ):
-                    # classmethod/staticmethod are already descriptor-adjusted by
-                    # synthetic attribute normalization; binding again drops one
-                    # real parameter.
                     return super().bind_synthetic_instance_attribute(attr_name, value)
         signature = (
             value.signature
@@ -813,6 +807,9 @@ class _AttrContext(CheckerAttrContext):
                     bound_signature = bound_signature.substitute_typevars(declared)
                 return CallableValue(bound_signature)
         return super().bind_synthetic_instance_attribute(attr_name, value)
+
+    def get_bound_self_type(self) -> Value | None:
+        return self.visitor.get_bound_self_type()
 
     def clone_for_attribute_lookup(
         self, root_composite: Composite, attr: str
@@ -3533,6 +3530,17 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             class_key, attr_name
         )
         if match is not None and self._is_instance_only_symbol(match[1].symbol):
+            symbol = match[1].symbol
+            if symbol.annotation is not None and any(
+                isinstance(subval, TypeVarValue)
+                and subval.typevar_param.typevar is SelfT
+                for subval in symbol.annotation.walk_values()
+            ):
+                return set_self(
+                    symbol.annotation,
+                    self.get_bound_self_type()
+                    or bound_self_type_from_class_key(class_key),
+                )
             return match[1].value
         return UNINITIALIZED_VALUE
 

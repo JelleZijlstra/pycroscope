@@ -374,9 +374,15 @@ class TestPEP673(TestNameCheckVisitorBase):
             def make(cls) -> Self:
                 return cls()
 
+            @classmethod
+            def get_class(cls) -> type[Self]:
+                return cls
+
         def capybara() -> None:
             assert_type(Box.make(), Box[Any])
             assert_type(Box[int].make(), Box[int])
+            assert_type(Box[type[int]].make(), Box[type[int]])
+            assert_type(Box[int].get_class(), type[Box[int]])
 
     @assert_passes()
     def test_classmethod_self_attribute_assignment(self):

@@ -74,6 +74,7 @@ from .value import (
     GenericValue,
     IntersectionValue,
     KnownValue,
+    KnownValueWithTypeVars,
     MultiValuedValue,
     ParamSpecParam,
     PredicateValue,
@@ -106,6 +107,7 @@ from .value import (
     receiver_to_self_type,
     replace_fallback,
     replace_known_sequence_value,
+    set_self,
     shield_nested_self_typevars,
     stringify_object,
     substitute_typevartuple_binding,
@@ -1285,7 +1287,7 @@ class TypeObject:
         receiver_value: Value | None = None,
     ) -> TypeObjectAttribute | None:
         """Look up an attribute and apply descriptor semantics for this access."""
-        typed_receiver_value = _receiver_type_value(receiver_value)
+        typed_receiver_value = _receiver_type_value(receiver_value, ctx)
         # TODO: Revisit whether __class__ and __dict__ should remain bespoke
         # get_attribute() special cases instead of falling out of general lookup.
         if not on_class and name == "__class__":
@@ -1336,8 +1338,17 @@ class TypeObject:
         resolved = _resolve_raw_attribute_access(
             self, raw_attribute, ctx, on_class=on_class, receiver_value=receiver_value
         )
+        value = resolved.value
+        if receiver_value is not None:
+            value = bind_attribute_value_to_receiver(
+                value,
+                symbol=raw_attribute.symbol,
+                receiver_value=receiver_value,
+                ctx=ctx,
+                bind_method=not on_class or raw_attribute.is_metaclass_owner,
+            )
         return TypeObjectAttribute(
-            value=resolved.value,
+            value=value,
             declared_value=raw_attribute.declared_value,
             raw_value=raw_attribute.raw_value,
             symbol=raw_attribute.symbol,
@@ -2350,12 +2361,27 @@ def _class_key_and_generic_args_from_type_value(
     return receiver_value.typ, generic_args
 
 
-def _receiver_type_value(receiver_value: Value | None) -> TypedValue | None:
+def _receiver_type_value(
+    receiver_value: Value | None, ctx: CanAssignContext
+) -> TypedValue | None:
     if receiver_value is None:
         return None
     resolved = replace_fallback(receiver_value)
     if isinstance(resolved, TypedValue):
         return resolved
+    if isinstance(resolved, KnownValueWithTypeVars) and isinstance(resolved.val, type):
+        type_params = ctx.get_type_parameters(resolved.val)
+        if not type_params:
+            return TypedValue(resolved.val)
+        return GenericValue(
+            resolved.val,
+            [
+                resolved.typevars.get_value(
+                    type_param, default_value_for_type_param(type_param)
+                )
+                for type_param in type_params
+            ],
+        )
     if isinstance(resolved, KnownValue):
         if isinstance(resolved.val, type):
             return TypedValue(resolved.val)
@@ -2418,19 +2444,51 @@ def _specialize_symbol_for_owner(
 
 
 def _bind_attribute_signature(
-    value: Value, *, receiver_value: Value, ctx: CanAssignContext
+    value: Value,
+    *,
+    receiver_value: Value,
+    ctx: CanAssignContext,
+    self_annotation_value: Value | None = None,
 ) -> Value:
+    if self_annotation_value is None:
+        self_annotation_value = receiver_value
     signature = ctx.signature_from_value(value)
     if isinstance(signature, BoundMethodSignature):
-        bound = signature.get_signature(ctx=ctx)
+        bound = signature.get_signature(
+            ctx=ctx, self_annotation_value=self_annotation_value
+        )
+        if bound is None and self_annotation_value == receiver_value:
+            bound = signature.get_signature(ctx=ctx)
         if bound is not None:
             return CallableValue(bound)
         return value
     if isinstance(signature, (Signature, OverloadedSignature)):
-        bound = signature.bind_self(self_value=receiver_value, ctx=ctx)
+        bound = signature.bind_self(
+            self_value=receiver_value,
+            self_annotation_value=self_annotation_value,
+            ctx=ctx,
+        )
+        if bound is None and self_annotation_value == receiver_value:
+            bound = signature.bind_self(self_value=receiver_value, ctx=ctx)
         if bound is not None:
             return CallableValue(bound)
     return value
+
+
+def bind_attribute_value_to_receiver(
+    value: Value,
+    *,
+    symbol: ClassSymbol | None,
+    receiver_value: Value,
+    ctx: CanAssignContext,
+    bind_method: bool = True,
+) -> Value:
+    """Apply receiver binding for an attribute lookup result."""
+    if symbol is None or not symbol.is_method:
+        return set_self(value, receiver_value)
+    if not bind_method or not isinstance(value, UnboundMethodValue):
+        return value
+    return _bind_attribute_signature(value, receiver_value=receiver_value, ctx=ctx)
 
 
 def _specialize_self_returning_classmethod(
@@ -2442,35 +2500,84 @@ def _specialize_self_returning_classmethod(
 ) -> Value:
     if receiver_value is None or not isinstance(normalized_attr, CallableValue):
         return normalized_attr
-    raw_attr = replace_fallback(raw_attr)
-    if not (
-        isinstance(raw_attr, GenericValue)
-        and raw_attr.typ is classmethod
-        and raw_attr.args
-    ):
-        return normalized_attr
     receiver_for_self: TypedValue | TypeVarValue
     match receiver_value:
+        case KnownValueWithTypeVars() if isinstance(receiver_value.val, type):
+            type_params = ctx.get_type_parameters(receiver_value.val)
+            if type_params:
+                receiver_for_self = GenericValue(
+                    receiver_value.val,
+                    [
+                        receiver_value.typevars.get_value(
+                            type_param, default_value_for_type_param(type_param)
+                        )
+                        for type_param in type_params
+                    ],
+                )
+            else:
+                receiver_for_self = TypedValue(receiver_value.val)
         case TypeVarValue():
             receiver_for_self = receiver_value
         case GenericValue():
-            receiver_for_self = TypedValue(receiver_value.typ)
+            receiver_for_self = receiver_value
         case TypedValue():
             receiver_for_self = receiver_value
         case _:
             return normalized_attr
-    inferred = get_tv_map(raw_attr.args[0], SubclassValue(receiver_for_self), ctx)
-    if isinstance(inferred, CanAssignError):
-        return normalized_attr
-    inferred = inferred.with_typevar(TypeVarParam(SelfT), receiver_for_self)
-    return CallableValue(normalized_attr.signature.substitute_typevars(inferred))
+    substitutions = TypeVarMap()
+    raw_attr = replace_fallback(raw_attr)
+    if (
+        isinstance(raw_attr, GenericValue)
+        and raw_attr.typ is classmethod
+        and raw_attr.args
+    ):
+        inferred = get_tv_map(raw_attr.args[0], SubclassValue(receiver_for_self), ctx)
+        if not isinstance(inferred, CanAssignError):
+            substitutions = inferred
+    substitutions = substitutions.with_typevar(TypeVarParam(SelfT), receiver_for_self)
+    signature = normalized_attr.signature.substitute_typevars(substitutions)
+    return CallableValue(
+        _rewrite_self_returning_classmethod_signature(signature, receiver_for_self)
+    )
+
+
+def _rewrite_self_returning_classmethod_signature(
+    signature: Signature | OverloadedSignature, receiver_for_self: Value
+) -> Signature | OverloadedSignature:
+    receiver_key = _class_key_from_value(receiver_for_self)
+
+    def rewrite_return(return_value: Value) -> Value:
+        root = replace_fallback(return_value)
+        if receiver_key is None:
+            return return_value
+        if (
+            isinstance(root, KnownValueWithTypeVars)
+            and isinstance(root.val, type)
+            and class_keys_match(root.val, receiver_key)
+        ):
+            return receiver_for_self
+        if (
+            isinstance(root, SubclassValue)
+            and (subclass_key := _class_key_from_value(root.typ)) is not None
+            and class_keys_match(subclass_key, receiver_key)
+        ):
+            return SubclassValue.make(receiver_for_self)
+        return return_value
+
+    if isinstance(signature, Signature):
+        return replace(signature, return_value=rewrite_return(signature.return_value))
+    return OverloadedSignature(
+        tuple(
+            replace(sig, return_value=rewrite_return(sig.return_value))
+            for sig in signature.signatures
+        )
+    )
 
 
 def _classmethod_receiver_value_from_type_value(
     receiver_value: TypedValue,
 ) -> SubclassValue:
-    class_key, _ = _class_key_and_generic_args_from_type_value(receiver_value)
-    return SubclassValue(TypedValue(class_key))
+    return SubclassValue(receiver_value)
 
 
 def _resolve_raw_attribute_access(
@@ -2538,15 +2645,26 @@ def _resolve_descriptor_access(
             receiver_value=receiver_value,
             ctx=ctx,
         )
-        typed_receiver_value = _receiver_type_value(receiver_value)
-        if typed_receiver_value is not None and not isinstance(receiver_tobj.typ, str):
+        typed_receiver_value = _receiver_type_value(receiver_value, ctx)
+        if typed_receiver_value is not None and not _is_prebound_synthetic_classmethod(
+            raw_attribute.raw_value
+        ):
             typed_descriptor_value = _bind_attribute_signature(
                 typed_descriptor_value,
-                receiver_value=_classmethod_receiver_value_from_type_value(
+                receiver_value=typed_receiver_value,
+                self_annotation_value=_classmethod_receiver_value_from_type_value(
                     typed_receiver_value
                 ),
                 ctx=ctx,
             )
+            if symbol.returns_self_on_class_access and isinstance(
+                typed_descriptor_value, CallableValue
+            ):
+                typed_descriptor_value = CallableValue(
+                    _rewrite_self_returning_classmethod_signature(
+                        typed_descriptor_value.signature, typed_receiver_value
+                    )
+                )
         return _ResolvedAttributeAccess(
             value=typed_descriptor_value, is_property=False, property_has_setter=False
         )
@@ -2602,6 +2720,11 @@ def _resolve_descriptor_access(
         is_property=descriptor_like_instance_access,
         property_has_setter=_descriptor_has_setter(raw_attribute.raw_value, ctx),
     )
+
+
+def _is_prebound_synthetic_classmethod(value: Value) -> bool:
+    value = replace_fallback(value)
+    return isinstance(value, GenericValue) and value.typ is classmethod
 
 
 def _get_nondescriptor_value(
@@ -2679,13 +2802,22 @@ def _get_attribute_value_from_symbol(
         ),
         is_metaclass_owner=False,
     )
-    return _resolve_raw_attribute_access(
+    value = _resolve_raw_attribute_access(
         raw_attribute.owner,
         raw_attribute,
         ctx,
         on_class=on_class,
         receiver_value=receiver_value,
     ).value
+    if receiver_value is None:
+        return value
+    return bind_attribute_value_to_receiver(
+        value,
+        symbol=symbol,
+        receiver_value=receiver_value,
+        ctx=ctx,
+        bind_method=not on_class,
+    )
 
 
 def _is_data_descriptor(
@@ -3222,7 +3354,7 @@ def _collect_protocol_self_typevar_map(
             continue
         _, symbol = match
         collected = _get_protocol_receiver_annotation(
-            symbol, receiver_value=receiver_value, ctx=ctx
+            tobj, symbol, receiver_value=receiver_value, ctx=ctx
         )
         if collected is None:
             continue
@@ -3234,7 +3366,11 @@ def _collect_protocol_self_typevar_map(
 
 
 def _get_protocol_receiver_annotation(
-    symbol: ClassSymbol, *, receiver_value: Value, ctx: CanAssignContext
+    owner_tobj: TypeObject,
+    symbol: ClassSymbol,
+    *,
+    receiver_value: Value,
+    ctx: CanAssignContext,
 ) -> tuple[Value, Value] | None:
     if symbol.is_staticmethod or symbol.initializer is None:
         return None
@@ -3256,7 +3392,27 @@ def _get_protocol_receiver_annotation(
     self_annotation = _get_first_parameter_annotation(signature)
     if self_annotation is None:
         return None
+    if (
+        isinstance(self_annotation, AnyValue)
+        and self_annotation.source is AnySource.unannotated
+    ):
+        self_annotation = _default_protocol_receiver_annotation(owner_tobj, symbol)
     return self_annotation, receiver_for_match
+
+
+def _default_protocol_receiver_annotation(
+    owner_tobj: TypeObject, symbol: ClassSymbol
+) -> Value:
+    params = owner_tobj.get_declared_type_params()
+    if params:
+        owner_value: Value = GenericValue(
+            owner_tobj.typ, [type_param_to_value(param) for param in params]
+        )
+    else:
+        owner_value = TypedValue(owner_tobj.typ)
+    if symbol.is_classmethod:
+        return SubclassValue.make(owner_value)
+    return owner_value
 
 
 def _get_protocol_member_callable(symbol: ClassSymbol) -> Value | None:
@@ -3297,6 +3453,11 @@ def _get_first_parameter_annotation(
 def _protocol_classmethod_receiver_value(
     receiver_value: Value, ctx: CanAssignContext
 ) -> Value:
+    if not _is_definitely_class_object_value(receiver_value):
+        receiver_type = _receiver_type_value(receiver_value, ctx)
+        if receiver_type is not None:
+            return SubclassValue.make(receiver_type)
+        return SubclassValue.make(receiver_value.get_type_value())
     receiver_key = _class_key_from_value(receiver_value)
     if receiver_key is not None:
         class_object = _class_object_value_for_key(receiver_key, ctx)

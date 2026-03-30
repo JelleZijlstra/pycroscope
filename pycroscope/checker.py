@@ -3032,3 +3032,6 @@ class CheckerAttrContext(AttrContext):
             if maybe_bound is not None:
                 return CallableValue(maybe_bound)
         return value
+
+    def get_bound_self_type(self) -> Value | None:
+        return None
