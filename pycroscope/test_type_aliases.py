@@ -205,6 +205,52 @@ class TestRecursion(TestNameCheckVisitorBase):
         )
 
     @skip_before((3, 11))
+    def test_typevartuple_alias_empty_specialization_through_call(self):
+        self.assert_passes(
+            """
+            from typing import Generic, TypeAlias, TypeVarTuple
+
+            from typing_extensions import assert_type
+
+            Ts = TypeVarTuple("Ts")
+
+            class Array(Generic[*Ts]):
+                def shape(self) -> tuple[*Ts]:
+                    raise NotImplementedError
+
+            NamedArray: TypeAlias = tuple[str, Array[*Ts]]
+
+            def unwrap(value: NamedArray[()]) -> Array[()]:
+                return value[1]
+
+            def capybara(value: NamedArray[()]) -> None:
+                assert_type(unwrap(value), Array[()])
+                assert_type(unwrap(value).shape(), tuple[()])
+            """,
+            run_in_both_module_modes=True,
+        )
+
+    @skip_before((3, 11))
+    def test_typevartuple_direct_method_empty_specialization(self):
+        self.assert_passes(
+            """
+            from typing import Generic, TypeVarTuple
+
+            from typing_extensions import assert_type
+
+            Ts = TypeVarTuple("Ts")
+
+            class Array(Generic[*Ts]):
+                def shape(self) -> tuple[*Ts]:
+                    raise NotImplementedError
+
+            def capybara(value: Array[()]) -> None:
+                assert_type(value.shape(), tuple[()])
+            """,
+            run_in_both_module_modes=True,
+        )
+
+    @skip_before((3, 11))
     def test_typevartuple_implicit_alias_validation(self):
         self.assert_passes(
             """

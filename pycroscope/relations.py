@@ -12,7 +12,7 @@ import enum
 import itertools
 import struct
 import sys
-from collections.abc import Iterable, Iterator, Mapping, MutableMapping, Sequence
+from collections.abc import Iterable, Iterator, MutableMapping, Sequence
 from dataclasses import dataclass, replace
 from types import FunctionType, ModuleType
 from typing import Literal, Protocol
@@ -71,6 +71,7 @@ from pycroscope.value import (
     TypeVarLike,
     TypeVarMap,
     TypeVarParam,
+    TypeVarTupleBindingValue,
     TypeVarTupleParam,
     TypeVarTupleValue,
     TypeVarValue,
@@ -79,17 +80,22 @@ from pycroscope.value import (
     Value,
     VariableNameValue,
     Variance,
+    _get_typevar_map_value,
+    _iter_typevar_map_items,
+    _with_typevar_map_value,
     default_value_for_type_param,
     flatten_values,
     freshen_typevars_for_inference,
     get_type_params_by_typevar,
     gradualize,
     intersect_bounds_maps,
+    pack_typevartuple_binding,
     replace_fallback,
     replace_known_sequence_value,
     stringify_object,
     tuple_members_from_value,
     type_param_to_value,
+    typevartuple_binding_to_tuple_value,
     typify_literal,
     unify_bounds_maps,
     unite_values,
@@ -288,13 +294,13 @@ def _specialized_synthetic_class_type(
     tobj = synthetic_class.get_type_object(ctx)
     declared = tobj.get_declared_type_params()
     if declared:
-        substitutions: dict[TypeVarLike, Value] = {}
+        substitutions = TypeVarMap()
         specialized_args: list[Value] = []
         for param in declared:
             specialized_arg = default_value_for_type_param(param).substitute_typevars(
                 substitutions
             )
-            substitutions[param.typevar] = specialized_arg
+            substitutions = substitutions.with_value(param, specialized_arg)
             specialized_args.append(specialized_arg)
         return GenericValue(class_typ, specialized_args)
     return synthetic_class.class_type
@@ -422,7 +428,10 @@ def _has_relation(
     if isinstance(left, TypeVarTupleValue) and not isinstance(right, MultiValuedValue):
         if isinstance(right, TypeVarTupleValue) and left.typevar is right.typevar:
             return {}
-        right_as_tuple = replace_known_sequence_value(right)
+        if isinstance(right, TypeVarTupleBindingValue):
+            right_as_tuple = typevartuple_binding_to_tuple_value(right.binding)
+        else:
+            right_as_tuple = replace_known_sequence_value(right)
         if not (
             isinstance(right_as_tuple, SequenceValue) and right_as_tuple.typ is tuple
         ):
@@ -433,7 +442,10 @@ def _has_relation(
         ]
         return {left.typevar: bounds}
     if isinstance(right, TypeVarTupleValue) and not isinstance(left, MultiValuedValue):
-        left_as_tuple = replace_known_sequence_value(left)
+        if isinstance(left, TypeVarTupleBindingValue):
+            left_as_tuple = typevartuple_binding_to_tuple_value(left.binding)
+        else:
+            left_as_tuple = replace_known_sequence_value(left)
         if not (
             isinstance(left_as_tuple, SequenceValue) and left_as_tuple.typ is tuple
         ):
@@ -928,6 +940,12 @@ def _has_relation(
                 left_tobj = left.get_type_object(ctx)
                 declared_type_params = left_tobj.get_declared_type_params()
                 if len(left.args) != len(generic_args):
+                    # TODO: GenericValue.args still arrive here in a mix of flattened
+                    # and packed variadic forms, so this branch has to repair both sides
+                    # before comparison. That works, but it's brittle and hard to reason
+                    # about. Once generic-arg normalization has a single post-resolution
+                    # invariant, collapse this repack/unpack ladder into one conversion
+                    # helper and compare only the canonical form.
                     if len(comparison_left.args) == 1:
                         unpacked_left = _unpack_fixed_tuple_generic_arg(
                             comparison_left.args[0]
@@ -967,7 +985,10 @@ def _has_relation(
                             for type_param in declared_type_params
                         )
                         and not any(
-                            isinstance(arg, TypeVarTupleValue) for arg in left.args
+                            isinstance(
+                                arg, (TypeVarTupleValue, TypeVarTupleBindingValue)
+                            )
+                            for arg in left.args
                         )
                         and not _contains_error_any_in_sequence(
                             [*left.args, *generic_args]
@@ -1001,9 +1022,7 @@ def _has_relation(
                             )
                         bounds_maps.append(can_assign)
                     if not bounds_maps:
-                        return CanAssignError(
-                            f"{right} is not {relation.description} to {left}"
-                        )
+                        return {}
                     return unify_bounds_maps(bounds_maps)
 
     if isinstance(left, TypedValue):
@@ -1065,6 +1084,10 @@ def _has_relation_for_generic_arg_pair(
 ) -> CanAssign:
     assert not isinstance(left, (TypeVarParam, ParamSpecParam, TypeVarTupleParam))
     assert not isinstance(right, (TypeVarParam, ParamSpecParam, TypeVarTupleParam))
+    if isinstance(left, TypeVarTupleBindingValue):
+        left = typevartuple_binding_to_tuple_value(left.binding)
+    if isinstance(right, TypeVarTupleBindingValue):
+        right = typevartuple_binding_to_tuple_value(right.binding)
     left = _coerce_paramspec_generic_arg_for_relation(left, other=right)
     right = _coerce_paramspec_generic_arg_for_relation(right, other=left)
     if isinstance(left, pycroscope.input_sig.InputSigValue) and isinstance(
@@ -1092,14 +1115,14 @@ def _get_generic_annotation(annotation: Value) -> tuple[GenericValue, bool] | No
 
 
 def translate_generic_typevar_map(
-    annotation: Value, inferred: Mapping[TypeVarLike, Value], ctx: CanAssignContext
+    annotation: Value, inferred: TypeVarMap, ctx: CanAssignContext
 ) -> TypeVarMap:
     generic_annotation_info = _get_generic_annotation(annotation)
     if generic_annotation_info is None:
-        return {}
+        return TypeVarMap()
     generic_annotation, _ = generic_annotation_info
 
-    translated: dict[TypeVarLike, Value] = {}
+    translated = TypeVarMap()
     for type_param, arg in zip(
         ctx.get_type_parameters(generic_annotation.typ),
         generic_annotation.args,
@@ -1107,13 +1130,13 @@ def translate_generic_typevar_map(
     ):
         if not get_type_params_by_typevar(arg):
             continue
-        inferred_value = inferred.get(type_param.typevar)
+        inferred_value = _get_typevar_map_value(inferred, type_param.typevar)
         if inferred_value is None:
             continue
         arg_map = get_tv_map(arg, inferred_value, Relation.ASSIGNABLE, ctx)
         if isinstance(arg_map, CanAssignError):
             continue
-        translated.update(arg_map)
+        translated = translated.merge(arg_map)
     return translated
 
 
@@ -1122,11 +1145,11 @@ def infer_positional_generic_typevar_map(
 ) -> TypeVarMap:
     generic_annotation_info = _get_generic_annotation(annotation)
     if generic_annotation_info is None:
-        return {}
+        return TypeVarMap()
     generic_annotation, is_subclass = generic_annotation_info
     declared_type_params = ctx.get_type_parameters(generic_annotation.typ)
     if len(declared_type_params) != len(generic_annotation.args):
-        return {}
+        return TypeVarMap()
 
     positional_template: Value = GenericValue(
         generic_annotation.typ,
@@ -1136,7 +1159,7 @@ def infer_positional_generic_typevar_map(
         positional_template = SubclassValue.make(positional_template)
     positional_map = get_tv_map(positional_template, receiver, Relation.ASSIGNABLE, ctx)
     if isinstance(positional_map, CanAssignError):
-        return {}
+        return TypeVarMap()
     return translate_generic_typevar_map(annotation, positional_map, ctx)
 
 
@@ -1158,7 +1181,7 @@ def _translate_generic_typevar_bounds(
             LowerBound(type_params_by_typevar[typevar], value),
             UpperBound(type_params_by_typevar[typevar], value),
         ]
-        for typevar, value in translated_tv_map.items()
+        for typevar, value in _iter_typevar_map_items(translated_tv_map)
         if typevar in type_params_by_typevar
     }
 
@@ -1177,7 +1200,7 @@ def _get_exact_typevar_bindings(left: Value, right: Value) -> TypeVarMap:
         and isinstance(right, TypeVarValue)
         and right.typevar_param.typevar is left.typevar_param.typevar
     ):
-        return {left.typevar_param.typevar: right}
+        return TypeVarMap(typevars={left.typevar_param.typevar: right})
 
     if (
         isinstance(left, SubclassValue)
@@ -1187,7 +1210,7 @@ def _get_exact_typevar_bindings(left: Value, right: Value) -> TypeVarMap:
         and isinstance(right.typ, TypeVarValue)
         and right.typ.typevar_param.typevar is left.typ.typevar_param.typevar
     ):
-        return {left.typ.typevar_param.typevar: right.typ}
+        return TypeVarMap(typevars={left.typ.typevar_param.typevar: right.typ})
 
     if (
         isinstance(left, InputSigValue)
@@ -1196,9 +1219,9 @@ def _get_exact_typevar_bindings(left: Value, right: Value) -> TypeVarMap:
         and isinstance(right.input_sig, ParamSpecParam)
         and right.input_sig.param_spec is left.input_sig.param_spec
     ):
-        return {left.input_sig.param_spec: right}
+        return TypeVarMap(paramspecs={left.input_sig.param_spec: right.input_sig})
 
-    return {}
+    return TypeVarMap()
 
 
 def _has_relation_for_generic_arg(
@@ -1906,6 +1929,10 @@ def _contains_error_any_in_sequence(values: Sequence[Value]) -> bool:
 
 
 def _unpack_fixed_tuple_generic_arg(value: Value) -> list[Value] | None:
+    if isinstance(value, TypeVarTupleBindingValue):
+        if all(not is_many for is_many, _ in value.binding):
+            return [member for _, member in value.binding]
+        return None
     normalized = replace_known_sequence_value(value)
     if isinstance(normalized, SequenceValue) and normalized.typ is tuple:
         members = normalized.get_member_sequence()
@@ -1928,16 +1955,7 @@ def _pack_typevartuple_generic_args(
     variadic_index = variadic_indexes[0]
     if len(generic_args) == len(declared_type_params):
         variadic_arg = generic_args[variadic_index]
-        if isinstance(variadic_arg, TypeVarTupleValue):
-            return list(generic_args)
-        if (
-            isinstance(variadic_arg, SequenceValue)
-            and variadic_arg.typ is tuple
-            and (
-                not variadic_arg.members
-                or any(is_many for is_many, _ in variadic_arg.members)
-            )
-        ):
+        if isinstance(variadic_arg, (TypeVarTupleValue, TypeVarTupleBindingValue)):
             return list(generic_args)
 
     minimum_args = len(declared_type_params) - 1
@@ -1952,9 +1970,8 @@ def _pack_typevartuple_generic_args(
             packed.append(generic_args[i])
         elif i == variadic_index:
             packed.append(
-                SequenceValue(
-                    tuple,
-                    [(False, arg) for arg in generic_args[variadic_index:variadic_end]],
+                TypeVarTupleBindingValue(
+                    pack_typevartuple_binding(generic_args[variadic_index:variadic_end])
                 )
             )
         else:
@@ -2163,11 +2180,12 @@ def get_tv_map(
     resolved_tv_map, errors = resolve_bounds_map(bounds_map, ctx)
     if errors:
         return CanAssignError(children=list(errors))
-    tv_map = dict(resolved_tv_map)
+    tv_map = resolved_tv_map
     exact_bindings = _get_exact_typevar_bindings(original_left, right)
-    for typevar, value in exact_bindings.items():
-        if typevar not in tv_map or isinstance(tv_map[typevar], AnyValue):
-            tv_map[typevar] = value
+    for typevar, value in _iter_typevar_map_items(exact_bindings):
+        existing = _get_typevar_map_value(tv_map, typevar)
+        if existing is None or isinstance(existing, AnyValue):
+            tv_map = _with_typevar_map_value(tv_map, typevar, value)
     return tv_map
 
 
@@ -2178,7 +2196,7 @@ def is_iterable(
     tv_map = get_tv_map(IterableValue, value, relation, ctx)
     if isinstance(tv_map, CanAssignError):
         return tv_map
-    return tv_map.get(T, AnyValue(AnySource.generic_argument))
+    return tv_map.get_typevar(TypeVarParam(T), AnyValue(AnySource.generic_argument))
 
 
 class HashableProto(Protocol):
@@ -2315,6 +2333,7 @@ def _intersect_values_inner(
         ParamSpecKwargsValue,
         PartialCallValue,
         TypeVarValue,
+        TypeVarTupleBindingValue,
         TypeVarTupleValue,
         SuperValue,
     )
@@ -2335,6 +2354,7 @@ def _intersect_wrapper(
         | ParamSpecArgsValue
         | ParamSpecKwargsValue
         | TypeVarValue
+        | TypeVarTupleBindingValue
         | TypeVarTupleValue
         | SuperValue
     ),

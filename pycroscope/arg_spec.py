@@ -90,9 +90,9 @@ from .value import (
     TypedDictValue,
     TypedValue,
     TypeParam,
-    TypeVarLike,
     TypeVarMap,
     TypeVarParam,
+    TypeVarTupleBindingValue,
     TypeVarTupleParam,
     TypeVarTupleValue,
     TypeVarValue,
@@ -117,6 +117,21 @@ if sys.version_info >= (3, 11):
     # TODO: support version checks
     # static analysis: ignore[undefined_attribute]
     _GET_OVERLOADS.append(typing.get_overloads)
+
+
+def _substitute_generic_base_args(
+    type_params: Sequence[TypeParam],
+    substitutions: TypeVarMap,
+    transform: Callable[[Value], Value],
+) -> TypeVarMap:
+    specialized = TypeVarMap()
+    for type_param in type_params:
+        value = substitutions.get_value(type_param)
+        if value is None:
+            continue
+        specialized = specialized.with_value(type_param, transform(value))
+    return specialized
+
 
 # types.MethodWrapperType in 3.7+
 MethodWrapperType = type(object().__str__)
@@ -662,8 +677,13 @@ class ArgSpecCache:
                 ):
                     generic_bases = self._get_generic_bases_cached(class_obj)
                     if generic_bases and generic_bases.get(class_obj):
+                        generic_base = generic_bases[class_obj]
                         return GenericValue(
-                            class_obj, generic_bases[class_obj].values()
+                            class_obj,
+                            [
+                                generic_base.get_value(type_param)
+                                for type_param in self.get_type_parameters(class_obj)
+                            ],
                         )
                     return TypedValue(class_obj)
         if parameter.kind in (
@@ -1296,7 +1316,7 @@ class ArgSpecCache:
         type_params = tuple(self.get_type_parameters(typ))
         if not type_params:
             return generic_bases
-        tv_map: dict[TypeVarLike, Value] = {}
+        tv_map = TypeVarMap()
         paramspec_generic_arg_map: dict[
             typing_extensions.ParamSpec | typing.ParamSpec, Value
         ] = {}
@@ -1308,7 +1328,7 @@ class ArgSpecCache:
                 if isinstance(type_param, ParamSpecParam):
                     paramspec_generic_arg_map[type_param.param_spec] = value
                 else:
-                    tv_map[type_param.typevar] = value
+                    tv_map = tv_map.with_value(type_param, value)
 
         def _substitute_base_arg(value: Value) -> Value:
             if (
@@ -1322,7 +1342,9 @@ class ArgSpecCache:
             return value.substitute_typevars(tv_map)
 
         return {
-            base: {tv: _substitute_base_arg(value) for tv, value in args.items()}
+            base: _substitute_generic_base_args(
+                self.get_type_parameters(base), args, _substitute_base_arg
+            )
             for base, args in generic_bases.items()
         }
 
@@ -1361,9 +1383,9 @@ class ArgSpecCache:
             for i, type_param in enumerate(type_params)
             if isinstance(type_param, TypeVarTupleParam)
         ]
-        if len(variadic_indexes) != 1 or not generic_args:
+        if len(variadic_indexes) != 1:
             specialized = []
-            substitutions: dict[TypeVarLike, Value] = {}
+            substitutions = TypeVarMap()
             for i, type_param in enumerate(type_params):
                 value = (
                     generic_args[i]
@@ -1376,23 +1398,20 @@ class ArgSpecCache:
                 )
                 value = _coerce_specialized_arg(type_param, value)
                 specialized.append(value)
-                substitutions[type_param.typevar] = value
+                substitutions = substitutions.with_value(type_param, value)
             return specialized
 
         variadic_index = variadic_indexes[0]
         if len(generic_args) == len(type_params):
             variadic_arg = generic_args[variadic_index]
-            if isinstance(variadic_arg, TypeVarTupleValue):
+            if isinstance(variadic_arg, (TypeVarTupleValue, TypeVarTupleBindingValue)):
                 return list(generic_args)
-            if (
-                isinstance(variadic_arg, SequenceValue)
-                and variadic_arg.typ is tuple
-                and (
-                    not variadic_arg.members
-                    or any(is_many for is_many, _ in variadic_arg.members)
-                )
-            ):
-                return list(generic_args)
+        # TODO: This still materializes a TypeVarTuple slot as SequenceValue(tuple, ...)
+        # while other code paths use TypeVarTupleBindingValue for the same concept.
+        # That split makes empty and partially-specialized variadics easy to mishandle.
+        # Refactor this helper to produce the same canonical binding wrapper as
+        # match_typevar_arguments()/TypeVarMap, then update the downstream callers to
+        # consume that single representation.
         split = self._split_variadic_generic_args(
             type_params, generic_args, variadic_index
         )
@@ -1405,7 +1424,7 @@ class ArgSpecCache:
         variadic_end = len(generic_args) - suffix_explicit_count
 
         specialized: list[Value] = []
-        variadic_substitutions: dict[TypeVarLike, Value] = {}
+        variadic_substitutions = TypeVarMap()
         for i in range(len(type_params)):
             if i < variadic_index:
                 value = (
@@ -1440,7 +1459,9 @@ class ArgSpecCache:
                 )
             value = _coerce_specialized_arg(type_params[i], value)
             specialized.append(value)
-            variadic_substitutions[type_params[i].typevar] = value
+            variadic_substitutions = variadic_substitutions.with_value(
+                type_params[i], value
+            )
         return specialized
 
     def _split_variadic_generic_args(
@@ -1557,18 +1578,12 @@ class ArgSpecCache:
         )
         self.type_params_cache[typ] = my_typevars
         generic_bases = {}
-        generic_bases[typ] = {
-            type_param.typevar: (
-                TypeVarValue(type_param)
-                if isinstance(type_param, TypeVarParam)
-                else (
-                    TypeVarTupleValue(type_param)
-                    if isinstance(type_param, TypeVarTupleParam)
-                    else InputSigValue(type_param)
-                )
+        self_typevars = TypeVarMap()
+        for type_param in my_typevars:
+            self_typevars = self_typevars.with_value(
+                type_param, type_param_to_value(type_param)
             )
-            for type_param in my_typevars
-        }
+        generic_bases[typ] = self_typevars
         for base in bases:
             if isinstance(base, TypedValue):
                 if isinstance(base.typ, str):
@@ -1586,8 +1601,12 @@ class ArgSpecCache:
                     tuple_type: type = tuple
                     tuple_type_params = self.get_type_parameters(tuple_type)
                     if len(tuple_type_params) == 1:
-                        tuple_generic_bases = dict(generic_bases.get(tuple_type, {}))
-                        tuple_generic_bases[tuple_type_params[0].typevar] = base
+                        tuple_generic_bases = generic_bases.get(
+                            tuple_type, TypeVarMap()
+                        )
+                        tuple_generic_bases = tuple_generic_bases.with_value(
+                            tuple_type_params[0], base
+                        )
                         generic_bases[tuple_type] = tuple_generic_bases
             elif isinstance(base, AnyValue):
                 # Runtime bases can contain `typing.Any` (e.g. `class C(Any): ...`).

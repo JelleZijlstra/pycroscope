@@ -507,9 +507,7 @@ class TestAnnotations(TestNameCheckVisitorBase):
         exec("class Array(Generic[*Ts]):\n    pass", namespace)
         Array = namespace["Array"]
 
-        assert type_from_value(KnownValue(Array[()])) == GenericValue(
-            Array, [SequenceValue(tuple, [])]
-        )
+        assert type_from_value(KnownValue(Array[()])) == GenericValue(Array, [])
 
     @skip_before((3, 12))
     def test_type_from_runtime_preserves_runtime_paramspec_specialization(self):
@@ -1743,8 +1741,8 @@ class TestCustomCheck(TestNameCheckVisitorBase):
                     yield TypeVarValue(TypeVarParam(self.value))
 
             def substitute_typevars(self, typevars: TypeVarMap) -> "GreaterThan":
-                if isinstance(self.value, TypeVar) and self.value in typevars:
-                    value = typevars[self.value]
+                if isinstance(self.value, TypeVar):
+                    value = typevars.get_typevar(TypeVarParam(self.value))
                     if isinstance(value, KnownValue) and isinstance(value.val, int):
                         return GreaterThan(value.val)
                 return self

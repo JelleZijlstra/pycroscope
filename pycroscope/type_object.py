@@ -29,12 +29,7 @@ if TYPE_CHECKING:
     from .relations import Relation
 
 from .annotations import make_type_param, type_from_runtime
-from .input_sig import (
-    ActualArguments,
-    FullSignature,
-    InputSigValue,
-    coerce_paramspec_specialization_to_input_sig,
-)
+from .input_sig import ActualArguments, AnySig, FullSignature, InputSigValue
 from .options import PyObjectSequenceOption
 from .relations import (
     infer_positional_generic_typevar_map,
@@ -93,25 +88,31 @@ from .value import (
     TypedValue,
     TypeFormValue,
     TypeParam,
-    TypeVarLike,
     TypeVarMap,
     TypeVarParam,
+    TypeVarTupleBindingValue,
     TypeVarTupleParam,
-    TypeVarTupleValue,
     TypeVarValue,
     UnboundMethodValue,
     Value,
+    _iter_typevar_map_items,
+    _typevar_map_from_varlike_pairs,
+    _with_typevar_map_value,
     default_value_for_type_param,
     freshen_typevars_for_inference,
     get_namedtuple_field_annotation,
+    get_single_typevartuple_param,
     get_tv_map,
     match_typevar_arguments,
     receiver_to_self_type,
     replace_fallback,
     replace_known_sequence_value,
     stringify_object,
+    substitute_typevartuple_binding,
     tuple_members_from_value,
     type_param_to_value,
+    typevartuple_binding_to_generic_args,
+    typevartuple_binding_to_tuple_value,
     unify_bounds_maps,
     unite_values,
 )
@@ -330,7 +331,8 @@ class MroEntry:
             result = f"~{result}"
         if self.tv_map:
             args_str = ", ".join(
-                f"{tv.__name__}={value}" for tv, value in self.tv_map.items()
+                f"{tv.__name__}={value}"
+                for tv, value in _iter_typevar_map_items(self.tv_map)
             )
             result += f"[{args_str}]"
         return result
@@ -338,9 +340,15 @@ class MroEntry:
     def substitute_typevars(self, typevars: TypeVarMap) -> "MroEntry":
         if self.is_any:
             return self
-        substituted_tv_map = {
-            tv: value.substitute_typevars(typevars) for tv, value in self.tv_map.items()
-        }
+        assert self.tobj is not None
+        substituted_tv_map = TypeVarMap()
+        for param in self.tobj.get_declared_type_params():
+            value = self.tv_map.get_value(param)
+            if value is None:
+                continue
+            substituted_tv_map = substituted_tv_map.with_value(
+                param, _substitute_type_param_value(param, value, typevars)
+            )
         if self.value is None:
             new_value = None
         else:
@@ -359,29 +367,42 @@ class MroEntry:
 
 
 ANY_MRO_ENTRY = MroEntry(
-    None, {}, value=AnyValue(AnySource.inference), is_virtual=False
+    None, TypeVarMap(), value=AnyValue(AnySource.inference), is_virtual=False
 )
 
 
 def _generic_args_from_tv_map(tobj: "TypeObject", tv_map: TypeVarMap) -> list[Value]:
     args: list[Value] = []
     for param in tobj.get_declared_type_params():
-        arg = tv_map[param.typevar]
+        arg = tv_map.get_value(param)
+        assert arg is not None
         if isinstance(param, TypeVarTupleParam):
-            normalized_arg = replace_known_sequence_value(arg)
-            if (
-                tobj.typ is not tuple
-                and isinstance(normalized_arg, SequenceValue)
-                and normalized_arg.typ is tuple
-                and all(not is_many for is_many, _ in normalized_arg.members)
-            ):
-                if normalized_arg.members:
-                    args.extend(member for _, member in normalized_arg.members)
-                else:
-                    args.append(normalized_arg)
-                continue
+            binding = tv_map.get_typevartuple(param)
+            assert binding is not None
+            if tobj.typ is tuple:
+                args.append(typevartuple_binding_to_tuple_value(binding))
+            else:
+                args.extend(typevartuple_binding_to_generic_args(binding))
+            continue
         args.append(arg)
     return args
+
+
+def _substitute_type_param_value(
+    type_param: TypeParam | None, value: Value, typevars: TypeVarMap
+) -> Value:
+    if not isinstance(type_param, TypeVarTupleParam):
+        return value.substitute_typevars(typevars)
+    if isinstance(value, TypeVarTupleBindingValue):
+        return TypeVarTupleBindingValue(
+            substitute_typevartuple_binding(value.binding, typevars)
+        )
+    normalized_value = replace_known_sequence_value(value)
+    if isinstance(normalized_value, SequenceValue) and normalized_value.typ is tuple:
+        return TypeVarTupleBindingValue(
+            substitute_typevartuple_binding(normalized_value.members, typevars)
+        )
+    return value.substitute_typevars(typevars)
 
 
 @dataclass(frozen=True)
@@ -516,13 +537,15 @@ class TypeObject:
 
         params = self.get_declared_type_params()
         if params:
-            parent_tv_map = {
-                param.typevar: type_param_to_value(param) for param in params
-            }
+            parent_tv_map = TypeVarMap()
+            for param in params:
+                parent_tv_map = parent_tv_map.with_value(
+                    param, type_param_to_value(param)
+                )
             self_args = [type_param_to_value(param) for param in params]
             self_value = GenericValue(self.typ, self_args)
         else:
-            parent_tv_map = {}
+            parent_tv_map = TypeVarMap()
             self_value = TypedValue(self.typ)
         self_mro_entry = _get_mro_entry(self_value, parent_tv_map, self._checker)
         child_mros = [
@@ -1112,7 +1135,7 @@ class TypeObject:
     def get_substitutions(self, args: Sequence[Value]) -> TypeVarMap:
         params = self.get_declared_type_params()
         if not params:
-            return {}
+            return TypeVarMap()
         return _match_up_generic_params(params, args)
 
     def get_substitutions_for_base(
@@ -1657,8 +1680,8 @@ class TypeObject:
                 other_type_obj, protocol_members, other_val, ctx
             )
         else:
-            protocol_self_typevar_map = {}
-            actual_self_typevar_map = {}
+            protocol_self_typevar_map = TypeVarMap()
+            actual_self_typevar_map = TypeVarMap()
         apply_synthetic_member_rules = (
             isinstance(self.typ, str)
             and _get_synthetic_class_for_key(self.typ, ctx) is not None
@@ -1691,7 +1714,9 @@ class TypeObject:
                 expected = _bind_protocol_call_expected(
                     expected, other_val, ctx, protocol_self_value=self_val
                 )
-                expected = expected.substitute_typevars({SelfT: other_val})
+                expected = expected.substitute_typevars(
+                    TypeVarMap(typevars={SelfT: other_val})
+                )
                 if other_type_obj is not None and other_type_obj.is_protocol():
                     actual = _get_protocol_call_member_initializer(
                         other_type_obj.typ, other_val, ctx
@@ -1718,7 +1743,9 @@ class TypeObject:
                     # In static fallback mode, synthetic protocol members may not have
                     # a retrievable attribute type. Keep enforcing member presence.
                     expected = AnyValue(AnySource.inference)
-                expected = expected.substitute_typevars({SelfT: other_val})
+                expected = expected.substitute_typevars(
+                    TypeVarMap(typevars={SelfT: other_val})
+                )
                 actual = AnyValue(AnySource.inference)
             else:
                 expected = ctx.get_attribute_from_value(
@@ -1730,7 +1757,9 @@ class TypeObject:
                     expected = AnyValue(AnySource.inference)
                 if protocol_self_typevar_map:
                     expected = expected.substitute_typevars(protocol_self_typevar_map)
-                expected = expected.substitute_typevars({SelfT: other_val})
+                expected = expected.substitute_typevars(
+                    TypeVarMap(typevars={SelfT: other_val})
+                )
                 actual = ctx.get_attribute_from_value(other_val, member)
                 if (
                     class_object_check
@@ -2346,7 +2375,7 @@ def _shield_nested_self_typevars(value: Value) -> tuple[Value, TypeVarMap]:
         None,
     )
     if first_self_typevar is None:
-        return value, {}
+        return value, TypeVarMap()
     placeholder = TypeVarValue(
         TypeVarParam(
             _DescriptorNestedSelfT,
@@ -2356,9 +2385,9 @@ def _shield_nested_self_typevars(value: Value) -> tuple[Value, TypeVarMap]:
             variance=first_self_typevar.typevar_param.variance,
         )
     )
-    return value.substitute_typevars({SelfT: placeholder}), {
-        _DescriptorNestedSelfT: first_self_typevar
-    }
+    return value.substitute_typevars(
+        TypeVarMap(typevars={SelfT: placeholder})
+    ), TypeVarMap(typevars={_DescriptorNestedSelfT: first_self_typevar})
 
 
 def _get_cached_property_return_type(
@@ -2405,26 +2434,25 @@ def _receiver_type_value(receiver_value: Value | None) -> TypedValue | None:
     return None
 
 
-# TODO: this is basically the same as _match_up_generic_args below
 def _typevar_map_from_generic_args(
     type_params: Sequence[TypeParam], generic_args: Sequence[Value]
-) -> dict[TypeVarLike, Value]:
+) -> TypeVarMap:
     if not type_params:
-        return {}
-    substitutions: dict[TypeVarLike, Value] = {}
+        return TypeVarMap()
+    substitutions = TypeVarMap()
     matched = match_typevar_arguments(type_params, generic_args)
     if matched is None:
         return substitutions
     for typevar, value in matched:
-        if is_instance_of_typing_name(typevar, "ParamSpec"):
-            value = coerce_paramspec_specialization_to_input_sig(value)
-        substitutions[typevar] = value.substitute_typevars(substitutions)
+        substitutions = _with_typevar_map_value(
+            substitutions, typevar, value.substitute_typevars(substitutions)
+        )
     return substitutions
 
 
 def _typevar_map_from_type_value(
     receiver_value: TypedValue, type_params: Sequence[TypeParam]
-) -> dict[TypeVarLike, Value]:
+) -> TypeVarMap:
     _, generic_args = _class_key_and_generic_args_from_type_value(receiver_value)
     return _typevar_map_from_generic_args(type_params, generic_args)
 
@@ -2505,7 +2533,7 @@ def _specialize_self_returning_classmethod(
     inferred = get_tv_map(raw_attr.args[0], SubclassValue(receiver_for_self), ctx)
     if isinstance(inferred, CanAssignError):
         return normalized_attr
-    inferred = {**inferred, SelfT: receiver_for_self}
+    inferred = inferred.with_typevar(TypeVarParam(SelfT), receiver_for_self)
     return CallableValue(normalized_attr.signature.substitute_typevars(inferred))
 
 
@@ -2880,9 +2908,7 @@ def _descriptor_signature_accepts_args(
     )
 
 
-def _substitute_symbol_value(
-    value: Value, substitutions: dict[TypeVarLike, Value]
-) -> Value:
+def _substitute_symbol_value(value: Value, substitutions: TypeVarMap) -> Value:
     if not substitutions:
         return value
     return value.substitute_typevars(substitutions)
@@ -2902,8 +2928,8 @@ def _get_symbol_owner_substitutions_from_type_objects(
     ctx: CanAssignContext,
     *,
     receiver_value: TypedValue | None = None,
-) -> dict[TypeVarLike, Value]:
-    receiver_substitutions: dict[TypeVarLike, Value] = {}
+) -> TypeVarMap:
+    receiver_substitutions = TypeVarMap()
     if receiver_value is not None:
         receiver_substitutions = _typevar_map_from_type_value(
             receiver_value, receiver_tobj.get_declared_type_params()
@@ -2919,17 +2945,17 @@ def _get_symbol_owner_substitutions_from_type_objects(
         None,
     )
     if owner_value is None:
-        return {}
+        return TypeVarMap()
     if receiver_substitutions:
         owner_value = owner_value.substitute_typevars(receiver_substitutions)
     owner_substitutions = _typevar_map_from_generic_args(
         owner_tobj.get_declared_type_params(), _mro_generic_args(owner_value)
     )
     if not owner_substitutions:
-        return {}
+        return TypeVarMap()
     if not receiver_substitutions:
         return owner_substitutions
-    return {**receiver_substitutions, **owner_substitutions}
+    return receiver_substitutions.merge(owner_substitutions)
 
 
 def _make_type_object_for_key(class_key: type | str, ctx: object) -> TypeObject | None:
@@ -3255,13 +3281,13 @@ def _collect_protocol_self_typevar_map(
     protocol_members: set[str],
     receiver_value: Value,
     ctx: CanAssignContext,
-) -> dict[TypeVarLike, Value]:
+) -> TypeVarMap:
     """Collect typevar substitutions implied by receiver annotations.
 
     This propagates `self: T` constraints across protocol members.
     """
-    tv_map: dict[TypeVarLike, Value] = {}
-    for member in protocol_members:
+    tv_map = TypeVarMap()
+    for member in sorted(protocol_members):
         match = tobj.get_declared_symbol_with_owner(member, ctx)
         if match is None:
             continue
@@ -3351,11 +3377,11 @@ def _protocol_classmethod_receiver_value(
 
 
 def _merge_protocol_receiver_typevars(
-    tv_map: dict[TypeVarLike, Value],
+    tv_map: TypeVarMap,
     self_annotation: Value,
     receiver_for_match: Value,
     ctx: CanAssignContext,
-) -> dict[TypeVarLike, Value]:
+) -> TypeVarMap:
     if not any(
         isinstance(subvalue, TypeVarValue) for subvalue in self_annotation.walk_values()
     ):
@@ -3368,13 +3394,46 @@ def _merge_protocol_receiver_typevars(
         translated = infer_positional_generic_typevar_map(
             self_annotation, receiver_for_match, ctx
         )
-    merged = dict(tv_map)
-    for typevar, value in {**inferred, **translated}.items():
-        existing = merged.get(typevar)
-        if existing is None:
-            merged[typevar] = value
-        elif existing != value:
-            merged[typevar] = unite_values(existing, value)
+    return _merge_protocol_receiver_typevar_maps(tv_map, inferred.merge(translated))
+
+
+def _is_placeholder_typevartuple_binding(binding: Sequence[tuple[bool, Value]]) -> bool:
+    return (
+        len(binding) == 1
+        and binding[0][0]
+        and isinstance(binding[0][1], AnyValue)
+        and binding[0][1].source is AnySource.generic_argument
+    )
+
+
+def _merge_protocol_receiver_typevar_maps(
+    existing: TypeVarMap, new: TypeVarMap
+) -> TypeVarMap:
+    merged = existing
+    for typevar, value in new.iter_typevars():
+        type_param = TypeVarParam(typevar)
+        existing_value = merged.get_typevar(type_param)
+        if existing_value is None:
+            merged = merged.with_typevar(type_param, value)
+        elif existing_value != value:
+            merged = merged.with_typevar(
+                type_param, unite_values(existing_value, value)
+            )
+    for paramspec, input_sig in new.iter_paramspecs():
+        type_param = ParamSpecParam(paramspec)
+        existing_sig = merged.get_paramspec(type_param)
+        if existing_sig is None or (
+            isinstance(existing_sig, AnySig) and not isinstance(input_sig, AnySig)
+        ):
+            merged = merged.with_paramspec(type_param, input_sig)
+    for typevartuple, binding in new.iter_typevartuples():
+        type_param = TypeVarTupleParam(typevartuple)
+        existing_binding = merged.get_typevartuple(type_param)
+        if existing_binding is None or (
+            _is_placeholder_typevartuple_binding(existing_binding)
+            and not _is_placeholder_typevartuple_binding(binding)
+        ):
+            merged = merged.with_typevartuple(type_param, binding)
     return merged
 
 
@@ -3451,12 +3510,10 @@ def _extract_type_param(value: Value) -> TypeParam | None:
     match value:
         case TypeVarValue(typevar_param=typevar_param):
             return typevar_param
-        case TypeVarTupleValue(typevar_param=typevar_param):
-            return typevar_param
         case InputSigValue(input_sig=ParamSpecParam() as param):
             return param
         case _:
-            return None
+            return get_single_typevartuple_param(value)
 
 
 def _compute_type_params_from_runtime(
@@ -3578,21 +3635,29 @@ def _get_tv_map_for_mro(
     if params:
         if isinstance(mro_value, GenericValue):
             tv_map = _match_up_generic_params(params, mro_value.args)
-            return {
-                tv: value.substitute_typevars(parent_tv_map)
-                for tv, value in tv_map.items()
-            }
+            substituted = TypeVarMap()
+            for param in params:
+                value = tv_map.get_value(param)
+                if value is None:
+                    continue
+                substituted = substituted.with_value(
+                    param, value.substitute_typevars(parent_tv_map)
+                )
+            return substituted
         else:
-            return {
-                param.typevar: AnyValue(AnySource.generic_argument) for param in params
-            }
+            substitutions = TypeVarMap()
+            for param in params:
+                substitutions = substitutions.with_value(
+                    param, AnyValue(AnySource.generic_argument)
+                )
+            return substitutions
     else:
-        return {}
+        return TypeVarMap()
 
 
 def _make_object_mro_entry(checker: "pycroscope.checker.Checker") -> MroEntry:
     tobj = checker.make_type_object(object)
-    return MroEntry(tobj=tobj, tv_map={}, value=None, is_virtual=False)
+    return MroEntry(tobj=tobj, tv_map=TypeVarMap(), value=None, is_virtual=False)
 
 
 def _get_mro_from_mro_value(
@@ -3629,10 +3694,13 @@ def _match_up_generic_params(
     returning a mapping of type variables to values."""
     seq = match_typevar_arguments(type_params, generic_args)
     if seq is None:
-        return {
-            param.typevar: default_value_for_type_param(param) for param in type_params
-        }
-    return {param: value for param, value in seq}
+        substitutions = TypeVarMap()
+        for param in type_params:
+            substitutions = substitutions.with_value(
+                param, default_value_for_type_param(param)
+            )
+        return substitutions
+    return _typevar_map_from_varlike_pairs(seq)
 
 
 def _entries_match(a: MroEntry, b: MroEntry) -> bool:

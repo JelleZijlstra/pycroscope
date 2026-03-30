@@ -95,6 +95,8 @@ from .value import (
     TypeVarValue,
     UnboundMethodValue,
     Value,
+    _iter_typevar_map_items,
+    _typevar_map_from_varlike_pairs,
     annotate_value,
     bound_self_type_from_class_key,
     receiver_to_self_type,
@@ -1341,27 +1343,22 @@ def _substitute_typevars(
             provider_key = origin
     if provider_key is not None:
         provider_typevars = generic_bases[provider_key]
-        substituted_typevars = {
-            typevar: (
-                coerce_paramspec_specialization_to_input_sig(value)
-                if is_instance_of_typing_name(typevar, "ParamSpec")
-                else value
+        substituted_typevars = _typevar_map_from_varlike_pairs(
+            (
+                typevar,
+                (
+                    coerce_paramspec_specialization_to_input_sig(value)
+                    if is_instance_of_typing_name(typevar, "ParamSpec")
+                    else value
+                ),
             )
-            for typevar, value in provider_typevars.items()
-        }
+            for typevar, value in _iter_typevar_map_items(provider_typevars)
+        )
         result = result.substitute_typevars(substituted_typevars)
     if generic_args and typ in generic_bases:
-        ordered_typevars = [
-            val.typevar_param.typevar if isinstance(val, TypeVarValue) else None
-            for val in generic_bases[typ].values()
-        ]
-        tv_map = {
-            typevar: arg
-            for typevar, arg in zip(ordered_typevars, generic_args)
-            if typevar is not None
-        }
+        tv_map = generic_bases[typ]
         if isinstance(result, KnownValueWithTypeVars):
-            merged_typevars = {**result.typevars, **tv_map}
+            merged_typevars = result.typevars.merge(tv_map)
             result = KnownValueWithTypeVars(result.val, merged_typevars)
         else:
             result = result.substitute_typevars(tv_map)

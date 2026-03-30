@@ -21,15 +21,20 @@ from .value import (
     KnownValue,
     LowerBound,
     OrBound,
+    ParamSpecLike,
+    SequenceMembers,
     SequenceValue,
     TypedValue,
     TypeParam,
     TypeVarLike,
     TypeVarMap,
+    TypeVarTupleLike,
     TypeVarTupleParam,
+    TypeVarType,
     UpperBound,
     Value,
     replace_known_sequence_value,
+    typevartuple_value_to_members,
     unite_values,
 )
 
@@ -74,7 +79,18 @@ def resolve_bounds_map(
     *,
     all_typevars: Iterable[TypeVarLike] = (),
 ) -> tuple[TypeVarMap, Sequence[CanAssignError]]:
-    tv_map = {tv: AnyValue(AnySource.generic_argument) for tv in all_typevars}
+    typevars: dict[TypeVarType, Value] = {}
+    paramspecs: dict[ParamSpecLike, pycroscope.input_sig.InputSig] = {}
+    typevartuples: dict[TypeVarTupleLike, SequenceMembers] = {}
+    for tv in all_typevars:
+        if is_instance_of_typing_name(tv, "TypeVar"):
+            typevars[tv] = AnyValue(AnySource.generic_argument)
+        elif is_instance_of_typing_name(tv, "ParamSpec"):
+            paramspecs[tv] = pycroscope.input_sig.AnySig()
+        elif is_instance_of_typing_name(tv, "TypeVarTuple"):
+            typevartuples[tv] = ((True, AnyValue(AnySource.generic_argument)),)
+        else:
+            raise TypeError(f"Unrecognized type parameter {tv!r}")
     errors = []
     for tv, bounds in bounds_map.items():
         bounds = tuple(dict.fromkeys(bounds))
@@ -86,8 +102,25 @@ def resolve_bounds_map(
         if isinstance(solution, CanAssignError):
             errors.append(solution)
             solution = AnyValue(AnySource.error)
-        tv_map[tv] = solution
-    return tv_map, errors
+        if is_instance_of_typing_name(tv, "TypeVar"):
+            typevars[tv] = solution
+        elif is_instance_of_typing_name(tv, "ParamSpec"):
+            from .input_sig import InputSigValue, assert_input_sig
+
+            if isinstance(solution, InputSigValue):
+                paramspecs[tv] = solution.input_sig
+            else:
+                paramspecs[tv] = assert_input_sig(solution)
+        elif is_instance_of_typing_name(tv, "TypeVarTuple"):
+            typevartuples[tv] = typevartuple_value_to_members(solution)
+        else:
+            raise TypeError(f"Unrecognized type parameter {tv!r}")
+    return (
+        TypeVarMap(
+            typevars=typevars, paramspecs=paramspecs, typevartuples=typevartuples
+        ),
+        errors,
+    )
 
 
 def solve(bounds: Iterable[Bound], ctx: CanAssignContext) -> Value | CanAssignError:

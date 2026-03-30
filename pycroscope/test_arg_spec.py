@@ -25,6 +25,7 @@ from .value import (
     SequenceValue,
     TypedValue,
     TypeVarParam,
+    TypeVarTupleBindingValue,
     TypeVarTupleParam,
     TypeVarValue,
     assert_is_value,
@@ -75,7 +76,7 @@ def test_match_typevar_arguments_preserves_suffix_after_default_before_typevartu
         [TypedValue(str)],
     ) == [
         (default_t, TypedValue(int)),
-        (ts, SequenceValue(tuple, [])),
+        (ts, TypeVarTupleBindingValue(())),
         (u, TypedValue(str)),
     ]
 

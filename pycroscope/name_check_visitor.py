@@ -291,7 +291,6 @@ from .value import (
     TypeGuardExtension,
     TypeIsExtension,
     TypeParam,
-    TypeVarLike,
     TypeVarMap,
     TypeVarParam,
     TypeVarTupleParam,
@@ -300,7 +299,11 @@ from .value import (
     UnboundMethodValue,
     Value,
     Variance,
+    _get_typevar_map_value,
     _is_property_initializer,
+    _iter_typevar_map_items,
+    _typevar_map_from_varlike_pairs,
+    _with_typevar_map_value,
     annotate_value,
     bound_self_type_from_class_key,
     concrete_values_from_iterable,
@@ -6659,7 +6662,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         self, node: ast.ClassDef, base_values: Sequence[Value]
     ) -> None:
         analyzed_bases = self._base_values_for_generic_analysis(node, base_values)
-        seen_mappings: dict[type | str, dict[TypeVarLike, Value]] = {}
+        seen_mappings: dict[type | str, TypeVarMap] = {}
         for base_node, base_value in zip(node.bases, analyzed_bases):
             for subval in flatten_values(replace_fallback(base_value)):
                 converted: Value = subval
@@ -6676,11 +6679,13 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 for gb_typ, tv_map in self.checker.get_generic_bases(
                     base_typ, generic_args
                 ).items():
-                    existing_map = seen_mappings.setdefault(gb_typ, {})
-                    for type_param, value in tv_map.items():
-                        existing = existing_map.get(type_param)
+                    existing_map = seen_mappings.setdefault(gb_typ, TypeVarMap())
+                    for type_param, value in _iter_typevar_map_items(tv_map):
+                        existing = _get_typevar_map_value(existing_map, type_param)
                         if existing is None:
-                            existing_map[type_param] = value
+                            existing_map = _with_typevar_map_value(
+                                existing_map, type_param, value
+                            )
                         elif (
                             existing != value
                             and not isinstance(existing, AnyValue)
@@ -6700,6 +6705,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                                 error_code=ErrorCode.invalid_base,
                             )
                             return
+                    seen_mappings[gb_typ] = existing_map
 
     def _check_typevartuple_usage_in_type_parameter_bases(
         self, node: ast.ClassDef, base_values: Sequence[Value]
@@ -7587,7 +7593,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 and params[0].node.annotation is None
             ):
                 self_instance_value = bound_self_type_from_class_key(enclosing_class)
-                substitutions: TypeVarMap = {SelfT: self_instance_value}
+                substitutions = TypeVarMap(typevars={SelfT: self_instance_value})
                 uses_self_annotation = (
                     _value_contains_self(return_annotation)
                     or any(
@@ -9006,7 +9012,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     variables={param.name: param.annotation for param in params},
                     positions={param.name: type_evaluation.DEFAULT for param in params},
                     can_assign_context=self,
-                    tv_map={},
+                    tv_map=TypeVarMap(),
                 )
                 for error in evaluator.validate(ctx):
                     self.show_error(
@@ -11001,7 +11007,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             result, _ = self._check_dunder_call(node, composite, "__await__", [])
             return result
         else:
-            return tv_map.get(T, AnyValue(AnySource.generic_argument))
+            return tv_map.get_typevar(
+                TypeVarParam(T), AnyValue(AnySource.generic_argument)
+            )
 
     def visit_YieldFrom(self, node: ast.YieldFrom) -> Value:
         self.is_generator = True
@@ -11010,9 +11018,13 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         if isinstance(tv_map, CanAssignError):
             can_assign = get_tv_map(AwaitableValue, value, self)
             if not isinstance(can_assign, CanAssignError):
-                tv_map = {
-                    ReturnT: can_assign.get(T, AnyValue(AnySource.generic_argument))
-                }
+                tv_map = TypeVarMap(
+                    typevars={
+                        ReturnT: can_assign.get_typevar(
+                            TypeVarParam(T), AnyValue(AnySource.generic_argument)
+                        )
+                    }
+                )
             else:
                 iterable_type = is_iterable(value, self)
                 if isinstance(iterable_type, CanAssignError):
@@ -11022,13 +11034,15 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                         error_code=ErrorCode.bad_yield_from,
                         detail=can_assign.display(),
                     )
-                    tv_map = {ReturnT: AnyValue(AnySource.error)}
+                    tv_map = TypeVarMap(typevars={ReturnT: AnyValue(AnySource.error)})
                 else:
-                    tv_map = {YieldT: iterable_type}
+                    tv_map = TypeVarMap(typevars={YieldT: iterable_type})
 
         if self.current_function_info is not None:
             expected_yield = self.current_function_info.get_generator_yield_type(self)
-            yield_type = tv_map.get(YieldT, AnyValue(AnySource.generic_argument))
+            yield_type = tv_map.get_typevar(
+                TypeVarParam(YieldT), AnyValue(AnySource.generic_argument)
+            )
             can_assign = has_relation(
                 expected_yield, yield_type, Relation.ASSIGNABLE, self
             )
@@ -11041,7 +11055,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 )
 
             expected_send = self.current_function_info.get_generator_send_type(self)
-            send_type = tv_map.get(SendT, AnyValue(AnySource.generic_argument))
+            send_type = tv_map.get_typevar(
+                TypeVarParam(SendT), AnyValue(AnySource.generic_argument)
+            )
             can_assign = has_relation(
                 send_type, expected_send, Relation.ASSIGNABLE, self
             )
@@ -11054,7 +11070,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     detail=can_assign.display(),
                 )
 
-        return tv_map.get(ReturnT, AnyValue(AnySource.generic_argument))
+        return tv_map.get_typevar(
+            TypeVarParam(ReturnT), AnyValue(AnySource.generic_argument)
+        )
 
     def visit_Yield(self, node: ast.Yield) -> Value:
         if self._is_checking():
@@ -11528,8 +11546,12 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 continue
             inferred.append(
                 (
-                    can_assign.get(T_co, AnyValue(AnySource.generic_argument)),
-                    can_assign.get(U_co, AnyValue(AnySource.generic_argument)),
+                    can_assign.get_typevar(
+                        TypeVarParam(T_co), AnyValue(AnySource.generic_argument)
+                    ),
+                    can_assign.get_typevar(
+                        TypeVarParam(U_co), AnyValue(AnySource.generic_argument)
+                    ),
                 )
             )
         if errors:
@@ -13902,11 +13924,12 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     )
                     if synthetic_typevars:
                         if isinstance(method_object, KnownValueWithTypeVars):
-                            merged_typevars = {
-                                typevar: value.substitute_typevars(synthetic_typevars)
-                                for typevar, value in method_object.typevars.items()
-                            }
-                            merged_typevars.update(synthetic_typevars)
+                            merged_typevars = _typevar_map_from_varlike_pairs(
+                                (typevar, value.substitute_typevars(synthetic_typevars))
+                                for typevar, value in _iter_typevar_map_items(
+                                    method_object.typevars
+                                )
+                            ).merge(synthetic_typevars)
                             method_object = KnownValueWithTypeVars(
                                 method_object.val, merged_typevars
                             )
@@ -13938,15 +13961,17 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
 
     def _get_synthetic_instance_typevars(self, value: TypedValue) -> TypeVarMap:
         if not isinstance(value.typ, str):
-            return {}
+            return TypeVarMap()
         if not isinstance(value, GenericValue):
-            return {}
+            return TypeVarMap()
         generic_args = value.args
         declared_type_params = self.checker.get_type_parameters(value.typ)
         if not declared_type_params:
-            return {}
-        typevars = [type_param.typevar for type_param in declared_type_params]
-        return dict(zip(typevars, generic_args))
+            return TypeVarMap()
+        substitutions = TypeVarMap()
+        for type_param, generic_arg in zip(declared_type_params, generic_args):
+            substitutions = substitutions.with_value(type_param, generic_arg)
+        return substitutions
 
     def _check_dunder_call_or_catch(
         self,
@@ -14184,8 +14209,12 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     ) -> Value | None:
         if isinstance(root, (TypedValue, GenericValue)):
             return root
-        if isinstance(root, KnownValueWithTypeVars) and SelfT in root.typevars:
-            return root.typevars[SelfT]
+        if isinstance(root, KnownValueWithTypeVars) and root.typevars.has_typevar(
+            TypeVarParam(SelfT)
+        ):
+            self_value = root.typevars.get_typevar(TypeVarParam(SelfT))
+            assert self_value is not None
+            return self_value
         if isinstance(root, KnownValue) and not isinstance(root.val, type):
             return TypedValue(type(root.val))
         return None
@@ -14211,7 +14240,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             if (
                 self_value := self._self_value_for_attribute_assignment_root(root)
             ) is not None:
-                value = value.substitute_typevars({SelfT: self_value})
+                value = value.substitute_typevars(
+                    TypeVarMap(typevars={SelfT: self_value})
+                )
         return value
 
     def _check_attribute_write(
@@ -15963,8 +15994,12 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     def _attribute_write_types_for_value(self, value: Value) -> set[type]:
         if isinstance(value, AnnotatedValue):
             return self._attribute_write_types_for_value(value.value)
-        if isinstance(value, KnownValueWithTypeVars) and SelfT in value.typevars:
-            return self._attribute_write_types_for_value(value.typevars[SelfT])
+        if isinstance(value, KnownValueWithTypeVars) and value.typevars.has_typevar(
+            TypeVarParam(SelfT)
+        ):
+            self_value = value.typevars.get_typevar(TypeVarParam(SelfT))
+            assert self_value is not None
+            return self._attribute_write_types_for_value(self_value)
         if isinstance(value, TypeVarValue):
             if value.typevar_param.typevar is SelfT and isinstance(
                 self.current_class, type
@@ -17202,7 +17237,9 @@ def _function_signature_contains_self(info: FunctionInfo) -> bool:
 
 
 def _value_carries_self_binding(value: Value) -> bool:
-    if isinstance(value, KnownValueWithTypeVars) and SelfT in value.typevars:
+    if isinstance(value, KnownValueWithTypeVars) and value.typevars.has_typevar(
+        TypeVarParam(SelfT)
+    ):
         return True
     return any(
         isinstance(subval, TypeVarValue) and subval.typevar_param.typevar is SelfT

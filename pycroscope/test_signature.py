@@ -1787,6 +1787,33 @@ class TestUnpack(TestNameCheckVisitorBase):
             """)
 
     @skip_before((3, 11))
+    def test_var_positional_typevartuple_args_to_tuple_and_suffix(self):
+        self.assert_passes("""
+            from typing import TypeVarTuple
+
+            from typing_extensions import assert_type
+
+            Ts = TypeVarTuple("Ts")
+
+            class Env:
+                ...
+
+            def args_to_tuple(*args: *Ts) -> tuple[*Ts]:
+                return args
+
+            def exec_le(
+                path: str, *args: *tuple[*Ts, Env], env: Env | None = None
+            ) -> tuple[*Ts]:
+                raise NotImplementedError
+
+            def caller(x: int, y: str, env: Env) -> None:
+                assert_type(args_to_tuple(), tuple[()])
+                assert_type(args_to_tuple(x, y), tuple[int, str])
+                assert_type(exec_le("", env), tuple[()])
+                assert_type(exec_le(y, x, y, env), tuple[int, str])
+            """)
+
+    @skip_before((3, 11))
     def test_var_positional_typevartuple_import_failure(self):
         self.assert_passes(
             """
@@ -1806,6 +1833,35 @@ class TestUnpack(TestNameCheckVisitorBase):
             """,
             run_in_both_module_modes=True,
         )
+
+    @skip_before((3, 11))
+    def test_var_positional_tuple_unpack_patterns(self):
+        self.assert_passes("""
+            from typing import TypeVarTuple
+
+            from typing_extensions import assert_type
+
+            Ts = TypeVarTuple("Ts")
+
+            def func1(*args: *tuple[int, ...]) -> tuple[int, ...]:
+                raise NotImplementedError
+
+            def func2(
+                *args: *tuple[int, *tuple[str, ...], str]
+            ) -> tuple[int, *tuple[str, ...], str]:
+                raise NotImplementedError
+
+            def func3(*args: tuple[*Ts]) -> tuple[*Ts]:
+                raise NotImplementedError
+
+            def caller() -> None:
+                assert_type(func1(), tuple[int, ...])
+                assert_type(func1(1, 2, 3), tuple[int, ...])
+                func2(1, "")
+                func2(1, "", "", "")
+                assert_type(func3((0,), (1,)), tuple[int])
+                assert_type(func3((0,), ("1",)), tuple[int | str])
+            """)
 
     @skip_before((3, 11))
     def test_var_positional_typevartuple_consistent_tuple_args(self):

@@ -41,7 +41,7 @@ from .value import (
     TypedValue,
     TypeFormValue,
     TypeParam,
-    TypeVarLike,
+    TypeVarMap,
     UnboundMethodValue,
     Value,
     get_namedtuple_field_annotation,
@@ -183,7 +183,7 @@ def _iter_base_type_values_from_simple(
 
 
 def _default_type_argument_for_param(
-    type_param: TypeParam, substitutions: dict[TypeVarLike, Value], checker: "Checker"
+    type_param: TypeParam, substitutions: TypeVarMap, checker: "Checker"
 ) -> Value:
     if type_param.default is not None:
         default = type_param.default
