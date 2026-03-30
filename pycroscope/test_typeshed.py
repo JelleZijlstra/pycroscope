@@ -161,6 +161,19 @@ class TestTypeshedClient(TestNameCheckVisitorBase):
         def capybara(s: str) -> None:
             assert_type(s.count("x"), int)
 
+    def test_get_fq_name_uses_safe_attribute_access(self) -> None:
+        tsf = TypeshedFinder(Checker(), verbose=True)
+
+        class ExplodesOnQualname:
+            __module__ = "builtins"
+
+            def __getattr__(self, name: str) -> Any:
+                if name == "__qualname__":
+                    raise RuntimeError("boom")
+                raise AttributeError(name)
+
+        assert tsf._get_fq_name(ExplodesOnQualname()) is None
+
     @assert_passes()
     def test_dict_fromkeys(self):
         def capybara(i: int) -> None:
