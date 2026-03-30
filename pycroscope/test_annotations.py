@@ -806,9 +806,9 @@ class TestAnnotated(TestNameCheckVisitorBase):
         _bad: "Annotated[int]"  # E: invalid_annotation
 
         def capybara() -> None:
-            Annotated()  # E: invalid_annotation
-            Annotated[int, "meta"]()  # E: invalid_annotation
-            Alias(1)  # E: invalid_annotation
+            Annotated()  # E: not_callable
+            Annotated[int, "meta"]()  # E: not_callable
+            Alias(1)  # E: not_callable
 
 
 class TestCallable(TestNameCheckVisitorBase):
@@ -1900,15 +1900,15 @@ class TestRequired(TestNameCheckVisitorBase):
     def test_unsupported_location(self):
         from typing_extensions import NotRequired, Required
 
-        def f(x: Required[int]) -> None:  # E: invalid_annotation
+        def f(x: Required[int]) -> None:  # E: invalid_qualifier
             pass
 
-        def g() -> Required[int]:  # E: invalid_annotation
+        def g() -> Required[int]:  # E: invalid_qualifier
             return 3
 
         class Capybara:
-            x: Required[int]  # E: invalid_annotation
-            y: NotRequired[int]  # E: invalid_annotation
+            x: Required[int]  # E: invalid_qualifier
+            y: NotRequired[int]  # E: invalid_qualifier
 
     def test_readonly_attribute_annotation_contexts(self):
         self.assert_passes("""
@@ -1929,15 +1929,15 @@ class TestRequired(TestNameCheckVisitorBase):
                     self.f: ReadOnly[int] = value
                     self.f = value + 1
 
-            not_ok: ReadOnly[int] = 1  # E: invalid_annotation
+            not_ok: ReadOnly[int] = 1  # E: invalid_qualifier
 
-            def bad_param(x: ReadOnly[int]) -> None:  # E: invalid_annotation
-                y: ReadOnly[int] = x  # E: invalid_annotation
+            def bad_param(x: ReadOnly[int]) -> None:  # E: invalid_qualifier
+                y: ReadOnly[int] = x  # E: invalid_qualifier
                 print(y)
 
             class Invalid:
-                a: Final[ReadOnly[int]] = 1  # E: invalid_annotation
-                b: ReadOnly[Final[int]] = 1  # E: invalid_annotation
+                a: Final[ReadOnly[int]] = 1  # E: invalid_qualifier
+                b: ReadOnly[Final[int]] = 1  # E: invalid_qualifier
 
             print(Valid, Invalid, bad_param, not_ok)
         """)
@@ -1951,12 +1951,12 @@ class TestRequired(TestNameCheckVisitorBase):
         if TYPE_CHECKING:
 
             class TD(TypedDict):
-                a: Required[Required[int]]  # E: invalid_annotation
-                b: Required[NotRequired[int]]  # E: invalid_annotation
-                c: NotRequired[Required[int]]  # E: invalid_annotation
-                d: NotRequired[NotRequired[int]]  # E: invalid_annotation
-                e: ReadOnly[ReadOnly[int]]  # E: invalid_annotation
-                f: ClassVar[int]  # E: invalid_annotation
+                a: Required[Required[int]]  # E: invalid_qualifier
+                b: Required[NotRequired[int]]  # E: invalid_qualifier
+                c: NotRequired[Required[int]]  # E: invalid_qualifier
+                d: NotRequired[NotRequired[int]]  # E: invalid_qualifier
+                e: ReadOnly[ReadOnly[int]]  # E: invalid_qualifier
+                f: ClassVar[int]  # E: invalid_qualifier
 
     @assert_passes()
     def test_invalid_qualifier_arity(self):
@@ -1982,7 +1982,7 @@ class TestRequired(TestNameCheckVisitorBase):
         from typing import TYPE_CHECKING, Final
 
         if TYPE_CHECKING:
-            x: Final[Final[int]] = 1  # E: invalid_annotation
+            x: Final[Final[int]] = 1  # E: invalid_qualifier
 
     @assert_passes()
     def test_dataclass_final_fields(self):
@@ -2034,8 +2034,8 @@ class TestRequired(TestNameCheckVisitorBase):
         if TYPE_CHECKING:
 
             class C:
-                x: ClassVar[Final[int]] = 1  # E: invalid_annotation
-                y: Final[ClassVar[int]] = 1  # E: invalid_annotation
+                x: ClassVar[Final[int]] = 1  # E: invalid_qualifier
+                y: Final[ClassVar[int]] = 1  # E: invalid_qualifier
 
     @assert_passes()
     def test_classvar_invalid_locations_and_type_params(self):
@@ -2059,12 +2059,12 @@ class TestRequired(TestNameCheckVisitorBase):
             bad_paramspec: ClassVar[Callable[P, Any]] = cast(Any, 0)
 
             def method(self) -> None:
-                local: ClassVar[int] = 0  # E: invalid_annotation
+                local: ClassVar[int] = 0  # E: invalid_qualifier
                 print(local)
-                self.attr: ClassVar[int] = 0  # E: invalid_annotation
+                self.attr: ClassVar[int] = 0  # E: invalid_qualifier
 
-        outside: ClassVar[int] = 0  # E: invalid_annotation
-        Alias: TypeAlias = ClassVar[str]  # E: invalid_annotation
+        outside: ClassVar[int] = 0  # E: invalid_qualifier
+        Alias: TypeAlias = ClassVar[str]  # E: invalid_qualifier
 
     @assert_passes(settings={ErrorCode.classvar_type_parameters: True})
     def test_classvar_type_parameters_check_enabled(self):
@@ -2087,9 +2087,9 @@ class TestParamSpec(TestNameCheckVisitorBase):
 
         P = ParamSpec("P")
 
-        _x: P  # E: invalid_annotation
+        _x: P  # E: invalid_paramspec_usage
 
-        def f(arg: P) -> None:  # E: invalid_annotation
+        def f(arg: P) -> None:  # E: invalid_paramspec_usage
             pass
 
     @assert_passes()
@@ -2100,8 +2100,8 @@ class TestParamSpec(TestNameCheckVisitorBase):
 
         P = ParamSpec("P")
 
-        _x: list[P]  # E: invalid_annotation
-        _y: Callable[[int, str], P]  # E: invalid_annotation
+        _x: list[P]  # E: invalid_paramspec_usage
+        _y: Callable[[int, str], P]  # E: invalid_paramspec_usage
 
     @assert_passes()
     def test_basic(self):
@@ -2332,30 +2332,30 @@ class TestParamSpec(TestNameCheckVisitorBase):
         P = ParamSpec("P")
         T = TypeVar("T")
 
-        _bad_stored_args: P.args  # E: invalid_annotation
-        _bad_stored_kwargs: P.kwargs  # E: invalid_annotation
+        _bad_stored_args: P.args  # E: invalid_paramspec_usage
+        _bad_stored_kwargs: P.kwargs  # E: invalid_paramspec_usage
 
         def bad_component_mixup(
-            *args: P.kwargs,  # E: invalid_annotation
-            **kwargs: P.args,  # E: invalid_annotation
+            *args: P.kwargs,  # E: invalid_paramspec_usage
+            **kwargs: P.args,  # E: invalid_paramspec_usage
         ) -> None:
             pass
 
-        def bad_only_args(*args: P.args) -> None:  # E: invalid_annotation
+        def bad_only_args(*args: P.args) -> None:  # E: invalid_paramspec_usage
             pass
 
-        def bad_only_kwargs(**kwargs: P.kwargs) -> None:  # E: invalid_annotation
+        def bad_only_kwargs(**kwargs: P.kwargs) -> None:  # E: invalid_paramspec_usage
             pass
 
         def bad_non_paramspec_kwargs(
-            *args: P.args, **kwargs: object  # E: invalid_annotation
+            *args: P.args, **kwargs: object  # E: invalid_paramspec_usage
         ) -> None:
             pass
 
         def bad_intervening_param(
-            *args: P.args,  # E: invalid_annotation
+            *args: P.args,  # E: invalid_paramspec_usage
             x: int,
-            **kwargs: P.kwargs,  # E: invalid_annotation
+            **kwargs: P.kwargs,  # E: invalid_paramspec_usage
         ) -> None:
             pass
 
@@ -2423,7 +2423,7 @@ class TestTypeAlias(TestNameCheckVisitorBase):
         from typing_extensions import ParamSpec, TypeAlias
 
         P = ParamSpec("P")
-        Bad: TypeAlias = P  # E: invalid_annotation
+        Bad: TypeAlias = P  # E: invalid_paramspec_usage
         Good: TypeAlias = Callable[P, int]
 
     @assert_passes()

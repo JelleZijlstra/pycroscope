@@ -1801,6 +1801,7 @@ class _DataclassFieldInferenceCallContext:
 class _LegacyTypeParamPolicy:
     allowed_identities: set[object]
     message: str
+    error_code: Error = ErrorCode.invalid_annotation
     report_in_collecting: bool = True
     triggered: bool = False
 
@@ -1898,6 +1899,7 @@ class ActiveTypeParams:
         self,
         message: str,
         *,
+        error_code: Error = ErrorCode.invalid_annotation,
         include_active_pep695: bool = True,
         report_in_collecting: bool = True,
     ) -> Generator[set[object]]:
@@ -1905,7 +1907,10 @@ class ActiveTypeParams:
             self.current_pep695_identities() if include_active_pep695 else set()
         )
         policy = _LegacyTypeParamPolicy(
-            allowed_identities, message, report_in_collecting=report_in_collecting
+            allowed_identities,
+            message,
+            error_code=error_code,
+            report_in_collecting=report_in_collecting,
         )
         self._legacy_policies.append(policy)
         try:
@@ -2114,7 +2119,7 @@ class ActiveTypeParams:
             self._show_error(
                 narrowed_error_node,
                 policy.message,
-                error_code=ErrorCode.invalid_annotation,
+                error_code=policy.error_code,
                 report_in_collecting=policy.report_in_collecting,
             )
             break
@@ -3696,7 +3701,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 self._show_error_if_checking(
                     node,
                     f"Cannot override final attribute {varname}",
-                    ErrorCode.invalid_annotation,
+                    ErrorCode.incompatible_override,
                 )
                 continue
             if child_is_classvar and base_attr.symbol.is_instance_only:
@@ -4805,7 +4810,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     self._show_error_if_checking(
                         keyword.value,
                         "TypedDict total= argument must be a bool literal",
-                        error_code=ErrorCode.invalid_annotation,
+                        error_code=ErrorCode.invalid_typeddict,
                     )
                 else:
                     total = bool_value
@@ -4816,7 +4821,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     self._show_error_if_checking(
                         keyword.value,
                         'Argument to "closed" must be a literal True or False',
-                        error_code=ErrorCode.invalid_annotation,
+                        error_code=ErrorCode.invalid_typeddict,
                     )
                 else:
                     closed = bool_value
@@ -4828,18 +4833,19 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     mutually_exclusive_qualifiers=(
                         (Qualifier.Required, Qualifier.NotRequired),
                     ),
+                    qualifier_error_code=ErrorCode.invalid_qualifier,
                 )
                 if Qualifier.Required in qualifiers:
                     self._show_error_if_checking(
                         keyword.value,
                         "'extra_items' value cannot be 'Required[...]'",
-                        error_code=ErrorCode.invalid_annotation,
+                        error_code=ErrorCode.invalid_qualifier,
                     )
                 if Qualifier.NotRequired in qualifiers:
                     self._show_error_if_checking(
                         keyword.value,
                         "'extra_items' value cannot be 'NotRequired[...]'",
-                        error_code=ErrorCode.invalid_annotation,
+                        error_code=ErrorCode.invalid_qualifier,
                     )
                 explicit_extra_keys = extra_items_value
                 explicit_extra_keys_readonly = Qualifier.ReadOnly in qualifiers
@@ -4848,7 +4854,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 self._show_error_if_checking(
                     keyword,
                     "TypedDict definitions cannot specify a metaclass",
-                    error_code=ErrorCode.invalid_annotation,
+                    error_code=ErrorCode.invalid_typeddict,
                 )
             else:
                 if keyword.arg is None:
@@ -4859,14 +4865,14 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                         " in TypedDict definition"
                     )
                 self._show_error_if_checking(
-                    keyword, message, error_code=ErrorCode.invalid_annotation
+                    keyword, message, error_code=ErrorCode.invalid_typeddict
                 )
 
         if closed is False and inherited_extra_keys is not None:
             self._show_error_if_checking(
                 node,
                 "Cannot set 'closed=False' when superclass is closed or has 'extra_items'",
-                error_code=ErrorCode.invalid_annotation,
+                error_code=ErrorCode.invalid_typeddict,
             )
 
         if (
@@ -4878,7 +4884,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             self._show_error_if_checking(
                 node,
                 "Cannot set 'closed=True' when superclass has non-read-only 'extra_items'",
-                error_code=ErrorCode.invalid_annotation,
+                error_code=ErrorCode.invalid_typeddict,
             )
 
         if (
@@ -4899,7 +4905,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 self._show_error_if_checking(
                     node,
                     "Cannot change 'extra_items' type unless it is 'ReadOnly' in the superclass",
-                    error_code=ErrorCode.invalid_annotation,
+                    error_code=ErrorCode.invalid_typeddict,
                 )
 
         if explicit_extra_keys is None:
@@ -4931,7 +4937,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 self._show_error_if_checking(
                     statement,
                     "Methods are not allowed in TypedDict definitions",
-                    error_code=ErrorCode.invalid_annotation,
+                    error_code=ErrorCode.invalid_typeddict,
                 )
 
     def _is_typeddict_generic_base(self, base_value: Value) -> bool:
@@ -4996,7 +5002,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 self._show_error_if_checking(
                     node.target,
                     "NamedTuple field names cannot start with an underscore",
-                    error_code=ErrorCode.invalid_annotation,
+                    error_code=ErrorCode.invalid_namedtuple,
                 )
             has_default = node.value is not None
             if info.saw_default and not has_default:
@@ -5004,7 +5010,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 self._show_error_if_checking(
                     node,
                     "NamedTuple fields without defaults cannot follow fields with defaults",
-                    error_code=ErrorCode.invalid_annotation,
+                    error_code=ErrorCode.invalid_namedtuple,
                 )
             info.saw_default = info.saw_default or has_default
             info.fields.append(_CurrentNamedTupleField(field_name, has_default))
@@ -6244,7 +6250,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 node,
                 f"{type_param_name} should be "
                 f"{inferred_type_param.variance.display_name()}",
-                error_code=ErrorCode.invalid_annotation,
+                error_code=ErrorCode.invalid_protocol,
             )
 
     def _check_class_base_type_param_variances(
@@ -6397,21 +6403,21 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                         node,
                         "Type parameter defaults can reference only earlier type"
                         " parameters from the same class",
-                        error_code=ErrorCode.invalid_annotation,
+                        error_code=ErrorCode.invalid_type_parameter,
                     )
                     return
             if seen_default and not has_default:
                 self._show_error_if_checking(
                     node,
                     "non-default TypeVars cannot follow ones with defaults",
-                    error_code=ErrorCode.invalid_annotation,
+                    error_code=ErrorCode.invalid_type_parameter,
                 )
                 return
             if previous_was_typevartuple and has_default and is_typevar:
                 self._show_error_if_checking(
                     node,
                     "TypeVars with defaults cannot follow TypeVarTuples",
-                    error_code=ErrorCode.invalid_annotation,
+                    error_code=ErrorCode.invalid_type_parameter,
                 )
                 return
             seen_default = seen_default or has_default
@@ -7108,14 +7114,14 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 self._self_error_message(
                     "can only be used in annotations within a class body"
                 ),
-                error_code=ErrorCode.invalid_annotation,
+                error_code=ErrorCode.invalid_self_usage,
             )
             return True
         if self._current_class_forbids_self():
             self._show_error_if_checking(
                 info.node,
                 self._self_error_message("cannot be used in metaclass definitions"),
-                error_code=ErrorCode.invalid_annotation,
+                error_code=ErrorCode.invalid_self_usage,
             )
             return True
         if self.current_class is not None:
@@ -7125,7 +7131,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     self._self_error_message(
                         "cannot be used in staticmethod signatures"
                     ),
-                    error_code=ErrorCode.invalid_annotation,
+                    error_code=ErrorCode.invalid_self_usage,
                 )
                 return True
             receiver = next((param for param in info.params if param.is_self), None)
@@ -7135,7 +7141,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     self._self_error_message(
                         "methods using Self must have a receiver parameter"
                     ),
-                    error_code=ErrorCode.invalid_annotation,
+                    error_code=ErrorCode.invalid_self_usage,
                 )
                 return True
             if receiver.node is not None and isinstance(receiver.node, ast.arg):
@@ -7149,7 +7155,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                             "methods using Self must annotate the receiver with Self"
                             " or leave it unannotated"
                         ),
-                        error_code=ErrorCode.invalid_annotation,
+                        error_code=ErrorCode.invalid_self_usage,
                     )
                     return True
         return False
@@ -7337,7 +7343,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     self._show_error_if_checking(
                         entry_node,
                         f"Incompatible TypedDict override for key {key!r}",
-                        error_code=ErrorCode.invalid_annotation,
+                        error_code=ErrorCode.invalid_typeddict,
                     )
                 items[key] = entry
             else:
@@ -7346,7 +7352,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     self._show_error_if_checking(
                         entry_node,
                         f'"{node.name}" is a closed TypedDict; extra key {key!r} not allowed',
-                        error_code=ErrorCode.invalid_annotation,
+                        error_code=ErrorCode.invalid_typeddict,
                     )
                 elif base_extra_keys is not None:
                     if context.inherited_extra_keys_readonly:
@@ -7358,14 +7364,14 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                                 entry_node,
                                 f"{entry.typ} is not assignable to 'extra_items'"
                                 f" type {base_extra_keys}",
-                                error_code=ErrorCode.invalid_annotation,
+                                error_code=ErrorCode.invalid_typeddict,
                             )
                     else:
                         if entry.required:
                             self._show_error_if_checking(
                                 entry_node,
                                 f"Required key {key!r} is not known to base TypedDict",
-                                error_code=ErrorCode.invalid_annotation,
+                                error_code=ErrorCode.invalid_typeddict,
                             )
                         base_to_entry = has_relation(
                             base_extra_keys, entry.typ, Relation.ASSIGNABLE, self
@@ -7380,7 +7386,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                                 entry_node,
                                 f"{entry.typ} is not consistent with 'extra_items'"
                                 f" type {base_extra_keys}",
-                                error_code=ErrorCode.invalid_annotation,
+                                error_code=ErrorCode.invalid_typeddict,
                             )
                 items[key] = entry
 
@@ -7613,7 +7619,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                             self.show_error(
                                 node.returns,
                                 "ParamSpec cannot be used in this annotation context",
-                                error_code=ErrorCode.invalid_annotation,
+                                error_code=ErrorCode.invalid_paramspec_usage,
                             )
                         else:
                             self.show_error(
@@ -7793,7 +7799,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     self._show_error_if_checking(
                         node,
                         "@final is not allowed on non-method functions",
-                        error_code=ErrorCode.invalid_annotation,
+                        error_code=ErrorCode.invalid_final,
                     )
                 elif (
                     FunctionDecorator.overload in info.decorator_kinds
@@ -7802,7 +7808,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     self._show_error_if_checking(
                         node,
                         "@final should be applied only to the overload implementation",
-                        error_code=ErrorCode.invalid_annotation,
+                        error_code=ErrorCode.invalid_final,
                     )
 
             if node.returns is None:
@@ -8293,7 +8299,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             self._show_error_if_checking(
                 overloads[0].node,
                 "At least two overload signatures are required",
-                error_code=ErrorCode.invalid_annotation,
+                error_code=ErrorCode.invalid_overload,
             )
 
         class_scope_object = pending_block.scope.scope_object
@@ -8315,7 +8321,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             self._show_error_if_checking(
                 overloads[0].node,
                 "Overloaded function is missing an implementation",
-                error_code=ErrorCode.invalid_annotation,
+                error_code=ErrorCode.invalid_overload,
             )
 
         overload_kinds = {
@@ -8328,7 +8334,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             self._show_error_if_checking(
                 overloads[0].node,
                 "@staticmethod/@classmethod usage must be consistent across overloads",
-                error_code=ErrorCode.invalid_annotation,
+                error_code=ErrorCode.invalid_overload,
             )
         elif impl_info is not None:
             (overload_kind,) = overload_kinds
@@ -8338,7 +8344,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 self._show_error_if_checking(
                     impl_node if impl_node is not None else overloads[0].node,
                     "Overload implementation has incompatible @staticmethod/@classmethod decorator",
-                    error_code=ErrorCode.invalid_annotation,
+                    error_code=ErrorCode.invalid_overload,
                 )
         if kind_mismatch:
             should_check_consistency = False
@@ -8361,7 +8367,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 self._show_error_if_checking(
                     overloads[overload_final_positions[0]].node,
                     "@final should be applied only to the overload implementation",
-                    error_code=ErrorCode.invalid_annotation,
+                    error_code=ErrorCode.invalid_final,
                 )
             if overload_override_positions:
                 placement_error = True
@@ -8379,7 +8385,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     self._show_error_if_checking(
                         overloads[idx].node,
                         "@final should appear only on the first overload",
-                        error_code=ErrorCode.invalid_annotation,
+                        error_code=ErrorCode.invalid_final,
                     )
             if overload_override_positions:
                 if overload_override_positions != [0]:
@@ -8582,7 +8588,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             self._show_error_if_checking(
                 node,
                 "Final class attributes without initializers must be assigned in __init__",
-                error_code=ErrorCode.invalid_annotation,
+                error_code=ErrorCode.invalid_qualifier,
             )
 
     def _is_allowed_instance_final_annotation_target(
@@ -9387,7 +9393,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
 
     def value_of_annotation(self, node: ast.expr) -> Value:
         expr = self.expr_of_annotation(node)
-        val, _ = expr.unqualify()
+        val, _ = expr.unqualify(qualifier_error_code=ErrorCode.invalid_qualifier)
         if isinstance(val, TypeAliasValue):
             return val.get_value()
         return val
@@ -12207,6 +12213,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 mutually_exclusive_qualifiers=(
                     (Qualifier.Required, Qualifier.NotRequired),
                 ),
+                qualifier_error_code=ErrorCode.invalid_qualifier,
             )
         else:
             allowed_qualifiers = {
@@ -12220,6 +12227,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             expected_type, qualifiers = expr.maybe_unqualify(
                 allowed_qualifiers,
                 mutually_exclusive_qualifiers=((Qualifier.Final, Qualifier.ReadOnly),),
+                qualifier_error_code=ErrorCode.invalid_qualifier,
             )
         if (
             should_collect_class_annotation_variance
@@ -12257,7 +12265,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     self._show_error_if_checking(
                         node,
                         f"Type alias {node.target.id} has a circular definition",
-                        error_code=ErrorCode.invalid_annotation,
+                        error_code=ErrorCode.invalid_type_alias,
                     )
             disallowed_type_params = (
                 self._class_body_type_alias_disallowed_type_param_identities()
@@ -12271,29 +12279,29 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     node.value, self, suppress_errors=self._is_collecting()
                 )
                 alias_type, alias_qualifiers = alias_expr.maybe_unqualify(
-                    set(Qualifier)
+                    set(Qualifier), qualifier_error_code=ErrorCode.invalid_qualifier
                 )
             if Qualifier.ClassVar in alias_qualifiers:
                 self._show_error_if_checking(
                     node.value,
                     "ClassVar cannot be used in type aliases",
-                    error_code=ErrorCode.invalid_annotation,
+                    error_code=ErrorCode.invalid_qualifier,
                 )
             if isinstance(alias_type, InputSigValue):
                 if isinstance(alias_type.input_sig, ParamSpecParam):
                     message = "ParamSpec cannot be used in this annotation context"
+                    error_code = ErrorCode.invalid_paramspec_usage
                 else:
                     message = f"Unrecognized annotation {alias_type}"
-                self._show_error_if_checking(
-                    node.value, message, error_code=ErrorCode.invalid_annotation
-                )
+                    error_code = ErrorCode.invalid_annotation
+                self._show_error_if_checking(node.value, message, error_code=error_code)
             elif alias_type is not None and has_invalid_paramspec_usage(
                 alias_type, self
             ):
                 self._show_error_if_checking(
                     node.value,
                     "ParamSpec cannot be used in this annotation context",
-                    error_code=ErrorCode.invalid_annotation,
+                    error_code=ErrorCode.invalid_paramspec_usage,
                 )
             if isinstance(node.target, ast.Name) and alias_type is not None:
                 type_params = self._infer_type_alias_type_params(node.value, alias_type)
@@ -12329,7 +12337,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 self._show_error_if_checking(
                     node.annotation,
                     "ParamSpec cannot be used in this annotation context",
-                    error_code=ErrorCode.invalid_annotation,
+                    error_code=ErrorCode.invalid_paramspec_usage,
                 )
             else:
                 self._show_error_if_checking(
@@ -12344,7 +12352,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             self._show_error_if_checking(
                 node.annotation,
                 "ParamSpec cannot be used in this annotation context",
-                error_code=ErrorCode.invalid_annotation,
+                error_code=ErrorCode.invalid_paramspec_usage,
             )
             expected_type = AnyValue(AnySource.error)
 
@@ -12358,7 +12366,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             self._show_error_if_checking(
                 node.annotation,
                 "ClassVar can only be used for assignments in class body",
-                error_code=ErrorCode.invalid_annotation,
+                error_code=ErrorCode.invalid_qualifier,
             )
         if (
             has_classvar
@@ -12416,13 +12424,13 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             self._show_error_if_checking(
                 node.annotation,
                 "Final cannot be combined with ClassVar",
-                error_code=ErrorCode.invalid_annotation,
+                error_code=ErrorCode.invalid_qualifier,
             )
         if is_final and node.value is None and expected_type is None:
             self._show_error_if_checking(
                 node.annotation,
                 "Final annotation without assignment requires an explicit type",
-                error_code=ErrorCode.invalid_annotation,
+                error_code=ErrorCode.invalid_qualifier,
             )
 
         if is_final and self.scopes.scope_type() == ScopeType.class_scope:
@@ -12447,7 +12455,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 self._show_error_if_checking(
                     node.annotation,
                     "Final instance attributes may be declared only in __init__",
-                    error_code=ErrorCode.invalid_annotation,
+                    error_code=ErrorCode.invalid_qualifier,
                 )
 
         is_class_annotation_without_value = (
@@ -12942,7 +12950,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             self._show_error_if_checking(
                 type_params_keyword.value,
                 "type_params argument to TypeAliasType must be a literal tuple",
-                error_code=ErrorCode.invalid_annotation,
+                error_code=ErrorCode.invalid_type_alias,
             )
             return []
         params: list[TypeParam] = []
@@ -12960,7 +12968,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             self._show_error_if_checking(
                 elt,
                 "TypeAliasType type_params must contain only type parameters",
-                error_code=ErrorCode.invalid_annotation,
+                error_code=ErrorCode.invalid_type_alias,
             )
         return params
 
@@ -13029,7 +13037,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             self._show_error_if_checking(
                 node.value,
                 self._self_error_message("cannot be used in type aliases"),
-                error_code=ErrorCode.invalid_annotation,
+                error_code=ErrorCode.invalid_self_usage,
             )
             return None
         if isinstance(alias_type, AnyValue):
@@ -13098,13 +13106,13 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 self._show_error_if_checking(
                     value_node,
                     self._self_error_message("cannot be used in type aliases"),
-                    error_code=ErrorCode.invalid_annotation,
+                    error_code=ErrorCode.invalid_self_usage,
                 )
             if has_circular_definition:
                 self._show_error_if_checking(
                     node,
                     f"Type alias {name} has a circular definition",
-                    error_code=ErrorCode.invalid_annotation,
+                    error_code=ErrorCode.invalid_type_alias,
                 )
         legacy_type_param_ctx: AbstractContextManager[set[object] | None] = (
             contextlib.nullcontext(None)
@@ -13120,7 +13128,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     "Type alias must declare type parameters in the" " type statement"
                 )
             legacy_type_param_ctx = self.active_type_params.reject_legacy_type_params(
-                legacy_message, include_active_pep695=False
+                legacy_message,
+                error_code=ErrorCode.invalid_type_alias,
+                include_active_pep695=False,
             )
         with (
             override(self, "in_annotation", True),
@@ -13204,7 +13214,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     self._show_error_if_checking(
                         node,
                         "Type alias statements are not allowed inside functions",
-                        error_code=ErrorCode.invalid_annotation,
+                        error_code=ErrorCode.invalid_type_alias,
                     )
                 first_by_name = self._type_alias_first_definition_by_scope.get(
                     self._current_scope_key(), {}
@@ -13214,13 +13224,13 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     self._show_error_if_checking(
                         node,
                         f"Type alias {name} is already defined",
-                        error_code=ErrorCode.invalid_annotation,
+                        error_code=ErrorCode.already_declared,
                     )
                 if self._type_alias_has_unguarded_cycle(name):
                     self._show_error_if_checking(
                         node,
                         f"Type alias {name} has a circular definition",
-                        error_code=ErrorCode.invalid_annotation,
+                        error_code=ErrorCode.invalid_type_alias,
                     )
                 if node.type_params:
                     legacy_param_message = (
@@ -13239,7 +13249,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                         scope_object=alias_obj,
                     ),
                     self.active_type_params.reject_legacy_type_params(
-                        legacy_param_message, include_active_pep695=False
+                        legacy_param_message,
+                        error_code=ErrorCode.invalid_type_alias,
+                        include_active_pep695=False,
                     ) as allowed_legacy_identities,
                 ):
                     if node.type_params:
@@ -13259,7 +13271,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     self._show_error_if_checking(
                         node.value,
                         self._self_error_message("cannot be used in type aliases"),
-                        error_code=ErrorCode.invalid_annotation,
+                        error_code=ErrorCode.invalid_self_usage,
                     )
             else:
                 value = None
@@ -15162,9 +15174,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
 
         if self._is_forbidden_annotated_call(callee_wrapped):
             self._show_error_if_checking(
-                node,
-                "Annotated cannot be called",
-                error_code=ErrorCode.invalid_annotation,
+                node, "Annotated cannot be called", error_code=ErrorCode.not_callable
             )
             return AnyValue(AnySource.error)
 
@@ -16178,7 +16188,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     self._show_error_if_checking(
                         node,
                         "Protocol members cannot be defined via assignment to self",
-                        error_code=ErrorCode.invalid_annotation,
+                        error_code=ErrorCode.invalid_protocol,
                     )
                 # Protocol members must come from the class body (PEP 544), so don't
                 # synthesize new members from method-body self assignments.

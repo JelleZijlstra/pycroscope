@@ -61,13 +61,13 @@ class TestRecursion(TestNameCheckVisitorBase):
         RecursiveContainer: TypeAlias = Union[list["RecursiveContainer"], int]
         _ok: RecursiveContainer = [1, [2]]
 
-        RecursiveUnion: TypeAlias = Union[  # E: invalid_annotation
+        RecursiveUnion: TypeAlias = Union[  # E: invalid_type_alias
             "RecursiveUnion", int
         ]
-        MutualReference1: TypeAlias = Union[  # E: invalid_annotation
+        MutualReference1: TypeAlias = Union[  # E: invalid_type_alias
             "MutualReference2", int
         ]
-        MutualReference2: TypeAlias = Union[  # E: invalid_annotation
+        MutualReference2: TypeAlias = Union[  # E: invalid_type_alias
             "MutualReference1", str
         ]
 
@@ -357,9 +357,9 @@ class TestTypeAliasType(TestNameCheckVisitorBase):
             T = TypeVar("T")
             my_tuple = (S, T)
 
-            Bad1 = TypeAliasType("Bad1", list[S], type_params=(T,))  # E: invalid_annotation
-            Bad2 = TypeAliasType("Bad2", list[S])  # E: invalid_annotation
-            Bad3 = TypeAliasType("Bad3", int, type_params=my_tuple)  # E: invalid_annotation
+            Bad1 = TypeAliasType("Bad1", list[S], type_params=(T,))  # E: invalid_type_alias
+            Bad2 = TypeAliasType("Bad2", list[S])  # E: invalid_type_alias
+            Bad3 = TypeAliasType("Bad3", int, type_params=my_tuple)  # E: invalid_type_alias
 
             class C(Generic[T]):
                 Good = TypeAliasType("Good", list[T])
@@ -373,11 +373,11 @@ class TestTypeAliasType(TestNameCheckVisitorBase):
 
             T = TypeVar("T")
 
-            Bad1 = TypeAliasType("Bad1", "Bad1")  # E: invalid_annotation
-            Bad2 = TypeAliasType("Bad2", T | "Bad2[str]", type_params=(T,))  # E: invalid_annotation
-            Bad3 = TypeAliasType("Bad3", "Bad4")  # E: invalid_annotation
-            Bad4 = TypeAliasType("Bad4", Bad3)  # E: invalid_annotation
-            Bad5 = TypeAliasType("Bad5", list[Bad5])  # E: invalid_annotation
+            Bad1 = TypeAliasType("Bad1", "Bad1")  # E: invalid_type_alias
+            Bad2 = TypeAliasType("Bad2", T | "Bad2[str]", type_params=(T,))  # E: invalid_type_alias
+            Bad3 = TypeAliasType("Bad3", "Bad4")  # E: invalid_type_alias
+            Bad4 = TypeAliasType("Bad4", Bad3)  # E: invalid_type_alias
+            Bad5 = TypeAliasType("Bad5", list[Bad5])  # E: invalid_type_alias
 
             Good = TypeAliasType("Good", T | "list[Good[T]]", type_params=(T,))
         """,
@@ -442,7 +442,7 @@ class TestTypeAliasType(TestNameCheckVisitorBase):
     def test_312_local_alias(self):
         self.assert_passes("""
             def capybara():
-                type MyType = int  # E: invalid_annotation
+                type MyType = int  # E: invalid_type_alias
         """)
 
     @skip_before((3, 12))
@@ -511,10 +511,10 @@ class TestTypeAliasType(TestNameCheckVisitorBase):
             from typing import TypeVar
 
             V = TypeVar("V")
-            type TA1[K] = dict[K, V]  # E: invalid_annotation
+            type TA1[K] = dict[K, V]  # E: invalid_type_alias
 
             T1 = TypeVar("T1")
-            type TA2 = list[T1]  # E: invalid_annotation
+            type TA2 = list[T1]  # E: invalid_type_alias
         """)
 
     @skip_before((3, 12))
@@ -531,17 +531,17 @@ class TestTypeAliasType(TestNameCheckVisitorBase):
             bad_s: RecursiveWithBounds[str, str, ...]  # E: invalid_specialization
             bad_t: RecursiveWithBounds[int, int, ...]  # E: invalid_specialization
 
-            type Circular1 = Circular1  # E: invalid_annotation
-            type Circular2[T] = T | Circular2[str]  # E: invalid_annotation
-            type Circular3 = Circular4  # E: invalid_annotation
-            type Circular4 = Circular3  # E: invalid_annotation
+            type Circular1 = Circular1  # E: invalid_type_alias
+            type Circular2[T] = T | Circular2[str]  # E: invalid_type_alias
+            type Circular3 = Circular4  # E: invalid_type_alias
+            type Circular4 = Circular3  # E: invalid_type_alias
         """)
 
     @skip_before((3, 12))
     def test_312_alias_redeclaration(self):
         self.assert_passes("""
             type Alias = int
-            type Alias = int  # E: invalid_annotation
+            type Alias = int  # E: already_declared
         """)
 
     @skip_before((3, 12))

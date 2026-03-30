@@ -1481,6 +1481,7 @@ class TypeshedFinder:
                 mutually_exclusive_qualifiers=(
                     (Qualifier.Required, Qualifier.NotRequired),
                 ),
+                qualifier_error_code=ErrorCode.invalid_qualifier,
             )
             if Qualifier.ReadOnly in qualifiers:
                 readonly = True

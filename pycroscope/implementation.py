@@ -2378,6 +2378,7 @@ def _typeddict_entry_from_field_value(
     item_type, qualifiers = ann_expr.unqualify(
         {Qualifier.ReadOnly, Qualifier.Required, Qualifier.NotRequired},
         mutually_exclusive_qualifiers=((Qualifier.Required, Qualifier.NotRequired),),
+        qualifier_error_code=ErrorCode.invalid_qualifier,
     )
     if Qualifier.Required in qualifiers:
         required = True

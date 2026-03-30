@@ -354,10 +354,10 @@ class TestTypeVar(TestNameCheckVisitorBase):
 
         T = TypeVar("T")
 
-        class ReturnsT(Protocol[T]):  # E: invalid_annotation
+        class ReturnsT(Protocol[T]):  # E: invalid_protocol
             def get(self) -> T: ...
 
-        class TakesT(Protocol[T]):  # E: invalid_annotation
+        class TakesT(Protocol[T]):  # E: invalid_protocol
             def put(self, value: T) -> None: ...
 
     @assert_passes()
@@ -367,10 +367,10 @@ class TestTypeVar(TestNameCheckVisitorBase):
         T_co = TypeVar("T_co", covariant=True)
         T_contra = TypeVar("T_contra", contravariant=True)
 
-        class BadCovariant(Protocol[T_co]):  # E: invalid_annotation
+        class BadCovariant(Protocol[T_co]):  # E: invalid_protocol
             def put(self, value: T_co) -> None: ...
 
-        class BadContravariant(Protocol[T_contra]):  # E: invalid_annotation
+        class BadContravariant(Protocol[T_contra]):  # E: invalid_protocol
             def get(self) -> T_contra: ...
 
     @assert_passes()
@@ -380,7 +380,7 @@ class TestTypeVar(TestNameCheckVisitorBase):
         T = TypeVar("T")
         T_co = TypeVar("T_co", covariant=True)
 
-        class InvariantByDefault(Protocol[T]):  # E: invalid_annotation
+        class InvariantByDefault(Protocol[T]):  # E: invalid_protocol
             def __init__(self, value: T) -> None: ...
 
         class CovariantIsOkay(Protocol[T_co]):
@@ -425,7 +425,7 @@ class TestTypeVar(TestNameCheckVisitorBase):
         T = TypeVar("T")
         T_contra = TypeVar("T_contra", contravariant=True)
 
-        class BadAliasStaticMethod(Protocol[T]):  # E: invalid_annotation
+        class BadAliasStaticMethod(Protocol[T]):  # E: invalid_protocol
             @my_staticmethod
             def put(value: T) -> None: ...
 
@@ -522,7 +522,7 @@ class TestTypeVar(TestNameCheckVisitorBase):
         DefaultAfterVariadic = TypeVar("DefaultAfterVariadic", default=bool)
         P = ParamSpec("P", default=[str])
 
-        class BadOrder(Generic[DefaultT, T]): ...  # E: invalid_annotation
+        class BadOrder(Generic[DefaultT, T]): ...  # E: invalid_type_parameter
 
         class GoodAfterVariadic(Generic[Unpack[Ts], P]): ...
 
@@ -536,7 +536,7 @@ class TestTypeVar(TestNameCheckVisitorBase):
         Ts = TypeVarTuple("Ts")
         DefaultAfterVariadic = TypeVar("DefaultAfterVariadic", default=bool)
 
-        class BadAfterVariadic(  # E: invalid_annotation
+        class BadAfterVariadic(  # E: invalid_type_parameter
             Generic[Unpack[Ts], DefaultAfterVariadic]
         ): ...
 

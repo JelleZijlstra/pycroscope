@@ -401,7 +401,7 @@ class TestProtocol(TestNameCheckVisitorBase):
             allowed: int
 
             def assign(this) -> None:  # E: method_first_arg
-                this.disallowed = 1  # E: invalid_annotation
+                this.disallowed = 1  # E: invalid_protocol
                 this.allowed = 1
 
     @assert_passes(run_in_both_module_modes=True)
