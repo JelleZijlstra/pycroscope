@@ -61,7 +61,6 @@ from .type_object import (
     TypeObject,
     class_keys_match,
     direct_bases_from_values,
-    normalize_synthetic_descriptor_attribute,
     runtime_type_generic_alias,
 )
 from .typeshed import TypeshedFinder
@@ -3117,44 +3116,3 @@ class CheckerAttrContext(AttrContext):
 
     def get_synthetic_class(self, typ: type | str) -> SyntheticClassObjectValue | None:
         return self.checker.get_synthetic_class(typ)
-
-    def bind_synthetic_instance_attribute(self, attr_name: str, value: Value) -> Value:
-        root_value = self.root_value
-        resolved_root_value = replace_fallback(root_value)
-        if isinstance(resolved_root_value, TypedValue):
-            class_key = resolved_root_value.typ
-        elif isinstance(resolved_root_value, KnownValue) and not isinstance(
-            resolved_root_value.val, type
-        ):
-            class_key = type(resolved_root_value.val)
-        else:
-            return value
-        tobj = self.checker.make_type_object(class_key)
-        symbol = tobj.get_declared_symbol_from_mro(attr_name, self.checker)
-        if symbol is None or not symbol.is_method:
-            return value
-        if symbol.is_staticmethod or symbol.is_classmethod:
-            raw_attr = symbol.initializer
-            if raw_attr is not None:
-                normalized_attr = normalize_synthetic_descriptor_attribute(
-                    raw_attr,
-                    is_self_returning_classmethod=symbol.returns_self_on_class_access,
-                    unknown_descriptor_means_any=False,
-                )
-                if isinstance(normalized_attr, CallableValue):
-                    return self.checker._specialize_synthetic_classmethod(
-                        raw_attr, normalized_attr, self_annotation_value=root_value
-                    )
-            return value
-        signature = (
-            value.signature
-            if isinstance(value, CallableValue)
-            else self.signature_from_value(value)
-        )
-        if isinstance(signature, ConcreteSignature):
-            maybe_bound = self.checker._bind_synthetic_method(
-                signature, self_annotation_value=self.root_value
-            )
-            if maybe_bound is not None:
-                return CallableValue(maybe_bound)
-        return value

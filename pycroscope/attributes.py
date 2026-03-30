@@ -29,6 +29,7 @@ from .annotations import (
     _RuntimeAnnotationsContext,
     annotation_expr_from_annotations,
     type_from_runtime,
+    type_from_value,
 )
 from .input_sig import coerce_paramspec_specialization_to_input_sig
 from .options import Options, PyObjectSequenceOption
@@ -56,6 +57,7 @@ from .type_object import (
     _get_cached_property_return_type,
     _is_property_marker_value,
     _specialize_symbol_for_owner,
+    bind_attribute_value_to_receiver,
     class_keys_match,
     lookup_declared_symbol_with_owner,
     normalize_synthetic_descriptor_attribute,
@@ -187,9 +189,6 @@ class AttrContext:
     def get_synthetic_class(self, typ: type | str) -> SyntheticClassObjectValue | None:
         raise NotImplementedError
 
-    def bind_synthetic_instance_attribute(self, attr_name: str, value: Value) -> Value:
-        raise NotImplementedError
-
     def clone_for_attribute_lookup(
         self, root_composite: Composite, attr: str
     ) -> "AttrContext":
@@ -213,6 +212,10 @@ def get_attribute(ctx: AttrContext) -> Value:
     lookup_root_value = (
         ctx.root_value if ctx.lookup_root_value is None else ctx.lookup_root_value
     )
+    original_lookup_root_value = lookup_root_value
+    lookup_root_value = _maybe_specialize_class_partial_root(lookup_root_value, ctx)
+    if lookup_root_value != original_lookup_root_value:
+        ctx = replace(ctx, lookup_root_value=lookup_root_value)
     super_value = _extract_super_value(lookup_root_value)
     if super_value is not None:
         attribute_value = _get_attribute_from_super_value(super_value, ctx)
@@ -337,6 +340,61 @@ def get_attribute(ctx: AttrContext) -> Value:
     return attribute_value
 
 
+def _maybe_specialize_class_partial_root(root_value: Value, ctx: AttrContext) -> Value:
+    if not (
+        isinstance(root_value, PartialValue)
+        and root_value.operation is PartialValueOperation.SUBSCRIPT
+    ):
+        return root_value
+    root = replace_fallback(root_value.root)
+    can_assign_ctx = ctx.get_can_assign_context()
+    class_key: type | str | None = None
+    if isinstance(root, SyntheticClassObjectValue) and isinstance(
+        root.class_type, TypedValue
+    ):
+        class_key = root.class_type.typ
+    elif isinstance(root, KnownValue) and isinstance(root.val, type):
+        class_key = root.val
+    if class_key is None:
+        return root_value
+    specialized_args = tuple(
+        _specialized_class_partial_member_to_type(member, can_assign_ctx)
+        for member in root_value.members
+    )
+    if isinstance(root, SyntheticClassObjectValue) and isinstance(
+        root.class_type, TypedValue
+    ):
+        return SyntheticClassObjectValue(
+            root.name,
+            GenericValue(root.class_type.typ, specialized_args),
+            runtime_class=root.runtime_class,
+        )
+    assert isinstance(root, KnownValue) and isinstance(root.val, type)
+    synthetic_class = ctx.get_synthetic_class(root.val)
+    if synthetic_class is not None and isinstance(
+        synthetic_class.class_type, TypedValue
+    ):
+        return SyntheticClassObjectValue(
+            synthetic_class.name,
+            GenericValue(synthetic_class.class_type.typ, specialized_args),
+            runtime_class=synthetic_class.runtime_class,
+        )
+    generic_bases = ctx.get_generic_bases(root.val, specialized_args)
+    typevars = generic_bases.get(root.val)
+    if typevars is None:
+        return root_value
+    return KnownValueWithTypeVars(root.val, typevars)
+
+
+def _specialized_class_partial_member_to_type(
+    member: Value, ctx: CanAssignContext
+) -> Value:
+    converted = type_from_value(member, visitor=ctx, suppress_errors=True)
+    if converted != AnyValue(AnySource.error):
+        return converted
+    return member
+
+
 def _get_namedtuple_member_from_sequence_value(
     root_value: SequenceValue, ctx: AttrContext
 ) -> Value | None:
@@ -445,7 +503,6 @@ def _get_attribute_from_super_value(super_value: SuperValue, ctx: AttrContext) -
                 )
             ):
                 result = TypedValue(property)
-            result = set_self(result, receiver_value)
             ctx.record_usage(super, result)
             return result
     return UNINITIALIZED_VALUE
@@ -628,7 +685,7 @@ def _get_attribute_from_synthetic_typed_value(
     )
     if attribute is None:
         return UNINITIALIZED_VALUE
-    return set_self(attribute.value, ctx.get_self_value())
+    return attribute.value
 
 
 def _get_attribute_from_synthetic_class(
@@ -640,6 +697,12 @@ def _get_attribute_from_synthetic_class(
     elif ctx.attr == "__dict__":
         return TypedValue(dict)
     assert isinstance(self_value, SyntheticClassObjectValue)
+    can_assign_ctx = ctx.get_can_assign_context()
+    attribute = can_assign_ctx.make_type_object(fq_name).get_attribute(
+        ctx.attr, can_assign_ctx, on_class=True, receiver_value=self_value.class_type
+    )
+    if attribute is not None:
+        return attribute.value
     result = _get_attribute_from_synthetic_class_inner(
         fq_name, self_value, ctx, seen={id(self_value)}, runtime_type=runtime_type
     )
@@ -648,7 +711,15 @@ def _get_attribute_from_synthetic_class(
         if tobj.has_any_base():
             return AnyValue(AnySource.from_another)
         return result
-    result = set_self(result, self_value.class_type)
+    symbol = can_assign_ctx.make_type_object(fq_name).get_declared_symbol_from_mro(
+        ctx.attr, can_assign_ctx
+    )
+    result = bind_attribute_value_to_receiver(
+        result,
+        receiver_value=self_value.class_type,
+        symbol=symbol,
+        ctx=ctx.get_can_assign_context(),
+    )
     return result
 
 
@@ -1142,17 +1213,6 @@ def _contains_self_typevar(value: Value) -> bool:
     )
 
 
-def _is_synthetic_instance_method_attribute(
-    typ: type, attr_name: str, ctx: AttrContext
-) -> bool:
-    symbol = (
-        ctx.get_can_assign_context()
-        .make_type_object(typ)
-        .get_declared_symbol_from_mro(attr_name, ctx.get_can_assign_context())
-    )
-    return symbol is not None and symbol.is_method
-
-
 def _get_attribute_from_typed(
     typ: type, generic_args: Sequence[Value], ctx: AttrContext
 ) -> Value:
@@ -1160,37 +1220,15 @@ def _get_attribute_from_typed(
 
     synthetic_class = ctx.get_synthetic_class(typ)
     if synthetic_class is not None and _contains_self_typevar(ctx.get_self_value()):
-        synthetic_result = _get_direct_attribute_from_synthetic_instance(
-            synthetic_class, ctx.attr, ctx
+        can_assign_ctx = ctx.get_can_assign_context()
+        attribute = can_assign_ctx.make_type_object(typ).get_attribute(
+            ctx.attr,
+            can_assign_ctx,
+            on_class=False,
+            receiver_value=ctx.get_self_value(),
         )
-        if synthetic_result is not UNINITIALIZED_VALUE:
-            synthetic_result = (
-                dataclass_helpers.maybe_resolve_synthetic_descriptor_attribute(
-                    synthetic_class,
-                    ctx.attr,
-                    synthetic_result,
-                    ctx,
-                    on_class=False,
-                    descriptor_get_type=_synthetic_descriptor_get_type,
-                )
-            )
-        if synthetic_result is not UNINITIALIZED_VALUE:
-            synthetic_result = _maybe_resolve_synthetic_property_attribute(
-                synthetic_result, ctx
-            )
-        if synthetic_result is not UNINITIALIZED_VALUE:
-            is_bound_method = _is_synthetic_instance_method_attribute(
-                typ, ctx.attr, ctx
-            )
-            synthetic_result = ctx.bind_synthetic_instance_attribute(
-                ctx.attr, synthetic_result
-            )
-            synthetic_result = _substitute_typevars(
-                typ, generic_args, synthetic_result, typ, ctx
-            )
-            if is_bound_method:
-                return synthetic_result
-            return set_self(synthetic_result, ctx.get_self_value())
+        if attribute is not None:
+            return attribute.value
 
     # First check values that are special in Python
     if ctx.attr == "__class__":
@@ -1254,7 +1292,16 @@ def _get_attribute_from_typed(
     if should_unwrap:
         result = _unwrap_value_from_typed(result, typ, ctx)
     ctx.record_usage(typ, result)
-    result = set_self(result, ctx.get_self_value())
+    match = lookup_declared_symbol_with_owner(
+        typ, ctx.attr, ctx.get_can_assign_context()
+    )
+    symbol = None if match is None else match[1]
+    result = bind_attribute_value_to_receiver(
+        result,
+        receiver_value=ctx.get_self_value(),
+        symbol=symbol,
+        ctx=ctx.get_can_assign_context(),
+    )
     if ctx.attr in {"value", "_value_"} and safe_issubclass(typ, Enum):
         enum_value_type = (
             ctx.get_can_assign_context().make_type_object(typ).get_enum_value_type()
@@ -1336,7 +1383,12 @@ def _get_runtime_attribute_from_synthetic_class(
                 direct = _unwrap_value_from_subclass(direct, ctx)
             else:
                 direct = _unwrap_value_from_typed(direct, typ, ctx)
-            return set_self(direct, ctx.get_self_value())
+            return bind_attribute_value_to_receiver(
+                direct,
+                receiver_value=ctx.get_self_value(),
+                symbol=symbol,
+                ctx=ctx.get_can_assign_context(),
+            )
     return UNINITIALIZED_VALUE
 
 
@@ -1537,6 +1589,20 @@ def _get_attribute_from_known(obj: object, ctx: AttrContext) -> Value:
             return classvar_type
 
     if safe_isinstance(obj, type):
+        receiver_value = (
+            ctx.lookup_root_value
+            if ctx.lookup_root_value is not None
+            else ctx.root_value
+        )
+        if isinstance(receiver_value, KnownValueWithTypeVars):
+            can_assign_ctx = ctx.get_can_assign_context()
+            attribute = can_assign_ctx.make_type_object(obj).get_attribute(
+                ctx.attr, can_assign_ctx, on_class=True, receiver_value=receiver_value
+            )
+            if attribute is not None:
+                result = attribute.value
+                ctx.record_usage(obj, result)
+                return result
         synthetic_attr = _get_runtime_attribute_from_synthetic_class(
             obj, (), ctx, on_class=True
         )
