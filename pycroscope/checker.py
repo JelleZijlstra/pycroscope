@@ -31,6 +31,7 @@ from .input_sig import (
 from .node_visitor import Failure
 from .options import Options
 from .reexport import ImplicitReexportTracker
+from .relations import infer_positional_generic_typevar_map, is_assignable
 from .safe import (
     hasattr_static,
     is_direct_namedtuple_class,
@@ -405,6 +406,56 @@ def _synthetic_descriptor_set_type(descriptor: Value, ctx: AttrContext) -> Value
         if len(positional_params) >= 2:
             return positional_params[1].annotation
     return None
+
+
+def _matches_constructor_receiver_annotation(
+    annotation: Value,
+    actual: Value,
+    ctx: CanAssignContext,
+    *,
+    enforce_nongeneric_match: bool,
+) -> bool:
+    if is_assignable(annotation, actual, ctx):
+        return True
+    if isinstance(annotation, (AnyValue, TypeVarValue)):
+        return True
+    if isinstance(annotation, SubclassValue) and isinstance(
+        annotation.typ, TypeVarValue
+    ):
+        return True
+    root = replace_fallback(annotation)
+    if isinstance(root, AnyValue):
+        return True
+    if isinstance(root, SubclassValue):
+        original_inner = root.typ
+        if isinstance(original_inner, TypeVarValue):
+            return True
+        root = replace_fallback(original_inner)
+    inferred = infer_positional_generic_typevar_map(annotation, actual, ctx)
+    if inferred and is_assignable(
+        annotation.substitute_typevars(inferred), actual, ctx
+    ):
+        return True
+    actual_root = replace_fallback(actual)
+    if isinstance(root, SubclassValue):
+        if not isinstance(actual_root, SubclassValue):
+            return False
+        root = replace_fallback(root.typ)
+        actual_root = replace_fallback(actual_root.typ)
+    if not (
+        isinstance(root, GenericValue)
+        and isinstance(actual_root, GenericValue)
+        and class_keys_match(root.typ, actual_root.typ)
+        and len(root.args) == len(actual_root.args)
+    ):
+        return not enforce_nongeneric_match
+    for expected_arg, actual_arg in zip(root.args, actual_root.args):
+        expected_root = replace_fallback(expected_arg)
+        if isinstance(expected_root, (AnyValue, TypeVarValue)):
+            continue
+        if not is_assignable(expected_arg, actual_arg, ctx):
+            return False
+    return True
 
 
 @dataclass
@@ -1400,11 +1451,9 @@ class Checker:
                 and self_annotation_root.typevar_param.typevar is SelfT
             ):
                 return True
-            if self._synthetic_explicit_self_annotation_matches_instance(
-                self_annotation, instance_type=instance_type, class_type=origin
+            if _matches_constructor_receiver_annotation(
+                self_annotation, instance_type, self, enforce_nongeneric_match=False
             ):
-                return True
-            if self_annotation.is_assignable(instance_type, self):
                 return True
         return not checked
 
@@ -1436,7 +1485,12 @@ class Checker:
                     ).substitute_typevars(typevar_map)
                     cls_annotation_root = replace_fallback(cls_annotation)
                     if not isinstance(cls_annotation_root, AnyValue):
-                        return cls_annotation.is_assignable(class_type_value, self)
+                        return _matches_constructor_receiver_annotation(
+                            cls_annotation,
+                            class_type_value,
+                            self,
+                            enforce_nongeneric_match=True,
+                        )
         new_sig: MaybeSignature = self._get_runtime_overloaded_method_signature(
             origin, "__new__"
         )
@@ -1457,7 +1511,9 @@ class Checker:
                 continue
             checked = True
             cls_annotation = params[0].annotation.substitute_typevars(typevar_map)
-            if cls_annotation.is_assignable(class_type_value, self):
+            if _matches_constructor_receiver_annotation(
+                cls_annotation, class_type_value, self, enforce_nongeneric_match=True
+            ):
                 return True
         return not checked
 
@@ -1528,77 +1584,14 @@ class Checker:
             if not params:
                 continue
             checked = True
-            if self._synthetic_explicit_cls_annotation_matches_class(
-                params[0].annotation, class_type_value=class_type_value
+            if _matches_constructor_receiver_annotation(
+                params[0].annotation,
+                class_type_value,
+                self,
+                enforce_nongeneric_match=True,
             ):
                 return True
         return not checked
-
-    def _synthetic_explicit_cls_annotation_matches_class(
-        self, annotation: Value, *, class_type_value: Value
-    ) -> bool:
-        annotation_root = replace_fallback(annotation)
-        class_root = replace_fallback(class_type_value)
-        if isinstance(annotation_root, SubclassValue):
-            original_annotation_inner = annotation_root.typ
-            if isinstance(original_annotation_inner, TypeVarValue):
-                return True
-            annotation_root = replace_fallback(original_annotation_inner)
-            if isinstance(annotation_root, (TypeVarValue, AnyValue)):
-                return True
-        else:
-            return annotation.is_assignable(class_type_value, self)
-        if isinstance(class_root, SubclassValue):
-            class_root = replace_fallback(class_root.typ)
-        else:
-            return annotation.is_assignable(class_type_value, self)
-        if (
-            isinstance(annotation_root, GenericValue)
-            and isinstance(class_root, GenericValue)
-            and annotation_root.typ == class_root.typ
-        ):
-            if len(annotation_root.args) != len(class_root.args):
-                return False
-            for expected_arg, actual_arg in zip(annotation_root.args, class_root.args):
-                expected_root = replace_fallback(expected_arg)
-                if isinstance(expected_root, TypeVarValue):
-                    continue
-                if isinstance(
-                    expected_root.can_assign(actual_arg, self), CanAssignError
-                ):
-                    return False
-            return True
-        if isinstance(annotation_root, TypedValue) and isinstance(
-            class_root, TypedValue
-        ):
-            return annotation_root.typ == class_root.typ
-        return annotation.is_assignable(class_type_value, self)
-
-    def _synthetic_explicit_self_annotation_matches_instance(
-        self, annotation: Value, *, instance_type: Value, class_type: type | str
-    ) -> bool:
-        expected_args = _extract_generic_args_from_self_annotation(
-            annotation, class_type
-        )
-        if expected_args is None:
-            return True
-        instance_root = replace_fallback(instance_type)
-        if (
-            not isinstance(instance_root, GenericValue)
-            or instance_root.typ != class_type
-        ):
-            return True
-        if len(expected_args) != len(instance_root.args):
-            return False
-        for expected_arg, actual_arg in zip(expected_args, instance_root.args):
-            if expected_arg == actual_arg:
-                continue
-            expected_root = replace_fallback(expected_arg)
-            if isinstance(expected_root, TypeVarValue):
-                continue
-            if isinstance(expected_root.can_assign(actual_arg, self), CanAssignError):
-                return False
-        return True
 
     def _infer_synthetic_type_params_from_methods(
         self, value: SyntheticClassObjectValue
@@ -1781,10 +1774,11 @@ class Checker:
                     params
                     and enforce_self_compatibility
                     and source_self_annotation is not None
-                    and not self._synthetic_explicit_self_annotation_matches_instance(
+                    and not _matches_constructor_receiver_annotation(
                         source_self_annotation,
-                        instance_type=bound_self_value,
-                        class_type=value.class_type.typ,
+                        bound_self_value,
+                        self,
+                        enforce_nongeneric_match=False,
                     )
                 ):
                     had_incompatible_self_annotation = True
@@ -2826,7 +2820,7 @@ class Checker:
         member_values = self.arg_spec_cache._specialize_generic_type_params(
             type_params, explicit_member_values
         )
-        exact_member_values = (
+        receiver_member_values = (
             [
                 (
                     TypedValue(member.val)
@@ -2842,6 +2836,7 @@ class Checker:
             if preserve_exact_return and explicit_member_values
             else member_values
         )
+        exact_member_values = receiver_member_values
         if preserve_exact_return:
             exact_member_values = [
                 _promote_constructor_type_arg(member) for member in exact_member_values
@@ -2892,11 +2887,16 @@ class Checker:
             )
         else:
             specialized_instance_type = TypedValue(class_type)
+        receiver_instance_type: Value
+        if receiver_member_values:
+            receiver_instance_type = GenericValue(class_type, receiver_member_values)
+        else:
+            receiver_instance_type = TypedValue(class_type)
         if (
             synthetic_root is not None
             and not self._synthetic_init_self_annotation_matches(
                 synthetic_root,
-                instance_type=specialized_instance_type,
+                instance_type=receiver_instance_type,
                 get_return_override=get_return_override,
                 get_call_attribute=get_call_attribute,
             )
@@ -2906,7 +2906,7 @@ class Checker:
             synthetic_root is not None
             and not self._synthetic_new_cls_annotation_matches(
                 synthetic_root,
-                class_type_value=SubclassValue.make(specialized_instance_type),
+                class_type_value=SubclassValue.make(receiver_instance_type),
                 get_return_override=get_return_override,
                 get_call_attribute=get_call_attribute,
             )
@@ -2946,7 +2946,7 @@ class Checker:
         if isinstance(class_type, type):
             if not self._runtime_init_self_annotation_matches(
                 class_type,
-                instance_type=specialized_instance_type,
+                instance_type=receiver_instance_type,
                 typevar_map=exact_typevar_map if preserve_exact_return else typevar_map,
             ):
                 return _make_incompatible_constructor_signature(
@@ -2954,7 +2954,7 @@ class Checker:
                 )
             if not self._runtime_new_cls_annotation_matches(
                 class_type,
-                class_type_value=SubclassValue.make(specialized_instance_type),
+                class_type_value=SubclassValue.make(receiver_instance_type),
                 typevar_map=exact_typevar_map if preserve_exact_return else typevar_map,
             ):
                 return _make_incompatible_constructor_signature(
