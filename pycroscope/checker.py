@@ -27,7 +27,13 @@ from .input_sig import InputSigValue, coerce_paramspec_specialization_to_input_s
 from .node_visitor import Failure
 from .options import Options
 from .reexport import ImplicitReexportTracker
-from .safe import hasattr_static, safe_getattr, safe_isinstance, safe_issubclass
+from .safe import (
+    hasattr_static,
+    is_direct_namedtuple_class,
+    safe_getattr,
+    safe_isinstance,
+    safe_issubclass,
+)
 from .shared_options import VariableNameValues
 from .signature import (
     ANY_SIGNATURE,
@@ -1964,6 +1970,11 @@ class Checker:
             return enum_argspec
 
         type_object = self.make_type_object(value.class_type.typ)
+        if type_object.is_namedtuple_like():
+            # Materialize namedtuple fields before reading synthetic constructor
+            # symbols. This lazily installs the synthetic __new__ used for generic
+            # NamedTuple specializations in fallback analysis.
+            type_object.get_namedtuple_fields()
         new_symbol = type_object.get_declared_symbol("__new__")
         init_symbol = type_object.get_declared_symbol("__init__")
         has_direct_new = new_symbol is not None and new_symbol.is_method
@@ -2363,7 +2374,11 @@ class Checker:
                     or _signature_returns_typeddict(cached_argspec)
                     or preserve_custom_constructor
                 )
-                if not should_preserve_cached_constructor:
+                should_preserve_cached_runtime_constructor = (
+                    should_preserve_cached_constructor
+                    or is_direct_namedtuple_class(value.val)
+                )
+                if not should_preserve_cached_runtime_constructor:
                     if not runtime_metaclass_overrides_constructor:
                         runtime_constructor_sig = (
                             self._get_runtime_constructor_signature(value.val)
@@ -2403,7 +2418,13 @@ class Checker:
                         if argspec is not None
                         else None
                     )
-                    should_prefer_synthetic_constructor = (
+                    should_prefer_synthetic_constructor = not (
+                        is_direct_namedtuple_class(value.val)
+                        and concrete_argspec is not None
+                        and not self._is_uninformative_constructor_signature(
+                            concrete_argspec
+                        )
+                    ) and (
                         concrete_argspec is None
                         or self._is_uninformative_constructor_signature(
                             concrete_argspec

@@ -1031,6 +1031,74 @@ class TestImportFailureHandlingCodeSamples(TestNameCheckVisitorBase):
             assert_type(x[1], str)
             assert_type(x, tuple[int, str])  # E: inference_failure
 
+    @assert_passes(run_in_both_module_modes=True)
+    def test_namedtuple_tuple_operations(self):
+        from typing import NamedTuple
+
+        from typing_extensions import assert_type
+
+        class Point(NamedTuple):
+            x: int
+            y: int
+            units: str = "meters"
+
+        def f(x: int, y: int, units: str) -> None:
+            p = Point(x, y, units)
+            assert_type(p[0], int)
+            assert_type(p[1], int)
+            assert_type(p[2], str)
+            assert_type(p[-1], str)
+            assert_type(p[-2], int)
+            assert_type(p[-3], int)
+
+            p[3]  # E: incompatible_call
+            p[-4]  # E: incompatible_call
+            p[0] = x  # E: unsupported_operation
+            del p[0]  # E: unsupported_operation
+
+            x1, y1, units1 = p
+            assert_type(x1, int)
+            assert_type(units1, str)
+            _x2, _y2 = p  # E: bad_unpack
+            _x3, _y3, _units3, _other = p  # E: bad_unpack
+
+        class PointWithName(Point):
+            name: str = ""
+
+        def g(x: int, y: int, units: str) -> None:
+            pn = PointWithName(x, y, units)
+            x4, y4, units4 = pn
+            assert_type(x4, int)
+            assert_type(units4, str)
+
+    @assert_passes(run_in_both_module_modes=True)
+    def test_namedtuple_constructor_preserves_runtime_return_type(self):
+        from typing import NamedTuple
+
+        from typing_extensions import assert_type
+
+        class Point(NamedTuple):
+            x: int
+            y: int
+
+        def f(x: int, y: int) -> None:
+            point = Point(x, y)
+            assert_type(point, Point)
+            assert_type(point[0], int)
+
+    @assert_passes(run_in_both_module_modes=True)
+    def test_namedtuple_is_assignable_to_exact_tuple(self):
+        from typing import NamedTuple
+
+        class Point(NamedTuple):
+            x: int
+            y: int
+            units: str = "meters"
+
+        def capybara(p: Point) -> tuple[int, int, str]:
+            exact: tuple[int, int, str] = p
+            return exact
+
     @assert_passes()
     def test_len_narrowing_on_tuple_union(self):
         from typing import TypeAlias
