@@ -19,7 +19,7 @@ from .annotations import (
 )
 from .arg_spec import ArgSpecCache
 from .checker import Checker
-from .safe import is_namedtuple_class, safe_getattr
+from .safe import hasattr_static, is_namedtuple_class, safe_getattr
 from .type_object import DataclassFieldRecord
 from .value import (
     AnySource,
@@ -260,6 +260,8 @@ def _add_runtime_declared_symbols(typ: type, symbols: dict[str, ClassSymbol]) ->
                 is_property = existing.property_info is not None
                 function_decorators = set(existing.function_decorators)
                 is_method = existing.is_method
+                is_staticmethod = existing.is_staticmethod
+                is_classmethod = existing.is_classmethod
             else:
                 is_property = isinstance(raw_value, property)
                 function_decorators = set()
@@ -294,6 +296,8 @@ def _add_runtime_declared_symbols(typ: type, symbols: dict[str, ClassSymbol]) ->
                     existing.is_instance_only if existing is not None else False
                 ),
                 is_method=is_method,
+                is_classmethod=is_classmethod,
+                is_staticmethod=is_staticmethod,
                 deprecation_message=deprecation_message,
                 function_decorators=frozenset(function_decorators),
                 property_info=(

@@ -1935,7 +1935,6 @@ def _get_attribute_from_known(obj: object, ctx: AttrContext) -> Value:
         )
         if synthetic_attr is not UNINITIALIZED_VALUE:
             return synthetic_attr
-
     result, _, _ = _get_attribute_from_mro(obj, ctx, on_class=True)
     if result is UNINITIALIZED_VALUE and safe_isinstance(obj, type):
         if synthetic_attr is UNINITIALIZED_VALUE:
