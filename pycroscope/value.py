@@ -4660,67 +4660,6 @@ def _is_property_initializer(value: Value) -> bool:
     )
 
 
-def get_synthetic_declared_symbols(
-    synthetic_class: SyntheticClassObjectValue, ctx: CanAssignContext
-) -> MutableMapping[str, ClassSymbol]:
-    class_type = synthetic_class.class_type
-    if not isinstance(class_type, TypedValue):
-        return {}
-    return ctx.make_type_object(class_type.typ).get_synthetic_declared_symbols()
-
-
-def get_synthetic_declared_symbol(
-    synthetic_class: SyntheticClassObjectValue, name: str, ctx: CanAssignContext
-) -> ClassSymbol | None:
-    return get_synthetic_declared_symbols(synthetic_class, ctx).get(name)
-
-
-def get_synthetic_member_initializer(
-    synthetic_class: SyntheticClassObjectValue, name: str, ctx: CanAssignContext
-) -> Value | None:
-    symbol = get_synthetic_declared_symbol(synthetic_class, name, ctx)
-    if symbol is None:
-        return None
-    return symbol.initializer
-
-
-def get_inherited_synthetic_member_initializer(
-    synthetic_class: SyntheticClassObjectValue,
-    name: str,
-    ctx: CanAssignContext,
-    *,
-    seen: frozenset[type | str] = frozenset(),
-) -> Value | None:
-    class_type = synthetic_class.class_type
-    if not isinstance(class_type, TypedValue):
-        return None
-    class_key = class_type.typ
-    if class_key in seen:
-        return None
-    seen = seen | {class_key}
-    direct = get_synthetic_member_initializer(synthetic_class, name, ctx)
-    if direct is not None:
-        return direct
-    for base_value in synthetic_class.get_type_object(ctx).get_direct_bases():
-        if not isinstance(base_value, TypedValue):
-            continue
-        base_synthetic = ctx.get_synthetic_class(base_value.typ)
-        if base_synthetic is None:
-            continue
-        inherited = get_inherited_synthetic_member_initializer(
-            base_synthetic, name, ctx, seen=seen
-        )
-        if inherited is not None:
-            if isinstance(base_value, GenericValue):
-                substitutions = base_synthetic.get_type_object(ctx).get_substitutions(
-                    base_value.args
-                )
-                if substitutions:
-                    inherited = inherited.substitute_typevars(substitutions)
-            return inherited
-    return None
-
-
 @dataclass(frozen=True)
 class AnnotationExpr:
     ctx: "pycroscope.annotations.Context"

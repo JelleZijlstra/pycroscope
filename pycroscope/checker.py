@@ -105,9 +105,7 @@ from .value import (
     _iter_typevar_map_items,
     _typevar_map_from_varlike_pairs,
     flatten_values,
-    get_inherited_synthetic_member_initializer,
     get_single_typevartuple_param,
-    get_synthetic_member_initializer,
     get_tv_map,
     is_union,
     iter_type_params_in_value,
@@ -1541,13 +1539,12 @@ class Checker:
         get_return_override: Callable[[MaybeSignature], Value | None],
         get_call_attribute: Callable[[Value], Value] | None,
     ) -> bool:
-        new_symbol = self.make_type_object(
-            synthetic_class.class_type.typ
-        ).get_declared_symbol("__new__")
+        tobj = self.make_type_object(synthetic_class.class_type.typ)
+        new_symbol = tobj.get_declared_symbol("__new__")
         has_direct_new = new_symbol is not None and new_symbol.is_method
         if has_direct_new:
             method = (
-                get_synthetic_member_initializer(synthetic_class, "__new__", self)
+                get_synthetic_member_initializer(tobj, "__new__", self)
                 or UNINITIALIZED_VALUE
             )
             if not isinstance(method, Value):
@@ -1587,11 +1584,10 @@ class Checker:
     def _infer_synthetic_type_params_from_methods(
         self, value: SyntheticClassObjectValue
     ) -> tuple[TypeParam, ...]:
-        if not isinstance(value.class_type, TypedValue):
-            return ()
-        class_type = value.class_type.typ
+        tobj = self.make_type_object(value.class_type.typ)
+        class_type = tobj.typ
         for method_name in ("__new__", "__init__"):
-            method_value = get_synthetic_member_initializer(value, method_name, self)
+            method_value = get_synthetic_member_initializer(tobj, method_name, self)
             if not isinstance(method_value, CallableValue):
                 continue
             signatures = (
@@ -1678,9 +1674,10 @@ class Checker:
         get_return_override: Callable[[MaybeSignature], Value | None],
         get_call_attribute: Callable[[Value], Value] | None,
     ) -> ConcreteSignature | None:
+        tobj = self.make_type_object(value.class_type.typ)
         if use_direct_method:
             method = (
-                get_synthetic_member_initializer(value, method_name, self)
+                get_synthetic_member_initializer(tobj, method_name, self)
                 or UNINITIALIZED_VALUE
             )
             if not isinstance(method, Value):
@@ -1692,7 +1689,7 @@ class Checker:
                 method = UNINITIALIZED_VALUE
             if method is UNINITIALIZED_VALUE:
                 method = (
-                    get_inherited_synthetic_member_initializer(value, method_name, self)
+                    get_inherited_synthetic_member_initializer(tobj, method_name, self)
                     or UNINITIALIZED_VALUE
                 )
             if method is UNINITIALIZED_VALUE and method_name == "__new__":
@@ -2498,7 +2495,8 @@ class Checker:
                 value.class_type.typ, allow_synthetic_type=True
             )
             if argspec is None:
-                init_attr = get_synthetic_member_initializer(value, "__init__", self)
+                tobj = self.make_type_object(value.class_type.typ)
+                init_attr = get_synthetic_member_initializer(tobj, "__init__", self)
                 if init_attr is not None:
                     init_sig = self.signature_from_value(init_attr)
                     if isinstance(init_sig, BoundMethodSignature):
@@ -3035,3 +3033,42 @@ class CheckerAttrContext(AttrContext):
 
     def get_bound_self_type(self) -> Value | None:
         return None
+
+
+def get_synthetic_member_initializer(
+    tobj: TypeObject, name: str, ctx: CanAssignContext
+) -> Value | None:
+    symbol = tobj.get_synthetic_declared_symbols().get(name)
+    if symbol is None:
+        return None
+    return symbol.initializer
+
+
+def get_inherited_synthetic_member_initializer(
+    tobj: TypeObject,
+    name: str,
+    ctx: CanAssignContext,
+    *,
+    seen: frozenset[type | str] = frozenset(),
+) -> Value | None:
+    class_key = tobj.typ
+    if class_key in seen:
+        return None
+    seen = seen | {class_key}
+    direct = get_synthetic_member_initializer(tobj, name, ctx)
+    if direct is not None:
+        return direct
+    for base_value in tobj.get_direct_bases():
+        if not isinstance(base_value, TypedValue):
+            continue
+        base_tobj = ctx.make_type_object(base_value.typ)
+        inherited = get_inherited_synthetic_member_initializer(
+            base_tobj, name, ctx, seen=seen
+        )
+        if inherited is not None:
+            if isinstance(base_value, GenericValue):
+                substitutions = base_tobj.get_substitutions(base_value.args)
+                if substitutions:
+                    inherited = inherited.substitute_typevars(substitutions)
+            return inherited
+    return None
