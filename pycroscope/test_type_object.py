@@ -23,6 +23,7 @@ from .value import (
     ClassSymbol,
     DataclassFieldInfo,
     DataclassInfo,
+    FunctionDecorator,
     GenericValue,
     IntersectionValue,
     KnownValue,
@@ -213,6 +214,76 @@ def test_runtime_declared_symbol_uses_annotation_expr_parsing() -> None:
     assert not symbol.is_instance_only
     assert symbol.annotation == TypedValue(int)
     assert symbol.initializer is None
+
+
+def test_runtime_declared_symbol_tracks_decorator_and_deprecation_metadata() -> None:
+    from abc import abstractmethod
+    from typing import final
+
+    from .extensions import deprecated
+
+    class Runtime:
+        @classmethod
+        @abstractmethod
+        def build(cls) -> "Runtime":
+            raise NotImplementedError
+
+        @classmethod
+        @final
+        def done(cls) -> int:
+            return 1
+
+        @staticmethod
+        @deprecated("old")
+        def old() -> int:
+            return 1
+
+    checker = Checker()
+    type_object = checker.make_type_object(Runtime)
+
+    build = type_object.get_declared_symbol("build")
+    assert build is not None
+    assert build.is_method
+    assert FunctionDecorator.classmethod in build.function_decorators
+    assert FunctionDecorator.abstractmethod in build.function_decorators
+
+    done = type_object.get_declared_symbol("done")
+    assert done is not None
+    assert FunctionDecorator.classmethod in done.function_decorators
+    if getattr(getattr(Runtime.__dict__["done"], "__func__", None), "__final__", False):
+        assert done.is_final
+        assert FunctionDecorator.final in done.function_decorators
+    else:
+        assert not done.is_final
+        assert FunctionDecorator.final not in done.function_decorators
+
+    old = type_object.get_declared_symbol("old")
+    assert old is not None
+    assert old.deprecation_message == "old"
+    assert FunctionDecorator.staticmethod in old.function_decorators
+
+
+def test_runtime_property_symbol_tracks_accessor_deprecations() -> None:
+    from .extensions import deprecated
+
+    class Runtime:
+        @property
+        @deprecated("getter")
+        def value(self) -> int:
+            return 1
+
+        @value.setter
+        @deprecated("setter")
+        def value(self, new_value: int) -> None:
+            pass
+
+    checker = Checker()
+    symbol = checker.make_type_object(Runtime).get_declared_symbol("value")
+
+    assert symbol is not None
+    assert symbol.property_info is not None
+    assert symbol.property_info.getter_deprecation == "getter"
+    assert symbol.property_info.setter_deprecation == "setter"
 
 
 def test_runtime_type_object_tracks_dataclass_fields() -> None:

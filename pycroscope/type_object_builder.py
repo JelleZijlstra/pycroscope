@@ -258,11 +258,7 @@ def _add_runtime_declared_symbols(typ: type, symbols: dict[str, ClassSymbol]) ->
             if name in namedtuple_fields:
                 continue
             existing = symbols.get(name)
-            depr = safe_getattr(raw_value, "__deprecated__", None)
-            if isinstance(depr, str):
-                deprecation_message = depr
-            else:
-                deprecation_message = None
+            deprecation_message = _runtime_deprecation_message(raw_value)
             if (
                 existing is not None
                 and not existing.is_classvar
@@ -358,7 +354,25 @@ def _runtime_property_info(raw_value: property, owner: type) -> PropertyInfo:
                     value_param.annotation, owner
                 )
 
-    return PropertyInfo(getter_type=getter_type, setter_type=setter_type)
+    return PropertyInfo(
+        getter_type=getter_type,
+        setter_type=setter_type,
+        getter_deprecation=_accessor_deprecation_message(raw_value.fget),
+        setter_deprecation=_accessor_deprecation_message(raw_value.fset),
+    )
+
+
+def _runtime_deprecation_message(raw_value: object) -> str | None:
+    if isinstance(raw_value, property):
+        return None
+    if isinstance(raw_value, (classmethod, staticmethod)):
+        return _accessor_deprecation_message(raw_value.__func__)
+    return _accessor_deprecation_message(raw_value)
+
+
+def _accessor_deprecation_message(accessor: object | None) -> str | None:
+    deprecated = safe_getattr(accessor, "__deprecated__", None)
+    return deprecated if isinstance(deprecated, str) else None
 
 
 _CLASS_SYMBOL_ALLOWED_QUALIFIERS = frozenset(
