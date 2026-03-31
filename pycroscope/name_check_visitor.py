@@ -2114,7 +2114,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     _argspec_to_retval: dict[int, tuple[Value, MaybeSignature]]
     _pending_overload_blocks: dict[int, _PendingOverloadBlock]
     _synthetic_classes_by_name: dict[str, SyntheticClassObjectValue]
-    _synthetic_abstract_methods: dict[str, set[str]]
     _function_decorator_kinds_by_node: dict[
         ast.FunctionDef | ast.AsyncFunctionDef, frozenset[FunctionDecorator]
     ]
@@ -2286,7 +2285,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         self._argspec_to_retval = {}
         self._pending_overload_blocks = {}
         self._synthetic_classes_by_name = {}
-        self._synthetic_abstract_methods = {}
         self._function_decorator_kinds_by_node = {}
         self._function_returns_self_by_node = {}
         self._type_alias_first_definition_by_scope = {}
@@ -2987,6 +2985,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         is_instance_only: bool | None = None,
         is_method: bool | None = None,
         function_decorators: frozenset[FunctionDecorator],
+        deprecation_message: str | None = None,
         returns_self_on_class_access: bool | None = None,
         property_info: PropertyInfo | None = None,
         initializer: Value | None | Literal[_UNSET] = _UNSET,
@@ -2997,6 +2996,11 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         qualifiers = set(existing.qualifiers if existing is not None else ())
         qualifiers.update(add_qualifiers)
         annotation = annotation if annotation is not None else base.annotation
+        deprecation_message = (
+            base.deprecation_message
+            if deprecation_message is None
+            else deprecation_message
+        )
         is_instance_only = (
             base.is_instance_only if is_instance_only is None else is_instance_only
         )
@@ -3026,6 +3030,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 is_instance_only=is_instance_only,
                 is_method=False if is_method is None else is_method,
                 function_decorators=function_decorators,
+                deprecation_message=deprecation_message,
                 returns_self_on_class_access=(
                     False
                     if returns_self_on_class_access is None
@@ -3041,6 +3046,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             is_instance_only=is_instance_only,
             is_method=base.is_method if is_method is None else is_method,
             function_decorators=base.function_decorators | function_decorators,
+            deprecation_message=deprecation_message,
             returns_self_on_class_access=(
                 base.returns_self_on_class_access
                 if returns_self_on_class_access is None
@@ -3064,6 +3070,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         is_instance_only: bool | None = None,
         is_method: bool | None = None,
         function_decorators: frozenset[FunctionDecorator] = frozenset(),
+        deprecation_message: str | None = None,
         returns_self_on_class_access: bool | None = None,
         property_info: PropertyInfo | None = None,
         initializer: Value | None | Literal[_UNSET] = _UNSET,
@@ -3080,6 +3087,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 is_instance_only=is_instance_only,
                 is_method=is_method,
                 function_decorators=function_decorators,
+                deprecation_message=deprecation_message,
                 returns_self_on_class_access=returns_self_on_class_access,
                 property_info=property_info,
                 initializer=initializer,
@@ -3219,9 +3227,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         if synthetic_type is None:
             return
 
-        decorator_deprecation = self._deprecation_message_from_decorators(
-            info.decorators
-        )
+        deprecation_message = self._deprecation_message_from_value(
+            function_value
+        ) or self._deprecation_message_from_decorators(info.decorators)
         if any(
             isinstance(unapplied, KnownValue) and unapplied.val is property
             for unapplied, _, _ in info.decorators
@@ -3240,11 +3248,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 annotation=getter_value,
                 is_instance_only=False,
                 property_info=PropertyInfo(
-                    getter_type=getter_value,
-                    getter_deprecation=(
-                        self._deprecation_message_from_value(function_value)
-                        or decorator_deprecation
-                    ),
+                    getter_type=getter_value, getter_deprecation=deprecation_message
                 ),
             )
             return
@@ -3262,19 +3266,14 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             function_decorators, returns_self_on_class_access = (
                 self._synthetic_method_symbol_flags(node)
             )
-            qualifiers = (
-                frozenset({Qualifier.Final})
-                if FunctionDecorator.final in info.decorator_kinds
-                else frozenset()
-            )
             self._set_complete_synthetic_class_symbol(
                 node.name,
                 initializer=function_value,
                 node=node,
-                qualifiers=qualifiers,
                 is_instance_only=False,
                 is_method=True,
                 function_decorators=function_decorators,
+                deprecation_message=deprecation_message,
                 returns_self_on_class_access=returns_self_on_class_access,
             )
             return
@@ -3320,10 +3319,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     if existing_property_info is not None
                     else None
                 ),
-                setter_deprecation=(
-                    self._deprecation_message_from_value(function_value)
-                    or decorator_deprecation
-                ),
+                setter_deprecation=(deprecation_message),
             ),
         )
 
@@ -4142,7 +4138,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 self._synthetic_classes_by_name[synthetic_fq_name] = synthetic_class
                 dataclass_metadata_class = synthetic_class
                 if self._is_checking():
-                    self._synthetic_abstract_methods[synthetic_fq_name] = set()
                     # Bind the class name while checking its body so references
                     # like "return C.attr" or string annotations mentioning C
                     # resolve even when no runtime class object exists.
@@ -7648,19 +7643,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     self._show_error_if_checking(
                         node, error_code=ErrorCode.override_does_not_override
                     )
-        if (
-            self._is_checking()
-            and isinstance(self.current_class, str)
-            and self.scopes.scope_type() is ScopeType.class_scope
-        ):
-            abstract_methods = self._synthetic_abstract_methods.setdefault(
-                self.current_class, set()
-            )
-            if FunctionDecorator.abstractmethod in info.decorator_kinds:
-                abstract_methods.add(node.name)
-            else:
-                abstract_methods.discard(node.name)
-
         if info.return_annotation is not None:
             assert node.returns is not None
             if result.is_generator:
@@ -8142,32 +8124,42 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         if not self._is_checking() or not isinstance(class_key, str):
             return
 
-        required = set(self._synthetic_abstract_methods.get(class_key, set()))
+        required = self._required_abstract_members_for_base(class_key)
+        if is_protocol_class:
+            required |= self._protocol_required_members_from_class_body(node)
+
+        type_object = self.checker.make_type_object(class_key)
+        for name, symbol in list(type_object.get_synthetic_declared_symbols().items()):
+            decorators = set(symbol.function_decorators)
+            if name in required:
+                decorators.add(FunctionDecorator.abstractmethod)
+            else:
+                decorators.discard(FunctionDecorator.abstractmethod)
+            updated = replace(symbol, function_decorators=frozenset(decorators))
+            if updated != symbol:
+                type_object.set_declared_symbol(name, updated)
+
+    def _required_abstract_members_for_base(self, class_key: type | str) -> set[str]:
+        if isinstance(class_key, type):
+            abstract_methods = safe_getattr(class_key, "__abstractmethods__", ())
+            if not isinstance(abstract_methods, (set, frozenset, tuple, list)):
+                return set()
+            return {name for name in abstract_methods if isinstance(name, str)}
+
+        direct_abstract = set()
+        for name, symbol in (
+            self.checker.make_type_object(class_key).get_declared_symbols().items()
+        ):
+            if FunctionDecorator.abstractmethod in symbol.function_decorators:
+                direct_abstract.add(name)
+
+        required = set(direct_abstract)
         for base_key in self.checker.get_generic_bases(class_key):
             if base_key == class_key:
                 continue
             required |= self._required_abstract_members_for_base(base_key)
-
-        if is_protocol_class:
-            required |= self._protocol_required_members_from_class_body(node)
-
-        provided = self._concrete_member_names_for_current_class(
-            node, class_key, is_protocol_class=is_protocol_class
-        )
-        for base_key in self.checker.get_generic_bases(class_key):
-            if base_key == class_key:
-                continue
-            provided |= self._concrete_member_names_for_base(base_key)
-
-        self._synthetic_abstract_methods[class_key] = required - provided
-
-    def _required_abstract_members_for_base(self, class_key: type | str) -> set[str]:
-        if isinstance(class_key, str):
-            return set(self._synthetic_abstract_methods.get(class_key, set()))
-        abstract_methods = safe_getattr(class_key, "__abstractmethods__", ())
-        if not isinstance(abstract_methods, (set, frozenset, tuple, list)):
-            return set()
-        return {name for name in abstract_methods if isinstance(name, str)}
+        required -= self._concrete_member_names_for_base(class_key)
+        return required
 
     def _concrete_member_names_for_current_class(
         self, node: ast.ClassDef, class_key: str, *, is_protocol_class: bool
@@ -8179,17 +8171,24 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         return provided
 
     def _concrete_member_names_for_base(self, class_key: type | str) -> set[str]:
-        if isinstance(class_key, str):
+        if isinstance(class_key, type):
             provided = set(
                 self.checker.make_type_object(class_key).get_declared_symbols()
             )
             return provided - self._required_abstract_members_for_base(class_key)
 
-        class_dict = safe_getattr(class_key, "__dict__", None)
-        if not isinstance(class_dict, Mapping):
-            return set()
-        provided = {name for name in class_dict if isinstance(name, str)}
-        return provided - self._required_abstract_members_for_base(class_key)
+        provided = {
+            name
+            for name, symbol in (
+                self.checker.make_type_object(class_key).get_declared_symbols().items()
+            )
+            if FunctionDecorator.abstractmethod not in symbol.function_decorators
+        }
+        for base_key in self.checker.get_generic_bases(class_key):
+            if base_key == class_key:
+                continue
+            provided |= self._concrete_member_names_for_base(base_key)
+        return provided
 
     def _protocol_required_members_from_class_body(
         self, node: ast.ClassDef
@@ -14009,10 +14008,8 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         if slots_state is not None:
             slots, has_dict = slots_state
             if not has_dict and node.attr not in slots:
-                is_abstract_with_empty_slots = (
-                    not slots
-                    and isinstance(tobj.typ, type)
-                    and safe_getattr(tobj.typ, "__abstractmethods__", None)
+                is_abstract_with_empty_slots = not slots and bool(
+                    self._required_abstract_members_for_base(tobj.typ)
                 )
                 if not is_abstract_with_empty_slots:
                     self._show_error_if_checking(
@@ -14227,24 +14224,11 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             )
             if match is None:
                 continue
-            candidate, attribute = match
+            _, attribute = match
             symbol = attribute.symbol
-            owner = attribute.owner.typ
-            class_dict = (
-                safe_getattr(owner, "__dict__", None)
-                if isinstance(owner, type)
-                else None
-            )
             if is_property:
                 if symbol.property_info is None:
                     continue
-                if isinstance(class_dict, Mapping):
-                    descriptor = class_dict.get(candidate)
-                    if isinstance(descriptor, property):
-                        accessor = descriptor.fset if is_setter else descriptor.fget
-                        deprecated = safe_getattr(accessor, "__deprecated__", None)
-                        if safe_isinstance(deprecated, str):
-                            return deprecated
                 return (
                     symbol.property_info.setter_deprecation
                     if is_setter
@@ -14252,14 +14236,8 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 )
             if symbol.property_info is not None:
                 continue
-            if isinstance(class_dict, Mapping):
-                member = class_dict.get(candidate)
-                if isinstance(member, (staticmethod, classmethod)):
-                    member = member.__func__
-                if member is not None:
-                    message = self._deprecation_message_from_value(KnownValue(member))
-                    if message is not None:
-                        return message
+            if symbol.deprecation_message is not None:
+                return symbol.deprecation_message
             value = symbol.initializer or attribute.value
             return self._deprecation_message_from_value(value)
         return None
@@ -15156,7 +15134,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             isinstance(callee_wrapped, SyntheticClassObjectValue)
             and isinstance(callee_wrapped.class_type, TypedValue)
             and isinstance(callee_wrapped.class_type.typ, str)
-            and self._synthetic_abstract_methods.get(callee_wrapped.class_type.typ)
+            and self._required_abstract_members_for_base(callee_wrapped.class_type.typ)
         ):
             if node is not None:
                 self._show_error_if_checking(

@@ -106,6 +106,27 @@ class TestRuntime(TestNameCheckVisitorBase):
             print(Cls.deprecated_method)  # E: deprecated
 
     @assert_passes()
+    def test_deprecated_descriptors(self):
+        from pycroscope.extensions import deprecated
+
+        class Cls:
+            @classmethod
+            @deprecated("no classy classmethods")
+            def deprecated_classmethod(cls) -> int:
+                return 1
+
+            @staticmethod
+            @deprecated("no static capybaras")
+            def deprecated_staticmethod() -> int:
+                return 1
+
+        def capybara() -> None:
+            Cls.deprecated_classmethod()  # E: deprecated
+            print(Cls.deprecated_classmethod)  # E: deprecated
+            Cls.deprecated_staticmethod()  # E: deprecated
+            print(Cls.deprecated_staticmethod)  # E: deprecated
+
+    @assert_passes()
     def test_class(self):
         from pycroscope.extensions import deprecated
 
