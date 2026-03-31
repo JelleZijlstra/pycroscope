@@ -380,17 +380,17 @@ class TestDataclassTransform(TestNameCheckVisitorBase):
             Decorated(2, why=1)
             Decorated(2, y=1)  # E: incompatible_call
             Decorated(x=1, why=1)  # E: incompatible_call
-            decorated = Decorated(2, why=1)
+            decorated = Decorated(z=3, why=1)
             decorated.y = 4  # E: incompatible_assignment
 
             FromBase(2, bee=1)
             FromBase(2, b=1)  # E: incompatible_call
-            from_base = FromBase(2, bee=1)
+            from_base = FromBase(c=2, bee=1)
             from_base.b = 4  # E: incompatible_assignment
 
             FromMeta(2, enn=1)
             FromMeta(2, n=1)  # E: incompatible_call
-            from_meta = FromMeta(2, enn=1)
+            from_meta = FromMeta(o=2, enn=1)
             from_meta.n = 4  # E: incompatible_assignment
 
     @assert_passes()
@@ -1040,6 +1040,31 @@ class TestDataclassTransform(TestNameCheckVisitorBase):
             Model("1", b"3", 2)  # E: incompatible_argument
 
     @assert_passes(allow_import_failures=True)
+    def test_dataclass_transform_converter_dict(self):
+        from typing import Callable, TypeVar
+
+        from typing_extensions import assert_type, dataclass_transform
+
+        T = TypeVar("T")
+        S = TypeVar("S")
+
+        def model_field(*, converter: Callable[[S], T], default: S) -> T:
+            raise NotImplementedError
+
+        @dataclass_transform(field_specifiers=(model_field,))
+        class Base:
+            pass
+
+        class Model(Base):
+            # TODO this should be allowed but the typevar solver isn't powerful enough
+            # E: incompatible_call
+            mapping_value: dict[str, str] = model_field(converter=dict, default=())
+
+        def capybara():
+            model = Model(())
+            assert_type(model.mapping_value, dict[str, str])
+
+    @assert_passes(allow_import_failures=True)
     def test_dataclass_transform_converter_field_specifier_after_import_failure(self):
         from typing import Callable, TypeVar
 
@@ -1071,6 +1096,8 @@ class TestDataclassTransform(TestNameCheckVisitorBase):
             value: int = model_field(converter=to_int)
             class_value: ConverterClass = model_field(converter=ConverterClass)
             converted_default: int = model_field(converter=to_int, default_factory=str)
+            # TODO this should be allowed but the typevar solver isn't powerful enough
+            # E: incompatible_call
             mapping_value: dict[str, str] = model_field(converter=dict, default=())
 
             # E: incompatible_call

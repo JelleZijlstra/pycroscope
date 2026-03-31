@@ -1721,12 +1721,10 @@ class _EnumMemberTracker:
 
 @dataclass(frozen=True)
 class _DataclassFieldCallOptions:
-    bound_args_available: bool = False
     init: bool | None = None
     kw_only: bool | None = None
     alias: str | None = None
-    has_default: bool = False
-    default_value: Value | None = None
+    default: Value | None = None
     default_factory: Value | None = None
     converter_value: Value | None = None
     converter_input_type: Value | None = None
@@ -2145,7 +2143,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     _pending_overload_blocks: dict[int, _PendingOverloadBlock]
     _synthetic_classes_by_name: dict[str, SyntheticClassObjectValue]
     _synthetic_abstract_methods: dict[str, set[str]]
-    _dataclass_field_call_options_by_node: dict[int, _DataclassFieldCallOptions]
     _function_decorator_kinds_by_node: dict[
         ast.FunctionDef | ast.AsyncFunctionDef, frozenset[FunctionDecorator]
     ]
@@ -2318,7 +2315,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         self._pending_overload_blocks = {}
         self._synthetic_classes_by_name = {}
         self._synthetic_abstract_methods = {}
-        self._dataclass_field_call_options_by_node = {}
         self._function_decorator_kinds_by_node = {}
         self._function_returns_self_by_node = {}
         self._type_alias_first_definition_by_scope = {}
@@ -5708,63 +5704,92 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 return bound_args
         return None
 
-    def _infer_dataclass_field_call_options_from_resolved_call(
-        self,
-        callee: Value,
-        args: Sequence[Composite],
-        keywords: Sequence[tuple[str | None, Composite]],
-        node: ast.Call,
+    def _infer_dataclass_field_call_options(
+        self, result: Value
     ) -> _DataclassFieldCallOptions | None:
-        if not self._is_dataclass_field_callee(callee):
+        if not isinstance(result, PartialCallValue):
             return None
-        bound_args = self._get_dataclass_field_call_bound_args_from_resolved_call(
-            callee, args, keywords, node
+        if not self._is_dataclass_field_callee(result.callee):
+            return None
+
+        if isinstance(result.node, ast.Call):
+            actual_kwargs = {
+                kw.arg for kw in result.node.keywords if kw.arg is not None
+            }
+        else:
+            actual_kwargs = set()
+
+        init_val = result.arguments.get("init", KnownValue(True))
+        kw_only_val = (
+            result.arguments.get("kw_only", KnownValue(None))
+            if "kw_only" in actual_kwargs
+            else KnownValue(None)
         )
-        if bound_args is None:
-            return _DataclassFieldCallOptions()
-        init = _dataclass_field_bound_bool_arg(bound_args, "init")
-        kw_only = _dataclass_field_bound_bool_arg(
-            bound_args, "kw_only", include_default=False
-        )
-        alias = _dataclass_field_bound_str_arg(
-            bound_args, "alias", include_default=False
-        )
-        has_default = False
-        default_value = _dataclass_field_bound_arg(
-            bound_args, "default", include_default=False
-        )
-        if default_value is not None and not _is_absent_dataclass_default_value(
-            default_value
+
+        default_likes = {
+            key
+            for key in ("default", "default_factory", "factory")
+            if key in actual_kwargs
+            and key in result.arguments
+            and not _is_absent_dataclass_default_value(result.arguments[key])
+        }
+        if len(default_likes) > 1:
+            self._show_error_if_checking(
+                result.node,
+                "Cannot specify more than one of default, default_factory, and factory",
+                error_code=ErrorCode.invalid_dataclass,
+            )
+
+        default_val = result.arguments.get("default")
+        if (
+            default_val is not None
+            and "default" in actual_kwargs
+            and not _is_absent_dataclass_default_value(default_val)
         ):
-            has_default = True
+            default = default_val
+        else:
+            default = None
+
         default_factory = None
         for key in ("default_factory", "factory"):
-            factory_value = _dataclass_field_bound_arg(
-                bound_args, key, include_default=False
-            )
-            if factory_value is None:
+            if key not in actual_kwargs:
                 continue
-            if _is_absent_dataclass_default_value(factory_value):
+            default_factory = result.arguments.get(key)
+            if default_factory is None or _is_absent_dataclass_default_value(
+                default_factory
+            ):
                 continue
-            has_default = True
-            default_factory = factory_value
-            break
+
+        alias_val = result.arguments.get("alias")
+        match alias_val:
+            case KnownValue(val=str()):
+                alias = alias_val.val
+            case _:
+                alias = None
+
         converter_input_type = None
-        converter_value = _dataclass_field_bound_arg(bound_args, "converter")
-        if converter_value is not None and not _is_absent_dataclass_default_value(
-            converter_value
+        converter_value = result.arguments.get("converter")
+        if (
+            converter_value is not None
+            and "converter" in actual_kwargs
+            and not _is_absent_dataclass_default_value(converter_value)
         ):
-            converter_sig = self.signature_from_value(converter_value, node)
+            converter_sig = self.signature_from_value(converter_value, result.node)
             converter_input_type = _callable_first_positional_parameter_type(
                 converter_sig, checker=self
             )
+            if converter_input_type is None:
+                self._show_error_if_checking(
+                    result.node,
+                    "Dataclass converter must accept a positional argument",
+                    error_code=ErrorCode.invalid_dataclass,
+                )
+
         return _DataclassFieldCallOptions(
-            bound_args_available=True,
-            init=init,
-            kw_only=kw_only,
+            init=_get_bool_value(init_val, self),
+            kw_only=_get_bool_value(kw_only_val, self),
             alias=alias,
-            has_default=has_default,
-            default_value=default_value,
+            default=default,
             default_factory=default_factory,
             converter_value=converter_value,
             converter_input_type=converter_input_type,
@@ -12069,17 +12094,10 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             if current_tobj is not None and current_tobj.is_direct_namedtuple():
                 readonly_name = node.target.id
         is_current_class_dataclass = self._is_current_class_dataclass()
-        has_default = node.value is not None
-        init = True
-        kw_only = self.current_dataclass_kw_only_active
-        alias: str | None = None
-        is_dataclass_field_call = False
         dataclass_field_info: DataclassFieldInfo | None = None
-        dataclass_default_value: Value | None = None
-        dataclass_default_factory: Value | None = None
-        dataclass_converter_value: Value | None = None
         dataclass_converter_input_type: Value | None = None
         dataclass_field_name: str | None = None
+        field_options = None
         if (
             is_current_class_dataclass
             and self.scopes.scope_type() == ScopeType.class_scope
@@ -12155,67 +12173,24 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             else:
                 is_yield = isinstance(node.value, ast.Yield)
                 value = self.visit(node.value)
-                if (
-                    dataclass_field_name is not None
-                    and isinstance(node.value, ast.Call)
-                    and (
-                        inferred_options := self._dataclass_field_call_options_by_node.pop(
-                            id(node.value), None
+                if dataclass_field_name is not None:
+                    field_options = self._infer_dataclass_field_call_options(value)
+                    print("FIOELD OPTIOSPNS", field_options, value)
+                    if field_options is not None:
+                        dataclass_converter_input_type = (
+                            field_options.converter_input_type
                         )
-                    )
-                    is not None
-                ):
-                    is_dataclass_field_call = True
-                    dataclass_default_value = inferred_options.default_value
-                    dataclass_default_factory = inferred_options.default_factory
-                    dataclass_converter_value = inferred_options.converter_value
-                    dataclass_converter_input_type = (
-                        inferred_options.converter_input_type
-                    )
-                    has_default = inferred_options.has_default or any(
-                        kw.arg in {"default", "default_factory", "factory"}
-                        for kw in node.value.keywords
-                    )
-                    if inferred_options.init is not None:
-                        init = inferred_options.init
-                    if inferred_options.kw_only is not None:
-                        kw_only = inferred_options.kw_only
-                    if inferred_options.alias is not None:
-                        alias = inferred_options.alias
-                    init_keyword = next(
-                        (kw.value for kw in node.value.keywords if kw.arg == "init"),
-                        None,
-                    )
-                    if isinstance(init_keyword, ast.Constant) and isinstance(
-                        init_keyword.value, bool
-                    ):
-                        init = init_keyword.value
-                    kw_only_keyword = next(
-                        (kw.value for kw in node.value.keywords if kw.arg == "kw_only"),
-                        None,
-                    )
-                    if isinstance(kw_only_keyword, ast.Constant) and isinstance(
-                        kw_only_keyword.value, bool
-                    ):
-                        kw_only = kw_only_keyword.value
-                    alias_keyword = next(
-                        (kw.value for kw in node.value.keywords if kw.arg == "alias"),
-                        None,
-                    )
-                    if isinstance(alias_keyword, ast.Constant) and isinstance(
-                        alias_keyword.value, str
-                    ):
-                        alias = alias_keyword.value
+
                 initializer_value = value
 
                 if expected_type is not None:
                     if (
                         is_current_class_dataclass
-                        and is_dataclass_field_call
-                        and dataclass_converter_value is not None
+                        and field_options is not None
+                        and field_options.converter_value is not None
                     ):
                         converter_sig = self.signature_from_value(
-                            dataclass_converter_value
+                            field_options.converter_value
                         )
                         specialized_converter_input_type = (
                             _callable_first_positional_parameter_type_for_return(
@@ -12226,18 +12201,8 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                             dataclass_converter_input_type = (
                                 specialized_converter_input_type
                             )
-                    if (
-                        is_current_class_dataclass
-                        and is_dataclass_field_call
-                        and dataclass_converter_value is not None
-                        and dataclass_converter_input_type is None
-                    ):
-                        self._show_error_if_checking(
-                            node,
-                            "Dataclass converter must accept a positional argument",
-                            error_code=ErrorCode.incompatible_argument,
-                        )
-                    if not (is_current_class_dataclass and is_dataclass_field_call):
+
+                    if not (is_current_class_dataclass and field_options is not None):
                         can_assign = has_relation(
                             expected_type, value, Relation.ASSIGNABLE, self
                         )
@@ -12255,8 +12220,8 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
 
                     if (
                         is_current_class_dataclass
-                        and is_dataclass_field_call
-                        and dataclass_default_value is not None
+                        and field_options is not None
+                        and field_options.default is not None
                     ):
                         expected_factory_type = (
                             dataclass_converter_input_type
@@ -12265,7 +12230,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                         )
                         can_assign_default = has_relation(
                             expected_factory_type,
-                            dataclass_default_value,
+                            field_options.default,
                             Relation.ASSIGNABLE,
                             self,
                         )
@@ -12276,15 +12241,15 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                                 f" {expected_factory_type}",
                                 error_code=(
                                     ErrorCode.incompatible_call
-                                    if dataclass_converter_value is not None
+                                    if field_options.converter_value is not None
                                     else ErrorCode.incompatible_assignment
                                 ),
                                 detail=can_assign_default.display(),
                             )
                     if (
                         is_current_class_dataclass
-                        and is_dataclass_field_call
-                        and dataclass_default_factory is not None
+                        and field_options is not None
+                        and field_options.default_factory is not None
                     ):
                         expected_factory_type = (
                             dataclass_converter_input_type
@@ -12292,7 +12257,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                             else expected_type
                         )
                         default_factory_return = _default_factory_return_value(
-                            dataclass_default_factory, checker=self
+                            field_options.default_factory, checker=self
                         )
                         if default_factory_return is not None:
                             can_assign_return = has_relation(
@@ -12308,7 +12273,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                                     f" with field type {expected_factory_type}",
                                     error_code=(
                                         ErrorCode.incompatible_call
-                                        if dataclass_converter_value is not None
+                                        if field_options.converter_value is not None
                                         else ErrorCode.incompatible_assignment
                                     ),
                                     detail=can_assign_return.display(),
@@ -12320,13 +12285,24 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             initializer_value = None
 
         if dataclass_field_name is not None:
-            dataclass_field_info = DataclassFieldInfo(
-                has_default=has_default,
-                init=init,
-                kw_only=kw_only,
-                alias=alias,
-                converter_input_type=dataclass_converter_input_type,
-            )
+            if field_options is None:
+                dataclass_field_info = DataclassFieldInfo(
+                    has_default=node.value is not None,
+                    kw_only=self.current_dataclass_kw_only_active,
+                )
+            else:
+                dataclass_field_info = DataclassFieldInfo(
+                    has_default=field_options.default is not None
+                    or field_options.default_factory is not None,
+                    init=field_options.init if field_options.init is not None else True,
+                    kw_only=(
+                        field_options.kw_only
+                        if field_options.kw_only is not None
+                        else self.current_dataclass_kw_only_active
+                    ),
+                    alias=field_options.alias,
+                    converter_input_type=dataclass_converter_input_type,
+                )
 
         ann_assign_declared_type = expected_type
         if explicit_type_alias_assignment_value is not None:
@@ -14815,23 +14791,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         else:
             keywords = []
 
-        dataclass_field_options: _DataclassFieldCallOptions | None = None
-        if (
-            self._is_current_class_dataclass()
-            and self.scopes.scope_type() == ScopeType.class_scope
-        ):
-            dataclass_field_options = (
-                self._infer_dataclass_field_call_options_from_resolved_call(
-                    callee_wrapped, args, keywords, node
-                )
-            )
-            if dataclass_field_options is not None:
-                self._dataclass_field_call_options_by_node[id(node)] = (
-                    dataclass_field_options
-                )
-            else:
-                self._dataclass_field_call_options_by_node.pop(id(node), None)
-
         if self._is_forbidden_annotated_call(callee_wrapped):
             self._show_error_if_checking(
                 node, "Annotated cannot be called", error_code=ErrorCode.not_callable
@@ -14840,19 +14799,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
 
         self._check_unsafe_super_protocol_call(node)
 
-        if (
-            dataclass_field_options is not None
-            and dataclass_field_options.bound_args_available
-            and not self._is_stdlib_dataclass_field_callee(callee_wrapped)
-        ):
-            with self.catch_errors():
-                return_value = self.check_call(
-                    node, callee_wrapped, args, keywords, allow_call=self.in_annotation
-                )
-        else:
-            return_value = self.check_call(
-                node, callee_wrapped, args, keywords, allow_call=self.in_annotation
-            )
+        return_value = self.check_call(
+            node, callee_wrapped, args, keywords, allow_call=self.in_annotation
+        )
 
         if self._is_checking():
             self.yield_checker.record_call(callee_wrapped, node)
@@ -16461,6 +16410,14 @@ def _dataclass_info_from_transform_info_and_options(
 def _get_bool_literal(node: ast.AST) -> bool | None:
     if isinstance(node, ast.Constant) and isinstance(node.value, bool):
         return node.value
+    return None
+
+
+def _get_bool_value(value: Value, ctx: NameCheckVisitor) -> bool | None:
+    if is_equivalent(value, KnownValue(True), ctx):
+        return True
+    if is_equivalent(value, KnownValue(False), ctx):
+        return False
     return None
 
 

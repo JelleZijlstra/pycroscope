@@ -1466,7 +1466,6 @@ class Signature:
         ctx: CheckCallContext,
         *,
         is_overload: bool = False,
-        use_partial_call: bool = False,
     ) -> CallReturn:
         variables = {key: composite.value for key, (_, composite) in bound_args.items()}
         composites = {param: composite for param, (_, composite) in bound_args.items()}
@@ -1730,7 +1729,7 @@ class Signature:
         else:
             runtime_return = None
         if (
-            (self.allow_partial_call or use_partial_call)
+            (self.allow_partial_call or ctx.use_partial_call)
             and runtime_return is None
             and not had_error
         ):
