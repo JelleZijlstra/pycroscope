@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Improve `TypeVar` inference for overloaded constructor callables, so patterns like `model_field(converter=dict, default=())` no longer fail by committing to the wrong `dict` overload too early.
+
 - Fix a method-binding regression in fallback analysis so inherited instance methods are bound exactly once, which removes false positive call-arity errors in projects that use transformed class attributes.
 
 - Fix a `Self` regression for generic receiver methods, so calls like `Query[Self].filter() -> Query[Self]` and `Getter[Self].get_one() -> Self | None` no longer get widened to nested receiver types during fallback analysis.

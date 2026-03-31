@@ -1056,8 +1056,6 @@ class TestDataclassTransform(TestNameCheckVisitorBase):
             pass
 
         class Model(Base):
-            # TODO this should be allowed but the typevar solver isn't powerful enough
-            # E: incompatible_call
             mapping_value: dict[str, str] = model_field(converter=dict, default=())
 
         def capybara():
@@ -1096,8 +1094,6 @@ class TestDataclassTransform(TestNameCheckVisitorBase):
             value: int = model_field(converter=to_int)
             class_value: ConverterClass = model_field(converter=ConverterClass)
             converted_default: int = model_field(converter=to_int, default_factory=str)
-            # TODO this should be allowed but the typevar solver isn't powerful enough
-            # E: incompatible_call
             mapping_value: dict[str, str] = model_field(converter=dict, default=())
 
             # E: incompatible_call

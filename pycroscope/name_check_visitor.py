@@ -123,7 +123,7 @@ from .functions import (
     compute_parameters,
     compute_value_of_function,
 )
-from .input_sig import ActualArguments, InputSigValue
+from .input_sig import InputSigValue
 from .maybe_asynq import asynq, qcore
 from .options import (
     BooleanOption,
@@ -168,8 +168,6 @@ from .signature import (
     ANY_SIGNATURE,
     ARGS,
     KWARGS,
-    Argument,
-    BoundArgs,
     BoundMethodSignature,
     CheckCallContext,
     ConcreteSignature,
@@ -180,7 +178,6 @@ from .signature import (
     Signature,
     SigParameter,
     _promote_constructor_type_arg,
-    preprocess_args,
 )
 from .stacked_scopes import (
     EMPTY_ORIGIN,
@@ -1728,31 +1725,6 @@ class _DataclassFieldCallOptions:
     default_factory: Value | None = None
     converter_value: Value | None = None
     converter_input_type: Value | None = None
-
-
-@dataclass
-class _DataclassFieldInferenceCallContext:
-    checker: "NameCheckVisitor"
-    errors: list[str] = dataclass_field(default_factory=list)
-
-    @property
-    def visitor(self) -> "NameCheckVisitor":
-        return self.checker
-
-    @property
-    def can_assign_ctx(self) -> "NameCheckVisitor":
-        return self.checker
-
-    def on_error(
-        self,
-        message: str,
-        *,
-        code: Error = ErrorCode.incompatible_call,
-        node: ast.AST | None = None,
-        detail: str | None = None,
-        replacement: node_visitor.Replacement | None = None,
-    ) -> None:
-        self.errors.append(message)
 
 
 @dataclass
@@ -5643,66 +5615,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             is_equivalent(callee, field_specifier, self)
             for field_specifier in self.current_dataclass_info.field_specifiers
         )
-
-    def _get_bound_args_for_dataclass_field_signature(
-        self,
-        signature: Signature,
-        actual_args: ActualArguments,
-        *,
-        is_overload: bool,
-        require_typevar_resolution: bool,
-    ) -> BoundArgs | None:
-        ctx = _DataclassFieldInferenceCallContext(self)
-        bound_args = signature.bind_arguments(actual_args, ctx)
-        if bound_args is None or not require_typevar_resolution:
-            return bound_args
-        ret = signature.check_call_preprocessed(
-            actual_args, ctx, is_overload=is_overload
-        )
-        if ret.is_error or ret.remaining_arguments is not None:
-            return None
-        return bound_args
-
-    def _is_stdlib_dataclass_field_callee(self, callee: Value) -> bool:
-        return isinstance(callee, KnownValue) and callee.val is dataclass_field
-
-    def _get_dataclass_field_call_bound_args_from_resolved_call(
-        self,
-        callee: Value,
-        args: Sequence[Composite],
-        keywords: Sequence[tuple[str | None, Composite]],
-        node: ast.Call,
-    ) -> BoundArgs | None:
-        signature = self.signature_from_value(callee, node)
-        if not isinstance(signature, (Signature, OverloadedSignature)):
-            return None
-
-        arguments = _arguments_from_call_composites(args, keywords)
-        preprocess_ctx = _DataclassFieldInferenceCallContext(self)
-        actual_args = preprocess_args(arguments, preprocess_ctx)
-        if actual_args is None:
-            return None
-        require_typevar_resolution = self._is_stdlib_dataclass_field_callee(callee)
-
-        if isinstance(signature, Signature):
-            return self._get_bound_args_for_dataclass_field_signature(
-                signature,
-                actual_args,
-                is_overload=False,
-                require_typevar_resolution=require_typevar_resolution,
-            )
-
-        last = len(signature.signatures) - 1
-        for i, overload_sig in enumerate(signature.signatures):
-            bound_args = self._get_bound_args_for_dataclass_field_signature(
-                overload_sig,
-                actual_args,
-                is_overload=i != last,
-                require_typevar_resolution=require_typevar_resolution,
-            )
-            if bound_args is not None:
-                return bound_args
-        return None
 
     def _infer_dataclass_field_call_options(
         self, result: Value
@@ -12175,7 +12087,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 value = self.visit(node.value)
                 if dataclass_field_name is not None:
                     field_options = self._infer_dataclass_field_call_options(value)
-                    print("FIOELD OPTIOSPNS", field_options, value)
                     if field_options is not None:
                         dataclass_converter_input_type = (
                             field_options.converter_input_type
@@ -16601,57 +16512,6 @@ def _is_dataclass_kw_only_marker_value(value: Value) -> bool:
     if isinstance(value, MultiValuedValue):
         return any(_is_dataclass_kw_only_marker_value(subval) for subval in value.vals)
     return isinstance(value, KnownValue) and value.val is marker
-
-
-def _arguments_from_call_composites(
-    args: Sequence[Composite], keywords: Sequence[tuple[str | None, Composite]]
-) -> list[Argument]:
-    return [
-        (
-            (Composite(arg.value.root, arg.varname, arg.node), ARGS)
-            if (
-                isinstance(arg.value, PartialValue)
-                and arg.value.operation is PartialValueOperation.UNPACK
-            )
-            else (arg, None)
-        )
-        for arg in args
-    ] + [
-        (value, KWARGS) if keyword is None else (value, keyword)
-        for keyword, value in keywords
-    ]
-
-
-def _dataclass_field_bound_arg(
-    bound_args: BoundArgs, name: str, *, include_default: bool = True
-) -> Value | None:
-    if name not in bound_args:
-        return None
-    if not include_default and bound_args[name][0] is type_evaluation.DEFAULT:
-        return None
-    return bound_args[name][1].value
-
-
-def _dataclass_field_bound_bool_arg(
-    bound_args: BoundArgs, name: str, *, include_default: bool = True
-) -> bool | None:
-    value = _dataclass_field_bound_arg(
-        bound_args, name, include_default=include_default
-    )
-    if isinstance(value, KnownValue) and isinstance(value.val, bool):
-        return value.val
-    return None
-
-
-def _dataclass_field_bound_str_arg(
-    bound_args: BoundArgs, name: str, *, include_default: bool = True
-) -> str | None:
-    value = _dataclass_field_bound_arg(
-        bound_args, name, include_default=include_default
-    )
-    if isinstance(value, KnownValue) and isinstance(value.val, str):
-        return value.val
-    return None
 
 
 def _is_absent_dataclass_default_value(value: Value) -> bool:

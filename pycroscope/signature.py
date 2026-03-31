@@ -120,6 +120,7 @@ from .value import (
     concrete_values_from_iterable,
     flatten_values,
     get_tv_map,
+    intersect_bounds_maps,
     iter_type_params_in_value,
     make_inference_typevar_map,
     receiver_to_self_type,
@@ -1732,6 +1733,8 @@ class Signature:
             (self.allow_partial_call or ctx.use_partial_call)
             and runtime_return is None
             and not had_error
+            and ctx.callee is not None
+            and ctx.node is not None
         ):
             partial_return = PartialCallValue(
                 callee=ctx.callee,
@@ -2729,6 +2732,7 @@ class OverloadedSignature:
         errors_per_overload = []
         bound_args_per_overload = []
         for sig in signatures:
+            assert ctx.visitor is not None
             with ctx.visitor.catch_errors() as caught_errors:
                 bound_args = sig.bind_arguments(actual_args, ctx)
             bound_args_per_overload.append(bound_args)
@@ -2755,6 +2759,7 @@ class OverloadedSignature:
         sigs = self._prefer_variadic_matches(sigs, actual_args)
         last = len(sigs) - 1
         for i, sig in enumerate(sigs):
+            assert ctx.visitor is not None
             with ctx.visitor.catch_errors() as caught_errors:
                 # We can't use check_call_with_bound_args here because we may
                 # rebind the arguments.
@@ -3792,10 +3797,10 @@ def signatures_have_relation(
         return unify_bounds_maps(bounds_maps)
     if isinstance(right, OverloadedSignature):
         # An overloaded signature can be assigned if any of the component signatures
-        # can be assigned. Strictly, an overloaded signature could satisfy a non-overloaded
-        # signature through a combination of overloads, but we make no attempt to support
-        # that.
+        # can be assigned. Preserve all successful bounds maps so later TypeVar solving
+        # can use constraints from other arguments to choose among viable overloads.
         errors = []
+        bounds_maps = []
         for sig in right.signatures:
             can_assign = signatures_have_relation(left, sig, relation, ctx)
             if isinstance(can_assign, CanAssignError):
@@ -3803,7 +3808,13 @@ def signatures_have_relation(
                     CanAssignError(f"overload {sig} is incompatible", [can_assign])
                 )
             else:
-                return can_assign
+                bounds_maps.append(can_assign)
+        if bounds_maps:
+            return (
+                bounds_maps[0]
+                if len(bounds_maps) == 1
+                else intersect_bounds_maps(bounds_maps)
+            )
         return CanAssignError("overloaded function is incompatible", errors)
 
     if isinstance(left, Signature):
