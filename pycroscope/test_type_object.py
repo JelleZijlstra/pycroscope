@@ -249,9 +249,13 @@ def test_runtime_declared_symbol_tracks_decorator_and_deprecation_metadata() -> 
 
     done = type_object.get_declared_symbol("done")
     assert done is not None
-    assert done.is_final
     assert FunctionDecorator.classmethod in done.function_decorators
-    assert FunctionDecorator.final in done.function_decorators
+    if getattr(getattr(Runtime.__dict__["done"], "__func__", None), "__final__", False):
+        assert done.is_final
+        assert FunctionDecorator.final in done.function_decorators
+    else:
+        assert not done.is_final
+        assert FunctionDecorator.final not in done.function_decorators
 
     old = type_object.get_declared_symbol("old")
     assert old is not None
