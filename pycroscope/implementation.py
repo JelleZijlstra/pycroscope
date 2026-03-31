@@ -107,6 +107,7 @@ from .value import (
     dump_value,
     flatten_values,
     get_mro,
+    get_tv_map,
     kv_pairs_from_mapping,
     len_of_value,
     replace_fallback,
@@ -2189,6 +2190,12 @@ def _assert_type_impl(ctx: CallContext) -> Value:
     typ = ctx.vars["typ"]
     expected_type = type_from_value(typ, visitor=ctx.visitor, node=ctx.node)
     can_assign = is_equivalent_with_reason(val, expected_type, ctx.visitor)
+    if isinstance(can_assign, CanAssignError) and any(
+        isinstance(subval, TypeVarValue) for subval in expected_type.walk_values()
+    ):
+        maybe_inferred = get_tv_map(expected_type, val, ctx.visitor)
+        if not isinstance(maybe_inferred, CanAssignError):
+            return val
     if isinstance(can_assign, CanAssignError):
         ctx.show_error(
             str(can_assign), error_code=ErrorCode.inference_failure, arg="val"

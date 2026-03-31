@@ -3217,7 +3217,7 @@ def _has_nested_self_typevar(value: Value) -> bool:
 
 def set_self(value: Value, self_value: Value) -> Value:
     self_type = receiver_to_self_type(self_value)
-    if isinstance(value, UnboundMethodValue) and _has_nested_self_typevar(self_type):
+    if _has_nested_self_typevar(self_type):
         return value
     self_type, restore_typevars = shield_nested_self_typevars(self_type)
     if isinstance(value, KnownValueWithTypeVars):

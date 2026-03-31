@@ -1709,37 +1709,16 @@ class TypeObject:
                 expected = _substitute_receiver_self_typevar(expected, other_val)
                 actual = AnyValue(AnySource.inference)
             else:
-                match = self.get_declared_symbol_with_owner(member, ctx)
-                if match is None:
-                    expected = ctx.get_attribute_from_value(
-                        self_val, member, prefer_typeshed=True
-                    )
-                    if expected is UNINITIALIZED_VALUE:
-                        # In static fallback mode, synthetic protocol members may not
-                        # have a retrievable attribute type. Keep enforcing member
-                        # presence.
-                        expected = AnyValue(AnySource.inference)
-                else:
-                    _, symbol = match
-                    expected = symbol.get_effective_type()
-                    if symbol.is_method and not isinstance(
-                        replace_fallback(expected), CallableValue
-                    ):
-                        expected_signature = _as_concrete_signature(
-                            ctx.signature_from_value(expected), ctx
-                        )
-                        if expected_signature is not None:
-                            expected = CallableValue(expected_signature)
-                    typed_self_value = _receiver_type_value(self_val, ctx)
-                    if typed_self_value is not None:
-                        expected = expected.substitute_typevars(
-                            _typevar_map_from_type_value(
-                                typed_self_value, self.get_declared_type_params()
-                            )
-                        )
+                expected = ctx.get_attribute_from_value(
+                    self_val, member, prefer_typeshed=True
+                )
+                if expected is UNINITIALIZED_VALUE:
+                    # In static fallback mode, synthetic protocol members may not have
+                    # a retrievable attribute type. Keep enforcing member presence.
+                    expected = AnyValue(AnySource.inference)
                 if protocol_self_typevar_map:
                     expected = expected.substitute_typevars(protocol_self_typevar_map)
-                if match is not None and symbol.is_method:
+                if _protocol_member_is_method(self, member, ctx):
                     expected = _bind_protocol_call_expected(
                         expected, other_val, ctx, protocol_self_value=self_val
                     )
@@ -3334,11 +3313,9 @@ def _bind_protocol_call_expected(
         return value
     signature = unwrapped.signature
     if isinstance(signature, BoundMethodSignature):
-        return value
-    receiver_reference = (
-        self_value if protocol_self_value is None else protocol_self_value
-    )
-    allow_any_annotation = protocol_self_value is not None
+        signature = signature.signature
+    receiver_reference = self_value
+    allow_any_annotation = False
     if isinstance(signature, (Signature, OverloadedSignature)):
         if isinstance(signature, Signature):
             has_receiver_parameter = _signature_has_receiver_parameter(
@@ -3362,10 +3339,7 @@ def _bind_protocol_call_expected(
         if not has_receiver_parameter:
             return value
         bind_kwargs: dict[str, object] = {"ctx": ctx}
-        if protocol_self_value is not None:
-            bind_kwargs["self_annotation_value"] = protocol_self_value
-        else:
-            bind_kwargs["self_value"] = self_value
+        bind_kwargs["self_value"] = self_value
         bound = signature.bind_self(**bind_kwargs)
         if bound is not None:
             return CallableValue(bound, unwrapped.typ)
@@ -3445,6 +3419,13 @@ def _collect_protocol_self_typevar_map(
             tv_map, self_annotation, receiver_for_match, ctx
         )
     return tv_map
+
+
+def _protocol_member_is_method(
+    tobj: TypeObject, member: str, ctx: CanAssignContext
+) -> bool:
+    match = tobj.get_declared_symbol_with_owner(member, ctx)
+    return match is not None and match[1].is_method
 
 
 def _substitute_receiver_self_typevar(value: Value, receiver_value: Value) -> Value:
@@ -3576,15 +3557,11 @@ def _merge_protocol_receiver_typevars(
     inferred = get_tv_map(self_annotation, receiver_for_match, ctx)
     if isinstance(inferred, CanAssignError):
         return tv_map
-    if inferred.has_typevar(TypeVarParam(SelfT)):
-        inferred = inferred - TypeVarParam(SelfT)
     translated = translate_generic_typevar_map(self_annotation, inferred, ctx)
     if not translated:
         translated = infer_positional_generic_typevar_map(
             self_annotation, receiver_for_match, ctx
         )
-    if translated.has_typevar(TypeVarParam(SelfT)):
-        translated = translated - TypeVarParam(SelfT)
     return _merge_protocol_receiver_typevar_maps(tv_map, inferred.merge(translated))
 
 

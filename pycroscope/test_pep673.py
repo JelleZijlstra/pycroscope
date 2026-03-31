@@ -528,6 +528,36 @@ class TestPEP673(TestNameCheckVisitorBase):
                 for obj in query:
                     assert_type(obj, Self)
 
+    # TODO: Switch this to run_in_both_module_modes=True once unimportable mode
+    # reports the protocol Self mismatch instead of import_failed.
+    @assert_passes()
+    def test_protocol_self_return_tracks_implementing_type(self):
+        from typing import Protocol
+
+        from typing_extensions import Self, assert_type
+
+        class ShapeProtocol(Protocol):
+            def set_scale(self, scale: float) -> Self: ...
+
+        class ReturnSelf:
+            def set_scale(self, scale: float) -> Self:
+                return self
+
+        class ReturnConcreteShape:
+            def set_scale(self, scale: float) -> "ReturnConcreteShape":
+                return self
+
+        class ReturnDifferentClass:
+            def set_scale(self, scale: float) -> ReturnConcreteShape:
+                return ReturnConcreteShape()
+
+        def accepts_shape(shape: ShapeProtocol) -> None:
+            assert_type(shape.set_scale(0.5), ShapeProtocol)
+
+        accepts_shape(ReturnSelf())
+        accepts_shape(ReturnConcreteShape())
+        accepts_shape(ReturnDifferentClass())  # E: incompatible_argument
+
     @assert_passes(run_in_both_module_modes=True)
     def test_method_binding_remains_stable_for_synthetic_self_lookup(self):
         from typing_extensions import assert_type
