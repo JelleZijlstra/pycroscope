@@ -303,6 +303,27 @@ class TypeVarMap:
             )
         return f"TypeVarMap({', '.join(parts)})"
 
+    def substitute_typevars(self, tv_map: "TypeVarMap") -> "TypeVarMap":
+        if not self or not tv_map:
+            return self
+        substituted_typevars = {
+            tv: value.substitute_typevars(tv_map)
+            for tv, value in self._typevars.items()
+        }
+        substituted_paramspecs = {
+            ps: ps_value.substitute_typevars(tv_map)
+            for ps, ps_value in self._paramspecs.items()
+        }
+        substituted_typevartuples = {
+            tv: substitute_typevartuple_binding(binding, tv_map)
+            for tv, binding in self._typevartuples.items()
+        }
+        return TypeVarMap(
+            typevars=substituted_typevars,
+            paramspecs=substituted_paramspecs,
+            typevartuples=substituted_typevartuples,
+        )
+
     @staticmethod
     def _paramspec_to_value(paramspec: "pycroscope.input_sig.InputSig") -> "Value":
         from pycroscope.input_sig import InputSigValue
@@ -1146,11 +1167,13 @@ class ParamSpecParam:
     def typevar(self) -> ParamSpecLike:
         return self.param_spec
 
-    def substitute_typevars(self, typevars: TypeVarMap) -> Value:
-        substituted = typevars.get_value(self)
+    def substitute_typevars(
+        self, typevars: TypeVarMap
+    ) -> "pycroscope.input_sig.InputSig":
+        substituted = typevars.get_paramspec(self)
         if substituted is not None:
             return substituted
-        return type_param_to_value(self)
+        return self
 
     def walk_values(self) -> Iterable[Value]:
         if self.default is not None:
@@ -1693,6 +1716,11 @@ class KnownValueWithTypeVars(KnownValue):
     typevars: TypeVarMap = field(compare=False)
     """TypeVars substituted on this value."""
 
+    def substitute_typevars(self, typevars: TypeVarMap) -> "KnownValueWithTypeVars":
+        return KnownValueWithTypeVars(
+            self.val, self.typevars.substitute_typevars(typevars).merge(typevars)
+        )
+
     def __post_init__(self) -> None:
         if not isinstance(self.typevars, TypeVarMap):
             raise TypeError(
@@ -1910,29 +1938,6 @@ class TypedValue(Value):
     def get_generic_args_for_type(
         self, typ: type | str, ctx: CanAssignContext
     ) -> list[Value] | None:
-        def _is_same_synthetic_class_key(left: type | str, right: type | str) -> bool:
-            if left == right:
-                return True
-            checker_ctx = safe_getattr(ctx, "checker", ctx)
-            get_synthetic_class = safe_getattr(checker_ctx, "get_synthetic_class", None)
-            if not callable(get_synthetic_class):
-                return False
-            if isinstance(left, type) and isinstance(right, str):
-                synthetic = get_synthetic_class(left)
-                return (
-                    synthetic is not None
-                    and isinstance(synthetic.class_type, TypedValue)
-                    and synthetic.class_type.typ == right
-                )
-            if isinstance(left, str) and isinstance(right, type):
-                synthetic = get_synthetic_class(right)
-                return (
-                    synthetic is not None
-                    and isinstance(synthetic.class_type, TypedValue)
-                    and synthetic.class_type.typ == left
-                )
-            return False
-
         if isinstance(self, GenericValue):
             args = self.args
         else:
@@ -1948,7 +1953,7 @@ class TypedValue(Value):
             if (
                 not raw_args
                 and isinstance(self, GenericValue)
-                and _is_same_synthetic_class_key(params_key, self.typ)
+                and params_key == self.typ
                 and self.args
             ):
                 # Synthetic generic metadata can occasionally lose self-mapping
@@ -1975,9 +1980,7 @@ class TypedValue(Value):
                     expanded_args.append(raw_arg)
                 return expanded_args
             return raw_args
-        if isinstance(self, GenericValue) and _is_same_synthetic_class_key(
-            typ, self.typ
-        ):
+        if isinstance(self, GenericValue) and typ == self.typ:
             # Preserve explicitly provided arguments when base expansion has
             # no self-entry for this synthetic specialization.
             return list(self.args)
@@ -4697,67 +4700,6 @@ def _is_property_initializer(value: Value) -> bool:
         or isinstance(value, TypedValue)
         and value.typ is property
     )
-
-
-def get_synthetic_declared_symbols(
-    synthetic_class: SyntheticClassObjectValue, ctx: CanAssignContext
-) -> MutableMapping[str, ClassSymbol]:
-    class_type = synthetic_class.class_type
-    if not isinstance(class_type, TypedValue):
-        return {}
-    return ctx.make_type_object(class_type.typ).get_synthetic_declared_symbols()
-
-
-def get_synthetic_declared_symbol(
-    synthetic_class: SyntheticClassObjectValue, name: str, ctx: CanAssignContext
-) -> ClassSymbol | None:
-    return get_synthetic_declared_symbols(synthetic_class, ctx).get(name)
-
-
-def get_synthetic_member_initializer(
-    synthetic_class: SyntheticClassObjectValue, name: str, ctx: CanAssignContext
-) -> Value | None:
-    symbol = get_synthetic_declared_symbol(synthetic_class, name, ctx)
-    if symbol is None:
-        return None
-    return symbol.initializer
-
-
-def get_inherited_synthetic_member_initializer(
-    synthetic_class: SyntheticClassObjectValue,
-    name: str,
-    ctx: CanAssignContext,
-    *,
-    seen: frozenset[type | str] = frozenset(),
-) -> Value | None:
-    class_type = synthetic_class.class_type
-    if not isinstance(class_type, TypedValue):
-        return None
-    class_key = class_type.typ
-    if class_key in seen:
-        return None
-    seen = seen | {class_key}
-    direct = get_synthetic_member_initializer(synthetic_class, name, ctx)
-    if direct is not None:
-        return direct
-    for base_value in synthetic_class.get_type_object(ctx).get_direct_bases():
-        if not isinstance(base_value, TypedValue):
-            continue
-        base_synthetic = ctx.get_synthetic_class(base_value.typ)
-        if base_synthetic is None:
-            continue
-        inherited = get_inherited_synthetic_member_initializer(
-            base_synthetic, name, ctx, seen=seen
-        )
-        if inherited is not None:
-            if isinstance(base_value, GenericValue):
-                substitutions = base_synthetic.get_type_object(ctx).get_substitutions(
-                    base_value.args
-                )
-                if substitutions:
-                    inherited = inherited.substitute_typevars(substitutions)
-            return inherited
-    return None
 
 
 @dataclass(frozen=True)

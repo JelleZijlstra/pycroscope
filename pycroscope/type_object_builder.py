@@ -18,7 +18,7 @@ from .annotations import (
 from .arg_spec import ArgSpecCache
 from .checker import Checker
 from .safe import is_namedtuple_class, safe_getattr
-from .type_object import DataclassFieldRecord, merge_declared_symbol
+from .type_object import DataclassFieldRecord
 from .value import (
     AnySource,
     AnyValue,
@@ -311,13 +311,6 @@ def _is_runtime_member_final(raw_value: object) -> bool:
             safe_getattr(raw_value, "__func__", None), "__final__", False
         )
     return False
-
-
-def _add_synthetic_declared_symbols(
-    declared_symbols: Mapping[str, ClassSymbol], symbols: dict[str, ClassSymbol]
-) -> None:
-    for name, symbol in declared_symbols.items():
-        symbols[name] = merge_declared_symbol(symbols.get(name), symbol)
 
 
 def _runtime_property_info(raw_value: property, owner: type) -> PropertyInfo:
