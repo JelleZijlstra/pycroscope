@@ -470,6 +470,8 @@ class TypeshedFinder:
             "typing_extensions.Protocol",
         ):
             return []
+        if "." not in fq_name:
+            return None
         info = self._get_info_for_name(fq_name)
         mod, _ = fq_name.rsplit(".", maxsplit=1)
         return self._get_bases_from_info(info, mod, fq_name)
@@ -493,6 +495,9 @@ class TypeshedFinder:
         try:
             return self._attribute_cache[key]
         except KeyError:
+            if "." not in fq_name:
+                self._attribute_cache[key] = UNINITIALIZED_VALUE
+                return UNINITIALIZED_VALUE
             info = self._get_info_for_name(fq_name)
             mod, _ = fq_name.rsplit(".", maxsplit=1)
             val = self._get_attribute_from_info(info, mod, attr, on_class=on_class)
@@ -513,6 +518,9 @@ class TypeshedFinder:
         try:
             return self._direct_symbol_cache[key]
         except KeyError:
+            if "." not in fq_name:
+                self._direct_symbol_cache[key] = None
+                return None
             info = self._get_info_for_name(fq_name)
             mod, _ = fq_name.rsplit(".", maxsplit=1)
             symbol = self._get_direct_symbol_from_info(info, mod, attr)

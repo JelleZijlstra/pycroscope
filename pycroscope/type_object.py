@@ -29,7 +29,7 @@ if TYPE_CHECKING:
     from .relations import Relation
 
 from .annotations import make_type_param, type_from_runtime
-from .input_sig import ActualArguments, AnySig, FullSignature, InputSigValue
+from .input_sig import AnySig, FullSignature, InputSigValue
 from .options import PyObjectSequenceOption
 from .relations import (
     infer_positional_generic_typevar_map,
@@ -53,10 +53,8 @@ from .signature import (
     ParameterKind,
     Signature,
     SigParameter,
-    check_call_preprocessed,
     mark_ellipsis_style_any_tail_parameters,
 )
-from .stacked_scopes import Composite
 from .value import (
     UNINITIALIZED_VALUE,
     AnnotatedValue,
@@ -1679,11 +1677,13 @@ class TypeObject:
                             )
                         expected = CallableValue(expected_signature)
                 expected = _bind_protocol_call_expected(
-                    expected, other_val, ctx, protocol_self_value=self_val
+                    expected,
+                    other_val,
+                    ctx,
+                    member=member,
+                    protocol_self_value=self_val,
                 )
-                expected = expected.substitute_typevars(
-                    TypeVarMap(typevars={SelfT: other_val})
-                )
+                expected = _substitute_receiver_self_typevar(expected, other_val)
                 if other_type_obj is not None and other_type_obj.is_protocol():
                     actual = _get_protocol_call_member_initializer(
                         other_type_obj.typ, other_val, ctx
@@ -1710,9 +1710,7 @@ class TypeObject:
                     # In static fallback mode, synthetic protocol members may not have
                     # a retrievable attribute type. Keep enforcing member presence.
                     expected = AnyValue(AnySource.inference)
-                expected = expected.substitute_typevars(
-                    TypeVarMap(typevars={SelfT: other_val})
-                )
+                expected = _substitute_receiver_self_typevar(expected, other_val)
                 actual = AnyValue(AnySource.inference)
             else:
                 expected = ctx.get_attribute_from_value(
@@ -1724,9 +1722,15 @@ class TypeObject:
                     expected = AnyValue(AnySource.inference)
                 if protocol_self_typevar_map:
                     expected = expected.substitute_typevars(protocol_self_typevar_map)
-                expected = expected.substitute_typevars(
-                    TypeVarMap(typevars={SelfT: other_val})
-                )
+                if _protocol_member_is_method(self, member, ctx):
+                    expected = _bind_protocol_call_expected(
+                        expected,
+                        other_val,
+                        ctx,
+                        member=member,
+                        protocol_self_value=self_val,
+                    )
+                expected = _substitute_receiver_self_typevar(expected, other_val)
                 actual = ctx.get_attribute_from_value(other_val, member)
                 if (
                     class_object_check
@@ -2119,8 +2123,22 @@ def _is_writable_member(
     if resolved_access.symbol.is_classvar or resolved_access.symbol.is_method:
         return False
     if resolved_access.is_property:
+        if not _attribute_blocks_writes(resolved_access, ctx):
+            return True
         return resolved_access.property_has_setter
     return not resolved_access.symbol.is_readonly and not _is_frozen_dataclass(tobj)
+
+
+def _attribute_blocks_writes(
+    access: TypeObjectAttribute, ctx: CanAssignContext
+) -> bool:
+    if not access.is_property:
+        return False
+    if access.symbol.property_info is not None:
+        return True
+    return _descriptor_has_method(access.raw_value, "__set__", ctx) or (
+        _descriptor_has_method(access.raw_value, "__delete__", ctx)
+    )
 
 
 def _resolve_member_access(
@@ -2500,7 +2518,7 @@ def _specialize_self_returning_classmethod(
 ) -> Value:
     if receiver_value is None or not isinstance(normalized_attr, CallableValue):
         return normalized_attr
-    receiver_for_self: TypedValue | TypeVarValue
+    receiver_for_self: TypedValue | TypeVarValue | GenericValue
     match receiver_value:
         case KnownValueWithTypeVars() if isinstance(receiver_value.val, type):
             type_params = ctx.get_type_parameters(receiver_value.val)
@@ -2516,6 +2534,10 @@ def _specialize_self_returning_classmethod(
                 )
             else:
                 receiver_for_self = TypedValue(receiver_value.val)
+        case SubclassValue(
+            typ=TypeVarValue() | GenericValue() | TypedValue() as subclass_type
+        ):
+            receiver_for_self = subclass_type
         case TypeVarValue():
             receiver_for_self = receiver_value
         case GenericValue():
@@ -2688,16 +2710,27 @@ def _resolve_descriptor_access(
         symbol.annotation is not None
         and not symbol.is_method
         and not symbol.is_classvar
-        and not raw_attribute.is_metaclass_owner
-        and not _descriptor_has_method(raw_attribute.declared_value, "__get__", ctx)
-        and not _descriptor_has_method(raw_attribute.declared_value, "__set__", ctx)
-        and not _descriptor_has_method(raw_attribute.declared_value, "__delete__", ctx)
+        and not (
+            _descriptor_has_method(raw_attribute.raw_value, "__get__", ctx)
+            or _descriptor_has_method(raw_attribute.raw_value, "__set__", ctx)
+            or _descriptor_has_method(raw_attribute.raw_value, "__delete__", ctx)
+        )
+    ):
+        return None
+    raw_has_get = _descriptor_has_method(raw_attribute.raw_value, "__get__", ctx)
+    raw_has_set = _descriptor_has_method(raw_attribute.raw_value, "__set__", ctx)
+    raw_has_delete = _descriptor_has_method(raw_attribute.raw_value, "__delete__", ctx)
+    if (
+        symbol.annotation is not None
+        and not symbol.is_method
+        and not symbol.is_classvar
+        and not raw_has_get
+        and not raw_has_set
+        and not raw_has_delete
     ):
         return None
     descriptor_value = raw_attribute.raw_value
-    if symbol.annotation is not None and _descriptor_has_method(
-        raw_attribute.declared_value, "__get__", ctx
-    ):
+    if _descriptor_has_method(raw_attribute.declared_value, "__get__", ctx):
         descriptor_value = raw_attribute.declared_value
     descriptor_get_value = _get_descriptor_get_value(
         descriptor_value,
@@ -2708,6 +2741,17 @@ def _resolve_descriptor_access(
         is_metaclass_owner=raw_attribute.is_metaclass_owner,
     )
     if descriptor_get_value is None:
+        if (
+            descriptor_like_instance_access
+            and raw_attribute.is_metaclass_owner
+            and symbol.annotation is not None
+            and raw_has_get
+        ):
+            return _ResolvedAttributeAccess(
+                value=raw_attribute.declared_value,
+                is_property=True,
+                property_has_setter=raw_has_set,
+            )
         return None
     if (
         descriptor_like_instance_access
@@ -2718,7 +2762,7 @@ def _resolve_descriptor_access(
     return _ResolvedAttributeAccess(
         value=descriptor_get_value,
         is_property=descriptor_like_instance_access,
-        property_has_setter=_descriptor_has_setter(raw_attribute.raw_value, ctx),
+        property_has_setter=raw_has_set,
     )
 
 
@@ -2863,21 +2907,74 @@ def _get_descriptor_get_value(
     return_value = get_signature.return_value
     if not on_class:
         return_value = subtract_values(
-            return_value, receiver_to_self_type(descriptor), ctx
+            return_value, receiver_to_self_type(descriptor, ctx), ctx
         )
     return return_value
 
 
-def _descriptor_has_setter(descriptor: Value, ctx: CanAssignContext) -> bool:
-    """Whether the descriptor exposes a ``__set__`` method."""
-    return _descriptor_has_method(descriptor, "__set__", ctx)
+def _runtime_descriptor_owner(descriptor: KnownValue | TypedValue) -> type | None:
+    if isinstance(descriptor, KnownValue) and not isinstance(descriptor.val, type):
+        return type(descriptor.val)
+    if isinstance(descriptor, TypedValue) and isinstance(descriptor.typ, type):
+        return descriptor.typ
+    return None
+
+
+def _runtime_type_declares_method(typ: type, method_name: str) -> bool:
+    return any(method_name in cls.__dict__ for cls in typ.__mro__)
 
 
 def _descriptor_has_method(
     descriptor: Value, method_name: str, ctx: CanAssignContext
 ) -> bool:
     """Whether the descriptor provides a retrievable dunder method."""
-    return _descriptor_method_signature_any(descriptor, method_name, ctx) is not None
+    descriptor = replace_fallback(descriptor)
+    if isinstance(descriptor, AnnotatedValue):
+        return _descriptor_has_method(descriptor.value, method_name, ctx)
+    if isinstance(descriptor, KnownValue):
+        runtime_owner = _runtime_descriptor_owner(descriptor)
+        if runtime_owner is not None and not _runtime_type_declares_method(
+            runtime_owner, method_name
+        ):
+            return False
+        if (
+            descriptor.get_type_object(ctx).get_declared_symbol_from_mro(
+                method_name, ctx
+            )
+            is None
+        ):
+            return False
+        return (
+            _descriptor_method_signature_any(descriptor, method_name, ctx) is not None
+        )
+    if isinstance(descriptor, TypedValue):
+        runtime_owner = _runtime_descriptor_owner(descriptor)
+        if runtime_owner is not None and not _runtime_type_declares_method(
+            runtime_owner, method_name
+        ):
+            return False
+        if (
+            descriptor.get_type_object(ctx).get_declared_symbol_from_mro(
+                method_name, ctx
+            )
+            is None
+        ):
+            return False
+        return (
+            _descriptor_method_signature_any(descriptor, method_name, ctx) is not None
+        )
+    if isinstance(descriptor, SyntheticClassObjectValue):
+        if (
+            ctx.make_type_object(
+                descriptor.class_type.typ
+            ).get_declared_symbol_from_mro(method_name, ctx)
+            is None
+        ):
+            return False
+        return (
+            _descriptor_method_signature_any(descriptor, method_name, ctx) is not None
+        )
+    return False
 
 
 def _descriptor_method_match(
@@ -2908,7 +3005,32 @@ def _descriptor_method_signature_any(
     if not isinstance(descriptor, (KnownValue, TypedValue, SyntheticClassObjectValue)):
         return None
     descriptor, restore_typevars = shield_nested_self_typevars(descriptor)
-    method_value = ctx.get_attribute_from_value(descriptor, method_name)
+    method_value = UNINITIALIZED_VALUE
+    if isinstance(descriptor, SyntheticClassObjectValue):
+        if isinstance(descriptor.class_type, TypedValue):
+            descriptor_tobj = ctx.make_type_object(descriptor.class_type.typ)
+            if descriptor_tobj.get_declared_symbol_from_mro(method_name, ctx) is None:
+                return None
+            attribute = descriptor_tobj.get_attribute(
+                method_name, ctx, on_class=False, receiver_value=descriptor
+            )
+            if attribute is not None:
+                method_value = attribute.value
+    else:
+        assert isinstance(descriptor, (KnownValue, TypedValue))
+        runtime_owner = _runtime_descriptor_owner(descriptor)
+        if runtime_owner is not None and not _runtime_type_declares_method(
+            runtime_owner, method_name
+        ):
+            return None
+        descriptor_tobj = descriptor.get_type_object(ctx)
+        if descriptor_tobj.get_declared_symbol_from_mro(method_name, ctx) is None:
+            return None
+        attribute = descriptor_tobj.get_attribute(
+            method_name, ctx, on_class=False, receiver_value=descriptor
+        )
+        if attribute is not None:
+            method_value = attribute.value
     if method_value is UNINITIALIZED_VALUE:
         return None
     signature = _signature_from_descriptor_attribute(method_value, ctx)
@@ -2952,21 +3074,37 @@ def _descriptor_signature_accepts_args(
 ) -> bool:
     """Cheap yes/no call check for simulated descriptor invocations.
 
-    This intentionally uses the shared signature call checker rather than
-    reimplementing argument assignability rules here. The helper still exists
-    because we need a boolean filter while iterating overloads.
+    Descriptor matching is especially sensitive to symbolic ``Self`` values.
+    Use direct parameter/argument assignability here so overload selection does
+    not trigger the broader call inference machinery.
     """
-    actual_args = ActualArguments(
-        positionals=[(True, Composite(arg)) for arg in args],
-        star_args=None,
-        keywords={},
-        star_kwargs=None,
-        kwargs_required=False,
-        pos_or_keyword_params=frozenset(),
-    )
-    return not isinstance(
-        check_call_preprocessed(signature, actual_args, ctx), CanAssignError
-    )
+    from .relations import Relation, has_relation
+
+    positional_params = [
+        parameter
+        for parameter in signature.parameters.values()
+        if parameter.kind
+        in (ParameterKind.POSITIONAL_ONLY, ParameterKind.POSITIONAL_OR_KEYWORD)
+    ]
+    variadic_param = signature.get_param_of_kind(ParameterKind.VAR_POSITIONAL)
+    if len(args) > len(positional_params) and variadic_param is None:
+        return False
+    for index, arg in enumerate(args):
+        if index < len(positional_params):
+            parameter = positional_params[index]
+        elif variadic_param is not None:
+            parameter = variadic_param
+        else:
+            return False
+        if isinstance(
+            has_relation(parameter.annotation, arg, Relation.ASSIGNABLE, ctx),
+            CanAssignError,
+        ):
+            return False
+    for parameter in positional_params[len(args) :]:
+        if parameter.default is None:
+            return False
+    return True
 
 
 def _substitute_symbol_value(value: Value, substitutions: TypeVarMap) -> Value:
@@ -3250,18 +3388,25 @@ def _bind_protocol_call_expected(
     self_value: Value,
     ctx: CanAssignContext,
     *,
+    member: str,
     protocol_self_value: Value | None = None,
 ) -> Value:
     unwrapped = replace_fallback(value)
     if not isinstance(unwrapped, CallableValue):
         return value
     signature = unwrapped.signature
-    if isinstance(signature, BoundMethodSignature):
-        return value
-    receiver_reference = (
-        self_value if protocol_self_value is None else protocol_self_value
-    )
-    allow_any_annotation = protocol_self_value is not None
+    if member == "__call__":
+        if isinstance(signature, BoundMethodSignature):
+            return value
+        receiver_reference = (
+            self_value if protocol_self_value is None else protocol_self_value
+        )
+        allow_any_annotation = protocol_self_value is not None
+    else:
+        if isinstance(signature, BoundMethodSignature):
+            signature = signature.signature
+        receiver_reference = self_value
+        allow_any_annotation = False
     if isinstance(signature, (Signature, OverloadedSignature)):
         if isinstance(signature, Signature):
             has_receiver_parameter = _signature_has_receiver_parameter(
@@ -3308,7 +3453,7 @@ def _get_protocol_call_member_initializer(
     if call_member is UNINITIALIZED_VALUE:
         return call_member
     return _bind_protocol_call_expected(
-        call_member, self_value, ctx, protocol_self_value=self_value
+        call_member, self_value, ctx, member="__call__", protocol_self_value=self_value
     )
 
 
@@ -3363,6 +3508,28 @@ def _collect_protocol_self_typevar_map(
             tv_map, self_annotation, receiver_for_match, ctx
         )
     return tv_map
+
+
+def _protocol_member_is_method(
+    tobj: TypeObject, member: str, ctx: CanAssignContext
+) -> bool:
+    match = tobj.get_declared_symbol_with_owner(member, ctx)
+    return match is not None and match[1].is_method
+
+
+def _substitute_receiver_self_typevar(value: Value, receiver_value: Value) -> Value:
+    """Substitute only receiver-bound ``Self`` occurrences.
+
+    Nested ``Self`` values may belong to surrounding type arguments such as
+    ``Iterable[Self]`` and should not be rebound to the protocol receiver.
+    """
+    shielded, restore_typevars = shield_nested_self_typevars(value)
+    substituted = shielded.substitute_typevars(
+        TypeVarMap(typevars={SelfT: receiver_value})
+    )
+    if restore_typevars:
+        substituted = substituted.substitute_typevars(restore_typevars)
+    return substituted
 
 
 def _get_protocol_receiver_annotation(

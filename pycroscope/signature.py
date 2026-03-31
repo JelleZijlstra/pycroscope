@@ -1568,11 +1568,28 @@ class Signature:
                             typevar_values, typevar, value
                         )
             if SelfT in self.inferable_typevars and self.parameters:
-                first_param_name = next(iter(self.parameters))
-                if first_param_name in bound_args and isinstance(
+                self_value = None
+                used_bound_receiver = False
+                if (
+                    self.bound_receiver_param_name is not None
+                    and self.bound_receiver_param_name in composites
+                ):
+                    self_value = composites[self.bound_receiver_param_name].value
+                    used_bound_receiver = True
+                else:
+                    first_param_name = next(iter(self.parameters))
+                    if first_param_name in bound_args:
+                        self_value = bound_args[first_param_name][1].value
+                if self_value is not None and isinstance(
                     _get_typevar_map_value(typevar_values, SelfT), AnyValue
                 ):
-                    self_value = bound_args[first_param_name][1].value
+                    if used_bound_receiver and isinstance(
+                        self_value, (TypedValue, GenericValue)
+                    ):
+                        self_value = None
+                if self_value is not None and isinstance(
+                    _get_typevar_map_value(typevar_values, SelfT), AnyValue
+                ):
                     if isinstance(
                         self_value, KnownValueWithTypeVars
                     ) and self_value.typevars.has_typevar(TypeVarParam(SelfT)):

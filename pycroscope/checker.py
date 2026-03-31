@@ -104,6 +104,7 @@ from .value import (
     VariableNameValue,
     _iter_typevar_map_items,
     _typevar_map_from_varlike_pairs,
+    bound_self_type_from_class_key,
     flatten_values,
     get_inherited_synthetic_member_initializer,
     get_single_typevartuple_param,
@@ -139,6 +140,16 @@ def _replace_signature_return(
             return_override=signature.return_override,
         )
     return signature
+
+
+def _bound_method_self_value_from_typevars(typevars: TypeVarMap) -> Value | None:
+    direct_self = typevars.get_typevar(TypeVarParam(SelfT))
+    if direct_self is not None:
+        return direct_self
+    for _, value in _iter_typevar_map_items(typevars):
+        if isinstance(value, TypeVarValue) and value.typevar_param.typevar is SelfT:
+            return value
+    return None
 
 
 def _infer_type_params_from_signature(signature: MaybeSignature) -> list[TypeParam]:
@@ -2179,6 +2190,23 @@ class Checker:
                 )
         value = replace_fallback(value)
         if isinstance(value, KnownValue):
+            if (
+                isinstance(value, KnownValueWithTypeVars)
+                and isinstance(value.val, types.MethodType)
+                and safe_isinstance(value.val.__self__, type)
+            ):
+                receiver_self = _bound_method_self_value_from_typevars(value.typevars)
+                if receiver_self is not None:
+                    unbound_sig = self.arg_spec_cache.get_argspec(value.val.__func__)
+                    if unbound_sig is not None:
+                        bound = make_bound_method(
+                            unbound_sig,
+                            Composite(SubclassValue.make(receiver_self)),
+                            get_return_override(unbound_sig),
+                            ctx=self,
+                        )
+                        if bound is not None:
+                            return bound.substitute_typevars(value.typevars)
             origin = safe_getattr(value.val, "__origin__", None)
             args = safe_getattr(value.val, "__args__", None)
             if isinstance(origin, type) and isinstance(args, tuple):
@@ -3034,4 +3062,24 @@ class CheckerAttrContext(AttrContext):
         return value
 
     def get_bound_self_type(self) -> Value | None:
+        root_value = replace_fallback(self.root_value)
+        if isinstance(root_value, AnnotatedValue):
+            root_value = root_value.value
+        if (
+            isinstance(root_value, TypeVarValue)
+            and root_value.typevar_param.typevar is SelfT
+        ):
+            return root_value
+        if isinstance(root_value, (TypedValue, GenericValue)):
+            return bound_self_type_from_class_key(root_value)
+        if isinstance(root_value, SubclassValue):
+            return bound_self_type_from_class_key(root_value.typ)
+        if isinstance(
+            root_value, KnownValueWithTypeVars
+        ) and root_value.typevars.has_typevar(TypeVarParam(SelfT)):
+            self_value = root_value.typevars.get_typevar(TypeVarParam(SelfT))
+            assert self_value is not None
+            return self_value
+        if isinstance(root_value, KnownValue) and not isinstance(root_value.val, type):
+            return bound_self_type_from_class_key(type(root_value.val))
         return None

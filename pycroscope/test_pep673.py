@@ -48,6 +48,25 @@ class TestPEP673(TestNameCheckVisitorBase):
             assert_type(Y.from_config(), Y)
 
     @assert_passes()
+    def test_classmethod_constructor_with_arguments(self):
+        from typing_extensions import Self
+
+        class Base:
+            def __init__(self, x: int) -> None:
+                self.x = x
+
+            @classmethod
+            def make(cls, x: int) -> Self:
+                return cls(x)
+
+        class Child(Base):
+            pass
+
+        def capybara(cls: type[Child]) -> None:
+            assert_type(Child.make(1), Child)
+            assert_type(cls.make(1), Child)
+
+    @assert_passes()
     def test_implicit_receiver_is_bound_self_in_method_body(self):
         from typing_extensions import Self, assert_type
 
@@ -477,6 +496,107 @@ class TestPEP673(TestNameCheckVisitorBase):
 
             def get(self) -> Self | None:
                 return self.parent
+
+            def set(self, parent: Self | None) -> None:
+                self.parent = parent
+
+    # TODO: Switch this to run_in_both_module_modes=True once unimportable mode
+    # preserves Query[Self] as Iterable[Self] inside classmethods.
+    @assert_passes()
+    def test_iterable_of_self_inside_classmethod(self):
+        from collections.abc import Iterable, Iterator
+        from typing import Generic, TypeVar
+
+        from typing_extensions import Self, assert_type
+
+        T = TypeVar("T")
+
+        class Query(Generic[T]):
+            def __iter__(self) -> Iterator[T]:
+                raise NotImplementedError
+
+        class Base:
+            @classmethod
+            def select(cls) -> Query[Self]:
+                raise NotImplementedError
+
+            @classmethod
+            def process(cls, query: Iterable[Self] | None = None) -> None:
+                assert_type(cls.select(), Query[Self])
+                if query is None:
+                    query = cls.select()
+                for obj in query:
+                    assert_type(obj, Self)
+
+    # TODO: Switch this to run_in_both_module_modes=True once unimportable mode
+    # reports the protocol Self mismatch instead of import_failed.
+    @assert_passes()
+    def test_protocol_self_return_tracks_implementing_type(self):
+        from typing import Protocol
+
+        from typing_extensions import Self, assert_type
+
+        class ShapeProtocol(Protocol):
+            def set_scale(self, scale: float) -> Self: ...
+
+        class ReturnSelf:
+            def set_scale(self, scale: float) -> Self:
+                return self
+
+        class ReturnConcreteShape:
+            def set_scale(self, scale: float) -> "ReturnConcreteShape":
+                return self
+
+        class ReturnDifferentClass:
+            def set_scale(self, scale: float) -> ReturnConcreteShape:
+                return ReturnConcreteShape()
+
+        def accepts_shape(shape: ShapeProtocol) -> None:
+            assert_type(shape.set_scale(0.5), ShapeProtocol)
+
+        accepts_shape(ReturnSelf())
+        accepts_shape(ReturnConcreteShape())
+        accepts_shape(ReturnDifferentClass())  # E: incompatible_argument
+
+    @assert_passes(run_in_both_module_modes=True)
+    def test_method_binding_remains_stable_for_synthetic_self_lookup(self):
+        from typing_extensions import assert_type
+
+        class Base:
+            def fill(self, field: str) -> str:
+                return field
+
+            def fill_default(self) -> str:
+                result = self.fill("x")
+                assert_type(result, str)
+                return result
+
+        class Child(Base):
+            pass
+
+        def capybara(child: Child) -> None:
+            assert_type(child.fill_default(), str)
+
+    # TODO: Switch this to run_in_both_module_modes=True once unimportable mode
+    # preserves the nested Self return from get_redirect_target().
+    @assert_passes()
+    def test_nested_self_from_optional_method_result(self):
+        from typing_extensions import Self, assert_type
+
+        class Base:
+            def get_redirect_target(self) -> Self | None:
+                return None
+
+            def resolve_redirect(self) -> Self:
+                if target := self.get_redirect_target():
+                    return target
+                return self
+
+        class Child(Base):
+            pass
+
+        def capybara(child: Child) -> None:
+            assert_type(child.resolve_redirect(), Child)
 
     @assert_passes()
     def test_classvar(self):

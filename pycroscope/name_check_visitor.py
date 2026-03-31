@@ -221,6 +221,7 @@ from .type_object import (
     NamedTupleField,
     TypeObject,
     TypeObjectAttribute,
+    _attribute_blocks_writes,
     _class_key_from_value,
     _is_definitely_class_object_value,
     _iter_base_type_objects,
@@ -312,6 +313,7 @@ from .value import (
     get_typevar_variance,
     is_async_iterable,
     is_iterable,
+    is_self_typevar_value,
     is_union,
     iter_type_params_in_value,
     kv_pairs_from_mapping,
@@ -10638,12 +10640,10 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 except Exception:
                     runtime_value = AnyValue(AnySource.inference)
             else:
-                with self.catch_errors() as runtime_errors:
-                    runtime_value = self._visit_binop_no_mvv(
-                        left_composite, op, right_composite, source_node, allow_call
-                    )
-                if runtime_errors:
-                    runtime_value = AnyValue(AnySource.inference)
+                # Symbolic type-form operands such as ``Self`` should keep the
+                # partial union shape instead of falling back to runtime
+                # ``__or__``/``__ror__`` calls, which can bind them incorrectly.
+                runtime_value = AnyValue(AnySource.inference)
             return PartialValue(
                 PartialValueOperation.BITOR, left, source_node, (right,), runtime_value
             )
@@ -14300,13 +14300,14 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 error_code=ErrorCode.incompatible_assignment,
             )
             return
-        if attr.is_property and not attr.property_has_setter:
-            self._show_error_if_checking(
-                node,
-                f"Cannot {wording} read-only property {node.attr!r}",
-                error_code=ErrorCode.incompatible_assignment,
-            )
-            return
+        if attr.is_property and _attribute_blocks_writes(attr, self):
+            if not attr.property_has_setter:
+                self._show_error_if_checking(
+                    node,
+                    f"Cannot {wording} read-only property {node.attr!r}",
+                    error_code=ErrorCode.incompatible_assignment,
+                )
+                return
         self._check_deprecated_property_setter(node, root)
         if (
             attr.symbol.is_readonly
@@ -17083,10 +17084,14 @@ def _base_expression_contains_self(value: Value) -> bool:
 
 
 def _is_self_type_value(value: Value) -> bool:
-    return isinstance(value, TypeVarValue) and value.typevar_param.typevar is SelfT
+    return is_self_typevar_value(value, include_nested_placeholders=True)
 
 
 def _is_self_expression_value(value: Value) -> bool:
+    if is_self_typevar_value(value, include_nested_placeholders=True):
+        return True
+    if isinstance(value, KnownValueWithTypeVars):
+        return is_typing_name(value.val, "Self")
     return isinstance(value, KnownValue) and is_typing_name(value.val, "Self")
 
 
@@ -17110,7 +17115,7 @@ def _value_carries_self_binding(value: Value) -> bool:
     ):
         return True
     return any(
-        isinstance(subval, TypeVarValue) and subval.typevar_param.typevar is SelfT
+        is_self_typevar_value(subval, include_nested_placeholders=True)
         for subval in value.walk_values()
     )
 

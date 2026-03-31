@@ -3104,6 +3104,21 @@ SelfTVV = TypeVarValue(TypeVarParam(SelfT))
 _NestedSelfT = TypeVar("_NestedSelfT")
 
 
+def is_self_typevar(
+    typevar: TypeVarType, *, include_nested_placeholders: bool = False
+) -> bool:
+    return typevar is SelfT or (include_nested_placeholders and typevar is _NestedSelfT)
+
+
+def is_self_typevar_value(
+    value: Value, *, include_nested_placeholders: bool = False
+) -> bool:
+    return isinstance(value, TypeVarValue) and is_self_typevar(
+        value.typevar_param.typevar,
+        include_nested_placeholders=include_nested_placeholders,
+    )
+
+
 def bound_self_type_from_class_key(
     current_class_key: Value | type | str,
 ) -> TypeVarValue:
@@ -3142,13 +3157,32 @@ def shield_nested_self_typevars(value: Value) -> tuple[Value, TypeVarMap]:
     ), TypeVarMap(typevars={_NestedSelfT: first_self_typevar})
 
 
-def receiver_to_self_type(self_value: Value) -> Value:
+def receiver_to_self_type(
+    self_value: Value, ctx: CanAssignContext | None = None
+) -> Value:
     if isinstance(
         self_value, KnownValueWithTypeVars
     ) and self_value.typevars.has_typevar(TypeVarParam(SelfT)):
         self_substitution = self_value.typevars.get_typevar(TypeVarParam(SelfT))
         assert self_substitution is not None
-        return receiver_to_self_type(self_substitution)
+        return receiver_to_self_type(self_substitution, ctx)
+    if (
+        ctx is not None
+        and isinstance(self_value, KnownValueWithTypeVars)
+        and not isinstance(self_value.val, type)
+    ):
+        runtime_type = type(self_value.val)
+        type_params = ctx.get_type_parameters(runtime_type)
+        if type_params:
+            return GenericValue(
+                runtime_type,
+                [
+                    self_value.typevars.get_value(
+                        type_param, default_value_for_type_param(type_param)
+                    )
+                    for type_param in type_params
+                ],
+            )
     if isinstance(self_value, SequenceValue):
         if self_value.typ in (list, set):
             return self_value.simplify()
@@ -3183,12 +3217,17 @@ def _has_nested_self_typevar(value: Value) -> bool:
 
 def set_self(value: Value, self_value: Value) -> Value:
     self_type = receiver_to_self_type(self_value)
-    if isinstance(value, UnboundMethodValue) and _has_nested_self_typevar(self_type):
+    if _has_nested_self_typevar(self_type):
         return value
+    self_type, restore_typevars = shield_nested_self_typevars(self_type)
     if isinstance(value, KnownValueWithTypeVars):
         merged_typevars = value.typevars.with_typevar(TypeVarParam(SelfT), self_type)
-        return KnownValueWithTypeVars(value.val, merged_typevars)
-    return value.substitute_typevars(TypeVarMap(typevars={SelfT: self_type}))
+        result: Value = KnownValueWithTypeVars(value.val, merged_typevars)
+    else:
+        result = value.substitute_typevars(TypeVarMap(typevars={SelfT: self_type}))
+    if restore_typevars:
+        result = result.substitute_typevars(restore_typevars)
+    return result
 
 
 @dataclass(frozen=True)
