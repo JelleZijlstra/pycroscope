@@ -10353,6 +10353,38 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 parent_node,
                 allow_call=False,
             )
+            if (
+                isinstance(op, (ast.Eq, ast.NotEq))
+                and isinstance(lhs_node, ast.Attribute)
+                and not isinstance(
+                    has_relation(TypedValue(bool), val, Relation.ASSIGNABLE, self),
+                    CanAssignError,
+                )
+            ):
+                _, method_name, _, _ = BINARY_OPERATION_TO_DESCRIPTION_AND_METHOD[
+                    type(op)
+                ]
+                explicit_dunder = self.get_attribute(
+                    Composite(lhs),
+                    method_name,
+                    lhs_node,
+                    ignore_none=self.options.get_value_for(IgnoreNoneAttributes),
+                )
+                if explicit_dunder is not UNINITIALIZED_VALUE:
+                    with self.catch_errors() as explicit_errors:
+                        explicit_result = self.check_call(
+                            parent_node,
+                            explicit_dunder,
+                            [Composite(rhs)],
+                            allow_call=False,
+                        )
+                    if not explicit_errors and isinstance(
+                        has_relation(
+                            TypedValue(bool), explicit_result, Relation.ASSIGNABLE, self
+                        ),
+                        CanAssignError,
+                    ):
+                        val = explicit_result
 
         if isinstance(op, (ast.Is, ast.IsNot)) or not isinstance(
             has_relation(TypedValue(bool), val, Relation.ASSIGNABLE, self),
@@ -13607,6 +13639,8 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 )
         if isinstance(callee_val, TypedValue):
             fallback_lookup_val = SubclassValue.make(callee_val)
+        elif isinstance(callee_val, KnownValueWithTypeVars):
+            fallback_lookup_val = callee_val
         else:
             fallback_lookup_val = callee_val.get_type_value()
         if isinstance(synthetic_lookup_val, TypedValue) and isinstance(
@@ -13748,8 +13782,20 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             return AnyValue(AnySource.error), False
         with override(self, "caught_errors", None):
             self.check_deprecation(node, method_object)
+        resolved_method = replace_fallback(method_object)
+        call_args: list[Composite]
+        if (
+            isinstance(resolved_method, KnownValue)
+            and safe_getattr(resolved_method.val, "__self__", None) is not None
+        ) or (
+            isinstance(stripped_callee.value, KnownValueWithTypeVars)
+            and not isinstance(method_object, UnboundMethodValue)
+        ):
+            call_args = list(args)
+        else:
+            call_args = [stripped_callee, *args]
         return_value = self.check_call(
-            node, method_object, [stripped_callee, *args], allow_call=allow_call
+            node, method_object, call_args, allow_call=allow_call
         )
         return return_value, True
 

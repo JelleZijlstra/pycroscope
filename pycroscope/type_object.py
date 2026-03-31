@@ -2365,8 +2365,13 @@ def _get_cached_property_return_type(
 
 
 def _class_key_and_generic_args_from_type_value(
-    receiver_value: TypedValue,
+    receiver_value: TypedValue | TypeVarValue | GenericValue,
 ) -> tuple[type | str, Sequence[Value]]:
+    if isinstance(receiver_value, TypeVarValue):
+        assert receiver_value.typevar_param.bound is not None
+        class_key = _class_key_from_value(receiver_value.typevar_param.bound)
+        assert class_key is not None
+        return class_key, ()
     generic_args = (
         receiver_value.args if isinstance(receiver_value, GenericValue) else ()
     )
@@ -2375,9 +2380,11 @@ def _class_key_and_generic_args_from_type_value(
 
 def _receiver_type_value(
     receiver_value: Value | None, ctx: CanAssignContext
-) -> TypedValue | None:
+) -> TypedValue | TypeVarValue | GenericValue | None:
     if receiver_value is None:
         return None
+    if isinstance(receiver_value, (TypeVarValue, GenericValue)):
+        return receiver_value
     resolved = replace_fallback(receiver_value)
     if isinstance(resolved, KnownValueWithTypeVars) and not isinstance(
         resolved.val, type
@@ -2396,6 +2403,10 @@ def _receiver_type_value(
             ],
         )
     if isinstance(resolved, TypedValue):
+        return resolved
+    if isinstance(resolved, TypeVarValue):
+        return resolved
+    if isinstance(resolved, GenericValue):
         return resolved
     if isinstance(resolved, KnownValueWithTypeVars) and isinstance(resolved.val, type):
         type_params = ctx.get_type_parameters(resolved.val)
@@ -2434,7 +2445,8 @@ def _typevar_map_from_generic_args(
 
 
 def _typevar_map_from_type_value(
-    receiver_value: TypedValue, type_params: Sequence[TypeParam]
+    receiver_value: TypedValue | TypeVarValue | GenericValue,
+    type_params: Sequence[TypeParam],
 ) -> TypeVarMap:
     _, generic_args = _class_key_and_generic_args_from_type_value(receiver_value)
     return _typevar_map_from_generic_args(type_params, generic_args)
@@ -2446,7 +2458,7 @@ def _specialize_symbol_for_owner(
     symbol: ClassSymbol,
     ctx: CanAssignContext,
     *,
-    receiver_value: TypedValue | None = None,
+    receiver_value: TypedValue | TypeVarValue | GenericValue | None = None,
 ) -> ClassSymbol:
     substitutions = _get_symbol_owner_substitutions_from_type_objects(
         receiver_tobj, owner_tobj, ctx, receiver_value=receiver_value
@@ -2651,7 +2663,7 @@ def _rewrite_self_returning_classmethod_signature(
 
 
 def _classmethod_receiver_value_from_type_value(
-    receiver_value: TypedValue,
+    receiver_value: TypedValue | TypeVarValue | GenericValue,
 ) -> SubclassValue:
     return SubclassValue(receiver_value)
 
@@ -2733,6 +2745,10 @@ def _resolve_descriptor_access(
                 ),
                 ctx=ctx,
             )
+            if not on_class:
+                typed_descriptor_value = set_self(
+                    typed_descriptor_value, typed_receiver_value
+                )
             if symbol.returns_self_on_class_access and isinstance(
                 typed_descriptor_value, CallableValue
             ):

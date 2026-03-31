@@ -209,6 +209,35 @@ def get_attribute(ctx: AttrContext) -> Value:
         and ctx.root_value.uses_type_alias_object_semantics
     ):
         return _get_attribute_from_type_alias(ctx.root_value, ctx)
+    lookup_root_value = (
+        ctx.root_value if ctx.lookup_root_value is None else ctx.lookup_root_value
+    )
+    if (
+        isinstance(lookup_root_value, TypeVarValue)
+        and lookup_root_value.typevar_param.bound is not None
+    ):
+        class_key = _class_key_from_value(lookup_root_value.typevar_param.bound)
+        if class_key is not None:
+            can_assign_ctx = ctx.get_can_assign_context()
+            type_object = can_assign_ctx.make_type_object(class_key)
+            symbol = type_object.get_declared_symbol_from_mro(ctx.attr, can_assign_ctx)
+            if symbol is not None:
+                uses_self = (
+                    symbol.annotation is not None
+                    and _contains_self_typevar(symbol.annotation)
+                ) or (
+                    symbol.initializer is not None
+                    and _contains_self_typevar(symbol.initializer)
+                )
+                if uses_self or symbol.is_classmethod:
+                    attribute = type_object.get_attribute(
+                        ctx.attr,
+                        can_assign_ctx,
+                        on_class=False,
+                        receiver_value=lookup_root_value,
+                    )
+                    if attribute is not None:
+                        return attribute.value
     if (
         isinstance(ctx.root_value, SubclassValue)
         and isinstance(ctx.root_value.typ, TypeVarValue)
@@ -230,9 +259,6 @@ def get_attribute(ctx: AttrContext) -> Value:
             ):
                 return set_self(symbol.annotation, ctx.root_value.typ)
 
-    lookup_root_value = (
-        ctx.root_value if ctx.lookup_root_value is None else ctx.lookup_root_value
-    )
     original_lookup_root_value = lookup_root_value
     lookup_root_value = _maybe_specialize_class_partial_root(lookup_root_value, ctx)
     if lookup_root_value != original_lookup_root_value:
@@ -965,8 +991,13 @@ def _get_direct_attribute_from_synthetic_instance(
     receiver_type_value = (
         replace_fallback(receiver_value) if receiver_value is not None else None
     )
-    if isinstance(receiver_type_value, TypedValue):
-        typed_receiver_value = can_assign_ctx.make_type_object(receiver_type_value.typ)
+    receiver_class_key = (
+        _class_key_from_value(receiver_type_value)
+        if receiver_type_value is not None
+        else None
+    )
+    if receiver_class_key is not None:
+        typed_receiver_value = can_assign_ctx.make_type_object(receiver_class_key)
     if receiver_value is not None and typed_receiver_value is not None:
         attribute = typed_receiver_value.get_attribute(
             attr_name, can_assign_ctx, on_class=False, receiver_value=receiver_value
@@ -974,6 +1005,8 @@ def _get_direct_attribute_from_synthetic_instance(
         if attribute is not None:
             symbol = attribute.symbol
             if attribute.is_property:
+                return attribute.value
+            if symbol.is_classmethod:
                 return attribute.value
             if (
                 symbol.is_instance_only
@@ -995,6 +1028,8 @@ def _get_direct_attribute_from_synthetic_instance(
         if attribute is not None:
             symbol = attribute.symbol
             if attribute.is_property:
+                return attribute.value
+            if symbol.is_classmethod:
                 return attribute.value
             if (
                 symbol.is_instance_only
@@ -1403,40 +1438,6 @@ def _get_attribute_from_typed(
 ) -> Value:
     ctx.record_attr_read(typ)
 
-    synthetic_class = ctx.get_synthetic_class(typ)
-    if synthetic_class is not None and _contains_self_typevar(ctx.get_self_value()):
-        synthetic_result = _get_direct_attribute_from_synthetic_instance(
-            synthetic_class,
-            ctx.attr,
-            ctx,
-            receiver_value=_get_instance_lookup_receiver(ctx),
-        )
-        if synthetic_result is not UNINITIALIZED_VALUE:
-            synthetic_result = (
-                dataclass_helpers.maybe_resolve_synthetic_descriptor_attribute(
-                    synthetic_class,
-                    ctx.attr,
-                    synthetic_result,
-                    ctx,
-                    on_class=False,
-                    descriptor_get_type=_synthetic_descriptor_get_type,
-                )
-            )
-        if synthetic_result is not UNINITIALIZED_VALUE:
-            synthetic_result = _maybe_resolve_synthetic_property_attribute(
-                synthetic_result, ctx
-            )
-        if synthetic_result is not UNINITIALIZED_VALUE:
-            is_bound_method = _is_synthetic_instance_method_attribute(
-                typ, ctx.attr, ctx
-            )
-            synthetic_result = _substitute_typevars(
-                typ, generic_args, synthetic_result, typ, ctx
-            )
-            if is_bound_method:
-                return synthetic_result
-            return set_self(synthetic_result, ctx.get_self_value())
-
     # First check values that are special in Python
     if ctx.attr == "__class__":
         return KnownValue(typ)
@@ -1476,6 +1477,8 @@ def _get_attribute_from_typed(
             )
             if attribute.is_property:
                 return set_self(resolved_value, ctx.get_self_value())
+            if symbol.is_classmethod:
+                return resolved_value
             if (
                 symbol.is_instance_only
                 and not symbol.is_classvar
@@ -1491,6 +1494,36 @@ def _get_attribute_from_typed(
                 if symbol.is_method:
                     return resolved_value
                 return set_self(resolved_value, ctx.get_self_value())
+    synthetic_class = ctx.get_synthetic_class(typ)
+    if synthetic_class is not None and _contains_self_typevar(ctx.get_self_value()):
+        synthetic_result = _get_direct_attribute_from_synthetic_instance(
+            synthetic_class, ctx.attr, ctx, receiver_value=receiver_value
+        )
+        if synthetic_result is not UNINITIALIZED_VALUE:
+            synthetic_result = (
+                dataclass_helpers.maybe_resolve_synthetic_descriptor_attribute(
+                    synthetic_class,
+                    ctx.attr,
+                    synthetic_result,
+                    ctx,
+                    on_class=False,
+                    descriptor_get_type=_synthetic_descriptor_get_type,
+                )
+            )
+        if synthetic_result is not UNINITIALIZED_VALUE:
+            synthetic_result = _maybe_resolve_synthetic_property_attribute(
+                synthetic_result, ctx
+            )
+        if synthetic_result is not UNINITIALIZED_VALUE:
+            is_bound_method = _is_synthetic_instance_method_attribute(
+                typ, ctx.attr, ctx
+            )
+            synthetic_result = _substitute_typevars(
+                typ, generic_args, synthetic_result, typ, ctx
+            )
+            if is_bound_method:
+                return synthetic_result
+            return set_self(synthetic_result, ctx.get_self_value())
     synthetic_attr = _get_runtime_attribute_from_synthetic_class(
         typ, generic_args, ctx, on_class=False
     )

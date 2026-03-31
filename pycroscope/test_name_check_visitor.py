@@ -2980,6 +2980,46 @@ class TestClassAttributeChecker(TestNameCheckVisitorBase):
 
         self.assert_passes(code, run_in_both_module_modes=True)
 
+    @assert_passes()
+    def test_generic_self_descriptor_comparison_on_class_access(self):
+        from typing import Generic, TypeVar, overload
+
+        from typing_extensions import Self
+
+        T = TypeVar("T")
+
+        class Condition:
+            pass
+
+        class Field(Generic[T]):
+            @overload
+            def __get__(self, obj: None, owner: object) -> Self: ...
+
+            @overload
+            def __get__(self, obj: object, owner: object) -> T: ...
+
+            def __get__(self, obj: object | None, owner: object) -> "Field[T] | T":
+                if obj is None:
+                    return self
+                return obj  # type: ignore[return-value]
+
+            def __eq__(self, other: T) -> Condition:
+                return Condition()
+
+        class Query(Generic[T]):
+            def filter(self, *conds: Condition) -> None:
+                pass
+
+        class Model:
+            parent = Field[Self | None]()
+
+            @classmethod
+            def select_valid(cls) -> Query[Self]:
+                return Query()
+
+            def children(self) -> None:
+                Model.select_valid().filter(Model.parent == self)
+
     def test_transformed_generic_descriptor_preserves_class_access_in_both_modes(self):
         code = """
         from collections.abc import Sequence
