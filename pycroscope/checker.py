@@ -71,7 +71,6 @@ from .value import (
     AnyValue,
     CallableValue,
     CanAssignContext,
-    CanAssignError,
     ClassSymbol,
     GenericValue,
     IntersectionValue,
@@ -106,7 +105,6 @@ from .value import (
     bound_self_type_from_class_key,
     flatten_values,
     get_single_typevartuple_param,
-    get_tv_map,
     is_union,
     iter_type_params_in_value,
     replace_fallback,
@@ -2834,51 +2832,6 @@ class Checker:
                 )
             specialized_argspec = combined
         return specialized_argspec
-
-    def _bind_synthetic_method(
-        self,
-        signature: ConcreteSignature,
-        *,
-        self_annotation_value: Value | None = None,
-    ) -> ConcreteSignature | None:
-        bound = signature.bind_self(
-            self_value=(
-                self_annotation_value
-                if self_annotation_value is not None
-                else AnyValue(AnySource.from_another)
-            ),
-            self_annotation_value=self_annotation_value,
-            ctx=self,
-        )
-        if bound is None:
-            return None
-        return bound
-
-    def _specialize_synthetic_classmethod(
-        self,
-        raw_attr: Value,
-        normalized_attr: CallableValue,
-        *,
-        self_annotation_value: Value | None,
-    ) -> CallableValue:
-        if self_annotation_value is None:
-            return normalized_attr
-        if not isinstance(self_annotation_value, (TypedValue, TypeVarValue)):
-            return normalized_attr
-        raw_attr = replace_fallback(raw_attr)
-        if not (
-            isinstance(raw_attr, GenericValue)
-            and raw_attr.typ is classmethod
-            and raw_attr.args
-        ):
-            return normalized_attr
-        inferred = get_tv_map(
-            raw_attr.args[0], SubclassValue(self_annotation_value), self
-        )
-        if isinstance(inferred, CanAssignError):
-            return normalized_attr
-        inferred = inferred.with_typevar(TypeVarParam(SelfT), self_annotation_value)
-        return CallableValue(normalized_attr.signature.substitute_typevars(inferred))
 
     def get_attribute_from_value(
         self, root_value: Value, attribute: str, *, prefer_typeshed: bool = False
