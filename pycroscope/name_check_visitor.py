@@ -171,6 +171,7 @@ from .signature import (
     Argument,
     BoundArgs,
     BoundMethodSignature,
+    CheckCallContext,
     ConcreteSignature,
     InvalidSignature,
     MaybeSignature,
@@ -15365,11 +15366,18 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 (value, KWARGS) if keyword is None else (value, keyword)
                 for keyword, value in keywords
             ]
+            ctx = CheckCallContext(
+                visitor=self,
+                can_assign_ctx=self,
+                node=node,
+                use_partial_call=self._is_dataclass_field_callee(callee_wrapped),
+                callee=callee_wrapped,
+            )
             if self._is_checking():
-                return_value = extended_argspec.check_call(arguments, self, node)
+                return_value = extended_argspec.check_call(arguments, ctx)
             else:
                 with self.catch_errors():
-                    return_value = extended_argspec.check_call(arguments, self, node)
+                    return_value = extended_argspec.check_call(arguments, ctx)
 
         if extended_argspec is not None and not extended_argspec.has_return_value():
             local = self.get_local_return_value(extended_argspec)

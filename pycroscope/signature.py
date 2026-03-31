@@ -17,7 +17,7 @@ from dataclasses import dataclass, field, replace
 from types import FunctionType, MethodType
 from typing import Any, ClassVar, Literal, NamedTuple, TypeVar
 
-from typing_extensions import Protocol, Self, assert_never
+from typing_extensions import Self, assert_never
 
 import pycroscope
 from pycroscope import relations
@@ -271,31 +271,35 @@ Argument = tuple[
 BoundArgs = dict[str, tuple[Position, Composite]]
 
 
-class CheckCallContext(Protocol):
-    @property
-    def visitor(self) -> "pycroscope.name_check_visitor.NameCheckVisitor | None":
-        raise NotImplementedError
+@dataclass(kw_only=True)
+class CheckCallContext:
+    visitor: "pycroscope.name_check_visitor.NameCheckVisitor | None"
+    can_assign_ctx: CanAssignContext
+    node: ast.AST | None = None
+    callee: Value | None = None
+    use_partial_call: bool = False
 
     def on_error(
         self,
-        __message: str,
+        message: str,
+        /,
         *,
-        code: Error = ...,
-        node: ast.AST | None = ...,
-        detail: str | None = ...,
-        replacement: Replacement | None = ...,
-    ) -> object:
-        raise NotImplementedError
-
-    @property
-    def can_assign_ctx(self) -> CanAssignContext:
-        raise NotImplementedError
+        code: Error = ErrorCode.incompatible_call,
+        node: ast.AST | None = None,
+        detail: str | None = None,
+        replacement: Replacement | None = None,
+    ) -> None:
+        if node is None:
+            node = self.node
+        if node is None or self.visitor is None:
+            return
+        self.visitor.show_error(
+            node, message, code, detail=detail, replacement=replacement
+        )
 
 
 @dataclass
-class _CanAssignBasedContext:
-    can_assign_ctx: CanAssignContext
-    visitor: "pycroscope.name_check_visitor.NameCheckVisitor | None" = None
+class _CanAssignBasedContext(CheckCallContext):
     errors: list[str] = field(default_factory=list)
 
     def on_error(
@@ -304,38 +308,10 @@ class _CanAssignBasedContext:
         *,
         code: Error = ErrorCode.incompatible_call,
         node: ast.AST | None = None,
-        detail: str | None = ...,
-        replacement: Replacement | None = ...,
-    ) -> object:
-        self.errors.append(message)
-        return None
-
-
-@dataclass
-class _VisitorBasedContext:
-    visitor: "pycroscope.name_check_visitor.NameCheckVisitor"
-    node: ast.AST | None
-
-    @property
-    def can_assign_ctx(self) -> CanAssignContext:
-        return self.visitor
-
-    def on_error(
-        self,
-        message: str,
-        *,
-        code: Error = ErrorCode.incompatible_call,
-        node: ast.AST | None = None,
-        detail: str | None = ...,
+        detail: str | None = None,
         replacement: Replacement | None = None,
     ) -> None:
-        if node is None:
-            node = self.node
-        if node is None:
-            return
-        self.visitor.show_error(
-            node, message, code, detail=detail, replacement=replacement
-        )
+        self.errors.append(message)
 
 
 class CallReturn(NamedTuple):
@@ -735,17 +711,16 @@ class Signature:
         return OverloadedSignature(specialized)
 
     def _should_specialize_constrained_typevars_for_args(
-        self, args: Sequence[Argument], ctx: CanAssignContext
+        self, args: Sequence[Argument], ctx: CheckCallContext
     ) -> bool:
         constrained_typevars = self._get_constrained_typevars()
         if constrained_typevars is None or not constrained_typevars:
             return False
 
-        check_ctx = _CanAssignBasedContext(ctx)
-        actual_args = preprocess_args(args, check_ctx)
+        actual_args = preprocess_args(args, ctx)
         if actual_args is None:
             return False
-        bound_args = self.bind_arguments(actual_args, check_ctx)
+        bound_args = self.bind_arguments(actual_args, ctx)
         if bound_args is None:
             return False
 
@@ -765,7 +740,7 @@ class Signature:
             if len(members) <= 1:
                 continue
             for member in members:
-                tv_map = get_tv_map(annotation, member, ctx)
+                tv_map = get_tv_map(annotation, member, ctx.can_assign_ctx)
                 if isinstance(tv_map, CanAssignError):
                     return False
                 for tv, constraints in constrained_typevars.items():
@@ -1402,12 +1377,7 @@ class Signature:
             return_value = return_value.substitute_typevars(typevar_values)
         return CallReturn(return_value, is_error=True, sig=self)
 
-    def check_call(
-        self,
-        args: Iterable[Argument],
-        visitor: "pycroscope.name_check_visitor.NameCheckVisitor",
-        node: ast.AST | None,
-    ) -> Value:
+    def check_call(self, args: Iterable[Argument], ctx: CheckCallContext) -> Value:
         """Type check a call to this Signature with the given arguments.
 
         This may call the :term:`impl` function or the underlying callable,
@@ -1417,30 +1387,26 @@ class Signature:
         args = list(args)
         if _has_decomposable_argument(
             args
-        ) and self._should_specialize_constrained_typevars_for_args(args, visitor):
+        ) and self._should_specialize_constrained_typevars_for_args(args, ctx):
             specialized = self._specialize_constrained_typevars()
             if specialized is not None:
-                return specialized.check_call(args, visitor, node)
-        ctx = _VisitorBasedContext(visitor, node)
+                return specialized.check_call(args, ctx)
         preprocessed = preprocess_args(args, ctx)
         if preprocessed is None:
             return self.get_default_return().return_value
         return self.check_call_preprocessed(
-            preprocessed, ctx, original_args=args, node=node
+            preprocessed, ctx, original_args=args
         ).return_value
 
     def maybe_show_too_many_pos_args_error(
-        self,
-        *,
-        args: Sequence[Argument],
-        bound_args: BoundArgs,
-        ctx: CheckCallContext,
-        node: ast.Call,
+        self, *, args: Sequence[Argument], bound_args: BoundArgs, ctx: CheckCallContext
     ) -> None:
         """Show an error if the call to this Signature has too many positional arguments."""
-        if ctx.visitor is None:
+        if ctx.visitor is None or not isinstance(ctx.node, ast.Call):
             return
-        if len(node.args) < ctx.visitor.options.get_value_for(MaximumPositionalArgs):
+        if len(ctx.node.args) < ctx.visitor.options.get_value_for(
+            MaximumPositionalArgs
+        ):
             return
         composite_to_name = {}
         for name, (kind, composite) in bound_args.items():
@@ -1453,7 +1419,7 @@ class Signature:
 
         new_args = []
         new_keywords = []
-        for arg in node.args:
+        for arg in ctx.node.args:
             if arg not in node_to_composite:
                 return
             composite = node_to_composite[arg]
@@ -1461,13 +1427,12 @@ class Signature:
                 return
             name = composite_to_name[composite]
             new_keywords.append(ast.keyword(arg=name, value=arg))
-        new_keywords += node.keywords
-        new_node = ast.Call(func=node.func, args=new_args, keywords=new_keywords)
-        ctx.visitor.show_error(
-            node,
+        new_keywords += ctx.node.keywords
+        new_node = ast.Call(func=ctx.node.func, args=new_args, keywords=new_keywords)
+        ctx.on_error(
             f"Too many positional arguments for {stringify_object(self.callable)}",
-            error_code=ErrorCode.too_many_positional_args,
-            replacement=ctx.visitor.replace_node(node, new_node),
+            code=ErrorCode.too_many_positional_args,
+            replacement=ctx.visitor.replace_node(ctx.node, new_node),
         )
 
     def check_call_preprocessed(
@@ -1477,23 +1442,18 @@ class Signature:
         *,
         is_overload: bool = False,
         original_args: Sequence[Argument] | None = None,
-        node: ast.AST | None = None,
     ) -> CallReturn:
         expanded = self._expand_typed_dict_kwargs()
         if expanded is not self:
             return expanded.check_call_preprocessed(
-                preprocessed,
-                ctx,
-                is_overload=is_overload,
-                original_args=original_args,
-                node=node,
+                preprocessed, ctx, is_overload=is_overload, original_args=original_args
             )
         bound_args = self.bind_arguments(preprocessed, ctx)
         if bound_args is None:
             return self.get_default_return()
-        if original_args is not None and isinstance(node, ast.Call):
+        if original_args is not None and isinstance(ctx.node, ast.Call):
             self.maybe_show_too_many_pos_args_error(
-                args=original_args, bound_args=bound_args, ctx=ctx, node=node
+                args=original_args, bound_args=bound_args, ctx=ctx
             )
         return self.check_call_with_bound_args(
             preprocessed, bound_args, ctx, is_overload=is_overload
@@ -1506,6 +1466,7 @@ class Signature:
         ctx: CheckCallContext,
         *,
         is_overload: bool = False,
+        use_partial_call: bool = False,
     ) -> CallReturn:
         variables = {key: composite.value for key, (_, composite) in bound_args.items()}
         composites = {param: composite for param, (_, composite) in bound_args.items()}
@@ -1719,7 +1680,7 @@ class Signature:
         # type checking
         if not had_error:
             # Unfortunately we can't make a CallContext out of a _CanAssignBasedContext
-            if self.impl is not None and isinstance(ctx, _VisitorBasedContext):
+            if self.impl is not None and ctx.visitor is not None:
                 call_ctx = CallContext(
                     vars=variables,
                     visitor=ctx.visitor,
@@ -1768,16 +1729,20 @@ class Signature:
                     return_value = runtime_return
         else:
             runtime_return = None
-        if self.allow_partial_call and runtime_return is None and not had_error:
+        if (
+            (self.allow_partial_call or use_partial_call)
+            and runtime_return is None
+            and not had_error
+        ):
             partial_return = PartialCallValue(
-                callee=self.callable,
+                callee=ctx.callee,
                 arguments=variables,
                 runtime_value=(
                     return_value.return_value
                     if isinstance(return_value, ImplReturn)
                     else return_value
                 ),
-                node=ctx.node if isinstance(ctx, _VisitorBasedContext) else None,
+                node=ctx.node,
             )
             if isinstance(return_value, ImplReturn):
                 return_value = ImplReturn(
@@ -2687,12 +2652,7 @@ class OverloadedSignature:
     def __init__(self, sigs: Sequence[Signature]) -> None:
         object.__setattr__(self, "signatures", tuple(sigs))
 
-    def check_call(
-        self,
-        args: Iterable[Argument],
-        visitor: "pycroscope.name_check_visitor.NameCheckVisitor",
-        node: ast.AST | None,
-    ) -> Value:
+    def check_call(self, args: Iterable[Argument], ctx: CheckCallContext) -> Value:
         """Check a call to an overloaded function.
 
         The way overloads are handled is not well specified in any PEPs. Useful resources
@@ -2748,9 +2708,7 @@ class OverloadedSignature:
         if _has_decomposable_argument(args):
             specialized_sigs: list[Signature] = []
             for sig in signatures:
-                if not sig._should_specialize_constrained_typevars_for_args(
-                    args, visitor
-                ):
+                if not sig._should_specialize_constrained_typevars_for_args(args, ctx):
                     specialized = None
                 else:
                     specialized = sig._specialize_constrained_typevars()
@@ -2764,7 +2722,6 @@ class OverloadedSignature:
             if specialized_sigs:
                 signatures = tuple(specialized_sigs)
 
-        ctx = _VisitorBasedContext(visitor, node)
         actual_args = preprocess_args(args, ctx)
         if actual_args is None:
             return AnyValue(AnySource.error)
@@ -2773,17 +2730,16 @@ class OverloadedSignature:
         errors_per_overload = []
         bound_args_per_overload = []
         for sig in signatures:
-            with visitor.catch_errors() as caught_errors:
+            with ctx.visitor.catch_errors() as caught_errors:
                 bound_args = sig.bind_arguments(actual_args, ctx)
             bound_args_per_overload.append(bound_args)
             errors_per_overload.append(caught_errors)
 
         if not any(bound_args is not None for bound_args in bound_args_per_overload):
             detail = self._make_detail(errors_per_overload, signatures)
-            visitor.show_error(
-                node,
+            ctx.on_error(
                 "Cannot call overloaded function",
-                ErrorCode.incompatible_call,
+                code=ErrorCode.incompatible_call,
                 detail=str(detail),
             )
             return AnyValue(AnySource.error)
@@ -2800,7 +2756,7 @@ class OverloadedSignature:
         sigs = self._prefer_variadic_matches(sigs, actual_args)
         last = len(sigs) - 1
         for i, sig in enumerate(sigs):
-            with visitor.catch_errors() as caught_errors:
+            with ctx.visitor.catch_errors() as caught_errors:
                 # We can't use check_call_with_bound_args here because we may
                 # rebind the arguments.
                 ret = sig.check_call_preprocessed(
@@ -2831,21 +2787,14 @@ class OverloadedSignature:
             else:
                 # We got a clean match!
                 return self._unite_rets(
-                    any_rets,
-                    union_and_any_rets,
-                    union_rets,
-                    ret,
-                    visitor=visitor,
-                    node=node,
+                    any_rets, union_and_any_rets, union_rets, ret, ctx=ctx
                 )
 
         if any_rets:
             # We don't do this if we have union_rets, because if we got here, we
             # didn't get any clean matches. Therefore, we must have some remaining
             # union members we haven't handled.
-            return self._unite_rets(
-                any_rets, union_and_any_rets, union_rets, visitor=visitor, node=node
-            )
+            return self._unite_rets(any_rets, union_and_any_rets, union_rets, ctx=ctx)
 
         # None of the signatures matched
         errors = list(itertools.chain.from_iterable(errors_per_overload))
@@ -2855,8 +2804,8 @@ class OverloadedSignature:
         else:
             error_code = ErrorCode.incompatible_call
         detail = self._make_detail(errors_per_overload, sigs)
-        visitor.show_error(
-            node, "Cannot call overloaded function", error_code, detail=str(detail)
+        ctx.on_error(
+            "Cannot call overloaded function", code=error_code, detail=str(detail)
         )
         return AnyValue(AnySource.error)
 
@@ -2867,8 +2816,7 @@ class OverloadedSignature:
         union_rets: Sequence[CallReturn],
         clean_ret: CallReturn | None = None,
         *,
-        visitor: "pycroscope.name_check_visitor.NameCheckVisitor",
-        node: ast.AST | None,
+        ctx: CheckCallContext,
     ) -> Value:
         if any_rets or union_and_any_rets:
             deduped = {ret.return_value for ret in any_rets}
@@ -2891,10 +2839,9 @@ class OverloadedSignature:
             rets = [clean_ret]
         for ret in rets:
             if ret.sig.deprecated is not None:
-                visitor.show_error(
-                    node,
+                ctx.on_error(
                     f"Use of deprecated overload {ret.sig}: {ret.sig.deprecated}",
-                    ErrorCode.deprecated,
+                    code=ErrorCode.deprecated,
                 )
         return unite_values(*[r.return_value for r in rets])
 
@@ -3043,12 +2990,7 @@ class BoundMethodSignature:
     self_composite: Composite
     return_override: Value | None = None
 
-    def check_call(
-        self,
-        args: Iterable[Argument],
-        visitor: "pycroscope.name_check_visitor.NameCheckVisitor",
-        node: ast.AST | None,
-    ) -> Value:
+    def check_call(self, args: Iterable[Argument], ctx: CheckCallContext) -> Value:
         self_composite = self.self_composite
         has_impl = (
             self.signature.impl is not None
@@ -3074,7 +3016,7 @@ class BoundMethodSignature:
                 self_composite = Composite(
                     normalized_value, self_composite.varname, self_composite.node
                 )
-        ret = self.signature.check_call([(self_composite, None), *args], visitor, node)
+        ret = self.signature.check_call([(self_composite, None), *args], ctx)
         if self.return_override is not None and not self.signature.has_return_value():
             if isinstance(ret, AnnotatedValue):
                 return annotate_value(self.return_override, ret.metadata)
@@ -3198,7 +3140,7 @@ def check_call_preprocessed(
     sig: ConcreteSignature, args: ActualArguments, ctx: CanAssignContext
 ) -> CanAssign:
     if isinstance(sig, Signature):
-        check_ctx = _CanAssignBasedContext(ctx)
+        check_ctx = _CanAssignBasedContext(visitor=None, can_assign_ctx=ctx)
         sig.check_call_preprocessed(args, check_ctx)
         if check_ctx.errors:
             return CanAssignError(
