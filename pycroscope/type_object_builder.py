@@ -19,7 +19,7 @@ from .annotations import (
 )
 from .arg_spec import ArgSpecCache
 from .checker import Checker
-from .safe import hasattr_static, is_namedtuple_class, safe_getattr
+from .safe import is_namedtuple_class, safe_getattr
 from .type_object import DataclassFieldRecord
 from .value import (
     AnySource,
@@ -355,9 +355,9 @@ def _is_runtime_method_member(
         return True
     if inspect.isfunction(raw_value):
         return True
-    return inspect.ismethoddescriptor(raw_value) and hasattr_static(
-        raw_value, "__objclass__"
-    )
+    if inspect.ismethoddescriptor(raw_value):
+        return True
+    return False
 
 
 def _is_runtime_member_final(raw_value: object) -> bool:

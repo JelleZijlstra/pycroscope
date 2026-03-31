@@ -3,7 +3,7 @@
 ## Unreleased
 
 - Improve class-symbol decorator metadata so final, abstractmethod, and deprecation checks now reuse stored symbol information more consistently, including deprecated class/static methods and property accessors.
-
+- Fix runtime method binding for Cython-backed descriptor methods, so chained calls like `self.method.asynq()` no longer produce false positive call-arity errors or depend on fallback lookup.
 - Improve `TypeVar` inference for overloaded constructor callables, so patterns like `model_field(converter=dict, default=())` no longer fail by committing to the wrong `dict` overload too early.
 - Fix `Self`-aware descriptor lookup so instance access keeps `Self` through classmethod helper chains like `self.getter().get_one()`, and class-level descriptor comparisons like `Model.parent == self` can return custom query objects instead of collapsing to `bool`.
 - Fix `__init_subclass__` class-attribute initialization so projects can declare a class-level attribute contract on a base class and initialize it via `cls.attr = ...` without spurious instance-attribute errors.

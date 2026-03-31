@@ -849,12 +849,14 @@ def _get_attribute_from_synthetic_typed_value(
     return set_self(attribute.value, ctx.get_self_value())
 
 
-def _get_typed_instance_lookup_receiver(ctx: AttrContext) -> TypedValue | None:
+def _get_typed_instance_lookup_receiver(ctx: AttrContext) -> Value | None:
     lookup_root = ctx.lookup_root_value
-    if isinstance(lookup_root, TypedValue):
-        return lookup_root
-    root_value = ctx.root_value
-    if isinstance(root_value, TypedValue):
+    if lookup_root is not None:
+        lookup_root = replace_fallback(lookup_root)
+        if isinstance(lookup_root, (TypedValue, GenericValue)):
+            return lookup_root
+    root_value = replace_fallback(ctx.root_value)
+    if isinstance(root_value, (TypedValue, GenericValue)):
         return root_value
     return None
 
@@ -1495,7 +1497,9 @@ def _get_attribute_from_typed(
                 and attribute.value != attribute.declared_value
             ):
                 if symbol.is_method:
-                    if _contains_self_typevar(receiver_value):
+                    if _contains_self_typevar(receiver_value) or not isinstance(
+                        replace_fallback(receiver_value), TypedValue
+                    ):
                         return resolved_value
                 else:
                     return set_self(resolved_value, ctx.get_self_value())
@@ -1879,11 +1883,20 @@ def _get_attribute_from_known(obj: object, ctx: AttrContext) -> Value:
                 ctx.record_usage(obj, result)
                 return result
 
-    result, _, _ = _get_attribute_from_mro(obj, ctx, on_class=True)
-    if result is UNINITIALIZED_VALUE and safe_isinstance(obj, type):
+    synthetic_attr = UNINITIALIZED_VALUE
+    if safe_isinstance(obj, type) and safe_issubclass(obj, Enum):
         synthetic_attr = _get_runtime_attribute_from_synthetic_class(
             obj, (), ctx, on_class=True
         )
+        if synthetic_attr is not UNINITIALIZED_VALUE:
+            return synthetic_attr
+
+    result, _, _ = _get_attribute_from_mro(obj, ctx, on_class=True)
+    if result is UNINITIALIZED_VALUE and safe_isinstance(obj, type):
+        if synthetic_attr is UNINITIALIZED_VALUE:
+            synthetic_attr = _get_runtime_attribute_from_synthetic_class(
+                obj, (), ctx, on_class=True
+            )
         if synthetic_attr is not UNINITIALIZED_VALUE:
             return synthetic_attr
         tobj = ctx.get_can_assign_context().make_type_object(obj)

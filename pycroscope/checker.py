@@ -2437,6 +2437,12 @@ class Checker:
                     # TODO return None here and figure out when the signature is missing
                     # Probably because of cythonized methods
                     return ANY_SIGNATURE
+                if value.secondary_attr_name is not None and isinstance(
+                    sig, BoundMethodSignature
+                ):
+                    if value.typevars is not None:
+                        sig = sig.substitute_typevars(value.typevars)
+                    return dataclass_replace(sig, self_composite=value.composite)
                 return_override = get_return_override(sig)
                 bound = make_bound_method(
                     sig, value.composite, return_override, ctx=self

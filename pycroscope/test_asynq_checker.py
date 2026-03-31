@@ -47,6 +47,20 @@ class TestAsynqBase(TestNameCheckVisitorBase):
 
 class TestImpureAsyncCalls(TestAsynqBase):
     @assert_passes()
+    def test_async_instance_method_asynq_binds_receiver(self):
+        from asynq import asynq, result
+
+        class Capybara:
+            @asynq()
+            def eat(self):
+                result(1)
+
+            @asynq()
+            def tree(self):
+                amount = yield self.eat.asynq()
+                result(amount)
+
+    @assert_passes()
     def test_async_classmethod(self):
         from asynq import asynq, result
 
