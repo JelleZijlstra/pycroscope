@@ -307,8 +307,6 @@ def _add_runtime_declared_symbols(typ: type, symbols: dict[str, ClassSymbol]) ->
                     existing.is_instance_only if existing is not None else False
                 ),
                 is_method=is_method,
-                is_classmethod=is_classmethod,
-                is_staticmethod=is_staticmethod,
                 deprecation_message=deprecation_message,
                 function_decorators=frozenset(function_decorators),
                 property_info=(
