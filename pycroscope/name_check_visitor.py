@@ -148,6 +148,7 @@ from .relations import (
     is_subtype,
 )
 from .safe import (
+    hasattr_static,
     is_dataclass_type,
     is_hashable,
     is_namedtuple_class,
@@ -1477,7 +1478,10 @@ class ClassAttributeChecker:
         raw_value = typ.__dict__.get(attr_name)
         if isinstance(raw_value, (staticmethod, classmethod)):
             return True
-        return inspect.isfunction(raw_value) or inspect.ismethoddescriptor(raw_value)
+        return inspect.isfunction(raw_value) or (
+            inspect.ismethoddescriptor(raw_value)
+            and hasattr_static(raw_value, "__objclass__")
+        )
 
     def _should_ignore_test_attribute(self, typ: type, attr_name: str) -> bool:
         if not self._is_method_attribute(typ, attr_name):
@@ -8348,6 +8352,26 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             )
         return False
 
+    def _is_allowed_init_subclass_class_attribute_initialization(
+        self, node: ast.Attribute, root_value: Value, attr: TypeObjectAttribute
+    ) -> bool:
+        if self.current_function_name != "__init_subclass__":
+            return False
+        if self.current_class_key is None or not self._is_current_method_receiver_node(
+            node.value
+        ):
+            return False
+        if self._is_class_object_attribute_root(root_value) is False:
+            return False
+        if not class_keys_match(attr.owner.typ, self.current_class_key):
+            return False
+        return (
+            attr.symbol.annotation is not None
+            and attr.symbol.is_instance_only
+            and not attr.symbol.is_initvar
+            and not attr.symbol.is_method
+        )
+
     def _is_class_object_attribute_root(self, value: Value) -> bool | None:
         return _attribute_root_class_info(value).is_class_object
 
@@ -14102,12 +14126,15 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             )
             return
         if attr.symbol.is_instance_only and on_class and not attr.is_metaclass_owner:
-            self._show_error_if_checking(
-                node,
-                f"Cannot {wording} instance attribute {node.attr!r} via class object",
-                error_code=ErrorCode.incompatible_assignment,
-            )
-            return
+            if not self._is_allowed_init_subclass_class_attribute_initialization(
+                node, root, attr
+            ):
+                self._show_error_if_checking(
+                    node,
+                    f"Cannot {wording} instance attribute {node.attr!r} via class object",
+                    error_code=ErrorCode.incompatible_assignment,
+                )
+                return
         if self._check_final_attribute_assignment(node, attr, wording):
             return
         if is_deletion:
@@ -14151,7 +14178,17 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 self._record_type_attr_set_for_value(
                     root, node.attr, node, self.being_assigned
                 )
-                self._record_synthetic_attr_set(node, root)
+                if self._is_allowed_init_subclass_class_attribute_initialization(
+                    node, root, attr
+                ):
+                    self._update_synthetic_declared_symbol(
+                        node.attr,
+                        add_qualifiers={Qualifier.ClassVar},
+                        is_instance_only=False,
+                        initializer=self.being_assigned,
+                    )
+                else:
+                    self._record_synthetic_attr_set(node, root)
 
     def _check_final_attribute_assignment(
         self, node: ast.Attribute, attr: TypeObjectAttribute, wording: str

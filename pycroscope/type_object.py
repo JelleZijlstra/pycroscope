@@ -33,6 +33,7 @@ from .input_sig import AnySig, FullSignature, InputSigValue
 from .options import PyObjectSequenceOption
 from .relations import (
     infer_positional_generic_typevar_map,
+    intersect_values,
     subtract_values,
     translate_generic_typevar_map,
 )
@@ -56,6 +57,7 @@ from .signature import (
     mark_ellipsis_style_any_tail_parameters,
 )
 from .value import (
+    NO_RETURN_VALUE,
     UNINITIALIZED_VALUE,
     AnnotatedValue,
     AnySource,
@@ -2377,6 +2379,22 @@ def _receiver_type_value(
     if receiver_value is None:
         return None
     resolved = replace_fallback(receiver_value)
+    if isinstance(resolved, KnownValueWithTypeVars) and not isinstance(
+        resolved.val, type
+    ):
+        runtime_type = type(resolved.val)
+        type_params = ctx.get_type_parameters(runtime_type)
+        if not type_params:
+            return TypedValue(runtime_type)
+        return GenericValue(
+            runtime_type,
+            [
+                resolved.typevars.get_value(
+                    type_param, default_value_for_type_param(type_param)
+                )
+                for type_param in type_params
+            ],
+        )
     if isinstance(resolved, TypedValue):
         return resolved
     if isinstance(resolved, KnownValueWithTypeVars) and isinstance(resolved.val, type):
@@ -2941,10 +2959,13 @@ def _get_descriptor_get_value(
         return None
     get_signature, _ = match
     return_value = get_signature.return_value
-    if not on_class:
-        return_value = subtract_values(
-            return_value, receiver_to_self_type(descriptor, ctx), ctx
-        )
+    self_type = receiver_to_self_type(descriptor, ctx)
+    if on_class and not is_metaclass_owner:
+        narrowed_return = intersect_values(return_value, self_type, ctx)
+        if narrowed_return is not NO_RETURN_VALUE:
+            return_value = narrowed_return
+    else:
+        return_value = subtract_values(return_value, self_type, ctx)
     return return_value
 
 
@@ -3042,6 +3063,7 @@ def _descriptor_method_signature_any(
         return None
     descriptor, restore_typevars = shield_nested_self_typevars(descriptor)
     method_value = UNINITIALIZED_VALUE
+    direct_signature: Signature | OverloadedSignature | None = None
     if isinstance(descriptor, SyntheticClassObjectValue):
         if isinstance(descriptor.class_type, TypedValue):
             descriptor_tobj = ctx.make_type_object(descriptor.class_type.typ)
@@ -3062,11 +3084,27 @@ def _descriptor_method_signature_any(
         descriptor_tobj = descriptor.get_type_object(ctx)
         if descriptor_tobj.get_declared_symbol_from_mro(method_name, ctx) is None:
             return None
+        if isinstance(descriptor, TypedValue):
+            raw_attribute = descriptor_tobj._get_raw_declared_attribute(
+                method_name, ctx, receiver_value=descriptor
+            )
+            if raw_attribute is not None:
+                direct_signature = _signature_from_descriptor_attribute(
+                    raw_attribute.raw_value, ctx
+                )
+                if direct_signature is not None:
+                    direct_signature = direct_signature.bind_self(
+                        self_value=descriptor, ctx=ctx
+                    )
         attribute = descriptor_tobj.get_attribute(
             method_name, ctx, on_class=False, receiver_value=descriptor
         )
         if attribute is not None:
             method_value = attribute.value
+    if direct_signature is not None:
+        if restore_typevars:
+            direct_signature = direct_signature.substitute_typevars(restore_typevars)
+        return direct_signature
     if method_value is UNINITIALIZED_VALUE:
         return None
     signature = _signature_from_descriptor_attribute(method_value, ctx)
