@@ -187,9 +187,6 @@ class AttrContext:
     def get_synthetic_class(self, typ: type | str) -> SyntheticClassObjectValue | None:
         raise NotImplementedError
 
-    def bind_synthetic_instance_attribute(self, attr_name: str, value: Value) -> Value:
-        raise NotImplementedError
-
     def get_bound_self_type(self) -> Value | None:
         raise NotImplementedError
 
@@ -1390,9 +1387,6 @@ def _get_attribute_from_typed(
         if synthetic_result is not UNINITIALIZED_VALUE:
             is_bound_method = _is_synthetic_instance_method_attribute(
                 typ, ctx.attr, ctx
-            )
-            synthetic_result = ctx.bind_synthetic_instance_attribute(
-                ctx.attr, synthetic_result
             )
             synthetic_result = _substitute_typevars(
                 typ, generic_args, synthetic_result, typ, ctx

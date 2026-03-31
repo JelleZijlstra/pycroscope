@@ -9,6 +9,7 @@ from typing_extensions import assert_type
 
 from . import test_node_visitor
 from .analysis_lib import make_module
+from .attributes import ClassAttributeTransformer
 from .checker import Checker
 from .error_code import DISABLED_IN_TESTS, ErrorCode
 from .name_check_visitor import ClassAttributeChecker, NameCheckVisitor, _static_hasattr
@@ -2725,6 +2726,60 @@ class TestClassAttributeChecker(TestNameCheckVisitorBase):
         class Neochoerus(Capybara):
             def eat(self):
                 assert_type(self.obj, str)
+
+    @skip_if_not_installed("clirm")
+    def test_transformed_clirm_field_does_not_double_bind_inherited_method(self):
+        import clirm
+
+        code = """
+        import sqlite3
+        from clirm import Clirm, Field, Model
+        from typing_extensions import assert_type
+
+        class BaseModel(Model):
+            clirm = Clirm(sqlite3.connect(":memory:"))
+
+            def fill(self, field: str) -> str:
+                return field
+
+        class Article(BaseModel):
+            clirm_table_name = "article"
+            name = Field[str](default="")
+
+            def edit(self) -> str:
+                result = self.fill("x")
+                assert_type(result, str)
+                return result
+        """
+
+        def transform(attr: object):
+            if not isinstance(attr, clirm.Field):
+                return None
+            return TypedValue(str), TypedValue(str)
+
+        code = textwrap.dedent(code)
+        tree = ast.parse(code, "<test input>")
+        module = _make_module(code)
+        settings = {code: code not in DISABLED_IN_TESTS for code in ErrorCode}
+        kwargs = self.visitor_cls.prepare_constructor_kwargs(
+            {"settings": settings},
+            extra_options=[ClassAttributeTransformer([transform])],
+        )
+        with ClassAttributeChecker(
+            enabled=True, options=kwargs["checker"].options
+        ) as attribute_checker:
+            visitor = self.visitor_cls(
+                module.__name__,
+                code,
+                tree,
+                module=module,
+                attribute_checker=attribute_checker,
+                verbosity=0,
+                **kwargs,
+            )
+            result = visitor.check_for_test()
+            result += visitor.perform_final_checks(kwargs)
+        assert not result
 
     @assert_passes()
     def test_unexamined_base(self):

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Fix a method-binding regression in fallback analysis so inherited instance methods are bound exactly once, which removes false positive call-arity errors in projects that use transformed class attributes.
+
 - Fix a `Self` regression for generic receiver methods, so calls like `Query[Self].filter() -> Query[Self]` and `Getter[Self].get_one() -> Self | None` no longer get widened to nested receiver types during fallback analysis.
 
 - Fix a user-visible regression in large project analysis so pycroscope no longer prints stray internal `__getitem__` debug lines, and avoids internal errors when stub lookup touches runtime objects whose `__getattr__` methods can raise project-specific exceptions.
