@@ -8172,15 +8172,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         required -= self._concrete_member_names_for_base(class_key)
         return required
 
-    def _concrete_member_names_for_current_class(
-        self, node: ast.ClassDef, class_key: str, *, is_protocol_class: bool
-    ) -> set[str]:
-        provided = self._concrete_member_names_for_base(class_key)
-        provided -= self._uninitialized_classvar_names_from_class_body(node)
-        if is_protocol_class:
-            provided -= self._protocol_required_members_from_class_body(node)
-        return provided
-
     def _concrete_member_names_for_base(self, class_key: type | str) -> set[str]:
         if isinstance(class_key, type):
             provided = set(
