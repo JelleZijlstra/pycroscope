@@ -996,10 +996,10 @@ class PartialCallValue(Value):
     """Represents a partially evaluated call expression, where the function is known but
     the arguments are not."""
 
-    callee: object | None
+    callee: Value
     arguments: dict[str, Value]
     runtime_value: Value
-    node: ast.AST | None = field(compare=False, hash=False)
+    node: ast.AST = field(compare=False, hash=False)
 
     def __str__(self) -> str:
         return f"{self.runtime_value} (call with arguments {self.arguments})"
@@ -1012,10 +1012,10 @@ class PartialCallValue(Value):
 
     def substitute_typevars(self, typevars: TypeVarMap) -> "PartialCallValue":
         return PartialCallValue(
+            # We don't substitute typevars on the callee or arguments, they record
+            # what happened at call time.
             callee=self.callee,
-            arguments={
-                k: v.substitute_typevars(typevars) for k, v in self.arguments.items()
-            },
+            arguments=self.arguments,
             runtime_value=self.runtime_value.substitute_typevars(typevars),
             node=self.node,
         )

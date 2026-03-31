@@ -133,6 +133,19 @@ class TestTypeVar(TestNameCheckVisitorBase):
             assert_type(Capybara(i).x, int)
 
     @assert_passes()
+    def test_complex_constructor(self):
+        from typing import Callable, TypeVar
+
+        T = TypeVar("T")
+        S = TypeVar("S")
+
+        def model_field(*, converter: Callable[[S], T], default: S) -> T:
+            raise NotImplementedError
+
+        def capybara() -> None:
+            model_field(converter=dict, default=())
+
+    @assert_passes()
     def test_generic_base(self):
         from typing import Generic, TypeVar
 
