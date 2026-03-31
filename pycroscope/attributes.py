@@ -722,6 +722,20 @@ def _get_attribute_from_subclass(
         # type[T] represents an arbitrary subclass of T, so class identity
         # attributes should be widened from base-class literals.
         return TypedValue(str)
+    can_assign_ctx = ctx.get_can_assign_context()
+    attribute = can_assign_ctx.make_type_object(typ).get_attribute(
+        ctx.attr, can_assign_ctx, on_class=True, receiver_value=self_value
+    )
+    if (
+        attribute is not None
+        and attribute.symbol.is_classmethod
+        and (
+            attribute.symbol.returns_self_on_class_access
+            or _contains_self_typevar(attribute.value)
+        )
+    ):
+        ctx.record_usage(typ, attribute.value)
+        return attribute.value
     result, provider, should_unwrap = _get_attribute_from_mro(typ, ctx, on_class=True)
     if result is UNINITIALIZED_VALUE:
         synthetic_attr = _get_runtime_attribute_from_synthetic_class(
@@ -1469,6 +1483,7 @@ def _get_attribute_from_typed(
     receiver_value = _get_instance_lookup_receiver(ctx)
     if receiver_value is not None:
         can_assign_ctx = ctx.get_can_assign_context()
+        plain_typed_receiver = isinstance(replace_fallback(receiver_value), TypedValue)
         attribute = can_assign_ctx.make_type_object(typ).get_attribute(
             ctx.attr, can_assign_ctx, on_class=False, receiver_value=receiver_value
         )
@@ -1477,21 +1492,31 @@ def _get_attribute_from_typed(
             resolved_value = _substitute_typevars(
                 typ, generic_args, attribute.value, typ, ctx
             )
+            raw_runtime_value = replace_fallback(attribute.raw_value)
+            prefer_legacy_unwrap = False
             if attribute.is_property:
-                return set_self(resolved_value, ctx.get_self_value())
-            if symbol.is_classmethod:
+                if plain_typed_receiver:
+                    prefer_legacy_unwrap = True
+                else:
+                    return set_self(resolved_value, ctx.get_self_value())
+            if not prefer_legacy_unwrap and symbol.is_classmethod:
                 if _contains_self_typevar(receiver_value) or _contains_self_typevar(
                     resolved_value
                 ):
                     return resolved_value
-            if (
+            if not prefer_legacy_unwrap and (
                 symbol.is_instance_only
                 and not symbol.is_classvar
                 and not symbol.is_initvar
                 and not symbol.is_method
             ):
-                return set_self(resolved_value, ctx.get_self_value())
-            if (
+                if plain_typed_receiver and isinstance(
+                    replace_fallback(resolved_value), GenericValue
+                ):
+                    prefer_legacy_unwrap = True
+                else:
+                    return set_self(resolved_value, ctx.get_self_value())
+            if not prefer_legacy_unwrap and (
                 not symbol.is_classvar
                 and not symbol.is_initvar
                 and attribute.value != attribute.declared_value
@@ -1502,7 +1527,18 @@ def _get_attribute_from_typed(
                     ):
                         return resolved_value
                 else:
-                    return set_self(resolved_value, ctx.get_self_value())
+                    normalized_resolved_value = replace_fallback(resolved_value)
+                    if plain_typed_receiver and (
+                        isinstance(normalized_resolved_value, GenericValue)
+                        or (
+                            isinstance(normalized_resolved_value, TypedValue)
+                            and isinstance(raw_runtime_value, KnownValue)
+                            and _static_hasattr(raw_runtime_value.val, "fn")
+                        )
+                    ):
+                        prefer_legacy_unwrap = True
+                    else:
+                        return set_self(resolved_value, ctx.get_self_value())
     synthetic_class = ctx.get_synthetic_class(typ)
     if synthetic_class is not None and _contains_self_typevar(ctx.get_self_value()):
         synthetic_result = _get_direct_attribute_from_synthetic_instance(
@@ -1748,6 +1784,10 @@ def _unwrap_value_from_typed(result: Value, typ: type, ctx: AttrContext) -> Valu
             return UnboundMethodValue(ctx.attr, ctx.root_composite, typevars=typevars)
     elif isinstance(cls_val, (types.MethodType, MethodDescriptorType, SlotWrapperType)):
         # built-in method; e.g. scope_lib.tests.SimpleDatabox.get
+        return UnboundMethodValue(ctx.attr, ctx.root_composite, typevars=typevars)
+    elif _static_hasattr(cls_val, "binder_cls") and _static_hasattr(cls_val, "fn"):
+        # qcore/asynq-style decorators expose a binder type on the descriptor but
+        # still behave like methods when accessed through instances.
         return UnboundMethodValue(ctx.attr, ctx.root_composite, typevars=typevars)
     elif (
         _static_hasattr(cls_val, "decorator")

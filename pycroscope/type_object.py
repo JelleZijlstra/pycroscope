@@ -2646,6 +2646,12 @@ def _rewrite_self_returning_classmethod_signature(
             return receiver_for_self
         if (
             isinstance(root, SubclassValue)
+            and isinstance(root.typ, TypeVarValue)
+            and root.typ.typevar_param.typevar is SelfT
+        ):
+            return SubclassValue.make(receiver_for_self)
+        if (
+            isinstance(root, SubclassValue)
             and (subclass_key := _class_key_from_value(root.typ)) is not None
             and class_keys_match(subclass_key, receiver_key)
         ):

@@ -2422,6 +2422,13 @@ class Checker:
                 return argspec.substitute_typevars(value.typevars)
             return argspec
         elif isinstance(value, UnboundMethodValue):
+            if value.secondary_attr_name == "asynq":
+                primary_value = dataclass_replace(value, secondary_attr_name=None)
+                primary_sig = self.signature_from_value(primary_value)
+                if primary_sig is not None:
+                    if value.typevars is not None:
+                        primary_sig = primary_sig.substitute_typevars(value.typevars)
+                    return primary_sig
             method = value.get_method()
             if method is not None:
                 sig: MaybeSignature = None
@@ -2442,7 +2449,7 @@ class Checker:
                 ):
                     if value.typevars is not None:
                         sig = sig.substitute_typevars(value.typevars)
-                    return dataclass_replace(sig, self_composite=value.composite)
+                    return sig
                 return_override = get_return_override(sig)
                 bound = make_bound_method(
                     sig, value.composite, return_override, ctx=self

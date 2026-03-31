@@ -33,6 +33,7 @@ from collections.abc import Callable, Container, Generator, Iterable, Mapping, S
 from contextlib import AbstractContextManager
 from dataclasses import dataclass, replace
 from dataclasses import field as dataclass_field
+from dataclasses import replace as dataclass_replace
 from functools import partial
 from itertools import chain
 from pathlib import Path
@@ -264,6 +265,7 @@ from .value import (
     KnownValueWithTypeVars,
     KVPair,
     MultiValuedValue,
+    NewTypeValue,
     NoReturnConstraintExtension,
     OverlapMode,
     ParamSpecParam,
@@ -10275,6 +10277,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             return self._is_enum_value_for_unsafe_comparison(value.typ)
         return False
 
+    def _contains_newtype_value_for_unsafe_comparison(self, value: Value) -> bool:
+        return any(isinstance(subval, NewTypeValue) for subval in value.walk_values())
+
     def _visit_single_compare(
         self,
         lhs_node: ast.expr,
@@ -10286,6 +10291,8 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     ) -> Value:
         self._check_dataclass_order_comparison(op, lhs, rhs, parent_node)
 
+        lhs_for_unsafe = lhs
+        rhs_for_unsafe = rhs
         lhs_constraint = extract_constraints(lhs)
         rhs_constraint = extract_constraints(rhs)
         rhs = replace_fallback(rhs)
@@ -10386,11 +10393,25 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     ):
                         val = explicit_result
 
-        if isinstance(op, (ast.Is, ast.IsNot)) or not isinstance(
-            has_relation(TypedValue(bool), val, Relation.ASSIGNABLE, self),
-            CanAssignError,
+        if (
+            isinstance(op, (ast.Is, ast.IsNot))
+            or not isinstance(
+                has_relation(TypedValue(bool), val, Relation.ASSIGNABLE, self),
+                CanAssignError,
+            )
+            or (
+                isinstance(op, (ast.Eq, ast.NotEq))
+                and (
+                    self._contains_newtype_value_for_unsafe_comparison(lhs_for_unsafe)
+                    or self._contains_newtype_value_for_unsafe_comparison(
+                        rhs_for_unsafe
+                    )
+                )
+            )
         ):
-            self.check_for_unsafe_comparison(op, lhs, rhs, parent_node)
+            self.check_for_unsafe_comparison(
+                op, lhs_for_unsafe, rhs_for_unsafe, parent_node
+            )
         if definite_value is not None:
             val = annotate_value(val, [DefiniteValueExtension(definite_value)])
         return annotate_with_constraint(val, constraint)
@@ -15338,6 +15359,17 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             callee_wrapped, UnboundMethodValue
         ) and callee_wrapped.secondary_attr_name in ("async", "asynq"):
             async_fn = callee_wrapped.get_method()
+            primary_callee = dataclass_replace(callee_wrapped, secondary_attr_name=None)
+            primary_sig = self.signature_from_value(primary_callee, node)
+            local_return = (
+                self.get_local_return_value(primary_sig)
+                if primary_sig is not None
+                else None
+            )
+            if local_return is None and isinstance(primary_sig, BoundMethodSignature):
+                local_return = self.get_local_return_value(primary_sig.signature)
+            if local_return is not None:
+                return_value = local_return
             return AsyncTaskIncompleteValue(_get_task_cls(async_fn), return_value)
         elif (
             asynq is not None

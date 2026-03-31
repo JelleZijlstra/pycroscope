@@ -2080,7 +2080,7 @@ class Signature:
         return Signature.make(
             self.parameters.values(),
             return_value,
-            impl=self.impl,
+            impl=_wrap_asynq_signature(self),
             callable=self.callable,
             has_return_annotation=self.has_return_annotation,
             is_asynq=False,
@@ -3077,6 +3077,32 @@ class BoundMethodSignature:
 
 
 MaybeSignature = None | Signature | BoundMethodSignature | OverloadedSignature
+
+
+def _wrap_asynq_signature(sig: Signature) -> Impl:
+    def wrapped(ctx: CallContext) -> Value | ImplReturn:
+        if ctx.visitor is None:
+            return AsyncTaskIncompleteValue(asynq.AsyncTask, sig.return_value)
+        args: list[Argument] = []
+        for param in sig.parameters.values():
+            composite = ctx.composites.get(param.name)
+            if composite is None:
+                continue
+            if param.kind is ParameterKind.VAR_POSITIONAL:
+                args.append((composite, ARGS))
+            elif param.kind is ParameterKind.VAR_KEYWORD:
+                args.append((composite, KWARGS))
+            elif param.kind is ParameterKind.KEYWORD_ONLY:
+                args.append((composite, param.name))
+            else:
+                args.append((composite, None))
+        inner_ctx = CheckCallContext(
+            visitor=ctx.visitor, can_assign_ctx=ctx.visitor, node=ctx.node
+        )
+        result = sig.check_call(args, inner_ctx)
+        return AsyncTaskIncompleteValue(asynq.AsyncTask, result)
+
+    return wrapped
 
 
 def make_bound_method(
