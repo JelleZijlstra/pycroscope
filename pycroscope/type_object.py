@@ -2912,11 +2912,6 @@ def _get_descriptor_get_value(
     return return_value
 
 
-def _descriptor_has_setter(descriptor: Value, ctx: CanAssignContext) -> bool:
-    """Whether the descriptor exposes a ``__set__`` method."""
-    return _descriptor_has_method(descriptor, "__set__", ctx)
-
-
 def _runtime_descriptor_owner(descriptor: KnownValue | TypedValue) -> type | None:
     if isinstance(descriptor, KnownValue) and not isinstance(descriptor.val, type):
         return type(descriptor.val)
@@ -3022,6 +3017,7 @@ def _descriptor_method_signature_any(
             if attribute is not None:
                 method_value = attribute.value
     else:
+        assert isinstance(descriptor, (KnownValue, TypedValue))
         runtime_owner = _runtime_descriptor_owner(descriptor)
         if runtime_owner is not None and not _runtime_type_declares_method(
             runtime_owner, method_name
@@ -3433,9 +3429,7 @@ def _bind_protocol_call_expected(
             )
         if not has_receiver_parameter:
             return value
-        bind_kwargs: dict[str, object] = {"ctx": ctx}
-        bind_kwargs["self_value"] = self_value
-        bound = signature.bind_self(**bind_kwargs)
+        bound = signature.bind_self(self_value=self_value, ctx=ctx)
         if bound is not None:
             return CallableValue(bound, unwrapped.typ)
     return value
