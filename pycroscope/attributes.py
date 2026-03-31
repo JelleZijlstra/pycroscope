@@ -1540,7 +1540,7 @@ def _get_attribute_from_typed(
                             and _static_hasattr(raw_runtime_value.val, "fn")
                         )
                     ):
-                        prefer_legacy_unwrap = True
+                        pass
                     else:
                         return set_self(resolved_value, ctx.get_self_value())
     synthetic_class = ctx.get_synthetic_class(typ)
