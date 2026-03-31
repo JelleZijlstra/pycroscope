@@ -1910,29 +1910,6 @@ class TypedValue(Value):
     def get_generic_args_for_type(
         self, typ: type | str, ctx: CanAssignContext
     ) -> list[Value] | None:
-        def _is_same_synthetic_class_key(left: type | str, right: type | str) -> bool:
-            if left == right:
-                return True
-            checker_ctx = safe_getattr(ctx, "checker", ctx)
-            get_synthetic_class = safe_getattr(checker_ctx, "get_synthetic_class", None)
-            if not callable(get_synthetic_class):
-                return False
-            if isinstance(left, type) and isinstance(right, str):
-                synthetic = get_synthetic_class(left)
-                return (
-                    synthetic is not None
-                    and isinstance(synthetic.class_type, TypedValue)
-                    and synthetic.class_type.typ == right
-                )
-            if isinstance(left, str) and isinstance(right, type):
-                synthetic = get_synthetic_class(right)
-                return (
-                    synthetic is not None
-                    and isinstance(synthetic.class_type, TypedValue)
-                    and synthetic.class_type.typ == left
-                )
-            return False
-
         if isinstance(self, GenericValue):
             args = self.args
         else:
@@ -1948,7 +1925,7 @@ class TypedValue(Value):
             if (
                 not raw_args
                 and isinstance(self, GenericValue)
-                and _is_same_synthetic_class_key(params_key, self.typ)
+                and params_key == self.typ
                 and self.args
             ):
                 # Synthetic generic metadata can occasionally lose self-mapping
@@ -1975,9 +1952,7 @@ class TypedValue(Value):
                     expanded_args.append(raw_arg)
                 return expanded_args
             return raw_args
-        if isinstance(self, GenericValue) and _is_same_synthetic_class_key(
-            typ, self.typ
-        ):
+        if isinstance(self, GenericValue) and typ == self.typ:
             # Preserve explicitly provided arguments when base expansion has
             # no self-entry for this synthetic specialization.
             return list(self.args)
