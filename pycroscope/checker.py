@@ -657,19 +657,9 @@ class Checker:
         self, synthetic_class: SyntheticClassObjectValue
     ) -> None:
         class_type = synthetic_class.class_type
-        if not isinstance(class_type, TypedValue):
-            return
         if isinstance(class_type, TypedDictValue):
             return
         typ = class_type.typ
-        had_cached_type_object = any(
-            key in self.type_object_cache
-            for key in self._iter_generic_override_keys(typ)
-        )
-        if not had_cached_type_object and isinstance(typ, type):
-            had_cached_type_object = (
-                runtime_type_generic_alias(typ) in self.type_object_cache
-            )
         for key in self._iter_generic_override_keys(typ):
             if key in self.synthetic_classes:
                 assert self.synthetic_classes[key] is synthetic_class, (

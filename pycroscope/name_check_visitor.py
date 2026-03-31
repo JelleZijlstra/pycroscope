@@ -2900,11 +2900,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             )
         return value, origin
 
-    def _current_synthetic_overlay_type_object(
-        self, *, ensure_runtime_overlay: bool = False
-    ) -> TypeObject | None:
-        if ensure_runtime_overlay:
-            return self.current_tobj
+    def _current_synthetic_overlay_type_object(self) -> TypeObject | None:
         # This is intentionally narrower than self.current_tobj: current_tobj tracks
         # the class currently being analyzed, while this helper answers whether that
         # class currently has a synthetic overlay. Callers that mutate synthetic
@@ -2915,9 +2911,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             return None
         synthetic_class = self.get_synthetic_class(current_class)
         if synthetic_class is None:
-            if ensure_runtime_overlay and isinstance(current_class, type):
-                self.checker.make_synthetic_class(current_class)
-                return self.checker.make_type_object(current_class)
             return None
         return synthetic_class.get_type_object(self.checker)
 
@@ -3184,9 +3177,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         property_info: PropertyInfo | None = None,
         initializer: Value | None | Literal[_UNSET] = _UNSET,
     ) -> None:
-        type_object = self._current_synthetic_overlay_type_object(
-            ensure_runtime_overlay=True
-        )
+        type_object = self.current_tobj
         if type_object is None:
             return
         type_object.set_declared_symbol(
@@ -3246,11 +3237,10 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         declared_annotation = annotation
         if self.ann_assign_type is not None and self.ann_assign_type[0] is not None:
             declared_annotation = self.ann_assign_type[0]
-        type_object = self._current_synthetic_overlay_type_object(
-            ensure_runtime_overlay=self._initializer_needs_runtime_synthetic_overlay(
-                initializer
-            )
-        )
+        if self._initializer_needs_runtime_synthetic_overlay(initializer):
+            type_object = self.current_tobj
+        else:
+            type_object = self._current_synthetic_overlay_type_object()
         if type_object is None:
             return
         synthetic_name, synthetic_initializer, enum_member_is_method = (
@@ -15758,9 +15748,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             and isinstance(value, KnownValue)
             and value.val is self.current_class
         ):
-            type_object = self._current_synthetic_overlay_type_object(
-                ensure_runtime_overlay=True
-            )
+            type_object = self.current_tobj
             synthetic_class = (
                 self.get_synthetic_class(self.current_class)
                 if self.current_class is not None
