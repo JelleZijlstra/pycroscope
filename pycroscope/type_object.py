@@ -1677,7 +1677,11 @@ class TypeObject:
                             )
                         expected = CallableValue(expected_signature)
                 expected = _bind_protocol_call_expected(
-                    expected, other_val, ctx, protocol_self_value=self_val
+                    expected,
+                    other_val,
+                    ctx,
+                    member=member,
+                    protocol_self_value=self_val,
                 )
                 expected = _substitute_receiver_self_typevar(expected, other_val)
                 if other_type_obj is not None and other_type_obj.is_protocol():
@@ -1720,7 +1724,11 @@ class TypeObject:
                     expected = expected.substitute_typevars(protocol_self_typevar_map)
                 if _protocol_member_is_method(self, member, ctx):
                     expected = _bind_protocol_call_expected(
-                        expected, other_val, ctx, protocol_self_value=self_val
+                        expected,
+                        other_val,
+                        ctx,
+                        member=member,
+                        protocol_self_value=self_val,
                     )
                 expected = _substitute_receiver_self_typevar(expected, other_val)
                 actual = ctx.get_attribute_from_value(other_val, member)
@@ -3306,16 +3314,25 @@ def _bind_protocol_call_expected(
     self_value: Value,
     ctx: CanAssignContext,
     *,
+    member: str,
     protocol_self_value: Value | None = None,
 ) -> Value:
     unwrapped = replace_fallback(value)
     if not isinstance(unwrapped, CallableValue):
         return value
     signature = unwrapped.signature
-    if isinstance(signature, BoundMethodSignature):
-        signature = signature.signature
-    receiver_reference = self_value
-    allow_any_annotation = False
+    if member == "__call__":
+        if isinstance(signature, BoundMethodSignature):
+            return value
+        receiver_reference = (
+            self_value if protocol_self_value is None else protocol_self_value
+        )
+        allow_any_annotation = protocol_self_value is not None
+    else:
+        if isinstance(signature, BoundMethodSignature):
+            signature = signature.signature
+        receiver_reference = self_value
+        allow_any_annotation = False
     if isinstance(signature, (Signature, OverloadedSignature)):
         if isinstance(signature, Signature):
             has_receiver_parameter = _signature_has_receiver_parameter(
@@ -3364,7 +3381,7 @@ def _get_protocol_call_member_initializer(
     if call_member is UNINITIALIZED_VALUE:
         return call_member
     return _bind_protocol_call_expected(
-        call_member, self_value, ctx, protocol_self_value=self_value
+        call_member, self_value, ctx, member="__call__", protocol_self_value=self_value
     )
 
 
