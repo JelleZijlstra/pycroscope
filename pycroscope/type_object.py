@@ -471,10 +471,6 @@ class TypeObject:
         self._has_stubs = None
         self._metaclass = None
 
-    def adopt_synthetic_class(self) -> None:
-        self._update_loaded_synthetic_fields()
-        self._protocol_positive_cache.clear()
-
     def has_stubs(self) -> bool:
         if self._has_stubs is None:
             self._has_stubs = self._checker.ts_finder.has_stubs(self.typ)
@@ -490,17 +486,11 @@ class TypeObject:
         if isinstance(self.typ, type):
             type_object_builder._add_runtime_declared_symbols(self.typ, direct_symbols)
         if self._virtual_symbols is not None:
-            type_object_builder._add_synthetic_declared_symbols(
-                self._virtual_symbols, direct_symbols
-            )
-        synthetic_class = self._checker.get_synthetic_class(self.typ)
-        if synthetic_class is not None:
-            synthetic_symbols: Mapping[str, ClassSymbol] = (
-                self.get_synthetic_declared_symbols()
-            )
-            type_object_builder._add_synthetic_declared_symbols(
-                synthetic_symbols, direct_symbols
-            )
+            _add_synthetic_declared_symbols(self._virtual_symbols, direct_symbols)
+        synthetic_symbols: Mapping[str, ClassSymbol] = (
+            self.get_synthetic_declared_symbols()
+        )
+        _add_synthetic_declared_symbols(synthetic_symbols, direct_symbols)
         return direct_symbols
 
     def _compute_declared_type_params(self) -> tuple[TypeParam, ...]:
@@ -961,7 +951,6 @@ class TypeObject:
 
     def _ensure_synthetic_class(self) -> SyntheticClassObjectValue:
         synthetic_class = self._checker.make_synthetic_class(self.typ)
-        self.adopt_synthetic_class()
         return synthetic_class
 
     def get_synthetic_declared_symbols(self) -> MutableMapping[str, ClassSymbol]:
@@ -3883,3 +3872,10 @@ def _make_namedtuple_constructor_impl(
         )
 
     return infer_namedtuple_return
+
+
+def _add_synthetic_declared_symbols(
+    declared_symbols: Mapping[str, ClassSymbol], symbols: dict[str, ClassSymbol]
+) -> None:
+    for name, symbol in declared_symbols.items():
+        symbols[name] = merge_declared_symbol(symbols.get(name), symbol)

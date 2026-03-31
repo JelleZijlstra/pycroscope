@@ -559,7 +559,6 @@ class Checker:
         except Exception:
             return TypeObject(self, typ)
         cached = self._get_cached_type_object(canonical_key)
-        needs_sync = False
         if cached is None:
             cached = TypeObject(self, canonical_key)
             self.type_object_cache[canonical_key] = cached
@@ -570,12 +569,8 @@ class Checker:
                 )
             if isinstance(typ, type):
                 self.type_object_cache[runtime_type_generic_alias(typ)] = cached
-            needs_sync = True
         elif isinstance(canonical_key, type) and cached.typ is not canonical_key:
             cached.typ = canonical_key
-            needs_sync = True
-        if needs_sync:
-            self._sync_synthetic_class_type_object(canonical_key, cached)
         self.type_object_cache[canonical_key] = cached
         self.type_object_cache[typ] = cached
         if isinstance(canonical_key, type):
@@ -611,14 +606,6 @@ class Checker:
             case _:
                 # TODO: should be assert_never(value) but our narrowing isn't good enough
                 assert False
-
-    def _sync_synthetic_class_type_object(
-        self, typ: type | str, type_object: TypeObject
-    ) -> None:
-        synthetic_class = self.get_synthetic_class(typ)
-        if synthetic_class is None:
-            return
-        type_object.adopt_synthetic_class()
 
     def get_generic_bases(
         self, typ: type | str, generic_args: Sequence[Value] = ()
@@ -664,14 +651,7 @@ class Checker:
 
     def get_type_parameters(self, typ: type | str) -> list[TypeParam]:
         declared_type_params = self.make_type_object(typ).get_declared_type_params()
-        if declared_type_params:
-            return list(declared_type_params)
-        synthetic_class = self.get_synthetic_class(typ)
-        if synthetic_class is not None:
-            inferred = self._infer_synthetic_type_params(synthetic_class)
-            if inferred:
-                return list(inferred)
-        return self.arg_spec_cache.get_type_parameters(typ)
+        return list(declared_type_params)
 
     def register_synthetic_class(
         self, synthetic_class: SyntheticClassObjectValue
@@ -698,10 +678,6 @@ class Checker:
                     f" {self.synthetic_classes[key]} vs {synthetic_class}"
                 )
             self.synthetic_classes[key] = synthetic_class
-        if had_cached_type_object:
-            cached = self._get_cached_type_object(typ)
-            if cached is not None:
-                self._sync_synthetic_class_type_object(typ, cached)
 
     def get_synthetic_class(self, typ: type | str) -> SyntheticClassObjectValue | None:
         for key in self._iter_generic_override_keys(typ):
@@ -745,9 +721,6 @@ class Checker:
             for member in members
             if member not in EXCLUDED_PROTOCOL_MEMBERS and member != "__slots__"
         }
-        synthetic_class = self.get_synthetic_class(typ)
-        if synthetic_class is None:
-            return
         type_object = self.make_type_object(typ)
         for member in cleaned_members:
             existing = type_object.get_declared_symbol(member)

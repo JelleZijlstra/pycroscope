@@ -769,24 +769,22 @@ class _AttrContext(CheckerAttrContext):
             synthetic_typ = type(root_value.val)
         if synthetic_typ is None:
             return super().bind_synthetic_instance_attribute(attr_name, value)
-        synthetic_class = self.checker.get_synthetic_class(synthetic_typ)
         tobj = self.checker.make_type_object(synthetic_typ)
         symbol = tobj.get_declared_symbol_from_mro(attr_name, self.checker)
         if symbol is None or not symbol.is_method:
             return super().bind_synthetic_instance_attribute(attr_name, value)
-        if synthetic_class is not None:
-            if symbol.is_classmethod:
+        if symbol.is_classmethod:
+            return super().bind_synthetic_instance_attribute(attr_name, value)
+        if symbol.initializer is not None:
+            raw_attr = replace_fallback(symbol.initializer)
+            if (
+                isinstance(raw_attr, GenericValue)
+                and raw_attr.typ in {classmethod, staticmethod}
+            ) or (
+                isinstance(raw_attr, KnownValue)
+                and isinstance(raw_attr.val, (classmethod, staticmethod))
+            ):
                 return super().bind_synthetic_instance_attribute(attr_name, value)
-            if symbol.initializer is not None:
-                raw_attr = replace_fallback(symbol.initializer)
-                if (
-                    isinstance(raw_attr, GenericValue)
-                    and raw_attr.typ in {classmethod, staticmethod}
-                ) or (
-                    isinstance(raw_attr, KnownValue)
-                    and isinstance(raw_attr.val, (classmethod, staticmethod))
-                ):
-                    return super().bind_synthetic_instance_attribute(attr_name, value)
         signature = (
             value.signature
             if isinstance(value, CallableValue)
@@ -2905,6 +2903,8 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     def _current_synthetic_overlay_type_object(
         self, *, ensure_runtime_overlay: bool = False
     ) -> TypeObject | None:
+        if ensure_runtime_overlay:
+            return self.current_tobj
         # This is intentionally narrower than self.current_tobj: current_tobj tracks
         # the class currently being analyzed, while this helper answers whether that
         # class currently has a synthetic overlay. Callers that mutate synthetic
