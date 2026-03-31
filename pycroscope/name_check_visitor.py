@@ -8146,6 +8146,17 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 return set()
             return {name for name in abstract_methods if isinstance(name, str)}
 
+        if self.checker.get_synthetic_class(class_key) is None:
+            return {
+                name
+                for name, symbol in (
+                    self.checker.make_type_object(class_key)
+                    .get_declared_symbols()
+                    .items()
+                )
+                if FunctionDecorator.abstractmethod in symbol.function_decorators
+            }
+
         direct_abstract = set()
         for name, symbol in (
             self.checker.make_type_object(class_key).get_declared_symbols().items()
