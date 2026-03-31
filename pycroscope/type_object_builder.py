@@ -19,7 +19,7 @@ from .annotations import (
 )
 from .arg_spec import ArgSpecCache
 from .checker import Checker
-from .safe import hasattr_static, is_namedtuple_class, safe_getattr
+from .safe import is_namedtuple_class, safe_getattr
 from .type_object import DataclassFieldRecord
 from .value import (
     AnySource,
