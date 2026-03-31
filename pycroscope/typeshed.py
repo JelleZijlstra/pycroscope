@@ -63,6 +63,7 @@ from .value import (
     ClassSymbol,
     DeprecatedExtension,
     Extension,
+    FunctionDecorator,
     GenericValue,
     KnownValue,
     PropertyInfo,
@@ -781,8 +782,8 @@ class TypeshedFinder:
     def _symbol_from_function_node(
         self, node: ast.FunctionDef | ast.AsyncFunctionDef, mod: str
     ) -> ClassSymbol | None:
-        is_property, is_classmethod, is_staticmethod, qualifiers, deprecated = (
-            self._analyze_stub_method_decorators(node, mod)
+        is_property, qualifiers, deprecated = self._analyze_stub_method_decorators(
+            node, mod
         )
         if is_property:
             getter_type = (
@@ -791,7 +792,8 @@ class TypeshedFinder:
                 else AnyValue(AnySource.unannotated)
             )
             return ClassSymbol(
-                qualifiers=qualifiers,
+                function_decorators=qualifiers,
+                deprecation_message=deprecated,
                 property_info=PropertyInfo(
                     getter_type=getter_type, getter_deprecation=deprecated
                 ),
@@ -808,11 +810,10 @@ class TypeshedFinder:
                     initializer, [DeprecatedExtension(deprecated)]
                 )
         return ClassSymbol(
-            qualifiers=qualifiers,
+            function_decorators=qualifiers,
             is_method=True,
-            is_classmethod=is_classmethod,
-            is_staticmethod=is_staticmethod,
             initializer=initializer,
+            deprecation_message=deprecated,
         )
 
     def _symbol_from_overloaded_node(
@@ -825,8 +826,8 @@ class TypeshedFinder:
         ]
         if not method_nodes:
             return None
-        is_property, is_classmethod, is_staticmethod, qualifiers, deprecated = (
-            self._analyze_stub_method_decorators(method_nodes[0], mod)
+        is_property, qualifiers, deprecated = self._analyze_stub_method_decorators(
+            method_nodes[0], mod
         )
         if is_property:
             getter_type: Value = AnyValue(AnySource.inference)
@@ -839,11 +840,12 @@ class TypeshedFinder:
                     )
                 )
             return ClassSymbol(
-                qualifiers=qualifiers,
+                function_decorators=qualifiers,
                 property_info=PropertyInfo(
                     getter_type=getter_type, getter_deprecation=deprecated
                 ),
                 initializer=TypedValue(property),
+                deprecation_message=deprecated,
             )
         value = self._get_value_from_child_info(
             node, mod, on_class=False, parent_name="<overload>"
@@ -853,45 +855,42 @@ class TypeshedFinder:
         if deprecated is not None:
             value = annotate_value(value, [DeprecatedExtension(deprecated)])
         return ClassSymbol(
-            qualifiers=qualifiers,
+            function_decorators=qualifiers,
             is_method=True,
-            is_classmethod=is_classmethod,
-            is_staticmethod=is_staticmethod,
             initializer=value,
+            deprecation_message=deprecated,
         )
 
     def _analyze_stub_method_decorators(
         self, node: ast.FunctionDef | ast.AsyncFunctionDef, mod: str
-    ) -> tuple[bool, bool, bool, frozenset[Qualifier], str | None]:
+    ) -> tuple[bool, frozenset[FunctionDecorator], str | None]:
         is_property = False
-        is_classmethod = False
-        is_staticmethod = False
-        qualifiers: set[Qualifier] = set()
+        qualifiers: set[FunctionDecorator] = set()
         deprecated = None
         for decorator_node in node.decorator_list:
             decorator_value = self._parse_expr(decorator_node, mod)
             if decorator_value in PROPERTY_LIKE:
                 is_property = True
             elif decorator_value == KnownValue(classmethod):
-                is_classmethod = True
+                qualifiers.add(FunctionDecorator.classmethod)
             elif decorator_value == KnownValue(staticmethod):
-                is_staticmethod = True
+                qualifiers.add(FunctionDecorator.staticmethod)
+            elif decorator_value == KnownValue(abstractmethod):
+                qualifiers.add(FunctionDecorator.abstractmethod)
             elif isinstance(decorator_value, KnownValue) and is_typing_name(
                 decorator_value.val, "final"
             ):
-                qualifiers.add(Qualifier.Final)
+                qualifiers.add(FunctionDecorator.final)
+            elif isinstance(decorator_value, KnownValue) and is_typing_name(
+                decorator_value.val, "override"
+            ):
+                qualifiers.add(FunctionDecorator.override)
             elif isinstance(
                 extension := self._extract_extension_from_decorator(decorator_value),
                 DeprecatedExtension,
             ):
                 deprecated = extension.deprecation_message
-        return (
-            is_property,
-            is_classmethod,
-            is_staticmethod,
-            frozenset(qualifiers),
-            deprecated,
-        )
+        return (is_property, frozenset(qualifiers), deprecated)
 
     def _initializer_from_stub_assignment(
         self, node: ast.AST | None, mod: str

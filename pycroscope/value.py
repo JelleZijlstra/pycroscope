@@ -20,6 +20,7 @@ these subclasses and some related utilities.
 """
 
 import ast
+import builtins
 import collections.abc
 import contextlib
 import enum
@@ -4624,16 +4625,37 @@ class Qualifier(enum.Enum):
     TypeAlias = "TypeAlias"
 
 
+class FunctionDecorator(enum.Enum):
+    classmethod = enum.auto()
+    staticmethod = enum.auto()
+    decorated_coroutine = enum.auto()  # @asyncio.coroutine
+    overload = enum.auto()
+    override = enum.auto()
+    final = enum.auto()
+    evaluated = enum.auto()
+    abstractmethod = enum.auto()
+
+    @builtins.classmethod
+    def method_kind_for(cls, decorators: Container["FunctionDecorator"]) -> str:
+        if cls.classmethod in decorators:
+            return "classmethod"
+        if cls.staticmethod in decorators:
+            return "staticmethod"
+        return "instance"
+
+
 @dataclass(frozen=True)
 class ClassSymbol:
     # Declared annotation for the member, if any. This is present for annotated
     # attributes and absent for unannotated synthetic members and methods.
     annotation: Value | None = None
     qualifiers: frozenset[Qualifier] = frozenset()
+    function_decorators: frozenset[FunctionDecorator] = frozenset()
+    # TODO: This is not yet consistently set and it is not being used
+    deprecation_message: str | None = None
     is_instance_only: bool = False
     is_method: bool = False
-    is_classmethod: bool = False
-    is_staticmethod: bool = False
+    # TODO: not sure why this exists or why we need it
     returns_self_on_class_access: bool = False
     property_info: PropertyInfo | None = None
     # Stored value information for the member. For annotated attributes this is
@@ -4643,8 +4665,6 @@ class ClassSymbol:
     dataclass_field: DataclassFieldInfo | None = None
 
     def __post_init__(self) -> None:
-        if self.is_classmethod or self.is_staticmethod:
-            assert self.is_method
         if self.returns_self_on_class_access:
             assert self.is_method
         if self.property_info is not None:
@@ -4661,6 +4681,14 @@ class ClassSymbol:
             assert self.annotation is None
 
     @property
+    def is_classmethod(self) -> bool:
+        return FunctionDecorator.classmethod in self.function_decorators
+
+    @property
+    def is_staticmethod(self) -> bool:
+        return FunctionDecorator.staticmethod in self.function_decorators
+
+    @property
     def is_classvar(self) -> bool:
         return Qualifier.ClassVar in self.qualifiers
 
@@ -4674,7 +4702,10 @@ class ClassSymbol:
 
     @property
     def is_final(self) -> bool:
-        return Qualifier.Final in self.qualifiers
+        return (
+            Qualifier.Final in self.qualifiers
+            or FunctionDecorator.final in self.function_decorators
+        )
 
     @property
     def is_property(self) -> bool:
