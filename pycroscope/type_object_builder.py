@@ -260,8 +260,6 @@ def _add_runtime_declared_symbols(typ: type, symbols: dict[str, ClassSymbol]) ->
                 is_property = existing.property_info is not None
                 function_decorators = set(existing.function_decorators)
                 is_method = existing.is_method
-                is_staticmethod = existing.is_staticmethod
-                is_classmethod = existing.is_classmethod
             else:
                 is_property = isinstance(raw_value, property)
                 function_decorators = set()
