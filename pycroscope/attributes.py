@@ -1504,10 +1504,7 @@ def _get_attribute_from_typed(
                 else:
                     return set_self(resolved_value, ctx.get_self_value())
             if not prefer_legacy_unwrap and symbol.is_classmethod:
-                if _contains_self_typevar(receiver_value) or _contains_self_typevar(
-                    resolved_value
-                ):
-                    return resolved_value
+                return resolved_value
             if not prefer_legacy_unwrap and (
                 symbol.is_instance_only
                 and not symbol.is_classvar
@@ -1527,7 +1524,9 @@ def _get_attribute_from_typed(
                 and attribute.value != attribute.declared_value
             ):
                 if symbol.is_method:
-                    if _contains_self_typevar(receiver_value) or not isinstance(
+                    if _contains_self_typevar(receiver_value) or _contains_self_typevar(
+                        resolved_value
+                    ) or not isinstance(
                         replace_fallback(receiver_value), TypedValue
                     ):
                         return resolved_value
