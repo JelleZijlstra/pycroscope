@@ -303,6 +303,27 @@ class TypeVarMap:
             )
         return f"TypeVarMap({', '.join(parts)})"
 
+    def substitute_typevars(self, tv_map: "TypeVarMap") -> "TypeVarMap":
+        if not self or not tv_map:
+            return self
+        substituted_typevars = {
+            tv: value.substitute_typevars(tv_map)
+            for tv, value in self._typevars.items()
+        }
+        substituted_paramspecs = {
+            ps: ps_value.substitute_typevars(tv_map)
+            for ps, ps_value in self._paramspecs.items()
+        }
+        substituted_typevartuples = {
+            tv: substitute_typevartuple_binding(binding, tv_map)
+            for tv, binding in self._typevartuples.items()
+        }
+        return TypeVarMap(
+            typevars=substituted_typevars,
+            paramspecs=substituted_paramspecs,
+            typevartuples=substituted_typevartuples,
+        )
+
     @staticmethod
     def _paramspec_to_value(paramspec: "pycroscope.input_sig.InputSig") -> "Value":
         from pycroscope.input_sig import InputSigValue
@@ -1146,11 +1167,13 @@ class ParamSpecParam:
     def typevar(self) -> ParamSpecLike:
         return self.param_spec
 
-    def substitute_typevars(self, typevars: TypeVarMap) -> Value:
-        substituted = typevars.get_value(self)
+    def substitute_typevars(
+        self, typevars: TypeVarMap
+    ) -> "pycroscope.input_sig.InputSig":
+        substituted = typevars.get_paramspec(self)
         if substituted is not None:
             return substituted
-        return type_param_to_value(self)
+        return self
 
     def walk_values(self) -> Iterable[Value]:
         if self.default is not None:
@@ -1692,6 +1715,11 @@ class KnownValueWithTypeVars(KnownValue):
 
     typevars: TypeVarMap = field(compare=False)
     """TypeVars substituted on this value."""
+
+    def substitute_typevars(self, typevars: TypeVarMap) -> "KnownValueWithTypeVars":
+        return KnownValueWithTypeVars(
+            self.val, self.typevars.substitute_typevars(typevars).merge(typevars)
+        )
 
     def __post_init__(self) -> None:
         if not isinstance(self.typevars, TypeVarMap):

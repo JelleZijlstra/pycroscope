@@ -2600,7 +2600,6 @@ class Checker:
             return None
         root = replace_fallback(value.root)
         class_type: type | str | None = None
-        synthetic_root: SyntheticClassObjectValue | None = None
         preserve_exact_return = False
         if isinstance(root, KnownValue) and isinstance(root.val, type):
             class_type = root.val
@@ -2634,24 +2633,6 @@ class Checker:
                 get_call_attribute=get_call_attribute,
             ):
                 preserve_exact_return = True
-        elif isinstance(root, TypedValue) and isinstance(root.typ, str):
-            class_type = root.typ
-            synthetic_class = self.get_synthetic_class(root.typ)
-            if synthetic_class is None:
-                return None
-            origin_argspec = self.signature_from_value(
-                synthetic_class,
-                get_return_override=get_return_override,
-                get_call_attribute=get_call_attribute,
-            )
-        elif isinstance(root, TypedValue) and isinstance(root.typ, type):
-            class_type = root.typ
-            synthetic_root = self.get_synthetic_class(root.typ)
-            if self._runtime_has_explicit_new_return_annotation(root.typ):
-                origin_argspec = self._get_runtime_constructor_signature(root.typ)
-                preserve_exact_return = True
-            else:
-                origin_argspec = self.arg_spec_cache.get_argspec(root.typ)
         else:
             return None
         if synthetic_root is not None:

@@ -302,7 +302,6 @@ from .value import (
     _get_typevar_map_value,
     _is_property_initializer,
     _iter_typevar_map_items,
-    _typevar_map_from_varlike_pairs,
     _with_typevar_map_value,
     annotate_value,
     bound_self_type_from_class_key,
@@ -13637,9 +13636,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         root_for_partial: Value
         if isinstance(value, KnownValue) and isinstance(value.val, type):
             synthetic_class = self.checker.get_synthetic_class(value.val)
-            if synthetic_class is None or not isinstance(
-                synthetic_class.class_type, TypedValue
-            ):
+            if synthetic_class is None:
                 return None
             synthetic_typ = synthetic_class.class_type.typ
             root_for_partial = synthetic_class
@@ -13801,24 +13798,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                         synthetic_lookup_val
                     )
                     if synthetic_typevars:
-                        if isinstance(method_object, KnownValueWithTypeVars):
-                            merged_typevars = _typevar_map_from_varlike_pairs(
-                                (typevar, value.substitute_typevars(synthetic_typevars))
-                                for typevar, value in _iter_typevar_map_items(
-                                    method_object.typevars
-                                )
-                            ).merge(synthetic_typevars)
-                            method_object = KnownValueWithTypeVars(
-                                method_object.val, merged_typevars
-                            )
-                        elif isinstance(method_object, KnownValue):
-                            method_object = KnownValueWithTypeVars(
-                                method_object.val, synthetic_typevars
-                            )
-                        else:
-                            method_object = method_object.substitute_typevars(
-                                synthetic_typevars
-                            )
+                        method_object = method_object.substitute_typevars(
+                            synthetic_typevars
+                        )
                     return method_object
 
         method_object = self.get_attribute(

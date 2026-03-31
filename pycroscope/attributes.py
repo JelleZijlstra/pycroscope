@@ -453,9 +453,7 @@ def _maybe_specialize_class_partial_root(root_value: Value, ctx: AttrContext) ->
         root.class_type, TypedValue
     ):
         return SyntheticClassObjectValue(
-            root.name,
-            GenericValue(root.class_type.typ, specialized_args),
-            runtime_class=root.runtime_class,
+            root.name, GenericValue(root.class_type.typ, specialized_args)
         )
     assert isinstance(root, KnownValue) and isinstance(root.val, type)
     synthetic_class = ctx.get_synthetic_class(root.val)
@@ -465,7 +463,6 @@ def _maybe_specialize_class_partial_root(root_value: Value, ctx: AttrContext) ->
         return SyntheticClassObjectValue(
             synthetic_class.name,
             GenericValue(synthetic_class.class_type.typ, specialized_args),
-            runtime_class=synthetic_class.runtime_class,
         )
     generic_bases = ctx.get_generic_bases(root.val, specialized_args)
     typevars = generic_bases.get(root.val)

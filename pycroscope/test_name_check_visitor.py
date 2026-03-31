@@ -798,7 +798,7 @@ class TestImportFailureHandlingCodeSamples(TestNameCheckVisitorBase):
             assert_type(b[i], int)
             assert_type(b[s], bytes)
 
-    @assert_passes(run_in_both_module_modes=True)
+    @assert_passes(allow_import_failures=True)
     def test_generic_parameter_order_after_import_failure(self):
         from collections.abc import Iterable, Mapping
         from typing import Generic, TypeVar
