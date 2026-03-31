@@ -1421,6 +1421,29 @@ def _get_attribute_from_typed(
         types.BuiltinFunctionType,
     }:
         return GenericValue(dict, [TypedValue(str), AnyValue(AnySource.explicit)])
+    receiver_value = _get_typed_instance_lookup_receiver(ctx)
+    if receiver_value is not None:
+        can_assign_ctx = ctx.get_can_assign_context()
+        attribute = can_assign_ctx.make_type_object(typ).get_attribute(
+            ctx.attr, can_assign_ctx, on_class=False, receiver_value=receiver_value
+        )
+        if attribute is not None:
+            symbol = attribute.symbol
+            if attribute.is_property:
+                return attribute.value
+            if (
+                symbol.is_instance_only
+                and not symbol.is_classvar
+                and not symbol.is_initvar
+                and not symbol.is_method
+            ):
+                return attribute.value
+            if (
+                not symbol.is_classvar
+                and not symbol.is_initvar
+                and attribute.value != attribute.declared_value
+            ):
+                return attribute.value
     synthetic_attr = _get_runtime_attribute_from_synthetic_class(
         typ, generic_args, ctx, on_class=False
     )

@@ -528,6 +528,30 @@ class TestPEP673(TestNameCheckVisitorBase):
                 for obj in query:
                     assert_type(obj, Self)
 
+    @assert_passes()
+    def test_enumerate_of_self_inside_classmethod(self):
+        from collections.abc import Iterator
+        from typing import Generic, TypeVar
+
+        from typing_extensions import Self, assert_type
+
+        T = TypeVar("T")
+
+        class Query(Generic[T]):
+            def __iter__(self) -> Iterator[T]:
+                raise NotImplementedError
+
+        class Base:
+            @classmethod
+            def select(cls) -> Query[Self]:
+                raise NotImplementedError
+
+            @classmethod
+            def process(cls) -> None:
+                for i, obj in enumerate(cls.select()):
+                    assert_type(i, int)
+                    assert_type(obj, Self)
+
     # TODO: Switch this to run_in_both_module_modes=True once unimportable mode
     # reports the protocol Self mismatch instead of import_failed.
     @assert_passes()

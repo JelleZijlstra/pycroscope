@@ -5,6 +5,7 @@
 - Improve class-symbol decorator metadata so final, abstractmethod, and deprecation checks now reuse stored symbol information more consistently, including deprecated class/static methods and property accessors.
 
 - Improve `TypeVar` inference for overloaded constructor callables, so patterns like `model_field(converter=dict, default=())` no longer fail by committing to the wrong `dict` overload too early.
+- Fix `Self`-typed iterator and query methods during fallback analysis, so classmethod patterns like `for i, obj in enumerate(cls.select()): ...` and `query = cls.select()` preserve `Self` instead of misbinding nested receiver types.
 
 - Fix a method-binding regression in fallback analysis so inherited instance methods are bound exactly once, which removes false positive call-arity errors in projects that use transformed class attributes.
 

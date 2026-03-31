@@ -2727,33 +2727,60 @@ class TestClassAttributeChecker(TestNameCheckVisitorBase):
             def eat(self):
                 assert_type(self.obj, str)
 
-    @skip_if_not_installed("clirm")
-    def test_transformed_clirm_field_does_not_double_bind_inherited_method(self):
-        import clirm
-
+    def test_transformed_descriptor_preserves_class_access(self):
         code = """
-        import sqlite3
-        from clirm import Clirm, Field, Model
+        from typing import overload
         from typing_extensions import assert_type
 
-        class BaseModel(Model):
-            clirm = Clirm(sqlite3.connect(":memory:"))
+        class Condition:
+            pass
+
+        class Query:
+            def filter(self, *conds: Condition) -> None:
+                pass
+
+        class Descriptor:
+            @overload
+            def __get__(self, obj: None, owner: object) -> "Descriptor": ...
+            @overload
+            def __get__(self, obj: object, owner: object) -> str: ...
+
+            def __get__(self, obj: object | None, owner: object) -> "Descriptor | str":
+                if obj is None:
+                    return self
+                return ""
+
+            def contains(self, value: str) -> Condition:
+                return Condition()
+
+            def __eq__(self, other: object) -> Condition:
+                return Condition()
+
+        class BaseModel:
+            name = Descriptor()
+
+            @classmethod
+            def select(cls) -> Query:
+                return Query()
 
             def fill(self, field: str) -> str:
                 return field
 
         class Article(BaseModel):
-            clirm_table_name = "article"
-            name = Field[str](default="")
-
             def edit(self) -> str:
                 result = self.fill("x")
                 assert_type(result, str)
                 return result
+
+        def query() -> None:
+            Article.select().filter(Article.name.contains("x"), Article.name == "x")
+
+        def instance(article: Article) -> None:
+            assert_type(article.name, str)
         """
 
         def transform(attr: object):
-            if not isinstance(attr, clirm.Field):
+            if not isinstance(attr, module.Descriptor):
                 return None
             return TypedValue(str), TypedValue(str)
 

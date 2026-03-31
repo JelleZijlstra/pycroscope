@@ -94,6 +94,7 @@ from .value import (
     TypeVarValue,
     UnboundMethodValue,
     Value,
+    _has_nested_self_typevar,
     _iter_typevar_map_items,
     _typevar_map_from_varlike_pairs,
     _with_typevar_map_value,
@@ -2462,16 +2463,25 @@ def _bind_attribute_signature(
     if self_annotation_value is None:
         self_annotation_value = receiver_value
     signature = ctx.signature_from_value(value)
+    restore_typevars = TypeVarMap()
     if isinstance(signature, BoundMethodSignature):
+        shielded_signature, restore_typevars = _shield_nested_self_in_signature(
+            signature.signature
+        )
+        signature = replace(signature, signature=shielded_signature)
         bound = signature.get_signature(
             ctx=ctx, self_annotation_value=self_annotation_value
         )
         if bound is None and self_annotation_value == receiver_value:
             bound = signature.get_signature(ctx=ctx)
         if bound is not None:
-            return CallableValue(bound)
+            result: Value = CallableValue(bound)
+            if restore_typevars:
+                result = result.substitute_typevars(restore_typevars)
+            return result
         return value
     if isinstance(signature, (Signature, OverloadedSignature)):
+        signature, restore_typevars = _shield_nested_self_in_signature(signature)
         bound = signature.bind_self(
             self_value=receiver_value,
             self_annotation_value=self_annotation_value,
@@ -2480,8 +2490,43 @@ def _bind_attribute_signature(
         if bound is None and self_annotation_value == receiver_value:
             bound = signature.bind_self(self_value=receiver_value, ctx=ctx)
         if bound is not None:
-            return CallableValue(bound)
+            result = CallableValue(bound)
+            if restore_typevars:
+                result = result.substitute_typevars(restore_typevars)
+            return result
     return value
+
+
+def _shield_nested_self_in_signature(
+    signature: Signature | OverloadedSignature,
+) -> tuple[Signature | OverloadedSignature, TypeVarMap]:
+    if isinstance(signature, OverloadedSignature):
+        restore_typevars = TypeVarMap()
+        shielded_signatures = []
+        for inner_sig in signature.signatures:
+            shielded_sig, inner_restore = _shield_nested_self_in_signature(inner_sig)
+            assert isinstance(shielded_sig, Signature)
+            shielded_signatures.append(shielded_sig)
+            restore_typevars = restore_typevars.merge(inner_restore)
+        return OverloadedSignature(shielded_signatures), restore_typevars
+
+    restore_typevars = TypeVarMap()
+    parameters = {}
+    for name, parameter in signature.parameters.items():
+        annotation = parameter.annotation
+        inner_restore = TypeVarMap()
+        if _has_nested_self_typevar(annotation):
+            annotation, inner_restore = shield_nested_self_typevars(annotation)
+        parameters[name] = replace(parameter, annotation=annotation)
+        restore_typevars = restore_typevars.merge(inner_restore)
+    return_value = signature.return_value
+    return_restore = TypeVarMap()
+    if _has_nested_self_typevar(return_value):
+        return_value, return_restore = shield_nested_self_typevars(return_value)
+    restore_typevars = restore_typevars.merge(return_restore)
+    return replace(signature, parameters=parameters, return_value=return_value), (
+        restore_typevars
+    )
 
 
 def bind_attribute_value_to_receiver(

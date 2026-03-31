@@ -10260,7 +10260,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         rhs: Value,
         parent_node: ast.AST,
     ) -> Value:
-        self.check_for_unsafe_comparison(op, lhs, rhs, parent_node)
         self._check_dataclass_order_comparison(op, lhs, rhs, parent_node)
 
         lhs_constraint = extract_constraints(lhs)
@@ -10331,6 +10330,11 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 allow_call=False,
             )
 
+        if isinstance(op, (ast.Is, ast.IsNot)) or not isinstance(
+            has_relation(TypedValue(bool), val, Relation.ASSIGNABLE, self),
+            CanAssignError,
+        ):
+            self.check_for_unsafe_comparison(op, lhs, rhs, parent_node)
         if definite_value is not None:
             val = annotate_value(val, [DefiniteValueExtension(definite_value)])
         return annotate_with_constraint(val, constraint)
