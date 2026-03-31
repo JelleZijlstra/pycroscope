@@ -2578,6 +2578,7 @@ def _bind_attribute_signature(
     if self_annotation_value is None:
         self_annotation_value = receiver_value
     signature = ctx.signature_from_value(value)
+    restore_typevars = TypeVarMap()
     if isinstance(signature, BoundMethodSignature):
         shielded_signature, restore_typevars = _shield_nested_self_in_signature(
             signature.signature
