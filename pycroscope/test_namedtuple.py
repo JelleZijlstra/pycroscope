@@ -206,6 +206,42 @@ class TestNamedTuple(TestNameCheckVisitorBase):
             def decode(cls, auth_header: str, encoding: str = "latin1") -> "BasicAuth":
                 return cls(auth_header, "", encoding)
 
+    @assert_passes()
+    def test_local_namedtuple_signature_lookup_does_not_crash(self):
+        import inspect
+        from typing import NamedTuple
+
+        from typing_extensions import assert_type
+
+        class Params(NamedTuple):
+            x: int
+            y: float = 0.0
+
+        def capybara() -> None:
+            params = Params(1)
+            inspect.signature(Params)
+            assert_type(params.x, int)
+            assert_type(params.y, float)
+
+    @assert_passes(allow_import_failures=True)
+    def test_except_local_namedtuple_signature_lookup_does_not_crash(self):
+        import inspect
+        from typing import NamedTuple
+
+        try:
+            from definitely_missing_namedtuple_module import Params
+        except ImportError:
+
+            class Params(NamedTuple):  # type: ignore[no-redef]
+                x: int
+                y: float = 0.0
+
+        def capybara() -> None:
+            params = Params(1)
+            inspect.signature(Params)
+            params.x
+            params.y
+
     @assert_passes(run_in_both_module_modes=True)
     def test_namedtuple_tuple_operations(self):
         from typing import NamedTuple

@@ -104,6 +104,16 @@ class TestTypeshedClient(TestNameCheckVisitorBase):
         assert_with_maybe_generic(Sequence, [Reversible, Collection])
         assert_with_maybe_generic(Set, [Collection])
 
+    def test_get_direct_symbol_ignores_undotted_local_name(self):
+        tsf = TypeshedFinder(Checker(), verbose=True)
+
+        assert tsf.get_direct_symbol("Params", "__new__") is None
+        assert tsf.get_bases_for_fq_name("Params") is None
+        assert (
+            tsf.get_attribute_for_fq_name("Params", "__new__", on_class=True)
+            is UNINITIALIZED_VALUE
+        )
+
     def test_newtype(self):
         with tempfile.TemporaryDirectory() as temp_dir_str:
             temp_dir = Path(temp_dir_str)
