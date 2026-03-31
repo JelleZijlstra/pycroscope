@@ -2024,12 +2024,14 @@ def _merge_runtime_and_typeshed_symbol(
             runtime_symbol.annotation, typeshed_symbol.annotation
         ),
         qualifiers=runtime_symbol.qualifiers | typeshed_symbol.qualifiers,
+        function_decorators=runtime_symbol.function_decorators
+        | typeshed_symbol.function_decorators,
+        deprecation_message=runtime_symbol.deprecation_message
+        or typeshed_symbol.deprecation_message,
         is_instance_only=(
             runtime_symbol.is_instance_only or typeshed_symbol.is_instance_only
         ),
         is_method=runtime_symbol.is_method,
-        is_classmethod=runtime_symbol.is_classmethod,
-        is_staticmethod=runtime_symbol.is_staticmethod,
         returns_self_on_class_access=(
             runtime_symbol.returns_self_on_class_access
             or (
@@ -2089,10 +2091,10 @@ def merge_declared_symbol(
     return ClassSymbol(
         annotation=_merge_symbol_initializer(existing.annotation, new.annotation),
         qualifiers=existing.qualifiers | new.qualifiers,
+        function_decorators=existing.function_decorators | new.function_decorators,
+        deprecation_message=existing.deprecation_message or new.deprecation_message,
         is_instance_only=existing.is_instance_only or new.is_instance_only,
         is_method=existing.is_method or new.is_method,
-        is_classmethod=existing.is_classmethod or new.is_classmethod,
-        is_staticmethod=existing.is_staticmethod or new.is_staticmethod,
         returns_self_on_class_access=(
             existing.returns_self_on_class_access or new.returns_self_on_class_access
         ),

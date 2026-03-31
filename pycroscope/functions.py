@@ -5,12 +5,11 @@ Code for understanding function definitions.
 """
 
 import ast
-import builtins
 import collections.abc
 import enum
 import sys
 import types
-from collections.abc import Container, Iterable, Sequence
+from collections.abc import Iterable, Sequence
 from contextlib import AbstractContextManager
 from dataclasses import dataclass, replace
 from itertools import zip_longest
@@ -43,6 +42,7 @@ from .value import (
     CanAssignContext,
     CanAssignError,
     DeprecatedExtension,
+    FunctionDecorator,
     GenericValue,
     InferenceVarValue,
     KnownValue,
@@ -116,25 +116,6 @@ class AsyncFunctionKind(enum.Enum):
     normal = 1
     async_proxy = 2
     pure = 3
-
-
-class FunctionDecorator(enum.Enum):
-    classmethod = enum.auto()
-    staticmethod = enum.auto()
-    decorated_coroutine = enum.auto()
-    overload = enum.auto()
-    override = enum.auto()
-    final = enum.auto()
-    evaluated = enum.auto()
-    abstractmethod = enum.auto()
-
-    @builtins.classmethod
-    def method_kind_for(cls, decorators: Container["FunctionDecorator"]) -> str:
-        if cls.classmethod in decorators:
-            return "classmethod"
-        if cls.staticmethod in decorators:
-            return "staticmethod"
-        return "instance"
 
 
 @dataclass(frozen=True)

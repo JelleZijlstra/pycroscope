@@ -24,6 +24,7 @@ from .value import (
     AnyValue,
     ClassSymbol,
     DataclassFieldInfo,
+    FunctionDecorator,
     GenericValue,
     IntersectionValue,
     KnownValue,
@@ -257,24 +258,40 @@ def _add_runtime_declared_symbols(typ: type, symbols: dict[str, ClassSymbol]) ->
             if name in namedtuple_fields:
                 continue
             existing = symbols.get(name)
+            depr = safe_getattr(raw_value, "__deprecated__", None)
+            if isinstance(depr, str):
+                deprecation_message = depr
+            else:
+                deprecation_message = None
             if (
                 existing is not None
                 and not existing.is_classvar
                 and not existing.is_initvar
             ):
                 is_property = existing.property_info is not None
-                is_staticmethod = existing.is_staticmethod
-                is_classmethod = existing.is_classmethod
+                function_decorators = existing.function_decorators
                 is_method = existing.is_method
             else:
                 is_property = isinstance(raw_value, property)
-                is_staticmethod = isinstance(raw_value, staticmethod)
-                is_classmethod = isinstance(raw_value, classmethod)
+                function_decorators = set()
+                maybe_func = raw_value
+                if isinstance(raw_value, staticmethod):
+                    function_decorators.add(FunctionDecorator.staticmethod)
+                    maybe_func = raw_value.__func__
+                if isinstance(raw_value, classmethod):
+                    function_decorators.add(FunctionDecorator.classmethod)
+                    maybe_func = raw_value.__func__
                 is_method = (
-                    (not is_property and (is_staticmethod or is_classmethod))
+                    (not is_property and bool(function_decorators))
                     or inspect.isfunction(raw_value)
                     or inspect.ismethoddescriptor(raw_value)
                 )
+                if safe_getattr(maybe_func, "__final__", False):
+                    function_decorators.add(FunctionDecorator.final)
+                if safe_getattr(maybe_func, "__isabstractmethod__", False):
+                    function_decorators.add(FunctionDecorator.abstractmethod)
+                if safe_getattr(maybe_func, "__override__", False):
+                    function_decorators.add(FunctionDecorator.override)
             qualifiers = set(existing.qualifiers if existing is not None else ())
             if _is_runtime_member_final(raw_value):
                 qualifiers.add(Qualifier.Final)
@@ -285,8 +302,8 @@ def _add_runtime_declared_symbols(typ: type, symbols: dict[str, ClassSymbol]) ->
                     existing.is_instance_only if existing is not None else False
                 ),
                 is_method=is_method,
-                is_classmethod=is_classmethod,
-                is_staticmethod=is_staticmethod,
+                deprecation_message=deprecation_message,
+                function_decorators=frozenset(function_decorators),
                 property_info=(
                     _runtime_property_info(raw_value, typ) if is_property else None
                 ),

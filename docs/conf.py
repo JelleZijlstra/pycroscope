@@ -80,6 +80,7 @@ nitpick_ignore = [
     ("py:class", "pycroscope.value.Qualifier"),
     ("py:class", "pycroscope.value.T"),
     ("py:class", "pycroscope.value.Variance"),
+    ("py:class", "pycroscope.value.FunctionDecorator"),
     ("py:class", "typing_extensions.ParamSpec"),
 ]
 
