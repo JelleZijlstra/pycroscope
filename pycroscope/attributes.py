@@ -353,7 +353,7 @@ def get_attribute(ctx: AttrContext) -> Value:
                     if tobj.has_any_base():
                         attribute_value = AnyValue(AnySource.from_another)
                 else:
-                    self_value: Value = root_value.typ
+                    self_value = root_value.typ
                     bound_self_type = _get_bound_self_type_from_ctx(ctx)
                     symbol = (
                         ctx.get_can_assign_context()
@@ -1434,6 +1434,10 @@ def _contains_self_typevar(value: Value) -> bool:
     )
 
 
+def _contains_typevar(value: Value) -> bool:
+    return any(isinstance(subval, TypeVarValue) for subval in value.walk_values())
+
+
 def _get_bound_self_type_from_ctx(ctx: AttrContext) -> Value | None:
     return ctx.get_bound_self_type()
 
@@ -1510,10 +1514,11 @@ def _get_attribute_from_typed(
                 and not symbol.is_initvar
                 and not symbol.is_method
             ):
-                if plain_typed_receiver and isinstance(
-                    replace_fallback(resolved_value), GenericValue
+                if plain_typed_receiver and (
+                    isinstance(replace_fallback(resolved_value), GenericValue)
+                    or _contains_typevar(resolved_value)
                 ):
-                    prefer_legacy_unwrap = True
+                    pass
                 else:
                     return set_self(resolved_value, ctx.get_self_value())
             if not prefer_legacy_unwrap and (

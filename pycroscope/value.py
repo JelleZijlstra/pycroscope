@@ -1780,16 +1780,19 @@ class UnboundMethodValue(Value):
         else:
             target = root.get_type()
         try:
-            if self.secondary_attr_name is not None and isinstance(target, type):
-                bound_target = _bind_runtime_descriptor_for_secondary_attribute(
-                    target, self.attr_name
-                )
-                if bound_target is not None:
-                    method = getattr(bound_target, self.secondary_attr_name)
-                    return method
             method = getattr(target, self.attr_name)
             if self.secondary_attr_name is not None:
-                method = getattr(method, self.secondary_attr_name)
+                try:
+                    method = getattr(method, self.secondary_attr_name)
+                except AttributeError:
+                    if not isinstance(target, type):
+                        raise
+                    bound_target = _bind_runtime_descriptor_for_secondary_attribute(
+                        target, self.attr_name
+                    )
+                    if bound_target is None:
+                        raise
+                    method = getattr(bound_target, self.secondary_attr_name)
         except AttributeError:
             return None
         return method

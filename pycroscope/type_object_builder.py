@@ -19,7 +19,7 @@ from .annotations import (
 )
 from .arg_spec import ArgSpecCache
 from .checker import Checker
-from .safe import hasattr_static, is_namedtuple_class, safe_getattr
+from .safe import is_namedtuple_class, safe_getattr
 from .type_object import DataclassFieldRecord
 from .value import (
     AnySource,
@@ -213,6 +213,7 @@ def _add_runtime_declared_symbols(typ: type, symbols: dict[str, ClassSymbol]) ->
             if isinstance(class_dict, Mapping) and name in class_dict
             else None
         )
+        property_value = raw_value if isinstance(raw_value, KnownValue) else None
         annotation = _value_from_runtime_annotation(
             get_namedtuple_field_annotation(typ, name), typ
         )
@@ -221,8 +222,9 @@ def _add_runtime_declared_symbols(typ: type, symbols: dict[str, ClassSymbol]) ->
             qualifiers=frozenset({Qualifier.ReadOnly}),
             is_instance_only=True,
             property_info=(
-                _runtime_property_info(raw_value.val, typ)
-                if raw_value is not None and isinstance(raw_value.val, property)
+                _runtime_property_info(property_value.val, typ)
+                if property_value is not None
+                and isinstance(property_value.val, property)
                 else None
             ),
             initializer=raw_value,
@@ -271,8 +273,6 @@ def _add_runtime_declared_symbols(typ: type, symbols: dict[str, ClassSymbol]) ->
                 is_property = existing.property_info is not None
                 function_decorators = set(existing.function_decorators)
                 is_method = existing.is_method
-                is_staticmethod = existing.is_staticmethod
-                is_classmethod = existing.is_classmethod
             else:
                 is_property = isinstance(raw_value, property)
                 function_decorators = set()
@@ -355,9 +355,9 @@ def _is_runtime_method_member(
         return True
     if inspect.isfunction(raw_value):
         return True
+    has_objclass = safe_getattr(raw_value, "__objclass__", None) is not None
     if inspect.ismethoddescriptor(raw_value) and (
-        hasattr_static(raw_value, "__objclass__")
-        or safe_getattr(raw_value, "func_code", None) is not None
+        has_objclass or safe_getattr(raw_value, "func_code", None) is not None
     ):
         return True
     return False

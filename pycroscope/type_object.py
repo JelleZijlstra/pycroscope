@@ -1355,7 +1355,7 @@ class TypeObject:
         *,
         on_class: bool,
         is_special_lookup: bool = False,
-        receiver_value: TypedValue | None,
+        receiver_value: TypedValue | TypeVarValue | GenericValue | None,
     ) -> _RawTypeObjectAttribute | None:
         """Find the raw member selected by Python lookup precedence."""
         metaclass_attribute = None
@@ -1377,7 +1377,11 @@ class TypeObject:
         return metaclass_attribute
 
     def _get_raw_declared_attribute(
-        self, name: str, ctx: CanAssignContext, *, receiver_value: TypedValue | None
+        self,
+        name: str,
+        ctx: CanAssignContext,
+        *,
+        receiver_value: TypedValue | TypeVarValue | GenericValue | None,
     ) -> _RawTypeObjectAttribute | None:
         """Return the matching class-MRO member without applying descriptors."""
         match = self._get_declared_symbol_sources_with_owner(name)
@@ -1394,7 +1398,11 @@ class TypeObject:
         )
 
     def _get_raw_metaclass_attribute(
-        self, name: str, ctx: CanAssignContext, *, receiver_value: TypedValue | None
+        self,
+        name: str,
+        ctx: CanAssignContext,
+        *,
+        receiver_value: TypedValue | TypeVarValue | GenericValue | None,
     ) -> _RawTypeObjectAttribute | None:
         """Return the matching metaclass member without applying descriptors."""
         metaclass = self.get_metaclass()
@@ -1425,7 +1433,7 @@ class TypeObject:
         typeshed_symbol: ClassSymbol | None,
         ctx: CanAssignContext,
         *,
-        receiver_value: TypedValue | None,
+        receiver_value: TypedValue | TypeVarValue | GenericValue | None,
         is_metaclass_owner: bool,
     ) -> _RawTypeObjectAttribute:
         """Specialize a located symbol and package the raw stored member state."""
@@ -2493,7 +2501,6 @@ def _bind_attribute_signature(
     if self_annotation_value is None:
         self_annotation_value = receiver_value
     signature = ctx.signature_from_value(value)
-    restore_typevars = TypeVarMap()
     if isinstance(signature, BoundMethodSignature):
         shielded_signature, restore_typevars = _shield_nested_self_in_signature(
             signature.signature
@@ -3224,7 +3231,7 @@ def _get_symbol_owner_substitutions_from_type_objects(
     owner_tobj: TypeObject,
     ctx: CanAssignContext,
     *,
-    receiver_value: TypedValue | None = None,
+    receiver_value: TypedValue | TypeVarValue | GenericValue | None = None,
 ) -> TypeVarMap:
     receiver_substitutions = TypeVarMap()
     if receiver_value is not None:
