@@ -221,6 +221,7 @@ from .type_object import (
     NamedTupleField,
     TypeObject,
     TypeObjectAttribute,
+    _attribute_blocks_writes,
     _class_key_from_value,
     _is_definitely_class_object_value,
     _iter_base_type_objects,
@@ -14299,13 +14300,14 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 error_code=ErrorCode.incompatible_assignment,
             )
             return
-        if attr.is_property and not attr.property_has_setter:
-            self._show_error_if_checking(
-                node,
-                f"Cannot {wording} read-only property {node.attr!r}",
-                error_code=ErrorCode.incompatible_assignment,
-            )
-            return
+        if attr.is_property and _attribute_blocks_writes(attr, self):
+            if not attr.property_has_setter:
+                self._show_error_if_checking(
+                    node,
+                    f"Cannot {wording} read-only property {node.attr!r}",
+                    error_code=ErrorCode.incompatible_assignment,
+                )
+                return
         self._check_deprecated_property_setter(node, root)
         if (
             attr.symbol.is_readonly
