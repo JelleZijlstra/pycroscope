@@ -1478,7 +1478,10 @@ def _get_attribute_from_typed(
             if attribute.is_property:
                 return set_self(resolved_value, ctx.get_self_value())
             if symbol.is_classmethod:
-                return resolved_value
+                if _contains_self_typevar(receiver_value) or _contains_self_typevar(
+                    resolved_value
+                ):
+                    return resolved_value
             if (
                 symbol.is_instance_only
                 and not symbol.is_classvar
@@ -1492,8 +1495,10 @@ def _get_attribute_from_typed(
                 and attribute.value != attribute.declared_value
             ):
                 if symbol.is_method:
-                    return resolved_value
-                return set_self(resolved_value, ctx.get_self_value())
+                    if _contains_self_typevar(receiver_value):
+                        return resolved_value
+                else:
+                    return set_self(resolved_value, ctx.get_self_value())
     synthetic_class = ctx.get_synthetic_class(typ)
     if synthetic_class is not None and _contains_self_typevar(ctx.get_self_value()):
         synthetic_result = _get_direct_attribute_from_synthetic_instance(

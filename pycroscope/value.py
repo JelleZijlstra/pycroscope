@@ -3210,7 +3210,6 @@ def receiver_to_self_type(
 
 
 def _has_nested_self_typevar(value: Value) -> bool:
-    value = replace_fallback(value)
     return not (
         isinstance(value, TypeVarValue) and value.typevar_param.typevar is SelfT
     ) and any(

@@ -2807,6 +2807,20 @@ class TestClassAttributeChecker(TestNameCheckVisitorBase):
             Child.e.touch()
             obj.e.touch()
 
+    @assert_passes(run_in_both_module_modes=True)
+    def test_classvar_container_methods_keep_receiver_parameter(self):
+        from typing import ClassVar
+
+        from typing_extensions import assert_type
+
+        class Model:
+            stats: ClassVar[dict[str, int]] = {}
+
+            def hit(self) -> None:
+                value = Model.stats.get("hits", 0)
+                assert_type(value, int)
+                Model.stats["hits"] = value + 1
+
     def test_transformed_descriptor_preserves_class_access(self):
         code = """
         from typing import overload
@@ -2941,6 +2955,30 @@ class TestClassAttributeChecker(TestNameCheckVisitorBase):
         """
 
         self.assert_passes(code, run_in_both_module_modes=True)
+
+    @assert_passes(allow_import_failures=True)
+    def test_overloaded_descriptor_class_access_uses_class_return_type(self):
+        from typing import Generic, TypeVar, overload
+
+        from typing_extensions import assert_type
+
+        T = TypeVar("T")
+
+        class Descriptor(Generic[T]):
+            @overload
+            def __get__(self, obj: None, owner: object) -> list[T]: ...
+
+            @overload
+            def __get__(self, obj: object, owner: object) -> T: ...
+
+            def __get__(self, obj: object | None, owner: object) -> list[T] | T:
+                raise NotImplementedError
+
+        class Model:
+            value: Descriptor[int] = Descriptor[int]()
+
+        assert_type(Model.value, list[int])
+        assert_type(Model().value, int)
 
     def test_generic_descriptor_preserves_nested_instance_access_in_both_modes(self):
         code = """
@@ -3204,6 +3242,61 @@ class TestClassAttributeChecker(TestNameCheckVisitorBase):
         """
 
         self.assert_passes(code, run_in_both_module_modes=True)
+
+    @assert_passes(run_in_both_module_modes=True)
+    def test_paramspec_callable_protocol_assignment_does_not_internal_error(self):
+        from typing import Any, ParamSpec, Protocol
+
+        P = ParamSpec("P")
+
+        class Proto3(Protocol):
+            def __call__(self, a: int, *args: Any, **kwargs: Any) -> None: ...
+
+        class Proto4(Protocol[P]):
+            def __call__(self, a: int, *args: P.args, **kwargs: P.kwargs) -> None: ...
+
+        def takes_proto3(value: Proto3) -> None:
+            pass
+
+        def takes_proto4(value: Proto4[...]) -> None:
+            pass
+
+        def f(p3: Proto3, p4: Proto4[...]) -> None:
+            takes_proto4(p3)
+            takes_proto3(p4)
+
+    @assert_passes(run_in_both_module_modes=True)
+    def test_bound_typeguard_methods_preserve_narrowing(self):
+        from typing import Self, TypeGuard
+
+        from typing_extensions import assert_type
+
+        class A:
+            def tg(self, value: object) -> TypeGuard[int]:
+                return isinstance(value, int)
+
+            @classmethod
+            def cls_tg(cls, value: object) -> TypeGuard[int]:
+                return isinstance(value, int)
+
+            def self_tg(self, value: object) -> TypeGuard[Self]:
+                return isinstance(value, type(self))
+
+        class B(A):
+            pass
+
+        def f() -> None:
+            value1 = object()
+            if A().tg(value1):
+                assert_type(value1, int)
+
+            value2 = object()
+            if A().cls_tg(value2):
+                assert_type(value2, int)
+
+            value3 = object()
+            if B().self_tg(value3):
+                assert_type(value3, B)
 
     @assert_passes(run_in_both_module_modes=True)
     def test_module_reexported_descriptor_preserves_class_access(self):

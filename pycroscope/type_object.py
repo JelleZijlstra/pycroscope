@@ -2977,9 +2977,11 @@ def _get_descriptor_get_value(
     return_value = get_signature.return_value
     self_type = receiver_to_self_type(descriptor, ctx)
     if on_class and not is_metaclass_owner:
-        narrowed_return = intersect_values(return_value, self_type, ctx)
-        if narrowed_return is not NO_RETURN_VALUE:
-            return_value = narrowed_return
+        return_without_self = subtract_values(return_value, self_type, ctx)
+        if return_without_self != return_value:
+            narrowed_return = intersect_values(return_value, self_type, ctx)
+            if narrowed_return is not NO_RETURN_VALUE:
+                return_value = narrowed_return
     else:
         return_value = subtract_values(return_value, self_type, ctx)
     return return_value
