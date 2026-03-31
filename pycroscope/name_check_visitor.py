@@ -7401,28 +7401,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                         ),
                         *params[1:],
                     ]
-            provisional_info = FunctionInfo(
-                async_kind=async_kind,
-                decorator_kinds=frozenset(decorator_kinds),
-                is_nested_in_class=is_nested_in_class,
-                decorators=decorators,
-                node=node,
-                params=params,
-                return_annotation=return_annotation,
-                has_invalid_self_usage=False,
-                is_async_generator=(
-                    _is_async_generator(node)
-                    if isinstance(node, ast.AsyncFunctionDef)
-                    else False
-                ),
-                potential_function=potential_function,
-                type_params=type_params,
-            )
-            has_invalid_self_usage = (
-                False
-                if isinstance(node, ast.Lambda)
-                else self._check_function_self_usage(provisional_info)
-            )
             yield FunctionInfo(
                 async_kind=async_kind,
                 decorator_kinds=frozenset(decorator_kinds),
@@ -7431,7 +7409,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 node=node,
                 params=params,
                 return_annotation=return_annotation,
-                has_invalid_self_usage=has_invalid_self_usage,
                 is_async_generator=(
                     _is_async_generator(node)
                     if isinstance(node, ast.AsyncFunctionDef)
@@ -7464,6 +7441,11 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 potential_function=potential_function,
             ) as info,
         ):
+            has_invalid_self_usage = (
+                False
+                if isinstance(node, ast.Lambda)
+                else self._check_function_self_usage(info)
+            )
             self._function_decorator_kinds_by_node[node] = info.decorator_kinds
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 self._function_returns_self_by_node[node] = _value_contains_self(
@@ -7614,7 +7596,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         if (
             not result.has_return
             and not self._allow_missing_return(info)
-            and not info.has_invalid_self_usage
+            and not has_invalid_self_usage
             and node.returns is not None
             and (
                 info.return_annotation is None

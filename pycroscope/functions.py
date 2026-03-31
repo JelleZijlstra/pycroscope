@@ -136,7 +136,6 @@ class FunctionInfo:
     node: FunctionNode
     params: Sequence[ParamInfo]
     return_annotation: Value | None
-    has_invalid_self_usage: bool
     is_async_generator: bool
     potential_function: object | None
     type_params: Sequence[TypeParam]
