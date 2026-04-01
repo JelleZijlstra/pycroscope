@@ -6,9 +6,9 @@ Functions to be used in test_scope unit tests.
 """
 
 from collections.abc import Sequence
-from typing import ClassVar, NoReturn, overload
+from typing import ClassVar, Generic, NoReturn, TypeVar, overload
 
-from typing_extensions import final
+from typing_extensions import Self, final
 
 from .value import SequenceValue, Value, VariableNameValue
 
@@ -116,3 +116,34 @@ def make_simple_sequence(typ: type, vals: Sequence[Value]) -> SequenceValue:
 
 def make_union_in_annotated() -> object:
     return 42
+
+
+T = TypeVar("T")
+
+
+class ImportedCondition:
+    pass
+
+
+class ImportedField(Generic[T]):
+    @overload
+    def __get__(self, obj: None, owner: object) -> Self: ...
+
+    @overload
+    def __get__(self, obj: object, owner: object) -> T: ...
+
+    def __get__(self, obj: object | None, owner: object) -> Self | T:
+        if obj is None:
+            return self
+        return obj  # type: ignore[return-value]
+
+    def contains(self, value: str) -> ImportedCondition:
+        return ImportedCondition()
+
+    def is_in(self, value: list[object]) -> ImportedCondition:
+        return ImportedCondition()
+
+
+class ReexportedFieldModel:
+    tags = ImportedField[tuple[str, ...]]()
+    kind = ImportedField[object]()

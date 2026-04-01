@@ -329,6 +329,26 @@ class TestProtocol(TestNameCheckVisitorBase):
             print(generic_cb, specific_cb, bad_cb)
 
     @assert_passes()
+    def test_bound_dataclass_init_matches_callable_protocol(self):
+        from dataclasses import dataclass
+        from typing import Protocol
+
+        @dataclass
+        class InventoryItem:
+            name: str
+            unit_price: float
+            quantity_on_hand: int = 0
+
+        class InventoryItemInitProto(Protocol):
+            def __call__(
+                self, name: str, unit_price: float, quantity_on_hand: int = ...
+            ) -> None: ...
+
+        item = InventoryItem("soap", 2.3)
+        init_like: InventoryItemInitProto = item.__init__
+        print(init_like)
+
+    @assert_passes()
     def test_protocol_class_object_metaclass_members(self):
         from typing import Protocol
 

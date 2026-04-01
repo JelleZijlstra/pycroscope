@@ -33,6 +33,7 @@ from collections.abc import Callable, Container, Generator, Iterable, Mapping, S
 from contextlib import AbstractContextManager
 from dataclasses import dataclass, replace
 from dataclasses import field as dataclass_field
+from dataclasses import replace as dataclass_replace
 from functools import partial
 from itertools import chain
 from pathlib import Path
@@ -148,6 +149,7 @@ from .relations import (
     is_subtype,
 )
 from .safe import (
+    hasattr_static,
     is_dataclass_type,
     is_hashable,
     is_namedtuple_class,
@@ -263,6 +265,7 @@ from .value import (
     KnownValueWithTypeVars,
     KVPair,
     MultiValuedValue,
+    NewTypeValue,
     NoReturnConstraintExtension,
     OverlapMode,
     ParamSpecParam,
@@ -1477,7 +1480,10 @@ class ClassAttributeChecker:
         raw_value = typ.__dict__.get(attr_name)
         if isinstance(raw_value, (staticmethod, classmethod)):
             return True
-        return inspect.isfunction(raw_value) or inspect.ismethoddescriptor(raw_value)
+        return inspect.isfunction(raw_value) or (
+            inspect.ismethoddescriptor(raw_value)
+            and hasattr_static(raw_value, "__objclass__")
+        )
 
     def _should_ignore_test_attribute(self, typ: type, attr_name: str) -> bool:
         if not self._is_method_attribute(typ, attr_name):
@@ -7395,28 +7401,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                         ),
                         *params[1:],
                     ]
-            provisional_info = FunctionInfo(
-                async_kind=async_kind,
-                decorator_kinds=frozenset(decorator_kinds),
-                is_nested_in_class=is_nested_in_class,
-                decorators=decorators,
-                node=node,
-                params=params,
-                return_annotation=return_annotation,
-                has_invalid_self_usage=False,
-                is_async_generator=(
-                    _is_async_generator(node)
-                    if isinstance(node, ast.AsyncFunctionDef)
-                    else False
-                ),
-                potential_function=potential_function,
-                type_params=type_params,
-            )
-            has_invalid_self_usage = (
-                False
-                if isinstance(node, ast.Lambda)
-                else self._check_function_self_usage(provisional_info)
-            )
             yield FunctionInfo(
                 async_kind=async_kind,
                 decorator_kinds=frozenset(decorator_kinds),
@@ -7425,7 +7409,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 node=node,
                 params=params,
                 return_annotation=return_annotation,
-                has_invalid_self_usage=has_invalid_self_usage,
                 is_async_generator=(
                     _is_async_generator(node)
                     if isinstance(node, ast.AsyncFunctionDef)
@@ -7458,6 +7441,11 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 potential_function=potential_function,
             ) as info,
         ):
+            has_invalid_self_usage = (
+                False
+                if isinstance(node, ast.Lambda)
+                else self._check_function_self_usage(info)
+            )
             self._function_decorator_kinds_by_node[node] = info.decorator_kinds
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 self._function_returns_self_by_node[node] = _value_contains_self(
@@ -7608,7 +7596,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         if (
             not result.has_return
             and not self._allow_missing_return(info)
-            and not info.has_invalid_self_usage
+            and not has_invalid_self_usage
             and node.returns is not None
             and (
                 info.return_annotation is None
@@ -8347,6 +8335,26 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 self.current_class_key, node.attr
             )
         return False
+
+    def _is_allowed_init_subclass_class_attribute_initialization(
+        self, node: ast.Attribute, root_value: Value, attr: TypeObjectAttribute
+    ) -> bool:
+        if self.current_function_name != "__init_subclass__":
+            return False
+        if self.current_class_key is None or not self._is_current_method_receiver_node(
+            node.value
+        ):
+            return False
+        if self._is_class_object_attribute_root(root_value) is False:
+            return False
+        if not class_keys_match(attr.owner.typ, self.current_class_key):
+            return False
+        return (
+            attr.symbol.annotation is not None
+            and attr.symbol.is_instance_only
+            and not attr.symbol.is_initvar
+            and not attr.symbol.is_method
+        )
 
     def _is_class_object_attribute_root(self, value: Value) -> bool | None:
         return _attribute_root_class_info(value).is_class_object
@@ -10251,6 +10259,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             return self._is_enum_value_for_unsafe_comparison(value.typ)
         return False
 
+    def _contains_newtype_value_for_unsafe_comparison(self, value: Value) -> bool:
+        return any(isinstance(subval, NewTypeValue) for subval in value.walk_values())
+
     def _visit_single_compare(
         self,
         lhs_node: ast.expr,
@@ -10260,9 +10271,10 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         rhs: Value,
         parent_node: ast.AST,
     ) -> Value:
-        self.check_for_unsafe_comparison(op, lhs, rhs, parent_node)
         self._check_dataclass_order_comparison(op, lhs, rhs, parent_node)
 
+        lhs_for_unsafe = lhs
+        rhs_for_unsafe = rhs
         lhs_constraint = extract_constraints(lhs)
         rhs_constraint = extract_constraints(rhs)
         rhs = replace_fallback(rhs)
@@ -10330,7 +10342,58 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 parent_node,
                 allow_call=False,
             )
+            if (
+                isinstance(op, (ast.Eq, ast.NotEq))
+                and isinstance(lhs_node, ast.Attribute)
+                and not isinstance(
+                    has_relation(TypedValue(bool), val, Relation.ASSIGNABLE, self),
+                    CanAssignError,
+                )
+            ):
+                _, method_name, _, _ = BINARY_OPERATION_TO_DESCRIPTION_AND_METHOD[
+                    type(op)
+                ]
+                explicit_dunder = self.get_attribute(
+                    Composite(lhs),
+                    method_name,
+                    lhs_node,
+                    ignore_none=self.options.get_value_for(IgnoreNoneAttributes),
+                )
+                if explicit_dunder is not UNINITIALIZED_VALUE:
+                    with self.catch_errors() as explicit_errors:
+                        explicit_result = self.check_call(
+                            parent_node,
+                            explicit_dunder,
+                            [Composite(rhs)],
+                            allow_call=False,
+                        )
+                    if not explicit_errors and isinstance(
+                        has_relation(
+                            TypedValue(bool), explicit_result, Relation.ASSIGNABLE, self
+                        ),
+                        CanAssignError,
+                    ):
+                        val = explicit_result
 
+        if (
+            isinstance(op, (ast.Is, ast.IsNot))
+            or not isinstance(
+                has_relation(TypedValue(bool), val, Relation.ASSIGNABLE, self),
+                CanAssignError,
+            )
+            or (
+                isinstance(op, (ast.Eq, ast.NotEq))
+                and (
+                    self._contains_newtype_value_for_unsafe_comparison(lhs_for_unsafe)
+                    or self._contains_newtype_value_for_unsafe_comparison(
+                        rhs_for_unsafe
+                    )
+                )
+            )
+        ):
+            self.check_for_unsafe_comparison(
+                op, lhs_for_unsafe, rhs_for_unsafe, parent_node
+            )
         if definite_value is not None:
             val = annotate_value(val, [DefiniteValueExtension(definite_value)])
         return annotate_with_constraint(val, constraint)
@@ -13579,6 +13642,8 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 )
         if isinstance(callee_val, TypedValue):
             fallback_lookup_val = SubclassValue.make(callee_val)
+        elif isinstance(callee_val, KnownValueWithTypeVars):
+            fallback_lookup_val = callee_val
         else:
             fallback_lookup_val = callee_val.get_type_value()
         if isinstance(synthetic_lookup_val, TypedValue) and isinstance(
@@ -13720,8 +13785,20 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             return AnyValue(AnySource.error), False
         with override(self, "caught_errors", None):
             self.check_deprecation(node, method_object)
+        resolved_method = replace_fallback(method_object)
+        call_args: list[Composite]
+        if (
+            isinstance(resolved_method, KnownValue)
+            and safe_getattr(resolved_method.val, "__self__", None) is not None
+        ) or (
+            isinstance(stripped_callee.value, KnownValueWithTypeVars)
+            and not isinstance(method_object, UnboundMethodValue)
+        ):
+            call_args = list(args)
+        else:
+            call_args = [stripped_callee, *args]
         return_value = self.check_call(
-            node, method_object, [stripped_callee, *args], allow_call=allow_call
+            node, method_object, call_args, allow_call=allow_call
         )
         return return_value, True
 
@@ -14098,12 +14175,15 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             )
             return
         if attr.symbol.is_instance_only and on_class and not attr.is_metaclass_owner:
-            self._show_error_if_checking(
-                node,
-                f"Cannot {wording} instance attribute {node.attr!r} via class object",
-                error_code=ErrorCode.incompatible_assignment,
-            )
-            return
+            if not self._is_allowed_init_subclass_class_attribute_initialization(
+                node, root, attr
+            ):
+                self._show_error_if_checking(
+                    node,
+                    f"Cannot {wording} instance attribute {node.attr!r} via class object",
+                    error_code=ErrorCode.incompatible_assignment,
+                )
+                return
         if self._check_final_attribute_assignment(node, attr, wording):
             return
         if is_deletion:
@@ -14147,7 +14227,17 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 self._record_type_attr_set_for_value(
                     root, node.attr, node, self.being_assigned
                 )
-                self._record_synthetic_attr_set(node, root)
+                if self._is_allowed_init_subclass_class_attribute_initialization(
+                    node, root, attr
+                ):
+                    self._update_synthetic_declared_symbol(
+                        node.attr,
+                        add_qualifiers={Qualifier.ClassVar},
+                        is_instance_only=False,
+                        initializer=self.being_assigned,
+                    )
+                else:
+                    self._record_synthetic_attr_set(node, root)
 
     def _check_final_attribute_assignment(
         self, node: ast.Attribute, attr: TypeObjectAttribute, wording: str
@@ -15251,6 +15341,17 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             callee_wrapped, UnboundMethodValue
         ) and callee_wrapped.secondary_attr_name in ("async", "asynq"):
             async_fn = callee_wrapped.get_method()
+            primary_callee = dataclass_replace(callee_wrapped, secondary_attr_name=None)
+            primary_sig = self.signature_from_value(primary_callee, node)
+            local_return = (
+                self.get_local_return_value(primary_sig)
+                if primary_sig is not None
+                else None
+            )
+            if local_return is None and isinstance(primary_sig, BoundMethodSignature):
+                local_return = self.get_local_return_value(primary_sig.signature)
+            if local_return is not None:
+                return_value = local_return
             return AsyncTaskIncompleteValue(_get_task_cls(async_fn), return_value)
         elif (
             asynq is not None

@@ -372,7 +372,7 @@ class Options:
         instances = self.options.get(option.name, ())
         if any(instance.value for instance in instances):
             return True
-        return option.default_value
+        return bool(option.default_value)
 
     def display(self) -> None:
         print("Options:")

@@ -304,6 +304,29 @@ class TestPEP673(TestNameCheckVisitorBase):
             assert_type(SubModel.get_one(), SubModel | None)
 
     @assert_passes()
+    def test_self_preserved_inside_instance_accessed_generic_receiver_method(self):
+        from typing import Generic, TypeVar
+
+        from typing_extensions import Self, assert_type
+
+        T = TypeVar("T", bound="Model")
+
+        class Getter(Generic[T]):
+            def get_one(self) -> T | None:
+                raise NotImplementedError
+
+        class Model:
+            @classmethod
+            def getter(cls) -> Getter[Self]:
+                raise NotImplementedError
+
+            def get_one(self) -> Self | None:
+                return self.getter().get_one()
+
+        def capybara(model: Model) -> None:
+            assert_type(model.getter().get_one(), Model | None)
+
+    @assert_passes()
     def test_self_preserved_inside_imported_generic_receiver_method(self):
         import sys
         import types
@@ -526,6 +549,30 @@ class TestPEP673(TestNameCheckVisitorBase):
                 if query is None:
                     query = cls.select()
                 for obj in query:
+                    assert_type(obj, Self)
+
+    @assert_passes()
+    def test_enumerate_of_self_inside_classmethod(self):
+        from collections.abc import Iterator
+        from typing import Generic, TypeVar
+
+        from typing_extensions import Self, assert_type
+
+        T = TypeVar("T")
+
+        class Query(Generic[T]):
+            def __iter__(self) -> Iterator[T]:
+                raise NotImplementedError
+
+        class Base:
+            @classmethod
+            def select(cls) -> Query[Self]:
+                raise NotImplementedError
+
+            @classmethod
+            def process(cls) -> None:
+                for i, obj in enumerate(cls.select()):
+                    assert_type(i, int)
                     assert_type(obj, Self)
 
     # TODO: Switch this to run_in_both_module_modes=True once unimportable mode

@@ -1774,14 +1774,25 @@ class UnboundMethodValue(Value):
         """Return the runtime callable for this ``UnboundMethodValue``, or
         None if it cannot be found."""
         root = replace_fallback(self.composite.value)
+        target: object
         if isinstance(root, KnownValue):
-            typ = root.val
+            target = root.val
         else:
-            typ = root.get_type()
+            target = root.get_type()
         try:
-            method = getattr(typ, self.attr_name)
+            method = getattr(target, self.attr_name)
             if self.secondary_attr_name is not None:
-                method = getattr(method, self.secondary_attr_name)
+                try:
+                    method = getattr(method, self.secondary_attr_name)
+                except AttributeError:
+                    if not isinstance(target, type):
+                        raise
+                    bound_target = _bind_runtime_descriptor_for_secondary_attribute(
+                        target, self.attr_name
+                    )
+                    if bound_target is None:
+                        raise
+                    method = getattr(bound_target, self.secondary_attr_name)
         except AttributeError:
             return None
         return method
@@ -1830,6 +1841,25 @@ class UnboundMethodValue(Value):
             f".{self.secondary_attr_name}" if self.secondary_attr_name else "",
             self.composite.value,
         )
+
+
+def _bind_runtime_descriptor_for_secondary_attribute(
+    owner: type, attr_name: str
+) -> object | None:
+    try:
+        descriptor = inspect.getattr_static(owner, attr_name)
+    except AttributeError:
+        return None
+    if not safe_getattr(descriptor, "__get__", None):
+        return None
+    try:
+        instance = object.__new__(owner)
+    except Exception:
+        return None
+    try:
+        return descriptor.__get__(instance, owner)
+    except Exception:
+        return None
 
 
 @dataclass(unsafe_hash=True)
@@ -3210,7 +3240,6 @@ def receiver_to_self_type(
 
 
 def _has_nested_self_typevar(value: Value) -> bool:
-    value = replace_fallback(value)
     return not (
         isinstance(value, TypeVarValue) and value.typevar_param.typevar is SelfT
     ) and any(

@@ -143,7 +143,10 @@ class TestNameCheckVisitorBase(test_node_visitor.BaseNodeVisitorTester):
                     raise
                 mod = None
         kwargs["settings"] = default_settings
-        kwargs = self.visitor_cls.prepare_constructor_kwargs(kwargs)
+        extra_options = kwargs.pop("extra_options", ())
+        kwargs = self.visitor_cls.prepare_constructor_kwargs(
+            kwargs, extra_options=extra_options
+        )
         new_code = ""
         with ClassAttributeChecker(
             enabled=check_attributes, options=kwargs["checker"].options
@@ -2111,6 +2114,53 @@ class TestSubclassValue(TestNameCheckVisitorBase):
 
         assert_type(C.answer, Literal[1])
 
+    @assert_passes(run_in_both_module_modes=True)
+    def test_metaclass_data_attribute_on_type_object(self):
+        from typing import Literal
+
+        from typing_extensions import assert_type
+
+        class Meta(type):
+            answer = 1
+
+        class C(metaclass=Meta):
+            pass
+
+        def capybara(cls: type[C]) -> None:
+            assert_type(cls.answer, Literal[1])
+
+    @assert_passes(run_in_both_module_modes=True)
+    def test_init_subclass_can_initialize_class_attribute_contract(self):
+        class Base:
+            clirm_backrefs: list[int]
+
+            def __init_subclass__(cls) -> None:
+                cls.clirm_backrefs = []
+
+        class Child(Base):
+            pass
+
+        def capybara(cls: type[Base]) -> None:
+            cls.clirm_backrefs.append(1)
+
+    @assert_passes(run_in_both_module_modes=True)
+    def test_metaclass_initialized_class_attribute_on_type_object(self):
+        from typing import ClassVar
+
+        class Meta(type):
+            def __new__(
+                cls, name: str, bases: tuple[type[object], ...], ns: dict[str, object]
+            ) -> type:
+                new_cls = super().__new__(cls, name, bases, ns)
+                new_cls._tag = 1
+                return new_cls
+
+        class ADT(metaclass=Meta):
+            _tag: ClassVar[int]
+
+        def capybara(tag_cls: type[ADT]) -> int:
+            return tag_cls._tag
+
     @assert_passes()
     def test_metaclass_property_overrides_class_attribute(self):
         from typing import Literal
@@ -2727,33 +2777,104 @@ class TestClassAttributeChecker(TestNameCheckVisitorBase):
             def eat(self):
                 assert_type(self.obj, str)
 
-    @skip_if_not_installed("clirm")
-    def test_transformed_clirm_field_does_not_double_bind_inherited_method(self):
-        import clirm
+    @assert_passes()
+    def test_classvar_descriptor_is_not_treated_as_method(self):
+        from typing import ClassVar
 
-        code = """
-        import sqlite3
-        from clirm import Clirm, Field, Model
         from typing_extensions import assert_type
 
-        class BaseModel(Model):
-            clirm = Clirm(sqlite3.connect(":memory:"))
+        class Editor:
+            def __init__(self, instance: object | None = None) -> None:
+                self.instance = instance
+
+            def __get__(self, instance: object, owner: object) -> "Editor":
+                return self.__class__(instance)
+
+            def touch(self) -> None:
+                pass
+
+        class Base:
+            e: ClassVar[Editor] = Editor()
+
+        class Child(Base):
+            pass
+
+        def f(obj: Base) -> None:
+            assert_type(Base.e, Editor)
+            assert_type(Child.e, Editor)
+            assert_type(obj.e, Editor)
+            Base.e.touch()
+            Child.e.touch()
+            obj.e.touch()
+
+    @assert_passes(run_in_both_module_modes=True)
+    def test_classvar_container_methods_keep_receiver_parameter(self):
+        from typing import ClassVar
+
+        from typing_extensions import assert_type
+
+        class Model:
+            stats: ClassVar[dict[str, int]] = {}
+
+            def hit(self) -> None:
+                value = Model.stats.get("hits", 0)
+                assert_type(value, int)
+                Model.stats["hits"] = value + 1
+
+    def test_transformed_descriptor_preserves_class_access(self):
+        code = """
+        from typing import overload
+        from typing_extensions import assert_type
+
+        class Condition:
+            pass
+
+        class Query:
+            def filter(self, *conds: Condition) -> None:
+                pass
+
+        class Descriptor:
+            @overload
+            def __get__(self, obj: None, owner: object) -> "Descriptor": ...
+            @overload
+            def __get__(self, obj: object, owner: object) -> str: ...
+
+            def __get__(self, obj: object | None, owner: object) -> "Descriptor | str":
+                if obj is None:
+                    return self
+                return ""
+
+            def contains(self, value: str) -> Condition:
+                return Condition()
+
+            def __eq__(self, other: object) -> Condition:
+                return Condition()
+
+        class BaseModel:
+            name = Descriptor()
+
+            @classmethod
+            def select(cls) -> Query:
+                return Query()
 
             def fill(self, field: str) -> str:
                 return field
 
         class Article(BaseModel):
-            clirm_table_name = "article"
-            name = Field[str](default="")
-
             def edit(self) -> str:
                 result = self.fill("x")
                 assert_type(result, str)
                 return result
+
+        def query() -> None:
+            Article.select().filter(Article.name.contains("x"), Article.name == "x")
+
+        def instance(article: Article) -> None:
+            assert_type(article.name, str)
         """
 
         def transform(attr: object):
-            if not isinstance(attr, clirm.Field):
+            if not isinstance(attr, module.Descriptor):
                 return None
             return TypedValue(str), TypedValue(str)
 
@@ -2780,6 +2901,409 @@ class TestClassAttributeChecker(TestNameCheckVisitorBase):
             result = visitor.check_for_test()
             result += visitor.perform_final_checks(kwargs)
         assert not result
+
+    def test_generic_descriptor_preserves_class_access_in_both_modes(self):
+        code = """
+        from typing import Generic, Optional, TypeVar, overload
+        from typing_extensions import Self, assert_type
+
+        T = TypeVar("T")
+
+        class Condition:
+            pass
+
+        class Query(Generic[T]):
+            def filter(self, *conds: Condition) -> None:
+                pass
+
+        class Field(Generic[T]):
+            @overload
+            def __get__(self, obj: None, owner: object) -> Self: ...
+            @overload
+            def __get__(self, obj: object, owner: object) -> T: ...
+
+            def __get__(self, obj: object | None, owner: object) -> "Field[T] | T":
+                if obj is None:
+                    return self
+                return obj  # type: ignore[return-value]
+
+            def contains(self, value: str) -> Condition:
+                return Condition()
+
+            def is_in(self, value: list[object]) -> Condition:
+                return Condition()
+
+        class Kind:
+            redirect = object()
+
+        class Model:
+            tags = Field[tuple[str, ...]]()
+            kind = Field[object]()
+
+            @classmethod
+            def select(cls) -> Query[Self]:
+                return Query()
+
+        def query() -> None:
+            Model.select().filter(
+                Model.tags.contains("x"),
+                Model.kind.is_in([Kind.redirect]),
+            )
+
+        def instance(model: Model) -> None:
+            assert_type(model.tags, tuple[str, ...])
+        """
+
+        self.assert_passes(code, run_in_both_module_modes=True)
+
+    @assert_passes(allow_import_failures=True)
+    def test_overloaded_descriptor_class_access_uses_class_return_type(self):
+        from typing import Generic, TypeVar, overload
+
+        from typing_extensions import assert_type
+
+        T = TypeVar("T")
+
+        class Descriptor(Generic[T]):
+            @overload
+            def __get__(self, obj: None, owner: object) -> list[T]: ...
+
+            @overload
+            def __get__(self, obj: object, owner: object) -> T: ...
+
+            def __get__(self, obj: object | None, owner: object) -> list[T] | T:
+                raise NotImplementedError
+
+        class Model:
+            value: Descriptor[int] = Descriptor[int]()
+
+        assert_type(Model.value, list[int])
+        assert_type(Model().value, int)
+
+    def test_generic_descriptor_preserves_nested_instance_access_in_both_modes(self):
+        code = """
+        from __future__ import annotations
+
+        from typing import Generic, Optional, TypeVar, overload
+
+        from typing_extensions import Self, assert_type
+
+        T = TypeVar("T")
+
+        class Field(Generic[T]):
+            @overload
+            def __get__(self, obj: None, owner: object) -> Self: ...
+            @overload
+            def __get__(self, obj: object, owner: object) -> T: ...
+
+            def __get__(self, obj: object | None, owner: object) -> "Field[T] | T":
+                if obj is None:
+                    return self
+                return obj  # type: ignore[return-value]
+
+        class CitationGroup:
+            name: str
+
+        class Model:
+            citation_group = Field[Optional[CitationGroup]]()
+
+            def get_name(self) -> Optional[str]:
+                if self.citation_group is None:
+                    return None
+                return self.citation_group.name
+
+        def instance(model: Model) -> None:
+            assert_type(model.citation_group, Optional[CitationGroup])
+        """
+
+        self.assert_passes(code, run_in_both_module_modes=True)
+
+    @assert_passes()
+    def test_generic_self_descriptor_comparison_on_class_access(self):
+        from typing import Generic, TypeVar, overload
+
+        from typing_extensions import Self
+
+        T = TypeVar("T")
+
+        class Condition:
+            pass
+
+        class Field(Generic[T]):
+            @overload
+            def __get__(self, obj: None, owner: object) -> Self: ...
+
+            @overload
+            def __get__(self, obj: object, owner: object) -> T: ...
+
+            def __get__(self, obj: object | None, owner: object) -> "Field[T] | T":
+                if obj is None:
+                    return self
+                return obj  # type: ignore[return-value]
+
+            def __eq__(self, other: T) -> Condition:
+                return Condition()
+
+        class Query(Generic[T]):
+            def filter(self, *conds: Condition) -> None:
+                pass
+
+        class Model:
+            parent = Field[Self | None]()
+
+            @classmethod
+            def select_valid(cls) -> Query[Self]:
+                return Query()
+
+            def children(self) -> None:
+                Model.select_valid().filter(Model.parent == self)
+
+    def test_transformed_generic_descriptor_preserves_class_access_in_both_modes(self):
+        code = """
+        from collections.abc import Sequence
+        from typing import Generic, TypeVar, overload
+        from typing_extensions import Self
+
+        T = TypeVar("T")
+        ADTT = TypeVar("ADTT", bound="ADT")
+
+        class Condition:
+            pass
+
+        class Query(Generic[T]):
+            def filter(self, *conds: Condition) -> None:
+                pass
+
+        class Field(Generic[T]):
+            @overload
+            def __get__(self, obj: None, owner: object) -> Self: ...
+            @overload
+            def __get__(self, obj: object, owner: object) -> T: ...
+
+            def __get__(self, obj: object | None, owner: object) -> "Field[T] | T":
+                if obj is None:
+                    return self
+                return obj  # type: ignore[return-value]
+
+            def contains(self, value: str) -> Condition:
+                return Condition()
+
+            def is_in(self, value: Sequence[object]) -> Condition:
+                return Condition()
+
+        class ADT:
+            pass
+
+        class ADTField(Field[Sequence[ADTT]], Generic[ADTT]):
+            pass
+
+        class Model:
+            tags = ADTField[ADT]()
+
+            @classmethod
+            def select(cls) -> Query[Self]:
+                return Query()
+
+        def query() -> None:
+            Model.select().filter(Model.tags.contains("x"))
+        """
+
+        def transform(attr: object):
+            if type(attr).__name__ != "ADTField":
+                return None
+            return TypedValue(tuple), TypedValue(tuple)
+
+        self.assert_passes(code, extra_options=[ClassAttributeTransformer([transform])])
+
+    def test_transformed_union_self_descriptor_preserves_class_access_in_both_modes(
+        self,
+    ):
+        code = """
+        from collections.abc import Sequence
+        from typing import Generic, TypeVar
+        from typing_extensions import Self
+
+        T = TypeVar("T")
+
+        class Condition:
+            pass
+
+        class Query:
+            def filter(self, *conds: Condition) -> None:
+                pass
+
+        class Field(Generic[T]):
+            def __get__(self, obj: object | None, owner: object = None) -> T | Self:
+                if obj is None:
+                    return self
+                return obj  # type: ignore[return-value]
+
+            def contains(self, value: str) -> Condition:
+                return Condition()
+
+            def is_in(self, value: Sequence[object]) -> Condition:
+                return Condition()
+
+        class Model:
+            tags = Field[tuple[str, ...]]()
+            kind = Field[object]()
+
+            @classmethod
+            def select(cls) -> Query:
+                return Query()
+
+        def query() -> None:
+            Model.select().filter(
+                Model.tags.contains("x"),
+                Model.kind.is_in([object()]),
+            )
+        """
+
+        def transform(attr: object):
+            if type(attr).__name__ != "Field":
+                return None
+            return TypedValue(tuple), TypedValue(tuple)
+
+        self.assert_passes(code, extra_options=[ClassAttributeTransformer([transform])])
+
+    def test_transformed_descriptor_class_access_ignores_instance_writes(self):
+        code = """
+        from typing import Generic, TypeVar, overload
+        from typing_extensions import Self, assert_type
+
+        T = TypeVar("T")
+
+        class Condition:
+            pass
+
+        class Field(Generic[T]):
+            @overload
+            def __get__(self, obj: None, owner: object) -> Self: ...
+            @overload
+            def __get__(self, obj: object, owner: object) -> T: ...
+
+            def __get__(self, obj: object | None, owner: object) -> "Field[T] | T":
+                if obj is None:
+                    return self
+                return ""  # type: ignore[return-value]
+
+            def contains(self, value: str) -> Condition:
+                return Condition()
+
+        class Model:
+            field = Field[str]()
+
+            def write(self) -> None:
+                self.field = "x"
+
+        def query() -> None:
+            Model.field.contains("x")
+        """
+
+        def transform(attr: object):
+            if type(attr).__name__ != "Field":
+                return None
+            return TypedValue(str), TypedValue(str)
+
+        self.assert_passes(code, extra_options=[ClassAttributeTransformer([transform])])
+
+    def test_imported_descriptor_preserves_class_access_in_both_modes(self):
+        code = """
+        from typing import Generic, TypeVar
+        from typing_extensions import Self, assert_type
+
+        from pycroscope.tests import ImportedCondition, ImportedField
+
+        T = TypeVar("T")
+
+        class Query(Generic[T]):
+            def filter(self, *conds: ImportedCondition) -> None:
+                pass
+
+        class Kind:
+            redirect = object()
+
+        class Model:
+            tags = ImportedField[tuple[str, ...]]()
+            kind = ImportedField[object]()
+
+            @classmethod
+            def select(cls) -> Query[Self]:
+                return Query()
+
+        def query() -> None:
+            Model.select().filter(
+                Model.tags.contains("x"),
+                Model.kind.is_in([Kind.redirect]),
+            )
+
+        def instance(model: Model) -> None:
+            assert_type(model.tags, tuple[str, ...])
+        """
+
+        self.assert_passes(code, run_in_both_module_modes=True)
+
+    @assert_passes(run_in_both_module_modes=True)
+    def test_paramspec_callable_protocol_assignment_does_not_internal_error(self):
+        from typing import Any, ParamSpec, Protocol
+
+        P = ParamSpec("P")
+
+        class Proto3(Protocol):
+            def __call__(self, a: int, *args: Any, **kwargs: Any) -> None: ...
+
+        class Proto4(Protocol[P]):
+            def __call__(self, a: int, *args: P.args, **kwargs: P.kwargs) -> None: ...
+
+        def takes_proto3(value: Proto3) -> None:
+            pass
+
+        def takes_proto4(value: Proto4[...]) -> None:
+            pass
+
+        def f(p3: Proto3, p4: Proto4[...]) -> None:
+            takes_proto4(p3)
+            takes_proto3(p4)
+
+    @assert_passes(run_in_both_module_modes=True)
+    def test_bound_typeguard_methods_preserve_narrowing(self):
+        from typing import TypeGuard
+
+        from typing_extensions import Self, assert_type
+
+        class A:
+            def tg(self, value: object) -> TypeGuard[int]:
+                return isinstance(value, int)
+
+            @classmethod
+            def cls_tg(cls, value: object) -> TypeGuard[int]:
+                return isinstance(value, int)
+
+            def self_tg(self, value: object) -> TypeGuard[Self]:
+                return isinstance(value, type(self))
+
+        class B(A):
+            pass
+
+        def f() -> None:
+            value1 = object()
+            if A().tg(value1):
+                assert_type(value1, int)
+
+            value2 = object()
+            if A().cls_tg(value2):
+                assert_type(value2, int)
+
+            value3 = object()
+            if B().self_tg(value3):
+                assert_type(value3, B)
+
+    @assert_passes(run_in_both_module_modes=True)
+    def test_module_reexported_descriptor_preserves_class_access(self):
+        import pycroscope.tests as tests
+
+        tests.ReexportedFieldModel.tags.contains("x")
+        tests.ReexportedFieldModel.kind.is_in([object()])
 
     @assert_passes()
     def test_unexamined_base(self):

@@ -917,6 +917,34 @@ def test_get_attribute_resolves_runtime_custom_descriptor() -> None:
     assert instance_attr.value == TypedValue(int)
 
 
+def test_get_attribute_resolves_runtime_generic_descriptor_instance_type() -> None:
+    from typing import Any, Generic, TypeVar, overload
+
+    T = TypeVar("T")
+
+    class Descriptor(Generic[T]):
+        @overload
+        def __get__(self, obj: None, owner: Any) -> "Descriptor[T]": ...
+
+        @overload
+        def __get__(self, obj: object, owner: Any) -> T: ...
+
+        def __get__(self, obj: object | None, owner: Any) -> "Descriptor[T] | T":
+            return self if obj is None else 1
+
+    class Box:
+        value = Descriptor[int]()
+
+    checker = Checker()
+    attribute = checker.make_type_object(Box).get_attribute(
+        "value", checker, on_class=False, receiver_value=TypedValue(Box)
+    )
+
+    assert attribute is not None
+    assert attribute.is_property
+    assert attribute.value == TypedValue(int)
+
+
 def test_get_attribute_prefers_metaclass_data_descriptor_on_class_access() -> None:
     from typing import Any, overload
 

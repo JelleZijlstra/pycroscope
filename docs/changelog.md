@@ -3,8 +3,14 @@
 ## Unreleased
 
 - Improve class-symbol decorator metadata so final, abstractmethod, and deprecation checks now reuse stored symbol information more consistently, including deprecated class/static methods and property accessors.
-
+- Fix cache-order-dependent protocol lookup for importable runtime types, so string-backed types like `contextlib.AbstractContextManager[T]` no longer need a prior runtime lookup before context-manager protocol checks and self-checks succeed.
+- Fix runtime method binding for Cython-backed descriptor methods, so chained calls like `self.method.asynq()` no longer produce false positive call-arity errors or depend on fallback lookup.
 - Improve `TypeVar` inference for overloaded constructor callables, so patterns like `model_field(converter=dict, default=())` no longer fail by committing to the wrong `dict` overload too early.
+- Fix `Self`-aware descriptor lookup so instance access keeps `Self` through classmethod helper chains like `self.getter().get_one()`, and class-level descriptor comparisons like `Model.parent == self` can return custom query objects instead of collapsing to `bool`.
+- Fix `__init_subclass__` class-attribute initialization so projects can declare a class-level attribute contract on a base class and initialize it via `cls.attr = ...` without spurious instance-attribute errors.
+- Make class-object attribute lookup prefer real runtime members before synthetic overlays, so descriptor-backed class attributes keep working even when method bodies assign through `self.attr` or transformed instance access is enabled.
+- Fix runtime generic descriptor specialization so instances like `Field[int]()` and `Field[Other | None]()` keep their concrete payload types during attribute lookup instead of falling back to unspecialized `~T`.
+- Fix `Self`-typed iterator and query methods during fallback analysis, so classmethod patterns like `for i, obj in enumerate(cls.select()): ...` and `query = cls.select()` preserve `Self` instead of misbinding nested receiver types.
 
 - Fix a method-binding regression in fallback analysis so inherited instance methods are bound exactly once, which removes false positive call-arity errors in projects that use transformed class attributes.
 

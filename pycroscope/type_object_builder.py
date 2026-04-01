@@ -4,6 +4,7 @@ import inspect
 import sys
 from collections.abc import Iterator, Mapping
 from dataclasses import MISSING, replace
+from typing import get_args, get_origin
 
 from typing_extensions import assert_never
 
@@ -13,6 +14,7 @@ if sys.version_info >= (3, 14):
 from .annotations import (
     _RuntimeAnnotationsContext,
     annotation_expr_from_runtime,
+    make_type_param,
     type_from_runtime,
 )
 from .arg_spec import ArgSpecCache
@@ -28,6 +30,7 @@ from .value import (
     GenericValue,
     IntersectionValue,
     KnownValue,
+    KnownValueWithTypeVars,
     MultiValuedValue,
     PartialValue,
     PartialValueOperation,
@@ -46,6 +49,7 @@ from .value import (
     UnboundMethodValue,
     Value,
     get_namedtuple_field_annotation,
+    match_typevar_arguments,
     replace_fallback,
     type_param_to_value,
 )
@@ -205,10 +209,11 @@ def _add_runtime_declared_symbols(typ: type, symbols: dict[str, ClassSymbol]) ->
     }
     for name in namedtuple_fields:
         raw_value = (
-            KnownValue(class_dict[name])
+            _runtime_member_value(class_dict[name], typ)
             if isinstance(class_dict, Mapping) and name in class_dict
             else None
         )
+        property_value = raw_value if isinstance(raw_value, KnownValue) else None
         annotation = _value_from_runtime_annotation(
             get_namedtuple_field_annotation(typ, name), typ
         )
@@ -217,8 +222,9 @@ def _add_runtime_declared_symbols(typ: type, symbols: dict[str, ClassSymbol]) ->
             qualifiers=frozenset({Qualifier.ReadOnly}),
             is_instance_only=True,
             property_info=(
-                _runtime_property_info(raw_value.val, typ)
-                if raw_value is not None and isinstance(raw_value.val, property)
+                _runtime_property_info(property_value.val, typ)
+                if property_value is not None
+                and isinstance(property_value.val, property)
                 else None
             ),
             initializer=raw_value,
@@ -265,22 +271,25 @@ def _add_runtime_declared_symbols(typ: type, symbols: dict[str, ClassSymbol]) ->
                 and not existing.is_initvar
             ):
                 is_property = existing.property_info is not None
-                function_decorators = existing.function_decorators
+                function_decorators = set(existing.function_decorators)
                 is_method = existing.is_method
             else:
                 is_property = isinstance(raw_value, property)
                 function_decorators = set()
                 maybe_func = raw_value
-                if isinstance(raw_value, staticmethod):
+                is_staticmethod = isinstance(raw_value, staticmethod)
+                is_classmethod = isinstance(raw_value, classmethod)
+                if is_staticmethod:
                     function_decorators.add(FunctionDecorator.staticmethod)
                     maybe_func = raw_value.__func__
-                if isinstance(raw_value, classmethod):
+                if is_classmethod:
                     function_decorators.add(FunctionDecorator.classmethod)
                     maybe_func = raw_value.__func__
-                is_method = (
-                    (not is_property and bool(function_decorators))
-                    or inspect.isfunction(raw_value)
-                    or inspect.ismethoddescriptor(raw_value)
+                is_method = _is_runtime_method_member(
+                    raw_value,
+                    is_property=is_property,
+                    is_staticmethod=is_staticmethod,
+                    is_classmethod=is_classmethod,
                 )
                 if safe_getattr(maybe_func, "__final__", False):
                     function_decorators.add(FunctionDecorator.final)
@@ -303,11 +312,55 @@ def _add_runtime_declared_symbols(typ: type, symbols: dict[str, ClassSymbol]) ->
                 property_info=(
                     _runtime_property_info(raw_value, typ) if is_property else None
                 ),
-                initializer=KnownValue(raw_value),
+                initializer=_runtime_member_value(raw_value, typ),
                 dataclass_field=(
                     existing.dataclass_field if existing is not None else None
                 ),
             )
+
+
+def _runtime_member_value(raw_value: object, owner: type) -> Value:
+    value = KnownValue(raw_value)
+    orig_class = safe_getattr(raw_value, "__orig_class__", None)
+    origin = get_origin(orig_class)
+    args = get_args(orig_class)
+    if not isinstance(origin, type) or not args:
+        return value
+    runtime_params = safe_getattr(origin, "__parameters__", ())
+    if not isinstance(runtime_params, tuple) or not runtime_params:
+        return value
+
+    ctx = _RuntimeAnnotationsContext(owner)
+    with ctx.suppress_errors():
+        type_params = tuple(make_type_param(param, ctx) for param in runtime_params)
+        type_arguments = tuple(type_from_runtime(arg, ctx=ctx) for arg in args)
+    matched = match_typevar_arguments(type_params, type_arguments)
+    if matched is None:
+        return value
+
+    typevars = TypeVarMap()
+    params_by_typevar = {type_param.typevar: type_param for type_param in type_params}
+    for runtime_typevar, arg_value in matched:
+        type_param = params_by_typevar.get(runtime_typevar)
+        if type_param is None:
+            return value
+        typevars = typevars.with_value(type_param, arg_value)
+    return KnownValueWithTypeVars(raw_value, typevars)
+
+
+def _is_runtime_method_member(
+    raw_value: object, *, is_property: bool, is_staticmethod: bool, is_classmethod: bool
+) -> bool:
+    if not is_property and (is_staticmethod or is_classmethod):
+        return True
+    if inspect.isfunction(raw_value):
+        return True
+    has_objclass = safe_getattr(raw_value, "__objclass__", None) is not None
+    if inspect.ismethoddescriptor(raw_value) and (
+        has_objclass or safe_getattr(raw_value, "func_code", None) is not None
+    ):
+        return True
+    return False
 
 
 def _is_runtime_member_final(raw_value: object) -> bool:

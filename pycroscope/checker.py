@@ -13,12 +13,14 @@ from collections.abc import Callable, Generator, Iterable, Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import InitVar, dataclass, field
 from dataclasses import replace as dataclass_replace
+from functools import cache
 from itertools import chain
 from typing import TypeVar, cast
 
 import pycroscope
 
 from . import dataclass as dataclass_helpers
+from .analysis_lib import object_from_string
 from .annotations import type_from_runtime, type_from_value
 from .arg_spec import ArgSpecCache, GenericBases
 from .attributes import AttrContext, get_attribute
@@ -115,6 +117,15 @@ from .value import (
 )
 
 _SyntheticGenericBases = dict[type | str, TypeVarMap]
+
+
+@cache
+def _resolve_runtime_type_key(type_path: str) -> type | None:
+    try:
+        resolved = object_from_string(type_path)
+    except Exception:
+        return None
+    return resolved if isinstance(resolved, type) else None
 
 
 @dataclass(frozen=True)
@@ -542,6 +553,10 @@ class Checker:
             class_key = synthetic_class.class_type.typ
             if isinstance(class_key, type):
                 return class_key
+        if isinstance(typ, str):
+            runtime_type = _resolve_runtime_type_key(typ)
+            if runtime_type is not None:
+                return runtime_type
         return typ
 
     def _get_cached_type_object(self, typ: type | str) -> TypeObject | None:
@@ -2422,6 +2437,13 @@ class Checker:
                 return argspec.substitute_typevars(value.typevars)
             return argspec
         elif isinstance(value, UnboundMethodValue):
+            if value.secondary_attr_name == "asynq":
+                primary_value = dataclass_replace(value, secondary_attr_name=None)
+                primary_sig = self.signature_from_value(primary_value)
+                if primary_sig is not None:
+                    if value.typevars is not None:
+                        primary_sig = primary_sig.substitute_typevars(value.typevars)
+                    return primary_sig
             method = value.get_method()
             if method is not None:
                 sig: MaybeSignature = None
@@ -2437,6 +2459,12 @@ class Checker:
                     # TODO return None here and figure out when the signature is missing
                     # Probably because of cythonized methods
                     return ANY_SIGNATURE
+                if value.secondary_attr_name is not None and isinstance(
+                    sig, BoundMethodSignature
+                ):
+                    if value.typevars is not None:
+                        sig = sig.substitute_typevars(value.typevars)
+                    return sig
                 return_override = get_return_override(sig)
                 bound = make_bound_method(
                     sig, value.composite, return_override, ctx=self

@@ -33,6 +33,7 @@ from .input_sig import AnySig, FullSignature, InputSigValue
 from .options import PyObjectSequenceOption
 from .relations import (
     infer_positional_generic_typevar_map,
+    intersect_values,
     subtract_values,
     translate_generic_typevar_map,
 )
@@ -56,6 +57,7 @@ from .signature import (
     mark_ellipsis_style_any_tail_parameters,
 )
 from .value import (
+    NO_RETURN_VALUE,
     UNINITIALIZED_VALUE,
     AnnotatedValue,
     AnySource,
@@ -94,6 +96,7 @@ from .value import (
     TypeVarValue,
     UnboundMethodValue,
     Value,
+    _has_nested_self_typevar,
     _iter_typevar_map_items,
     _typevar_map_from_varlike_pairs,
     _with_typevar_map_value,
@@ -1352,7 +1355,7 @@ class TypeObject:
         *,
         on_class: bool,
         is_special_lookup: bool = False,
-        receiver_value: TypedValue | None,
+        receiver_value: TypedValue | TypeVarValue | GenericValue | None,
     ) -> _RawTypeObjectAttribute | None:
         """Find the raw member selected by Python lookup precedence."""
         metaclass_attribute = None
@@ -1374,7 +1377,11 @@ class TypeObject:
         return metaclass_attribute
 
     def _get_raw_declared_attribute(
-        self, name: str, ctx: CanAssignContext, *, receiver_value: TypedValue | None
+        self,
+        name: str,
+        ctx: CanAssignContext,
+        *,
+        receiver_value: TypedValue | TypeVarValue | GenericValue | None,
     ) -> _RawTypeObjectAttribute | None:
         """Return the matching class-MRO member without applying descriptors."""
         match = self._get_declared_symbol_sources_with_owner(name)
@@ -1391,7 +1398,11 @@ class TypeObject:
         )
 
     def _get_raw_metaclass_attribute(
-        self, name: str, ctx: CanAssignContext, *, receiver_value: TypedValue | None
+        self,
+        name: str,
+        ctx: CanAssignContext,
+        *,
+        receiver_value: TypedValue | TypeVarValue | GenericValue | None,
     ) -> _RawTypeObjectAttribute | None:
         """Return the matching metaclass member without applying descriptors."""
         metaclass = self.get_metaclass()
@@ -1422,7 +1433,7 @@ class TypeObject:
         typeshed_symbol: ClassSymbol | None,
         ctx: CanAssignContext,
         *,
-        receiver_value: TypedValue | None,
+        receiver_value: TypedValue | TypeVarValue | GenericValue | None,
         is_metaclass_owner: bool,
     ) -> _RawTypeObjectAttribute:
         """Specialize a located symbol and package the raw stored member state."""
@@ -1474,6 +1485,18 @@ class TypeObject:
     ) -> tuple["TypeObject", ClassSymbol | None, ClassSymbol | None] | None:
         runtime_symbol, typeshed_symbol = self._get_direct_lookup_symbol_sources(name)
         if runtime_symbol is not None or typeshed_symbol is not None:
+            if (
+                runtime_symbol is not None
+                and typeshed_symbol is None
+                and _runtime_method_needs_inherited_typeshed_symbol(runtime_symbol)
+            ):
+                inherited_typeshed = self._get_inherited_typeshed_symbol_with_owner(
+                    name
+                )
+                if inherited_typeshed is not None:
+                    owner, inherited_symbol = inherited_typeshed
+                    if _symbol_contains_typevars(inherited_symbol):
+                        return owner, runtime_symbol, inherited_symbol
             return self, runtime_symbol, typeshed_symbol
         for entry in self.get_mro():
             if entry.tobj is None:
@@ -1491,6 +1514,30 @@ class TypeObject:
         return self.get_declared_symbols().get(
             name
         ), self._checker.ts_finder.get_direct_symbol(self.typ, name)
+
+    def _get_inherited_typeshed_symbol_with_owner(
+        self, name: str
+    ) -> tuple["TypeObject", ClassSymbol] | None:
+        if isinstance(self.typ, type):
+            try:
+                runtime_mro = type.mro(self.typ)
+            except Exception:
+                return None
+            for base_typ in runtime_mro[1:]:
+                entry_tobj = self._checker.make_type_object(base_typ)
+                _, typeshed_symbol = entry_tobj._get_direct_lookup_symbol_sources(name)
+                if typeshed_symbol is not None:
+                    return entry_tobj, typeshed_symbol
+            return None
+        if self._mro is None:
+            return None
+        for entry in self.get_mro():
+            if entry.tobj is None:
+                return None
+            _, typeshed_symbol = entry.tobj._get_direct_lookup_symbol_sources(name)
+            if typeshed_symbol is not None:
+                return entry.tobj, typeshed_symbol
+        return None
 
     def is_assignable_to_type(self, typ: type | str) -> bool:
         return self.is_universally_assignable() or any(
@@ -1976,6 +2023,17 @@ def _merge_symbol_type_information(
     return typeshed_value
 
 
+def _runtime_method_needs_inherited_typeshed_symbol(symbol: ClassSymbol) -> bool:
+    return symbol.is_method and symbol.annotation is None
+
+
+def _symbol_contains_typevars(symbol: ClassSymbol) -> bool:
+    effective_type = symbol.get_effective_type()
+    return any(
+        isinstance(subval, TypeVarValue) for subval in effective_type.walk_values()
+    )
+
+
 def _merge_runtime_and_typeshed_property_info(
     runtime_info: PropertyInfo | None, typeshed_info: PropertyInfo | None
 ) -> PropertyInfo | None:
@@ -2362,8 +2420,13 @@ def _get_cached_property_return_type(
 
 
 def _class_key_and_generic_args_from_type_value(
-    receiver_value: TypedValue,
+    receiver_value: TypedValue | TypeVarValue | GenericValue,
 ) -> tuple[type | str, Sequence[Value]]:
+    if isinstance(receiver_value, TypeVarValue):
+        assert receiver_value.typevar_param.bound is not None
+        class_key = _class_key_from_value(receiver_value.typevar_param.bound)
+        assert class_key is not None
+        return class_key, ()
     generic_args = (
         receiver_value.args if isinstance(receiver_value, GenericValue) else ()
     )
@@ -2372,11 +2435,33 @@ def _class_key_and_generic_args_from_type_value(
 
 def _receiver_type_value(
     receiver_value: Value | None, ctx: CanAssignContext
-) -> TypedValue | None:
+) -> TypedValue | TypeVarValue | GenericValue | None:
     if receiver_value is None:
         return None
+    if isinstance(receiver_value, (TypeVarValue, GenericValue)):
+        return receiver_value
     resolved = replace_fallback(receiver_value)
+    if isinstance(resolved, KnownValueWithTypeVars) and not isinstance(
+        resolved.val, type
+    ):
+        runtime_type = type(resolved.val)
+        type_params = ctx.get_type_parameters(runtime_type)
+        if not type_params:
+            return TypedValue(runtime_type)
+        return GenericValue(
+            runtime_type,
+            [
+                resolved.typevars.get_value(
+                    type_param, default_value_for_type_param(type_param)
+                )
+                for type_param in type_params
+            ],
+        )
     if isinstance(resolved, TypedValue):
+        return resolved
+    if isinstance(resolved, TypeVarValue):
+        return resolved
+    if isinstance(resolved, GenericValue):
         return resolved
     if isinstance(resolved, KnownValueWithTypeVars) and isinstance(resolved.val, type):
         type_params = ctx.get_type_parameters(resolved.val)
@@ -2415,7 +2500,8 @@ def _typevar_map_from_generic_args(
 
 
 def _typevar_map_from_type_value(
-    receiver_value: TypedValue, type_params: Sequence[TypeParam]
+    receiver_value: TypedValue | TypeVarValue | GenericValue,
+    type_params: Sequence[TypeParam],
 ) -> TypeVarMap:
     _, generic_args = _class_key_and_generic_args_from_type_value(receiver_value)
     return _typevar_map_from_generic_args(type_params, generic_args)
@@ -2427,7 +2513,7 @@ def _specialize_symbol_for_owner(
     symbol: ClassSymbol,
     ctx: CanAssignContext,
     *,
-    receiver_value: TypedValue | None = None,
+    receiver_value: TypedValue | TypeVarValue | GenericValue | None = None,
 ) -> ClassSymbol:
     substitutions = _get_symbol_owner_substitutions_from_type_objects(
         receiver_tobj, owner_tobj, ctx, receiver_value=receiver_value
@@ -2463,15 +2549,23 @@ def _bind_attribute_signature(
         self_annotation_value = receiver_value
     signature = ctx.signature_from_value(value)
     if isinstance(signature, BoundMethodSignature):
+        shielded_signature, restore_typevars = _shield_nested_self_in_signature(
+            signature.signature
+        )
+        signature = replace(signature, signature=shielded_signature)
         bound = signature.get_signature(
             ctx=ctx, self_annotation_value=self_annotation_value
         )
         if bound is None and self_annotation_value == receiver_value:
             bound = signature.get_signature(ctx=ctx)
         if bound is not None:
-            return CallableValue(bound)
+            result: Value = CallableValue(bound)
+            if restore_typevars:
+                result = result.substitute_typevars(restore_typevars)
+            return result
         return value
     if isinstance(signature, (Signature, OverloadedSignature)):
+        signature, restore_typevars = _shield_nested_self_in_signature(signature)
         bound = signature.bind_self(
             self_value=receiver_value,
             self_annotation_value=self_annotation_value,
@@ -2480,8 +2574,43 @@ def _bind_attribute_signature(
         if bound is None and self_annotation_value == receiver_value:
             bound = signature.bind_self(self_value=receiver_value, ctx=ctx)
         if bound is not None:
-            return CallableValue(bound)
+            result = CallableValue(bound)
+            if restore_typevars:
+                result = result.substitute_typevars(restore_typevars)
+            return result
     return value
+
+
+def _shield_nested_self_in_signature(
+    signature: Signature | OverloadedSignature,
+) -> tuple[Signature | OverloadedSignature, TypeVarMap]:
+    if isinstance(signature, OverloadedSignature):
+        restore_typevars = TypeVarMap()
+        shielded_signatures = []
+        for inner_sig in signature.signatures:
+            shielded_sig, inner_restore = _shield_nested_self_in_signature(inner_sig)
+            assert isinstance(shielded_sig, Signature)
+            shielded_signatures.append(shielded_sig)
+            restore_typevars = restore_typevars.merge(inner_restore)
+        return OverloadedSignature(shielded_signatures), restore_typevars
+
+    restore_typevars = TypeVarMap()
+    parameters = {}
+    for name, parameter in signature.parameters.items():
+        annotation = parameter.annotation
+        inner_restore = TypeVarMap()
+        if _has_nested_self_typevar(annotation):
+            annotation, inner_restore = shield_nested_self_typevars(annotation)
+        parameters[name] = replace(parameter, annotation=annotation)
+        restore_typevars = restore_typevars.merge(inner_restore)
+    return_value = signature.return_value
+    return_restore = TypeVarMap()
+    if _has_nested_self_typevar(return_value):
+        return_value, return_restore = shield_nested_self_typevars(return_value)
+    restore_typevars = restore_typevars.merge(return_restore)
+    return replace(signature, parameters=parameters, return_value=return_value), (
+        restore_typevars
+    )
 
 
 def bind_attribute_value_to_receiver(
@@ -2571,6 +2700,12 @@ def _rewrite_self_returning_classmethod_signature(
             return receiver_for_self
         if (
             isinstance(root, SubclassValue)
+            and isinstance(root.typ, TypeVarValue)
+            and root.typ.typevar_param.typevar is SelfT
+        ):
+            return SubclassValue.make(receiver_for_self)
+        if (
+            isinstance(root, SubclassValue)
             and (subclass_key := _class_key_from_value(root.typ)) is not None
             and class_keys_match(subclass_key, receiver_key)
         ):
@@ -2588,7 +2723,7 @@ def _rewrite_self_returning_classmethod_signature(
 
 
 def _classmethod_receiver_value_from_type_value(
-    receiver_value: TypedValue,
+    receiver_value: TypedValue | TypeVarValue | GenericValue,
 ) -> SubclassValue:
     return SubclassValue(receiver_value)
 
@@ -2670,6 +2805,10 @@ def _resolve_descriptor_access(
                 ),
                 ctx=ctx,
             )
+            if not on_class:
+                typed_descriptor_value = set_self(
+                    typed_descriptor_value, typed_receiver_value
+                )
             if symbol.returns_self_on_class_access and isinstance(
                 typed_descriptor_value, CallableValue
             ):
@@ -2896,10 +3035,15 @@ def _get_descriptor_get_value(
         return None
     get_signature, _ = match
     return_value = get_signature.return_value
-    if not on_class:
-        return_value = subtract_values(
-            return_value, receiver_to_self_type(descriptor, ctx), ctx
-        )
+    self_type = receiver_to_self_type(descriptor, ctx)
+    if on_class and not is_metaclass_owner:
+        return_without_self = subtract_values(return_value, self_type, ctx)
+        if return_without_self != return_value:
+            narrowed_return = intersect_values(return_value, self_type, ctx)
+            if narrowed_return is not NO_RETURN_VALUE:
+                return_value = narrowed_return
+    else:
+        return_value = subtract_values(return_value, self_type, ctx)
     return return_value
 
 
@@ -2997,6 +3141,7 @@ def _descriptor_method_signature_any(
         return None
     descriptor, restore_typevars = shield_nested_self_typevars(descriptor)
     method_value = UNINITIALIZED_VALUE
+    direct_signature: Signature | OverloadedSignature | None = None
     if isinstance(descriptor, SyntheticClassObjectValue):
         if isinstance(descriptor.class_type, TypedValue):
             descriptor_tobj = ctx.make_type_object(descriptor.class_type.typ)
@@ -3017,11 +3162,27 @@ def _descriptor_method_signature_any(
         descriptor_tobj = descriptor.get_type_object(ctx)
         if descriptor_tobj.get_declared_symbol_from_mro(method_name, ctx) is None:
             return None
+        if isinstance(descriptor, TypedValue):
+            raw_attribute = descriptor_tobj._get_raw_declared_attribute(
+                method_name, ctx, receiver_value=descriptor
+            )
+            if raw_attribute is not None:
+                direct_signature = _signature_from_descriptor_attribute(
+                    raw_attribute.raw_value, ctx
+                )
+                if direct_signature is not None:
+                    direct_signature = direct_signature.bind_self(
+                        self_value=descriptor, ctx=ctx
+                    )
         attribute = descriptor_tobj.get_attribute(
             method_name, ctx, on_class=False, receiver_value=descriptor
         )
         if attribute is not None:
             method_value = attribute.value
+    if direct_signature is not None:
+        if restore_typevars:
+            direct_signature = direct_signature.substitute_typevars(restore_typevars)
+        return direct_signature
     if method_value is UNINITIALIZED_VALUE:
         return None
     signature = _signature_from_descriptor_attribute(method_value, ctx)
@@ -3117,7 +3278,7 @@ def _get_symbol_owner_substitutions_from_type_objects(
     owner_tobj: TypeObject,
     ctx: CanAssignContext,
     *,
-    receiver_value: TypedValue | None = None,
+    receiver_value: TypedValue | TypeVarValue | GenericValue | None = None,
 ) -> TypeVarMap:
     receiver_substitutions = TypeVarMap()
     if receiver_value is not None:

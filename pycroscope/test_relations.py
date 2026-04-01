@@ -1,7 +1,57 @@
 # static analysis: ignore
+from types import NoneType
 
+from pycroscope.analysis_lib import override
+from pycroscope.checker import Checker
+from pycroscope.relations import Relation, has_relation
 from pycroscope.test_name_check_visitor import TestNameCheckVisitorBase
 from pycroscope.test_node_visitor import assert_passes, skip_before
+from pycroscope.value import GenericValue, KnownValue, TypedValue
+
+
+def test_string_backed_context_manager_protocol_specializes_before_runtime_cache() -> (
+    None
+):
+    checker = Checker()
+    left = GenericValue("contextlib.AbstractContextManager", [TypedValue(NoneType)])
+
+    enter = checker.get_attribute_from_value(left, "__enter__", prefer_typeshed=True)
+    exit_ = checker.get_attribute_from_value(left, "__exit__", prefer_typeshed=True)
+
+    assert str(enter) == "() -> NoneType"
+    assert str(exit_).endswith("-> bool | None")
+
+
+def test_string_backed_context_manager_protocol_accepts_override_without_cache() -> (
+    None
+):
+    checker = Checker()
+    left = GenericValue("contextlib.AbstractContextManager", [TypedValue(NoneType)])
+
+    assert has_relation(left, TypedValue(override), Relation.ASSIGNABLE, checker) == {}
+
+
+def test_string_backed_generator_context_manager_inherits_typed_base_enter() -> None:
+    checker = Checker()
+    left = GenericValue("contextlib._GeneratorContextManager", [TypedValue(int)])
+
+    enter = checker.get_attribute_from_value(left, "__enter__", prefer_typeshed=True)
+
+    assert str(enter) == "() -> int"
+
+
+def test_string_backed_async_generator_context_manager_inherits_typed_base_aenter() -> (
+    None
+):
+    checker = Checker()
+    left = GenericValue("contextlib._AsyncGeneratorContextManager", [KnownValue(None)])
+
+    aenter = checker.get_attribute_from_value(left, "__aenter__", prefer_typeshed=True)
+
+    assert (
+        str(aenter)
+        == "() -> collections.abc.Coroutine[Any[inference], Any[inference], None]"
+    )
 
 
 class TestRelations(TestNameCheckVisitorBase):
