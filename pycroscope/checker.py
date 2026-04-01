@@ -62,6 +62,7 @@ from .stacked_scopes import Composite
 from .suggested_type import CallableTracker
 from .type_object import (
     EXCLUDED_PROTOCOL_MEMBERS,
+    AttributePolicy,
     TypeObject,
     class_keys_match,
     direct_bases_from_values,
@@ -2126,6 +2127,7 @@ class Checker:
         callee: Value,
         args: Iterable[Value] = (),
         kwargs: Iterable[tuple[str | None, Value]] = (),
+        node: ast.AST | None = None,
     ) -> Value:
         sig = self.signature_from_value(callee)
         if sig is None:
@@ -2138,7 +2140,9 @@ class Checker:
                 arguments.append((Composite(kwarg_value), KWARGS))
             else:
                 arguments.append((Composite(kwarg_value), kwarg_name))
-        ctx = CheckCallContext(can_assign_ctx=self, callee=callee, visitor=None)
+        ctx = CheckCallContext(
+            can_assign_ctx=self, callee=callee, visitor=None, node=node
+        )
         return sig.check_call(arguments, ctx)
 
     def signature_from_value(
@@ -2556,7 +2560,7 @@ class Checker:
                 return ANY_SIGNATURE
             if isinstance(typ, str):
                 call_access = self.make_type_object(typ).get_attribute(
-                    "__call__", self, on_class=False, receiver_value=value
+                    "__call__", AttributePolicy(receiver_value=value)
                 )
                 if call_access is not None and call_access.symbol.is_method:
                     if call_access.owner.typ != typ:

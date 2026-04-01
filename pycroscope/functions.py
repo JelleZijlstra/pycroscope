@@ -198,7 +198,7 @@ class FunctionInfo:
             return AnyValue(AnySource.error)
         return KnownValue(None)
 
-    def get_symbol(self, value: Value, deprecation_message: str) -> ClassSymbol:
+    def get_symbol(self, value: Value, deprecation_message: str | None) -> ClassSymbol:
         return ClassSymbol(
             initializer=value,
             function_decorators=self.decorator_kinds,

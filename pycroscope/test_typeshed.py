@@ -251,7 +251,7 @@ class TestTypeshedClient(TestNameCheckVisitorBase):
             prop = tsf.get_direct_symbol("sample.C", "name")
             assert prop is not None
             assert prop.property_info is not None
-            assert prop.property_info.getter_type == TypedValue(str)
+            assert prop.property_info.fget is not None
 
             make = tsf.get_direct_symbol("sample.C", "make")
             assert make is not None

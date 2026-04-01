@@ -218,6 +218,7 @@ from .suggested_type import (
     should_suggest_type,
 )
 from .type_object import (
+    AttributePolicy,
     NamedTupleField,
     TypeObject,
     TypeObjectAttribute,
@@ -739,6 +740,16 @@ class _AttrContext(CheckerAttrContext):
         if self.self_value is not None:
             return self.self_value
         return self.root_composite.value
+
+    def get_type_object_attribute_policy(
+        self, *, on_class: bool, receiver_value: Value | None
+    ) -> AttributePolicy:
+        return AttributePolicy(
+            on_class=on_class,
+            receiver_value=receiver_value,
+            visitor=self.visitor,
+            node=self.node,
+        )
 
     def should_ignore_none_attributes(self) -> bool:
         return self.ignore_none
@@ -3384,7 +3395,8 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         )
         for candidate in self._property_attr_candidates(attr_name, class_name):
             attribute = type_object.get_attribute(
-                candidate, self, on_class=False, receiver_value=TypedValue(class_key)
+                candidate,
+                AttributePolicy(receiver_value=TypedValue(class_key), visitor=self),
             )
             if attribute is not None:
                 return candidate, attribute
@@ -3524,7 +3536,8 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 return True
             base_tobj = self.checker.make_type_object(base_value.typ)
             attr = base_tobj.get_attribute(
-                varname, self, on_class=False, receiver_value=base_value
+                varname,
+                AttributePolicy(receiver_value=base_value, visitor=self, node=node),
             )
             if attr is not None:
                 return True
@@ -3556,7 +3569,8 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 continue
             base_tobj = self.checker.make_type_object(base_value.typ)
             base_attr = base_tobj.get_attribute(
-                varname, self, on_class=False, receiver_value=base_value
+                varname,
+                AttributePolicy(receiver_value=base_value, visitor=self, node=node),
             )
             if base_attr is None:
                 continue
@@ -13525,7 +13539,10 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             and not has_explicit_class_getitem
         ):
             meta_getitem = tobj.get_attribute(
-                "__getitem__", self, on_class=True, is_special_lookup=True
+                "__getitem__",
+                AttributePolicy(
+                    on_class=True, is_special_lookup=True, visitor=self, node=node
+                ),
             )
             if meta_getitem is not None:
                 synthetic_class = self.checker.get_synthetic_class(synthetic_typ)
@@ -14089,9 +14106,12 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     return
         attr = tobj.get_attribute(
             node.attr,
-            self,
-            on_class=on_class,
-            receiver_value=root if isinstance(root, TypedValue) else None,
+            AttributePolicy(
+                on_class=on_class,
+                receiver_value=root if isinstance(root, TypedValue) else None,
+                visitor=self,
+                node=node,
+            ),
         )
         if attr is None:
             if (
@@ -15117,9 +15137,10 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         callee: Value,
         args: Iterable[Value] = (),
         kwargs: Iterable[tuple[str | None, Value]] = (),
+        node: ast.AST | None = None,
     ) -> Value:
         return self.check_call(
-            None,
+            node,
             callee,
             (Composite(arg) for arg in args),
             [(k, Composite(v)) for k, v in kwargs],

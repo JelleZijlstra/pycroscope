@@ -51,6 +51,7 @@ from .signature import (
 )
 from .stacked_scopes import Composite
 from .type_object import (
+    AttributePolicy,
     MroValue,
     TypeObject,
     TypeObjectAttribute,
@@ -58,10 +59,8 @@ from .type_object import (
     _get_attribute_value_from_symbol,
     _get_cached_property_return_type,
     _is_property_marker_value,
-    _should_resolve_runtime_property_from_argspec,
     _specialize_symbol_for_owner,
     class_keys_match,
-    lookup_declared_symbol_with_owner,
     normalize_synthetic_descriptor_attribute,
 )
 from .value import (
@@ -205,6 +204,11 @@ class AttrContext:
             prefer_typeshed=False,
         )
 
+    def get_type_object_attribute_policy(
+        self, *, on_class: bool, receiver_value: Value | None
+    ) -> AttributePolicy:
+        return AttributePolicy(on_class=on_class, receiver_value=receiver_value)
+
 
 def _get_type_object_attribute(
     type_object: TypeObject,
@@ -214,14 +218,11 @@ def _get_type_object_attribute(
     on_class: bool,
     receiver_value: Value | None,
 ) -> TypeObjectAttribute | None:
-    can_assign_ctx = ctx.get_can_assign_context()
     return type_object.get_attribute(
         attr_name,
-        can_assign_ctx,
-        on_class=on_class,
-        receiver_value=receiver_value,
-        # TODO: clean this up
-        visitor=getattr(ctx, "visitor", None),
+        ctx.get_type_object_attribute_policy(
+            on_class=on_class, receiver_value=receiver_value
+        ),
     )
 
 
@@ -747,8 +748,12 @@ def _get_attribute_from_subclass(
         # attributes should be widened from base-class literals.
         return TypedValue(str)
     can_assign_ctx = ctx.get_can_assign_context()
-    attribute = can_assign_ctx.make_type_object(typ).get_attribute(
-        ctx.attr, can_assign_ctx, on_class=True, receiver_value=self_value
+    attribute = _get_type_object_attribute(
+        can_assign_ctx.make_type_object(typ),
+        ctx.attr,
+        ctx,
+        on_class=True,
+        receiver_value=self_value,
     )
     if attribute is not None and _should_use_resolved_class_attribute(attribute):
         ctx.record_usage(typ, attribute.value)
@@ -1791,29 +1796,15 @@ def _unwrap_value_from_typed(result: Value, typ: type, ctx: AttrContext) -> Valu
     cls_val = result.val
     if isinstance(cls_val, property):
         can_assign_ctx = ctx.get_can_assign_context()
-        match = lookup_declared_symbol_with_owner(typ, ctx.attr, can_assign_ctx)
-        if match is not None:
-            owner, symbol = match
-            if (
-                symbol.property_info is not None
-                and not _should_resolve_runtime_property_from_argspec(
-                    cls_val, symbol.property_info.getter_type
-                )
-            ):
-                self_value = replace_fallback(ctx.get_self_value())
-                generic_args: Sequence[Value] = ()
-                if isinstance(self_value, GenericValue) and self_value.typ is typ:
-                    generic_args = self_value.args
-                elif isinstance(self_value, SubclassValue):
-                    subclass_typ = replace_fallback(self_value.typ)
-                    if (
-                        isinstance(subclass_typ, GenericValue)
-                        and subclass_typ.typ is typ
-                    ):
-                        generic_args = subclass_typ.args
-                return _substitute_typevars(
-                    typ, generic_args, symbol.property_info.getter_type, owner, ctx
-                )
+        tobj = can_assign_ctx.make_type_object(typ)
+        attr = tobj.get_attribute(
+            ctx.attr,
+            ctx.get_type_object_attribute_policy(
+                on_class=False, receiver_value=ctx.lookup_root_value
+            ),
+        )
+        if attr is not None:
+            return attr.value
         return ctx.get_property_type_from_argspec(cls_val)
     elif is_bound_classmethod(cls_val):
         return result

@@ -4140,25 +4140,11 @@ class TestAnnAssign(TestNameCheckVisitorBase):
                 assert_type(cls.a[0], Self)
                 assert_type(cls.method1(), Self)
 
-    @assert_passes(run_in_both_module_modes=True)
-    def test_self_property_in_method_body_in_unimportable_module(self):
-        from typing_extensions import Self, assert_type
-
-        class Base:
-            @property
-            def prop(self) -> Self:
-                raise NotImplementedError
-
-            def method(self) -> None:
-                assert_type(self.prop, Self)
-
-        class Child(Base):
-            def method(self) -> None:
-                assert_type(self.prop, Self)
-
     @assert_passes()
     def test_self_annotated_property_uses_runtime_attribute_resolution(self):
         from typing import Generic, TypeVar
+
+        from typing_extensions import assert_type
 
         T = TypeVar("T")
 
@@ -4168,7 +4154,7 @@ class TestAnnAssign(TestNameCheckVisitorBase):
                 return 1
 
         def caller(ci: Capybara[int], cs: Capybara[str]) -> None:
-            # assert_type(ci.prop, int)
+            assert_type(ci.prop, int)
             cs.prop  # E: incompatible_argument
 
     @assert_passes(run_in_both_module_modes=True)

@@ -4,6 +4,7 @@ An object that represents a type.
 
 """
 
+import ast
 import collections.abc
 import enum
 import functools
@@ -54,8 +55,10 @@ from .signature import (
     ParameterKind,
     Signature,
     SigParameter,
+    make_bound_method,
     mark_ellipsis_style_any_tail_parameters,
 )
+from .stacked_scopes import Composite
 from .value import (
     NO_RETURN_VALUE,
     UNINITIALIZED_VALUE,
@@ -232,6 +235,15 @@ class ResolvedAttribute:
 
 
 TypeObjectAttribute = ResolvedAttribute
+
+
+@dataclass(frozen=True, kw_only=True)
+class AttributePolicy:
+    on_class: bool = False
+    is_special_lookup: bool = False
+    receiver_value: Value | None = None
+    visitor: "pycroscope.name_check_visitor.NameCheckVisitor | None" = None
+    node: ast.AST | None = None
 
 
 @dataclass(frozen=True)
@@ -1339,15 +1351,7 @@ class TypeObject:
         return self._declared_symbols
 
     def get_attribute(
-        self,
-        name: str,
-        ctx: CanAssignContext,
-        *,
-        on_class: bool,
-        is_special_lookup: bool = False,
-        receiver_value: Value | None = None,
-        visitor: "pycroscope.name_check_visitor.NameCheckVisitor | None" = None,
-        property_type_from_argspec: Callable[[property], Value] | None = None,
+        self, name: str, policy: AttributePolicy
     ) -> TypeObjectAttribute | None:
         """Look up an attribute in three phases.
 
@@ -1355,6 +1359,9 @@ class TypeObject:
         2. Specialize the selected symbols for the receiver and owner.
         3. Apply descriptor semantics to the merged result.
         """
+        ctx = self._checker
+        on_class = policy.on_class
+        receiver_value = policy.receiver_value
         typed_receiver_value = _receiver_type_value(receiver_value, ctx)
         # TODO: Revisit whether __class__ and __dict__ should remain bespoke
         # get_attribute() special cases instead of falling out of general lookup.
@@ -1401,11 +1408,7 @@ class TypeObject:
             ctx, receiver_value=typed_receiver_value, selected=metaclass_selected
         )
         merged_attribute = self._choose_merged_attribute(
-            merged_declared,
-            merged_metaclass,
-            ctx,
-            on_class=on_class,
-            is_special_lookup=is_special_lookup,
+            merged_declared, merged_metaclass, ctx, policy=policy
         )
         if merged_attribute is None:
             if isinstance(self.typ, str) and self.has_any_base():
@@ -1428,12 +1431,7 @@ class TypeObject:
         # Phase 3: apply descriptor semantics to the merged attribute that
         # survived lookup precedence.
         return _resolve_merged_attribute_access(
-            self,
-            merged_attribute,
-            ctx,
-            on_class=on_class,
-            receiver_value=receiver_value,
-            visitor=visitor,
+            self, merged_attribute, ctx, policy=policy
         )
 
     def _choose_merged_attribute(
@@ -1442,19 +1440,21 @@ class TypeObject:
         metaclass_attribute: MergedAttribute | None,
         ctx: CanAssignContext,
         *,
-        on_class: bool,
-        is_special_lookup: bool = False,
+        policy: AttributePolicy,
     ) -> MergedAttribute | None:
         """Apply Python lookup precedence after generic specialization."""
         if (
-            on_class
+            policy.on_class
             and metaclass_attribute is not None
-            and (is_special_lookup or _is_data_descriptor(metaclass_attribute, ctx))
+            and (
+                policy.is_special_lookup
+                or _is_data_descriptor(metaclass_attribute, ctx)
+            )
         ):
             return metaclass_attribute
         if declared_attribute is not None:
             return declared_attribute
-        return metaclass_attribute if on_class else None
+        return metaclass_attribute if policy.on_class else None
 
     def _select_declared_attribute(
         self, name: str
@@ -2136,21 +2136,9 @@ def _merge_runtime_and_typeshed_property_info(
     if typeshed_info is None:
         return runtime_info
     return PropertyInfo(
-        getter_type=(
-            _merge_symbol_type_information(
-                runtime_info.getter_type, typeshed_info.getter_type
-            )
-            or runtime_info.getter_type
-        ),
-        setter_type=_merge_symbol_type_information(
-            runtime_info.setter_type, typeshed_info.setter_type
-        ),
-        getter_deprecation=(
-            typeshed_info.getter_deprecation or runtime_info.getter_deprecation
-        ),
-        setter_deprecation=(
-            typeshed_info.setter_deprecation or runtime_info.setter_deprecation
-        ),
+        fget=_merge_runtime_and_typeshed_symbol(runtime_info.fget, typeshed_info.fget),
+        fset=_merge_runtime_and_typeshed_symbol(runtime_info.fset, typeshed_info.fset),
+        fdel=_merge_runtime_and_typeshed_symbol(runtime_info.fdel, typeshed_info.fdel),
     )
 
 
@@ -2299,7 +2287,7 @@ def _resolve_member_access(
     ctx: CanAssignContext,
     class_object_access: bool,
 ) -> TypeObjectAttribute:
-    access = tobj.get_attribute(member, ctx, on_class=class_object_access)
+    access = tobj.get_attribute(member, AttributePolicy(on_class=class_object_access))
     if access is None:
         return TypeObjectAttribute(
             value=resolved_value,
@@ -2988,26 +2976,19 @@ def _resolve_merged_attribute_access(
     merged_attribute: MergedAttribute,
     ctx: CanAssignContext,
     *,
-    on_class: bool,
-    receiver_value: Value | None,
-    visitor: "pycroscope.name_check_visitor.NameCheckVisitor | None" = None,
+    policy: AttributePolicy,
 ) -> ResolvedAttribute:
     """Resolve a merged member to the final value seen by this access."""
     resolved_descriptor = _resolve_descriptor_access(
-        receiver_tobj,
-        merged_attribute,
-        ctx,
-        on_class=on_class,
-        receiver_value=receiver_value,
-        visitor=visitor,
+        receiver_tobj, merged_attribute, ctx, policy=policy
     )
     if resolved_descriptor is None:
         resolved_descriptor = _make_resolved_attribute(
             merged_attribute,
             value=_get_nondescriptor_value(
                 merged_attribute,
-                on_class=on_class,
-                receiver_value=receiver_value,
+                on_class=policy.on_class,
+                receiver_value=policy.receiver_value,
                 ctx=ctx,
             ),
             is_property=False,
@@ -3021,11 +3002,11 @@ def _resolve_descriptor_access(
     merged_attribute: MergedAttribute,
     ctx: CanAssignContext,
     *,
-    on_class: bool,
-    receiver_value: Value | None,
-    visitor: "pycroscope.name_check_visitor.NameCheckVisitor | None",
+    policy: AttributePolicy,
 ) -> ResolvedAttribute | None:
     """Apply descriptor behavior, including any receiver binding, to a member."""
+    on_class = policy.on_class
+    receiver_value = policy.receiver_value
     effective_value = _merged_attribute_effective_value(merged_attribute)
     lookup_value = _merged_attribute_lookup_value(merged_attribute)
     descriptor_like_instance_access = (
@@ -3036,23 +3017,18 @@ def _resolve_descriptor_access(
         if descriptor_like_instance_access:
             if receiver_value is None:
                 receiver_value = TypedValue(receiver_tobj.typ)
+            if merged_attribute.property_info.fget is None:
+                return None
             fget = merged_attribute.property_info.fget.initializer
             assert fget is not None
-            if visitor is None:
+            if policy.visitor is None:
                 # Note this path means errors don't get shown!
                 value = ctx.get_call_result(fget, (receiver_value,))
             else:
-                value = visitor.get_call_result(fget, (receiver_value,))
-                print("CALL", visitor, fget, receiver_value, value)
-            # property_value = _resolve_runtime_property_getter_value(
-            #     merged_attribute,
-            #     receiver_value=receiver_value,
-            #     property_type_from_argspec=property_type_from_argspec,
-            # )
-            # if property_value is None:
-            #     property_value = merged_attribute.property_info.getter_type
-            # if receiver_value is not None:
-            #     property_value = set_self(property_value, receiver_value)
+                value = policy.visitor.get_call_result(
+                    fget, (receiver_value,), node=policy.node
+                )
+
             return _make_resolved_attribute(
                 merged_attribute,
                 value=value,
@@ -3202,6 +3178,33 @@ def _resolve_descriptor_access(
     )
 
 
+def _resolve_property_getter_value(
+    merged_attribute: MergedAttribute,
+    *,
+    receiver_value: Value,
+    ctx: CanAssignContext,
+    policy: AttributePolicy,
+) -> Value | None:
+    property_info = merged_attribute.property_info
+    if property_info is None or property_info.fget is None:
+        return None
+    getter_value = property_info.fget.initializer
+    if getter_value is None:
+        return None
+    if policy.visitor is not None:
+        return policy.visitor.check_call(
+            policy.node, getter_value, [Composite(receiver_value)]
+        )
+    getter_sig = ctx.signature_from_value(getter_value)
+    bound = make_bound_method(getter_sig, Composite(receiver_value), ctx=ctx)
+    if bound is None:
+        return None
+    concrete = bound.get_signature(ctx=ctx)
+    if concrete is None or not concrete.has_return_value():
+        return None
+    return concrete.return_value
+
+
 def _should_resolve_runtime_property_from_argspec(
     prop: property, getter_type: Value
 ) -> bool:
@@ -3218,29 +3221,6 @@ def _should_resolve_runtime_property_from_argspec(
     except (TypeError, ValueError):
         return False
     return bool(parameters) and parameters[0].annotation is not inspect.Signature.empty
-
-
-def _resolve_runtime_property_getter_value(
-    merged_attribute: MergedAttribute,
-    *,
-    receiver_value: Value | None,
-    property_type_from_argspec: Callable[[property], Value] | None = None,
-) -> Value | None:
-    if merged_attribute.runtime_symbol is None:
-        return None
-    runtime_initializer = merged_attribute.runtime_symbol.initializer
-    if not isinstance(runtime_initializer, KnownValue) or not isinstance(
-        runtime_initializer.val, property
-    ):
-        return None
-    property_info = merged_attribute.property_info
-    if property_info is None or not _should_resolve_runtime_property_from_argspec(
-        runtime_initializer.val, property_info.getter_type
-    ):
-        return None
-    if property_type_from_argspec is None:
-        return None
-    return property_type_from_argspec(runtime_initializer.val)
 
 
 def _is_prebound_synthetic_classmethod(value: Value) -> bool:
@@ -3335,8 +3315,7 @@ def _get_attribute_value_from_symbol(
         merged_attribute.owner,
         merged_attribute,
         ctx,
-        on_class=on_class,
-        receiver_value=receiver_value,
+        policy=AttributePolicy(on_class=on_class, receiver_value=receiver_value),
     ).value
     return value
 
@@ -3496,7 +3475,7 @@ def _descriptor_method_signature_any(
             if descriptor_tobj.get_declared_symbol_from_mro(method_name, ctx) is None:
                 return None
             attribute = descriptor_tobj.get_attribute(
-                method_name, ctx, on_class=False, receiver_value=descriptor
+                method_name, AttributePolicy(receiver_value=descriptor)
             )
             if attribute is not None:
                 method_value = attribute.value
@@ -3525,7 +3504,7 @@ def _descriptor_method_signature_any(
                         self_value=descriptor, ctx=ctx
                     )
         attribute = descriptor_tobj.get_attribute(
-            method_name, ctx, on_class=False, receiver_value=descriptor
+            method_name, AttributePolicy(receiver_value=descriptor)
         )
         if attribute is not None:
             method_value = attribute.value

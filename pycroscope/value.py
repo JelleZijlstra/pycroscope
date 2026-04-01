@@ -686,6 +686,7 @@ class CanAssignContext(Protocol):
         callee: "Value",
         args: Iterable["Value"] = (),
         kwargs: Iterable[tuple[str | None, "Value"]] = (),
+        node: ast.AST | None = None,
     ) -> "Value":
         """Return the result of calling callee with the given arguments."""
         return AnyValue(AnySource.inference)
@@ -3650,14 +3651,6 @@ class PropertyInfo:
     fset: "ClassSymbol | None" = None
     fdel: "ClassSymbol | None" = None
 
-    def walk_values(self) -> Iterable[Value]:
-        if self.fget is not None:
-            yield from self.fget.walk_values()
-        if self.fset is not None:
-            yield from self.fset.walk_values()
-        if self.fdel is not None:
-            yield from self.fdel.walk_values()
-
     def substitute_typevars(self, typevars: TypeVarMap) -> "PropertyInfo":
         return PropertyInfo(
             fget=(
@@ -4714,19 +4707,19 @@ class ClassSymbol:
 
     def __post_init__(self) -> None:
         if self.returns_self_on_class_access:
-            assert self.is_method
+            assert self.is_method, self
         if self.property_info is not None:
-            assert not self.is_method
-            assert not self.is_classmethod
-            assert not self.is_staticmethod
-            assert not self.returns_self_on_class_access
+            assert not self.is_method, self
+            assert not self.is_classmethod, self
+            assert not self.is_staticmethod, self
+            assert not self.returns_self_on_class_access, self
             assert self.initializer is None or _is_property_initializer(
                 self.initializer
-            )
+            ), self
         if self.is_method:
-            assert self.initializer is not None
-            assert self.property_info is None
-            assert self.annotation is None
+            assert self.initializer is not None, self
+            assert self.property_info is None, self
+            assert self.annotation is None, self
 
     @property
     def is_classmethod(self) -> bool:

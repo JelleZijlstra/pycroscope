@@ -1816,6 +1816,8 @@ class TestSelfAnnotation(TestNameCheckVisitorBase):
     def test_method(self):
         from typing import Generic, TypeVar
 
+        from typing_extensions import assert_type
+
         T = TypeVar("T")
 
         class Capybara(Generic[T]):
@@ -1829,6 +1831,8 @@ class TestSelfAnnotation(TestNameCheckVisitorBase):
     @assert_passes()
     def test_property(self):
         from typing import Generic, TypeVar
+
+        from typing_extensions import assert_type
 
         T = TypeVar("T")
 

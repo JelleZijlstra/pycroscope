@@ -286,7 +286,8 @@ def _symbol_from_runtime_member(
             is_property=is_property,
             is_staticmethod=isinstance(raw_value, staticmethod),
             is_classmethod=isinstance(raw_value, classmethod),
-        ),
+        )
+        and (existing is None or existing.annotation is None),
         deprecation_message=_runtime_deprecation_message(raw_value),
         function_decorators=frozenset(function_decorators),
         property_info=(
