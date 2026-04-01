@@ -14335,6 +14335,8 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                         return None
                     return symbol.property_info.fset.deprecation_message
                 else:
+                    if symbol.property_info.fget is None:
+                        return None
                     return symbol.property_info.fget.deprecation_message
             if symbol.property_info is not None:
                 continue

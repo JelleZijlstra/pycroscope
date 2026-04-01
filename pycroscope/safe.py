@@ -253,3 +253,8 @@ def is_async_fn(obj: object) -> bool:
         # This does certain attribute accesses, which may raise if the object has
         # an unusual __getattr__.
         return False
+
+
+def not_none(arg: T | None) -> T:
+    assert arg is not None
+    return arg

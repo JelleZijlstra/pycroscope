@@ -43,6 +43,7 @@ from .safe import (
     is_instance_of_typing_name,
     is_namedtuple_class,
     is_typing_name,
+    not_none,
     safe_getattr,
     safe_isinstance,
     safe_issubclass,
@@ -55,10 +56,8 @@ from .signature import (
     ParameterKind,
     Signature,
     SigParameter,
-    make_bound_method,
     mark_ellipsis_style_any_tail_parameters,
 )
-from .stacked_scopes import Composite
 from .value import (
     NO_RETURN_VALUE,
     UNINITIALIZED_VALUE,
@@ -1524,12 +1523,14 @@ class TypeObject:
         )
         if symbol is None:
             return None
-        owner = (
-            runtime_selected.owner
-            if runtime_selected is not None
-            else typeshed_selected.owner
-        )
-        return owner, symbol
+        if runtime_selected is not None:
+            return runtime_selected.owner, symbol
+        elif typeshed_selected is not None:
+            return typeshed_selected.owner, symbol
+        else:
+            assert (
+                False
+            ), "At least one of runtime_selected or typeshed_selected must be non-None"
 
     def _get_selected_attribute_sources(
         self, name: str, *, is_metaclass_owner: bool
@@ -2838,12 +2839,12 @@ def _make_merged_attribute(
     owner = (
         runtime_attribute.owner
         if runtime_attribute is not None
-        else typeshed_attribute.owner
+        else not_none(typeshed_attribute).owner
     )
     is_metaclass_owner = (
         runtime_attribute.is_metaclass_owner
         if runtime_attribute is not None
-        else typeshed_attribute.is_metaclass_owner
+        else not_none(typeshed_attribute).is_metaclass_owner
     )
     if runtime_attribute is not None and typeshed_attribute is not None:
         assert (
@@ -2874,7 +2875,7 @@ def _make_merged_attribute(
     is_method = (
         runtime_symbol.is_method
         if runtime_symbol is not None
-        else typeshed_symbol.is_method
+        else not_none(typeshed_symbol).is_method
     )
     is_classmethod = (
         runtime_symbol.is_classmethod if runtime_symbol is not None else False
@@ -3176,51 +3177,6 @@ def _resolve_descriptor_access(
         is_property=descriptor_like_instance_access,
         property_has_setter=raw_has_set,
     )
-
-
-def _resolve_property_getter_value(
-    merged_attribute: MergedAttribute,
-    *,
-    receiver_value: Value,
-    ctx: CanAssignContext,
-    policy: AttributePolicy,
-) -> Value | None:
-    property_info = merged_attribute.property_info
-    if property_info is None or property_info.fget is None:
-        return None
-    getter_value = property_info.fget.initializer
-    if getter_value is None:
-        return None
-    if policy.visitor is not None:
-        return policy.visitor.check_call(
-            policy.node, getter_value, [Composite(receiver_value)]
-        )
-    getter_sig = ctx.signature_from_value(getter_value)
-    bound = make_bound_method(getter_sig, Composite(receiver_value), ctx=ctx)
-    if bound is None:
-        return None
-    concrete = bound.get_signature(ctx=ctx)
-    if concrete is None or not concrete.has_return_value():
-        return None
-    return concrete.return_value
-
-
-def _should_resolve_runtime_property_from_argspec(
-    prop: property, getter_type: Value
-) -> bool:
-    if (
-        isinstance(getter_type, AnyValue)
-        and getter_type.source is AnySource.unannotated
-    ):
-        return True
-    getter = prop.fget
-    if getter is None:
-        return False
-    try:
-        parameters = tuple(inspect.signature(getter).parameters.values())
-    except (TypeError, ValueError):
-        return False
-    return bool(parameters) and parameters[0].annotation is not inspect.Signature.empty
 
 
 def _is_prebound_synthetic_classmethod(value: Value) -> bool:

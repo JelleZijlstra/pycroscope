@@ -348,6 +348,20 @@ class TestAttributes(TestNameCheckVisitorBase):
             x.split()  # E: undefined_attribute
 
     @assert_passes()
+    def test_type_attribute(self):
+        from typing_extensions import assert_type
+
+        class Capybara:
+            @classmethod
+            def capy(cls):
+                assert_type(cls.__doc__, str | None)
+                assert_type(cls.__name__, str)
+
+        def bara(c: type[Capybara]):
+            assert_type(c.__doc__, str | None)
+            assert_type(c.__name__, str)
+
+    @assert_passes()
     def test_typeshed(self):
         # missing_generic_parameters is a bit questionable here, but the
         # class really is defined as generic in typeshed.
