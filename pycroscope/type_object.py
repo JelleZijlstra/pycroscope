@@ -247,6 +247,7 @@ class AttributePolicy:
 
 @dataclass(frozen=True)
 class SelectedAttribute:
+    mro_index: int
     owner: "TypeObject"
     symbol: ClassSymbol
     is_metaclass_owner: bool
@@ -254,16 +255,14 @@ class SelectedAttribute:
 
 @dataclass(frozen=True)
 class SpecializedAttribute:
-    owner: "TypeObject"
-    symbol: ClassSymbol
+    selected: SelectedAttribute
     annotation: Value | None
     initializer: Value | None
     property_info: PropertyInfo | None
-    is_metaclass_owner: bool
 
     def as_symbol(self) -> ClassSymbol:
         return replace(
-            self.symbol,
+            self.selected.symbol,
             annotation=self.annotation,
             initializer=self.initializer,
             property_info=self.property_info,
@@ -1457,25 +1456,35 @@ class TypeObject:
 
     def _select_declared_attribute(
         self, name: str
-    ) -> tuple[SelectedAttribute | None, SelectedAttribute | None] | None:
+    ) -> tuple[SelectedAttribute | None, SelectedAttribute | None]:
         """Select runtime/typeshed class-MRO symbols before specialization."""
-        return self._get_selected_attribute_sources(name, is_metaclass_owner=False)
+        runtime_attr = self.get_selected_attribute(
+            name, is_metaclass_owner=False, use_typeshed=False
+        )
+        typeshed_attr = self.get_selected_attribute(
+            name, is_metaclass_owner=False, use_typeshed=True
+        )
+        return runtime_attr, typeshed_attr
 
     def _select_metaclass_attribute(
         self, name: str
-    ) -> tuple[SelectedAttribute | None, SelectedAttribute | None] | None:
+    ) -> tuple[SelectedAttribute | None, SelectedAttribute | None]:
         """Select runtime/typeshed metaclass-MRO symbols before specialization."""
         metaclass = self.get_metaclass()
         match metaclass:
             case TypedValue():
                 metaclass_tobj = metaclass.get_type_object(self._checker)
             case AnyValue():
-                return None
+                return None, None
             case _:
                 assert_never(metaclass)
-        return metaclass_tobj._get_selected_attribute_sources(
-            name, is_metaclass_owner=True
+        runtime_attr = metaclass_tobj.get_selected_attribute(
+            name, is_metaclass_owner=True, use_typeshed=False
         )
+        typeshed_attr = metaclass_tobj.get_selected_attribute(
+            name, is_metaclass_owner=True, use_typeshed=True
+        )
+        return runtime_attr, typeshed_attr
 
     def _specialize_selected_attribute_pair(
         self,
@@ -1532,6 +1541,26 @@ class TypeObject:
                 False
             ), "At least one of runtime_selected or typeshed_selected must be non-None"
 
+    def get_selected_attribute(
+        self, name: str, *, is_metaclass_owner: bool, use_typeshed: bool
+    ) -> SelectedAttribute | None:
+        for i, entry in enumerate(self.get_mro()):
+            if entry.tobj is None:
+                continue
+            if use_typeshed:
+                symbol = self._checker.ts_finder.get_direct_symbol(entry.tobj.typ, name)
+            else:
+                symbol = entry.tobj.get_declared_symbols().get(name)
+            if symbol is None:
+                continue
+            return SelectedAttribute(
+                mro_index=i,
+                owner=entry.tobj,
+                symbol=symbol,
+                is_metaclass_owner=is_metaclass_owner,
+            )
+        return None
+
     def _get_selected_attribute_sources(
         self, name: str, *, is_metaclass_owner: bool
     ) -> tuple[SelectedAttribute | None, SelectedAttribute | None] | None:
@@ -1539,6 +1568,7 @@ class TypeObject:
         if runtime_symbol is not None or typeshed_symbol is not None:
             runtime_selected = (
                 SelectedAttribute(
+                    mro_index=0,
                     owner=self,
                     symbol=runtime_symbol,
                     is_metaclass_owner=is_metaclass_owner,
@@ -1548,6 +1578,7 @@ class TypeObject:
             )
             typeshed_selected = (
                 SelectedAttribute(
+                    mro_index=0,
                     owner=self,
                     symbol=typeshed_symbol,
                     is_metaclass_owner=is_metaclass_owner,
@@ -1569,12 +1600,13 @@ class TypeObject:
                     owner, inherited_symbol = inherited_typeshed
                     if _symbol_contains_typevars(inherited_symbol):
                         typeshed_selected = SelectedAttribute(
+                            mro_index=0,
                             owner=owner,
                             symbol=inherited_symbol,
                             is_metaclass_owner=is_metaclass_owner,
                         )
             return runtime_selected, typeshed_selected
-        for entry in self.get_mro():
+        for i, entry in enumerate(self.get_mro()):
             if entry.tobj is None:
                 return None
             runtime_symbol, typeshed_symbol = (
@@ -1584,6 +1616,7 @@ class TypeObject:
                 return (
                     (
                         SelectedAttribute(
+                            mro_index=i,
                             owner=entry.tobj,
                             symbol=runtime_symbol,
                             is_metaclass_owner=is_metaclass_owner,
@@ -1593,6 +1626,7 @@ class TypeObject:
                     ),
                     (
                         SelectedAttribute(
+                            mro_index=i,
                             owner=entry.tobj,
                             symbol=typeshed_symbol,
                             is_metaclass_owner=is_metaclass_owner,
@@ -2658,12 +2692,10 @@ def _specialize_selected_attribute(
         receiver_value=receiver_value,
     )
     return SpecializedAttribute(
-        owner=selected.owner,
-        symbol=selected.symbol,
+        selected=selected,
         annotation=specialized_symbol.annotation,
         initializer=specialized_symbol.initializer,
         property_info=specialized_symbol.property_info,
-        is_metaclass_owner=selected.is_metaclass_owner,
     )
 
 
@@ -2859,6 +2891,13 @@ def _make_merged_attribute(
 ) -> MergedAttribute | None:
     if runtime_attribute is None and typeshed_attribute is None:
         return None
+    if (
+        runtime_attribute is not None
+        and typeshed_attribute is not None
+        and typeshed_attribute.selected.mro_index > runtime_attribute.selected.mro_index
+        and isinstance(runtime_attribute.selected.owner.typ, str)
+    ):
+        typeshed_attribute = None
     runtime_symbol = (
         runtime_attribute.as_symbol() if runtime_attribute is not None else None
     )
@@ -2866,36 +2905,23 @@ def _make_merged_attribute(
         typeshed_attribute.as_symbol() if typeshed_attribute is not None else None
     )
     owner = (
-        runtime_attribute.owner
+        runtime_attribute.selected.owner
         if runtime_attribute is not None
-        else not_none(typeshed_attribute).owner
+        else not_none(typeshed_attribute).selected.owner
     )
     is_metaclass_owner = (
-        runtime_attribute.is_metaclass_owner
+        runtime_attribute.selected.is_metaclass_owner
         if runtime_attribute is not None
-        else not_none(typeshed_attribute).is_metaclass_owner
+        else not_none(typeshed_attribute).selected.is_metaclass_owner
     )
     if runtime_attribute is not None and typeshed_attribute is not None:
         assert (
-            runtime_attribute.is_metaclass_owner
-            == typeshed_attribute.is_metaclass_owner
+            runtime_attribute.selected.is_metaclass_owner
+            == typeshed_attribute.selected.is_metaclass_owner
         )
-    property_info = (
-        _merge_runtime_and_typeshed_property_info(
-            runtime_attribute.property_info if runtime_attribute is not None else None,
-            typeshed_attribute,
-        )
-        if (
-            (
-                runtime_attribute is not None
-                and runtime_attribute.property_info is not None
-            )
-            or (
-                typeshed_attribute is not None
-                and typeshed_attribute.property_info is not None
-            )
-        )
-        else None
+    property_info = _merge_runtime_and_typeshed_property_info(
+        runtime_attribute.property_info if runtime_attribute is not None else None,
+        typeshed_attribute,
     )
     is_method = (
         runtime_symbol.is_method
