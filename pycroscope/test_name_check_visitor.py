@@ -3267,9 +3267,9 @@ class TestClassAttributeChecker(TestNameCheckVisitorBase):
 
     @assert_passes(run_in_both_module_modes=True)
     def test_bound_typeguard_methods_preserve_narrowing(self):
-        from typing import Self, TypeGuard
+        from typing import TypeGuard
 
-        from typing_extensions import assert_type
+        from typing_extensions import Self, assert_type
 
         class A:
             def tg(self, value: object) -> TypeGuard[int]:
