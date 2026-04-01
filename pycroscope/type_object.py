@@ -1525,8 +1525,7 @@ class TypeObject:
                 )
                 if inherited_typeshed is not None:
                     owner, inherited_symbol = inherited_typeshed
-                    if _symbol_contains_typevars(inherited_symbol):
-                        return owner, runtime_symbol, inherited_symbol
+                    return owner, runtime_symbol, inherited_symbol
             return self, runtime_symbol, typeshed_symbol
         for entry in self.get_mro():
             if entry.tobj is None:
@@ -2055,13 +2054,6 @@ def _merge_symbol_type_information(
 
 def _runtime_method_needs_inherited_typeshed_symbol(symbol: ClassSymbol) -> bool:
     return symbol.is_method and symbol.annotation is None
-
-
-def _symbol_contains_typevars(symbol: ClassSymbol) -> bool:
-    effective_type = symbol.get_effective_type()
-    return any(
-        isinstance(subval, TypeVarValue) for subval in effective_type.walk_values()
-    )
 
 
 def _merge_runtime_and_typeshed_property_info(
