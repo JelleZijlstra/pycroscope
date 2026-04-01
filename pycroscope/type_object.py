@@ -81,6 +81,7 @@ from .value import (
     ParamSpecParam,
     PredicateValue,
     PropertyInfo,
+    Qualifier,
     SelfT,
     SelfTVV,
     SequenceValue,
@@ -2164,7 +2165,8 @@ def _symbol_contains_typevars(symbol: ClassSymbol) -> bool:
 
 
 def _merge_runtime_and_typeshed_property_info(
-    runtime_info: PropertyInfo | None, typeshed_attribute: SpecializedAttribute | None
+    runtime_info: PropertyInfo | None,
+    typeshed_attribute: SpecializedAttribute | ClassSymbol | None,
 ) -> PropertyInfo | None:
     if typeshed_attribute is None:
         return runtime_info
@@ -2182,31 +2184,35 @@ def _merge_runtime_and_typeshed_property_info(
                 runtime_info.fdel, typeshed_attribute.property_info.fdel
             ),
         )
-    if typeshed_attribute.initializer is None:
+    if typeshed_attribute.annotation is None:
         return runtime_info
     # Else, we try to use typeshed's annotation to get more precise getter/setter types
     # This helps with cases like type.__doc__
     fget = CallableValue(
-        Signature(
-            parameters=[SigParameter(name="self", kind=ParameterKind.POSITIONAL_ONLY)],
-            return_annotation=typeshed_attribute.initializer,
+        Signature.make(
+            [SigParameter(name="self", kind=ParameterKind.POSITIONAL_ONLY)],
+            typeshed_attribute.annotation,
         )
     )
     fget_symbol = ClassSymbol(initializer=fget, is_method=True)
-    if typeshed_attribute.symbol.is_readonly:
+    if Qualifier.ReadOnly in (
+        typeshed_attribute.selected.symbol.qualifiers
+        if isinstance(typeshed_attribute, SpecializedAttribute)
+        else typeshed_attribute.qualifiers
+    ):
         fset_symbol = None
     else:
         fset = CallableValue(
-            Signature(
-                parameters=[
+            Signature.make(
+                [
                     SigParameter(name="self", kind=ParameterKind.POSITIONAL_ONLY),
                     SigParameter(
                         name="value",
                         kind=ParameterKind.POSITIONAL_ONLY,
-                        annotation=typeshed_attribute.initializer,
+                        annotation=typeshed_attribute.annotation,
                     ),
                 ],
-                return_annotation=KnownValue(None),
+                KnownValue(None),
             )
         )
         fset_symbol = ClassSymbol(initializer=fset, is_method=True)
