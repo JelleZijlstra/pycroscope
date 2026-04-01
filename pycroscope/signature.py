@@ -965,7 +965,9 @@ class Signature:
     ) -> VarnameWithOrigin | None:
         # This might miss some cases where we should use the second argument instead. We'll
         # have to come up with additional heuristics if that comes up.
-        if self._is_method_like_typeguard_callable():
+        if self.bound_receiver_param_name is not None:
+            index = 0
+        elif self._is_method_like_typeguard_callable():
             index = 1
         else:
             index = 0
