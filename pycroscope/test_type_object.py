@@ -977,8 +977,16 @@ def test_get_attribute_uses_typeshed_types_for_type_descriptors() -> None:
     checker = Checker()
     type_object = checker.make_type_object(int)
 
+    doc_attr = type_object.get_attribute(
+        "__doc__", AttributePolicy(on_class=True, receiver_value=KnownValue(int))
+    )
+    assert doc_attr is not None
+    assert doc_attr.is_metaclass_owner
+    assert doc_attr.is_property
+    assert doc_attr.value == TypedValue(str)
+
     name_attr = type_object.get_attribute(
-        "__name__", AttributePolicy(on_class=True, receiver_value=TypedValue(int))
+        "__name__", AttributePolicy(on_class=True, receiver_value=KnownValue(int))
     )
     assert name_attr is not None
     assert name_attr.is_metaclass_owner

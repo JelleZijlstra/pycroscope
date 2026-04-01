@@ -21,7 +21,6 @@ from types import GeneratorType, MethodDescriptorType, ModuleType
 from typing import Any, Generic, TypeVar
 
 import typeshed_client
-from typing_extensions import Protocol
 
 from .analysis_lib import is_positional_only_arg_name
 from .annotations import (
@@ -416,8 +415,6 @@ class TypeshedFinder:
                     return [
                         GenericValue(Collection, (TypeVarValue(TypeVarParam(T_co)),))
                     ]
-                elif fq_name == "contextlib.AbstractContextManager":
-                    return [GenericValue(Protocol, (TypeVarValue(TypeVarParam(T_co)),))]
                 elif fq_name in (
                     "typing.Callable",
                     "collections.abc.Callable",

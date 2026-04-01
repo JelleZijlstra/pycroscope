@@ -572,13 +572,19 @@ class Checker:
         cached = self.type_object_cache.get(canonical_key)
         if cached is None and typ != canonical_key:
             cached = self.type_object_cache.get(typ)
-        if cached is None and isinstance(canonical_key, type):
+        if cached is None and isinstance(typ, str) and isinstance(canonical_key, type):
             cached = self.type_object_cache.get(
                 runtime_type_generic_alias(canonical_key)
             )
-        if cached is None and isinstance(typ, type):
-            cached = self.type_object_cache.get(runtime_type_generic_alias(typ))
         return cached
+
+    def _cache_runtime_type_object_alias(
+        self, typ: type, type_object: TypeObject
+    ) -> None:
+        alias = runtime_type_generic_alias(typ)
+        existing = self.type_object_cache.get(alias)
+        if existing is None or existing.typ is typ:
+            self.type_object_cache[alias] = type_object
 
     def make_type_object(self, typ: type | str) -> TypeObject:
         try:
@@ -591,19 +597,17 @@ class Checker:
             self.type_object_cache[canonical_key] = cached
             self.type_object_cache[typ] = cached
             if isinstance(canonical_key, type):
-                self.type_object_cache[runtime_type_generic_alias(canonical_key)] = (
-                    cached
-                )
+                self._cache_runtime_type_object_alias(canonical_key, cached)
             if isinstance(typ, type):
-                self.type_object_cache[runtime_type_generic_alias(typ)] = cached
+                self._cache_runtime_type_object_alias(typ, cached)
         elif isinstance(canonical_key, type) and cached.typ is not canonical_key:
             cached.typ = canonical_key
         self.type_object_cache[canonical_key] = cached
         self.type_object_cache[typ] = cached
         if isinstance(canonical_key, type):
-            self.type_object_cache[runtime_type_generic_alias(canonical_key)] = cached
+            self._cache_runtime_type_object_alias(canonical_key, cached)
         if isinstance(typ, type):
-            self.type_object_cache[runtime_type_generic_alias(typ)] = cached
+            self._cache_runtime_type_object_alias(typ, cached)
         return cached
 
     def get_type_object_for_value(
@@ -687,20 +691,32 @@ class Checker:
         if isinstance(class_type, TypedDictValue):
             return
         typ = class_type.typ
-        for key in self._iter_generic_override_keys(typ):
-            if key in self.synthetic_classes:
-                assert self.synthetic_classes[key] is synthetic_class, (
-                    f"Conflicting synthetic classes for key {key} "
-                    f"(from {synthetic_class.class_type}):"
-                    f" {self.synthetic_classes[key]} vs {synthetic_class}"
-                )
-            self.synthetic_classes[key] = synthetic_class
+        if typ in self.synthetic_classes:
+            assert self.synthetic_classes[typ] is synthetic_class, (
+                f"Conflicting synthetic classes for key {typ} "
+                f"(from {synthetic_class.class_type}):"
+                f" {self.synthetic_classes[typ]} vs {synthetic_class}"
+            )
+        self.synthetic_classes[typ] = synthetic_class
+        if isinstance(typ, type):
+            alias = runtime_type_generic_alias(typ)
+            existing = self.synthetic_classes.get(alias)
+            if existing is None or existing.class_type.typ is typ:
+                self.synthetic_classes[alias] = synthetic_class
 
     def get_synthetic_class(self, typ: type | str) -> SyntheticClassObjectValue | None:
-        for key in self._iter_generic_override_keys(typ):
-            synthetic_class = self.synthetic_classes.get(key)
-            if synthetic_class is not None:
-                return synthetic_class
+        synthetic_class = self.synthetic_classes.get(typ)
+        if synthetic_class is not None:
+            return synthetic_class
+        if isinstance(typ, str):
+            try:
+                canonical_key = self._canonical_type_object_key(typ)
+            except Exception:
+                return None
+            if isinstance(canonical_key, type):
+                return self.synthetic_classes.get(
+                    runtime_type_generic_alias(canonical_key)
+                )
         return None
 
     def make_synthetic_class(self, typ: type | str) -> SyntheticClassObjectValue:
@@ -714,6 +730,31 @@ class Checker:
         synthetic_class = SyntheticClassObjectValue(name, TypedValue(typ))
         self.register_synthetic_class(synthetic_class)
         return synthetic_class
+
+    def rekey_synthetic_class(
+        self, synthetic_class: SyntheticClassObjectValue, old_typ: type | str
+    ) -> None:
+        """Register an existing synthetic class under its updated runtime type.
+
+        This is a compatibility helper for flows that currently mutate a
+        SyntheticClassObjectValue in place from one class key to another. New code
+        should prefer creating the right synthetic class up front.
+        """
+        self.register_synthetic_class(synthetic_class)
+        class_type = synthetic_class.class_type
+        if isinstance(class_type, TypedDictValue):
+            return
+        new_typ = class_type.typ
+        if old_typ == new_typ:
+            return
+        old_type_object = self.type_object_cache.get(old_typ)
+        if old_type_object is None:
+            return
+        if old_type_object.typ is not new_typ:
+            old_type_object.typ = new_typ
+        self.type_object_cache[new_typ] = old_type_object
+        if isinstance(new_typ, type):
+            self._cache_runtime_type_object_alias(new_typ, old_type_object)
 
     def register_synthetic_type_bases(
         self,

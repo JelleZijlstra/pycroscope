@@ -5166,7 +5166,12 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         if runtime_enum is None:
             return
 
+        old_class_key = synthetic_class.class_type.typ
+        # TODO: Stop mutating the synthetic class in place here. Instead, build the
+        # final runtime-backed synthetic class directly so checker caches do not need
+        # to be rekeyed after the fact.
         object.__setattr__(synthetic_class, "class_type", TypedValue(runtime_enum))
+        self.checker.rekey_synthetic_class(synthetic_class, old_class_key)
         for member_name in member_order:
             try:
                 initializer = KnownValue(getattr(runtime_enum, member_name))
@@ -15597,8 +15602,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     def _maybe_convert_local_namedtuple_class(
         self, callee: Value, return_value: Value, node: ast.AST | None
     ) -> Value:
-        if self.scopes.scope_type() == ScopeType.module_scope:
-            return return_value
         if not self._is_namedtuple_factory(callee):
             return return_value
         if not isinstance(return_value, KnownValue):
@@ -15613,6 +15616,8 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 f"{self._get_synthetic_class_fq_name(self.current_statement)}"
                 f".__namedtuple_base_{node.lineno}_{node.col_offset}"
             )
+        elif self.scopes.scope_type() == ScopeType.module_scope:
+            return return_value
         else:
             synthetic_name = self._get_synthetic_class_fq_name_from_name(
                 runtime_class.__name__
