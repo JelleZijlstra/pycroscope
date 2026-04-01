@@ -4799,9 +4799,9 @@ def _is_property_initializer(value: Value) -> bool:
     value = replace_fallback(value)
     return (
         isinstance(value, KnownValue)
-        and isinstance(value.val, property)
+        and isinstance(value.val, (property, types.GetSetDescriptorType))
         or isinstance(value, TypedValue)
-        and value.typ is property
+        and (value.typ is property or value.typ is types.GetSetDescriptorType)
     )
 
 

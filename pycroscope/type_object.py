@@ -2130,17 +2130,53 @@ def _symbol_contains_typevars(symbol: ClassSymbol) -> bool:
 
 
 def _merge_runtime_and_typeshed_property_info(
-    runtime_info: PropertyInfo | None, typeshed_info: PropertyInfo | None
+    runtime_info: PropertyInfo | None, typeshed_attribute: SpecializedAttribute | None
 ) -> PropertyInfo | None:
-    if runtime_info is None:
-        return typeshed_info
-    if typeshed_info is None:
+    if typeshed_attribute is None:
         return runtime_info
-    return PropertyInfo(
-        fget=_merge_runtime_and_typeshed_symbol(runtime_info.fget, typeshed_info.fget),
-        fset=_merge_runtime_and_typeshed_symbol(runtime_info.fset, typeshed_info.fset),
-        fdel=_merge_runtime_and_typeshed_symbol(runtime_info.fdel, typeshed_info.fdel),
+    if runtime_info is None:
+        return typeshed_attribute.property_info
+    if typeshed_attribute.property_info is not None:
+        return PropertyInfo(
+            fget=_merge_runtime_and_typeshed_symbol(
+                runtime_info.fget, typeshed_attribute.property_info.fget
+            ),
+            fset=_merge_runtime_and_typeshed_symbol(
+                runtime_info.fset, typeshed_attribute.property_info.fset
+            ),
+            fdel=_merge_runtime_and_typeshed_symbol(
+                runtime_info.fdel, typeshed_attribute.property_info.fdel
+            ),
+        )
+    if typeshed_attribute.initializer is None:
+        return runtime_info
+    # Else, we try to use typeshed's annotation to get more precise getter/setter types
+    # This helps with cases like type.__doc__
+    fget = CallableValue(
+        Signature(
+            parameters=[SigParameter(name="self", kind=ParameterKind.POSITIONAL_ONLY)],
+            return_annotation=typeshed_attribute.initializer,
+        )
     )
+    fget_symbol = ClassSymbol(initializer=fget, is_method=True)
+    if typeshed_attribute.symbol.is_readonly:
+        fset_symbol = None
+    else:
+        fset = CallableValue(
+            Signature(
+                parameters=[
+                    SigParameter(name="self", kind=ParameterKind.POSITIONAL_ONLY),
+                    SigParameter(
+                        name="value",
+                        kind=ParameterKind.POSITIONAL_ONLY,
+                        annotation=typeshed_attribute.initializer,
+                    ),
+                ],
+                return_annotation=KnownValue(None),
+            )
+        )
+        fset_symbol = ClassSymbol(initializer=fset, is_method=True)
+    return PropertyInfo(fget=fget_symbol, fset=fset_symbol, fdel=runtime_info.fdel)
 
 
 def _merge_runtime_and_typeshed_symbol(
@@ -2150,15 +2186,8 @@ def _merge_runtime_and_typeshed_symbol(
         return typeshed_symbol
     if typeshed_symbol is None:
         return runtime_symbol
-    property_info = (
-        _merge_runtime_and_typeshed_property_info(
-            runtime_symbol.property_info, typeshed_symbol.property_info
-        )
-        if (
-            runtime_symbol.property_info is not None
-            or typeshed_symbol.property_info is not None
-        )
-        else None
+    property_info = _merge_runtime_and_typeshed_property_info(
+        runtime_symbol.property_info, typeshed_symbol
     )
     return ClassSymbol(
         annotation=_merge_symbol_type_information(
@@ -2854,11 +2883,7 @@ def _make_merged_attribute(
     property_info = (
         _merge_runtime_and_typeshed_property_info(
             runtime_attribute.property_info if runtime_attribute is not None else None,
-            (
-                typeshed_attribute.property_info
-                if typeshed_attribute is not None
-                else None
-            ),
+            typeshed_attribute,
         )
         if (
             (

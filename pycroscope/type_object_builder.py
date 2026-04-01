@@ -2,6 +2,7 @@
 
 import inspect
 import sys
+import types
 from collections.abc import Iterator, Mapping
 from dataclasses import MISSING, replace
 from typing import get_args, get_origin
@@ -19,7 +20,7 @@ from .annotations import (
 )
 from .arg_spec import ArgSpecCache
 from .checker import Checker
-from .safe import is_namedtuple_class, safe_getattr
+from .safe import is_namedtuple_class, safe_getattr, safe_isinstance
 from .type_object import DataclassFieldRecord
 from .value import (
     AnySource,
@@ -259,7 +260,6 @@ def _add_runtime_declared_symbols(typ: type, symbols: dict[str, ClassSymbol]) ->
 def _symbol_from_runtime_member(
     raw_value: object, owner: type, existing: ClassSymbol | None = None
 ) -> ClassSymbol:
-    is_property = isinstance(raw_value, property)
     function_decorators = set()
     maybe_func = raw_value
     if isinstance(raw_value, staticmethod):
@@ -281,18 +281,11 @@ def _symbol_from_runtime_member(
         annotation=existing.annotation if existing is not None else None,
         qualifiers=frozenset(qualifiers),
         is_instance_only=(existing.is_instance_only if existing is not None else False),
-        is_method=_is_runtime_method_member(
-            raw_value,
-            is_property=is_property,
-            is_staticmethod=isinstance(raw_value, staticmethod),
-            is_classmethod=isinstance(raw_value, classmethod),
-        )
+        is_method=_is_runtime_method_member(raw_value)
         and (existing is None or existing.annotation is None),
         deprecation_message=_runtime_deprecation_message(raw_value),
         function_decorators=frozenset(function_decorators),
-        property_info=(
-            _runtime_property_info(raw_value, owner) if is_property else None
-        ),
+        property_info=(_runtime_property_info(raw_value, owner)),
         initializer=_runtime_member_value(raw_value, owner),
         dataclass_field=(existing.dataclass_field if existing is not None else None),
     )
@@ -324,12 +317,10 @@ def _runtime_member_value(raw_value: object, owner: type) -> Value:
     return KnownValueWithTypeVars(raw_value, typevars)
 
 
-def _is_runtime_method_member(
-    raw_value: object, *, is_property: bool, is_staticmethod: bool, is_classmethod: bool
-) -> bool:
-    if not is_property and (is_staticmethod or is_classmethod):
-        return True
-    if inspect.isfunction(raw_value):
+def _is_runtime_method_member(raw_value: object) -> bool:
+    if inspect.isfunction(raw_value) or safe_isinstance(
+        raw_value, (staticmethod, classmethod)
+    ):
         return True
     has_objclass = safe_getattr(raw_value, "__objclass__", None) is not None
     if inspect.ismethoddescriptor(raw_value) and (
@@ -355,7 +346,16 @@ def _is_runtime_member_final(raw_value: object) -> bool:
     return False
 
 
-def _runtime_property_info(raw_value: property, owner: type) -> PropertyInfo:
+UNKNOWN_SYMBOL = ClassSymbol(initializer=AnyValue(AnySource.unannotated))
+
+
+def _runtime_property_info(raw_value: object, owner: type) -> PropertyInfo | None:
+    if isinstance(raw_value, types.GetSetDescriptorType):
+        return PropertyInfo(
+            fget=UNKNOWN_SYMBOL, fset=UNKNOWN_SYMBOL, fdel=UNKNOWN_SYMBOL
+        )
+    if not isinstance(raw_value, property):
+        return None
     if raw_value.fget is None:
         fget = None
     else:
