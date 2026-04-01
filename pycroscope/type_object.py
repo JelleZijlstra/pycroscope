@@ -19,6 +19,7 @@ from collections.abc import (
     Sequence,
 )
 from dataclasses import dataclass, replace
+from types import FunctionType
 from typing import TYPE_CHECKING, Literal, get_origin
 from unittest import mock
 
@@ -2891,17 +2892,36 @@ def _classmethod_receiver_value_from_type_value(
     return SubclassValue(receiver_value)
 
 
+def _is_informative_runtime_attribute(attribute: SpecializedAttribute) -> bool:
+    if isinstance(attribute.selected.owner.typ, str):
+        # for synthetic classes, assume all symbols were explicitly created and are useful
+        return True
+    if attribute.selected.symbol.annotation is not None:
+        return True  # it was annotated
+    if isinstance(attribute.selected.symbol.initializer, KnownValue):
+        val = attribute.selected.symbol.initializer.val
+        if isinstance(val, (staticmethod, classmethod)):
+            val = val.__func__
+        if isinstance(val, FunctionType) and safe_getattr(val, "__annotations__", None):
+            return True  # it has annotations, so it is likely useful
+
+    return False
+
+
 def _make_merged_attribute(
     runtime_attribute: SpecializedAttribute | None,
     typeshed_attribute: SpecializedAttribute | None,
 ) -> MergedAttribute | None:
     if runtime_attribute is None and typeshed_attribute is None:
         return None
+
+    # We ignore the typeshed attribute if it's later in the MRO
+    # and we have a useful runtime attribute
     if (
         runtime_attribute is not None
         and typeshed_attribute is not None
         and typeshed_attribute.selected.mro_index > runtime_attribute.selected.mro_index
-        and isinstance(runtime_attribute.selected.owner.typ, str)
+        and _is_informative_runtime_attribute(runtime_attribute)
     ):
         typeshed_attribute = None
     runtime_symbol = (

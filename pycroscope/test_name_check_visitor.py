@@ -2452,7 +2452,6 @@ class TestClassAttributeChecker(TestNameCheckVisitorBase):
                 return Query()
 
             def children(self) -> None:
-                reveal_type(Model.parent)
                 Model.select_valid().filter(Model.parent == self)
 
     def test_transformed_generic_descriptor_preserves_class_access_in_both_modes(self):
