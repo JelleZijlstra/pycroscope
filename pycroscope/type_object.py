@@ -1518,6 +1518,19 @@ class TypeObject:
     def _get_inherited_typeshed_symbol_with_owner(
         self, name: str
     ) -> tuple["TypeObject", ClassSymbol] | None:
+        if isinstance(self.typ, type):
+            try:
+                runtime_mro = type.mro(self.typ)
+            except Exception:
+                return None
+            for base_typ in runtime_mro[1:]:
+                entry_tobj = self._checker.make_type_object(base_typ)
+                _, typeshed_symbol = entry_tobj._get_direct_lookup_symbol_sources(name)
+                if typeshed_symbol is not None:
+                    return entry_tobj, typeshed_symbol
+            return None
+        if self._mro is None:
+            return None
         for entry in self.get_mro():
             if entry.tobj is None:
                 return None
