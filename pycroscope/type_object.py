@@ -1346,6 +1346,7 @@ class TypeObject:
         on_class: bool,
         is_special_lookup: bool = False,
         receiver_value: Value | None = None,
+        visitor: "pycroscope.name_check_visitor.NameCheckVisitor | None" = None,
         property_type_from_argspec: Callable[[property], Value] | None = None,
     ) -> TypeObjectAttribute | None:
         """Look up an attribute in three phases.
@@ -1432,7 +1433,7 @@ class TypeObject:
             ctx,
             on_class=on_class,
             receiver_value=receiver_value,
-            property_type_from_argspec=property_type_from_argspec,
+            visitor=visitor,
         )
 
     def _choose_merged_attribute(
@@ -2223,14 +2224,21 @@ def _merge_property_info(
     if existing is None:
         return new
     return PropertyInfo(
-        (
-            existing.getter_type
-            if _prefer_existing_symbol_type(existing.getter_type, new.getter_type)
-            else new.getter_type
+        fget=(
+            existing.fget
+            if new.fget is None
+            else merge_declared_symbol(existing.fget, new.fget)
         ),
-        setter_type=_merge_symbol_initializer(existing.setter_type, new.setter_type),
-        getter_deprecation=new.getter_deprecation or existing.getter_deprecation,
-        setter_deprecation=new.setter_deprecation or existing.setter_deprecation,
+        fset=(
+            existing.fset
+            if new.fset is None
+            else merge_declared_symbol(existing.fset, new.fset)
+        ),
+        fdel=(
+            existing.fdel
+            if new.fdel is None
+            else merge_declared_symbol(existing.fdel, new.fdel)
+        ),
     )
 
 
@@ -2597,8 +2605,7 @@ def _typevar_map_from_generic_args(
 
 
 def _typevar_map_from_type_value(
-    receiver_value: TypedValue | TypeVarValue | GenericValue,
-    type_params: Sequence[TypeParam],
+    receiver_value: TypedValue | TypeVarValue, type_params: Sequence[TypeParam]
 ) -> TypeVarMap:
     _, generic_args = _class_key_and_generic_args_from_type_value(receiver_value)
     return _typevar_map_from_generic_args(type_params, generic_args)
@@ -2610,29 +2617,12 @@ def _specialize_symbol_for_owner(
     symbol: ClassSymbol,
     ctx: CanAssignContext,
     *,
-    receiver_value: TypedValue | TypeVarValue | GenericValue | None = None,
+    receiver_value: TypedValue | TypeVarValue | None = None,
 ) -> ClassSymbol:
     substitutions = _get_symbol_owner_substitutions_from_type_objects(
         receiver_tobj, owner_tobj, ctx, receiver_value=receiver_value
     )
-    return replace(
-        symbol,
-        annotation=(
-            _substitute_symbol_value(symbol.annotation, substitutions)
-            if symbol.annotation is not None
-            else None
-        ),
-        property_info=(
-            symbol.property_info.substitute_typevars(substitutions)
-            if symbol.property_info is not None
-            else None
-        ),
-        initializer=(
-            _substitute_symbol_value(symbol.initializer, substitutions)
-            if symbol.initializer is not None
-            else None
-        ),
-    )
+    return symbol.substitute_typevars(substitutions)
 
 
 def _specialize_selected_attribute(
@@ -2640,7 +2630,7 @@ def _specialize_selected_attribute(
     selected: SelectedAttribute,
     ctx: CanAssignContext,
     *,
-    receiver_value: TypedValue | TypeVarValue | GenericValue | None = None,
+    receiver_value: TypedValue | TypeVarValue | None = None,
 ) -> SpecializedAttribute:
     specialized_symbol = _specialize_symbol_for_owner(
         receiver_tobj,
@@ -3000,7 +2990,7 @@ def _resolve_merged_attribute_access(
     *,
     on_class: bool,
     receiver_value: Value | None,
-    property_type_from_argspec: Callable[[property], Value] | None = None,
+    visitor: "pycroscope.name_check_visitor.NameCheckVisitor | None" = None,
 ) -> ResolvedAttribute:
     """Resolve a merged member to the final value seen by this access."""
     resolved_descriptor = _resolve_descriptor_access(
@@ -3009,7 +2999,7 @@ def _resolve_merged_attribute_access(
         ctx,
         on_class=on_class,
         receiver_value=receiver_value,
-        property_type_from_argspec=property_type_from_argspec,
+        visitor=visitor,
     )
     if resolved_descriptor is None:
         resolved_descriptor = _make_resolved_attribute(
@@ -3033,7 +3023,7 @@ def _resolve_descriptor_access(
     *,
     on_class: bool,
     receiver_value: Value | None,
-    property_type_from_argspec: Callable[[property], Value] | None = None,
+    visitor: "pycroscope.name_check_visitor.NameCheckVisitor | None",
 ) -> ResolvedAttribute | None:
     """Apply descriptor behavior, including any receiver binding, to a member."""
     effective_value = _merged_attribute_effective_value(merged_attribute)
@@ -3042,20 +3032,30 @@ def _resolve_descriptor_access(
         not on_class or merged_attribute.is_metaclass_owner
     )
     if merged_attribute.property_info is not None:
-        property_has_setter = merged_attribute.property_info.setter_type is not None
+        property_has_setter = merged_attribute.property_info.fset is not None
         if descriptor_like_instance_access:
-            property_value = _resolve_runtime_property_getter_value(
-                merged_attribute,
-                receiver_value=receiver_value,
-                property_type_from_argspec=property_type_from_argspec,
-            )
-            if property_value is None:
-                property_value = merged_attribute.property_info.getter_type
-            if receiver_value is not None:
-                property_value = set_self(property_value, receiver_value)
+            if receiver_value is None:
+                receiver_value = TypedValue(receiver_tobj.typ)
+            fget = merged_attribute.property_info.fget.initializer
+            assert fget is not None
+            if visitor is None:
+                # Note this path means errors don't get shown!
+                value = ctx.get_call_result(fget, (receiver_value,))
+            else:
+                value = visitor.get_call_result(fget, (receiver_value,))
+                print("CALL", visitor, fget, receiver_value, value)
+            # property_value = _resolve_runtime_property_getter_value(
+            #     merged_attribute,
+            #     receiver_value=receiver_value,
+            #     property_type_from_argspec=property_type_from_argspec,
+            # )
+            # if property_value is None:
+            #     property_value = merged_attribute.property_info.getter_type
+            # if receiver_value is not None:
+            #     property_value = set_self(property_value, receiver_value)
             return _make_resolved_attribute(
                 merged_attribute,
-                value=property_value,
+                value=value,
                 is_property=True,
                 property_has_setter=property_has_setter,
             )
@@ -3628,7 +3628,7 @@ def _get_symbol_owner_substitutions_from_type_objects(
     owner_tobj: TypeObject,
     ctx: CanAssignContext,
     *,
-    receiver_value: TypedValue | TypeVarValue | GenericValue | None = None,
+    receiver_value: TypedValue | TypeVarValue | None = None,
 ) -> TypeVarMap:
     receiver_substitutions = TypeVarMap()
     if receiver_value is not None:

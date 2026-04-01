@@ -41,6 +41,7 @@ from .value import (
     CallableValue,
     CanAssignContext,
     CanAssignError,
+    ClassSymbol,
     DeprecatedExtension,
     FunctionDecorator,
     GenericValue,
@@ -197,6 +198,15 @@ class FunctionInfo:
             return AnyValue(AnySource.error)
         return KnownValue(None)
 
+    def get_symbol(self, value: Value, deprecation_message: str) -> ClassSymbol:
+        return ClassSymbol(
+            initializer=value,
+            function_decorators=self.decorator_kinds,
+            is_method=True,
+            deprecation_message=deprecation_message,
+            # TODO: get deprecation_message from the decorators directly
+        )
+
 
 @dataclass
 class FunctionResult:
@@ -224,6 +234,7 @@ class Context(ErrorContext, CanAssignContext, Protocol):
         args: Iterable[Composite],
         *,
         allow_call: bool = False,
+        use_partial_call: bool = False,
     ) -> Value:
         raise NotImplementedError
 
@@ -263,6 +274,13 @@ class SafeDecoratorsForNestedFunctions(PyObjectSequenceOption[object]):
 
     name = "safe_decorators_for_nested_functions"
     default_value = _safe_decorators
+
+
+class PartialCallDecorators(PyObjectSequenceOption[object]):
+    """Decorators that should use partial-call semantics when applied."""
+
+    name = "partial_call_decorators"
+    default_value = [property]
 
 
 def _visit_default(node: ast.AST, ctx: Context) -> Value:
@@ -802,7 +820,16 @@ def compute_value_of_function(
         allow_call = isinstance(
             unapplied, KnownValue
         ) and SafeDecoratorsForNestedFunctions.contains(unapplied.val, ctx.options)
-        val = ctx.check_call(node, decorator, [Composite(val)], allow_call=allow_call)
+        use_partial_call = isinstance(
+            unapplied, KnownValue
+        ) and PartialCallDecorators.contains(unapplied.val, ctx.options)
+        val = ctx.check_call(
+            node,
+            decorator,
+            [Composite(val)],
+            allow_call=allow_call,
+            use_partial_call=use_partial_call,
+        )
     return val
 
 

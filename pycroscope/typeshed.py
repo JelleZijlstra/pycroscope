@@ -18,7 +18,7 @@ from enum import EnumMeta
 from functools import lru_cache
 from pathlib import Path
 from types import GeneratorType, MethodDescriptorType, ModuleType
-from typing import Any, Generic, TypeVar, cast
+from typing import Any, Generic, TypeVar
 
 import typeshed_client
 from typing_extensions import Protocol
@@ -87,7 +87,6 @@ from .value import (
     replace_fallback,
     type_param_to_value,
     unannotate_value,
-    unite_values,
 )
 
 PROPERTY_LIKE = {KnownValue(property), KnownValue(types.DynamicClassAttribute)}
@@ -785,20 +784,6 @@ class TypeshedFinder:
         is_property, qualifiers, deprecated = self._analyze_stub_method_decorators(
             node, mod
         )
-        if is_property:
-            getter_type = (
-                self._parse_type(node.returns, mod)
-                if node.returns is not None
-                else AnyValue(AnySource.unannotated)
-            )
-            return ClassSymbol(
-                function_decorators=qualifiers,
-                deprecation_message=deprecated,
-                property_info=PropertyInfo(
-                    getter_type=getter_type, getter_deprecation=deprecated
-                ),
-                initializer=TypedValue(property),
-            )
         sig = self._get_signature_from_func_def(node, None, mod)
         initializer: Value
         if sig is None:
@@ -809,12 +794,20 @@ class TypeshedFinder:
                 initializer = annotate_value(
                     initializer, [DeprecatedExtension(deprecated)]
                 )
-        return ClassSymbol(
+        symbol = ClassSymbol(
             function_decorators=qualifiers,
             is_method=True,
             initializer=initializer,
             deprecation_message=deprecated,
         )
+        if is_property:
+            return ClassSymbol(
+                function_decorators=qualifiers,
+                deprecation_message=deprecated,
+                property_info=PropertyInfo(fget=symbol),
+                initializer=TypedValue(property),
+            )
+        return symbol
 
     def _symbol_from_overloaded_node(
         self, node: typeshed_client.OverloadedName, mod: str
@@ -829,24 +822,6 @@ class TypeshedFinder:
         is_property, qualifiers, deprecated = self._analyze_stub_method_decorators(
             method_nodes[0], mod
         )
-        if is_property:
-            getter_type: Value = AnyValue(AnySource.inference)
-            if all(defn.returns is not None for defn in method_nodes):
-                return_nodes = [cast(ast.expr, defn.returns) for defn in method_nodes]
-                getter_type = unite_values(
-                    *(
-                        self._parse_type(return_node, mod)
-                        for return_node in return_nodes
-                    )
-                )
-            return ClassSymbol(
-                function_decorators=qualifiers,
-                property_info=PropertyInfo(
-                    getter_type=getter_type, getter_deprecation=deprecated
-                ),
-                initializer=TypedValue(property),
-                deprecation_message=deprecated,
-            )
         value = self._get_value_from_child_info(
             node, mod, on_class=False, parent_name="<overload>"
         )
@@ -854,12 +829,20 @@ class TypeshedFinder:
             value, _ = value.unqualify()
         if deprecated is not None:
             value = annotate_value(value, [DeprecatedExtension(deprecated)])
-        return ClassSymbol(
+        symbol = ClassSymbol(
             function_decorators=qualifiers,
             is_method=True,
             initializer=value,
             deprecation_message=deprecated,
         )
+        if is_property:
+            return ClassSymbol(
+                function_decorators=qualifiers,
+                deprecation_message=deprecated,
+                property_info=PropertyInfo(fget=symbol),
+                initializer=TypedValue(property),
+            )
+        return symbol
 
     def _analyze_stub_method_decorators(
         self, node: ast.FunctionDef | ast.AsyncFunctionDef, mod: str

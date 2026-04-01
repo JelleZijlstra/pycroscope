@@ -220,7 +220,8 @@ def _get_type_object_attribute(
         can_assign_ctx,
         on_class=on_class,
         receiver_value=receiver_value,
-        property_type_from_argspec=ctx.get_property_type_from_argspec,
+        # TODO: clean this up
+        visitor=getattr(ctx, "visitor", None),
     )
 
 
@@ -1733,17 +1734,6 @@ def _get_runtime_attribute_from_synthetic_class(
                 descriptor_get_type=_synthetic_descriptor_get_type,
             )
         if direct is not UNINITIALIZED_VALUE:
-            if not on_class and symbol is not None and symbol.property_info is not None:
-                try:
-                    descriptor = inspect.getattr_static(typ, ctx.attr)
-                except AttributeError:
-                    descriptor = None
-                if isinstance(
-                    descriptor, property
-                ) and _should_resolve_runtime_property_from_argspec(
-                    descriptor, symbol.property_info.getter_type
-                ):
-                    return ctx.get_property_type_from_argspec(descriptor)
             direct = _substitute_typevars(typ, generic_args, direct, typ, ctx)
             if on_class:
                 direct = _unwrap_value_from_subclass(direct, ctx)

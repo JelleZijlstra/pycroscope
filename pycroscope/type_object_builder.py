@@ -251,59 +251,50 @@ def _add_runtime_declared_symbols(typ: type, symbols: dict[str, ClassSymbol]) ->
             if name in namedtuple_fields:
                 continue
             existing = symbols.get(name)
-            deprecation_message = _runtime_deprecation_message(raw_value)
-            if (
-                existing is not None
-                and not existing.is_classvar
-                and not existing.is_initvar
-            ):
-                is_property = existing.property_info is not None
-                function_decorators = set(existing.function_decorators)
-                is_method = existing.is_method
-            else:
-                is_property = isinstance(raw_value, property)
-                function_decorators = set()
-                maybe_func = raw_value
-                is_staticmethod = isinstance(raw_value, staticmethod)
-                is_classmethod = isinstance(raw_value, classmethod)
-                if is_staticmethod:
-                    function_decorators.add(FunctionDecorator.staticmethod)
-                    maybe_func = raw_value.__func__
-                if is_classmethod:
-                    function_decorators.add(FunctionDecorator.classmethod)
-                    maybe_func = raw_value.__func__
-                is_method = _is_runtime_method_member(
-                    raw_value,
-                    is_property=is_property,
-                    is_staticmethod=is_staticmethod,
-                    is_classmethod=is_classmethod,
-                )
-                if safe_getattr(maybe_func, "__final__", False):
-                    function_decorators.add(FunctionDecorator.final)
-                if safe_getattr(maybe_func, "__isabstractmethod__", False):
-                    function_decorators.add(FunctionDecorator.abstractmethod)
-                if safe_getattr(maybe_func, "__override__", False):
-                    function_decorators.add(FunctionDecorator.override)
-            qualifiers = set(existing.qualifiers if existing is not None else ())
-            if _is_runtime_member_final(raw_value):
-                qualifiers.add(Qualifier.Final)
-            symbols[name] = ClassSymbol(
-                annotation=existing.annotation if existing is not None else None,
-                qualifiers=frozenset(qualifiers),
-                is_instance_only=(
-                    existing.is_instance_only if existing is not None else False
-                ),
-                is_method=is_method,
-                deprecation_message=deprecation_message,
-                function_decorators=frozenset(function_decorators),
-                property_info=(
-                    _runtime_property_info(raw_value, typ) if is_property else None
-                ),
-                initializer=_runtime_member_value(raw_value, typ),
-                dataclass_field=(
-                    existing.dataclass_field if existing is not None else None
-                ),
+            symbols[name] = _symbol_from_runtime_member(
+                raw_value, typ, existing=existing
             )
+
+
+def _symbol_from_runtime_member(
+    raw_value: object, owner: type, existing: ClassSymbol | None = None
+) -> ClassSymbol:
+    is_property = isinstance(raw_value, property)
+    function_decorators = set()
+    maybe_func = raw_value
+    if isinstance(raw_value, staticmethod):
+        function_decorators.add(FunctionDecorator.staticmethod)
+        maybe_func = raw_value.__func__
+    if isinstance(raw_value, classmethod):
+        function_decorators.add(FunctionDecorator.classmethod)
+        maybe_func = raw_value.__func__
+    if safe_getattr(maybe_func, "__final__", False):
+        function_decorators.add(FunctionDecorator.final)
+    if safe_getattr(maybe_func, "__isabstractmethod__", False):
+        function_decorators.add(FunctionDecorator.abstractmethod)
+    if safe_getattr(maybe_func, "__override__", False):
+        function_decorators.add(FunctionDecorator.override)
+    qualifiers = set(existing.qualifiers if existing is not None else ())
+    if _is_runtime_member_final(raw_value):
+        qualifiers.add(Qualifier.Final)
+    return ClassSymbol(
+        annotation=existing.annotation if existing is not None else None,
+        qualifiers=frozenset(qualifiers),
+        is_instance_only=(existing.is_instance_only if existing is not None else False),
+        is_method=_is_runtime_method_member(
+            raw_value,
+            is_property=is_property,
+            is_staticmethod=isinstance(raw_value, staticmethod),
+            is_classmethod=isinstance(raw_value, classmethod),
+        ),
+        deprecation_message=_runtime_deprecation_message(raw_value),
+        function_decorators=frozenset(function_decorators),
+        property_info=(
+            _runtime_property_info(raw_value, owner) if is_property else None
+        ),
+        initializer=_runtime_member_value(raw_value, owner),
+        dataclass_field=(existing.dataclass_field if existing is not None else None),
+    )
 
 
 def _runtime_member_value(raw_value: object, owner: type) -> Value:
@@ -364,39 +355,20 @@ def _is_runtime_member_final(raw_value: object) -> bool:
 
 
 def _runtime_property_info(raw_value: property, owner: type) -> PropertyInfo:
-    getter_type: Value
     if raw_value.fget is None:
-        getter_type = AnyValue(AnySource.inference)
+        fget = None
     else:
-        getter_annotations = safe_getattr(raw_value.fget, "__annotations__", None)
-        if isinstance(getter_annotations, Mapping) and "return" in getter_annotations:
-            getter_type = _value_from_runtime_annotation(
-                getter_annotations["return"], owner
-            )
-        else:
-            getter_type = AnyValue(AnySource.unannotated)
+        fget = _symbol_from_runtime_member(raw_value.fget, owner)
+    if raw_value.fset is None:
+        fset = None
+    else:
+        fset = _symbol_from_runtime_member(raw_value.fset, owner)
+    if raw_value.fdel is None:
+        fdel = None
+    else:
+        fdel = _symbol_from_runtime_member(raw_value.fdel, owner)
 
-    setter_type: Value | None = None
-    if raw_value.fset is not None:
-        try:
-            parameters = list(inspect.signature(raw_value.fset).parameters.values())
-        except Exception:
-            setter_type = AnyValue(AnySource.inference)
-        else:
-            value_param = parameters[1] if len(parameters) >= 2 else None
-            if value_param is None or value_param.annotation is inspect.Parameter.empty:
-                setter_type = AnyValue(AnySource.unannotated)
-            else:
-                setter_type = _value_from_runtime_annotation(
-                    value_param.annotation, owner
-                )
-
-    return PropertyInfo(
-        getter_type=getter_type,
-        setter_type=setter_type,
-        getter_deprecation=_accessor_deprecation_message(raw_value.fget),
-        setter_deprecation=_accessor_deprecation_message(raw_value.fset),
-    )
+    return PropertyInfo(fget=fget, fset=fset, fdel=fdel)
 
 
 def _runtime_deprecation_message(raw_value: object) -> str | None:

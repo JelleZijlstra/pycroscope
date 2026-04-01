@@ -18,6 +18,7 @@ from itertools import chain
 from typing import TypeVar, cast
 
 import pycroscope
+from pycroscope.type_evaluation import KWARGS
 
 from . import dataclass as dataclass_helpers
 from .analysis_lib import object_from_string
@@ -45,7 +46,9 @@ from .shared_options import VariableNameValues
 from .signature import (
     ANY_SIGNATURE,
     ELLIPSIS_PARAM,
+    Argument,
     BoundMethodSignature,
+    CheckCallContext,
     ConcreteSignature,
     MaybeSignature,
     OverloadedSignature,
@@ -2117,6 +2120,26 @@ class Checker:
         if isinstance(attr, KnownValue):
             return TypedValue(type(attr.val))
         return attr
+
+    def get_call_result(
+        self,
+        callee: Value,
+        args: Iterable[Value] = (),
+        kwargs: Iterable[tuple[str | None, Value]] = (),
+    ) -> Value:
+        sig = self.signature_from_value(callee)
+        if sig is None:
+            return AnyValue(AnySource.inference)
+        arguments: list[Argument] = []
+        for arg in args:
+            arguments.append((Composite(arg), None))
+        for kwarg_name, kwarg_value in kwargs:
+            if kwarg_name is None:
+                arguments.append((Composite(kwarg_value), KWARGS))
+            else:
+                arguments.append((Composite(kwarg_value), kwarg_name))
+        ctx = CheckCallContext(can_assign_ctx=self, callee=callee, visitor=None)
+        return sig.check_call(arguments, ctx)
 
     def signature_from_value(
         self,
