@@ -1485,6 +1485,17 @@ class TypeObject:
     ) -> tuple["TypeObject", ClassSymbol | None, ClassSymbol | None] | None:
         runtime_symbol, typeshed_symbol = self._get_direct_lookup_symbol_sources(name)
         if runtime_symbol is not None or typeshed_symbol is not None:
+            if (
+                runtime_symbol is not None
+                and typeshed_symbol is None
+                and _runtime_method_needs_inherited_typeshed_symbol(runtime_symbol)
+            ):
+                inherited_typeshed = self._get_inherited_typeshed_symbol_with_owner(
+                    name
+                )
+                if inherited_typeshed is not None:
+                    owner, inherited_symbol = inherited_typeshed
+                    return owner, runtime_symbol, inherited_symbol
             return self, runtime_symbol, typeshed_symbol
         for entry in self.get_mro():
             if entry.tobj is None:
@@ -1502,6 +1513,17 @@ class TypeObject:
         return self.get_declared_symbols().get(
             name
         ), self._checker.ts_finder.get_direct_symbol(self.typ, name)
+
+    def _get_inherited_typeshed_symbol_with_owner(
+        self, name: str
+    ) -> tuple["TypeObject", ClassSymbol] | None:
+        for entry in self.get_mro():
+            if entry.tobj is None:
+                return None
+            _, typeshed_symbol = entry.tobj._get_direct_lookup_symbol_sources(name)
+            if typeshed_symbol is not None:
+                return entry.tobj, typeshed_symbol
+        return None
 
     def is_assignable_to_type(self, typ: type | str) -> bool:
         return self.is_universally_assignable() or any(
@@ -1985,6 +2007,10 @@ def _merge_symbol_type_information(
     if isinstance(typeshed_value, AnyValue) and not isinstance(runtime_value, AnyValue):
         return runtime_value
     return typeshed_value
+
+
+def _runtime_method_needs_inherited_typeshed_symbol(symbol: ClassSymbol) -> bool:
+    return symbol.is_method and symbol.annotation is None
 
 
 def _merge_runtime_and_typeshed_property_info(
