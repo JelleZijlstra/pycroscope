@@ -10,6 +10,7 @@ import textwrap
 
 import pycroscope
 from pycroscope import node_visitor
+from pycroscope.analysis_lib import override
 from pycroscope.error_code import ErrorCode
 from pycroscope.find_unused import UnusedObjectFinder
 from pycroscope.shared_options import EnforceNoUnused, EnforceNoUnusedAttributes
@@ -266,9 +267,9 @@ def test_self_check_visits_decorated_namedtuple_subclass_method() -> None:
     assert not missing
 
 
-def test_files_for_self_check_skips_conformance_before_python_312(monkeypatch) -> None:
-    monkeypatch.setattr(sys, "version_info", (3, 11, 0))
-    assert _files_for_self_check() == ["pycroscope"]
+def test_files_for_self_check_skips_conformance_before_python_312() -> None:
+    with override(sys, "version_info", (3, 11, 0)):
+        assert _files_for_self_check() == ["pycroscope"]
 
 
 @skip_if_not_installed("asynq")
