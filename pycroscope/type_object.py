@@ -1063,9 +1063,7 @@ class TypeObject:
 
     def is_in_mro(self, typ: type | str) -> bool:
         return any(
-            isinstance(entry.get_mro_value(), TypedValue)
-            and entry.get_mro_value().typ == typ
-            for entry in self.get_mro()
+            entry.tobj is not None and entry.tobj.typ == typ for entry in self.get_mro()
         )
 
     def _get_protocol_members_contributed_by_self(self) -> set[str]:
