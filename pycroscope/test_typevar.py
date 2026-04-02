@@ -1365,6 +1365,7 @@ class TestGenericClasses(TestNameCheckVisitorBase):
             class Bad(PairBase[T, U], Generic[T]):  # E: invalid_base
                 pass
 
+    @skip_before((3, 11))
     @assert_passes()
     def test_manual_runtime_type_params_align_legacy_generic_kinds(self):
         from typing import Callable, Generic

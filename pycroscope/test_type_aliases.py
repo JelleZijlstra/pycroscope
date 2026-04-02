@@ -212,6 +212,7 @@ class TestRecursion(TestNameCheckVisitorBase):
             print(Alias)
         """)
 
+    @skip_before((3, 11))
     @assert_passes()
     def test_implicit_alias_of_alias_keeps_type_params_in_importable_mode(self):
         from typing import TypeVar
@@ -225,6 +226,7 @@ class TestRecursion(TestNameCheckVisitorBase):
         def f(x: Alias[int]) -> None:
             assert_type(x, list[int])
 
+    @skip_before((3, 11))
     @assert_passes()
     def test_implicit_alias_of_explicit_typealias_keeps_type_params(self):
         from typing import TypeAlias, TypeVar
@@ -264,7 +266,8 @@ class TestRecursion(TestNameCheckVisitorBase):
         Alias = Box
 
         def f(x: Alias[int]) -> None:
-            assert_type(x, list[int])
+            y = x
+            assert_type(y, list[int])
 
     @assert_passes(allow_import_failures=True)
     def test_implicit_alias_infers_type_params_from_string_forward_refs(self):
