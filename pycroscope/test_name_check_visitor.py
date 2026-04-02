@@ -4492,6 +4492,122 @@ class TestControlFlow(TestNameCheckVisitorBase):
             x = 1 if False else "x"
             assert_type(x, Literal[1, "x"])
 
+    def test_unreachable_statements_after_terminators(self):
+        self.assert_passes(
+            """
+            from typing import NoReturn
+
+            def fail() -> NoReturn:
+                raise RuntimeError
+
+            def capybara(flag: bool) -> None:
+                if flag:
+                    return
+                    print("after return")  # E: unreachable
+                raise RuntimeError()
+                print("after raise")  # E: unreachable
+
+            def pacarana() -> None:
+                fail()
+                print("after noreturn")  # E: unreachable
+
+            def hutia() -> None:
+                while True:
+                    pass
+                print("after loop")  # E: unreachable
+            """,
+            settings={ErrorCode.unreachable: True, ErrorCode.value_always_true: False},
+        )
+
+    def test_unreachable_only_warns_once_per_dead_block(self):
+        self.assert_passes(
+            """
+            def capybara() -> None:
+                return
+                print("first")  # E: unreachable
+                print("second")
+
+            def pacarana() -> None:
+                if 0:
+                    print("dead branch")  # E: unreachable
+                    print("still dead")
+
+            def hutia() -> None:
+                0 and print("dead operand")  # E: unreachable
+                0 and print("also dead") and print("still dead")  # E: unreachable
+            """,
+            settings={ErrorCode.unreachable: True, ErrorCode.value_always_true: False},
+        )
+
+    def test_unreachable_conditional_branches(self):
+        self.assert_passes(
+            """
+            def capybara() -> None:
+                if 0:
+                    print("if body")  # E: unreachable
+                else:
+                    print("if else")
+
+                if 1:
+                    print("reachable else")
+                else:
+                    print("else body")  # E: unreachable
+
+                while 0:
+                    print("while body")  # E: unreachable
+                else:
+                    print("while else")
+
+                while 1:
+                    break
+                else:
+                    print("while else body")  # E: unreachable
+            """,
+            settings={ErrorCode.unreachable: True, ErrorCode.value_always_true: False},
+        )
+
+    def test_unreachable_short_circuit_operands_and_branches(self):
+        self.assert_passes(
+            """
+            def fail() -> bool:
+                return True
+
+            def capybara() -> None:
+                0 and fail()  # E: unreachable
+                1 or fail()  # E: unreachable
+
+                if 0 and fail():  # E: unreachable
+                    print("body")  # E: unreachable
+
+                if 1 or fail():  # E: unreachable
+                    print("reachable")
+                else:
+                    print("else")  # E: unreachable
+            """,
+            settings={ErrorCode.unreachable: True, ErrorCode.value_always_true: False},
+        )
+
+    def test_unreachable_ignores_definite_value_extensions(self):
+        self.assert_passes(
+            """
+            from typing import TYPE_CHECKING
+
+            if TYPE_CHECKING:
+                imported = 1
+            else:
+                runtime = 2
+
+            def capybara() -> None:
+                if TYPE_CHECKING:
+                    print(imported)
+                else:
+                    print(runtime)
+
+                TYPE_CHECKING and print("side effect")
+            """,
+            settings={ErrorCode.unreachable: True},
+        )
+
     @assert_passes(run_in_both_module_modes=True)
     def test_annotated_class_attribute_read_uses_annotation_type(self):
         from typing_extensions import assert_type

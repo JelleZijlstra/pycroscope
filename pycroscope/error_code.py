@@ -163,6 +163,7 @@ ErrorCode = ErrorRegistry(
         Error(
             "no_return_may_return", "Function is annotated as NoReturn but may return"
         ),
+        Error("unreachable", "Code is unreachable"),
         Error("implicit_reexport", "Use of implicitly re-exported name"),
         Error("invalid_context_manager", "Use of invalid object in with or async with"),
         Error("suggested_return_type", "Suggested return type"),
@@ -215,6 +216,7 @@ DISABLED_IN_TESTS = {
     ErrorCode.implicit_any,
     ErrorCode.classvar_type_parameters,
     ErrorCode.invalid_literal,
+    ErrorCode.unreachable,
 }
 
 
@@ -232,6 +234,7 @@ DISABLED_BY_DEFAULT = {
     ErrorCode.implicit_reexport,
     ErrorCode.incompatible_override,
     ErrorCode.missing_generic_parameters,
+    ErrorCode.unreachable,
 }
 
 
