@@ -1803,6 +1803,113 @@ class TestUnpack(TestNameCheckVisitorBase):
         ) -> R:
             return fn(*args, **kwargs)  # E: incompatible_call  # E: incompatible_call
 
+    @assert_passes()
+    def test_paramspec_definition_pairing_rules(self):
+        from typing import ParamSpec
+
+        P = ParamSpec("P")
+        Q = ParamSpec("Q")
+
+        def bad_only_kwargs(**kwargs: P.kwargs) -> None:  # E: invalid_paramspec_usage
+            pass
+
+        def bad_mismatched(
+            *args: P.args,  # E: invalid_paramspec_usage
+            **kwargs: Q.kwargs,  # E: invalid_paramspec_usage
+        ) -> None:
+            pass
+
+        def bad_only_args(*args: P.args) -> None:  # E: invalid_paramspec_usage
+            pass
+
+        def bad_intervening(
+            *args: P.args,  # E: invalid_paramspec_usage
+            x: int,
+            **kwargs: P.kwargs,  # E: invalid_paramspec_usage
+        ) -> None:
+            pass
+
+    @skip_before((3, 11))
+    def test_callable_typevartuple_rejects_suffix_mismatch(self):
+        self.assert_passes("""
+            from typing import Callable, TypeVar, TypeVarTuple
+
+            Ts = TypeVarTuple("Ts")
+            T = TypeVar("T")
+
+            def accepts(cb: Callable[[int, *Ts, T], tuple[T, *Ts]]) -> None:
+                pass
+
+            def good(a: int, b: str, c: complex) -> tuple[complex, str]:
+                raise NotImplementedError
+
+            def bad(a: int, b: str, c: complex) -> tuple[str, complex]:
+                raise NotImplementedError
+
+            def capybara() -> None:
+                accepts(good)
+                accepts(bad)  # E: incompatible_call
+            """)
+
+    @assert_passes()
+    def test_paramspec_components_conformance_paths(self):
+        from typing import Any, Callable, Concatenate, ParamSpec
+
+        P = ParamSpec("P")
+
+        def puts_p_into_scope1(f: Callable[P, int]) -> None:
+            def inner(*args: P.args, **kwargs: P.kwargs) -> None:
+                pass
+
+            def mixed_up(
+                *args: P.kwargs,  # E: invalid_paramspec_usage
+                **kwargs: P.args,  # E: invalid_paramspec_usage
+            ) -> None:
+                pass
+
+            def misplaced1(x: P.args) -> None:  # E: invalid_paramspec_usage
+                pass
+
+            def bad_kwargs1(
+                *args: P.args, **kwargs: P.args  # E: invalid_paramspec_usage
+            ) -> None:
+                pass
+
+            def bad_kwargs2(
+                *args: P.args, **kwargs: Any  # E: invalid_paramspec_usage
+            ) -> None:
+                pass
+
+        def out_of_scope(
+            *args: P.args,  # E: invalid_paramspec_usage
+            **kwargs: P.kwargs,  # E: invalid_paramspec_usage
+        ) -> None:
+            pass
+
+        def puts_p_into_scope2(f: Callable[P, int]) -> None:
+            from typing import cast
+
+            stored_args: P.args = cast(Any, None)  # E: invalid_paramspec_usage
+            stored_kwargs: P.kwargs = cast(Any, None)  # E: invalid_paramspec_usage
+            print(stored_args, stored_kwargs)
+
+            def just_args(*args: P.args) -> None:  # E: invalid_paramspec_usage
+                pass
+
+            def just_kwargs(**kwargs: P.kwargs) -> None:  # E: invalid_paramspec_usage
+                pass
+
+        def add(f: Callable[P, int]) -> Callable[Concatenate[str, P], None]:
+            def foo(s: str, *args: P.args, **kwargs: P.kwargs) -> None:
+                pass
+
+            def bar(
+                *args: P.args, s: str, **kwargs: P.kwargs  # E: invalid_paramspec_usage
+            ) -> None:
+                pass
+
+            return foo
+
     @skip_before((3, 11))
     def test_callable_typevartuple(self):
         self.assert_passes("""

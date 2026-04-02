@@ -504,6 +504,7 @@ class TestTypeVar(TestNameCheckVisitorBase):
     def test_typevar_default_must_match_bound_and_constraints(self):
         from typing_extensions import TypeVar
 
+        TypeVar("GoodBound", bound=float, default=int)
         TypeVar("BadBound", bound=str, default=int)  # E: incompatible_call
         TypeVar("BadConstraint", float, str, default=int)  # E: incompatible_call
         Base = TypeVar("Base", int, str)
@@ -522,6 +523,94 @@ class TestTypeVar(TestNameCheckVisitorBase):
             assert_type(x(), int)  # E: inference_failure
 
     # Not sure why this fails on 3.10, TODO investigate
+    @skip_before((3, 11))
+    def test_type_parameter_defaults_on_generic_classes(self):
+        self.assert_passes("""
+            from typing import Generic
+
+            from typing_extensions import ParamSpec, TypeVarTuple, Unpack, assert_type
+
+            DefaultP = ParamSpec("DefaultP", default=[str, int])
+            DefaultTs = TypeVarTuple("DefaultTs", default=Unpack[tuple[str, int]])
+
+            class ClassParamSpec(Generic[DefaultP]): ...
+
+            class ClassTypeVarTuple(Generic[*DefaultTs]): ...
+
+            def capybara() -> None:
+                assert_type(ClassParamSpec(), ClassParamSpec[str, int])
+                assert_type(ClassTypeVarTuple(), ClassTypeVarTuple[str, int])
+                assert_type(ClassTypeVarTuple[int, bool](), ClassTypeVarTuple[int, bool])
+        """)
+
+    @skip_before((3, 11))
+    def test_typevartuple_unpack_assignability(self):
+        self.assert_passes("""
+            from typing import Any, Generic, NewType, TypeVarTuple
+
+            Shape = TypeVarTuple("Shape")
+
+            Height = NewType("Height", int)
+            Width = NewType("Width", int)
+            Batch = NewType("Batch", int)
+            Channels = NewType("Channels", int)
+
+            class Array(Generic[*Shape]): ...
+
+            def process_batch_channels(x: Array[Batch, *tuple[Any, ...], Channels]) -> None:
+                pass
+
+            def expect_variadic_array(x: Array[Batch, *Shape]) -> None:
+                pass
+
+            def expect_precise_array(x: Array[Batch, Height, Width, Channels]) -> None:
+                pass
+
+            def capybara(
+                x: Array[Batch, Height, Width, Channels],
+                y: Array[Batch, Channels],
+                z: Array[Batch],
+                any_array: Array[*tuple[Any, ...]],
+            ) -> None:
+                process_batch_channels(x)
+                process_batch_channels(y)
+                process_batch_channels(z)  # E: incompatible_argument
+                expect_variadic_array(any_array)
+                expect_precise_array(any_array)
+        """)
+
+    @skip_before((3, 11))
+    def test_typevartuple_conformance_repeated_positions(self):
+        self.assert_passes("""
+            from typing import Generic, NewType, TypeVarTuple
+
+            Ts = TypeVarTuple("Ts")
+
+            class Array(Generic[*Ts]): ...
+
+            Height = NewType("Height", int)
+            Width = NewType("Width", int)
+
+            def func2(arg1: tuple[*Ts], arg2: tuple[*Ts]) -> tuple[*Ts]:
+                raise NotImplementedError
+
+            def multiply(x: Array[*Ts], y: Array[*Ts]) -> Array[*Ts]:
+                raise NotImplementedError
+
+            def capybara(
+                x: Array[Height], y: Array[Width], z: Array[Height, Width]
+            ) -> None:
+                func2((0,), (1,))
+                func2((0,), (0.0,))
+                func2((0.0,), (0,))
+                func2((0,), ("0",))
+                func2((0, 0), (0,))  # E: incompatible_call
+
+                multiply(x, x)
+                multiply(x, y)  # E: incompatible_call
+                multiply(x, z)  # E: incompatible_call
+        """)
+
     @skip_before((3, 11))
     @assert_passes(allow_import_failures=True)
     def test_class_type_param_default_ordering_rules(self):
