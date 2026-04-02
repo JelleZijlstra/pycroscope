@@ -511,6 +511,17 @@ class TestBool(TestNameCheckVisitorBase):
                 assert_type(x, int | None)
 
 
+class TestSum(TestNameCheckVisitorBase):
+    @assert_passes()
+    def test_numeric_iterables(self):
+        from typing_extensions import assert_type
+
+        def capybara(ints: list[int], mapping: dict[str, int]) -> None:
+            assert_type(sum(ints), int)
+            assert_type(sum(x for x in ints), int)
+            assert_type(sum(mapping.values()), int)
+
+
 class TestCast(TestNameCheckVisitorBase):
     @assert_passes()
     def test(self):

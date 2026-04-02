@@ -3815,7 +3815,9 @@ def _bind_protocol_call_expected(
     else:
         if isinstance(signature, BoundMethodSignature):
             signature = signature.signature
-        receiver_reference = self_value
+        receiver_reference = (
+            self_value if protocol_self_value is None else protocol_self_value
+        )
         allow_any_annotation = False
     if isinstance(signature, (Signature, OverloadedSignature)):
         if isinstance(signature, Signature):
