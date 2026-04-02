@@ -13888,13 +13888,13 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             ):
                 local_value = self.being_assigned
                 if not isinstance(node.ctx, ast.Del):
-                    precise_attr_value = (
-                        self._precise_attribute_value_for_local_tracking(
+                    tracked_attr_value = (
+                        self._get_attribute_value_for_local_tracking_after_write(
                             node, root_composite.value
                         )
                     )
-                    if precise_attr_value is not None:
-                        local_value = precise_attr_value
+                    if tracked_attr_value is not None:
+                        local_value = tracked_attr_value
                 self.scopes.set(composite.get_varname(), local_value, node, self.state)
             return Composite(self.being_assigned, composite, node)
         elif isinstance(node.ctx, ast.Load):
@@ -14035,7 +14035,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             )
         return None
 
-    def _precise_attribute_value_for_local_tracking(
+    def _get_attribute_value_for_local_tracking_after_write(
         self, node: ast.Attribute, root: SimpleType
     ) -> Value | None:
         root = replace_fallback(root)
@@ -14078,13 +14078,36 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         )
         if attr is None:
             return None
-        if (
-            attr.symbol.annotation is None
-            and self._get_transformed_attribute_types(attr.raw_value) is None
-            and attr.value == attr.declared_value
-        ):
+        transformed_attribute_types = self._get_transformed_attribute_types(
+            attr.raw_value
+        )
+        has_precise_attribute_type = (
+            attr.symbol.annotation is not None
+            or transformed_attribute_types is not None
+            or attr.value != attr.declared_value
+        )
+        if not has_precise_attribute_type:
             return None
-        return attr.value
+        if self.being_assigned is None:
+            return attr.value
+        if transformed_attribute_types is not None:
+            return attr.value
+        if (
+            attr.symbol.dataclass_field is not None
+            and attr.symbol.dataclass_field.converter_input_type is not None
+        ):
+            return attr.value
+        expected_type = self._normalize_expected_attribute_type_for_assignment(
+            attr.value, root, on_class=on_class
+        )
+        can_assign = has_relation(
+            expected_type, self.being_assigned, Relation.ASSIGNABLE, self
+        )
+        if isinstance(can_assign, CanAssignError):
+            return attr.value
+        if attr.value != attr.declared_value:
+            return attr.value
+        return self.being_assigned
 
     def _check_attribute_write(
         self, node: ast.Attribute, value: Value, *, is_deletion: bool = False

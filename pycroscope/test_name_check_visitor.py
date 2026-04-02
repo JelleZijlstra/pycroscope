@@ -1042,6 +1042,16 @@ class TestImportFailureHandlingCodeSamples(TestNameCheckVisitorBase):
                 self.x.bit_length()
 
     @assert_passes()
+    def test_valid_attribute_write_narrows_later_reads(self):
+        class C:
+            x: int | None
+
+            def f(self) -> int:
+                if self.x is None:
+                    self.x = 3
+                return self.x
+
+    @assert_passes()
     def test_union_instance_member_assignment_through_class(self):
         class C:
             x: int
