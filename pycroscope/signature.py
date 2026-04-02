@@ -3377,13 +3377,12 @@ def _try_typevartuple_callable_relation(
         for param in middle
     ]
     captured = SequenceValue(tuple, captured_members)
-    captured_bounds_maps.append(
-        {
-            marker_annotation.typevar: [
-                LowerBound(marker_annotation.typevar_tuple_param, captured)
-            ]
-        }
-    )
+    marker_bound: Bound
+    if left_idx is not None:
+        marker_bound = UpperBound(marker_annotation.typevar_tuple_param, captured)
+    else:
+        marker_bound = LowerBound(marker_annotation.typevar_tuple_param, captured)
+    captured_bounds_maps.append({marker_annotation.typevar: [marker_bound]})
 
     return unify_bounds_maps(captured_bounds_maps)
 

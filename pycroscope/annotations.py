@@ -1702,6 +1702,47 @@ def _paramspec_value_from_concatenate_members(
     )
 
 
+def _callable_params_from_normalized_args(
+    normalized_args: Sequence[tuple[bool, Value]],
+) -> list[SigParameter]:
+    if any(is_many for is_many, _ in normalized_args) and all(
+        isinstance(annotation, TypeVarTupleValue) if is_many else True
+        for is_many, annotation in normalized_args
+    ):
+        return [
+            SigParameter(
+                f"@{i}",
+                kind=(
+                    ParameterKind.PARAM_SPEC
+                    if isinstance(annotation, InputSigValue)
+                    else ParameterKind.POSITIONAL_ONLY
+                ),
+                annotation=annotation,
+            )
+            for i, (_is_many, annotation) in enumerate(normalized_args)
+        ]
+    if any(is_many for is_many, _ in normalized_args):
+        return [
+            SigParameter(
+                "@args",
+                kind=ParameterKind.VAR_POSITIONAL,
+                annotation=SequenceValue(tuple, list(normalized_args)),
+            )
+        ]
+    return [
+        SigParameter(
+            f"@{i}",
+            kind=(
+                ParameterKind.PARAM_SPEC
+                if isinstance(annotation, InputSigValue)
+                else ParameterKind.POSITIONAL_ONLY
+            ),
+            annotation=annotation,
+        )
+        for i, (_is_many, annotation) in enumerate(normalized_args)
+    ]
+
+
 def _callable_args_from_runtime(
     arg_types: Any, label: str, ctx: Context
 ) -> Sequence[SigParameter]:
@@ -1714,51 +1755,33 @@ def _callable_args_from_runtime(
                 return [ELLIPSIS_PARAM]
             elif is_typing_name(get_origin(arg), "Concatenate"):
                 return _args_from_concatenate(arg, ctx)
-            elif is_instance_of_typing_name(arg, "ParamSpec"):
-                param_spec = InputSigValue(ParamSpecParam(arg))
-                param = SigParameter(
-                    "__P", kind=ParameterKind.PARAM_SPEC, annotation=param_spec
-                )
-                return [param]
-        types: list[Value] = []
+        normalized_args: list[tuple[bool, Value]] = []
         for arg in arg_types:
             if _is_unpack_runtime_arg(arg):
                 expr = _annotation_expr_from_runtime(arg, ctx)
                 unpacked, qualifiers = expr.unqualify({Qualifier.Unpack})
                 if Qualifier.Unpack not in qualifiers:
-                    types.append(unpacked)
+                    normalized_args.append((False, unpacked))
                     continue
                 unpacked_members = _unpack_value(unpacked)
                 if unpacked_members is None:
                     ctx.show_error(f"Invalid usage of Unpack with {unpacked}")
-                    types.append(AnyValue(AnySource.error))
+                    normalized_args.append((False, AnyValue(AnySource.error)))
                     continue
                 for is_many, member in unpacked_members:
                     if is_many:
                         # Callable argument lists support unpacked TypeVarTuple
                         # placeholders, but not generic unbounded tuples.
                         if isinstance(member, TypeVarTupleValue):
-                            types.append(member)
+                            normalized_args.append((True, member))
                         else:
                             ctx.show_error(f"Invalid usage of Unpack with {unpacked}")
-                            types.append(AnyValue(AnySource.error))
+                            normalized_args.append((False, AnyValue(AnySource.error)))
                     else:
-                        types.append(member)
+                        normalized_args.append((False, member))
                 continue
-            types.append(_type_from_runtime(arg, ctx))
-        params = [
-            SigParameter(
-                f"@{i}",
-                kind=(
-                    ParameterKind.PARAM_SPEC
-                    if isinstance(typ, InputSigValue)
-                    else ParameterKind.POSITIONAL_ONLY
-                ),
-                annotation=typ,
-            )
-            for i, typ in enumerate(types)
-        ]
-        return params
+            normalized_args.append((False, _type_from_runtime(arg, ctx)))
+        return _callable_params_from_normalized_args(normalized_args)
     elif is_instance_of_typing_name(arg_types, "ParamSpec"):
         param_spec = InputSigValue(ParamSpecParam(arg_types))
         param = SigParameter(
@@ -3168,21 +3191,7 @@ def _make_callable_from_value(
             normalized_args.append(
                 (is_many, arg if is_many else _type_from_value(arg, ctx))
             )
-        if any(is_many for is_many, _ in normalized_args):
-            params = [
-                SigParameter(
-                    "@args",
-                    kind=ParameterKind.VAR_POSITIONAL,
-                    annotation=SequenceValue(tuple, normalized_args),
-                )
-            ]
-        else:
-            params = [
-                SigParameter(
-                    f"@{i}", kind=ParameterKind.POSITIONAL_ONLY, annotation=annotation
-                )
-                for i, (_is_many, annotation) in enumerate(normalized_args)
-            ]
+        params = _callable_params_from_normalized_args(normalized_args)
         try:
             sig = Signature.make(params, return_annotation, is_asynq=is_asynq)
         except InvalidSignature as e:
