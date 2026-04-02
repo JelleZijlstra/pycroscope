@@ -11,6 +11,7 @@ the system.
 import abc
 import ast
 import asyncio
+import builtins
 import collections
 import collections.abc
 import contextlib
@@ -353,6 +354,10 @@ else:  # pragma: no cover
     TryNode = ast.Try
 
 TYPE_CHECKING_MODULES: frozenset[str] = frozenset({"typing", "typing_extensions"})
+
+
+def _get_type_param_nodes(node: ast.AST) -> Sequence[ast.AST]:
+    return safe_getattr(node, "type_params", ())
 
 
 def _strip_predicate_intersection(value: Value) -> Value:
@@ -4023,7 +4028,8 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             for _, value, _ in decorator_values
         ):
             tobj.set_is_disjoint_base(True)
-        if sys.version_info >= (3, 12) and node.type_params:
+        declared_type_param_nodes = _get_type_param_nodes(node)
+        if sys.version_info >= (3, 12) and declared_type_param_nodes:
             ctx = self.scopes.add_scope(
                 ScopeType.annotation_scope, scope_node=node, scope_object=class_obj
             )
@@ -4033,7 +4039,11 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             legacy_type_param_ctx: AbstractContextManager[set[object] | None] = (
                 contextlib.nullcontext(None)
             )
-            if self._is_checking() and sys.version_info >= (3, 12) and node.type_params:
+            if (
+                self._is_checking()
+                and sys.version_info >= (3, 12)
+                and declared_type_param_nodes
+            ):
                 legacy_type_param_ctx = (
                     self.active_type_params.reject_legacy_type_params(
                         "Class definition cannot combine old-style TypeVar declarations"
@@ -4041,8 +4051,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     )
                 )
             with legacy_type_param_ctx as allowed_legacy_identities:
-                if sys.version_info >= (3, 12) and node.type_params:
-                    declared_type_param_nodes = node.type_params
+                if sys.version_info >= (3, 12) and declared_type_param_nodes:
                     type_param_values = list(
                         self.visit_type_param_values(
                             declared_type_param_nodes,
@@ -6005,7 +6014,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         class_scope_object: type | str | None,
         type_param_polarities: Mapping[object, set[int]],
     ) -> None:
-        if sys.version_info >= (3, 12) and node.type_params:
+        if sys.version_info >= (3, 12) and _get_type_param_nodes(node):
             # PEP 695 class type parameters infer variance, so explicit
             # protocol variance checks for legacy TypeVars don't apply.
             return
@@ -7252,10 +7261,13 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     elif is_typing_name(val, "final"):
                         decorator_kinds.add(FunctionDecorator.final)
                 decorators.append((decorator_value, decorator_value, decorator))
+        declared_type_params = ()
+        if not isinstance(node, ast.Lambda):
+            declared_type_params = _get_type_param_nodes(node)
         if (
             sys.version_info >= (3, 12)
             and not isinstance(node, ast.Lambda)
-            and node.type_params
+            and declared_type_params
         ):
             ctx = self.scopes.add_scope(
                 ScopeType.annotation_scope,
@@ -7272,7 +7284,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 self._is_checking()
                 and sys.version_info >= (3, 12)
                 and not isinstance(node, ast.Lambda)
-                and node.type_params
+                and declared_type_params
             ):
                 legacy_type_param_ctx = (
                     self.active_type_params.reject_legacy_type_params(
@@ -7284,9 +7296,8 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 if (
                     sys.version_info >= (3, 12)
                     and not isinstance(node, ast.Lambda)
-                    and node.type_params
+                    and declared_type_params
                 ):
-                    declared_type_params = node.type_params
                     type_params = self.visit_type_param_values(
                         declared_type_params,
                         legacy_allowed_identities=allowed_legacy_identities,
@@ -7301,7 +7312,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 self._is_checking()
                 and sys.version_info >= (3, 12)
                 and not isinstance(node, ast.Lambda)
-                and node.type_params
+                and declared_type_params
             ):
                 legacy_annotation_ctx = (
                     self.active_type_params.reject_legacy_type_params(
@@ -11509,9 +11520,11 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 to_assign = unite_values(*[typ for _, typ in possible_types])
                 if is_try_star and sys.version_info >= (3, 11):
                     if all(is_exception for is_exception, _ in possible_types):
-                        base = ExceptionGroup
+                        base = safe_getattr(builtins, "ExceptionGroup", Exception)
                     else:
-                        base = BaseExceptionGroup
+                        base = safe_getattr(
+                            builtins, "BaseExceptionGroup", BaseException
+                        )
                     to_assign = GenericValue(base, [to_assign])
                 self._set_name_in_scope(node.name, node, value=to_assign, private=True)
 
@@ -11547,7 +11560,10 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     if (
                         is_try_star
                         and sys.version_info >= (3, 11)
-                        and issubclass(subval.val, BaseExceptionGroup)
+                        and issubclass(
+                            subval.val,
+                            safe_getattr(builtins, "BaseExceptionGroup", BaseException),
+                        )
                     ):
                         self._show_error_if_checking(
                             node,

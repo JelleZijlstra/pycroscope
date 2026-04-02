@@ -24,7 +24,7 @@ class PycroscopeVisitor(pycroscope.name_check_visitor.NameCheckVisitor):
 
 def _files_for_self_check() -> list[str]:
     files = ["pycroscope"]
-    if sys.version_info >= (3, 11):
+    if sys.version_info >= (3, 12):
         from pathlib import Path
 
         conformance_ci = (
@@ -264,6 +264,11 @@ def test_self_check_visits_decorated_namedtuple_subclass_method() -> None:
         )
     ]
     assert not missing
+
+
+def test_files_for_self_check_skips_conformance_before_python_312(monkeypatch) -> None:
+    monkeypatch.setattr(sys, "version_info", (3, 11, 0))
+    assert _files_for_self_check() == ["pycroscope"]
 
 
 @skip_if_not_installed("asynq")
