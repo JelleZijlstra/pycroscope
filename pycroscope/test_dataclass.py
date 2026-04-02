@@ -78,7 +78,7 @@ class TestDataclass(TestNameCheckVisitorBase):
             frozen = Frozen(1)
             frozen.value = 2  # E: incompatible_assignment
 
-    @assert_passes()
+    @assert_passes(run_in_both_module_modes=True)
     def test_dataclass_rejects_classvar_instance_override_mismatch(self):
         from dataclasses import dataclass
         from typing import ClassVar
@@ -196,21 +196,6 @@ class TestDataclass(TestNameCheckVisitorBase):
 
         def mutate(child: Child) -> None:
             child.value = 2  # E: incompatible_assignment
-
-    @assert_passes(run_in_both_module_modes=True)
-    def test_dataclass_classvar_instance_override_mismatch_after_import_failure(self):
-        from dataclasses import dataclass
-        from typing import ClassVar
-
-        @dataclass
-        class Base:
-            x: int
-            y: ClassVar[int] = 1
-
-        @dataclass
-        class Child(Base):
-            x: ClassVar[int]  # E: incompatible_override
-            y: int  # E: incompatible_override
 
     @assert_passes()
     def test_dataclass_hashability(self):

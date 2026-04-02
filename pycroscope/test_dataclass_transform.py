@@ -393,7 +393,7 @@ class TestDataclassTransform(TestNameCheckVisitorBase):
             from_meta = FromMeta(o=2, enn=1)
             from_meta.n = 4  # E: incompatible_assignment
 
-    @assert_passes()
+    @assert_passes(run_in_both_module_modes=True)
     def test_dataclass_transform_decorator_field_specifier_options(self):
         from typing import Any, Callable, TypeVar
 
@@ -505,7 +505,7 @@ class TestDataclassTransform(TestNameCheckVisitorBase):
             CustomerModel2(name="Fred")
             CustomerModel2(id=1, name="Fred")  # E: incompatible_call
 
-    @assert_passes()
+    @assert_passes(run_in_both_module_modes=True)
     def test_dataclass_transform_base_field_specifier_options(self):
         from typing import Any
 
@@ -550,7 +550,7 @@ class TestDataclassTransform(TestNameCheckVisitorBase):
             class MutableChild(FrozenParent, frozen=False):  # E: invalid_base
                 y: int
 
-    @assert_passes()
+    @assert_passes(run_in_both_module_modes=True)
     def test_dataclass_transform_metaclass_field_specifier_options(self):
         from typing import Any
 
@@ -597,134 +597,6 @@ class TestDataclassTransform(TestNameCheckVisitorBase):
 
             class MutableChild(FrozenParent, frozen=False):  # E: invalid_base
                 y: int
-
-    @assert_passes(run_in_both_module_modes=True)
-    def test_dataclass_transform_decorator_field_specifier_options_after_import_failure(
-        self,
-    ):
-        from typing import Any, Callable, TypeVar
-
-        from typing_extensions import dataclass_transform
-
-        T = TypeVar("T")
-
-        def model_field(
-            *,
-            init: bool = True,
-            default: Any = 0,
-            alias: str | None = None,
-            kw_only: bool = False,
-        ) -> Any:
-            return object()
-
-        @dataclass_transform(
-            kw_only_default=True, frozen_default=True, field_specifiers=(model_field,)
-        )
-        def create_model(
-            *, frozen: bool = True, kw_only: bool = True
-        ) -> Callable[[type[T]], type[T]]:
-            def decorator(cls: type[T]) -> type[T]:
-                return cls
-
-            return decorator
-
-        @create_model()
-        class DecoratorModel:
-            x: int = model_field(init=False)
-            y: int = model_field(alias="why")
-            z: int = model_field(default=3, kw_only=False)
-
-        def check_calls() -> None:
-            DecoratorModel(2, why=1)
-            DecoratorModel(why=1)
-            DecoratorModel(2, y=1)  # E: incompatible_call
-            DecoratorModel(x=1, why=1)  # E: incompatible_call
-            DecoratorModel(1, 2)  # E: incompatible_call
-            model = DecoratorModel(2, why=1)
-            model.y = 3  # E: incompatible_assignment
-
-    @assert_passes(run_in_both_module_modes=True)
-    def test_dataclass_transform_base_field_specifier_options_after_import_failure(
-        self,
-    ):
-        from typing import Any
-
-        from typing_extensions import dataclass_transform
-
-        def model_field(
-            *,
-            init: bool = True,
-            default: Any = 0,
-            alias: str | None = None,
-            kw_only: bool = False,
-        ) -> Any:
-            return object()
-
-        @dataclass_transform(
-            kw_only_default=True, frozen_default=False, field_specifiers=(model_field,)
-        )
-        class BaseModel:
-            def __init_subclass__(
-                cls, *, frozen: bool = False, kw_only: bool = True
-            ) -> None:
-                pass
-
-        class Concrete(BaseModel, frozen=True):
-            a: int = model_field(init=False)
-            b: int = model_field(alias="bee")
-            c: int = model_field(default=3, kw_only=False)
-
-        def check_calls() -> None:
-            Concrete(2, bee=1)
-            Concrete(bee=1)
-            Concrete(2, b=1)  # E: incompatible_call
-            Concrete(a=1, bee=1)  # E: incompatible_call
-            Concrete(1, 2)  # E: incompatible_call
-            model = Concrete(2, bee=1)
-            model.b = 3  # E: incompatible_assignment
-
-    @assert_passes(run_in_both_module_modes=True)
-    def test_dataclass_transform_metaclass_field_specifier_options_after_import_failure(
-        self,
-    ):
-        from typing import Any
-
-        from typing_extensions import dataclass_transform
-
-        def model_field(
-            *,
-            init: bool = True,
-            default: Any = 0,
-            alias: str | None = None,
-            kw_only: bool = False,
-        ) -> Any:
-            return object()
-
-        @dataclass_transform(
-            kw_only_default=True, frozen_default=False, field_specifiers=(model_field,)
-        )
-        class ModelMeta(type):
-            pass
-
-        class MetaBase(metaclass=ModelMeta):
-            def __init_subclass__(
-                cls, *, frozen: bool = False, kw_only: bool = True
-            ) -> None:
-                pass
-
-        class MetaConcrete(MetaBase, frozen=True):
-            a: int = model_field(init=False)
-            b: int = model_field(alias="bee")
-            c: int = model_field(default=3, kw_only=False)
-
-        def check_calls() -> None:
-            MetaConcrete(2, bee=1)
-            MetaConcrete(bee=1)
-            MetaConcrete(2, b=1)  # E: incompatible_call
-            MetaConcrete(a=1, bee=1)  # E: incompatible_call
-            MetaConcrete(1, 2)  # E: incompatible_call
-            model = MetaConcrete(2, bee=1)
-            model.b = 3  # E: incompatible_assignment
 
     @assert_passes(allow_import_failures=True)
     def test_dataclass_transform_ignores_inherited_init_after_import_failure(self):

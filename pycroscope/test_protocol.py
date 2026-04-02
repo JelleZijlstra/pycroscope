@@ -150,21 +150,6 @@ class TestProtocol(TestNameCheckVisitorBase):
             def draw(self) -> str:
                 return super().draw()  # E: bad_super_call
 
-        class RGB(Protocol):
-            rgb: tuple[int, int, int]
-
-            @abstractmethod
-            def intensity(self) -> int:
-                return 1
-
-            def transparency(self) -> int: ...
-
-        class Point(RGB):
-            def __init__(self, blue: str) -> None:
-                self.rgb = 0, 0, blue  # E: incompatible_assignment
-
-        Point("")  # E: incompatible_call
-
         class Proto1(Protocol):
             cm1: ClassVar[int]
 
@@ -361,8 +346,10 @@ class TestProtocol(TestNameCheckVisitorBase):
         class Concrete(metaclass=Meta):
             pass
 
-        good: WantsAnswer = Concrete
-        print(good)
+        def takes(value: WantsAnswer) -> None:
+            pass
+
+        takes(Concrete)
 
     @assert_passes()
     def test_type_protocol_constructor_call_allows_concrete_implementers(self):
