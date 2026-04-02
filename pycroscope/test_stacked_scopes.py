@@ -2332,6 +2332,7 @@ class TestComposite(TestNameCheckVisitorBase):
 
     @assert_passes()
     def test_reveal_type_for_indexed_constraints(self):
+        import sys
         from typing import Optional
 
         class Box:
@@ -2341,11 +2342,18 @@ class TestComposite(TestNameCheckVisitorBase):
             return box
 
         def capybara(box: Box):
-            assert_is_value(
-                box.items[1] == 1 or box.items[1] == 2,
-                TypedValue(bool) | AnyValue(AnySource.from_another),
-                skip_annotated=True,
-            )
+            if sys.version_info >= (3, 14):
+                assert_is_value(
+                    box.items[1] == 1 or box.items[1] == 2,
+                    TypedValue(bool) | AnyValue(AnySource.from_another),
+                    skip_annotated=True,
+                )
+            else:
+                assert_is_value(
+                    box.items[1] == 1 or box.items[1] == 2,
+                    TypedValue(bool),
+                    skip_annotated=True,
+                )
             repeated_truthiness = box.items[1] and box.items[1] and box.items[1]
             assert_is_value(
                 repeated_truthiness,
