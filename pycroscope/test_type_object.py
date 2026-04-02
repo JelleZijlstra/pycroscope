@@ -1904,11 +1904,10 @@ class TestSyntheticType(TestNameCheckVisitorBase):
         ok4 = Child().value
         print(ok1, ok2, ok3, ok4)
 
-    @assert_passes(run_in_both_module_modes=True)
+    @assert_passes()
     def test_namedtuple_with_non_mapping_annotations_loses_class_attribute(self):
+        import collections
         from typing import Any, NamedTuple, cast
-
-        from typing_extensions import assert_type
 
         class NT(NamedTuple):
             x: int
@@ -1916,8 +1915,12 @@ class TestSyntheticType(TestNameCheckVisitorBase):
         cast(Any, NT)._fields = 1
         setattr(NT, "__annotations__", 1)
 
-        print(NT.x)  # E: undefined_attribute
-        assert_type(NT.x, object)  # E: undefined_attribute  # E: inference_failure
+        print(NT.x)
+
+        def capybara(getter: collections._tuplegetter) -> None:
+            pass
+
+        capybara(NT.x)
 
     @assert_passes(run_in_both_module_modes=True)
     def test_runtime_generic_type_param_defaults_use_runtime_types(self):

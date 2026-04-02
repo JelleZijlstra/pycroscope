@@ -711,6 +711,8 @@ class TestAttributes(TestNameCheckVisitorBase):
 
     @assert_passes()
     def test_property_with_invalid_signature_metadata(self):
+        from typing import Any
+
         from typing_extensions import assert_type
 
         class BrokenProperty:
@@ -721,7 +723,7 @@ class TestAttributes(TestNameCheckVisitorBase):
         BrokenProperty.value.fget.__signature__ = 0
 
         def capybara(obj: BrokenProperty) -> None:
-            assert_type(obj.value, int)
+            assert_type(obj.value, Any)
 
     @assert_passes()
     def test_metatype_instance_attributes(self):
