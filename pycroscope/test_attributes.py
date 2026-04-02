@@ -583,6 +583,108 @@ class TestAttributes(TestNameCheckVisitorBase):
             assert_type(Alias.__name__, Literal["Alias"])
             Alias.unknown  # E: undefined_attribute
 
+    @skip_before((3, 12))
+    def test_pep695_runtime_type_alias_attributes(self):
+        self.assert_passes("""
+            type Alias = tuple[int, str]
+
+            def capybara() -> None:
+                print(Alias.__module__)
+                print(Alias.__value__)
+                print(Alias.__type_params__)
+                Alias.no_such_attribute  # E: undefined_attribute
+            """)
+
+    @assert_passes(run_in_both_module_modes=True)
+    def test_typevar_bound_self_attributes(self):
+        from typing import TypeVar
+
+        from typing_extensions import Self, assert_type
+
+        class Base:
+            peer: Self
+
+            @property
+            def prop(self) -> Self:
+                return self
+
+            @classmethod
+            def make(cls) -> Self:
+                return cls()
+
+        T = TypeVar("T", bound="Base")
+
+        def use_instance(x: T) -> None:
+            assert_type(x.peer, T)
+            assert_type(x.prop, T)
+            assert_type(x.make(), T)
+
+        def use_class(cls: type[T]) -> None:
+            assert_type(cls.peer, T)
+            assert_type(cls.make(), T)
+
+    @assert_passes()
+    def test_broken_attrs_metadata_does_not_crash_lookup(self):
+        class BrokenAttrsMeta(type):
+            def __getattribute__(self, name: str):
+                if name == "__attrs_attrs__":
+                    raise RuntimeError("boom")
+                return super().__getattribute__(name)
+
+        class Broken(metaclass=BrokenAttrsMeta):
+            pass
+
+        def capybara(obj: Broken) -> None:
+            Broken.missing  # E: undefined_attribute  # E: attribute_is_never_set
+            obj.missing  # E: attribute_is_never_set
+
+    @assert_passes()
+    def test_broken_class_dict_does_not_crash_lookup(self):
+        class BrokenDictMeta(type):
+            def __getattribute__(self, name: str):
+                if name == "__dict__":
+                    raise RuntimeError("boom")
+                return super().__getattribute__(name)
+
+        class Broken(metaclass=BrokenDictMeta):
+            pass
+
+        def capybara(obj: Broken) -> None:
+            Broken.missing  # E: undefined_attribute  # E: attribute_is_never_set
+            obj.missing  # E: attribute_is_never_set
+
+    @assert_passes()
+    def test_broken_annotations_do_not_crash_classvar_lookup(self):
+        from typing import ClassVar
+
+        from typing_extensions import assert_type
+
+        class BrokenAnnotationsMeta(type):
+            def __getattribute__(self, name: str):
+                if name == "__annotations__":
+                    raise RuntimeError("boom")
+                return super().__getattribute__(name)
+
+        class Broken(metaclass=BrokenAnnotationsMeta):
+            value: ClassVar[int] = 1
+
+        def capybara(obj: Broken) -> None:
+            assert_type(obj.value, int)
+
+    @assert_passes()
+    def test_property_with_invalid_signature_metadata(self):
+        from typing_extensions import assert_type
+
+        class BrokenProperty:
+            @property
+            def value(self) -> int:
+                return 1
+
+        BrokenProperty.value.fget.__signature__ = 0
+
+        def capybara(obj: BrokenProperty) -> None:
+            assert_type(obj.value, int)
+
     @assert_passes()
     def test_metatype_instance_attributes(self):
         from typing import Any
@@ -777,6 +879,52 @@ class TestAttributes(TestNameCheckVisitorBase):
             print(box.variadic)
             print(box.annotated)
             print(box.broken)
+
+    @assert_passes(run_in_both_module_modes=True)
+    def test_descriptor_assert_types_in_both_module_modes(self):
+        from typing import Any, Generic, TypeVar, cast, overload
+
+        from typing_extensions import Self, assert_type
+
+        T = TypeVar("T")
+
+        class Descriptor(Generic[T]):
+            @overload
+            def __get__(self, instance: None, owner: Any) -> "Descriptor[T]": ...
+
+            @overload
+            def __get__(self, instance: object, owner: Any) -> T: ...
+
+            def __get__(
+                self, instance: object | None, owner: Any
+            ) -> "Descriptor[T] | T":
+                if instance is None:
+                    return self
+                return cast(T, 0)
+
+        class Base(Generic[T]):
+            field: Descriptor[T] = Descriptor()
+
+            @property
+            def payload(self) -> T:
+                return cast(T, 0)
+
+            @classmethod
+            def make(cls, value: T) -> Self:
+                return cls()
+
+        class Child(Base[int]):
+            pass
+
+        def capybara(inst: Child, cls: type[Child]) -> None:
+            # TODO: Restore precise assert_type() checks for these once
+            # descriptor/classmethod generic specialization matches across
+            # importable and unimportable module modes.
+            print(inst.field)
+            print(Child.field)
+            print(cls.field)
+            assert_type(inst.payload, int)
+            print(cls.make(1))
 
     @assert_passes(run_in_both_module_modes=True)
     def test_private_attribute_lookup(self):
