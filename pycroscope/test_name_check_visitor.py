@@ -2689,6 +2689,50 @@ class TestClassAttributeChecker(TestNameCheckVisitorBase):
             extra_options=[ClassAttributeTransformer([transform])],
         )
 
+    def test_optional_transformed_descriptor_keeps_non_none_narrowing_after_write(self):
+        code = """
+        from typing import Generic, TypeVar, overload
+        from typing_extensions import Self, assert_type
+
+        T = TypeVar("T")
+
+        class Field(Generic[T]):
+            @overload
+            def __get__(self, obj: None, owner: object) -> Self: ...
+            @overload
+            def __get__(self, obj: object, owner: object) -> T: ...
+
+            def __get__(self, obj: object | None, owner: object) -> "Field[T] | T":
+                if obj is None:
+                    return self
+                return ""  # type: ignore[return-value]
+
+        class Model:
+            name = Field[str | None]()
+
+            def rewrite(self, newname: str) -> None:
+                if self.name is None:
+                    return
+                assert_type(self.name, str)
+                self.name.lower()
+                self.name = newname
+                assert_type(self.name, str)
+                self.name.lower()
+        """
+
+        def transform(attr: object):
+            if type(attr).__name__ != "Field":
+                return None
+            return TypedValue(str) | KnownValue(None), TypedValue(str) | KnownValue(
+                None
+            )
+
+        self.assert_passes(
+            code,
+            run_in_both_module_modes=True,
+            extra_options=[ClassAttributeTransformer([transform])],
+        )
+
     def test_imported_descriptor_preserves_class_access_in_both_modes(self):
         code = """
         from typing import Generic, TypeVar

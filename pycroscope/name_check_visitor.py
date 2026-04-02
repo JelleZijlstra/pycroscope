@@ -14099,21 +14099,22 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         if self.being_assigned is None:
             return attr.value
         if transformed_attribute_types is not None:
-            return attr.value
+            _, expected_type = transformed_attribute_types
+            if expected_type is NO_RETURN_VALUE:
+                return attr.value
+        else:
+            expected_type = self._normalize_expected_attribute_type_for_assignment(
+                attr.value, simple_root, on_class=on_class
+            )
         if (
             attr.symbol.dataclass_field is not None
             and attr.symbol.dataclass_field.converter_input_type is not None
         ):
-            return attr.value
-        expected_type = self._normalize_expected_attribute_type_for_assignment(
-            attr.value, simple_root, on_class=on_class
-        )
+            expected_type = attr.symbol.dataclass_field.converter_input_type
         can_assign = has_relation(
             expected_type, self.being_assigned, Relation.ASSIGNABLE, self
         )
         if isinstance(can_assign, CanAssignError):
-            return attr.value
-        if attr.value != attr.declared_value:
             return attr.value
         return self.being_assigned
 
