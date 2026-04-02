@@ -427,6 +427,8 @@ class TypeObject:
     _mro: Sequence[MroEntry] | None
     _declared_type_params: tuple[TypeParam, ...] | None
     _is_final: bool | None
+    _is_disjoint_base: bool | None
+    _directly_disjoint_base: bool | None
     _is_protocol: bool | None
     _protocol_members: set[str] | None
     _synthetic_declared_symbols: dict[str, ClassSymbol] | None
@@ -456,6 +458,8 @@ class TypeObject:
         self._mro = None
         self._declared_type_params = None
         self._is_final = None
+        self._is_disjoint_base = None
+        self._directly_disjoint_base = None
         self._is_protocol = None
         self._protocol_members = None
         self._dataclass_fields = None
@@ -570,6 +574,14 @@ class TypeObject:
         return self._checker.ts_finder.is_final(self.typ) or safe_getattr(
             self.typ, "__final__", False
         )
+
+    def _compute_is_disjoint_base(self) -> bool:
+        if isinstance(self.typ, type):
+            class_dict = safe_getattr(self.typ, "__dict__", None)
+            return isinstance(class_dict, Mapping) and bool(
+                class_dict.get("__disjoint_base__", False)
+            )
+        return bool(self._directly_disjoint_base)
 
     def _compute_is_protocol(self) -> bool:
         if isinstance(self.typ, str):
@@ -939,6 +951,8 @@ class TypeObject:
             self._mro = self._compute_mro()
         if self._is_final is not None:
             self._is_final = self._compute_is_final()
+        if self._is_disjoint_base is not None:
+            self._is_disjoint_base = self._compute_is_disjoint_base()
         if self._is_protocol is not None:
             self._is_protocol = self._compute_is_protocol()
         if self._protocol_members is not None:
@@ -977,6 +991,12 @@ class TypeObject:
     def set_dataclass_info(self, dataclass_info: DataclassInfo | None) -> None:
         self._ensure_synthetic_class()
         self._direct_dataclass_info = dataclass_info
+        self._update_loaded_synthetic_fields()
+        self._protocol_positive_cache.clear()
+
+    def set_is_disjoint_base(self, is_disjoint_base: bool) -> None:
+        self._ensure_synthetic_class()
+        self._directly_disjoint_base = is_disjoint_base
         self._update_loaded_synthetic_fields()
         self._protocol_positive_cache.clear()
 
@@ -1040,6 +1060,11 @@ class TypeObject:
         if self._mro is None:
             self._mro = self._compute_mro()
         return self._mro
+
+    def is_in_mro(self, typ: type | str) -> bool:
+        return any(
+            entry.tobj is not None and entry.tobj.typ == typ for entry in self.get_mro()
+        )
 
     def _get_protocol_members_contributed_by_self(self) -> set[str]:
         if isinstance(self.typ, str) or self._checker.ts_finder.is_protocol(self.typ):
@@ -1117,6 +1142,11 @@ class TypeObject:
         if self._is_final is None:
             self._is_final = self._compute_is_final()
         return self._is_final
+
+    def is_disjoint_base(self) -> bool:
+        if self._is_disjoint_base is None:
+            self._is_disjoint_base = self._compute_is_disjoint_base()
+        return self._is_disjoint_base
 
     def is_protocol(self) -> bool:
         if self._is_protocol is None:
