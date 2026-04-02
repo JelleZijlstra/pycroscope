@@ -842,21 +842,21 @@ class TestTypedDictImportFailures(TestNameCheckVisitorBase):
             name: str
 
         class BadRequiredExtra(
-            TypedDict, extra_items=Required[int]
-        ):  # E: invalid_qualifier
+            TypedDict, extra_items=Required[int]  # E: invalid_qualifier
+        ):
             name: str
 
         class BadNotRequiredExtra(
-            TypedDict, extra_items=NotRequired[int]
-        ):  # E: invalid_qualifier
+            TypedDict, extra_items=NotRequired[int]  # E: invalid_qualifier
+        ):
             name: str
 
         class BadClosedChild(MutableExtraBase, closed=True):  # E: invalid_typeddict
             pass
 
-        class BadChangedExtra(
+        class BadChangedExtra(  # E: invalid_typeddict
             MutableExtraBase, extra_items=str
-        ):  # E: invalid_typeddict
+        ):
             pass
 
         class ClosedChild(ReadOnlyExtraBase, closed=True):
@@ -878,9 +878,9 @@ class TestTypedDictImportFailures(TestNameCheckVisitorBase):
         class BadOpenClosedBase(ClosedBase, closed=False):  # E: invalid_typeddict
             pass
 
-        class BadOpenExtraItemsBase(
+        class BadOpenExtraItemsBase(  # E: invalid_typeddict
             ExtraItemsBase, closed=False
-        ):  # E: invalid_typeddict
+        ):
             pass
 
     @assert_passes(allow_import_failures=True)
