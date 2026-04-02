@@ -395,6 +395,30 @@ class TestTypeAliasType(TestNameCheckVisitorBase):
         """)
 
     @skip_before((3, 12))
+    def test_312_runtime_typealiastype_conformance_specializations(self):
+        self.assert_passes("""
+            from typing import Callable, TypeAliasType, TypeVar, TypeVarTuple
+
+            from typing_extensions import ParamSpec
+
+            S = TypeVar("S")
+            TStr = TypeVar("TStr", bound=str)
+            P = ParamSpec("P")
+            Ts = TypeVarTuple("Ts")
+
+            GoodAlias = TypeAliasType(
+                "GoodAlias",
+                Callable[P, TStr] | list[S] | list["GoodAlias[S, TStr, P]"] | tuple[*Ts],
+                type_params=(S, TStr, P, Ts),
+            )
+
+            x1: GoodAlias[str, str, ..., int, str]
+            x2: GoodAlias[int, str, ..., int, str]
+            x3: GoodAlias[int, str, [int, str], *tuple[int, str, int]]
+            x4: GoodAlias[int, int, ...]  # E: invalid_specialization
+        """)
+
+    @skip_before((3, 12))
     def test_312_runtime_typealiastype_scope_checks(self):
         self.assert_passes("""
             from typing import Generic, TypeAliasType, TypeVar

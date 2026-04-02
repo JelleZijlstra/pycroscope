@@ -1865,6 +1865,39 @@ class TestConstraints(TestNameCheckVisitorBase):
                         pass
 
     @assert_passes()
+    def test_nonlocal_skips_class_scope(self):
+        from typing_extensions import Literal
+
+        def capybara():
+            x = 1
+
+            class Wrapper:
+                def method(self) -> None:
+                    nonlocal x
+                    assert_type(x, Literal[1])
+
+            Wrapper().method()
+
+    @assert_passes()
+    def test_nonlocal_skips_intermediate_function_without_name(self):
+        from typing_extensions import Literal
+
+        def capybara():
+            x = 1
+
+            def middle() -> None:
+                y = 2
+
+                def nested() -> None:
+                    nonlocal x
+                    assert_type(x, Literal[1])
+                    assert_type(y, Literal[2])
+
+                nested()
+
+            middle()
+
+    @assert_passes()
     def test_nonlocal_not_unused(self):
         def _get_call_point(x, y):
             frame = x

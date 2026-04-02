@@ -198,6 +198,58 @@ class TestExtraKeys(TestNameCheckVisitorBase):
         # E: incompatible_argument
         ClosedMovie(name="No Country for Old Men", year=2007)
 
+    @assert_passes()
+    def test_extra_items_mutation_and_functional_constructor(self):
+        from typing_extensions import NotRequired, ReadOnly, TypedDict
+
+        class MovieExtra(TypedDict, extra_items=int):
+            name: ReadOnly[str]
+            year: NotRequired[int]
+
+        title = "No Country for Old Men"
+
+        MovieExtra(name=title, language=1)
+        MovieExtra(name=title, language="English")  # E: incompatible_argument
+
+        MovieFunctional = TypedDict("MovieFunctional", {"name": str}, extra_items=int)
+        movie_dict = {"name": title}
+
+        MovieFunctional(name=title, language=1)
+        MovieFunctional(movie_dict, language=1)  # E: incompatible_call
+
+        def capybara(movie: MovieExtra) -> None:
+            movie["language"] = 1
+            movie["language"] = "English"  # E: incompatible_argument
+            movie["name"] = "No Country for Old Men"  # E: readonly_typeddict
+            movie["year"] = "2007"  # E: incompatible_argument
+
+    @assert_passes()
+    def test_extra_items_conformance_operations(self):
+        from typing_extensions import TypedDict, Unpack
+
+        class MovieEI(TypedDict, extra_items=int):
+            name: str
+
+        def del_items(movie: MovieEI) -> None:
+            del movie["name"]  # E: incompatible_argument
+            del movie["year"]
+
+        class MovieNoExtra(TypedDict):
+            name: str
+
+        class MovieExtra(TypedDict, extra_items=int):
+            name: str
+
+        def unpack_no_extra(**kwargs: Unpack[MovieNoExtra]) -> None:
+            pass
+
+        def unpack_extra(**kwargs: Unpack[MovieExtra]) -> None:
+            pass
+
+        title = "No Country for Old Men"
+        unpack_no_extra(name=title, year=2007)  # E: incompatible_call
+        unpack_extra(name=title, year=2007)
+
 
 class TestTypedDict(TestNameCheckVisitorBase):
     @assert_passes()
