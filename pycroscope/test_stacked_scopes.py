@@ -292,6 +292,7 @@ class TestConstraintHelpers:
         assert "box.items[1]" in str(list_constraint)
         assert "AND" in str(AndConstraint((truthy_constraint, inverted_truthy)))
         assert "OR" in str(OrConstraint((truthy_constraint, inverted_truthy)))
+        assert "==" in str(EquivalentConstraint((truthy_constraint, inverted_truthy)))
 
     def test_predicate_provider_helpers(self):
         provider = PredicateProvider(VarnameWithOrigin("box"), lambda value: value)
@@ -2333,8 +2334,6 @@ class TestComposite(TestNameCheckVisitorBase):
     def test_reveal_type_for_indexed_constraints(self):
         from typing import Optional
 
-        from pycroscope.extensions import reveal_type
-
         class Box:
             items: tuple[Optional[int], Optional[int]]
 
@@ -2342,11 +2341,19 @@ class TestComposite(TestNameCheckVisitorBase):
             return box
 
         def capybara(box: Box):
-            reveal_type(box.items[1] == 1 or box.items[1] == 2)  # E: reveal_type
+            assert_is_value(
+                box.items[1] == 1 or box.items[1] == 2,
+                TypedValue(bool) | AnyValue(AnySource.from_another),
+                skip_annotated=True,
+            )
             repeated_truthiness = box.items[1] and box.items[1] and box.items[1]
-            reveal_type(repeated_truthiness)  # E: reveal_type
+            assert_is_value(
+                repeated_truthiness,
+                TypedValue(int) | KnownValue(None),
+                skip_annotated=True,
+            )
             non_none_equals_two = box.items[1] is not None and box.items[1] == 2
-            reveal_type(non_none_equals_two)  # E: reveal_type
+            assert_is_value(non_none_equals_two, TypedValue(bool), skip_annotated=True)
             if make_box(box).items[1] is not None:
                 pass
 
