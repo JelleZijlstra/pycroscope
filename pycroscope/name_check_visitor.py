@@ -8452,6 +8452,8 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     def _is_instance_member_accessed_through_class(
         self, root_composite: Composite, attr_name: str, node: ast.AST | None = None
     ) -> bool:
+        if attr_name in {"__name__", "__qualname__", "__module__", "__doc__"}:
+            return False
         call_expr: ast.AST | None = root_composite.node
         if isinstance(node, ast.Attribute):
             call_expr = node.value

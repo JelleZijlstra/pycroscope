@@ -747,6 +747,8 @@ def _get_attribute_from_subclass(
         # type[T] represents an arbitrary subclass of T, so class identity
         # attributes should be widened from base-class literals.
         return TypedValue(str)
+    elif ctx.attr == "__doc__":
+        return unite_values(TypedValue(str), KnownValue(None))
     can_assign_ctx = ctx.get_can_assign_context()
     attribute = _get_type_object_attribute(
         can_assign_ctx.make_type_object(typ),
@@ -1559,6 +1561,8 @@ def _get_attribute_from_typed(
         return KnownValue(typ)
     elif ctx.attr == "__dict__":
         return TypedValue(dict)
+    elif ctx.attr == "__doc__" and typ is type and generic_args:
+        return unite_values(TypedValue(str), KnownValue(None))
     classvar_type = _get_classvar_attribute_type_from_runtime_annotations(typ, ctx)
     if classvar_type is not None:
         ctx.record_usage(typ, classvar_type)
