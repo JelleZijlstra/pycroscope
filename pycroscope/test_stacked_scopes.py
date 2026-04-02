@@ -1,22 +1,46 @@
 # static analysis: ignore
 
+import pytest
+
+from .checker import Checker
 from .error_code import ErrorCode
 from .name_check_visitor import build_stacked_scopes
 from .options import Options
-from .stacked_scopes import ScopeType, uniq_chain
+from .stacked_scopes import (
+    EMPTY_ORIGIN,
+    NULL_CONSTRAINT,
+    AndConstraint,
+    Composite,
+    CompositeVariable,
+    Constraint,
+    ConstraintType,
+    EquivalentConstraint,
+    FunctionScope,
+    OrConstraint,
+    PredicateProvider,
+    Scope,
+    ScopeType,
+    VarnameWithOrigin,
+    VisitorState,
+    uniq_chain,
+)
 from .test_name_check_visitor import TestNameCheckVisitorBase
-from .test_node_visitor import assert_passes, skip_if_not_installed
+from .test_node_visitor import assert_passes, skip_before, skip_if_not_installed
 from .value import (
     UNINITIALIZED_VALUE,
     AnnotatedValue,
     AnySource,
     AnyValue,
+    ConstraintExtension,
     DictIncompleteValue,
     GenericValue,
     KnownValue,
     MultiValuedValue,
     ReferencingValue,
     SequenceValue,
+    SubclassValue,
+    TypeAlias,
+    TypeAliasValue,
     TypedValue,
     assert_is_value,
 )
@@ -174,6 +198,204 @@ class TestStackedScopes:
         assert div == self.scopes.get("value", None, None, can_assign_ctx=ctx)
 
 
+class TestConstraintHelpers:
+    def test_composite_helpers(self):
+        varname = VarnameWithOrigin(
+            "box",
+            EMPTY_ORIGIN,
+            (("items", EMPTY_ORIGIN), (KnownValue(1), EMPTY_ORIGIN)),
+        )
+
+        assert str(CompositeVariable("box", ("items", KnownValue(1)))) == "box.items[1]"
+        assert str(varname) == "box.items[1]"
+        assert (
+            Composite(KnownValue(1)).get_extended_varname_with_origin(
+                "attr", EMPTY_ORIGIN
+            )
+            is None
+        )
+
+    def test_composite_equality_ignores_node(self):
+        varname = VarnameWithOrigin("box")
+
+        assert Composite(KnownValue(1), varname, node="left") == Composite(
+            KnownValue(1), varname, node="right"
+        )
+
+    def test_constraint_apply_to_value_on_synthetic_and_subclass_values(self):
+        checker = Checker()
+        varname = VarnameWithOrigin("box")
+        int_constraint = Constraint(varname, ConstraintType.is_instance, True, int)
+
+        synthetic_value = TypedValue("Synthetic")
+        assert list(int_constraint.apply_to_value(synthetic_value, checker)) == [
+            synthetic_value
+        ]
+
+        subclass_value = SubclassValue(KnownValue(int))
+        assert list(int_constraint.apply_to_value(subclass_value, checker)) == [
+            subclass_value
+        ]
+
+    def test_constraint_apply_to_value_on_negative_isinstance_paths(self):
+        checker = Checker()
+        varname = VarnameWithOrigin("box")
+
+        assert list(
+            Constraint(varname, ConstraintType.is_instance, False, int).apply_to_value(
+                AnyValue(AnySource.unannotated), checker
+            )
+        ) == [AnyValue(AnySource.unannotated)]
+        assert list(
+            Constraint(varname, ConstraintType.is_instance, False, str).apply_to_value(
+                TypedValue(int), checker
+            )
+        ) == [TypedValue(int)]
+
+    def test_constraint_apply_to_value_negative_value_object(self):
+        constraint = Constraint(
+            VarnameWithOrigin("box"),
+            ConstraintType.is_value_object,
+            False,
+            TypedValue(int),
+        )
+
+        assert list(constraint.apply_to_value(TypedValue(str), Checker())) == [
+            TypedValue(str)
+        ]
+
+    def test_constraint_add_annotation_helper(self):
+        extension = ConstraintExtension(NULL_CONSTRAINT)
+        constraint = Constraint(
+            VarnameWithOrigin("box"), ConstraintType.add_annotation, True, extension
+        )
+
+        assert list(constraint.apply_to_value(TypedValue(int), Checker())) == [
+            AnnotatedValue(TypedValue(int), [extension])
+        ]
+        assert list(constraint.invert().apply_to_value(TypedValue(int), Checker())) == [
+            TypedValue(int)
+        ]
+
+    def test_constraint_string_representations(self):
+        varname = VarnameWithOrigin(
+            "box",
+            EMPTY_ORIGIN,
+            (("items", EMPTY_ORIGIN), (KnownValue(1), EMPTY_ORIGIN)),
+        )
+        truthy_constraint = Constraint(varname, ConstraintType.is_truthy, True, None)
+        inverted_truthy = truthy_constraint.invert()
+        list_constraint = Constraint(
+            varname, ConstraintType.one_of, True, [truthy_constraint, inverted_truthy]
+        )
+
+        assert "box.items[1]" in str(list_constraint)
+        assert "AND" in str(AndConstraint((truthy_constraint, inverted_truthy)))
+        assert "OR" in str(OrConstraint((truthy_constraint, inverted_truthy)))
+        assert "==" in str(EquivalentConstraint((truthy_constraint, inverted_truthy)))
+
+    def test_predicate_provider_helpers(self):
+        provider = PredicateProvider(VarnameWithOrigin("box"), lambda value: value)
+
+        assert tuple(provider.apply()) == ()
+        assert provider.invert() is NULL_CONSTRAINT
+
+    def test_constraint_combinator_helpers(self):
+        truthy_constraint = Constraint(
+            VarnameWithOrigin("box"), ConstraintType.is_truthy, True, None
+        )
+        falsy_constraint = truthy_constraint.invert()
+        other_constraint = Constraint(
+            VarnameWithOrigin("other"), ConstraintType.is_truthy, True, None
+        )
+
+        flattened = EquivalentConstraint.make(
+            [EquivalentConstraint((truthy_constraint,)), truthy_constraint]
+        )
+        assert flattened is truthy_constraint
+        assert EquivalentConstraint.make([truthy_constraint, truthy_constraint]) is (
+            truthy_constraint
+        )
+
+        assert tuple(OrConstraint(()).apply()) == ()
+
+        flattened_or = OrConstraint.make(
+            [OrConstraint((truthy_constraint,)), other_constraint]
+        )
+        assert flattened_or == OrConstraint((truthy_constraint, other_constraint))
+
+        reduced = OrConstraint.make(
+            [truthy_constraint, AndConstraint((truthy_constraint, other_constraint))]
+        )
+        assert reduced is truthy_constraint
+
+        object.__setattr__(falsy_constraint, "inverted", truthy_constraint)
+        assert (
+            OrConstraint.make([truthy_constraint, falsy_constraint]) is NULL_CONSTRAINT
+        )
+
+
+class TestScopeHelpers:
+    def test_scope_add_constraint_is_noop(self):
+        scope = Scope(ScopeType.module_scope)
+        scope.add_constraint(NULL_CONSTRAINT, "node", VisitorState.check_names)
+
+        assert scope.variables == {}
+
+    def test_scope_dummy_context_managers(self):
+        scope = Scope(ScopeType.module_scope)
+
+        with scope.suppressing_subscope() as suppressing:
+            assert suppressing == {}
+        with scope.loop_scope() as loop_scopes:
+            assert loop_scopes == []
+
+    def test_function_scope_ignores_constraint_without_varname(self):
+        function_scope = FunctionScope(Scope(ScopeType.module_scope))
+        function_scope._add_single_constraint(
+            Constraint(None, ConstraintType.is_truthy, True, None),
+            "node",
+            VisitorState.check_names,
+        )
+
+        assert function_scope.name_to_current_definition_nodes == {}
+
+    def test_function_scope_origin_for_special_lookup_context(self):
+        function_scope = FunctionScope(Scope(ScopeType.module_scope))
+        composite = CompositeVariable("box", ("value",))
+
+        assert (
+            function_scope.get_origin(composite, None, VisitorState.check_names)
+            == EMPTY_ORIGIN
+        )
+
+        function_scope.set(
+            composite, KnownValue(1), "definition", VisitorState.collect_names
+        )
+        assert function_scope.get_origin(
+            composite, None, VisitorState.check_names
+        ) == frozenset({"definition"})
+
+    def test_get_nonlocal_scope_for_missing_name(self):
+        local_scopes = build_stacked_scopes(Module, options=Options({}))
+
+        with local_scopes.add_scope(ScopeType.function_scope, scope_node=None):
+            assert (
+                local_scopes.get_nonlocal_scope("missing", local_scopes.current_scope())
+                is None
+            )
+
+    def test_scope_replaces_any_with_precise_type_alias_value(self):
+        alias = TypeAliasValue(
+            "Alias", "__main__", TypeAlias(lambda: TypedValue(int), lambda: ())
+        )
+        scope = Scope(ScopeType.module_scope, {"Alias": AnyValue(AnySource.inference)})
+
+        scope.set("Alias", alias, None, VisitorState.check_names)
+
+        assert scope.variables["Alias"] is alias
+
+
 class TestScoping(TestNameCheckVisitorBase):
     @assert_passes()
     def test_multiple_assignment(self):
@@ -249,6 +471,60 @@ class TestScoping(TestNameCheckVisitorBase):
         class Capybara:
             def socket(self) -> socket.error:
                 return socket.error()
+
+    @skip_before((3, 12))
+    def test_module_scope_reveal_locals_with_forward_alias(self):
+        self.assert_passes(
+            """
+            from pycroscope.extensions import reveal_locals
+            from typing_extensions import assert_type
+
+            type Alias = Later
+
+            class Later:
+                pass
+
+            module_value: Alias = Later()
+            assert_type(module_value, Later)
+            reveal_locals()  # E: reveal_type
+            """,
+            run_in_both_module_modes=True,
+        )
+
+    @assert_passes()
+    def test_evaluated_decorator_uses_module_scope(self):
+        from typing_extensions import assert_type
+
+        from pycroscope.extensions import evaluated
+
+        T = int
+
+        def capybara():
+            T = str
+            print(T)
+
+            @evaluated
+            def local_eval():
+                return T
+
+            def local_eval() -> int:
+                return 1
+
+            assert_type(local_eval(), int)
+
+    @assert_passes()
+    def test_walrus_in_comprehension_body_updates_outer_scope(self):
+        from typing_extensions import Literal, assert_type
+
+        def capybara():
+            values = [(x := i) for i in (1, 2)]
+            print(values)
+            assert_type(x, Literal[2])
+
+    @assert_passes(allow_import_failures=True)
+    def test_module_scope_future_value_for_class_body_self_reference(self):
+        class Capybara:
+            self_ref = Capybara
 
 
 class TestIf(TestNameCheckVisitorBase):
@@ -1211,6 +1487,22 @@ class TestConstraints(TestNameCheckVisitorBase):
             assert_is_instance(cond2, (int, str))
             assert_type(cond2, int | str)
 
+    @skip_if_not_installed("qcore")
+    @assert_passes()
+    def test_qcore_assert_is_instance_precision(self):
+        from qcore.asserts import assert_is_instance
+        from typing_extensions import assert_type
+
+        def capybara(x, y: object, z: bool):
+            assert_is_instance(x, int)
+            assert_type(x, int)
+
+            assert_is_instance(y, int)
+            assert_type(y, int)
+
+            assert_is_instance(z, int)
+            assert_type(z, bool)
+
     @assert_passes()
     def test_is_or_is_not(self):
         from typing_extensions import Literal
@@ -1545,6 +1837,26 @@ class TestConstraints(TestNameCheckVisitorBase):
                     assert_type(x, Literal[True])
 
     @assert_passes()
+    def test_nonlocal_skips_class_scope(self):
+        from typing_extensions import Literal
+
+        def capybara() -> None:
+            x = 1
+
+            class Inner:
+                def nested(self) -> None:
+                    nonlocal x
+                    assert_type(x, Literal[1])
+
+    def test_bad_nonlocal_without_binding(self):
+        with pytest.raises(SyntaxError):
+            self.assert_passes("""
+                def capybara() -> None:
+                    def nested() -> None:
+                        nonlocal x
+                """)
+
+    @assert_passes()
     def test_nonlocal_in_loop(self):
         def capybara(x):
             def nested(y):
@@ -1703,6 +2015,104 @@ class TestConstraints(TestNameCheckVisitorBase):
             if x > 5:
                 assert_is_value(x, AnnotatedValue(TypedValue(int), [ext]))
             assert_is_value(x, TypedValue(int) | AnnotatedValue(TypedValue(int), [ext]))
+
+    @assert_passes()
+    def test_typeguard_on_expression_does_not_add_constraint(self):
+        from typing_extensions import TypeGuard
+
+        def is_int(value: object) -> TypeGuard[int]:
+            return isinstance(value, int)
+
+        def capybara(x: object) -> None:
+            if is_int((x,)):
+                assert_type(x, object)
+
+    @assert_passes()
+    def test_negative_isinstance_paths(self):
+        def capybara(x, y: int) -> None:
+            if not isinstance(x, int):
+                assert_is_value(x, AnyValue(AnySource.unannotated))
+
+            if not isinstance(y, str):
+                assert_type(y, int)
+
+    @assert_passes()
+    def test_evaluated_is_of_type_uses_module_scope_only(self):
+        from typing import Union
+
+        from typing_extensions import Literal
+
+        from pycroscope.extensions import evaluated, is_of_type
+
+        @evaluated
+        def is_of_type_evaluated(x: int):
+            if is_of_type(x, Literal[1]):
+                return str
+            else:
+                return int
+
+        def is_of_type_evaluated(x: int) -> Union[int, str]:
+            if x == 1:
+                return ""
+            else:
+                return 0
+
+        def capybara(unannotated):
+            assert_type(is_of_type_evaluated(1), str)
+            assert_type(is_of_type_evaluated(2), int)
+            assert_type(is_of_type_evaluated(unannotated), int)
+            assert_type(is_of_type_evaluated(2 if unannotated else 1), int | str)
+
+    @assert_passes()
+    def test_negated_is_of_type_preserves_value_object(self):
+        from typing import Union
+
+        from typing_extensions import Literal
+
+        from pycroscope.extensions import evaluated, is_of_type
+
+        @evaluated
+        def not_evaluated(x: int):
+            if not is_of_type(x, Literal[1]):
+                return str
+            else:
+                return int
+
+        def not_evaluated(x: int) -> Union[int, str]:
+            if x == 1:
+                return 0
+            else:
+                return ""
+
+        def capybara(unannotated):
+            assert_type(not_evaluated(1), int)
+            assert_type(not_evaluated(2), str)
+            assert_type(not_evaluated(unannotated), str)
+            assert_type(not_evaluated(2 if unannotated else 1), int | str)
+
+    @assert_passes()
+    def test_extract_constraints_on_noreturn_compare(self):
+        from typing import NoReturn
+
+        def impossible() -> NoReturn:
+            raise RuntimeError
+
+        def capybara() -> None:
+            if impossible() == 0:
+                pass
+
+    @assert_passes()
+    def test_compare_without_constraints(self):
+        def capybara() -> None:
+            assert_type(1 == 2, bool)
+
+    @assert_passes()
+    def test_negative_tuple_truthiness_narrows(self):
+        def capybara(t: tuple[()] | tuple[int]):
+            if not t:
+                assert_type(t, tuple[()])
+            else:
+                assert_type(t, tuple[int])
 
     @assert_passes()
     def test_unconstrained_composite(self):
@@ -1921,6 +2331,45 @@ class TestComposite(TestNameCheckVisitorBase):
                     assert_type(self.x, int)
 
     @assert_passes()
+    def test_reveal_type_for_indexed_constraints(self):
+        from typing import Optional
+
+        class Box:
+            items: tuple[Optional[int], Optional[int]]
+
+        def make_box(box: Box) -> Box:
+            return box
+
+        def capybara(box: Box):
+            assert_is_value(
+                bool(box.items[1] == 1 or box.items[1] == 2), TypedValue(bool)
+            )
+            repeated_truthiness = box.items[1] and box.items[1] and box.items[1]
+            assert_is_value(
+                repeated_truthiness,
+                TypedValue(int) | KnownValue(None),
+                skip_annotated=True,
+            )
+            non_none_equals_two = box.items[1] is not None and box.items[1] == 2
+            assert_is_value(non_none_equals_two, TypedValue(bool), skip_annotated=True)
+            if make_box(box).items[1] is not None:
+                pass
+
+    @assert_passes()
+    def test_nested_function_attribute_constraint(self):
+        from typing import Optional
+
+        class Box:
+            value: Optional[int]
+
+        def capybara(box: Box):
+            def nested():
+                if box.value is not None:
+                    assert_type(box.value, int)
+
+            nested()
+
+    @assert_passes()
     def test_subscript(self):
         from typing import Any, Dict
 
@@ -1941,6 +2390,19 @@ class TestComposite(TestNameCheckVisitorBase):
             # make sure this doesn't crash
             df[["a", "b"]] = 42
             print(df[["a", "b"]])
+
+    @assert_passes()
+    def test_reveal_locals_with_composite_variables(self):
+        from typing import Optional
+
+        from pycroscope.extensions import reveal_locals
+
+        class Box:
+            child: Optional["Box"]
+
+        def capybara(box: Box, items: list[tuple[Optional[int]]]) -> None:
+            if box.child is not None and items[0][0] is not None:
+                reveal_locals()  # E: reveal_type
 
 
 def test_uniq_chain():

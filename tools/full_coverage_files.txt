@@ -3,4 +3,5 @@ pycroscope/__init__.py
 pycroscope/error_code.py
 pycroscope/regex_check.py
 pycroscope/shared_options.py
+pycroscope/stacked_scopes.py
 pycroscope/type_evaluation.py
