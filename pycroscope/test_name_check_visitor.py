@@ -1033,6 +1033,15 @@ class TestImportFailureHandlingCodeSamples(TestNameCheckVisitorBase):
             cls.x = "x"  # E: incompatible_assignment
 
     @assert_passes()
+    def test_invalid_attribute_write_does_not_poison_later_reads(self):
+        class C:
+            x: int
+
+            def f(self, maybe: int | None) -> None:
+                self.x = maybe  # E: incompatible_assignment
+                self.x.bit_length()
+
+    @assert_passes()
     def test_union_instance_member_assignment_through_class(self):
         class C:
             x: int
@@ -2610,6 +2619,48 @@ class TestClassAttributeChecker(TestNameCheckVisitorBase):
             return TypedValue(str), TypedValue(str)
 
         self.assert_passes(code, extra_options=[ClassAttributeTransformer([transform])])
+
+    def test_transformed_descriptor_uses_set_type_and_preserves_instance_reads(self):
+        code = """
+        from typing import Generic, TypeVar, overload
+        from typing_extensions import Self, assert_type
+
+        T = TypeVar("T")
+
+        class Field(Generic[T]):
+            @overload
+            def __get__(self, obj: None, owner: object) -> Self: ...
+            @overload
+            def __get__(self, obj: object, owner: object) -> T: ...
+
+            def __get__(self, obj: object | None, owner: object) -> "Field[T] | T":
+                if obj is None:
+                    return self
+                return ""  # type: ignore[return-value]
+
+        class Model:
+            name = Field[str]()
+
+            def write(self, newname: str | None) -> None:
+                self.name = newname  # E: incompatible_assignment
+                assert_type(self.name, str)
+                self.name.lower()
+
+            def read(self) -> None:
+                assert_type(self.name, str)
+                self.name.lower()
+        """
+
+        def transform(attr: object):
+            if type(attr).__name__ != "Field":
+                return None
+            return TypedValue(str), TypedValue(str)
+
+        self.assert_passes(
+            code,
+            run_in_both_module_modes=True,
+            extra_options=[ClassAttributeTransformer([transform])],
+        )
 
     def test_imported_descriptor_preserves_class_access_in_both_modes(self):
         code = """
