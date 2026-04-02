@@ -4608,6 +4608,21 @@ class TestControlFlow(TestNameCheckVisitorBase):
             settings={ErrorCode.unreachable: True},
         )
 
+    def test_definite_value_short_circuit_suppresses_rhs_errors(self):
+        self.assert_passes(
+            """
+            import sys
+
+            def capybara() -> None:
+                if sys.version_info < (0, 0) and undefined_name:
+                    pass
+
+                if sys.version_info >= (0, 0) or undefined_name:
+                    pass
+            """,
+            settings={ErrorCode.unreachable: True, ErrorCode.value_always_true: False},
+        )
+
     def test_unreachable_ignores_mutable_annotated_bool_attributes(self):
         self.assert_passes(
             """
