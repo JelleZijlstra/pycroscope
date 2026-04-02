@@ -858,16 +858,15 @@ class TestTypeAliasType(TestNameCheckVisitorBase):
         P = ParamSpec("P")
         Ts = TypeVarTuple("Ts")
 
-        Alias1: TypeAlias = ClassVar[int]  # E: invalid_qualifier
-        Alias2: TypeAlias = P  # E: invalid_paramspec_usage
-        Alias3: TypeAlias = tuple[P.args]  # E: invalid_paramspec_usage
-        Alias4: TypeAlias = ...
+        Alias1: TypeAlias = ClassVar[int]  # E: invalid_qualifier  # noqa: F841
+        Alias2: TypeAlias = P  # E: invalid_paramspec_usage  # noqa: F841
+        Alias3: TypeAlias = tuple[P.args]  # E: invalid_paramspec_usage  # noqa: F841
+        Alias4: TypeAlias = ...  # noqa: F841
 
         value1: P  # E: invalid_paramspec_usage  # noqa: F842
         value2: ...  # noqa: F842
         value3: tuple[P.args]  # E: invalid_paramspec_usage  # noqa: F842
         value4: Ts  # noqa: F842
-        print(Alias1, Alias2, Alias3, Alias4)
 
     @assert_passes()
     def test_explicit_typealias_type_forms_use_object_semantics(self):
