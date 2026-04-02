@@ -22,7 +22,7 @@ from typing_extensions import assert_never
 import pycroscope
 from pycroscope.analysis_lib import Sentinel
 from pycroscope.find_unused import used
-from pycroscope.safe import safe_equals, safe_isinstance, safe_issubclass
+from pycroscope.safe import safe_equals, safe_isinstance
 from pycroscope.typevar import resolve_bounds_map
 from pycroscope.value import (
     NO_RETURN_VALUE,
@@ -2556,9 +2556,7 @@ def _intersect_typed(
     if (
         not left_tobj.is_protocol()
         and not right_tobj.is_protocol()
-        and isinstance(left_tobj.typ, type)
-        and isinstance(right_tobj.typ, type)
-        and not _can_nominal_types_intersect(left_tobj.typ, right_tobj.typ)
+        and not _can_nominal_types_intersect(left_tobj, right_tobj, ctx)
     ):
         return NO_RETURN_VALUE
 
@@ -2570,10 +2568,14 @@ def _intersect_typed(
     return Irreducible
 
 
-def _can_nominal_types_intersect(t1: type[object], t2: type[object]) -> bool:
-    sb1 = _solid_base(t1)
-    sb2 = _solid_base(t2)
-    return safe_issubclass(sb1, sb2) or safe_issubclass(sb2, sb1)
+def _can_nominal_types_intersect(
+    t1: "pycroscope.type_object.TypeObject",
+    t2: "pycroscope.type_object.TypeObject",
+    ctx: CanAssignContext,
+) -> bool:
+    sb1 = _solid_base(t1, ctx)
+    sb2 = _solid_base(t2, ctx)
+    return sb1.is_in_mro(sb2.typ) or sb2.is_in_mro(sb1.typ)
 
 
 SIZEOF_PYOBJECT = struct.calcsize("P")
@@ -2616,17 +2618,26 @@ def _shape_differs(t1: type[object], t2: type[object]) -> bool:
         return t_size != t2.__basicsize__
 
 
-def _solid_base(typ: type[object]) -> type[object]:
+def _solid_base(
+    tobj: "pycroscope.type_object.TypeObject", ctx: CanAssignContext
+) -> "pycroscope.type_object.TypeObject":
     """Return the "solid base" of a type, mirroring the logic in CPython's typeobject.c.
 
     A "solid base" is a base that determines the shape of the type."""
-    if typ is object:
-        return object
+    if tobj.is_disjoint_base() or tobj.typ is object:
+        return tobj
+    typ = tobj.typ
+    if not isinstance(typ, type):
+        # TODO: this is not entirely correct in the presence of multiple inheritance.
+        # I think the right approach is to get the solid base for all direct bases, and pick
+        # the one that is a subclass of all others.
+        direct_bases = tuple(tobj.get_direct_base_type_objects())
+        return _solid_base(direct_bases[0], ctx)
     base = typ.__base__
     assert base is not None, f"Type {typ} has no base"
     if _shape_differs(typ, base):
-        return typ
-    return _solid_base(base)
+        return tobj
+    return _solid_base(ctx.make_type_object(base), ctx)
 
 
 def _intersect_maybe_mutable(

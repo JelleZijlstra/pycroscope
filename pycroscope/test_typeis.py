@@ -560,6 +560,34 @@ class TestTypeIs(TestNameCheckVisitorBase):
                 return
             assert_type(x, Union[A, B])
 
+    @assert_passes(run_in_both_module_modes=True)
+    def testTypeIsDistinctDisjointBases(self):
+        from typing_extensions import Never, TypeIs, assert_type, disjoint_base
+
+        @disjoint_base
+        class Left:
+            pass
+
+        @disjoint_base
+        class Right:
+            pass
+
+        class LeftChild(Left):
+            pass
+
+        class RightChild(Right):
+            pass
+
+        def is_left(x: object) -> TypeIs[LeftChild]:
+            return isinstance(x, LeftChild)
+
+        def is_right(x: object) -> TypeIs[RightChild]:
+            return isinstance(x, RightChild)
+
+        def main(x: object) -> None:
+            if is_left(x) and is_right(x):
+                assert_type(x, Never)
+
     @assert_passes()
     def testTypeIsComprehensionSubtype(self):
         from typing import List

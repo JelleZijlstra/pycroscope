@@ -3994,6 +3994,11 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             self._is_final_decorator_value(value) for _, value, _ in decorator_values
         ):
             self.final_class_keys.add(class_key)
+        if any(
+            self._is_disjoint_base_decorator_value(value)
+            for _, value, _ in decorator_values
+        ):
+            tobj.set_is_disjoint_base(True)
         if sys.version_info >= (3, 12) and node.type_params:
             ctx = self.scopes.add_scope(
                 ScopeType.annotation_scope, scope_node=node, scope_object=class_obj
@@ -8123,6 +8128,11 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
 
     def _is_final_decorator_value(self, value: Value) -> bool:
         return isinstance(value, KnownValue) and is_typing_name(value.val, "final")
+
+    def _is_disjoint_base_decorator_value(self, value: Value) -> bool:
+        return isinstance(value, KnownValue) and is_typing_name(
+            value.val, "disjoint_base"
+        )
 
     def _finalize_synthetic_abstract_members(
         self, node: ast.ClassDef, class_key: type | str, *, is_protocol_class: bool
