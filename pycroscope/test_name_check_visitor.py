@@ -2960,8 +2960,10 @@ class TestTypingConstructNameMatching(TestNameCheckVisitorBase):
         MaybeNewType = NewType(tp=int, name=maybe_name)
         object_name: object = "ObjectNameNewType"
         ObjectNameNewType = NewType(
-            tp=int, name=object_name
-        )  # E: incompatible_argument
+            tp=int,
+            # E: incompatible_argument
+            name=object_name,
+        )
         BadNewType = NewType(tp=int, name="WrongNewType")  # E: incompatible_call
 
         print(GoodNewType, MaybeNewType, ObjectNameNewType, BadNewType)

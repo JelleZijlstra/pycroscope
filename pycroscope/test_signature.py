@@ -1367,9 +1367,9 @@ class TestOverload(TestNameCheckVisitorBase):
         class MissingImplFinal:
             @overload
             @final
-            def only_first_final(
+            def only_first_final(  # E: invalid_overload  # E: invalid_final
                 self, x: int
-            ) -> int: ...  # E: invalid_overload  # E: invalid_final
+            ) -> int: ...
 
             @overload
             @final
@@ -1386,9 +1386,9 @@ class TestOverload(TestNameCheckVisitorBase):
 
             @overload
             @override
-            def only_first_override(
+            def only_first_override(  # E: invalid_override_decorator
                 self, x: bool
-            ) -> bool: ...  # E: invalid_override_decorator
+            ) -> bool: ...
 
     @assert_passes()
     def test_overload_missing_implementation_preserves_dataclass_transform_info(self):

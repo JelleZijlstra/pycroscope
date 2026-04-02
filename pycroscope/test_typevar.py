@@ -1291,8 +1291,9 @@ class TestGenericClasses(TestNameCheckVisitorBase):
                 ...
 
             class BadConstraintTypeVar[
+                # E: invalid_annotation
                 Base: (int, str), T: (bool, complex) = Base
-            ]:  # E: invalid_annotation
+            ]:
                 ...
         """)
 

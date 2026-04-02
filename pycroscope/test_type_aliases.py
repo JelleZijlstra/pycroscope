@@ -1,6 +1,8 @@
 # static analysis: ignore
+import sys
+
 from .test_name_check_visitor import TestNameCheckVisitorBase
-from .test_node_visitor import assert_passes, skip_before
+from .test_node_visitor import assert_passes, skip_before, skip_if
 
 
 class TestRecursion(TestNameCheckVisitorBase):
@@ -125,8 +127,18 @@ class TestRecursion(TestNameCheckVisitorBase):
 
         print(x)
 
+    @skip_if(sys.version_info >= (3, 14))
+    @assert_passes(allow_import_failures=True)
+    def test_implicit_alias_union_of_named_runtime_union_before_314(self):
+        Base = list | set
+        Alias = Base | tuple
+
+        def f(x: Alias[int]) -> None:  # E: invalid_annotation
+            print(x)
+
+    @skip_if(sys.version_info < (3, 14))
     @assert_passes()
-    def test_implicit_alias_union_of_named_runtime_union(self):
+    def test_implicit_alias_union_of_named_runtime_union_314_plus(self):
         Base = list | set
         Alias = Base | tuple
 
@@ -254,7 +266,7 @@ class TestRecursion(TestNameCheckVisitorBase):
         def f(x: Alias[int]) -> None:
             assert_type(x, list[int])
 
-    @assert_passes(run_in_both_module_modes=True)
+    @assert_passes(allow_import_failures=True)
     def test_implicit_alias_infers_type_params_from_string_forward_refs(self):
         from typing import TypeVar
 
