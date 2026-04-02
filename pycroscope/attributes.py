@@ -1099,9 +1099,14 @@ def _should_use_resolved_class_attribute(attribute: TypeObjectAttribute) -> bool
     return (
         attribute.is_metaclass_owner
         or attribute.is_property
-        or symbol.is_classmethod
-        or symbol.returns_self_on_class_access
-        or symbol.annotation is not None
+        or (symbol.annotation is not None and not symbol.is_classmethod)
+        or (
+            symbol.is_classmethod
+            and (
+                symbol.returns_self_on_class_access
+                or _contains_self_typevar(attribute.value)
+            )
+        )
     )
 
 
