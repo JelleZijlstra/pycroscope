@@ -851,9 +851,12 @@ class TestTypeAliasType(TestNameCheckVisitorBase):
 
         print(Good, Bad)
 
+    @skip_before((3, 11))
     @assert_passes()
     def test_explicit_typealias_and_annotations_reject_invalid_paramspec_contexts(self):
-        from typing import ClassVar, ParamSpec, TypeAlias, TypeVarTuple
+        from typing import ClassVar, ParamSpec, TypeAlias
+
+        from typing_extensions import TypeVarTuple
 
         P = ParamSpec("P")
         Ts = TypeVarTuple("Ts")
@@ -978,7 +981,7 @@ class TestTypeAliasType(TestNameCheckVisitorBase):
             type Circular4 = Circular3  # E: invalid_type_alias
         """)
 
-    @skip_before((3, 12))
+    @skip_before((3, 13))
     def test_312_string_type_param_bounds_and_defaults(self):
         self.assert_passes(
             """
