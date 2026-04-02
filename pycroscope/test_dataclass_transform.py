@@ -153,6 +153,105 @@ class TestDataclassTransform(TestNameCheckVisitorBase):
             Customer1(1, "")  # E: incompatible_call
 
     @assert_passes()
+    def test_dataclass_transform_merges_overload_provider_metadata(self):
+        from dataclasses import dataclass
+        from typing import Any, Callable, TypeVar, overload
+
+        from typing_extensions import dataclass_transform
+
+        T = TypeVar("T")
+
+        @overload
+        @dataclass_transform(kw_only_default=True, frozen_default=False)
+        def model(cls: T) -> T: ...
+
+        @overload
+        @dataclass_transform(kw_only_default=True, frozen_default=False)
+        def model(
+            *, kw_only: bool = True, frozen: bool = False
+        ) -> Callable[[T], T]: ...
+
+        def model(*args: Any, **kwargs: Any) -> Any:
+            def decorator(cls: type[T]) -> type[T]:
+                return dataclass(
+                    cls,
+                    kw_only=kwargs.get("kw_only", True),
+                    frozen=kwargs.get("frozen", False),
+                )
+
+            if args and len(args) == 1 and isinstance(args[0], type):
+                return decorator(args[0])
+            return decorator
+
+        @model
+        class DefaultCustomer:
+            id: int
+            name: str
+
+        @model(frozen=False)
+        class MutableCustomer:
+            id: int
+            name: str
+
+        @model(frozen=True)
+        class FrozenCustomer:
+            id: int
+            name: str
+
+        DefaultCustomer(id=1, name="")
+        MutableCustomer(id=1, name="")
+        FrozenCustomer(id=1, name="")
+
+        def check_errors() -> None:
+            DefaultCustomer(1, "")  # E: incompatible_call
+            MutableCustomer(1, "")  # E: incompatible_call
+            FrozenCustomer(1, "")  # E: incompatible_call
+            FrozenCustomer(id=1, name="").name = "x"  # E: incompatible_assignment
+
+    @assert_passes()
+    def test_dataclass_transform_merges_direct_and_overload_provider_metadata(self):
+        from dataclasses import dataclass
+        from typing import Any, Callable, TypeVar, overload
+
+        from typing_extensions import dataclass_transform
+
+        T = TypeVar("T")
+
+        @overload
+        @dataclass_transform(kw_only_default=True)
+        def model(cls: T) -> T: ...
+
+        @overload
+        @dataclass_transform(kw_only_default=True)
+        def model(*, kw_only: bool = True) -> Callable[[T], T]: ...
+
+        @dataclass_transform(kw_only_default=True)
+        def model(*args: Any, **kwargs: Any) -> Any:
+            def decorator(cls: type[T]) -> type[T]:
+                return dataclass(cls, kw_only=kwargs.get("kw_only", True))
+
+            if args and len(args) == 1 and isinstance(args[0], type):
+                return decorator(args[0])
+            return decorator
+
+        @model
+        class KeywordOnlyCustomer:
+            id: int
+            name: str
+
+        @model(kw_only=False)
+        class PositionalCustomer:
+            id: int
+            name: str
+
+        KeywordOnlyCustomer(id=1, name="")
+        PositionalCustomer(1, "")
+
+        def check_errors() -> None:
+            KeywordOnlyCustomer(1, "")  # E: incompatible_call
+            PositionalCustomer(name="")  # E: incompatible_call
+
+    @assert_passes()
     def test_dataclass_transform_decorator_base_and_metaclass(self):
         from dataclasses import dataclass
         from typing import Callable, TypeVar
@@ -939,6 +1038,48 @@ class TestDataclassTransform(TestNameCheckVisitorBase):
             model.value = 3  # E: incompatible_assignment
             Model("1")
             Model(1)  # E: incompatible_argument
+
+    @assert_passes(run_in_both_module_modes=True)
+    def test_dataclass_transform_rejects_conflicting_defaults_and_bad_converter(self):
+        from typing import Any, Callable, TypeVar
+
+        from typing_extensions import dataclass_transform
+
+        T = TypeVar("T")
+
+        def model_field(
+            *,
+            default: Any = ...,
+            default_factory: object = ...,
+            factory: object = ...,
+            converter: Callable[..., Any] | None = None,
+        ) -> Any:
+            return object()
+
+        @dataclass_transform(field_specifiers=(model_field,))
+        def create_model() -> Callable[[type[T]], type[T]]:
+            def decorator(cls: type[T]) -> type[T]:
+                return cls
+
+            return decorator
+
+        def no_args() -> int:
+            return 1
+
+        @create_model()
+        class WithAbsentFactory:
+            value: int = model_field(factory=...)
+
+        @create_model()
+        class BadConverter:
+            value: int = model_field(converter=no_args)  # E: invalid_dataclass
+
+        @create_model()
+        class ConflictingDefault:
+            # E: invalid_dataclass
+            value: int = model_field(default=1, default_factory=lambda: 2)
+
+        print(WithAbsentFactory, BadConverter, ConflictingDefault)
 
     @assert_passes()
     def test_dataclass_transform_converter_field_specifier(self):

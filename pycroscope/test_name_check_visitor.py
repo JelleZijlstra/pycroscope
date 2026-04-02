@@ -1087,6 +1087,23 @@ class TestImportFailureHandlingCodeSamples(TestNameCheckVisitorBase):
             assert_type(point, Point)
             assert_type(point[0], int)
 
+    @assert_passes(run_in_both_module_modes=True)
+    def test_namedtuple_factory_in_class_base_and_function_scope(self):
+        from typing import NamedTuple
+
+        class Child(NamedTuple("Base", [("x", int)])):
+            pass
+
+        child = Child(1)
+        print(child.x)
+
+        def make_local_point(x: int, y: str) -> None:
+            LocalPoint = NamedTuple("LocalPoint", [("x", int), ("y", str)])
+            point = LocalPoint(x, y)
+            print(point.x, point.y)
+
+        make_local_point(1, "x")
+
     @assert_passes()
     def test_len_narrowing_on_tuple_union(self):
         from typing import TypeAlias

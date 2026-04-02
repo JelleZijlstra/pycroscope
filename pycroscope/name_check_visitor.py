@@ -7871,8 +7871,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         if not should_check_consistency or implementation is None:
             return
         node, _, implementation_signature = implementation
-        if implementation_signature is None:
-            return
+        assert implementation_signature is not None
 
         for pending in pending_block.overloads:
             if pending.signature is None:

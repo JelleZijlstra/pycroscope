@@ -203,6 +203,44 @@ class TestEnum(TestNameCheckVisitorBase):
             assert_type(Color.CRIMSON, Literal[Color.RED])
             assert_type(Color.CRIMSON.value, Literal[1])
 
+    @skip_before((3, 11))
+    @assert_passes()
+    def test_enum_docstring_pass_and_annotated_alias_members(self):
+        import enum
+
+        from typing_extensions import Literal, assert_type
+
+        class Example(enum.Enum):
+            "doc"
+
+            pass
+            helper: object = enum.nonmember(2)
+            first: object = 1
+            second: object = first
+
+        assert_type(Example.first, Literal[Example.first])
+        assert_type(Example.second, Literal[Example.first])
+        print(Example.helper)
+
+    @skip_before((3, 11))
+    def test_enum_docstring_pass_and_annotated_alias_members_after_import_failure(self):
+        self.assert_passes(
+            """
+            import enum
+
+            class Example(enum.Enum):
+                "doc"
+                pass
+                helper: object = enum.nonmember(2)
+                first: object = 1  # E: invalid_annotation
+                second: object = first
+
+            print(Example.helper)
+            """,
+            allow_import_failures=True,
+            force_runtime_module_load_failure=True,
+        )
+
     @assert_passes(run_in_both_module_modes=True)
     def test_enum_declared_value_type_checks_member_assignments(self):
         from enum import Enum

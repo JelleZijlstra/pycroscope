@@ -118,6 +118,21 @@ class TestRecursion(TestNameCheckVisitorBase):
 
         print(x)
 
+    @assert_passes(run_in_both_module_modes=True)
+    def test_implicit_alias_qualifier_like_expr_is_not_treated_as_type_alias(self):
+        from typing import ClassVar
+
+        Alias = ClassVar[int]
+        print(Alias)
+
+    @assert_passes(run_in_both_module_modes=True)
+    def test_implicit_alias_paramspec_value_is_not_treated_as_type_alias(self):
+        from typing_extensions import ParamSpec
+
+        P = ParamSpec("P")
+        Alias = P
+        print(Alias)
+
     @assert_passes()
     def test_implicit_alias_ignores_qualifier_expression(self):
         from typing import Final
@@ -126,6 +141,31 @@ class TestRecursion(TestNameCheckVisitorBase):
         x: Alias = 1
 
         print(x)
+
+    @assert_passes()
+    def test_implicit_alias_ignores_string_literal(self):
+        Alias = "int"
+        print(Alias)
+
+    @assert_passes()
+    def test_implicit_alias_ignores_runtime_subclass_value(self):
+        Alias = type[int]
+        print(Alias)
+
+    @assert_passes(allow_import_failures=True)
+    def test_implicit_alias_ignores_qualifier_with_invalid_inner_annotation(self):
+        from typing_extensions import Required
+
+        Alias = Required[int, str]
+        print(Alias)
+
+    @assert_passes(allow_import_failures=True)
+    def test_implicit_alias_ignores_paramspec_retrieved_dynamically(self):
+        from typing import ParamSpec
+
+        P = ParamSpec("P")
+        Alias = globals()["P"]
+        print(Alias)
 
     @skip_if(sys.version_info >= (3, 14))
     @assert_passes(allow_import_failures=True)
@@ -708,6 +748,38 @@ class TestTypeAliasType(TestNameCheckVisitorBase):
         )
 
     @skip_before((3, 12))
+    def test_312_generic_typevartuple_in_static_fallback(self):
+        self.assert_passes(
+            """
+            type Alias[*Ts] = tuple[*Ts]
+            """,
+            allow_import_failures=True,
+            force_runtime_module_load_failure=True,
+        )
+
+    @skip_before((3, 12))
+    def test_312_generic_paramspec_and_typevartuple(self):
+        self.assert_passes("""
+            from typing import Callable
+
+            type Callback[**P] = Callable[P, int]
+            type Shape[*Ts] = tuple[*Ts]
+
+            def use_callback(cb: Callback[[int, str]]) -> None:
+                cb(1, "x")
+
+            def use_shape(shape: Shape[int, str]) -> None:
+                a, b = shape
+                print(a, b)
+
+            def callback(x: int, y: str) -> int:
+                return x
+
+            use_callback(callback)
+            use_shape((1, "x"))
+            """)
+
+    @skip_before((3, 12))
     def test_312_annotated_runtime_alias(self):
         self.assert_passes(
             """
@@ -778,6 +850,42 @@ class TestTypeAliasType(TestNameCheckVisitorBase):
         Bad = TypeAliasType("Bad", int, type_params=(1,))  # E: invalid_type_alias
 
         print(Good, Bad)
+
+    @assert_passes()
+    def test_explicit_typealias_and_annotations_reject_invalid_paramspec_contexts(self):
+        from typing import ClassVar, ParamSpec, TypeAlias, TypeVarTuple
+
+        P = ParamSpec("P")
+        Ts = TypeVarTuple("Ts")
+
+        Alias1: TypeAlias = ClassVar[int]  # E: invalid_qualifier
+        Alias2: TypeAlias = P  # E: invalid_paramspec_usage
+        Alias3: TypeAlias = tuple[P.args]  # E: invalid_paramspec_usage
+        Alias4: TypeAlias = ...
+
+        value1: P  # E: invalid_paramspec_usage  # noqa: F842
+        value2: ...  # noqa: F842
+        value3: tuple[P.args]  # E: invalid_paramspec_usage  # noqa: F842
+        value4: Ts  # noqa: F842
+        print(Alias1, Alias2, Alias3, Alias4)
+
+    @assert_passes()
+    def test_explicit_typealias_type_forms_use_object_semantics(self):
+        from typing import Type, TypeAlias
+
+        AliasBuiltin: TypeAlias = type
+        AliasTyping: TypeAlias = Type
+        AliasBuiltinGeneric: TypeAlias = type[int]
+        AliasTypingGeneric: TypeAlias = Type[int]
+
+        print(AliasBuiltin, AliasTyping, AliasBuiltinGeneric, AliasTypingGeneric)
+
+    @assert_passes(allow_import_failures=True)
+    def test_implicit_alias_ignores_initvar_with_invalid_inner_annotation(self):
+        import dataclasses
+
+        Alias = dataclasses.InitVar[int, str]
+        print(Alias)
 
     @skip_before((3, 12))
     def test_312_literal(self):
@@ -870,6 +978,34 @@ class TestTypeAliasType(TestNameCheckVisitorBase):
             type Circular3 = Circular4  # E: invalid_type_alias
             type Circular4 = Circular3  # E: invalid_type_alias
         """)
+
+    @skip_before((3, 12))
+    def test_312_string_type_param_bounds_and_defaults(self):
+        self.assert_passes(
+            """
+            class Later:
+                pass
+
+            type Alias[T: "Later" = "Later"] = tuple[T]
+
+            def capybara(x: Alias[Later]) -> Alias[Later]:
+                return x
+            """,
+            run_in_both_module_modes=True,
+        )
+
+    @skip_before((3, 12))
+    def test_312_type_param_bounds_and_constraints_cannot_reference_type_params(self):
+        self.assert_passes(
+            """
+            type TooFewConstraints[T: (int,)] = T  # E: invalid_annotation
+            type BareConstraint[T, S: (T, int)] = tuple[T, S]  # E: invalid_annotation
+            type BadConstraint[T, S: (list[T], int)] = tuple[T, S]  # E: invalid_annotation
+            type BareBound[T, S: T] = tuple[T, S]  # E: invalid_annotation
+            type BadBound[T, S: list[T]] = tuple[T, S]  # E: invalid_annotation
+            """,
+            run_in_both_module_modes=True,
+        )
 
     @skip_before((3, 12))
     def test_312_alias_redeclaration(self):
