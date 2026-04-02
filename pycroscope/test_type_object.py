@@ -1795,6 +1795,171 @@ class TestSyntheticType(TestNameCheckVisitorBase):
         print(maybe_ok)
 
     @assert_passes()
+    def test_base_value_conversion_covers_runtime_shape_helpers(self):
+        from typing_extensions import TypeIs
+
+        class A:
+            pass
+
+        class B:
+            pass
+
+        class Base:
+            pass
+
+        HomTuple = tuple[int, ...]
+        FixedTuple = tuple[int, str]
+
+        class LoopBase:
+            def __mro_entries__(self, bases):
+                return (self,)
+
+        loop = LoopBase()
+
+        def is_a_class(cls: object) -> TypeIs[type[A]]:
+            return True
+
+        def capybara(flag: bool, cls: type[Base], narrowed: type[A] | type[B]) -> None:
+            class FromUnion(A if flag else B):
+                pass
+
+            class FromSubclassValue(cls):
+                pass
+
+            class FromDirectTuple(tuple[int, str]):
+                pass
+
+            class FromFixedTupleAlias(FixedTuple):
+                pass
+
+            class FromHomTupleAlias(HomTuple):
+                pass
+
+            class FromBitOr(A | B):
+                pass
+
+            class FromLoop(loop):
+                pass
+
+            if is_a_class(narrowed):
+
+                class FromIntersection(narrowed):
+                    pass
+
+                print(FromIntersection)
+
+            print(
+                FromUnion,
+                FromSubclassValue,
+                FromDirectTuple,
+                FromFixedTupleAlias,
+                FromHomTupleAlias,
+                FromBitOr,
+                FromLoop,
+            )
+
+    @assert_passes(run_in_both_module_modes=True)
+    def test_runtime_type_object_handles_odd_runtime_metadata_shapes(self):
+        from dataclasses import dataclass
+        from types import GenericAlias
+        from typing import Any, Generic, NamedTuple, TypeVar, cast, final
+
+        from typing_extensions import override
+
+        T = TypeVar("T")
+
+        class Box(Generic[T]):
+            pass
+
+        class EmptyOrig:
+            __orig_class__ = list[int]
+
+        class MismatchOrig:
+            __orig_class__ = GenericAlias(Box, (int, str))
+
+        @dataclass
+        class Data:
+            x: int
+
+        cast(Any, Data.__dataclass_fields__)[1] = Data.__dataclass_fields__["x"]
+        cast(Any, Data.__dataclass_fields__["x"]).init = 0
+
+        class NT(NamedTuple):
+            x: int
+
+        cast(Any, NT)._fields = 1
+        setattr(NT, "__annotations__", 1)
+
+        class Runtime:
+            x = 1
+            empty = EmptyOrig()
+            mismatch = MismatchOrig()
+
+            @final
+            def plain(self) -> int:
+                return 1
+
+            def chosen(self) -> int:
+                return 1
+
+        class Child(Runtime):
+            @override
+            def chosen(self) -> int:
+                return 2
+
+            @property
+            def value(self) -> int:
+                return 1
+
+            @value.setter
+            def value(self, new_value) -> None:
+                pass
+
+        ok1 = Data(1).x
+        ok2 = Runtime.x
+        ok3 = NT(1)
+        ok4 = Child().value
+        print(ok1, ok2, ok3, ok4)
+
+    @assert_passes(run_in_both_module_modes=True)
+    def test_namedtuple_with_non_mapping_annotations_loses_class_attribute(self):
+        from typing import Any, NamedTuple, cast
+
+        from typing_extensions import assert_type
+
+        class NT(NamedTuple):
+            x: int
+
+        cast(Any, NT)._fields = 1
+        setattr(NT, "__annotations__", 1)
+
+        print(NT.x)  # E: undefined_attribute
+        assert_type(NT.x, object)  # E: undefined_attribute  # E: inference_failure
+
+    @assert_passes(run_in_both_module_modes=True)
+    def test_runtime_generic_type_param_defaults_use_runtime_types(self):
+        from dataclasses import dataclass
+        from typing import Generic
+
+        from typing_extensions import TypeVar, assert_type
+
+        T = TypeVar("T", default=int)
+        U = TypeVar("U", default=str)
+
+        @dataclass
+        class Box(Generic[T, U]):
+            first: T
+            second: U
+
+        i: int = 1
+        s: str = "x"
+
+        assert_type(Box(i, s).first, int)
+        assert_type(Box(i, s).second, str)
+        assert_type(Box[bool](True, s).first, bool)
+        assert_type(Box[bool](True, s).second, str)
+
+    @assert_passes()
     def test_protocol_hash_method_accepts_class_object_metaclass_hash(self):
         from typing import Protocol
 
