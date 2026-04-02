@@ -534,6 +534,43 @@ class TestPartialValueInference(TestNameCheckVisitorBase):
 
 
 class TestImportFailureHandlingCodeSamples(TestNameCheckVisitorBase):
+    def test_code_only_module_load_success(self):
+        self.assert_passes(
+            """
+            from typing import Generic, TypeVar
+
+            from typing_extensions import assert_type
+
+            T = TypeVar("T")
+
+            class Box(Generic[T]):
+                value: T
+
+                def __init__(self, value: T) -> None:
+                    self.value = value
+
+            def capybara() -> None:
+                assert_type(Box(1).value, int)
+        """,
+            is_code_only=True,
+            force_runtime_module_load_failure=True,
+        )
+
+    def test_code_only_import_failure_reports_failing_line(self):
+        self.assert_passes(
+            """
+            from typing_extensions import assert_type
+
+            boom = 1 / 0
+
+            def capybara(x: int) -> None:
+                assert_type(x, int)
+                missing_name  # E: undefined_name
+        """,
+            allow_import_failures=True,
+            is_code_only=True,
+        )
+
     @assert_passes(run_in_both_module_modes=True)
     def test_overload_consistency_after_import_failure(self):
         from typing import overload
@@ -2912,6 +2949,25 @@ class TestTypingConstructNameMatching(TestNameCheckVisitorBase):
             BadTypedDict,
         )
 
+    @assert_passes(allow_import_failures=True)
+    def test_assignment_target_name_checks_keyword_name_arguments(self):
+        from random import random
+
+        from typing_extensions import NewType
+
+        GoodNewType = NewType(tp=int, name="GoodNewType")
+        maybe_name = "MaybeNewType" if random() else 1
+        MaybeNewType = NewType(tp=int, name=maybe_name)
+        object_name: object = "ObjectNameNewType"
+        ObjectNameNewType = NewType(
+            tp=int,
+            # E: incompatible_argument
+            name=object_name,
+        )
+        BadNewType = NewType(tp=int, name="WrongNewType")  # E: incompatible_call
+
+        print(GoodNewType, MaybeNewType, ObjectNameNewType, BadNewType)
+
     @assert_passes()
     def test_assignment_target_name_mismatch_with_keywords(self):
         from typing_extensions import ParamSpec
@@ -4825,6 +4881,97 @@ class TestFallbackValueDispatch(TestNameCheckVisitorBase):
                 self.y = 2
                 self.z = 3  # E: incompatible_assignment
 
+    @assert_passes(run_in_both_module_modes=True)
+    def test_string_slots_value_is_respected(self):
+        class Slotted:
+            __slots__ = "x"
+            x: int
+
+            def mutate(self) -> None:
+                self.x = 1
+                self.y = 2  # E: incompatible_assignment
+
+    @assert_passes(run_in_both_module_modes=True)
+    def test_slots_with_dict_and_weakref_allow_extra_attributes(self):
+        class Flexible:
+            __slots__ = ("x", "__dict__", "__weakref__")
+            x: int
+
+            def mutate(self) -> None:
+                self.x = 1
+                self.y = 2
+
+    @assert_passes(run_in_both_module_modes=True)
+    def test_slots_from_named_tuple_constant_are_respected(self):
+        SLOT_NAMES = ("x", "y")
+
+        class Slotted:
+            __slots__ = SLOT_NAMES
+            x: int
+            y: int
+
+            def mutate(self) -> None:
+                self.x = 1
+                self.y = 2
+                self.z = 3  # E: incompatible_assignment
+
+    @assert_passes(run_in_both_module_modes=True)
+    def test_slots_from_named_list_constant_are_respected(self):
+        SLOT_NAMES = ["x", "y"]
+
+        class Slotted:
+            __slots__ = SLOT_NAMES
+            x: int
+            y: int
+
+            def mutate(self) -> None:
+                self.x = 1
+                self.y = 2
+                self.z = 3  # E: incompatible_assignment
+
+    @assert_passes(allow_import_failures=True)
+    def test_invalid_conditional_slots_disable_slot_enforcement(self):
+        from random import random
+
+        class Weird:
+            __slots__ = ("x",) if random() else 3
+            x: int
+
+            def mutate(self) -> None:
+                self.x = 1
+                self.y = 2  # E: incompatible_assignment
+
+    @assert_passes(allow_import_failures=True)
+    def test_conflicting_conditional_slots_disable_slot_enforcement(self):
+        from random import random
+
+        class Weird:
+            __slots__ = ("x",) if random() else ("y",)
+            x: int
+            y: int
+
+            def mutate(self) -> None:
+                self.x = 1
+                self.y = 2  # E: incompatible_assignment
+                self.z = 3  # E: incompatible_assignment
+
+    @assert_passes(allow_import_failures=True)
+    def test_unknown_base_slots_disable_child_slot_enforcement(self):
+        from random import random
+
+        class Base:
+            __slots__ = ("x",) if random() else 3
+            x: int
+
+        class Child(Base):
+            __slots__ = ("y",)
+            y: int
+
+            def mutate(self) -> None:
+                self.x = 1
+                self.y = 2
+                self.z = 3  # E: incompatible_assignment
+
     @assert_passes(allow_import_failures=True)
     def test_conditional_typevar_identity_in_generic_bases(self):
         from random import random
@@ -5322,3 +5469,15 @@ class TestImplicitAny(TestNameCheckVisitorBase):
 
         class X(Base, a=True):
             pass
+
+    def test_call_result_reports_implicit_any(self):
+        self.assert_passes(
+            """
+            def identity(x):
+                return x  # E: implicit_any
+
+            def capybara(y):
+                identity(y)  # E: implicit_any  # E: implicit_any
+        """,
+            settings={ErrorCode.implicit_any: True},
+        )

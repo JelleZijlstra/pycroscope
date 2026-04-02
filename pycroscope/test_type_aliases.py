@@ -1,6 +1,8 @@
 # static analysis: ignore
+import sys
+
 from .test_name_check_visitor import TestNameCheckVisitorBase
-from .test_node_visitor import assert_passes, skip_before
+from .test_node_visitor import assert_passes, skip_before, skip_if
 
 
 class TestRecursion(TestNameCheckVisitorBase):
@@ -99,6 +101,185 @@ class TestRecursion(TestNameCheckVisitorBase):
 
         def includes(typ: AstType) -> bool:
             return isinstance(1, typ)
+
+    @assert_passes()
+    def test_implicit_alias_rejects_self_in_class_scope(self):
+        from typing_extensions import Self
+
+        class C:
+            Alias = tuple[Self]  # E: invalid_self_usage
+
+    @assert_passes()
+    def test_implicit_alias_ignores_renamed_any(self):
+        from typing import Any as TypingAny
+
+        Alias = TypingAny
+        x: Alias = 1
+
+        print(x)
+
+    @assert_passes()
+    def test_implicit_alias_ignores_qualifier_expression(self):
+        from typing import Final
+
+        Alias = Final[int]
+        x: Alias = 1
+
+        print(x)
+
+    @skip_if(sys.version_info >= (3, 14))
+    @assert_passes(allow_import_failures=True)
+    def test_implicit_alias_union_of_named_runtime_union_before_314(self):
+        Base = list | set
+        Alias = Base | tuple
+
+        def f(x: Alias[int]) -> None:  # E: invalid_annotation
+            print(x)
+
+    @skip_if(sys.version_info < (3, 14))
+    @assert_passes()
+    def test_implicit_alias_union_of_named_runtime_union_314_plus(self):
+        Base = list | set
+        Alias = Base | tuple
+
+        def f(x: Alias[int]) -> None:
+            print(x)
+
+    @assert_passes()
+    def test_implicit_alias_union_of_named_generic_alias(self):
+        from typing import TypeVar
+
+        T = TypeVar("T")
+        Base = list[T]
+        Alias = Base | set[T]
+
+        def f(x: Alias[int]) -> None:
+            print(x)
+
+    @assert_passes()
+    def test_implicit_alias_union_of_typevar_and_runtime_type(self):
+        from typing import TypeVar
+
+        T = TypeVar("T")
+        Alias = T | int
+
+        def f(x: Alias[str]) -> None:
+            print(x)
+
+    @assert_passes()
+    def test_implicit_alias_runtime_typeform_union(self):
+        Alias = type[int] | tuple[type[int], ...]
+
+        def f(x: Alias) -> bool:
+            return isinstance(1, x)
+
+    @assert_passes()
+    def test_implicit_alias_ignores_paramspec_components(self):
+        from typing import ParamSpec
+
+        P = ParamSpec("P")
+        ArgsAlias = P.args
+        KwargsAlias = P.kwargs
+
+        print(ArgsAlias, KwargsAlias)
+
+    @assert_passes()
+    def test_implicit_alias_from_typevar_name(self):
+        from typing import TypeVar
+
+        T = TypeVar("T")
+        Alias = T
+
+        print(Alias)
+
+    @assert_passes()
+    def test_implicit_alias_from_paramspec_name(self):
+        from typing import ParamSpec
+
+        P = ParamSpec("P")
+        Alias = P
+
+        print(Alias)
+
+    @skip_before((3, 11))
+    def test_implicit_alias_from_typevartuple_unpack(self):
+        self.assert_passes("""
+            from typing import TypeVarTuple
+
+            Ts = TypeVarTuple("Ts")
+            Alias = tuple[*Ts]
+
+            print(Alias)
+        """)
+
+    @skip_before((3, 11))
+    @assert_passes()
+    def test_implicit_alias_of_alias_keeps_type_params_in_importable_mode(self):
+        from typing import TypeVar
+
+        from typing_extensions import assert_type
+
+        T = TypeVar("T")
+        Box = list[T]
+        Alias = Box
+
+        def f(x: Alias[int]) -> None:
+            assert_type(x, list[int])
+
+    @skip_before((3, 11))
+    @assert_passes()
+    def test_implicit_alias_of_explicit_typealias_keeps_type_params(self):
+        from typing import TypeAlias, TypeVar
+
+        from typing_extensions import assert_type
+
+        T = TypeVar("T")
+        Box: TypeAlias = list[T]
+        Alias = Box
+
+        def f(x: Alias[int]) -> None:
+            assert_type(x, list[int])
+
+    @assert_passes()
+    def test_implicit_alias_of_conditional_runtime_generic_keeps_type_params(self):
+        from random import random
+        from typing import TypeVar
+
+        from typing_extensions import assert_type
+
+        T = TypeVar("T")
+        Box = list[T] if random() else list[T]
+        Alias = Box
+
+        def f(x: Alias[int]) -> None:
+            assert_type(x, list[int])
+
+    @assert_passes()
+    def test_implicit_alias_from_conditional_generic_value(self):
+        from random import random
+        from typing import TypeVar
+
+        from typing_extensions import assert_type
+
+        T = TypeVar("T")
+        Box = list[T] if random() else list[T]
+        Alias = Box
+
+        def f(x: Alias[int]) -> None:
+            y = x
+            assert_type(y, list[int])
+
+    @assert_passes(allow_import_failures=True)
+    def test_implicit_alias_infers_type_params_from_string_forward_refs(self):
+        from typing import TypeVar
+
+        from typing_extensions import assert_type
+
+        T = TypeVar("T")
+        Alias = list["T"]
+
+        def f(x: Alias[int]) -> None:
+            assert_type(x, list[int])
 
     @skip_before((3, 11))
     def test_typevartuple_alias_empty_specialization(self):
@@ -515,6 +696,18 @@ class TestTypeAliasType(TestNameCheckVisitorBase):
         """)
 
     @skip_before((3, 12))
+    def test_312_generic_paramspec_in_static_fallback(self):
+        self.assert_passes(
+            """
+            from typing import Callable
+
+            type Alias[**P] = Callable[P, int]
+            """,
+            allow_import_failures=True,
+            force_runtime_module_load_failure=True,
+        )
+
+    @skip_before((3, 12))
     def test_312_annotated_runtime_alias(self):
         self.assert_passes(
             """
@@ -536,6 +729,55 @@ class TestTypeAliasType(TestNameCheckVisitorBase):
             def capybara():
                 type MyType = int  # E: invalid_type_alias
         """)
+
+    @skip_before((3, 12))
+    def test_312_type_alias_cannot_use_self_in_static_fallback(self):
+        self.assert_passes(
+            """
+            from typing_extensions import Self
+
+            class C:
+                type Alias = Self
+            """,
+            allow_import_failures=True,
+            force_runtime_module_load_failure=True,
+        )
+
+    def test_typealiastype_cannot_use_self(self):
+        self.assert_passes("""
+            from typing_extensions import Self, TypeAliasType
+
+            class C:
+                Alias = TypeAliasType("Alias", Self)  # E: invalid_self_usage
+        """)
+
+    @assert_passes(allow_import_failures=True)
+    def test_typealiastype_missing_value_in_static_fallback(self):
+        from typing_extensions import TypeAliasType
+
+        Alias = TypeAliasType("Alias")  # E: incompatible_call
+
+    @skip_before((3, 12))
+    def test_typealiastype_type_params_in_class_scope(self):
+        self.assert_passes(
+            """
+            from typing_extensions import TypeAliasType
+
+            class C[T]:
+                Alias = TypeAliasType("Alias", list[T], type_params=(T,))
+            """,
+            allow_import_failures=True,
+        )
+
+    @assert_passes(allow_import_failures=True)
+    def test_typealiastype_type_params_reject_non_type_params(self):
+        from typing_extensions import TypeAliasType, TypeVar
+
+        T = TypeVar("T")
+        Good = TypeAliasType("Good", list[T], type_params=(T,))
+        Bad = TypeAliasType("Bad", int, type_params=(1,))  # E: invalid_type_alias
+
+        print(Good, Bad)
 
     @skip_before((3, 12))
     def test_312_literal(self):
@@ -635,6 +877,28 @@ class TestTypeAliasType(TestNameCheckVisitorBase):
             type Alias = int
             type Alias = int  # E: already_declared
         """)
+
+    @skip_before((3, 12))
+    def test_312_type_parameter_expr_fallbacks(self):
+        self.assert_passes(
+            """
+            import collections.abc
+
+            class UsesAttributeBound[T: collections.abc.Sequence[int]]:
+                ...
+
+            class UsesNonNameBound[T: int | str]:
+                ...
+
+            class UsesForwardRef[T: Later[int]]:
+                ...
+
+            class Later[S]:
+                ...
+            """,
+            allow_import_failures=True,
+            force_runtime_module_load_failure=True,
+        )
 
     @skip_before((3, 12))
     def test_312_iteration(self):

@@ -1359,6 +1359,184 @@ class TestOverload(TestNameCheckVisitorBase):
             def proto_override(self, x: str) -> str: ...
 
     @assert_passes()
+    def test_overload_final_and_override_placement_without_implementation(self):
+        from typing import final, overload
+
+        from typing_extensions import override
+
+        class MissingImplFinal:
+            @overload
+            @final
+            def only_first_final(  # E: invalid_overload  # E: invalid_final
+                self, x: int
+            ) -> int: ...
+
+            @overload
+            @final
+            def only_first_final(self, x: str) -> str: ...  # E: invalid_final
+
+        class Base:
+            def only_first_override(self, x: object) -> object:
+                return x
+
+        class MissingImplOverride(Base):
+            @overload
+            @override
+            def only_first_override(self, x: bytes) -> bytes: ...  # E: invalid_overload
+
+            @overload
+            @override
+            def only_first_override(  # E: invalid_override_decorator
+                self, x: bool
+            ) -> bool: ...
+
+    @assert_passes()
+    def test_overload_missing_implementation_preserves_dataclass_transform_info(self):
+        from typing import Callable, TypeVar, overload
+
+        from typing_extensions import dataclass_transform
+
+        T = TypeVar("T")
+
+        @overload
+        @dataclass_transform(kw_only_default=True)
+        def model(cls: T) -> T: ...  # E: invalid_overload
+
+        @overload
+        def model(*, kw_only: bool = True) -> Callable[[T], T]: ...
+
+    @assert_passes()
+    def test_protocol_overload_materializes_call_signature(self):
+        from typing import Protocol, overload
+
+        from typing_extensions import assert_type
+
+        class P(Protocol):
+            @overload
+            def f(self, x: int, /) -> int: ...
+
+            @overload
+            def f(self, x: str, /) -> str: ...
+
+        class C:
+            def f(self, x: int | str, /) -> int | str:
+                return x
+
+        def use(p: P) -> None:
+            assert_type(p.f(1), int)  # E: inference_failure
+            assert_type(p.f("x"), str)  # E: inference_failure
+
+        use(C())
+
+    @assert_passes()
+    def test_missing_overload_impl_flushed_by_next_function(self):
+        from typing import overload
+
+        from typing_extensions import assert_type
+
+        @overload
+        def bad(x: int) -> int: ...  # E: invalid_overload
+
+        @overload
+        def bad(x: str) -> str: ...
+
+        def other(x: bytes) -> bytes:
+            return x
+
+        assert_type(other(b"x"), bytes)
+
+    @assert_passes()
+    def test_missing_overload_impl_flushed_by_next_overload_block(self):
+        from typing import overload
+
+        from typing_extensions import assert_type
+
+        @overload
+        def bad(x: int) -> int: ...  # E: invalid_overload
+
+        @overload
+        def bad(x: str) -> str: ...
+
+        @overload
+        def good(x: int) -> int: ...
+
+        @overload
+        def good(x: str) -> str: ...
+
+        def good(x: int | str) -> int | str:
+            return x
+
+        assert_type(good(1), int)
+        assert_type(good("x"), str)
+
+    @assert_passes()
+    def test_abstract_overload_block_without_impl(self):
+        from abc import ABC, abstractmethod
+        from typing import overload
+
+        from typing_extensions import assert_type
+
+        class Base(ABC):
+            @overload
+            @abstractmethod
+            def f(self, x: int, /) -> int: ...
+
+            @overload
+            @abstractmethod
+            def f(self, x: str, /) -> str: ...
+
+        class Child(Base):
+            def f(self, x: int | str, /) -> int | str:
+                return x
+
+        def use(c: Child) -> None:
+            assert_type(c.f(1), int)  # E: inference_failure
+            assert_type(c.f("x"), str)  # E: inference_failure
+
+    @assert_passes()
+    def test_protocol_override_on_first_overload_only(self):
+        from typing import Protocol, overload
+
+        from typing_extensions import override
+
+        class Base(Protocol):
+            @overload
+            def f(self, x: int) -> int: ...
+
+            @overload
+            def f(self, x: str) -> str: ...
+
+        class Child(Base, Protocol):
+            @overload
+            @override
+            def f(self, x: int) -> int: ...
+
+            @overload
+            def f(self, x: str) -> str: ...
+
+    @assert_passes()
+    def test_protocol_overload_final_and_override_must_appear_first(self):
+        from typing import Protocol, final, overload
+
+        from typing_extensions import override
+
+        class BadFinalProtocol(Protocol):
+            @overload
+            def method(self, x: int) -> int: ...
+
+            @overload
+            @final
+            def method(self, x: str) -> str: ...  # E: invalid_final
+
+        class BadOverrideProtocol(Protocol):
+            @overload
+            def method(self, x: int) -> int: ...
+
+            @overload
+            @override
+            def method(self, x: str) -> str: ...  # E: invalid_override_decorator
+
+    @assert_passes()
     def test_consistency_with_transforms(self):
         from typing import Callable, Coroutine, overload
 

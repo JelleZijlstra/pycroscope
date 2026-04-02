@@ -2464,7 +2464,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             return importer.load_module_from_file(
                 self.filename, import_paths=[str(p) for p in import_paths]
             )
-        except KeyboardInterrupt:
+        except KeyboardInterrupt:  # pragma: no cover
             raise
         except BaseException as e:
             # don't re-raise the error, just proceed without a module object
@@ -2485,11 +2485,11 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         """Run the visitor on this module."""
         start_time = time.time()
         try:
-            if self.is_compiled:
+            if self.is_compiled:  # pragma: no cover
                 # skip compiled (Cythonized) files because pycroscope will misinterpret the
                 # AST in some cases (for example, if a function was cdefed)
                 return []
-            if self.tree is None:
+            if self.tree is None:  # pragma: no cover
                 return self.all_failures
             if self.module is None and not ignore_missing_module:
                 # Keep checking so we can surface non-import-related issues too.
@@ -6339,13 +6339,8 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             for type_param in type_params_from_bases
         ):
             return type_params_from_bases
-        seen: set[object] = set()
-        type_params: list[TypeParam] = []
-        for type_param in type_params_from_bases:
-            if type_param.typevar in seen:
-                continue
-            seen.add(type_param.typevar)
-            type_params.append(type_param)
+        type_params = list(type_params_from_bases)
+        seen = {type_param.typevar for type_param in type_params}
         for base in base_values:
             for subval in flatten_values(base):
                 runtime_annotation = self._runtime_annotation_from_value(subval)
@@ -6381,9 +6376,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         analyzed_bases = [
             self._value_for_variance_annotation(base_node) for base_node in node.bases
         ]
-        if analyzed_bases:
-            return analyzed_bases
-        return base_values
+        return analyzed_bases
 
     def _check_duplicate_type_params_in_generic_bases(
         self, node: ast.ClassDef, base_values: Sequence[Value]
@@ -12589,11 +12582,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             if extracted is not None:
                 params.append(extracted)
                 continue
-            identity = _type_param_identity(value, self)
-            if identity is not None:
-                assert is_typevarlike(identity)
-                params.append(make_type_param(identity, visitor=self, node=elt))
-                continue
             self._show_error_if_checking(
                 elt,
                 "TypeAliasType type_params must contain only type parameters",
@@ -15141,8 +15129,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             name_arg_value, name_arg_node = maybe_name_arg
             if name_arg_value != assigned_name:
                 error_node = name_arg_node if name_arg_node is not None else node
-                if error_node is None:
-                    return
+                assert error_node is not None
                 self._show_error_if_checking(
                     error_node,
                     f"{construct_name} name argument must match the assignment target"
