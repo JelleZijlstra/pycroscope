@@ -56,6 +56,7 @@ def _check_files_with_annotations(
     settings = PycroscopeVisitor._get_default_settings()
     if settings is not None:
         settings[ErrorCode.implicit_any] = False
+        settings[ErrorCode.unreachable] = True
     kwargs: dict[str, object] = {"settings": settings, "files": files}
     kwargs = dict(PycroscopeVisitor.prepare_constructor_kwargs(kwargs))
     files_to_check = PycroscopeVisitor.get_files_to_check(False, **kwargs)
