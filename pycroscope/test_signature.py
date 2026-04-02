@@ -1768,6 +1768,27 @@ class TestUnpack(TestNameCheckVisitorBase):
             wrapped(1, y="x")
 
     @assert_passes()
+    def test_paramspec_forwarding_through_rebound_args_and_kwargs(self):
+        from typing import Callable, TypeVar
+
+        from typing_extensions import ParamSpec, assert_type
+
+        P = ParamSpec("P")
+        T = TypeVar("T")
+
+        def apply(func: Callable[P, T], *args: P.args, **kwargs: P.kwargs) -> T:
+            rebound_args = args
+            rebound_kwargs = kwargs
+            return func(*rebound_args, **rebound_kwargs)
+
+        def sample(x: int, *, y: str) -> str:
+            return y * x
+
+        def caller() -> None:
+            assert_type(apply(sample, 2, y="a"), str)
+            apply(sample, "x", y="a")  # E: incompatible_call
+
+    @assert_passes()
     def test_paramspec_forwarding_rejects_mismatched_args_and_kwargs(self):
         from typing import Callable, ParamSpec, TypeVar
 
