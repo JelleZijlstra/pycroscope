@@ -4608,6 +4608,32 @@ class TestControlFlow(TestNameCheckVisitorBase):
             settings={ErrorCode.unreachable: True},
         )
 
+    def test_unreachable_ignores_mutable_annotated_bool_attributes(self):
+        self.assert_passes(
+            """
+            class Detector:
+                is_generator: bool = False
+
+                def mark(self) -> None:
+                    self.is_generator = True
+
+            class VarianceState:
+                def __init__(self) -> None:
+                    self.is_protocol: bool = False
+
+                def set_protocol(self, value: bool) -> None:
+                    self.is_protocol = value
+
+            def capybara(detector: Detector, state: VarianceState) -> None:
+                if detector.is_generator:
+                    print("maybe")
+
+                if state.is_protocol:
+                    print("maybe")
+            """,
+            settings={ErrorCode.unreachable: True},
+        )
+
     @assert_passes(run_in_both_module_modes=True)
     def test_annotated_class_attribute_read_uses_annotation_type(self):
         from typing_extensions import assert_type

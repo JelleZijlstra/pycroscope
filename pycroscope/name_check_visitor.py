@@ -558,7 +558,7 @@ if asynq is not None:
 class _AsyncGeneratorDetector(ast.NodeVisitor):
     """Detect whether an async function body contains a yield."""
 
-    is_generator = False
+    is_generator: bool = False
 
     def visit_Yield(self, node: ast.Yield) -> None:
         self.is_generator = True
@@ -1793,7 +1793,7 @@ class ActiveTypeParams:
         self._legacy_policies: list[_LegacyTypeParamPolicy] = []
         self._variance_collections: list[_VarianceCollectionContext] = []
         self._current_class_type_param_polarities: dict[object, set[int]] | None = None
-        self._current_is_protocol_class = False
+        self._current_is_protocol_class: bool = False
         self._variance_polarity_stack: list[int] = []
         self._variance_is_suspended = 0
         self._variance_outside_annotations = 0
