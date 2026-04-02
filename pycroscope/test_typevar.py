@@ -642,6 +642,42 @@ class TestTypeVar(TestNameCheckVisitorBase):
             Generic[Unpack[Ts], DefaultAfterVariadic]
         ): ...
 
+    @skip_before((3, 11))
+    @assert_passes(allow_import_failures=True)
+    def test_class_type_param_defaults_cannot_reference_later_params(self):
+        from typing import Generic
+
+        from typing_extensions import TypeVar
+
+        LaterT = TypeVar("LaterT")
+        EarlierDefaultT = TypeVar("EarlierDefaultT", default=list[LaterT])
+
+        class Bad(Generic[EarlierDefaultT, LaterT]): ...  # E: invalid_type_parameter
+
+    @skip_before((3, 13))
+    def test_pep696_class_type_param_defaults_cannot_reference_later_params(self):
+        self.assert_passes(
+            """
+            class Good[T, U = tuple[T]]:
+                ...
+
+            class Bad[T = tuple[U], U]:  # E: undefined_name  # E: invalid_type_parameter
+                ...
+        """,
+            allow_import_failures=True,
+        )
+
+    @skip_before((3, 11))
+    @assert_passes(allow_import_failures=True)
+    def test_typevartuple_unpack_singleton_tuple_in_generic_base(self):
+        from typing import Generic
+
+        from typing_extensions import TypeVarTuple, Unpack
+
+        Ts = TypeVarTuple("Ts")
+
+        class Array(Generic[Unpack[(Ts,)]]): ...
+
     @assert_passes(run_in_both_module_modes=True)
     def test_class_assignability_with_defaults(self):
         from typing import Generic
@@ -1150,6 +1186,24 @@ class TestGenericClasses(TestNameCheckVisitorBase):
         )
 
     @skip_before((3, 12))
+    def test_protocol_base_validation_with_duplicate_and_generic_bases(self):
+        self.assert_passes(
+            """
+            from typing import Generic, Protocol, TypeVar
+
+            T_co = TypeVar("T_co", covariant=True)
+
+            class GoodGenericBase(Protocol[T_co], Generic[T_co]):
+                ...
+
+            def capybara() -> None:
+                class BadDuplicate(Protocol[T_co, T_co]):
+                    ...
+        """,
+            run_in_both_module_modes=True,
+        )
+
+    @skip_before((3, 12))
     def test_pep695_protocol_variance_is_inferred_without_errors(self):
         self.assert_passes("""
             from typing import Protocol
@@ -1199,6 +1253,177 @@ class TestGenericClasses(TestNameCheckVisitorBase):
             class BadConstraint[S, T: (Sequence[S], bytes)]:  # E: invalid_annotation
                 ...
         """)
+
+    @skip_before((3, 12))
+    def test_pep695_type_parameter_default_must_reference_earlier_params(self):
+        self.assert_passes(
+            """
+            from typing import Generic
+
+            from typing_extensions import TypeVar
+
+            U = TypeVar("U")
+            T = TypeVar("T", default=tuple[U])
+
+            def capybara() -> None:
+                class Bad(Generic[T, U]):  # E: invalid_type_parameter
+                    ...
+        """,
+            run_in_both_module_modes=True,
+        )
+
+    @skip_before((3, 13))
+    def test_pep696_type_parameter_defaults_match_bounds_and_constraints(self):
+        self.assert_passes("""
+            class GoodBound[T: float = int]:
+                ...
+
+            class BadBound[T: str = int]:  # E: invalid_annotation
+                ...
+
+            class GoodConstraint[T: (int, str) = int]:
+                ...
+
+            class BadConstraint[T: (float, str) = int]:  # E: invalid_annotation
+                ...
+
+            class GoodConstraintTypeVar[Base: (int, str), T: (int, str, bool) = Base]:
+                ...
+
+            class BadConstraintTypeVar[
+                Base: (int, str), T: (bool, complex) = Base
+            ]:  # E: invalid_annotation
+                ...
+        """)
+
+    @skip_before((3, 13))
+    def test_pep696_type_parameter_default_with_bound_typevar(self):
+        self.assert_passes("""
+            class AcceptsBoundTypeVar[Base: int, T: (int, str) = Base]:
+                ...
+
+            class RejectsBoundTypeVar[Base: bytes, T: (int, str) = Base]:  # E: invalid_annotation
+                ...
+        """)
+
+    @assert_passes()
+    def test_runtime_typevar_default_matches_literal_constraints_and_bound_typevar(
+        self,
+    ):
+        from typing import Literal
+
+        from typing_extensions import TypeVar
+
+        LiteralOk = TypeVar("LiteralOk", Literal[1], Literal[2], default=Literal[1])
+        LiteralBad = TypeVar(
+            "LiteralBad",
+            Literal[1],
+            Literal[2],
+            default=Literal[3],  # E: incompatible_call
+        )
+        BoundInt = TypeVar("BoundInt", bound=int)
+        BoundDefaultOk = TypeVar(
+            "BoundDefaultOk", int, str, default=BoundInt  # E: incompatible_call
+        )
+        BoundDefaultBad = TypeVar(
+            "BoundDefaultBad", str, bytes, default=BoundInt  # E: incompatible_call
+        )
+
+        print(LiteralOk, LiteralBad, BoundDefaultOk, BoundDefaultBad)
+
+    @skip_before((3, 12))
+    def test_pep695_typevartuple_syntax_in_class_and_function(self):
+        self.assert_passes(
+            """
+            from typing_extensions import assert_type
+
+            class Array[*Ts]:
+                def pack(self, *args: *Ts) -> tuple[*Ts]:
+                    return args
+
+            def capybara() -> None:
+                assert_type(Array[int, str]().pack(1, "x"), tuple[int, str])
+        """,
+            run_in_both_module_modes=True,
+        )
+
+    @assert_passes(run_in_both_module_modes=True)
+    def test_generic_base_must_cover_all_class_type_params(self):
+        from typing import Generic, TypeVar
+
+        T = TypeVar("T")
+        U = TypeVar("U")
+
+        class PairBase(Generic[T, U]):
+            pass
+
+        def capybara() -> None:
+            class Good(PairBase[T, U], Generic[T, U]):
+                pass
+
+            class Bad(PairBase[T, U], Generic[T]):  # E: invalid_base
+                pass
+
+    @assert_passes()
+    def test_manual_runtime_type_params_align_legacy_generic_kinds(self):
+        from typing import Callable, Generic
+
+        from typing_extensions import (
+            ParamSpec,
+            TypeVar,
+            TypeVarTuple,
+            Unpack,
+            assert_type,
+        )
+
+        T = TypeVar("T")
+        P = ParamSpec("P")
+        Ts = TypeVarTuple("Ts")
+
+        # This is intentionally odd: it forces the runtime-alignment path to
+        # see `__type_params__` even for legacy `Generic[...]` syntax.
+        class Box(Generic[T]):
+            __type_params__ = (T,)
+            value: T
+
+            def __init__(self, value: T) -> None:
+                self.value = value
+
+        class Wrapper(Generic[P]):
+            __type_params__ = (P,)
+
+            def call(
+                self, fn: Callable[P, int], *args: P.args, **kwargs: P.kwargs
+            ) -> int:
+                return fn(*args, **kwargs)
+
+        class Array(Generic[Unpack[Ts]]):
+            __type_params__ = (Ts,)
+
+            def pack(self, *args: Unpack[Ts]) -> tuple[Unpack[Ts]]:
+                return args
+
+        def capybara(
+            box: Box[int], wrapper: Wrapper[[int, str]], array: Array[int, str]
+        ) -> None:
+            assert_type(box.value, int)
+            assert_type(wrapper, Wrapper[[int, str]])
+            assert_type(array, Array[int, str])
+
+    @assert_passes()
+    def test_manual_runtime_type_params_append_unmatched_declared_param(self):
+        from typing import Generic
+
+        from typing_extensions import TypeVar
+
+        T = TypeVar("T")
+        U = TypeVar("U")
+
+        class Weird(Generic[T]):
+            __type_params__ = (T, U)
+
+        def capybara() -> None:
+            print(Weird)
 
     @assert_passes()
     def test_legacy_generic_alias_constructor_call_preserves_type_args(self):

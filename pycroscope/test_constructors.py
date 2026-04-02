@@ -324,6 +324,78 @@ class TestConstructors(TestNameCheckVisitorBase):
         assert_type(Box[str](), Box[list[str]])
 
     @assert_passes(allow_import_failures=True)
+    def test_named_generic_alias_preserves_explicit_new_return(self):
+        from typing import Generic, TypeVar
+
+        from typing_extensions import assert_type
+
+        T = TypeVar("T")
+
+        class Box(Generic[T]):
+            def __new__(cls, *args, **kwargs) -> "Box[list[T]]":
+                return super().__new__(cls)
+
+        IntBox = Box[int]
+        StrBox = Box[str]
+
+        assert_type(IntBox(), Box[list[int]])
+        assert_type(StrBox(), Box[list[str]])
+
+    @assert_passes()
+    def test_subscripted_class_value_preserves_explicit_new_return(self):
+        from typing import Generic, TypeVar
+
+        from typing_extensions import assert_type
+
+        T = TypeVar("T")
+
+        class Box(Generic[T]):
+            def __new__(cls, *args, **kwargs) -> "Box[list[T]]":
+                return super().__new__(cls)
+
+        Alias = Box
+
+        assert_type(Alias[int](), Box[list[int]])
+        assert_type(Alias[str](), Box[list[str]])
+
+    @assert_passes()
+    def test_typed_class_value_preserves_explicit_new_return(self):
+        from typing import Any, Generic, TypeVar, cast
+
+        from typing_extensions import assert_type
+
+        T = TypeVar("T")
+
+        class Box(Generic[T]):
+            def __new__(cls, *args, **kwargs) -> "Box[list[T]]":
+                return super().__new__(cls)
+
+        def capybara(factory: type[Box[Any]]) -> None:
+            assert_type(factory[int](), Box[list[int]])
+            assert_type(factory[str](), Box[list[str]])
+            assert_type(cast(type[Box[Any]], Box)[int](), Box[list[int]])
+            assert_type(cast(type[Box[Any]], Box)[str](), Box[list[str]])
+
+        capybara(Box)
+
+    @assert_passes()
+    def test_runtime_recovered_class_value_preserves_explicit_new_return(self):
+        from typing import Generic, TypeVar
+
+        from typing_extensions import assert_type
+
+        T = TypeVar("T")
+
+        class Box(Generic[T]):
+            def __new__(cls, *args, **kwargs) -> "Box[list[T]]":
+                return super().__new__(cls)
+
+        BoxFactory = globals()["Box"]
+
+        assert_type(BoxFactory[int](), Box[list[int]])
+        assert_type(BoxFactory[str](), Box[list[str]])
+
+    @assert_passes(allow_import_failures=True)
     def test_unimportable_constructor_subscript_preserves_explicit_new_return(self):
         import does_not_exist  # noqa: F401
         from typing_extensions import Generic, Self, TypeVar
