@@ -206,17 +206,16 @@ class TestExtraKeys(TestNameCheckVisitorBase):
             name: ReadOnly[str]
             year: NotRequired[int]
 
-        MovieExtra(name="No Country for Old Men", language=1)
-        MovieExtra(
-            name="No Country for Old Men", language="English"
-        )  # E: incompatible_argument
+        title = "No Country for Old Men"
+
+        MovieExtra(name=title, language=1)
+        MovieExtra(name=title, language="English")  # E: incompatible_argument
 
         MovieFunctional = TypedDict("MovieFunctional", {"name": str}, extra_items=int)
+        movie_dict = {"name": title}
 
-        MovieFunctional(name="No Country for Old Men", language=1)
-        MovieFunctional(  # E: incompatible_call
-            {"name": "No Country for Old Men"}, language=1
-        )
+        MovieFunctional(name=title, language=1)
+        MovieFunctional(movie_dict, language=1)  # E: incompatible_call
 
         def capybara(movie: MovieExtra) -> None:
             movie["language"] = 1
@@ -247,10 +246,9 @@ class TestExtraKeys(TestNameCheckVisitorBase):
         def unpack_extra(**kwargs: Unpack[MovieExtra]) -> None:
             pass
 
-        unpack_no_extra(
-            name="No Country for Old Men", year=2007
-        )  # E: incompatible_call
-        unpack_extra(name="No Country for Old Men", year=2007)
+        title = "No Country for Old Men"
+        unpack_no_extra(name=title, year=2007)  # E: incompatible_call
+        unpack_extra(name=title, year=2007)
 
 
 class TestTypedDict(TestNameCheckVisitorBase):
