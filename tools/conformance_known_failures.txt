@@ -39,6 +39,3 @@ typeddicts_type_consistency
 
 # pycroscope uses Literal[] over float
 namedtuples_define_class
-
-# Precise Literal inference with TypeVarTuple
-generics_typevartuple_callable

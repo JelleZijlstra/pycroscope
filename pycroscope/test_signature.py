@@ -2094,7 +2094,8 @@ class TestUnpack(TestNameCheckVisitorBase):
 
     @skip_before((3, 11))
     def test_callable_typevartuple(self):
-        self.assert_passes("""
+        self.assert_passes(
+            """
             from typing import Callable, TypeVar, TypeVarTuple
 
             from typing_extensions import assert_type
@@ -2114,7 +2115,28 @@ class TestUnpack(TestNameCheckVisitorBase):
             def caller() -> None:
                 assert_type(func2(callback1), tuple[str, int, complex])
                 assert_type(func2(callback2), tuple[str])
-            """)
+            """,
+            run_in_both_module_modes=True,
+        )
+
+    @skip_before((3, 11))
+    def test_typevartuple_concat(self):
+        self.assert_passes(
+            """
+            from typing import TypeVar, TypeVarTuple, assert_type
+
+            Ts = TypeVarTuple("Ts")
+            T = TypeVar("T")
+
+            def prefix_tuple(x: T, y: tuple[*Ts]) -> tuple[T, *Ts]:
+                raise NotImplementedError
+
+            def caller(x: int, y: bool, z: str) -> None:
+                result = prefix_tuple(x=x, y=(y, z))
+                assert_type(result, tuple[int, bool, str])
+            """,
+            run_in_both_module_modes=True,
+        )
 
     @skip_before((3, 11))
     def test_var_positional_typevartuple(self):
