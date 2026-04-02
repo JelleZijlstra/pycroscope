@@ -2052,6 +2052,12 @@ class TestYieldFrom(TestNameCheckVisitorBase):
 
 
 class TestClassAttributeChecker(TestNameCheckVisitorBase):
+    @assert_passes(check_attributes=False)
+    def test_attribute_checker_can_be_disabled(self):
+        class Capybara(object):
+            def method(self):
+                return self.doesnt_exist
+
     @assert_passes()
     def test_mangled_attributes(self):
         class Capybara(object):
@@ -2104,6 +2110,14 @@ class TestClassAttributeChecker(TestNameCheckVisitorBase):
                 assert_type(self.obj, str)
 
     @assert_passes()
+    def test_browser_attribute_is_ignored_for_webtest_style_classes(self):
+        class WebTestCase:
+            _pre_setup = object()
+
+            def current_browser(self):
+                return self.browser
+
+    @assert_passes()
     def test_classvar_descriptor_is_not_treated_as_method(self):
         from typing import ClassVar
 
@@ -2132,6 +2146,25 @@ class TestClassAttributeChecker(TestNameCheckVisitorBase):
             Base.e.touch()
             Child.e.touch()
             obj.e.touch()
+
+    @assert_passes(run_in_both_module_modes=True)
+    def test_property_lookup_uses_specialized_self_type(self):
+        from typing import Generic, TypeVar
+
+        from typing_extensions import assert_type
+
+        T = TypeVar("T")
+
+        class Base(Generic[T]):
+            @property
+            def value(self) -> T:
+                raise RuntimeError
+
+        class Child(Base[int]):
+            pass
+
+        def f(x: Child) -> None:
+            assert_type(x.value, int)
 
     @assert_passes(run_in_both_module_modes=True)
     def test_classvar_container_methods_keep_receiver_parameter(self):

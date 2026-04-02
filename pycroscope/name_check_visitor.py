@@ -348,7 +348,7 @@ _TValueResult = TypeVar("_TValueResult")
 
 if sys.version_info >= (3, 11):
     TryNode = ast.Try | ast.TryStar
-else:
+else:  # pragma: no cover
     TryNode = ast.Try
 
 TYPE_CHECKING_MODULES: frozenset[str] = frozenset({"typing", "typing_extensions"})
@@ -547,7 +547,9 @@ AST_TO_REVERSE = {
 
 SAFE_DECORATORS_FOR_ARGSPEC_TO_RETVAL = [KnownValue(property)]
 if sys.version_info < (3, 11):
-    SAFE_DECORATORS_FOR_ARGSPEC_TO_RETVAL.append(KnownValue(asyncio.coroutine))
+    SAFE_DECORATORS_FOR_ARGSPEC_TO_RETVAL.append(
+        KnownValue(asyncio.coroutine)
+    )  # pragma: no cover
 if asynq is not None:
     SAFE_DECORATORS_FOR_ARGSPEC_TO_RETVAL.append(KnownValue(asynq.asynq))
 
@@ -817,7 +819,9 @@ class OutputFormatOption(ConfigOption[node_visitor.OutputFormat]):
             return "concise"
         if data == "detailed":
             return "detailed"
-        raise InvalidConfigOption.from_parser(cls, "'concise' or 'detailed'", data)
+        raise InvalidConfigOption.from_parser(  # pragma: no cover
+            cls, "'concise' or 'detailed'", data
+        )
 
     @classmethod
     def create_command_line_option(cls, parser: ArgumentParser) -> None:
@@ -886,15 +890,23 @@ class IgnoredPaths(ConcatenatedOption[Sequence[str]]):
     should_create_command_line_option = False
 
     @classmethod
-    def parse(cls, data: object, source_path: Path) -> Sequence[Sequence[str]]:
+    def parse(  # pragma: no cover
+        cls, data: object, source_path: Path
+    ) -> Sequence[Sequence[str]]:
         if not isinstance(data, (list, tuple)):
-            raise InvalidConfigOption.from_parser(cls, "sequence", data)
+            raise InvalidConfigOption.from_parser(
+                cls, "sequence", data
+            )  # pragma: no cover
         for sublist in data:
             if not isinstance(sublist, (list, tuple)):
-                raise InvalidConfigOption.from_parser(cls, "sequence", sublist)
+                raise InvalidConfigOption.from_parser(  # pragma: no cover
+                    cls, "sequence", sublist
+                )
             for elt in sublist:
                 if not isinstance(elt, str):
-                    raise InvalidConfigOption.from_parser(cls, "string", elt)
+                    raise InvalidConfigOption.from_parser(  # pragma: no cover
+                        cls, "string", elt
+                    )
         return data
 
 
@@ -986,33 +998,39 @@ class IgnoredUnusedClassAttributes(ConcatenatedOption[tuple[type, set[str]]]):
     should_create_command_line_option = False  # too complicated
 
     @classmethod
-    def parse(cls, data: object, source_path: Path) -> Sequence[tuple[type, set[str]]]:
+    def parse(  # pragma: no cover
+        cls, data: object, source_path: Path
+    ) -> Sequence[tuple[type, set[str]]]:
         if not isinstance(data, (list, tuple)):
-            raise InvalidConfigOption.from_parser(
+            raise InvalidConfigOption.from_parser(  # pragma: no cover
                 cls, "sequence of (type, [attribute]) pairs", data
             )
         final = []
         for elt in data:
             if not isinstance(elt, (list, tuple)) or len(elt) != 2:
-                raise InvalidConfigOption.from_parser(
+                raise InvalidConfigOption.from_parser(  # pragma: no cover
                     cls, "sequence of (type, [attribute]) pairs", elt
                 )
             typ, attrs = elt
             try:
                 obj = object_from_string(typ)
             except Exception:
-                raise InvalidConfigOption.from_parser(
+                raise InvalidConfigOption.from_parser(  # pragma: no cover
                     cls, "path to Python object", typ
                 ) from None
             if not isinstance(obj, type):
-                raise InvalidConfigOption.from_parser(cls, "type", obj)
-            if not isinstance(attrs, (list, tuple)):
                 raise InvalidConfigOption.from_parser(
+                    cls, "type", obj
+                )  # pragma: no cover
+            if not isinstance(attrs, (list, tuple)):
+                raise InvalidConfigOption.from_parser(  # pragma: no cover
                     cls, "sequence of attributes", attrs
                 )
             for attr in attrs:
                 if not isinstance(attr, str):
-                    raise InvalidConfigOption.from_parser(cls, "attribute string", attr)
+                    raise InvalidConfigOption.from_parser(  # pragma: no cover
+                        cls, "attribute string", attr
+                    )
             final.append((obj, set(attrs)))
         return final
 
@@ -15919,8 +15937,8 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 config_file = module_path / config_filename
         options = Options.from_option_list(instances, config_file_path=config_file)
         if kwargs.pop("display_options", False):
-            options.display()
-            sys.exit(0)
+            options.display()  # pragma: no cover
+            sys.exit(0)  # pragma: no cover
         kwargs.setdefault("checker", Checker(raw_options=options))
         patch_typing_overload()
         return kwargs
@@ -15948,7 +15966,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         attribute_checker: ClassAttributeChecker | None = None,
         unused_finder: UnusedObjectFinder | None = None,
         **kwargs: Any,
-    ) -> list[node_visitor.Failure]:
+    ) -> list[node_visitor.Failure]:  # pragma: no cover
         attribute_checker_enabled = checker.options.is_error_code_enabled_anywhere(
             ErrorCode.attribute_is_never_set
         )
@@ -16009,7 +16027,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         filename: str,
         attribute_checker: ClassAttributeChecker | None = None,
         **kwargs: Any,
-    ) -> tuple[list[node_visitor.Failure], Any]:
+    ) -> tuple[list[node_visitor.Failure], Any]:  # pragma: no cover
         failures = cls.check_file(
             filename, attribute_checker=attribute_checker, **kwargs
         )
@@ -16021,7 +16039,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         extra_data: Any,
         attribute_checker: ClassAttributeChecker | None = None,
         **kwargs: Any,
-    ) -> None:
+    ) -> None:  # pragma: no cover
         if attribute_checker is None:
             return
         for checker in extra_data:
@@ -17464,9 +17482,9 @@ def _extract_definite_value(val: Value) -> bool | None:
 
 try:
     from pydantic import BaseModel  # static analysis: ignore[import_failed]
-except ImportError:
+except ImportError:  # pragma: no cover
 
-    def _is_safe_pydantic_class(typ: type) -> bool:
+    def _is_safe_pydantic_class(typ: type) -> bool:  # pragma: no cover
         return False
 
 else:
@@ -17476,7 +17494,7 @@ else:
             return False
         # Pydantic 1 is unsupported but we shouldn't crash
         if not safe_hasattr(typ, "model_config"):
-            return False
+            return False  # pragma: no cover
         # Pydantic classes have a __getattr__ that looks at two fields,
         # __private_attributes__ and __pydantic_extra__. The latter is
         # used only if this config is set. The former doesn't seem to have
