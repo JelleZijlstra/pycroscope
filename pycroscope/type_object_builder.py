@@ -87,7 +87,7 @@ def _runtime_dataclass_field_info(field: object) -> DataclassFieldInfo:
 
 def _iter_base_type_values(
     value: Value,
-    arg_spec_cache: ArgSpecCache | None,
+    arg_spec_cache: ArgSpecCache,
     seen_known_bases: frozenset[int] = frozenset(),
 ) -> Iterator[TypedValue | AnyValue]:
     if isinstance(value, PartialValue):
@@ -97,12 +97,7 @@ def _iter_base_type_values(
         if isinstance(root, SyntheticClassObjectValue):
             root = root.class_type
         elif isinstance(root, KnownValue):
-            if arg_spec_cache is not None:
-                root = arg_spec_cache._type_from_base(root.val)
-            elif isinstance(root.val, type):
-                root = TypedValue(root.val)
-            else:
-                return
+            root = arg_spec_cache._type_from_base(root.val)
         root = replace_fallback(root)
         members = tuple(
             (
@@ -133,22 +128,17 @@ def _iter_base_type_values(
 
 
 def _iter_base_type_values_from_simple(
-    value: SimpleType,
-    arg_spec_cache: ArgSpecCache | None,
-    seen_known_bases: frozenset[int],
+    value: SimpleType, arg_spec_cache: ArgSpecCache, seen_known_bases: frozenset[int]
 ) -> Iterator[TypedValue | AnyValue]:
     if isinstance(value, KnownValue):
-        if arg_spec_cache is not None:
-            base_id = id(value.val)
-            if base_id in seen_known_bases:
-                return
-            yield from _iter_base_type_values(
-                arg_spec_cache._type_from_base(value.val),
-                arg_spec_cache,
-                seen_known_bases | {base_id},
-            )
-        elif isinstance(value.val, type):
-            yield TypedValue(value.val)
+        base_id = id(value.val)
+        if base_id in seen_known_bases:
+            return
+        yield from _iter_base_type_values(
+            arg_spec_cache._type_from_base(value.val),
+            arg_spec_cache,
+            seen_known_bases | {base_id},
+        )
         return
     if isinstance(value, SyntheticClassObjectValue):
         yield from _iter_base_type_values(
@@ -159,10 +149,7 @@ def _iter_base_type_values_from_simple(
         yield value
         return
     if isinstance(value, GenericValue) and value.typ is tuple:
-        if len(value.args) == 1:
-            yield SequenceValue(tuple, [(True, value.args[0])])
-        else:
-            yield SequenceValue(tuple, [(False, arg) for arg in value.args])
+        yield SequenceValue(tuple, [(True, value.args[0])])
         return
     if isinstance(value, TypedValue):
         yield value
@@ -233,7 +220,7 @@ def _add_runtime_declared_symbols(typ: type, symbols: dict[str, ClassSymbol]) ->
         if sys.version_info >= (3, 14):
             annotations = get_annotations(typ, format=Format.FORWARDREF)
         else:
-            annotations = inspect.get_annotations(typ)
+            annotations = inspect.get_annotations(typ)  # pragma: no cover
     except Exception:
         annotations = safe_getattr(typ, "__annotations__", None)
     if isinstance(annotations, Mapping):
@@ -341,10 +328,7 @@ def _runtime_member_value(raw_value: object, owner: type) -> Value:
     typevars = TypeVarMap()
     params_by_typevar = {type_param.typevar: type_param for type_param in type_params}
     for runtime_typevar, arg_value in matched:
-        type_param = params_by_typevar.get(runtime_typevar)
-        if type_param is None:
-            return value
-        typevars = typevars.with_value(type_param, arg_value)
+        typevars = typevars.with_value(params_by_typevar[runtime_typevar], arg_value)
     return KnownValueWithTypeVars(raw_value, typevars)
 
 
