@@ -429,6 +429,17 @@ class TestDataclass(TestNameCheckVisitorBase):
             WithInitFalse(a=1, b=2)  # E: incompatible_call
 
     @assert_passes(run_in_both_module_modes=True)
+    def test_inferred_init_on_import_failure(self):
+        from dataclasses import dataclass
+
+        @dataclass
+        class DC:
+            a: int
+
+        def capybara(dc: DC) -> None:
+            dc.__init__(1)
+
+    @assert_passes(run_in_both_module_modes=True)
     def test_dataclass_usage_features_after_import_failure(self):
         from dataclasses import dataclass, field
         from typing import Any, Callable, ClassVar, Generic, Mapping, Protocol, TypeVar

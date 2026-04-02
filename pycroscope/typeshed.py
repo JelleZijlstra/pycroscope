@@ -18,10 +18,9 @@ from enum import EnumMeta
 from functools import lru_cache
 from pathlib import Path
 from types import GeneratorType, MethodDescriptorType, ModuleType
-from typing import Any, Generic, TypeVar, cast
+from typing import Any, Generic, TypeVar
 
 import typeshed_client
-from typing_extensions import Protocol
 
 from .analysis_lib import is_positional_only_arg_name
 from .annotations import (
@@ -87,7 +86,6 @@ from .value import (
     replace_fallback,
     type_param_to_value,
     unannotate_value,
-    unite_values,
 )
 
 PROPERTY_LIKE = {KnownValue(property), KnownValue(types.DynamicClassAttribute)}
@@ -199,6 +197,13 @@ _TYPING_ALIASES = {
     "typing.ChainMap": "collections.ChainMap",
     "typing.OrderedDict": "collections.OrderedDict",
     "typing.Tuple": "builtins.tuple",
+}
+
+_RUNTIME_TO_TYPESHED_ALIASES = {
+    "enum.EnumType": "enum.EnumMeta",
+    "builtins.dict_items": "_collections_abc.dict_items",
+    "builtins.dict_keys": "_collections_abc.dict_keys",
+    "builtins.dict_values": "_collections_abc.dict_values",
 }
 
 
@@ -417,8 +422,6 @@ class TypeshedFinder:
                     return [
                         GenericValue(Collection, (TypeVarValue(TypeVarParam(T_co)),))
                     ]
-                elif fq_name == "contextlib.AbstractContextManager":
-                    return [GenericValue(Protocol, (TypeVarValue(TypeVarParam(T_co)),))]
                 elif fq_name in (
                     "typing.Callable",
                     "collections.abc.Callable",
@@ -785,20 +788,6 @@ class TypeshedFinder:
         is_property, qualifiers, deprecated = self._analyze_stub_method_decorators(
             node, mod
         )
-        if is_property:
-            getter_type = (
-                self._parse_type(node.returns, mod)
-                if node.returns is not None
-                else AnyValue(AnySource.unannotated)
-            )
-            return ClassSymbol(
-                function_decorators=qualifiers,
-                deprecation_message=deprecated,
-                property_info=PropertyInfo(
-                    getter_type=getter_type, getter_deprecation=deprecated
-                ),
-                initializer=TypedValue(property),
-            )
         sig = self._get_signature_from_func_def(node, None, mod)
         initializer: Value
         if sig is None:
@@ -809,12 +798,20 @@ class TypeshedFinder:
                 initializer = annotate_value(
                     initializer, [DeprecatedExtension(deprecated)]
                 )
-        return ClassSymbol(
+        symbol = ClassSymbol(
             function_decorators=qualifiers,
             is_method=True,
             initializer=initializer,
             deprecation_message=deprecated,
         )
+        if is_property:
+            return ClassSymbol(
+                function_decorators=qualifiers,
+                deprecation_message=deprecated,
+                property_info=PropertyInfo(fget=symbol),
+                initializer=TypedValue(property),
+            )
+        return symbol
 
     def _symbol_from_overloaded_node(
         self, node: typeshed_client.OverloadedName, mod: str
@@ -829,24 +826,6 @@ class TypeshedFinder:
         is_property, qualifiers, deprecated = self._analyze_stub_method_decorators(
             method_nodes[0], mod
         )
-        if is_property:
-            getter_type: Value = AnyValue(AnySource.inference)
-            if all(defn.returns is not None for defn in method_nodes):
-                return_nodes = [cast(ast.expr, defn.returns) for defn in method_nodes]
-                getter_type = unite_values(
-                    *(
-                        self._parse_type(return_node, mod)
-                        for return_node in return_nodes
-                    )
-                )
-            return ClassSymbol(
-                function_decorators=qualifiers,
-                property_info=PropertyInfo(
-                    getter_type=getter_type, getter_deprecation=deprecated
-                ),
-                initializer=TypedValue(property),
-                deprecation_message=deprecated,
-            )
         value = self._get_value_from_child_info(
             node, mod, on_class=False, parent_name="<overload>"
         )
@@ -854,12 +833,20 @@ class TypeshedFinder:
             value, _ = value.unqualify()
         if deprecated is not None:
             value = annotate_value(value, [DeprecatedExtension(deprecated)])
-        return ClassSymbol(
+        symbol = ClassSymbol(
             function_decorators=qualifiers,
             is_method=True,
             initializer=value,
             deprecation_message=deprecated,
         )
+        if is_property:
+            return ClassSymbol(
+                function_decorators=qualifiers,
+                deprecation_message=deprecated,
+                property_info=PropertyInfo(fget=symbol),
+                initializer=TypedValue(property),
+            )
+        return symbol
 
     def _analyze_stub_method_decorators(
         self, node: ast.FunctionDef | ast.AsyncFunctionDef, mod: str
@@ -1066,11 +1053,18 @@ class TypeshedFinder:
             self.log("Ignoring object without module or qualname", obj)
             return None
         fq_name = ".".join([module_name, qualname])
+        fq_name = _TYPING_ALIASES.get(fq_name, fq_name)
+        # Some runtime classes, such as builtin view types, are not exported from
+        # the module under their runtime qualname. Trust our explicit alias table
+        # for those instead of rejecting them during runtime-name validation.
+        aliased = _RUNTIME_TO_TYPESHED_ALIASES.get(fq_name)
+        if aliased is not None:
+            return aliased
         # Avoid looking for stubs we won't find anyway.
         if not _obj_from_qualname_is(module_name, qualname, obj):
             self.log("Ignoring invalid name", fq_name)
             return None
-        return _TYPING_ALIASES.get(fq_name, fq_name)
+        return fq_name
 
     def _sig_from_value(self, val: Value) -> ConcreteSignature | None:
         if isinstance(val, UninitializedValue):

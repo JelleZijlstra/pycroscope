@@ -348,6 +348,44 @@ class TestAttributes(TestNameCheckVisitorBase):
             x.split()  # E: undefined_attribute
 
     @assert_passes()
+    def test_type_attribute(self):
+        from typing_extensions import assert_type
+
+        class Capybara:
+            @classmethod
+            def capy(cls):
+                assert_type(cls.__doc__, str | None)
+                assert_type(cls.__name__, str)
+
+        def bara(c: type[Capybara]):
+            assert_type(c.__doc__, str | None)
+            assert_type(c.__name__, str)
+
+    @assert_passes()
+    def test_exact_class_object_identity_attributes(self):
+        from typing_extensions import assert_type
+
+        def capybara() -> None:
+            assert_type(str.__module__, str)
+
+    @assert_passes()
+    def test_enum_members_attribute(self):
+        import enum
+        import types
+
+        from typing_extensions import assert_type
+
+        class Color(enum.Enum):
+            RED = 1
+
+            @classmethod
+            def capy(cls) -> None:
+                assert_type(cls.__members__, types.MappingProxyType[str, Color])
+
+        def bara(cls: type[Color]) -> None:
+            assert_type(cls.__members__, types.MappingProxyType[str, Color])
+
+    @assert_passes()
     def test_typeshed(self):
         # missing_generic_parameters is a bit questionable here, but the
         # class really is defined as generic in typeshed.
@@ -673,6 +711,8 @@ class TestAttributes(TestNameCheckVisitorBase):
 
     @assert_passes()
     def test_property_with_invalid_signature_metadata(self):
+        from typing import Any
+
         from typing_extensions import assert_type
 
         class BrokenProperty:
@@ -683,7 +723,7 @@ class TestAttributes(TestNameCheckVisitorBase):
         BrokenProperty.value.fget.__signature__ = 0
 
         def capybara(obj: BrokenProperty) -> None:
-            assert_type(obj.value, int)
+            assert_type(obj.value, Any)
 
     @assert_passes()
     def test_metatype_instance_attributes(self):

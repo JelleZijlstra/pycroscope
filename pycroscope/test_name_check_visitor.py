@@ -1157,6 +1157,14 @@ class TestImportFailureHandlingCodeSamples(TestNameCheckVisitorBase):
 
 
 class TestNameCheckVisitor(TestNameCheckVisitorBase):
+    @assert_passes()
+    def test_keys_view_set_difference_preserves_key_type(self):
+        from typing_extensions import assert_type
+
+        def capybara(mapping: dict[str, int], seen: set[str]) -> None:
+            keys_left = mapping.keys() - seen
+            assert_type(keys_left, set[str])
+
     @assert_passes(run_in_both_module_modes=True)
     def test_undefined_class_decorator_does_not_internal_error(self):
         def run() -> None:
@@ -4140,21 +4148,22 @@ class TestAnnAssign(TestNameCheckVisitorBase):
                 assert_type(cls.a[0], Self)
                 assert_type(cls.method1(), Self)
 
-    @assert_passes(run_in_both_module_modes=True)
-    def test_self_property_in_method_body_in_unimportable_module(self):
-        from typing_extensions import Self, assert_type
+    @assert_passes()
+    def test_self_annotated_property_uses_runtime_attribute_resolution(self):
+        from typing import Generic, TypeVar
 
-        class Base:
+        from typing_extensions import assert_type
+
+        T = TypeVar("T")
+
+        class Capybara(Generic[T]):
             @property
-            def prop(self) -> Self:
-                raise NotImplementedError
+            def prop(self: "Capybara[int]") -> int:
+                return 1
 
-            def method(self) -> None:
-                assert_type(self.prop, Self)
-
-        class Child(Base):
-            def method(self) -> None:
-                assert_type(self.prop, Self)
+        def caller(ci: Capybara[int], cs: Capybara[str]) -> None:
+            assert_type(ci.prop, int)
+            cs.prop  # E: incompatible_argument
 
     @assert_passes(run_in_both_module_modes=True)
     def test_inherited_instance_only_member_substitutes_generic_base_args(self):

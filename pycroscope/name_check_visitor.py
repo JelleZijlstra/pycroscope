@@ -218,6 +218,7 @@ from .suggested_type import (
     should_suggest_type,
 )
 from .type_object import (
+    AttributePolicy,
     NamedTupleField,
     TypeObject,
     TypeObjectAttribute,
@@ -739,6 +740,16 @@ class _AttrContext(CheckerAttrContext):
         if self.self_value is not None:
             return self.self_value
         return self.root_composite.value
+
+    def get_type_object_attribute_policy(
+        self, *, on_class: bool, receiver_value: Value | None
+    ) -> AttributePolicy:
+        return AttributePolicy(
+            on_class=on_class,
+            receiver_value=receiver_value,
+            visitor=self.visitor,
+            node=self.node,
+        )
 
     def should_ignore_none_attributes(self) -> bool:
         return self.ignore_none
@@ -3258,27 +3269,32 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             isinstance(unapplied, KnownValue) and unapplied.val is property
             for unapplied, _, _ in info.decorators
         ) or any(
+            # TODO: do we need this branch? we shouldn't look at exact names
             isinstance(decorator, ast.Name) and decorator.id == "property"
             for decorator in node.decorator_list
         ):
-            getter_value = (
-                info.return_annotation
-                if info.return_annotation is not None
-                else AnyValue(AnySource.unannotated)
-            )
+
+            if isinstance(function_value, PartialCallValue) and is_equivalent(
+                function_value.callee, KnownValue(property), self
+            ):
+                getter = function_value.arguments.get(
+                    "fget", AnyValue(AnySource.inference)
+                )
+            else:
+                getter = AnyValue(AnySource.inference)
+            fget = info.get_symbol(getter, deprecation_message)
             self._set_complete_synthetic_class_symbol(
                 node.name,
                 node=node,
-                annotation=getter_value,
+                initializer=TypedValue(property),
                 is_instance_only=False,
-                property_info=PropertyInfo(
-                    getter_type=getter_value, getter_deprecation=deprecation_message
-                ),
+                property_info=PropertyInfo(fget=fget),
             )
             return
 
         setter_target_name: str | None = None
         for decorator in node.decorator_list:
+            # TODO: this is not a precise way to recognize property setters
             if (
                 isinstance(decorator, ast.Attribute)
                 and decorator.attr == "setter"
@@ -3303,18 +3319,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             return
 
         mangled_target = _mangle_class_attribute_name(class_name, setter_target_name)
-        if FunctionDecorator.staticmethod in info.decorator_kinds:
-            value_index = 0
-        else:
-            value_index = 1
-        if value_index >= len(info.params):
-            setter_value: Value = AnyValue(AnySource.unannotated)
-        else:
-            setter_annotation = info.params[value_index].param.annotation
-            if setter_annotation is None:
-                setter_value = AnyValue(AnySource.unannotated)
-            else:
-                setter_value = setter_annotation
+        fset = info.get_symbol(function_value, deprecation_message)
         existing = synthetic_type.get_declared_symbol(mangled_target)
         existing_property_info = (
             existing.property_info if existing is not None else None
@@ -3322,28 +3327,20 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         self._set_complete_synthetic_class_symbol(
             setter_target_name,
             node=node,
-            annotation=existing.annotation if existing is not None else None,
+            initializer=(
+                existing.initializer if existing is not None else TypedValue(property)
+            ),
             qualifiers=existing.qualifiers if existing is not None else frozenset(),
             is_instance_only=(
                 existing.is_instance_only if existing is not None else False
             ),
             property_info=PropertyInfo(
-                getter_type=(
-                    existing_property_info.getter_type
-                    if existing_property_info is not None
-                    else (
-                        existing.get_effective_type()
-                        if existing is not None
-                        else AnyValue(AnySource.inference)
-                    )
-                ),
-                setter_type=setter_value,
-                getter_deprecation=(
-                    existing_property_info.getter_deprecation
+                fget=(
+                    existing_property_info.fget
                     if existing_property_info is not None
                     else None
                 ),
-                setter_deprecation=(deprecation_message),
+                fset=fset,
             ),
         )
 
@@ -3398,7 +3395,8 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         )
         for candidate in self._property_attr_candidates(attr_name, class_name):
             attribute = type_object.get_attribute(
-                candidate, self, on_class=False, receiver_value=TypedValue(class_key)
+                candidate,
+                AttributePolicy(receiver_value=TypedValue(class_key), visitor=self),
             )
             if attribute is not None:
                 return candidate, attribute
@@ -3538,7 +3536,8 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 return True
             base_tobj = self.checker.make_type_object(base_value.typ)
             attr = base_tobj.get_attribute(
-                varname, self, on_class=False, receiver_value=base_value
+                varname,
+                AttributePolicy(receiver_value=base_value, visitor=self, node=node),
             )
             if attr is not None:
                 return True
@@ -3570,7 +3569,8 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 continue
             base_tobj = self.checker.make_type_object(base_value.typ)
             base_attr = base_tobj.get_attribute(
-                varname, self, on_class=False, receiver_value=base_value
+                varname,
+                AttributePolicy(receiver_value=base_value, visitor=self, node=node),
             )
             if base_attr is None:
                 continue
@@ -5166,7 +5166,12 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         if runtime_enum is None:
             return
 
+        old_class_key = synthetic_class.class_type.typ
+        # TODO: Stop mutating the synthetic class in place here. Instead, build the
+        # final runtime-backed synthetic class directly so checker caches do not need
+        # to be rekeyed after the fact.
         object.__setattr__(synthetic_class, "class_type", TypedValue(runtime_enum))
+        self.checker.rekey_synthetic_class(synthetic_class, old_class_key)
         for member_name in member_order:
             try:
                 initializer = KnownValue(getattr(runtime_enum, member_name))
@@ -6928,6 +6933,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         self.checker.runtime_class_self_annotation_cache[typ] = result
         return result
 
+    # TODO: We should not branch behavior on wheter an object contains Self
     def _type_object_or_bases_use_self_annotations(
         self, tobj: TypeObject, seen: set[type | str] | None = None
     ) -> bool:
@@ -6937,21 +6943,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             return False
         seen.add(tobj.typ)
         if any(
-            (symbol.annotation is not None and _value_contains_self(symbol.annotation))
-            or (
-                symbol.property_info is not None
-                and (
-                    _value_contains_self(symbol.property_info.getter_type)
-                    or (
-                        symbol.property_info.setter_type is not None
-                        and _value_contains_self(symbol.property_info.setter_type)
-                    )
-                )
-            )
-            or (
-                symbol.initializer is not None
-                and _value_contains_self(symbol.initializer)
-            )
+            _symbol_contains_self(symbol)
             for symbol in tobj.get_declared_symbols().values()
         ):
             return True
@@ -8460,6 +8452,8 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     def _is_instance_member_accessed_through_class(
         self, root_composite: Composite, attr_name: str, node: ast.AST | None = None
     ) -> bool:
+        if attr_name in {"__name__", "__qualname__", "__module__", "__doc__"}:
+            return False
         call_expr: ast.AST | None = root_composite.node
         if isinstance(node, ast.Attribute):
             call_expr = node.value
@@ -8469,6 +8463,12 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         ):
             return True
         concrete_root = replace_fallback(root_composite.value)
+        if isinstance(concrete_root, KnownValue) and isinstance(
+            concrete_root.val, type
+        ):
+            marker = object()
+            if safe_getattr(concrete_root.val, attr_name, marker) is not marker:
+                return False
         if (
             isinstance(concrete_root, (TypedValue, GenericValue))
             and isinstance(concrete_root.typ, type)
@@ -13552,7 +13552,10 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             and not has_explicit_class_getitem
         ):
             meta_getitem = tobj.get_attribute(
-                "__getitem__", self, on_class=True, is_special_lookup=True
+                "__getitem__",
+                AttributePolicy(
+                    on_class=True, is_special_lookup=True, visitor=self, node=node
+                ),
             )
             if meta_getitem is not None:
                 synthetic_class = self.checker.get_synthetic_class(synthetic_typ)
@@ -14116,9 +14119,12 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     return
         attr = tobj.get_attribute(
             node.attr,
-            self,
-            on_class=on_class,
-            receiver_value=root if isinstance(root, TypedValue) else None,
+            AttributePolicy(
+                on_class=on_class,
+                receiver_value=root if isinstance(root, TypedValue) else None,
+                visitor=self,
+                node=node,
+            ),
         )
         if attr is None:
             if (
@@ -14337,11 +14343,14 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             if is_property:
                 if symbol.property_info is None:
                     continue
-                return (
-                    symbol.property_info.setter_deprecation
-                    if is_setter
-                    else symbol.property_info.getter_deprecation
-                )
+                if is_setter:
+                    if symbol.property_info.fset is None:
+                        return None
+                    return symbol.property_info.fset.deprecation_message
+                else:
+                    if symbol.property_info.fget is None:
+                        return None
+                    return symbol.property_info.fget.deprecation_message
             if symbol.property_info is not None:
                 continue
             if symbol.deprecation_message is not None:
@@ -15138,6 +15147,20 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 )
             return
 
+    def get_call_result(
+        self,
+        callee: Value,
+        args: Iterable[Value] = (),
+        kwargs: Iterable[tuple[str | None, Value]] = (),
+        node: ast.AST | None = None,
+    ) -> Value:
+        return self.check_call(
+            node,
+            callee,
+            (Composite(arg) for arg in args),
+            [(k, Composite(v)) for k, v in kwargs],
+        )
+
     def check_call(
         self,
         node: ast.AST | None,
@@ -15146,12 +15169,18 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         keywords: Iterable[tuple[str | None, Composite]] = (),
         *,
         allow_call: bool = False,
+        use_partial_call: bool = False,
     ) -> Value:
         if isinstance(callee, MultiValuedValue):
             with override(self, "in_union_decomposition", True):
                 values = [
                     self._check_call_no_mvv(
-                        node, val, args, keywords, allow_call=allow_call
+                        node,
+                        val,
+                        args,
+                        keywords,
+                        allow_call=allow_call,
+                        use_partial_call=use_partial_call,
                     )
                     for val in callee.vals
                 ]
@@ -15168,7 +15197,12 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             )
         else:
             val = self._check_call_no_mvv(
-                node, callee, args, keywords, allow_call=allow_call
+                node,
+                callee,
+                args,
+                keywords,
+                allow_call=allow_call,
+                use_partial_call=use_partial_call,
             )
             val, nru_extensions = unannotate_value(val, NoReturnConstraintExtension)
             constraint = AndConstraint.make(ext.constraint for ext in nru_extensions)
@@ -15213,6 +15247,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         keywords: Iterable[tuple[str | None, Composite]] = (),
         *,
         allow_call: bool = False,
+        use_partial_call: bool = False,
     ) -> Value:
         args = tuple(args)
         keywords = tuple(keywords)
@@ -15294,7 +15329,8 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 visitor=self,
                 can_assign_ctx=self,
                 node=node,
-                use_partial_call=self._is_dataclass_field_callee(callee_wrapped),
+                use_partial_call=use_partial_call
+                or self._is_dataclass_field_callee(callee_wrapped),
                 callee=callee_wrapped,
             )
             if self._is_checking():
@@ -15574,8 +15610,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     def _maybe_convert_local_namedtuple_class(
         self, callee: Value, return_value: Value, node: ast.AST | None
     ) -> Value:
-        if self.scopes.scope_type() == ScopeType.module_scope:
-            return return_value
         if not self._is_namedtuple_factory(callee):
             return return_value
         if not isinstance(return_value, KnownValue):
@@ -15590,6 +15624,8 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 f"{self._get_synthetic_class_fq_name(self.current_statement)}"
                 f".__namedtuple_base_{node.lineno}_{node.col_offset}"
             )
+        elif self.scopes.scope_type() == ScopeType.module_scope:
+            return return_value
         else:
             synthetic_name = self._get_synthetic_class_fq_name_from_name(
                 runtime_class.__name__
@@ -17522,4 +17558,20 @@ def _has_only_known_attributes(ts_finder: TypeshedFinder | None, typ: object) ->
         and not hasattr(typ, "__getattr__")
     ):
         return True
+    return False
+
+
+def _symbol_contains_self(symbol: ClassSymbol) -> bool:
+    if symbol.annotation is not None and _value_contains_self(symbol.annotation):
+        return True
+    if symbol.initializer is not None and _value_contains_self(symbol.initializer):
+        return True
+    if symbol.property_info is not None:
+        for subsymbol in (
+            symbol.property_info.fget,
+            symbol.property_info.fset,
+            symbol.property_info.fdel,
+        ):
+            if subsymbol is not None and _symbol_contains_self(subsymbol):
+                return True
     return False

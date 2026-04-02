@@ -445,11 +445,6 @@ class ArgSpecCache:
         for obj, argspec in default_argspecs.items():
             self.known_argspecs[obj] = argspec
 
-    def invalidate_for_type(self, typ: type | str) -> None:
-        self.known_argspecs.pop(typ, None)
-        self.generic_bases_cache.pop(typ, None)
-        self.type_params_cache.pop(typ, None)
-
     def from_signature(
         self,
         sig: inspect.Signature,

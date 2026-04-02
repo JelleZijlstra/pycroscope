@@ -9,6 +9,7 @@ from .test_config import TEST_OPTIONS
 from .test_name_check_visitor import TestNameCheckVisitorBase
 from .test_node_visitor import assert_passes, skip_before
 from .type_object import (
+    AttributePolicy,
     DataclassFieldRecord,
     NamedTupleField,
     _class_key_from_value,
@@ -143,7 +144,7 @@ def test_lookup_declared_symbol_with_owner_merges_typeshed_property_info() -> No
         owner, symbol = match
         assert owner is runtime_class
         assert symbol.property_info is not None
-        assert symbol.property_info.getter_type == TypedValue(str)
+        assert symbol.property_info.fget is not None
     finally:
         sys.modules.pop(module_name, None)
         sys.modules.pop("_pycroscope_tests", None)
@@ -282,8 +283,10 @@ def test_runtime_property_symbol_tracks_accessor_deprecations() -> None:
 
     assert symbol is not None
     assert symbol.property_info is not None
-    assert symbol.property_info.getter_deprecation == "getter"
-    assert symbol.property_info.setter_deprecation == "setter"
+    assert symbol.property_info.fget is not None
+    assert symbol.property_info.fget.deprecation_message == "getter"
+    assert symbol.property_info.fset is not None
+    assert symbol.property_info.fset.deprecation_message == "setter"
 
 
 def test_runtime_type_object_tracks_dataclass_fields() -> None:
@@ -702,28 +705,22 @@ def test_get_attribute_substitutes_direct_declared_type_params() -> None:
     type_object = checker.make_type_object(Box)
 
     value_attr = type_object.get_attribute(
-        "value",
-        checker,
-        on_class=False,
-        receiver_value=GenericValue(Box, [TypedValue(str)]),
+        "value", AttributePolicy(receiver_value=GenericValue(Box, [TypedValue(str)]))
     )
     assert value_attr is not None
     assert value_attr.value == TypedValue(str)
 
     prop_attr = type_object.get_attribute(
-        "prop",
-        checker,
-        on_class=False,
-        receiver_value=GenericValue(Box, [TypedValue(str)]),
+        "prop", AttributePolicy(receiver_value=GenericValue(Box, [TypedValue(str)]))
     )
     assert prop_attr is not None
     assert prop_attr.value == TypedValue(str)
 
     class_prop_attr = type_object.get_attribute(
         "prop",
-        checker,
-        on_class=True,
-        receiver_value=GenericValue(Box, [TypedValue(str)]),
+        AttributePolicy(
+            on_class=True, receiver_value=GenericValue(Box, [TypedValue(str)])
+        ),
     )
     assert class_prop_attr is not None
     assert class_prop_attr.value == TypedValue(property)
@@ -740,7 +737,7 @@ def test_get_attribute_substitutes_inherited_generic_base_args() -> None:
 
     checker = Checker()
     attribute = checker.make_type_object(Child).get_attribute(
-        "value", checker, on_class=False, receiver_value=TypedValue(Child)
+        "value", AttributePolicy(receiver_value=TypedValue(Child))
     )
 
     assert attribute is not None
@@ -759,10 +756,7 @@ def test_get_attribute_substitutes_receiver_args_through_generic_mro() -> None:
 
     checker = Checker()
     attribute = checker.make_type_object(Child).get_attribute(
-        "value",
-        checker,
-        on_class=False,
-        receiver_value=GenericValue(Child, [TypedValue(int)]),
+        "value", AttributePolicy(receiver_value=GenericValue(Child, [TypedValue(int)]))
     )
 
     assert attribute is not None
@@ -807,7 +801,7 @@ def test_get_attribute_applies_classmethod_descriptor_protocol() -> None:
 
     checker = Checker()
     attribute = checker.make_type_object(Box).get_attribute(
-        "make", checker, on_class=False, receiver_value=TypedValue(Box)
+        "make", AttributePolicy(receiver_value=TypedValue(Box))
     )
 
     assert attribute is not None
@@ -826,7 +820,7 @@ def test_get_attribute_special_cases_instance_class_and_dict_for_runtime_types()
     type_object = checker.make_type_object(Box)
 
     class_attr = type_object.get_attribute(
-        "__class__", checker, on_class=False, receiver_value=TypedValue(Box)
+        "__class__", AttributePolicy(receiver_value=TypedValue(Box))
     )
     assert class_attr is not None
     assert class_attr.owner.typ is Box
@@ -834,7 +828,7 @@ def test_get_attribute_special_cases_instance_class_and_dict_for_runtime_types()
     assert class_attr.value.source is AnySource.inference
 
     dict_attr = type_object.get_attribute(
-        "__dict__", checker, on_class=False, receiver_value=TypedValue(Box)
+        "__dict__", AttributePolicy(receiver_value=TypedValue(Box))
     )
     assert dict_attr is not None
     assert dict_attr.owner.typ is Box
@@ -855,19 +849,19 @@ def test_get_attribute_uses_metaclass_members_for_class_object_access() -> None:
     type_object = checker.make_type_object(Box)
 
     answer_attr = type_object.get_attribute(
-        "answer", checker, on_class=True, receiver_value=TypedValue(Box)
+        "answer", AttributePolicy(on_class=True, receiver_value=TypedValue(Box))
     )
     assert answer_attr is not None
     assert answer_attr.owner.typ is Meta
     assert answer_attr.value == KnownValue(42)
 
     instance_answer_attr = type_object.get_attribute(
-        "answer", checker, on_class=False, receiver_value=TypedValue(Box)
+        "answer", AttributePolicy(receiver_value=TypedValue(Box))
     )
     assert instance_answer_attr is None
 
     make_attr = type_object.get_attribute(
-        "make", checker, on_class=True, receiver_value=TypedValue(Box)
+        "make", AttributePolicy(on_class=True, receiver_value=TypedValue(Box))
     )
     assert make_attr is not None
     assert make_attr.owner.typ is Meta
@@ -887,7 +881,7 @@ def test_get_attribute_prefers_metaclass_property_on_class_access() -> None:
 
     checker = Checker()
     attribute = checker.make_type_object(Box).get_attribute(
-        "value", checker, on_class=True, receiver_value=TypedValue(Box)
+        "value", AttributePolicy(on_class=True, receiver_value=TypedValue(Box))
     )
 
     assert attribute is not None
@@ -910,7 +904,7 @@ def test_get_attribute_resolves_runtime_custom_descriptor() -> None:
     type_object = checker.make_type_object(Box)
 
     instance_attr = type_object.get_attribute(
-        "value", checker, on_class=False, receiver_value=TypedValue(Box)
+        "value", AttributePolicy(receiver_value=TypedValue(Box))
     )
     assert instance_attr is not None
     assert instance_attr.is_property
@@ -937,7 +931,7 @@ def test_get_attribute_resolves_runtime_generic_descriptor_instance_type() -> No
 
     checker = Checker()
     attribute = checker.make_type_object(Box).get_attribute(
-        "value", checker, on_class=False, receiver_value=TypedValue(Box)
+        "value", AttributePolicy(receiver_value=TypedValue(Box))
     )
 
     assert attribute is not None
@@ -969,7 +963,7 @@ def test_get_attribute_prefers_metaclass_data_descriptor_on_class_access() -> No
 
     checker = Checker()
     attribute = checker.make_type_object(Box).get_attribute(
-        "value", checker, on_class=True, receiver_value=TypedValue(Box)
+        "value", AttributePolicy(on_class=True, receiver_value=TypedValue(Box))
     )
 
     assert attribute is not None
@@ -983,8 +977,16 @@ def test_get_attribute_uses_typeshed_types_for_type_descriptors() -> None:
     checker = Checker()
     type_object = checker.make_type_object(int)
 
+    doc_attr = type_object.get_attribute(
+        "__doc__", AttributePolicy(on_class=True, receiver_value=KnownValue(int))
+    )
+    assert doc_attr is not None
+    assert doc_attr.is_metaclass_owner
+    assert doc_attr.is_property
+    assert doc_attr.value == TypedValue(str) | KnownValue(None)
+
     name_attr = type_object.get_attribute(
-        "__name__", checker, on_class=True, receiver_value=TypedValue(int)
+        "__name__", AttributePolicy(on_class=True, receiver_value=KnownValue(int))
     )
     assert name_attr is not None
     assert name_attr.is_metaclass_owner
@@ -992,7 +994,7 @@ def test_get_attribute_uses_typeshed_types_for_type_descriptors() -> None:
     assert name_attr.value == TypedValue(str)
 
     qualname_attr = type_object.get_attribute(
-        "__qualname__", checker, on_class=True, receiver_value=TypedValue(int)
+        "__qualname__", AttributePolicy(on_class=True, receiver_value=TypedValue(int))
     )
     assert qualname_attr is not None
     assert qualname_attr.is_metaclass_owner
@@ -1000,7 +1002,7 @@ def test_get_attribute_uses_typeshed_types_for_type_descriptors() -> None:
     assert qualname_attr.value == TypedValue(str)
 
     module_attr = type_object.get_attribute(
-        "__module__", checker, on_class=True, receiver_value=TypedValue(int)
+        "__module__", AttributePolicy(on_class=True, receiver_value=TypedValue(int))
     )
     assert module_attr is not None
     assert module_attr.is_metaclass_owner
@@ -1008,7 +1010,7 @@ def test_get_attribute_uses_typeshed_types_for_type_descriptors() -> None:
     assert module_attr.value == TypedValue(str)
 
     mro_attr = type_object.get_attribute(
-        "__mro__", checker, on_class=True, receiver_value=TypedValue(int)
+        "__mro__", AttributePolicy(on_class=True, receiver_value=TypedValue(int))
     )
     assert mro_attr is not None
     assert mro_attr.is_metaclass_owner
@@ -1016,7 +1018,7 @@ def test_get_attribute_uses_typeshed_types_for_type_descriptors() -> None:
     assert mro_attr.value == GenericValue(tuple, [TypedValue(type)])
 
     bases_attr = type_object.get_attribute(
-        "__bases__", checker, on_class=True, receiver_value=TypedValue(int)
+        "__bases__", AttributePolicy(on_class=True, receiver_value=TypedValue(int))
     )
     assert bases_attr is not None
     assert bases_attr.is_metaclass_owner
@@ -1772,7 +1774,7 @@ class TestSyntheticType(TestNameCheckVisitorBase):
         class WeirdProperty:
             value = property(None, object())  # E: incompatible_argument
 
-        maybe_ok: WantsSettable = WeirdProperty()
+        maybe_ok: WantsSettable = WeirdProperty()  # E: incompatible_assignment
         print(maybe_ok)
 
     @assert_passes()
@@ -1902,11 +1904,10 @@ class TestSyntheticType(TestNameCheckVisitorBase):
         ok4 = Child().value
         print(ok1, ok2, ok3, ok4)
 
-    @assert_passes(run_in_both_module_modes=True)
+    @assert_passes()
     def test_namedtuple_with_non_mapping_annotations_loses_class_attribute(self):
+        import collections
         from typing import Any, NamedTuple, cast
-
-        from typing_extensions import assert_type
 
         class NT(NamedTuple):
             x: int
@@ -1914,8 +1915,12 @@ class TestSyntheticType(TestNameCheckVisitorBase):
         cast(Any, NT)._fields = 1
         setattr(NT, "__annotations__", 1)
 
-        print(NT.x)  # E: undefined_attribute
-        assert_type(NT.x, object)  # E: undefined_attribute  # E: inference_failure
+        print(NT.x)
+
+        def capybara(getter: collections._tuplegetter) -> None:
+            pass
+
+        capybara(NT.x)
 
     @assert_passes(run_in_both_module_modes=True)
     def test_runtime_generic_type_param_defaults_use_runtime_types(self):

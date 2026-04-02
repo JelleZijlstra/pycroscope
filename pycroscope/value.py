@@ -681,6 +681,16 @@ class CanAssignContext(Protocol):
         """Return a ``pycroscope.type_object.TypeObject`` for this concrete type."""
         raise NotImplementedError
 
+    def get_call_result(
+        self,
+        callee: "Value",
+        args: Iterable["Value"] = (),
+        kwargs: Iterable[tuple[str | None, "Value"]] = (),
+        node: ast.AST | None = None,
+    ) -> "Value":
+        """Return the result of calling callee with the given arguments."""
+        return AnyValue(AnySource.inference)
+
     def get_generic_bases(
         self, typ: type | str, generic_args: Sequence["Value"] = ()
     ) -> GenericBases:
@@ -3634,29 +3644,31 @@ class DataclassFieldInfo:
             yield from self.converter_input_type.walk_values()
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class PropertyInfo:
-    getter_type: Value
-    setter_type: Value | None = None
-    getter_deprecation: str | None = None
-    setter_deprecation: str | None = None
+    # Can be None if a property is manually constructed (property(fset=...))
+    fget: "ClassSymbol | None"
+    fset: "ClassSymbol | None" = None
+    fdel: "ClassSymbol | None" = None
 
     def substitute_typevars(self, typevars: TypeVarMap) -> "PropertyInfo":
         return PropertyInfo(
-            getter_type=self.getter_type.substitute_typevars(typevars),
-            setter_type=(
-                self.setter_type.substitute_typevars(typevars)
-                if self.setter_type is not None
+            fget=(
+                self.fget.substitute_typevars(typevars)
+                if self.fget is not None
                 else None
             ),
-            getter_deprecation=self.getter_deprecation,
-            setter_deprecation=self.setter_deprecation,
+            fset=(
+                self.fset.substitute_typevars(typevars)
+                if self.fset is not None
+                else None
+            ),
+            fdel=(
+                self.fdel.substitute_typevars(typevars)
+                if self.fdel is not None
+                else None
+            ),
         )
-
-    def walk_values(self) -> Iterable[Value]:
-        yield from self.getter_type.walk_values()
-        if self.setter_type is not None:
-            yield from self.setter_type.walk_values()
 
 
 @dataclass(frozen=True)
@@ -4673,41 +4685,41 @@ class FunctionDecorator(enum.Enum):
         return "instance"
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class ClassSymbol:
     # Declared annotation for the member, if any. This is present for annotated
     # attributes and absent for unannotated synthetic members and methods.
     annotation: Value | None = None
+    # Stored value information for the member. For annotated attributes this is
+    # the assigned/default value when known; for methods it is the callable
+    # value; for unannotated synthetic members it is the best available value.
+    initializer: Value | None = None
     qualifiers: frozenset[Qualifier] = frozenset()
     function_decorators: frozenset[FunctionDecorator] = frozenset()
-    # TODO: This is not yet consistently set and it is not being used
     deprecation_message: str | None = None
+    # TODO: How do we determine this? Does it add information over initializer/annotation?
     is_instance_only: bool = False
     is_method: bool = False
     # TODO: not sure why this exists or why we need it
     returns_self_on_class_access: bool = False
     property_info: PropertyInfo | None = None
-    # Stored value information for the member. For annotated attributes this is
-    # the assigned/default value when known; for methods it is the callable
-    # value; for unannotated synthetic members it is the best available value.
-    initializer: Value | None = None
     dataclass_field: DataclassFieldInfo | None = None
 
     def __post_init__(self) -> None:
         if self.returns_self_on_class_access:
-            assert self.is_method
+            assert self.is_method, self
         if self.property_info is not None:
-            assert not self.is_method
-            assert not self.is_classmethod
-            assert not self.is_staticmethod
-            assert not self.returns_self_on_class_access
+            assert not self.is_method, self
+            assert not self.is_classmethod, self
+            assert not self.is_staticmethod, self
+            assert not self.returns_self_on_class_access, self
             assert self.initializer is None or _is_property_initializer(
                 self.initializer
-            )
+            ), self
         if self.is_method:
-            assert self.initializer is not None
-            assert self.property_info is None
-            assert self.annotation is None
+            assert self.initializer is not None, self
+            assert self.property_info is None, self
+            assert self.annotation is None, self
 
     @property
     def is_classmethod(self) -> bool:
@@ -4740,6 +4752,37 @@ class ClassSymbol:
     def is_property(self) -> bool:
         return self.property_info is not None
 
+    def substitute_typevars(self, substitutions: TypeVarMap) -> "ClassSymbol":
+        return ClassSymbol(
+            annotation=(
+                self.annotation.substitute_typevars(substitutions)
+                if self.annotation is not None
+                else None
+            ),
+            initializer=(
+                self.initializer.substitute_typevars(substitutions)
+                if self.initializer is not None
+                else None
+            ),
+            qualifiers=self.qualifiers,
+            function_decorators=self.function_decorators,
+            deprecation_message=self.deprecation_message,
+            is_instance_only=self.is_instance_only,
+            is_method=self.is_method,
+            returns_self_on_class_access=self.returns_self_on_class_access,
+            property_info=(
+                self.property_info.substitute_typevars(substitutions)
+                if self.property_info is not None
+                else None
+            ),
+            dataclass_field=(
+                self.dataclass_field.substitute_typevars(substitutions)
+                if self.dataclass_field is not None
+                else None
+            ),
+        )
+
+    # TODO: I don't think these two methods should exist, they are confusing
     def get_declared_type(self) -> Value | None:
         if self.annotation is not None:
             return self.annotation
@@ -4756,9 +4799,9 @@ def _is_property_initializer(value: Value) -> bool:
     value = replace_fallback(value)
     return (
         isinstance(value, KnownValue)
-        and isinstance(value.val, property)
+        and isinstance(value.val, (property, types.GetSetDescriptorType))
         or isinstance(value, TypedValue)
-        and value.typ is property
+        and (value.typ is property or value.typ is types.GetSetDescriptorType)
     )
 
 
