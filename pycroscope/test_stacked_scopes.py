@@ -25,7 +25,7 @@ from .stacked_scopes import (
     uniq_chain,
 )
 from .test_name_check_visitor import TestNameCheckVisitorBase
-from .test_node_visitor import assert_passes, skip_if_not_installed
+from .test_node_visitor import assert_passes, skip_before, skip_if_not_installed
 from .value import (
     UNINITIALIZED_VALUE,
     AnnotatedValue,
@@ -471,6 +471,7 @@ class TestScoping(TestNameCheckVisitorBase):
             def socket(self) -> socket.error:
                 return socket.error()
 
+    @skip_before((3, 12))
     def test_module_scope_reveal_locals_with_forward_alias(self):
         self.assert_passes(
             """
