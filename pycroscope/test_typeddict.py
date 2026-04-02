@@ -820,6 +820,78 @@ class TestTypedDictImportFailures(TestNameCheckVisitorBase):
 
         class BadBaseRequiredness(MutableLeft, OptionalRight): ...  # E: invalid_base
 
+    @assert_passes(run_in_both_module_modes=True)
+    def test_typeddict_keyword_and_extra_items_validation_after_import_failure(self):
+        from random import random
+
+        from typing_extensions import NotRequired, ReadOnly, Required, TypedDict
+
+        maybe_total = True if random() else 1
+        maybe_closed = False if random() else 1
+
+        class MutableExtraBase(TypedDict, extra_items=int):
+            name: str
+
+        class ReadOnlyExtraBase(TypedDict, extra_items=ReadOnly[int]):
+            name: str
+
+        class BadTotal(TypedDict, total=maybe_total):  # E: invalid_typeddict
+            name: str
+
+        class BadClosed(TypedDict, closed=maybe_closed):  # E: invalid_typeddict
+            name: str
+
+        class BadRequiredExtra(
+            TypedDict, extra_items=Required[int]  # E: invalid_qualifier
+        ):
+            name: str
+
+        class BadNotRequiredExtra(
+            TypedDict, extra_items=NotRequired[int]  # E: invalid_qualifier
+        ):
+            name: str
+
+        class BadClosedChild(MutableExtraBase, closed=True):  # E: invalid_typeddict
+            pass
+
+        class BadChangedExtra(  # E: invalid_typeddict
+            MutableExtraBase, extra_items=str
+        ):
+            pass
+
+        class ClosedChild(ReadOnlyExtraBase, closed=True):
+            pass
+
+        def capybara(value: ClosedChild) -> None:
+            print(value["name"])
+
+    @assert_passes(run_in_both_module_modes=True)
+    def test_typeddict_closed_false_conflicts_with_closed_or_extra_items_base(self):
+        from typing_extensions import TypedDict
+
+        class ClosedBase(TypedDict, closed=True):
+            name: str
+
+        class ExtraItemsBase(TypedDict, extra_items=int):
+            name: str
+
+        class BadOpenClosedBase(ClosedBase, closed=False):  # E: invalid_typeddict
+            pass
+
+        class BadOpenExtraItemsBase(  # E: invalid_typeddict
+            ExtraItemsBase, closed=False
+        ):
+            pass
+
+    @assert_passes(allow_import_failures=True)
+    def test_typeddict_kwargs_keyword_validation_after_import_failure(self):
+        from typing_extensions import TypedDict
+
+        extra_kwargs = {"other": True}
+
+        class BadKwargs(TypedDict, **extra_kwargs):  # E: invalid_typeddict
+            name: str
+
 
 class TestTypedDictFunctionScope(TestNameCheckVisitorBase):
     @assert_passes()

@@ -638,6 +638,39 @@ class TestDataclass(TestNameCheckVisitorBase):
             dc.x  # E: undefined_attribute
             dc.y  # E: undefined_attribute
 
+    @assert_passes(run_in_both_module_modes=True)
+    def test_dataclass_post_init_duplicate_initvar_name_in_inheritance(self):
+        from dataclasses import InitVar, dataclass
+
+        @dataclass
+        class Base:
+            x: InitVar[int]
+
+            def __post_init__(self, x: int) -> None:
+                pass
+
+        @dataclass
+        class Child(Base):
+            x: InitVar[int]
+
+            def __post_init__(self, x: int) -> None:
+                pass
+
+        Child(1)
+
+    @assert_passes(run_in_both_module_modes=True)
+    def test_dataclass_order_comparison_with_class_objects_and_non_dataclasses(self):
+        from dataclasses import dataclass
+
+        @dataclass(order=True)
+        class Ordered:
+            value: int
+
+        ordered = Ordered(1)
+
+        def compare() -> None:
+            print(ordered < 1)
+
     @assert_passes()
     def test_attribute_checker_respects_isinstance_narrowing_for_attributes(self):
         from dataclasses import dataclass

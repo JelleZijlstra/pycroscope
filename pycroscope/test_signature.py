@@ -1406,6 +1406,121 @@ class TestOverload(TestNameCheckVisitorBase):
         def model(*, kw_only: bool = True) -> Callable[[T], T]: ...
 
     @assert_passes()
+    def test_overload_block_with_signatureless_decorated_stubs(self):
+        from typing import overload
+
+        def erase_signature(fn: object) -> int:
+            return 1
+
+        @overload
+        @erase_signature
+        def f(x: int) -> int: ...
+
+        @overload
+        @erase_signature
+        def f(x: str) -> str: ...
+
+        def f(x: int | str) -> int | str:
+            return x
+
+        print(f(1), f("x"))
+
+    @assert_passes()
+    def test_overload_block_with_union_callable_decorated_stubs(self):
+        from typing import Callable, cast, overload
+
+        def preserve_as_union(
+            fn: object,
+        ) -> Callable[[int], int] | Callable[[str], str]:
+            return cast(Callable[[int], int] | Callable[[str], str], fn)
+
+        @overload
+        @preserve_as_union
+        def f(x: int) -> int: ...
+
+        @overload
+        @preserve_as_union
+        def f(x: str) -> str: ...
+
+        def f(x: int | str) -> int | str:
+            return x
+
+        print(f(1), f("x"))
+
+    @assert_passes()
+    def test_overload_block_skips_signatureless_stub_in_consistency_check(self):
+        from typing import overload
+
+        def erase_signature(fn: object) -> int:
+            return 1
+
+        @overload
+        @erase_signature
+        def f(x: int) -> int: ...
+
+        @overload
+        def f(x: str) -> str: ...
+
+        def f(x: int | str) -> int | str:
+            return x
+
+        print(f("x"))
+
+    @assert_passes()
+    def test_overload_block_with_protocol_callable_decorated_stubs(self):
+        from typing import Protocol, cast, overload
+
+        class OverloadedDecoratorResult(Protocol):
+            @overload
+            def __call__(self, x: int) -> int: ...
+
+            @overload
+            def __call__(self, x: str) -> str: ...
+
+        def preserve_as_protocol(fn: object) -> OverloadedDecoratorResult:
+            return cast(OverloadedDecoratorResult, fn)
+
+        @overload
+        @preserve_as_protocol
+        def f(x: int) -> int: ...
+
+        @overload
+        @preserve_as_protocol
+        def f(x: str) -> str: ...
+
+        def f(x: int | str) -> int | str:
+            return x
+
+        print(f(1), f("x"))
+
+    @assert_passes()
+    def test_missing_protocol_decorated_overload_block_materializes(self):
+        from typing import Protocol, cast, overload
+
+        class OverloadedDecoratorResult(Protocol):
+            @overload
+            def __call__(self, x: int) -> int: ...
+
+            @overload
+            def __call__(self, x: str) -> str: ...
+
+        def preserve_as_protocol(fn: object) -> OverloadedDecoratorResult:
+            return cast(OverloadedDecoratorResult, fn)
+
+        @overload
+        @preserve_as_protocol
+        def bad(x: int) -> int: ...  # E: invalid_overload
+
+        @overload
+        @preserve_as_protocol
+        def bad(x: str) -> str: ...
+
+        def other(x: bytes) -> bytes:
+            return x
+
+        print(other(b"x"))
+
+    @assert_passes()
     def test_protocol_overload_materializes_call_signature(self):
         from typing import Protocol, overload
 
