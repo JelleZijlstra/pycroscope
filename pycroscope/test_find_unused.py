@@ -1,10 +1,13 @@
 # static analysis: ignore
 import ast
+import sys
 import textwrap
+import types
 
 from .error_code import DISABLED_IN_TESTS, ErrorCode
 from .name_check_visitor import (
     IgnoredUnusedAttributePaths,
+    IgnoredUnusedClassAttributes,
     IgnoreUnusedAttributePredicates,
     _ignore_unused_ast_visit_methods,
     _ignore_unused_test_helper_attributes,
@@ -18,7 +21,13 @@ from .test_name_check_visitor import (
 
 class TestFindUnused(TestNameCheckVisitorBase):
     def assert_unused_attributes(
-        self, code_str, expected_unused, extra_options=(), module=None
+        self,
+        code_str,
+        expected_unused,
+        extra_options=(),
+        module=None,
+        *,
+        should_serialize=False,
     ):
         code_str = textwrap.dedent(code_str)
         tree = ast.parse(code_str, "<test input>")
@@ -30,6 +39,7 @@ class TestFindUnused(TestNameCheckVisitorBase):
         with ClassAttributeChecker(
             enabled=True,
             should_check_unused_attributes=True,
+            should_serialize=should_serialize,
             options=kwargs["checker"].options,
         ) as attribute_checker:
             visitor = self.visitor_cls(
@@ -48,6 +58,14 @@ class TestFindUnused(TestNameCheckVisitorBase):
             for item in attribute_checker.unused_attributes
         }
         assert actual_unused == set(expected_unused)
+
+    @staticmethod
+    def _make_named_module(code_str: str, module_name: str) -> types.ModuleType:
+        module = types.ModuleType(module_name)
+        module.__file__ = f"{module_name}.py"
+        sys.modules[module_name] = module
+        exec(compile(code_str, module.__file__, "exec"), module.__dict__)
+        return module
 
     def test_unused_attributes_follow_overrides(self):
         self.assert_unused_attributes(
@@ -280,6 +298,63 @@ class TestFindUnused(TestNameCheckVisitorBase):
                 ),
             ),
             module=module,
+        )
+
+    def test_unused_attributes_can_be_ignored_for_related_classes_in_serialized_mode(
+        self,
+    ):
+        code = """
+            class Base:
+                helper = 1
+
+            class Child(Base):
+                pass
+            """
+        module = _make_module(textwrap.dedent(code))
+        self.assert_unused_attributes(
+            code,
+            set(),
+            extra_options=(
+                IgnoredUnusedClassAttributes(
+                    [(module.Base, {"helper"})], from_command_line=True
+                ),
+            ),
+            module=module,
+            should_serialize=True,
+        )
+
+    def test_setup_method_is_ignored_as_unused_test_helper(self):
+        self.assert_unused_attributes(
+            """
+            class Helper:
+                def setup_method(self) -> None:
+                    pass
+            """,
+            set(),
+        )
+
+    def test_test_methods_can_be_ignored_based_on_module_name(self):
+        code = """
+            class Helper:
+                def test_case(self) -> None:
+                    pass
+            """
+        module = self._make_named_module(textwrap.dedent(code), "test_helpers")
+        self.assert_unused_attributes(code, set(), module=module)
+
+    def test_server_call_attributes_are_ignored(self):
+        self.assert_unused_attributes(
+            """
+            class ServerCall:
+                server_call = True
+
+                def __get__(self, obj: object, owner: object) -> "ServerCall":
+                    return self
+
+            class Api:
+                fetch = ServerCall()
+            """,
+            {("ServerCall", "server_call", False)},
         )
 
     def test_test_helper_modules_can_be_ignored_by_predicate(self):

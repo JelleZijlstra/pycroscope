@@ -431,6 +431,28 @@ class TestTypeAliasType(TestNameCheckVisitorBase):
         )
 
     @skip_before((3, 12))
+    @assert_passes()
+    def test_312_runtime_typealiastype_keyword_value_and_private_class_alias(self):
+        from typing import TypeAliasType
+
+        from typing_extensions import assert_type
+
+        Alias = TypeAliasType("Alias", value=type[int])
+
+        def takes_alias(cls: Alias) -> None:
+            assert_type(cls, type[int])
+
+        class Box:
+            __Value = int
+
+            def get(self, x: __Value) -> __Value:
+                return x
+
+        takes_alias(int)
+        takes_alias(str)  # E: incompatible_argument
+        assert_type(Box().get(1), int)
+
+    @skip_before((3, 12))
     def test_312(self):
         self.assert_passes("""
             from typing_extensions import assert_type

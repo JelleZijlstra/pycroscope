@@ -6,6 +6,47 @@ from .test_node_visitor import assert_passes
 
 class TestDataclassTransform(TestNameCheckVisitorBase):
     @assert_passes()
+    def test_multiple_dataclass_transform_sources_are_rejected(self):
+        from typing import TypeVar
+
+        from typing_extensions import dataclass_transform
+
+        T = TypeVar("T")
+
+        @dataclass_transform()
+        def model(cls: type[T]) -> type[T]:
+            return cls
+
+        @dataclass_transform()
+        def other_model(cls: type[T]) -> type[T]:
+            return cls
+
+        @model
+        @other_model  # E: multiple_dataclass_transform
+        class Decorated:
+            x: int
+
+        @dataclass_transform()
+        class BaseModel:
+            def __init_subclass__(cls) -> None:
+                pass
+
+        @model
+        class FromBase(BaseModel):  # E: multiple_dataclass_transform
+            y: int
+
+        @dataclass_transform()
+        class ModelMeta(type):
+            pass
+
+        class WithMeta(metaclass=ModelMeta):
+            pass
+
+        @model
+        class FromMeta(WithMeta):  # E: multiple_dataclass_transform
+            z: int
+
+    @assert_passes()
     def test_non_typing_decorator_named_dataclass_transform(self):
         from typing import Callable, TypeVar
 
@@ -858,6 +899,46 @@ class TestDataclassTransform(TestNameCheckVisitorBase):
         def check_calls() -> None:
             Model(1, 2)
             Model(1)  # E: incompatible_call
+
+    @assert_passes(run_in_both_module_modes=True)
+    def test_dataclass_transform_var_positional_converter_and_missing_arg_factory(self):
+        from typing import Any, Callable, TypeVar
+
+        from typing_extensions import dataclass_transform
+
+        T = TypeVar("T")
+        S = TypeVar("S")
+
+        def model_field(
+            *,
+            converter: Callable[[S], T],
+            default_factory: Callable[..., S] | None = None,
+        ) -> Any:
+            return object()
+
+        @dataclass_transform(field_specifiers=(model_field,))
+        class Base:
+            pass
+
+        def parse_int(*pieces: str) -> int:
+            return int("".join(pieces))
+
+        def needs_prefix(prefix: str) -> str:
+            return prefix
+
+        class Model(Base):
+            value: int = model_field(converter=parse_int)
+            with_default: int = model_field(
+                converter=parse_int, default_factory=needs_prefix
+            )
+
+        def check_calls(model: Model) -> None:
+            model.value = "1"
+            model.with_default = "2"
+
+            model.value = 3  # E: incompatible_assignment
+            Model("1")
+            Model(1)  # E: incompatible_argument
 
     @assert_passes()
     def test_dataclass_transform_converter_field_specifier(self):

@@ -587,6 +587,31 @@ class TestDataclass(TestNameCheckVisitorBase):
             def __post_init__(self, _name: str, _age: int): ...
 
     @assert_passes(run_in_both_module_modes=True)
+    def test_dataclass_post_init_runtime_initvar_annotation_forms(self):
+        import dataclasses
+        from dataclasses import dataclass
+
+        @dataclass
+        class Direct:
+            x: dataclasses.InitVar[int]
+
+            def __post_init__(self, x: int) -> None:
+                pass
+
+        @dataclass
+        class Forward:
+            y: "dataclasses.InitVar[int]"
+
+            def __post_init__(self, y: int) -> None:
+                pass
+
+        def f() -> None:
+            Direct(1)
+            Forward(2)
+            Direct(1).x  # E: undefined_attribute
+            Forward(2).y  # E: undefined_attribute
+
+    @assert_passes(run_in_both_module_modes=True)
     def test_dataclass_post_init_initvar_semantics_after_import_failure(self):
         from dataclasses import InitVar, dataclass
 

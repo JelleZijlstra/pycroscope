@@ -130,6 +130,27 @@ class TestEnum(TestNameCheckVisitorBase):
         assert_type(Example.first.value, Literal[1])
         assert_type(Example.helper, int)
 
+    @skip_before((3, 11))
+    @assert_passes(run_in_both_module_modes=True)
+    def test_enum_member_alias_and_ignore_sequence_variants(self):
+        import enum
+        from random import random
+
+        from typing_extensions import Literal, assert_type
+
+        class Example(enum.Enum):
+            # TODO: _ignore_ should not need incompatible_override here.
+            _ignore_ = (  # E: incompatible_override
+                ("temp", "spare") if random() else frozenset({"temp", "spare"})
+            )
+            temp = 0
+            spare = 1
+            first = 2
+            second = first
+
+        assert_type(Example.first, Literal[Example.first])
+        assert_type(Example.second, Literal[Example.first])
+
     @assert_passes(run_in_both_module_modes=True)
     def test_annotated_nonmember_attributes_can_be_assigned_in_init(self):
         from enum import Enum
