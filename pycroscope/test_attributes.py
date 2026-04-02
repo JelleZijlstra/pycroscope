@@ -362,6 +362,30 @@ class TestAttributes(TestNameCheckVisitorBase):
         #     assert_type(c.__name__, str)
 
     @assert_passes()
+    def test_exact_class_object_identity_attributes(self):
+        from typing_extensions import assert_type
+
+        def capybara() -> None:
+            assert_type(str.__module__, str)
+
+    @assert_passes()
+    def test_enum_members_attribute(self):
+        import enum
+        import types
+
+        from typing_extensions import assert_type
+
+        class Color(enum.Enum):
+            RED = 1
+
+            @classmethod
+            def capy(cls) -> None:
+                assert_type(cls.__members__, types.MappingProxyType[str, Color])
+
+        def bara(cls: type[Color]) -> None:
+            assert_type(cls.__members__, types.MappingProxyType[str, Color])
+
+    @assert_passes()
     def test_typeshed(self):
         # missing_generic_parameters is a bit questionable here, but the
         # class really is defined as generic in typeshed.

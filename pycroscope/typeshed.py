@@ -199,6 +199,13 @@ _TYPING_ALIASES = {
     "typing.Tuple": "builtins.tuple",
 }
 
+_RUNTIME_TO_TYPESHED_ALIASES = {
+    "enum.EnumType": "enum.EnumMeta",
+    "builtins.dict_items": "_collections_abc.dict_items",
+    "builtins.dict_keys": "_collections_abc.dict_keys",
+    "builtins.dict_values": "_collections_abc.dict_values",
+}
+
 
 @dataclass
 class TypeshedFinder:
@@ -1046,11 +1053,18 @@ class TypeshedFinder:
             self.log("Ignoring object without module or qualname", obj)
             return None
         fq_name = ".".join([module_name, qualname])
+        fq_name = _TYPING_ALIASES.get(fq_name, fq_name)
+        # Some runtime classes, such as builtin view types, are not exported from
+        # the module under their runtime qualname. Trust our explicit alias table
+        # for those instead of rejecting them during runtime-name validation.
+        aliased = _RUNTIME_TO_TYPESHED_ALIASES.get(fq_name)
+        if aliased is not None:
+            return aliased
         # Avoid looking for stubs we won't find anyway.
         if not _obj_from_qualname_is(module_name, qualname, obj):
             self.log("Ignoring invalid name", fq_name)
             return None
-        return _TYPING_ALIASES.get(fq_name, fq_name)
+        return fq_name
 
     def _sig_from_value(self, val: Value) -> ConcreteSignature | None:
         if isinstance(val, UninitializedValue):

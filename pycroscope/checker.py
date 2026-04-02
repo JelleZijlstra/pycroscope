@@ -9,7 +9,7 @@ import collections.abc
 import enum
 import inspect
 import types
-from collections.abc import Callable, Generator, Iterable, Iterator, Sequence
+from collections.abc import Callable, Generator, Iterable, Sequence
 from contextlib import contextmanager
 from dataclasses import InitVar, dataclass, field
 from dataclasses import replace as dataclass_replace
@@ -786,11 +786,6 @@ class Checker:
                 type_object.add_declared_symbol(
                     member, ClassSymbol(initializer=AnyValue(AnySource.inference))
                 )
-
-    def _iter_generic_override_keys(self, typ: type | str) -> Iterator[type | str]:
-        yield typ
-        if isinstance(typ, type):
-            yield runtime_type_generic_alias(typ)
 
     def _get_type_object_generic_bases(
         self, typ: type | str

@@ -8461,6 +8461,12 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         ):
             return True
         concrete_root = replace_fallback(root_composite.value)
+        if isinstance(concrete_root, KnownValue) and isinstance(
+            concrete_root.val, type
+        ):
+            marker = object()
+            if safe_getattr(concrete_root.val, attr_name, marker) is not marker:
+                return False
         if (
             isinstance(concrete_root, (TypedValue, GenericValue))
             and isinstance(concrete_root.typ, type)

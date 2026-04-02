@@ -1157,6 +1157,14 @@ class TestImportFailureHandlingCodeSamples(TestNameCheckVisitorBase):
 
 
 class TestNameCheckVisitor(TestNameCheckVisitorBase):
+    @assert_passes()
+    def test_keys_view_set_difference_preserves_key_type(self):
+        from typing_extensions import assert_type
+
+        def capybara(mapping: dict[str, int], seen: set[str]) -> None:
+            keys_left = mapping.keys() - seen
+            assert_type(keys_left, set[str])
+
     @assert_passes(run_in_both_module_modes=True)
     def test_undefined_class_decorator_does_not_internal_error(self):
         def run() -> None:

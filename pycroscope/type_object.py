@@ -953,7 +953,9 @@ class TypeObject:
             self._declared_symbols = self.get_synthetic_declared_symbols()
 
     def _invalidate_synthetic_state(self) -> None:
-        self._checker.arg_spec_cache.invalidate_for_type(self.typ)
+        self._checker.arg_spec_cache.known_argspecs.pop(self.typ, None)
+        self._checker.arg_spec_cache.generic_bases_cache.pop(self.typ, None)
+        self._checker.arg_spec_cache.type_params_cache.pop(self.typ, None)
         self._update_loaded_synthetic_fields()
         self._protocol_positive_cache.clear()
 
@@ -1563,113 +1565,6 @@ class TypeObject:
             )
         return None
 
-    def _get_selected_attribute_sources(
-        self, name: str, *, is_metaclass_owner: bool
-    ) -> tuple[SelectedAttribute | None, SelectedAttribute | None] | None:
-        runtime_symbol, typeshed_symbol = self._get_direct_lookup_symbol_sources(name)
-        if runtime_symbol is not None or typeshed_symbol is not None:
-            runtime_selected = (
-                SelectedAttribute(
-                    mro_index=0,
-                    owner=self,
-                    symbol=runtime_symbol,
-                    is_metaclass_owner=is_metaclass_owner,
-                )
-                if runtime_symbol is not None
-                else None
-            )
-            typeshed_selected = (
-                SelectedAttribute(
-                    mro_index=0,
-                    owner=self,
-                    symbol=typeshed_symbol,
-                    is_metaclass_owner=is_metaclass_owner,
-                )
-                if typeshed_symbol is not None
-                else None
-            )
-            if (
-                runtime_selected is not None
-                and typeshed_selected is None
-                and _runtime_method_needs_inherited_typeshed_symbol(
-                    runtime_selected.symbol
-                )
-            ):
-                inherited_typeshed = self._get_inherited_typeshed_symbol_with_owner(
-                    name
-                )
-                if inherited_typeshed is not None:
-                    owner, inherited_symbol = inherited_typeshed
-                    if _symbol_contains_typevars(inherited_symbol):
-                        typeshed_selected = SelectedAttribute(
-                            mro_index=0,
-                            owner=owner,
-                            symbol=inherited_symbol,
-                            is_metaclass_owner=is_metaclass_owner,
-                        )
-            return runtime_selected, typeshed_selected
-        for i, entry in enumerate(self.get_mro()):
-            if entry.tobj is None:
-                return None
-            runtime_symbol, typeshed_symbol = (
-                entry.tobj._get_direct_lookup_symbol_sources(name)
-            )
-            if runtime_symbol is not None or typeshed_symbol is not None:
-                return (
-                    (
-                        SelectedAttribute(
-                            mro_index=i,
-                            owner=entry.tobj,
-                            symbol=runtime_symbol,
-                            is_metaclass_owner=is_metaclass_owner,
-                        )
-                        if runtime_symbol is not None
-                        else None
-                    ),
-                    (
-                        SelectedAttribute(
-                            mro_index=i,
-                            owner=entry.tobj,
-                            symbol=typeshed_symbol,
-                            is_metaclass_owner=is_metaclass_owner,
-                        )
-                        if typeshed_symbol is not None
-                        else None
-                    ),
-                )
-        return None
-
-    def _get_direct_lookup_symbol_sources(
-        self, name: str
-    ) -> tuple[ClassSymbol | None, ClassSymbol | None]:
-        return self.get_declared_symbols().get(
-            name
-        ), self._checker.ts_finder.get_direct_symbol(self.typ, name)
-
-    def _get_inherited_typeshed_symbol_with_owner(
-        self, name: str
-    ) -> tuple["TypeObject", ClassSymbol] | None:
-        if isinstance(self.typ, type):
-            try:
-                runtime_mro = type.mro(self.typ)
-            except Exception:
-                return None
-            for base_typ in runtime_mro[1:]:
-                entry_tobj = self._checker.make_type_object(base_typ)
-                _, typeshed_symbol = entry_tobj._get_direct_lookup_symbol_sources(name)
-                if typeshed_symbol is not None:
-                    return entry_tobj, typeshed_symbol
-            return None
-        if self._mro is None:
-            return None
-        for entry in self.get_mro():
-            if entry.tobj is None:
-                return None
-            _, typeshed_symbol = entry.tobj._get_direct_lookup_symbol_sources(name)
-            if typeshed_symbol is not None:
-                return entry.tobj, typeshed_symbol
-        return None
-
     def is_assignable_to_type(self, typ: type | str) -> bool:
         return self.is_universally_assignable() or any(
             entry.tobj is not None
@@ -2154,17 +2049,6 @@ def _merge_symbol_type_information(
     return typeshed_value
 
 
-def _runtime_method_needs_inherited_typeshed_symbol(symbol: ClassSymbol) -> bool:
-    return symbol.is_method and symbol.annotation is None
-
-
-def _symbol_contains_typevars(symbol: ClassSymbol) -> bool:
-    effective_type = symbol.get_effective_type()
-    return any(
-        isinstance(subval, TypeVarValue) for subval in effective_type.walk_values()
-    )
-
-
 def _merge_runtime_and_typeshed_property_info(
     runtime_info: PropertyInfo | None,
     typeshed_attribute: SpecializedAttribute | ClassSymbol | None,
@@ -2604,6 +2488,8 @@ def _receiver_type_value(
         return None
     if isinstance(receiver_value, (TypeVarValue, GenericValue)):
         return receiver_value
+    if isinstance(receiver_value, SubclassValue):
+        return receiver_value.typ
     resolved = replace_fallback(receiver_value)
     if isinstance(resolved, KnownValueWithTypeVars) and not isinstance(
         resolved.val, type
@@ -3095,16 +2981,26 @@ def _resolve_descriptor_access(
         if descriptor_like_instance_access:
             if receiver_value is None:
                 receiver_value = TypedValue(receiver_tobj.typ)
+            receiver_arg = receiver_value
+            typed_receiver_value = _receiver_type_value(receiver_value, ctx)
+            if (
+                on_class
+                and merged_attribute.is_metaclass_owner
+                and typed_receiver_value is not None
+            ):
+                receiver_arg = _classmethod_receiver_value_from_type_value(
+                    typed_receiver_value
+                )
             if merged_attribute.property_info.fget is None:
                 return None
             fget = merged_attribute.property_info.fget.initializer
             assert fget is not None
             if policy.visitor is None:
                 # Note this path means errors don't get shown!
-                value = ctx.get_call_result(fget, (receiver_value,))
+                value = ctx.get_call_result(fget, (receiver_arg,))
             else:
                 value = policy.visitor.get_call_result(
-                    fget, (receiver_value,), node=policy.node
+                    fget, (receiver_arg,), node=policy.node
                 )
 
             return _make_resolved_attribute(
