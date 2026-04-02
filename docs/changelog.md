@@ -6,6 +6,7 @@
 - Fix fallback-mode `TypeVarTuple` callable inference so conformance-style checks like `Process(target=..., args=...)` now match fixed-arity callables more consistently.
 - Make transformed instance attributes keep their declared types on writes, so bad assignments like `self.name = maybe_none` are reported and no longer widen later `self.name` reads across a method or class.
 - Fix false positive `incompatible_argument` errors for numeric `sum()` calls, so ordinary iterables like `list[int]`, generator expressions, and `dict.values()` type-check cleanly again.
+- Add an opt-in `unreachable` check that reports dead code after guaranteed termination and in impossible control-flow paths such as always-false branches and short-circuited boolean operands.
 - Support PEP 800 `@disjoint_base` classes in intersection-based narrowing, so incompatible `TypeIs[...]` checks on different disjoint bases now narrow to `Never`.
 - Improve class-symbol decorator metadata so final, abstractmethod, and deprecation checks now reuse stored symbol information more consistently, including deprecated class/static methods and property accessors.
 - Fix cache-order-dependent protocol lookup for importable runtime types, so string-backed types like `contextlib.AbstractContextManager[T]` no longer need a prior runtime lookup before context-manager protocol checks and self-checks succeed.

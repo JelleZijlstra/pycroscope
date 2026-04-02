@@ -558,7 +558,7 @@ if asynq is not None:
 class _AsyncGeneratorDetector(ast.NodeVisitor):
     """Detect whether an async function body contains a yield."""
 
-    is_generator = False
+    is_generator: bool = False
 
     def visit_Yield(self, node: ast.Yield) -> None:
         self.is_generator = True
@@ -1793,7 +1793,7 @@ class ActiveTypeParams:
         self._legacy_policies: list[_LegacyTypeParamPolicy] = []
         self._variance_collections: list[_VarianceCollectionContext] = []
         self._current_class_type_param_polarities: dict[object, set[int]] | None = None
-        self._current_is_protocol_class = False
+        self._current_is_protocol_class: bool = False
         self._variance_polarity_stack: list[int] = []
         self._variance_is_suspended = 0
         self._variance_outside_annotations = 0
@@ -3855,8 +3855,32 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     return new_mvv, origin
         return value, origin
 
-    def _generic_visit_list(self, lst: Iterable[ast.AST]) -> list[Value]:
-        return [self.visit(node) for node in lst]
+    def _generic_visit_list(
+        self, lst: Iterable[ast.AST], *, unreachable_already_reported: bool = False
+    ) -> list[Value]:
+        values = []
+        is_unreachable = False
+        has_reported_unreachable = unreachable_already_reported
+        for node in lst:
+            if is_unreachable and not has_reported_unreachable:
+                self._show_error_if_checking(node, error_code=ErrorCode.unreachable)
+                has_reported_unreachable = True
+            had_leaves_scope = self._current_scope_has_leaves_scope()
+            values.append(self.visit(node))
+            if not had_leaves_scope and self._current_scope_has_leaves_scope():
+                is_unreachable = True
+        return values
+
+    def _warn_unreachable_nodes(self, nodes: Iterable[ast.AST]) -> None:
+        for node in nodes:
+            self._show_error_if_checking(node, error_code=ErrorCode.unreachable)
+            break
+
+    def _current_scope_has_leaves_scope(self) -> bool:
+        scope = self.scopes.current_scope()
+        if isinstance(scope, FunctionScope):
+            return LEAVES_SCOPE in scope.name_to_current_definition_nodes
+        return LEAVES_SCOPE in scope
 
     def _is_write_ctx(self, ctx: ast.AST) -> bool:
         return isinstance(ctx, (ast.Store, ast.Param))
@@ -7012,8 +7036,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 return KnownValue(current_class), class_scope_values
             return AnyValue(AnySource.inference), class_scope_values
 
-        return AnyValue(AnySource.inference), None
-
     def _build_synthetic_typeddict_value(
         self, context: _SyntheticTypedDictContext, node: ast.ClassDef
     ) -> TypedDictValue:
@@ -8834,6 +8856,8 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
 
             # otherwise we may end up using results from the last yield (generated during the
             # collect state) to evaluate the first one visited during the check state
+            scope.name_to_current_definition_nodes.pop(LEAVES_SCOPE, None)
+            scope.name_to_current_definition_nodes.pop(LEAVES_LOOP, None)
             self.yield_checker.reset_yield_checks()
 
             with (
@@ -10155,9 +10179,20 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         values = []
         constraint = NULL_CONSTRAINT
         definite_value = None
+        short_circuited = False
+        should_warn_on_short_circuit = False
+        has_reported_unreachable_operand = False
         with stack:
             for i, condition in enumerate(node.values):
                 is_last = i == len(node.values) - 1
+                is_unreachable_operand = (
+                    short_circuited and should_warn_on_short_circuit
+                )
+                if is_unreachable_operand and not has_reported_unreachable_operand:
+                    self._show_error_if_checking(
+                        condition, error_code=ErrorCode.unreachable
+                    )
+                    has_reported_unreachable_operand = True
                 scope = stack.enter_context(self.scopes.subscope())
                 scopes.append(scope)
                 if is_and:
@@ -10165,16 +10200,33 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 else:
                     self.add_constraint(condition, constraint.invert())
 
-                new_value, constraint = self.constraint_from_condition(
-                    condition, check_boolability=not is_last
-                )
+                if short_circuited and not should_warn_on_short_circuit:
+                    with self.catch_errors():
+                        new_value, constraint = self.constraint_from_condition(
+                            condition, check_boolability=not is_last
+                        )
+                else:
+                    new_value, constraint = self.constraint_from_condition(
+                        condition, check_boolability=not is_last
+                    )
                 new_def_val = _extract_definite_value(new_value)
+                new_truthiness = _extract_unreachable_condition_value(new_value)
                 if is_and and new_def_val is False:
                     definite_value = False
-                    stack.enter_context(self.catch_errors())
+                    short_circuited = True
+                    should_warn_on_short_circuit = False
                 elif not is_and and new_def_val is True:
                     definite_value = True
-                    stack.enter_context(self.catch_errors())
+                    short_circuited = True
+                    should_warn_on_short_circuit = False
+                elif not short_circuited and (
+                    (is_and and new_truthiness is False)
+                    or (not is_and and new_truthiness is True)
+                ):
+                    short_circuited = True
+                    should_warn_on_short_circuit = True
+                if is_unreachable_operand:
+                    continue
                 out_constraints.append(constraint)
 
                 if is_last:
@@ -11186,6 +11238,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         test, constraint = self.constraint_from_condition(
             node.test, check_boolability=False
         )
+        unreachable_condition_value = _extract_unreachable_condition_value(test)
         always_entered = get_boolability(test) in (
             Boolability.value_always_true,
             Boolability.type_always_true,
@@ -11194,8 +11247,19 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             with self.scopes.loop_scope() as loop_scopes:
                 # The "node" argument need not be an AST node but must be unique.
                 self.add_constraint((node, 1), constraint)
-                self._generic_visit_list(node.body)
-        self._handle_loop_else(node.orelse, body_scope, always_entered)
+                if unreachable_condition_value is False:
+                    self._warn_unreachable_nodes(node.body)
+                    self._generic_visit_list(
+                        node.body, unreachable_already_reported=True
+                    )
+                else:
+                    self._generic_visit_list(node.body)
+        self._handle_loop_else(
+            node.orelse,
+            body_scope,
+            always_entered,
+            dead_else=unreachable_condition_value is True,
+        )
 
         if self.state == VisitorState.collect_names:
             test, constraint = self.constraint_from_condition(
@@ -11210,7 +11274,12 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             self._set_name_in_scope(LEAVES_SCOPE, node, AnyValue(AnySource.marker))
 
     def _handle_loop_else(
-        self, orelse: list[ast.stmt], body_scope: SubScope, always_entered: bool
+        self,
+        orelse: list[ast.stmt],
+        body_scope: SubScope,
+        always_entered: bool,
+        *,
+        dead_else: bool = False,
     ) -> None:
         if always_entered:
             self.scopes.combine_subscopes([body_scope])
@@ -11219,7 +11288,13 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             with self.scopes.subscope() as body_scope:
                 pass
         with self.scopes.subscope() as else_scope:
-            self._generic_visit_list(orelse)
+            if dead_else:
+                self._warn_unreachable_nodes(orelse)
+                self._generic_visit_list(orelse, unreachable_already_reported=True)
+            else:
+                self._generic_visit_list(orelse)
+        if dead_else:
+            else_scope = _without_leaves_scope(else_scope)
         self.scopes.combine_subscopes([body_scope, else_scope])
 
     def _member_value_of_iterator(
@@ -11504,6 +11579,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     def visit_If(self, node: ast.If) -> None:
         val, constraint = self.constraint_from_condition(node.test)
         definite_value = _extract_definite_value(val)
+        unreachable_condition_value = _extract_unreachable_condition_value(val)
         # reset yield checks to avoid incorrect errors when we yield in both the condition and one
         # of the blocks
         self.yield_checker.reset_yield_checks()
@@ -11525,6 +11601,30 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 self._generic_visit_list(node.orelse)
             self.scopes.combine_subscopes([else_scope])
             self._annotate_skipped_subtree(node.body)
+        elif unreachable_condition_value is True:
+            with self.scopes.subscope() as body_scope:
+                self.add_constraint(node, constraint)
+                self._generic_visit_list(node.body)
+            self.yield_checker.reset_yield_checks()
+            with self.scopes.subscope() as else_scope:
+                self.add_constraint(node, constraint.invert())
+                self._warn_unreachable_nodes(node.orelse)
+                self._generic_visit_list(node.orelse, unreachable_already_reported=True)
+            self.scopes.combine_subscopes(
+                [body_scope, _without_leaves_scope(else_scope)]
+            )
+        elif unreachable_condition_value is False:
+            with self.scopes.subscope() as body_scope:
+                self.add_constraint(node, constraint)
+                self._warn_unreachable_nodes(node.body)
+                self._generic_visit_list(node.body, unreachable_already_reported=True)
+            self.yield_checker.reset_yield_checks()
+            with self.scopes.subscope() as else_scope:
+                self.add_constraint(node, constraint.invert())
+                self._generic_visit_list(node.orelse)
+            self.scopes.combine_subscopes(
+                [_without_leaves_scope(body_scope), else_scope]
+            )
         else:
             with self.scopes.subscope() as body_scope:
                 self.add_constraint(node, constraint)
@@ -11539,6 +11639,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     def visit_IfExp(self, node: ast.IfExp) -> Value:
         val, constraint = self.constraint_from_condition(node.test)
         definite_value = _extract_definite_value(val)
+        unreachable_condition_value = _extract_unreachable_condition_value(val)
         if definite_value is True:
             with (
                 self.scopes.subscope() as if_scope,
@@ -11559,6 +11660,30 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             self.scopes.combine_subscopes([else_scope])
             self._annotate_skipped_subtree([node.body])
             return else_val
+        if unreachable_condition_value is True:
+            with self.scopes.subscope() as if_scope:
+                self.add_constraint(node, constraint)
+                then_val = self.visit(node.body)
+            with self.scopes.subscope() as else_scope:
+                self.add_constraint(node, constraint.invert())
+                self._show_error_if_checking(
+                    node.orelse, error_code=ErrorCode.unreachable
+                )
+                else_val = self.visit(node.orelse)
+            self.scopes.combine_subscopes([if_scope, _without_leaves_scope(else_scope)])
+            return unite_values(then_val, else_val)
+        if unreachable_condition_value is False:
+            with self.scopes.subscope() as if_scope:
+                self.add_constraint(node, constraint)
+                self._show_error_if_checking(
+                    node.body, error_code=ErrorCode.unreachable
+                )
+                then_val = self.visit(node.body)
+            with self.scopes.subscope() as else_scope:
+                self.add_constraint(node, constraint.invert())
+                else_val = self.visit(node.orelse)
+            self.scopes.combine_subscopes([_without_leaves_scope(if_scope), else_scope])
+            return unite_values(then_val, else_val)
         with self.scopes.subscope() as if_scope:
             self.add_constraint(node, constraint)
             then_val = self.visit(node.body)
@@ -16682,7 +16807,6 @@ def _known_string_sequence_from_simple_value(
     ):
         return None
     assert_never(value)
-    return None
 
 
 def _known_string_sequence_values(value: Value | None) -> tuple[str, ...] | None:
@@ -16805,7 +16929,6 @@ def _is_absent_dataclass_default_value(value: Value) -> bool:
     ):
         return False
     assert_never(value)
-    return False
 
 
 def _callable_return_type_from_signature(
@@ -17528,7 +17651,6 @@ def _is_runtime_literal_index(value: Value) -> bool:
     ):
         return False
     assert_never(value)
-    return False
 
 
 def _should_use_static_annotation_subscript(value: Value) -> bool:
@@ -17668,6 +17790,23 @@ def _extract_definite_value(val: Value) -> bool | None:
         for dv_ext in dv_exts:
             return dv_ext.value
     return None
+
+
+def _extract_unreachable_condition_value(val: Value) -> bool | None:
+    if isinstance(val, AnnotatedValue):
+        if any(True for _ in val.get_metadata_of_type(DefiniteValueExtension)):
+            return None
+        return _extract_unreachable_condition_value(val.value)
+    boolability = get_boolability(val)
+    if boolability.is_safely_true():
+        return True
+    if boolability.is_safely_false():
+        return False
+    return None
+
+
+def _without_leaves_scope(scope: SubScope) -> SubScope:
+    return {name: values for name, values in scope.items() if name != LEAVES_SCOPE}
 
 
 try:

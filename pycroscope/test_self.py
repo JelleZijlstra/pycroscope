@@ -10,6 +10,7 @@ import textwrap
 
 import pycroscope
 from pycroscope import node_visitor
+from pycroscope.analysis_lib import override
 from pycroscope.error_code import ErrorCode
 from pycroscope.find_unused import UnusedObjectFinder
 from pycroscope.shared_options import EnforceNoUnused, EnforceNoUnusedAttributes
@@ -24,7 +25,7 @@ class PycroscopeVisitor(pycroscope.name_check_visitor.NameCheckVisitor):
 
 def _files_for_self_check() -> list[str]:
     files = ["pycroscope"]
-    if sys.version_info >= (3, 11):
+    if sys.version_info >= (3, 12):
         from pathlib import Path
 
         conformance_ci = (
@@ -56,6 +57,7 @@ def _check_files_with_annotations(
     settings = PycroscopeVisitor._get_default_settings()
     if settings is not None:
         settings[ErrorCode.implicit_any] = False
+        settings[ErrorCode.unreachable] = True
     kwargs: dict[str, object] = {"settings": settings, "files": files}
     kwargs = dict(PycroscopeVisitor.prepare_constructor_kwargs(kwargs))
     files_to_check = PycroscopeVisitor.get_files_to_check(False, **kwargs)
@@ -263,6 +265,11 @@ def test_self_check_visits_decorated_namedtuple_subclass_method() -> None:
         )
     ]
     assert not missing
+
+
+def test_files_for_self_check_skips_conformance_before_python_312() -> None:
+    with override(sys, "version_info", (3, 11, 0)):
+        assert _files_for_self_check() == ["pycroscope"]
 
 
 @skip_if_not_installed("asynq")
