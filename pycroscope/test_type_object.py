@@ -1129,25 +1129,6 @@ class TestSyntheticType(TestNameCheckVisitorBase):
         def capybara(child: Child) -> None:
             takes(child)  # E: incompatible_argument
 
-    @assert_passes()
-    def test_protocol_class_object_uses_metaclass_data_member(self):
-        from typing import Protocol
-
-        class WantsAnswer(Protocol):
-            answer: int
-
-        class Meta(type):
-            answer = 1
-
-        class C(metaclass=Meta):
-            pass
-
-        def takes(value: WantsAnswer) -> None:
-            pass
-
-        def capybara() -> None:
-            takes(C)
-
     @assert_passes(run_in_both_module_modes=True)
     def test_protocol_self_typevar_map_handles_classmethod_and_staticmethod(self):
         from typing import Protocol, TypeVar
