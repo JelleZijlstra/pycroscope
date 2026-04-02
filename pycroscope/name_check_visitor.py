@@ -14036,27 +14036,36 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         return None
 
     def _get_attribute_value_for_local_tracking_after_write(
-        self, node: ast.Attribute, root: SimpleType
+        self, node: ast.Attribute, root: Value
     ) -> Value | None:
         root = replace_fallback(root)
         match root:
             case AnyValue() | TypeFormValue() | UnboundMethodValue() | PredicateValue():
+                simple_root: SimpleType = root
                 tobj, on_class = self.checker.make_type_object(object), False
             case SyntheticModuleValue():
+                simple_root = root
                 tobj, on_class = self.checker.make_type_object(types.ModuleType), False
             case KnownValue(val) if safe_isinstance(val, type):
+                simple_root = root
                 tobj, on_class = self.checker.make_type_object(val), True
             case KnownValue(val=val):
+                simple_root = root
                 tobj, on_class = self.checker.make_type_object(type(val)), False
             case SyntheticClassObjectValue(class_type=TypedValue(typ)):
+                simple_root = root
                 tobj, on_class = self.checker.make_type_object(typ), True
             case TypedValue(typ=typ):
+                simple_root = root
                 tobj, on_class = self.checker.make_type_object(typ), False
             case GenericValue(typ=typ):
+                simple_root = root
                 tobj, on_class = self.checker.make_type_object(typ), False
             case SubclassValue(TypedValue(typ)):
+                simple_root = root
                 tobj, on_class = self.checker.make_type_object(typ), True
             case SubclassValue(TypeVarValue() as tv):
+                simple_root = root
                 if (
                     tv.typevar_param.typevar is SelfT
                     and self.current_class_key is not None
@@ -14098,7 +14107,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         ):
             return attr.value
         expected_type = self._normalize_expected_attribute_type_for_assignment(
-            attr.value, root, on_class=on_class
+            attr.value, simple_root, on_class=on_class
         )
         can_assign = has_relation(
             expected_type, self.being_assigned, Relation.ASSIGNABLE, self
