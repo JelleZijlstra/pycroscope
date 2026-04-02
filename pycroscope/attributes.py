@@ -815,20 +815,27 @@ class ClassAttributeTransformer(PyObjectSequenceOption[_CAT]):
 
     If multiple transformers match an object, the first one is used.
 
-    TODO: The set type is currently ignored.
-
     """
 
     default_value: ClassVar[Sequence[_CAT]] = []
     name = "class_attribute_transformers"
 
     @classmethod
-    def transform_attribute(cls, val: object, options: Options) -> Value | None:
+    def transform_attribute_types(
+        cls, val: object, options: Options
+    ) -> tuple[Value, Value] | None:
         option_value = options.get_value_for(cls)
         for transformer in option_value:
             result = transformer(val)
             if result is not None:
-                return result[0]
+                return result
+        return None
+
+    @classmethod
+    def transform_attribute(cls, val: object, options: Options) -> Value | None:
+        transformed = cls.transform_attribute_types(val, options)
+        if transformed is not None:
+            return transformed[0]
         return None
 
 

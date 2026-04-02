@@ -13886,9 +13886,16 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 composite is not None
                 and self.scopes.scope_type() == ScopeType.function_scope
             ):
-                self.scopes.set(
-                    composite.get_varname(), self.being_assigned, node, self.state
-                )
+                local_value = self.being_assigned
+                if not isinstance(node.ctx, ast.Del):
+                    tracked_attr_value = (
+                        self._get_attribute_value_for_local_tracking_after_write(
+                            node, root_composite.value
+                        )
+                    )
+                    if tracked_attr_value is not None:
+                        local_value = tracked_attr_value
+                self.scopes.set(composite.get_varname(), local_value, node, self.state)
             return Composite(self.being_assigned, composite, node)
         elif isinstance(node.ctx, ast.Load):
             root_composite = self._get_locally_narrowed_composite(root_composite, node)
@@ -14001,6 +14008,115 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     TypeVarMap(typevars={SelfT: self_value})
                 )
         return value
+
+    def _get_transformed_attribute_types(
+        self, raw_value: Value | None
+    ) -> tuple[Value, Value] | None:
+        # TODO: Centralize transformed-attribute typing in type_object.py so
+        # NameCheckVisitor does not need to duplicate lookup logic here.
+        if raw_value is None:
+            return None
+        raw_value = replace_fallback(raw_value)
+        if isinstance(raw_value, AnnotatedValue):
+            return self._get_transformed_attribute_types(raw_value.value)
+        if isinstance(raw_value, MultiValuedValue):
+            transformed = {
+                subval_transform
+                for subval in raw_value.vals
+                if (subval_transform := self._get_transformed_attribute_types(subval))
+                is not None
+            }
+            if len(transformed) == 1:
+                return next(iter(transformed))
+            return None
+        if isinstance(raw_value, KnownValue):
+            return attributes.ClassAttributeTransformer.transform_attribute_types(
+                raw_value.val, self.options
+            )
+        return None
+
+    def _get_attribute_value_for_local_tracking_after_write(
+        self, node: ast.Attribute, root: Value
+    ) -> Value | None:
+        root = replace_fallback(root)
+        match root:
+            case AnyValue() | TypeFormValue() | UnboundMethodValue() | PredicateValue():
+                simple_root: SimpleType = root
+                tobj, on_class = self.checker.make_type_object(object), False
+            case SyntheticModuleValue():
+                simple_root = root
+                tobj, on_class = self.checker.make_type_object(types.ModuleType), False
+            case KnownValue(val) if safe_isinstance(val, type):
+                simple_root = root
+                tobj, on_class = self.checker.make_type_object(val), True
+            case KnownValue(val=val):
+                simple_root = root
+                tobj, on_class = self.checker.make_type_object(type(val)), False
+            case SyntheticClassObjectValue(class_type=TypedValue(typ)):
+                simple_root = root
+                tobj, on_class = self.checker.make_type_object(typ), True
+            case TypedValue(typ=typ):
+                simple_root = root
+                tobj, on_class = self.checker.make_type_object(typ), False
+            case GenericValue(typ=typ):
+                simple_root = root
+                tobj, on_class = self.checker.make_type_object(typ), False
+            case SubclassValue(TypedValue(typ)):
+                simple_root = root
+                tobj, on_class = self.checker.make_type_object(typ), True
+            case SubclassValue(TypeVarValue() as tv):
+                simple_root = root
+                if (
+                    tv.typevar_param.typevar is SelfT
+                    and self.current_class_key is not None
+                ):
+                    tobj = self.checker.make_type_object(self.current_class_key)
+                else:
+                    tobj = self.checker.make_type_object(object)
+                on_class = True
+            case _:
+                return None
+        attr = tobj.get_attribute(
+            node.attr,
+            AttributePolicy(
+                on_class=on_class,
+                receiver_value=root if isinstance(root, TypedValue) else None,
+                visitor=self,
+                node=node,
+            ),
+        )
+        if attr is None:
+            return None
+        transformed_attribute_types = self._get_transformed_attribute_types(
+            attr.raw_value
+        )
+        has_precise_attribute_type = (
+            attr.symbol.annotation is not None
+            or transformed_attribute_types is not None
+            or attr.value != attr.declared_value
+        )
+        if not has_precise_attribute_type:
+            return None
+        if self.being_assigned is None:
+            return attr.value
+        if transformed_attribute_types is not None:
+            return attr.value
+        if (
+            attr.symbol.dataclass_field is not None
+            and attr.symbol.dataclass_field.converter_input_type is not None
+        ):
+            return attr.value
+        expected_type = self._normalize_expected_attribute_type_for_assignment(
+            attr.value, simple_root, on_class=on_class
+        )
+        can_assign = has_relation(
+            expected_type, self.being_assigned, Relation.ASSIGNABLE, self
+        )
+        if isinstance(can_assign, CanAssignError):
+            return attr.value
+        if attr.value != attr.declared_value:
+            return attr.value
+        return self.being_assigned
 
     def _check_attribute_write(
         self, node: ast.Attribute, value: Value, *, is_deletion: bool = False
@@ -14215,9 +14331,17 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 error_code=ErrorCode.incompatible_assignment,
             )
             return
+        transformed_attribute_types = self._get_transformed_attribute_types(
+            attr.raw_value
+        )
+        has_precise_attribute_type = (
+            attr.symbol.annotation is not None
+            or transformed_attribute_types is not None
+            or attr.value != attr.declared_value
+        )
         if (
             self._is_enum_value_assignment_on_current_receiver(node, root)
-            or attr.symbol.annotation is None
+            or not has_precise_attribute_type
         ):
             self._record_type_attr_set_for_value(
                 root, node.attr, node, self.being_assigned
@@ -14225,9 +14349,19 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             self._record_synthetic_attr_set(node, root)
             return
         if self.being_assigned is not None:
-            expected_type = self._normalize_expected_attribute_type_for_assignment(
-                attr.value, root, on_class=on_class
-            )
+            if transformed_attribute_types is not None:
+                _, expected_type = transformed_attribute_types
+                if expected_type is NO_RETURN_VALUE:
+                    self._show_error_if_checking(
+                        node,
+                        f"Cannot {wording} transformed attribute {node.attr!r}",
+                        error_code=ErrorCode.incompatible_assignment,
+                    )
+                    return
+            else:
+                expected_type = self._normalize_expected_attribute_type_for_assignment(
+                    attr.value, root, on_class=on_class
+                )
             if (
                 not on_class
                 and attr.symbol.dataclass_field is not None
@@ -15827,6 +15961,29 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 # Protocol members must come from the class body (PEP 544), so don't
                 # synthesize new members from method-body self assignments.
                 return
+        class_type = self.checker.make_type_object(class_key)
+        existing_symbol = class_type.get_declared_symbol(node.attr)
+        existing_attribute = class_type.get_attribute(
+            node.attr,
+            AttributePolicy(
+                on_class=self._is_class_object_attribute_root(root_value) is not False,
+                receiver_value=(
+                    root_value if isinstance(root_value, TypedValue) else None
+                ),
+                visitor=self,
+                node=node,
+            ),
+        )
+        if existing_symbol is not None and (
+            existing_symbol.annotation is not None
+            or self._get_transformed_attribute_types(existing_symbol.initializer)
+            is not None
+            or (
+                existing_attribute is not None
+                and existing_attribute.value != existing_attribute.declared_value
+            )
+        ):
+            return
         synthetic_class = self.checker.get_synthetic_class(class_key)
         if synthetic_class is None:
             return
