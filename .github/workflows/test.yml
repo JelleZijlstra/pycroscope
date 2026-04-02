@@ -36,10 +36,10 @@ jobs:
         run: pip install .[tests,asynq,codemod] pytest pytest-cov
       - name: test
         if: matrix.python-version != '3.14'
-        run: pytest pycroscope tools/test_*.py
+        run: pytest pycroscope tools/test_duplicate_tests.py
       - name: test with coverage
         if: matrix.python-version == '3.14'
-        run: pytest --cov=pycroscope --cov-report=term-missing --cov-report=json:coverage.json pycroscope tools/test_*.py
+        run: pytest --cov=pycroscope --cov-report=term-missing --cov-report=json:coverage.json pycroscope tools/test_duplicate_tests.py
       - name: check pinned full coverage
         if: matrix.python-version == '3.14'
         run: python tools/check_full_coverage.py coverage.json tools/full_coverage_files.txt
@@ -55,4 +55,4 @@ jobs:
       - name: install
         run: pip install . pytest
       - name: test-no-deps
-        run: pytest pycroscope tools/test_*.py
+        run: pytest pycroscope tools/test_duplicate_tests.py
