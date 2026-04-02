@@ -41,5 +41,4 @@ typeddicts_type_consistency
 namedtuples_define_class
 
 # Precise Literal inference with TypeVarTuple
-generics_typevartuple_concat
 generics_typevartuple_callable

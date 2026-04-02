@@ -138,6 +138,25 @@ class TestProtocol(TestNameCheckVisitorBase):
         f2: SizedClosableFlush = FlushOnly()  # E: incompatible_assignment
 
     @assert_passes(allow_import_failures=True)
+    def test_stub_only_protocol_method_is_not_double_bound(self):
+        from collections.abc import Iterable
+        from typing import Any, Protocol, TypeVar
+
+        from _typeshed import SupportsAdd, SupportsRAdd
+        from typing_extensions import assert_type
+
+        class SupportsSum(SupportsAdd[Any, Any], SupportsRAdd[int, Any], Protocol):
+            pass
+
+        T = TypeVar("T", bound=SupportsSum)
+
+        def mysum(xs: Iterable[T]) -> T | int:
+            return 0
+
+        def f(xs: list[int]) -> None:
+            assert_type(mysum(xs), int)
+
+    @assert_passes(allow_import_failures=True)
     def test_explicit_protocol_abstract_instantiation_in_unimportable_module(self):
         from abc import ABC, abstractmethod
         from typing import ClassVar, Protocol
