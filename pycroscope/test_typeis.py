@@ -270,6 +270,63 @@ class TestTypeIs(TestNameCheckVisitorBase):
                 assert_type(a, float)
 
     @assert_passes()
+    def testTypeIsMethodHeuristicsHandleWeirdRuntimeMetadata(self):
+        from types import MethodType
+
+        from typing_extensions import TypeIs, assert_type
+
+        def moduleless_guard(receiver: object, value: object) -> TypeIs[int]:
+            return False
+
+        moduleless_guard.__module__ = "not_a_real_module"
+
+        def alias_guard(receiver: object, value: object) -> TypeIs[int]:
+            return False
+
+        alias_guard.__qualname__ = "renamed"
+
+        def missing_owner_guard(receiver: object, value: object) -> TypeIs[int]:
+            return False
+
+        missing_owner_guard.__qualname__ = "Ghost.guard"
+
+        class Holder:
+            pass
+
+        def missing_attr_guard(receiver: object, value: object) -> TypeIs[int]:
+            return False
+
+        missing_attr_guard.__qualname__ = "Holder.guard"
+
+        class BoundGuard:
+            def guard(self, receiver: object, value: object) -> TypeIs[int]:
+                return False
+
+        bound_guard = MethodType(BoundGuard.guard, BoundGuard())
+
+        def outer():
+            def nested_guard(value: object) -> TypeIs[int]:
+                return False
+
+            return nested_guard
+
+        nested_guard = outer()
+
+        def main(a: object) -> None:
+            if moduleless_guard(None, a):
+                print(a)
+            if alias_guard(None, a):
+                assert_type(a, int)
+            if missing_owner_guard(None, a):
+                assert_type(a, int)
+            if missing_attr_guard(None, a):
+                assert_type(a, int)
+            if bound_guard(None, a):
+                print(a)
+            if nested_guard(a):
+                assert_type(a, int)
+
+    @assert_passes()
     def testTypeIsCallableCompatibility(self):
         from typing import Callable
 

@@ -1053,6 +1053,7 @@ class TestCalls(TestNameCheckVisitorBase):
             takes_ab(**{"a": cond})  # ok
             takes_ab(**{cond: cond})  # ok
             takes_ab(**{"a": 1, cond: ""})  # ok
+            takes_ab(**good_dict, **any_dict)  # ok
             takes_ab(**{"b": ""})  # E: incompatible_call
             bad_div_or_good = {"b": ""} if cond else good_dict
             # TODO ideally this should error, because if we take the {"b": ""}
@@ -1744,6 +1745,42 @@ class TestUnpack(TestNameCheckVisitorBase):
             ...
 
         print(ok, bad)
+
+    @assert_passes()
+    def test_paramspec_forwarding_preserves_args_and_kwargs_pair(self):
+        from typing import Callable, ParamSpec, TypeVar
+
+        P = ParamSpec("P")
+        R = TypeVar("R")
+
+        def passthrough(fn: Callable[P, R]) -> Callable[P, R]:
+            def inner(*args: P.args, **kwargs: P.kwargs) -> R:
+                return fn(*args, **kwargs)
+
+            return inner
+
+        def target(x: int, *, y: str) -> tuple[int, str]:
+            return (x, y)
+
+        wrapped = passthrough(target)
+
+        def caller() -> None:
+            wrapped(1, y="x")
+
+    @assert_passes()
+    def test_paramspec_forwarding_rejects_mismatched_args_and_kwargs(self):
+        from typing import Callable, ParamSpec, TypeVar
+
+        P = ParamSpec("P")
+        Q = ParamSpec("Q")
+        R = TypeVar("R")
+
+        def bad_forward(
+            fn: Callable[P, R],
+            *args: P.args,
+            **kwargs: Q.kwargs,  # E: invalid_paramspec_usage
+        ) -> R:
+            return fn(*args, **kwargs)  # E: incompatible_call  # E: incompatible_call
 
     @skip_before((3, 11))
     def test_callable_typevartuple(self):

@@ -248,24 +248,13 @@ class PossibleArg:
     name: str | None
 
 
-@dataclass
-class PosOrKeyword:
-    name: str
-    is_required: bool
-
-
 # Representation of a single argument to a call. Second member is
 # None for positional args, str for keyword args,
 # ARGS for *args, KWARGS for **kwargs, PossibleArg for args that may
 # be missing, TypeVarValue for a ParamSpec.
 Argument = tuple[
     Composite,
-    None
-    | str
-    | PossibleArg
-    | Literal[ARGS, KWARGS, ELLIPSIS]
-    | ParamSpecParam
-    | PosOrKeyword,
+    None | str | PossibleArg | Literal[ARGS, KWARGS, ELLIPSIS] | ParamSpecParam,
 ]
 
 # Arguments bound to a call
@@ -1022,13 +1011,6 @@ class Signature:
         for param in self.parameters.values():
             if param.kind is ParameterKind.POSITIONAL_ONLY:
                 if positional_index < len(actual_args.positionals):
-                    if positional_index in actual_args.pos_or_keyword_params:
-                        self.show_call_error(
-                            f"Positional parameter {positional_index} should be"
-                            " positional-or-keyword",
-                            ctx,
-                        )
-                        return None
                     definitely_provided, composite = actual_args.positionals[
                         positional_index
                     ]
@@ -1085,15 +1067,12 @@ class Signature:
                     bound_args[param.name] = (positional_index, composite)
                     positional_index += 1
                     if param.name in actual_args.keywords:
-                        if param.name in actual_args.pos_or_keyword_params:
-                            keywords_consumed.add(param.name)
-                        else:
-                            self.show_call_error(
-                                f"Parameter '{param.name}' provided as both a"
-                                " positional and a keyword argument",
-                                ctx,
-                            )
-                            return None
+                        self.show_call_error(
+                            f"Parameter '{param.name}' provided as both a"
+                            " positional and a keyword argument",
+                            ctx,
+                        )
+                        return None
                 elif actual_args.star_args is not None:
                     if param.name in actual_args.keywords:
                         self.show_call_error(
@@ -1163,13 +1142,6 @@ class Signature:
                         self.show_call_error(
                             f"Parameter '{param.name}' may be filled from both"
                             " ParamSpec and a keyword argument",
-                            ctx,
-                        )
-                        return None
-                    if param.name in actual_args.pos_or_keyword_params:
-                        self.show_call_error(
-                            f"Keyword parameter {param.name} should be"
-                            " positional-or-keyword",
                             ctx,
                         )
                         return None
@@ -1315,7 +1287,6 @@ class Signature:
                             else None
                         ),
                         kwargs_required=actual_args.kwargs_required,
-                        pos_or_keyword_params=actual_args.pos_or_keyword_params,
                     )
                     star_args_consumed = True
                     star_kwargs_consumed = True
@@ -2471,7 +2442,6 @@ def preprocess_args(
     star_args: Value | None = None
     star_kwargs: Value | None = None
     is_ellipsis: bool = False
-    pok_indices = set()
     param_spec = None
     seen_param_spec = False
 
@@ -2482,7 +2452,7 @@ def preprocess_args(
         if label is None or (isinstance(label, PossibleArg) and label.name is None):
             is_required = label is None
             # Should never happen because the parser doesn't let you
-            if more_processed_kwargs or star_kwargs is not None:
+            if more_processed_kwargs or star_kwargs is not None:  # pragma: no cover
                 ctx.on_error("Positional argument follow keyword arguments")
                 return None
             if star_args is not None:
@@ -2492,7 +2462,7 @@ def preprocess_args(
         elif label is ARGS:
             # This is legal: f(x=3, *args)
             # But this is not: f(**kwargs, *args)
-            if star_kwargs is not None:
+            if star_kwargs is not None:  # pragma: no cover
                 ctx.on_error("*args follows **kwargs")
                 return None
             if star_args is not None:
@@ -2517,14 +2487,6 @@ def preprocess_args(
                 star_kwargs = new_kwargs
             else:
                 star_kwargs = unite_values(star_kwargs, new_kwargs)
-        elif isinstance(label, PosOrKeyword):
-            if label.name in more_processed_kwargs:
-                ctx.on_error(f"Multiple values provided for argument '{label}'")
-                return None
-            pok_indices.add(label.name)
-            pok_indices.add(len(more_processed_args))
-            more_processed_kwargs[label.name] = (label.is_required, arg)
-            more_processed_args.append((label.is_required, arg))
         elif isinstance(label, ParamSpecParam):
             if param_spec is not None:
                 ctx.on_error("Multiple ParamSpecs passed")
@@ -2543,7 +2505,6 @@ def preprocess_args(
         star_kwargs,
         kwargs_required=any(kwargs_requireds),
         ellipsis=is_ellipsis,
-        pos_or_keyword_params=pok_indices,
         param_spec=param_spec,
     )
 

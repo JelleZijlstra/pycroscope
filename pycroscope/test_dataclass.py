@@ -637,8 +637,10 @@ class TestDataclass(TestNameCheckVisitorBase):
 
         assert_type(Box(1), Box[int])
         assert_is_value(Box(1.0), BOX_FLOAT_OR_INT_IN_TEST_INPUT)
+        assert_type(Box(1j), Box[complex | float | int])
         assert_type(Box(""), Box[str])
         assert_type(Box[float](1), Box[float | int])
+        assert_type(Box[complex](1), Box[complex | float | int])
 
         @dataclass
         class Data(Generic[T]):

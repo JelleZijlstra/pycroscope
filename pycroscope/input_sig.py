@@ -1,4 +1,4 @@
-from collections.abc import Container, Iterable, Sequence
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from typing import Literal
 
@@ -56,7 +56,6 @@ class ActualArguments:
     keywords: dict[str, tuple[bool, Composite]]
     star_kwargs: Value | None  # represents the type of the elements of **kwargs
     kwargs_required: bool
-    pos_or_keyword_params: Container[int | str]
     ellipsis: bool = False
     param_spec: ParamSpecParam | None = None
 
