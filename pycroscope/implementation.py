@@ -2840,7 +2840,7 @@ class _IdentityCallable:
         raise NotImplementedError
 
 
-def get_default_argspecs() -> dict[object, Signature]:
+def get_default_argspecs() -> dict[object, ConcreteSignature]:
     signatures = []
     try:
         special_form_getitem = getattr(typing, "_SpecialForm").__getitem__
