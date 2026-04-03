@@ -181,11 +181,11 @@ def _should_suggest_simple_type(value: SimpleType) -> bool:
     if isinstance(value, KnownValue) and isinstance(value.val, FunctionType):
         return False
     # These generally aren't useful.
-    if isinstance(value, TypedValue) and value.typ in (FunctionType, type):
+    elif isinstance(value, TypedValue) and value.typ in (FunctionType, type):
         return False
-    if isinstance(value, AnyValue):
+    elif isinstance(value, AnyValue):
         return False
-    if isinstance(
+    elif isinstance(
         value,
         (
             SyntheticClassObjectValue,
@@ -195,9 +195,10 @@ def _should_suggest_simple_type(value: SimpleType) -> bool:
         ),
     ):
         return False
-    if isinstance(value, (TypedValue, SubclassValue, TypeFormValue, KnownValue)):
+    elif isinstance(value, (TypedValue, SubclassValue, TypeFormValue, KnownValue)):
         return True
-    assert_never(value)
+    else:
+        assert_never(value)
 
 
 def prepare_type(value: Value, ctx: CanAssignContext | None = None) -> Value:
@@ -251,14 +252,14 @@ def _prepare_simple_type(value: SimpleType, ctx: CanAssignContext | None) -> Val
                     tuple, [(False, prepare_type(elt, ctx)) for elt in members]
                 )
         return GenericValue(value.typ, [prepare_type(arg, ctx) for arg in value.args])
-    if isinstance(value, (TypedDictValue, CallableValue)):
+    elif isinstance(value, (TypedDictValue, CallableValue)):
         return value
-    if isinstance(value, GenericValue):
+    elif isinstance(value, GenericValue):
         # TODO maybe turn DictIncompleteValue into TypedDictValue?
         return GenericValue(value.typ, [prepare_type(arg, ctx) for arg in value.args])
-    if isinstance(value, VariableNameValue):
+    elif isinstance(value, VariableNameValue):
         return AnyValue(AnySource.unannotated)
-    if isinstance(value, KnownValue):
+    elif isinstance(value, KnownValue):
         if value.val is None:
             return value
         if safe_isinstance(value.val, type):
@@ -266,7 +267,7 @@ def _prepare_simple_type(value: SimpleType, ctx: CanAssignContext | None) -> Val
         if callable(value.val):
             return value  # TODO get the signature instead and return a CallableValue?
         return TypedValue(type(value.val))
-    if isinstance(
+    elif isinstance(
         value,
         (
             AnyValue,
@@ -280,7 +281,8 @@ def _prepare_simple_type(value: SimpleType, ctx: CanAssignContext | None) -> Val
         ),
     ):
         return value
-    assert_never(value)
+    else:
+        assert_never(value)
 
 
 def get_shared_type(types: Sequence[type]) -> type:

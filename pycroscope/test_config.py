@@ -115,7 +115,7 @@ def get_known_signatures(
 
 
 @used  # in test.toml
-def unwrap_class(cls: type) -> type:
+def unwrap_class(cls: object) -> object:
     """Does any application-specific unwrapping logic for wrapper classes."""
     if (
         isinstance(cls, type)

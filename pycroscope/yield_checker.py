@@ -176,9 +176,9 @@ def _is_async_simple_value(
     if isinstance(value, UnboundMethodValue):
         obj = value.get_method()
         return obj is not None and is_async_predicate(obj)
-    if isinstance(value, KnownValue):
+    elif isinstance(value, KnownValue):
         return is_async_predicate(value.val)
-    if isinstance(
+    elif isinstance(
         value,
         (
             AnyValue,
@@ -191,7 +191,8 @@ def _is_async_simple_value(
         ),
     ):
         return False
-    assert_never(value)
+    else:
+        assert_never(value)
 
 
 @dataclass

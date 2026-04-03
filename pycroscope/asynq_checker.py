@@ -206,12 +206,12 @@ def is_impure_async_fn(value: Value) -> bool:
 def _is_impure_async_simple(value: SimpleType) -> bool:
     if isinstance(value, KnownValue):
         return is_async_fn(value.val) and not asynq.is_pure_async_fn(value.val)
-    if isinstance(value, UnboundMethodValue):
+    elif isinstance(value, UnboundMethodValue):
         method = value.get_method()
         if method is None:
             return False
         return is_async_fn(method) and not asynq.is_pure_async_fn(method)
-    if isinstance(
+    elif isinstance(
         value,
         (
             AnyValue,
@@ -224,7 +224,8 @@ def _is_impure_async_simple(value: SimpleType) -> bool:
         ),
     ):
         return False
-    assert_never(value)
+    else:
+        assert_never(value)
 
 
 def get_pure_async_equivalent(value: Value) -> str:
@@ -279,15 +280,15 @@ def _stringify_async_values(values: tuple[Value, ...], *, fallback: str) -> str:
 def _stringify_async_simple_value(value: SimpleType) -> str:
     if isinstance(value, KnownValue):
         return _stringify_obj(value.val)
-    if isinstance(value, UnboundMethodValue):
+    elif isinstance(value, UnboundMethodValue):
         typ = _stringify_async_fn(value.composite.value)
         ret = f"{typ}.{value.attr_name}"
         if value.secondary_attr_name is not None:
             ret += f".{value.secondary_attr_name}"
         return ret
-    if isinstance(value, TypedValue):
+    elif isinstance(value, TypedValue):
         return _stringify_obj(value.typ)
-    if isinstance(
+    elif isinstance(
         value,
         (
             AnyValue,
@@ -299,7 +300,8 @@ def _stringify_async_simple_value(value: SimpleType) -> str:
         ),
     ):
         return str(value)
-    assert_never(value)
+    else:
+        assert_never(value)
 
 
 def _stringify_obj(obj: Any) -> str:

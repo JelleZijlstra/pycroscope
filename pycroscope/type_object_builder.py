@@ -140,39 +140,25 @@ def _iter_base_type_values_from_simple(
             arg_spec_cache,
             seen_known_bases | {base_id},
         )
-        return
-    if isinstance(value, SyntheticClassObjectValue):
+    elif isinstance(value, SyntheticClassObjectValue):
         yield from _iter_base_type_values(
             value.class_type, arg_spec_cache, seen_known_bases
         )
-        return
-    if isinstance(value, SequenceValue) and value.typ is tuple:
+    elif isinstance(value, SequenceValue) and value.typ is tuple:
         yield value
-        return
-    if isinstance(value, GenericValue) and value.typ is tuple:
+    elif isinstance(value, GenericValue) and value.typ is tuple:
         yield SequenceValue(tuple, [(True, value.args[0])])
-        return
-    if isinstance(value, TypedValue):
+    elif isinstance(value, (TypedValue, AnyValue)):
         yield value
-        return
-    if isinstance(value, SubclassValue):
+    elif isinstance(value, SubclassValue):
         if isinstance(value.typ, TypedValue):
             yield value.typ
-        return
-    if isinstance(
-        value,
-        (
-            AnyValue,
-            SyntheticModuleValue,
-            UnboundMethodValue,
-            TypeFormValue,
-            PredicateValue,
-        ),
+    elif isinstance(
+        value, (SyntheticModuleValue, UnboundMethodValue, TypeFormValue, PredicateValue)
     ):
-        if isinstance(value, AnyValue):
-            yield value
-        return
-    assert_never(value)
+        pass
+    else:
+        assert_never(value)
 
 
 def _default_type_argument_for_param(
