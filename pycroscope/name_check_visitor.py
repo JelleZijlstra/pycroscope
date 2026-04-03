@@ -4225,9 +4225,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 class_scope_object if isinstance(class_scope_object, type) else None
             )
             is_protocol_class = self._is_protocol_class(base_values, class_scope_object)
-            analyzed_base_values = self._base_values_for_generic_analysis(
-                node, base_values
-            )
             class_type_param_polarities: dict[object, set[int]] = {}
             if not is_protocol_class:
                 for base_variance_info in base_type_param_variance_infos:
@@ -4243,41 +4240,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 if type_param_values
                 else self._type_params_from_base_values(base_values)
             )
-            if (
-                not type_param_values
-                and self.module is None
-                and not effective_type_param_values
-                and analyzed_base_values is not base_values
-            ):
-                effective_type_param_values = (
-                    self._order_type_params_by_base_annotation_appearance(
-                        node.bases,
-                        self._type_params_from_base_values(analyzed_base_values),
-                    )
-                )
-            if not effective_type_param_values and self.module is None:
-                # In static-fallback mode we can lose Generic[...] type arguments
-                # from base values; recover from base annotation expressions.
-                recovered_type_param_values = (
-                    self._type_params_from_base_annotations_for_default_rules(
-                        node.bases
-                    )
-                )
-                should_use_recovered_type_params = any(
-                    not isinstance(type_param, TypeVarParam)
-                    or _type_param_uses_infer_variance(type_param)
-                    for type_param in recovered_type_param_values
-                )
-                if not should_use_recovered_type_params:
-                    # Recovering type parameters here is still important for
-                    # classes that expose non-constructor generic methods.
-                    should_use_recovered_type_params = any(
-                        isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef))
-                        and statement.name not in {"__init__", "__new__"}
-                        for statement in node.body
-                    )
-                if should_use_recovered_type_params:
-                    effective_type_param_values = recovered_type_param_values
             annotation_type_param_values = (
                 self._type_params_from_base_annotations_for_default_rules(node.bases)
             )
@@ -4312,50 +4274,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 tobj.set_declared_type_params(tuple(registered_type_param_values))
             else:
                 tobj.clear_declared_type_params()
-            method_type_params = (
-                type_param_values
-                if type_param_values
-                else self._merge_type_params_using_declared_identities(
-                    self._type_params_from_base_values(base_values),
-                    annotation_type_param_values,
-                    append_unmatched_declared=True,
-                )
-            )
-            if (
-                not type_param_values
-                and self.module is None
-                and analyzed_base_values is not base_values
-            ):
-                method_type_params = self._merge_type_params_using_declared_identities(
-                    self._order_type_params_by_base_annotation_appearance(
-                        node.bases,
-                        self._type_params_from_base_values(analyzed_base_values),
-                    ),
-                    annotation_type_param_values,
-                    append_unmatched_declared=True,
-                )
-            if not method_type_params and self.module is None:
-                method_type_params = annotation_type_param_values
-            if (
-                not method_type_params
-                and effective_type_param_values
-                and any(
-                    isinstance(type_param, ParamSpecParam)
-                    or isinstance(type_param, TypeVarTupleParam)
-                    for type_param in effective_type_param_values
-                )
-            ):
-                method_type_params = effective_type_param_values
-            method_type_param_values = method_type_params
-            if not type_param_values:
-                method_type_param_values = self._align_type_params_with_runtime_class(
-                    runtime_class_for_type_params, method_type_param_values
-                )
-            class_scope_type_params = (
-                tuple(registered_type_param_values)
-                if registered_type_param_values
-                else tuple(method_type_param_values)
-            )
+            class_scope_type_params = tuple(registered_type_param_values)
             should_register_generic_bases = synthetic_typeddict is None and (
                 isinstance(generic_class_key, str) or bool(registered_type_param_values)
             )
@@ -4422,34 +4341,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                             is_protocol=False,
                         )
                     )
-                elif any(
-                    _type_param_uses_infer_variance(type_param)
-                    for type_param in registered_type_param_values
-                ):
-                    inferred_type_params = (
-                        self._infer_type_param_variances_from_polarities(
-                            registered_type_param_values,
-                            class_type_param_polarities,
-                            is_protocol=False,
-                        )
-                    )
-                    inferred_by_identity = {
-                        type_param.typevar: type_param.variance
-                        for type_param in inferred_type_params
-                    }
-                    inferred_registration_type_params = [
-                        (
-                            replace(
-                                type_param,
-                                variance=inferred_by_identity.get(
-                                    type_param.typevar, type_param.variance
-                                ),
-                            )
-                            if _type_param_uses_infer_variance(type_param)
-                            else type_param
-                        )
-                        for type_param in registered_type_param_values
-                    ]
 
                 if inferred_registration_type_params is not None:
                     self.checker.register_synthetic_type_bases(
@@ -4476,8 +4367,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                             append_unmatched_declared=False,
                         )
                     )
-                elif not declared_type_params:
-                    declared_type_params = annotation_declared_type_params
                 self._check_class_type_param_default_rules(node, declared_type_params)
                 self._check_class_base_type_param_variances(
                     node,

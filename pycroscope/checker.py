@@ -1500,7 +1500,7 @@ class Checker:
         new_symbol = tobj.get_declared_symbol("__new__")
         has_direct_new = new_symbol is not None and new_symbol.is_method
         if has_direct_new:
-            method = get_synthetic_member_initializer(tobj, "__new__", self)
+            method = get_synthetic_member_initializer(tobj, "__new__")
             if method is None:
                 return True
         else:
@@ -1567,7 +1567,7 @@ class Checker:
         tobj = self.make_type_object(value.class_type.typ)
         if use_direct_method:
             method = (
-                get_synthetic_member_initializer(tobj, method_name, self)
+                get_synthetic_member_initializer(tobj, method_name)
                 or UNINITIALIZED_VALUE
             )
             if not isinstance(method, Value):
@@ -1895,14 +1895,6 @@ class Checker:
             return new_sig
         if init_sig is not None:
             return init_sig
-        if dataclass_info is not None and dataclass_init_enabled:
-            dataclass_sig = dataclass_helpers.get_synthetic_constructor_signature(
-                type_object,
-                instance_type,
-                get_field_parameters=self.get_synthetic_dataclass_field_parameters,
-            )
-            if dataclass_sig is not None:
-                return dataclass_sig
         if get_call_attribute is not None:
             call_method = get_call_attribute(value)
         else:
@@ -2435,20 +2427,6 @@ class Checker:
                 value.class_type.typ, allow_synthetic_type=True
             )
             if argspec is None:
-                tobj = self.make_type_object(value.class_type.typ)
-                init_attr = get_synthetic_member_initializer(tobj, "__init__", self)
-                if init_attr is not None:
-                    init_sig = self.signature_from_value(init_attr)
-                    if isinstance(init_sig, BoundMethodSignature):
-                        init_sig = init_sig.get_signature(ctx=self)
-                    if isinstance(init_sig, (Signature, OverloadedSignature)):
-                        bound_init = init_sig.bind_self(
-                            self_annotation_value=value.class_type, ctx=self
-                        )
-                        if bound_init is not None:
-                            return _replace_signature_return(
-                                bound_init, value.class_type
-                            )
                 return Signature.make([ELLIPSIS_PARAM], value.class_type)
             return argspec
         elif isinstance(value, TypedValue):
@@ -2867,9 +2845,7 @@ class CheckerAttrContext(AttrContext):
         return None
 
 
-def get_synthetic_member_initializer(
-    tobj: TypeObject, name: str, ctx: CanAssignContext
-) -> Value | None:
+def get_synthetic_member_initializer(tobj: TypeObject, name: str) -> Value | None:
     symbol = tobj.get_synthetic_declared_symbols().get(name)
     if symbol is None:
         return None
@@ -2887,7 +2863,7 @@ def get_inherited_synthetic_member_initializer(
     if class_key in seen:
         return None
     seen = seen | {class_key}
-    direct = get_synthetic_member_initializer(tobj, name, ctx)
+    direct = get_synthetic_member_initializer(tobj, name)
     if direct is not None:
         return direct
     for base_value in tobj.get_direct_bases():
