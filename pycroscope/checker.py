@@ -1500,7 +1500,7 @@ class Checker:
         new_symbol = tobj.get_declared_symbol("__new__")
         has_direct_new = new_symbol is not None and new_symbol.is_method
         if has_direct_new:
-            method = get_synthetic_member_initializer(tobj, "__new__", self)
+            method = get_synthetic_member_initializer(tobj, "__new__")
             if method is None:
                 return True
         else:
@@ -1567,7 +1567,7 @@ class Checker:
         tobj = self.make_type_object(value.class_type.typ)
         if use_direct_method:
             method = (
-                get_synthetic_member_initializer(tobj, method_name, self)
+                get_synthetic_member_initializer(tobj, method_name)
                 or UNINITIALIZED_VALUE
             )
             if not isinstance(method, Value):
@@ -2845,9 +2845,7 @@ class CheckerAttrContext(AttrContext):
         return None
 
 
-def get_synthetic_member_initializer(
-    tobj: TypeObject, name: str, ctx: CanAssignContext
-) -> Value | None:
+def get_synthetic_member_initializer(tobj: TypeObject, name: str) -> Value | None:
     symbol = tobj.get_synthetic_declared_symbols().get(name)
     if symbol is None:
         return None
@@ -2865,7 +2863,7 @@ def get_inherited_synthetic_member_initializer(
     if class_key in seen:
         return None
     seen = seen | {class_key}
-    direct = get_synthetic_member_initializer(tobj, name, ctx)
+    direct = get_synthetic_member_initializer(tobj, name)
     if direct is not None:
         return direct
     for base_value in tobj.get_direct_bases():
