@@ -99,6 +99,48 @@ class TestTypeVar(TestNameCheckVisitorBase):
         def capybara(x: Capybara[int]) -> None:
             x.add_one("x")  # E: incompatible_argument
 
+    def test_generic_too_few_args_in_annotation_without_future(self):
+        self.assert_passes(
+            """
+            from typing_extensions import Generic, TypeVar
+
+            T = TypeVar("T")
+            U = TypeVar("U")
+
+            class Capybara(Generic[T, U]):
+                pass
+
+            def outer() -> None:
+                def capybara(
+                    w: Capybara,  # E: missing_generic_parameters
+                    x: Capybara[int],  # E: invalid_specialization
+                    y: Capybara[int, int],
+                ) -> None:
+                    pass
+            """,
+            run_in_both_module_modes=True,
+        )
+
+    def test_generic_too_few_args_in_annotation_with_future(self):
+        self.assert_passes("""
+            from __future__ import annotations
+
+            from typing_extensions import Generic, TypeVar
+
+            T = TypeVar("T")
+            U = TypeVar("U")
+
+            class Capybara(Generic[T, U]):
+                pass
+
+            def capybara(
+                w: Capybara,  # E: missing_generic_parameters
+                x: Capybara[int],  # E: invalid_specialization
+                y: Capybara[int, int],
+            ) -> None:
+                pass
+            """)
+
     @assert_passes()
     def test_multi_typevar(self):
         from typing import Optional, TypeVar

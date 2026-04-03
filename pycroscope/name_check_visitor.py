@@ -9122,27 +9122,42 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         return False
 
     def check_for_missing_generic_params(self, node: ast.AST, value: Value) -> None:
-        if not isinstance(value, KnownValue):
+        display_value: object
+        val: type | str | None
+        if isinstance(value, KnownValue):
+            display_value = value.val
+            val_obj = value.val
+            if not safe_isinstance(val_obj, type):
+                args = get_args(val_obj)
+                if args:
+                    return
+                val_obj = get_origin(val_obj)
+                if not safe_isinstance(val_obj, type):
+                    return
+                if val_obj is tuple and value.val is not tuple:
+                    # tuple[()]
+                    return
+            if isinstance(val_obj, GenericAlias):
+                return
+            val = val_obj
+        elif isinstance(value, TypedValue):
+            if not isinstance(node, (ast.Name, ast.Attribute)):
+                return
+            display_value = value.typ
+            val = value.typ
+        elif isinstance(value, SyntheticClassObjectValue):
+            if not isinstance(node, (ast.Name, ast.Attribute)):
+                return
+            display_value = value.class_type.typ
+            val = value.class_type.typ
+        else:
             return
-        val = value.val
-        if not safe_isinstance(val, type):
-            args = get_args(val)
-            if args:
-                return
-            val = get_origin(val)
-            if not safe_isinstance(val, type):
-                return
-            if val is tuple and value.val is not tuple:
-                # tuple[()]
-                return
-        if isinstance(val, GenericAlias):
-            return
-        generic_params = self.arg_spec_cache.get_type_parameters(val)
+        generic_params = self.checker.get_type_parameters(val)
         if not generic_params:
             return
         self.show_error(
             node,
-            f"Missing type parameters for generic type {stringify_object(value.val)}",
+            f"Missing type parameters for generic type {stringify_object(display_value)}",
             error_code=ErrorCode.missing_generic_parameters,
         )
 
@@ -13498,6 +13513,31 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                         isinstance(stripped_root.value, KnownValue)
                         and is_typing_name(stripped_root.value.val, "Literal")
                         and not _is_runtime_literal_index(index)
+                    )
+                    or (
+                        isinstance(stripped_root.value, KnownValue)
+                        and isinstance(stripped_root.value.val, type)
+                        and bool(
+                            type_params := self.checker.get_type_parameters(
+                                stripped_root.value.val
+                            )
+                        )
+                        and not (
+                            len(type_params) == 1
+                            and isinstance(type_params[0], ParamSpecParam)
+                        )
+                    )
+                    or (
+                        isinstance(stripped_root.value, SyntheticClassObjectValue)
+                        and bool(
+                            type_params := self.checker.get_type_parameters(
+                                stripped_root.value.class_type.typ
+                            )
+                        )
+                        and not (
+                            len(type_params) == 1
+                            and isinstance(type_params[0], ParamSpecParam)
+                        )
                     )
                     or _contains_unpack_annotation_value(index)
                     or (

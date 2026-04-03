@@ -155,6 +155,7 @@ from .value import (
     match_typevar_arguments,
     replace_fallback,
     replace_known_sequence_value,
+    stringify_object,
     typevartuple_binding_to_generic_args,
     unite_values,
 )
@@ -1672,6 +1673,57 @@ def _validate_type_alias_arg_values(
     return normalized_args
 
 
+def _validate_generic_type_argument_count(
+    generic_type: object,
+    type_params: Sequence[TypeParam],
+    args: Sequence[object],
+    ctx: Context,
+) -> bool:
+    if not type_params:
+        return True
+    if len(type_params) == 1 and isinstance(type_params[0], ParamSpecParam):
+        return True
+    variadic_indexes = [
+        i
+        for i, type_param in enumerate(type_params)
+        if isinstance(type_param, TypeVarTupleParam)
+    ]
+    if len(variadic_indexes) > 1:
+        return True
+    minimum_required = sum(
+        1
+        for i, type_param in enumerate(type_params)
+        if i not in variadic_indexes and type_param.default is None
+    )
+    if variadic_indexes:
+        expected_message = (
+            f"Expected at least {minimum_required} type arguments for "
+            f"{stringify_object(generic_type)}"
+        )
+        is_valid = len(args) >= minimum_required
+    else:
+        expected_len = len(type_params)
+        is_valid = minimum_required <= len(args) <= expected_len
+        if len(args) < minimum_required:
+            expected_message = (
+                f"Expected at least {minimum_required} type arguments for "
+                f"{stringify_object(generic_type)}"
+            )
+        elif minimum_required == expected_len:
+            expected_message = (
+                f"Expected {expected_len} type arguments for "
+                f"{stringify_object(generic_type)}"
+            )
+        else:
+            expected_message = (
+                f"Expected at most {expected_len} type arguments for "
+                f"{stringify_object(generic_type)}"
+            )
+    if not is_valid:
+        ctx.show_error(expected_message, error_code=ErrorCode.invalid_specialization)
+    return is_valid
+
+
 def _paramspec_value_from_concatenate_members(
     concatenate_members: Sequence[Value], ctx: Context
 ) -> Value:
@@ -2053,6 +2105,10 @@ def _type_from_subscripted_value(
                 _type_from_value_type_alias_arg(member, root_arg, ctx)
                 for member, root_arg in zip(members, root_type_params)
             ]
+        elif root_type_params is not None and not _validate_generic_type_argument_count(
+            root.typ, root_type_params, members, ctx
+        ):
+            return AnyValue(AnySource.error)
         if typed_members is not None:
             if root_type_params is not None:
                 typed_members = _normalize_paramspec_generic_args(
@@ -2122,6 +2178,10 @@ def _type_from_subscripted_value(
                 for elt, type_param in zip(members, synthetic_type_params)
             ]
         else:
+            if not _validate_generic_type_argument_count(
+                synthetic_typ, synthetic_type_params, members, ctx
+            ):
+                return AnyValue(AnySource.error)
             typed_members = [_type_from_value(elt, ctx) for elt in members]
         typed_members = _normalize_paramspec_generic_args(
             synthetic_type_params, typed_members, ctx
@@ -2155,6 +2215,10 @@ def _type_from_subscripted_value(
                 for elt, type_param in zip(members, synthetic_type_params_for_str)
             ]
         else:
+            if not _validate_generic_type_argument_count(
+                synthetic_typ, synthetic_type_params_for_str, members, ctx
+            ):
+                return AnyValue(AnySource.error)
             typed_members = [_type_from_value(elt, ctx) for elt in members]
         typed_members = _normalize_paramspec_generic_args(
             synthetic_type_params_for_str, typed_members, ctx
@@ -2382,6 +2446,10 @@ def _type_from_subscripted_value(
                 for elt, type_param in zip(members, type_params)
             ]
         else:
+            if not _validate_generic_type_argument_count(
+                root, type_params, members, ctx
+            ):
+                return AnyValue(AnySource.error)
             typed_members = [_type_from_value(elt, ctx) for elt in members]
         typed_members = _normalize_paramspec_generic_args(
             type_params, typed_members, ctx
@@ -3021,6 +3089,10 @@ def _value_of_origin_args(
                     for arg, type_param in zip(args, type_params)
                 ]
             else:
+                if not _validate_generic_type_argument_count(
+                    runtime_origin, type_params, args, ctx
+                ):
+                    return AnyValue(AnySource.error)
                 args_vals = [_type_from_runtime(val, ctx) for val in args]
             args_vals = _normalize_paramspec_generic_args(type_params, args_vals, ctx)
             return GenericValue(origin, _canonicalize_generic_args_for_value(args_vals))
