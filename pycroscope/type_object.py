@@ -3400,15 +3400,14 @@ def _descriptor_method_signature_any(
     method_value = UNINITIALIZED_VALUE
     direct_signature: Signature | OverloadedSignature | None = None
     if isinstance(descriptor, SyntheticClassObjectValue):
-        if isinstance(descriptor.class_type, TypedValue):
-            descriptor_tobj = ctx.make_type_object(descriptor.class_type.typ)
-            if descriptor_tobj.get_declared_symbol_from_mro(method_name, ctx) is None:
-                return None
-            attribute = descriptor_tobj.get_attribute(
-                method_name, AttributePolicy(receiver_value=descriptor)
-            )
-            if attribute is not None:
-                method_value = attribute.value
+        descriptor_tobj = ctx.make_type_object(descriptor.class_type.typ)
+        if descriptor_tobj.get_declared_symbol_from_mro(method_name, ctx) is None:
+            return None
+        attribute = descriptor_tobj.get_attribute(
+            method_name, AttributePolicy(receiver_value=descriptor)
+        )
+        if attribute is not None:
+            method_value = attribute.value
     else:
         assert isinstance(descriptor, (KnownValue, TypedValue))
         runtime_owner = _runtime_descriptor_owner(descriptor)
@@ -3820,31 +3819,30 @@ def _bind_protocol_call_expected(
             self_value if protocol_self_value is None else protocol_self_value
         )
         allow_any_annotation = False
-    if isinstance(signature, (Signature, OverloadedSignature)):
-        if isinstance(signature, Signature):
-            has_receiver_parameter = _signature_has_receiver_parameter(
-                signature,
+    if isinstance(signature, Signature):
+        has_receiver_parameter = _signature_has_receiver_parameter(
+            signature,
+            receiver_reference,
+            ctx=ctx,
+            member="__call__",
+            allow_any_annotation=allow_any_annotation,
+        )
+    else:
+        has_receiver_parameter = all(
+            _signature_has_receiver_parameter(
+                sig,
                 receiver_reference,
                 ctx=ctx,
                 member="__call__",
                 allow_any_annotation=allow_any_annotation,
             )
-        else:
-            has_receiver_parameter = all(
-                _signature_has_receiver_parameter(
-                    sig,
-                    receiver_reference,
-                    ctx=ctx,
-                    member="__call__",
-                    allow_any_annotation=allow_any_annotation,
-                )
-                for sig in signature.signatures
-            )
-        if not has_receiver_parameter:
-            return value
-        bound = signature.bind_self(self_value=self_value, ctx=ctx)
-        if bound is not None:
-            return CallableValue(bound, unwrapped.typ)
+            for sig in signature.signatures
+        )
+    if not has_receiver_parameter:
+        return value
+    bound = signature.bind_self(self_value=self_value, ctx=ctx)
+    if bound is not None:
+        return CallableValue(bound, unwrapped.typ)
     return value
 
 

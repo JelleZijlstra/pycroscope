@@ -833,7 +833,7 @@ def _has_relation(
                     )
                 return _has_relation(left, rigid_subclass, relation, ctx)
             else:
-                return CanAssignError(f"{right} is not {relation.description} {left}")
+                assert_never(right.typ)
         else:
             return CanAssignError(f"{right} is not {relation.description} {left}")
 
@@ -1286,17 +1286,17 @@ def _extract_type_form(value: Value, ctx: CanAssignContext) -> Value | CanAssign
 
     if isinstance(value, TypeFormValue):
         return gradualize(value.inner_type)
-    if isinstance(value, AnnotatedValue):
+    elif isinstance(value, AnnotatedValue):
         # Annotated metadata is ignored for implicit TypeForm extraction.
         return _extract_type_form(value.value, ctx)
-    if isinstance(value, (PartialValue, PartialCallValue)):
+    elif isinstance(value, (PartialValue, PartialCallValue)):
         from pycroscope.annotations import type_from_value
 
         extracted = type_from_value(value, visitor=ctx, suppress_errors=True)
         if extracted != AnyValue(AnySource.error):
             return _extract_type_form(extracted, ctx)
         return _extract_type_form(value.get_fallback_value(), ctx)
-    if isinstance(value, MultiValuedValue):
+    elif isinstance(value, MultiValuedValue):
         vals: list[Value] = []
         for subval in value.vals:
             subval_as_type = _extract_type_form(subval, ctx)
@@ -1304,7 +1304,7 @@ def _extract_type_form(value: Value, ctx: CanAssignContext) -> Value | CanAssign
                 return subval_as_type
             vals.append(subval_as_type)
         return gradualize(unite_values(*vals))
-    if isinstance(value, KnownValue):
+    elif isinstance(value, KnownValue):
         from pycroscope.annotations import type_from_runtime, type_from_value
 
         if isinstance(value.val, str):
@@ -1347,21 +1347,21 @@ def _extract_type_form(value: Value, ctx: CanAssignContext) -> Value | CanAssign
         if isinstance(extracted, (ParamSpecArgsValue, ParamSpecKwargsValue)):
             return CanAssignError(f"{value} is not a TypeForm")
         return extracted
-    if isinstance(value, SubclassValue):
+    elif isinstance(value, SubclassValue):
         return value.typ
-    if isinstance(value, SyntheticClassObjectValue):
+    elif isinstance(value, SyntheticClassObjectValue):
         return value.class_type
-    if isinstance(value, TypedValue) and value.typ is type:
+    elif isinstance(value, TypedValue) and value.typ is type:
         return AnyValue(AnySource.inference)
-    if isinstance(value, TypedValue):
+    elif isinstance(value, TypedValue):
         return CanAssignError(f"{value} is not a TypeForm")
-    if isinstance(value, (AnyValue, TypeAliasValue)):
+    elif isinstance(value, (AnyValue, TypeAliasValue)):
         return value
-    if isinstance(value, TypeVarValue):
+    elif isinstance(value, TypeVarValue):
         if value.typevar_param.typevar is SelfT:
             return CanAssignError(f"{value} is not a TypeForm")
         return value
-    if isinstance(
+    elif isinstance(
         value,
         (
             NewTypeValue,
@@ -1378,7 +1378,8 @@ def _extract_type_form(value: Value, ctx: CanAssignContext) -> Value | CanAssign
         ),
     ):
         return CanAssignError(f"{value} is not a TypeForm")
-    assert_never(value)
+    else:
+        assert_never(value)
 
 
 def _has_relation_union(
@@ -1417,7 +1418,7 @@ def _has_relation_thrift_enum(
             return {}
         return left.get_type_object(ctx).can_assign(left, right, ctx, relation=relation)
     else:
-        return CanAssignError(f"{right} is not {relation.description} {left}")
+        assert_never(right)
 
 
 def _maybe_specify_error_for_generic(

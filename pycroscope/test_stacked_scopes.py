@@ -215,6 +215,9 @@ class TestConstraintHelpers:
             is None
         )
 
+        # covers the return NotImplemented in Composite.__eq__
+        assert (Composite(KnownValue(1)) == KnownValue(1)) is False
+
     def test_composite_equality_ignores_node(self):
         varname = VarnameWithOrigin("box")
 

@@ -1010,17 +1010,16 @@ def _get_direct_attribute_from_synthetic_class(
         return UNINITIALIZED_VALUE
     if symbol.is_property:
         class_type = self_value.class_type
-        if isinstance(class_type, TypedValue):
-            can_assign_ctx = ctx.get_can_assign_context()
-            attribute = _get_type_object_attribute(
-                can_assign_ctx.make_type_object(class_type.typ),
-                attr_name,
-                ctx,
-                on_class=True,
-                receiver_value=class_type,
-            )
-            if attribute is not None:
-                return attribute.value
+        can_assign_ctx = ctx.get_can_assign_context()
+        attribute = _get_type_object_attribute(
+            can_assign_ctx.make_type_object(class_type.typ),
+            attr_name,
+            ctx,
+            on_class=True,
+            receiver_value=class_type,
+        )
+        if attribute is not None:
+            return attribute.value
         raw_value = symbol.initializer
     elif symbol.annotation is not None and not symbol.is_method:
         raw_value = symbol.annotation
@@ -1075,16 +1074,15 @@ def _get_direct_attribute_from_synthetic_instance(
         )
         if attribute is not None and _should_use_resolved_instance_attribute(attribute):
             return attribute.value
-    if isinstance(class_type, TypedValue):
-        attribute = _get_type_object_attribute(
-            can_assign_ctx.make_type_object(class_type.typ),
-            attr_name,
-            ctx,
-            on_class=False,
-            receiver_value=class_type,
-        )
-        if attribute is not None and _should_use_resolved_instance_attribute(attribute):
-            return attribute.value
+    attribute = _get_type_object_attribute(
+        can_assign_ctx.make_type_object(class_type.typ),
+        attr_name,
+        ctx,
+        on_class=False,
+        receiver_value=class_type,
+    )
+    if attribute is not None and _should_use_resolved_instance_attribute(attribute):
+        return attribute.value
     symbol = _get_synthetic_declared_symbol(self_value, attr_name, ctx)
     if (
         symbol is not None
@@ -1187,8 +1185,6 @@ def _get_synthetic_declared_symbol(
     self_value: SyntheticClassObjectValue, attr_name: str, ctx: AttrContext
 ) -> ClassSymbol | None:
     class_type = self_value.class_type
-    if not isinstance(class_type, TypedValue):
-        return None
     can_assign_ctx = ctx.get_can_assign_context()
     type_object = can_assign_ctx.make_type_object(class_type.typ)
     symbol = type_object.get_synthetic_declared_symbols().get(attr_name)
@@ -1352,18 +1348,16 @@ def _is_synthetic_self_classmethod_attribute(
 ) -> bool:
     class_type = self_value.class_type
     can_assign_ctx = ctx.get_can_assign_context()
-    if isinstance(class_type, TypedValue):
-        attribute = _get_type_object_attribute(
-            can_assign_ctx.make_type_object(class_type.typ),
-            attr_name,
-            ctx,
-            on_class=True,
-            receiver_value=class_type,
-        )
-        symbol = None if attribute is None else attribute.symbol
-    else:
-        symbol = _get_synthetic_declared_symbol(self_value, attr_name, ctx)
-    return symbol is not None and symbol.returns_self_on_class_access
+    attribute = _get_type_object_attribute(
+        can_assign_ctx.make_type_object(class_type.typ),
+        attr_name,
+        ctx,
+        on_class=True,
+        receiver_value=class_type,
+    )
+    if attribute is None:
+        return False
+    return attribute.symbol.returns_self_on_class_access
 
 
 def _maybe_mangle_private_name(attr_name: str, class_name: str) -> str | None:
@@ -1395,9 +1389,9 @@ def _should_deliteralize_synthetic_enum_attr(
     self_value: SyntheticClassObjectValue, attr_name: str, ctx: AttrContext
 ) -> bool:
     class_type = self_value.class_type
-    if not isinstance(class_type, TypedValue) or not isinstance(class_type.typ, type):
-        return False
-    if not safe_issubclass(class_type.typ, Enum):
+    if not isinstance(class_type.typ, type) or not safe_issubclass(
+        class_type.typ, Enum
+    ):
         return False
     symbol = _get_synthetic_declared_symbol(self_value, attr_name, ctx)
     if (
@@ -1426,7 +1420,7 @@ def _deliteralize_value(value: Value) -> Value:
 def _deliteralize_simple_value(value: SimpleType) -> Value:
     if isinstance(value, KnownValue):
         return TypedValue(type(value.val))
-    if isinstance(
+    elif isinstance(
         value,
         (
             AnyValue,
@@ -1440,7 +1434,8 @@ def _deliteralize_simple_value(value: SimpleType) -> Value:
         ),
     ):
         return value
-    assert_never(value)
+    else:
+        assert_never(value)
 
 
 def _get_attribute_from_synthetic_base(
@@ -1462,8 +1457,7 @@ def _get_attribute_from_synthetic_base(
             members = tuple(base.members)
             if isinstance(root, SyntheticClassObjectValue):
                 class_type = root.class_type
-                if isinstance(class_type, TypedValue):
-                    base = GenericValue(class_type.typ, members)
+                base = GenericValue(class_type.typ, members)
             elif isinstance(root, KnownValue) and isinstance(root.val, type):
                 base = GenericValue(root.val, members)
             elif isinstance(root, TypedValue):
@@ -1491,11 +1485,13 @@ def _get_attribute_from_synthetic_base(
             if result is not UNINITIALIZED_VALUE:
                 return _substitute_typevars(base.typ, base.args, result, provider, ctx)
             return UNINITIALIZED_VALUE
-        if isinstance(base.typ, type):
+        elif isinstance(base.typ, type):
             result = _get_attribute_from_subclass(base.typ, self_value.class_type, ctx)
             if result is not UNINITIALIZED_VALUE:
                 return _substitute_typevars(base.typ, base.args, result, base.typ, ctx)
             return result
+        else:
+            assert_never(base.typ)
 
     if isinstance(base, SyntheticClassObjectValue):
         base_id = id(base)

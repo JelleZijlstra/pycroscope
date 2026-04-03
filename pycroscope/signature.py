@@ -3186,13 +3186,13 @@ def _widen_typevartuple_inferred_simple_value(value: SimpleType) -> Value:
                 ],
             )
         return value
-    if isinstance(value, KnownValue):
+    elif isinstance(value, KnownValue):
         if isinstance(value.val, float):
             return TypedValue(float) | TypedValue(int)
         if isinstance(value.val, complex):
             return TypedValue(complex) | TypedValue(float) | TypedValue(int)
         return TypedValue(type(value.val))
-    if isinstance(
+    elif isinstance(
         value,
         (
             AnyValue,
@@ -3206,7 +3206,8 @@ def _widen_typevartuple_inferred_simple_value(value: SimpleType) -> Value:
         ),
     ):
         return value
-    assert_never(value)
+    else:
+        assert_never(value)
 
 
 def _is_placeholder_typevartuple_solution(value: Value | None) -> bool:
@@ -3805,10 +3806,8 @@ def signatures_have_relation(
             )
         return CanAssignError("overloaded function is incompatible", errors)
 
-    if isinstance(left, Signature):
-        left = left.freshen_typevars_for_inference()
-    if isinstance(right, Signature):
-        right = right.freshen_typevars_for_inference()
+    left = left.freshen_typevars_for_inference()
+    right = right.freshen_typevars_for_inference()
 
     # Callable[..., Any] is compatible with an asynq callable too.
     if (
@@ -3842,14 +3841,13 @@ def signatures_have_relation(
     if isinstance(return_tv_map, CanAssignError):
         return CanAssignError("return annotation is not compatible", [return_tv_map])
 
-    if isinstance(left, Signature) and isinstance(right, Signature):
-        typevartuple_tv_map = _try_typevartuple_callable_relation(
-            left, right, relation, ctx
-        )
-        if typevartuple_tv_map is not None:
-            if isinstance(typevartuple_tv_map, CanAssignError):
-                return typevartuple_tv_map
-            return unify_bounds_maps([return_tv_map, typevartuple_tv_map])
+    typevartuple_tv_map = _try_typevartuple_callable_relation(
+        left, right, relation, ctx
+    )
+    if typevartuple_tv_map is not None:
+        if isinstance(typevartuple_tv_map, CanAssignError):
+            return typevartuple_tv_map
+        return unify_bounds_maps([return_tv_map, typevartuple_tv_map])
 
     tv_maps = [return_tv_map]
     left_has_ellipsis_style_tail = _has_ellipsis_style_tail(left)

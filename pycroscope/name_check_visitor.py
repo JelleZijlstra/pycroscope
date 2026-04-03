@@ -1624,10 +1624,6 @@ class ClassAttributeChecker:
         if any_base_classes_unexamined:
             return
 
-        if not isinstance(typ, type):
-            # old-style class; don't want to support
-            return
-
         # if it's on a child class it's also ok
         for child_cls in get_subclasses_recursively(typ):
             # also check the child classes' base classes, because mixins sometimes use attributes
@@ -5013,7 +5009,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         base = replace_fallback(base_value)
         if allow_synthetic_class_base and isinstance(base, SyntheticClassObjectValue):
             class_type = base.class_type
-            if isinstance(class_type, TypedValue) and isinstance(class_type.typ, type):
+            if isinstance(class_type.typ, type):
                 return class_type.typ
             return None
         if isinstance(base, KnownValue) and isinstance(base.val, type):
@@ -5424,11 +5420,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 return None
             return _merge_dataclass_transform_infos(infos)
         if isinstance(value, SyntheticClassObjectValue):
-            if isinstance(value.class_type, TypedValue):
-                return self._get_dataclass_transform_info_from_class_key(
-                    value.class_type.typ
-                )
-            return None
+            return self._get_dataclass_transform_info_from_class_key(
+                value.class_type.typ
+            )
         if isinstance(value, KnownValue):
             if isinstance(value.val, type):
                 if (
@@ -7380,7 +7374,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     )
                     or (
                         runtime_current_class is None
-                        and isinstance(enclosing_class, TypedValue)
                         and isinstance(enclosing_class.typ, str)
                         and (
                             self._type_object_or_bases_use_self_annotations(
@@ -8460,11 +8453,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         members = tuple(normalized_members)
         root = replace_fallback(value.root)
         if isinstance(root, SyntheticClassObjectValue):
-            if isinstance(root.class_type, TypedValue):
-                return replace(
-                    root, class_type=GenericValue(root.class_type.typ, members)
-                )
-            return None
+            return replace(root, class_type=GenericValue(root.class_type.typ, members))
         if isinstance(root, KnownValue) and isinstance(root.val, type):
             return GenericValue(root.val, members)
         if isinstance(root, TypedValue):
@@ -10354,9 +10343,10 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         if isinstance(value, TypedValue):
             if isinstance(value.typ, type):
                 return safe_issubclass(value.typ, enum.Enum)
-            if isinstance(value.typ, str):
+            elif isinstance(value.typ, str):
                 return self._is_enum_class_key(value.typ)
-            return False
+            else:
+                assert_never(value.typ)
         if isinstance(value, SubclassValue):
             return self._is_enum_value_for_unsafe_comparison(value.typ)
         return False
@@ -16710,7 +16700,7 @@ def _runtime_object_for_enum_member(value: Value) -> object:
         if all(initializer is first_value for initializer in member_values):
             return first_value
         return object()
-    if isinstance(value, IntersectionValue):
+    elif isinstance(value, IntersectionValue):
         member_values = [
             _runtime_object_for_enum_member(subval) for subval in value.vals
         ]
