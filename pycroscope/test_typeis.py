@@ -1041,9 +1041,9 @@ class TestTypeIs(TestNameCheckVisitorBase):
     @assert_passes()
     def test_type_is_awaitable_any(self):
         from collections.abc import Awaitable
-        from typing import Any, Union, assert_type
+        from typing import Any, Union
 
-        from typing_extensions import TypeIs
+        from typing_extensions import TypeIs, assert_type
 
         from pycroscope.extensions import Intersection
 
