@@ -2160,36 +2160,36 @@ def _type_from_subscripted_value(
         and root.class_key is not None
     ):
         can_assign_ctx = _get_can_assign_context(ctx)
-        synthetic_type_params: Sequence[TypeParam] = ()
+        typed_dict_type_params: Sequence[TypeParam] = ()
         if can_assign_ctx is not None:
-            synthetic_type_params = can_assign_ctx.get_type_parameters(root.class_key)
+            typed_dict_type_params = can_assign_ctx.get_type_parameters(root.class_key)
         packed_variadic_members = _pack_typevartuple_args_from_unpack_members(
-            synthetic_type_params, members, ctx
+            typed_dict_type_params, members, ctx
         )
         if packed_variadic_members is not None:
             typed_members = packed_variadic_members
         elif (
             not members
-            and len(synthetic_type_params) == 1
-            and isinstance(synthetic_type_params[0], TypeVarTupleParam)
+            and len(typed_dict_type_params) == 1
+            and isinstance(typed_dict_type_params[0], TypeVarTupleParam)
         ):
             typed_members = [TypeVarTupleBindingValue(())]
-        elif len(synthetic_type_params) == len(members):
+        elif len(typed_dict_type_params) == len(members):
             typed_members = [
                 _type_from_value_type_alias_arg(elt, type_param, ctx)
-                for elt, type_param in zip(members, synthetic_type_params)
+                for elt, type_param in zip(members, typed_dict_type_params)
             ]
         else:
             if not _validate_generic_type_argument_count(
-                root.class_key, synthetic_type_params, members, ctx
+                root.class_key, typed_dict_type_params, members, ctx
             ):
                 return AnyValue(AnySource.error)
             typed_members = [_type_from_value(elt, ctx) for elt in members]
         typed_members = _normalize_paramspec_generic_args(
-            synthetic_type_params, typed_members, ctx
+            typed_dict_type_params, typed_members, ctx
         )
         substitutions = TypeVarMap()
-        for type_param, typed_member in zip(synthetic_type_params, typed_members):
+        for type_param, typed_member in zip(typed_dict_type_params, typed_members):
             substitutions = substitutions.with_value(type_param, typed_member)
         return root.class_type.substitute_typevars(substitutions)
 
