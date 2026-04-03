@@ -13553,6 +13553,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                         )
                     )
                     or _contains_unpack_annotation_value(index)
+                    or not _is_runtime_literal_index(index)
                     or (
                         isinstance(index, KnownValue)
                         and index.val == ()
@@ -17774,17 +17775,6 @@ def _should_use_static_annotation_subscript(value: Value) -> bool:
         or root is collections.abc.Callable
         or is_typing_name(root, "Callable")
         or is_typing_name(root, "Annotated")
-        or is_typing_name(root, "TypeGuard")
-        or is_typing_name(root, "TypeIs")
-        or is_typing_name(root, "TypeForm")
-        or is_typing_name(root, "ClassVar")
-        or is_typing_name(root, "Final")
-        or is_typing_name(root, "Literal")
-        or is_typing_name(root, "Optional")
-        or is_typing_name(root, "Required")
-        or is_typing_name(root, "NotRequired")
-        or is_typing_name(root, "ReadOnly")
-        or is_typing_name(root, "Unpack")
         or root is AsynqCallable
     )
 
