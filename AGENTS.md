@@ -16,7 +16,9 @@
 
 - Major files include:
   - `name_check_visitor.py` contains the core visitor that walks over code being type checked. It should visit
-    every AST node exactly twice (in the collect and check phases).
+    every AST node exactly twice (in the collect and check phases). This file should
+    contain the core checker logic, but delegate to other files (e.g., `attributes.py`,
+    `type_object.py`, `stacked_scopes.py`) for narrower logic specific to those files.
   - `value.py` contains the core data structures representing types.
   - `relations.py` performs basic operations on types, such as subtyping, assignability, and intersections.
   - `type_object.py` contains rich data about classes.
@@ -44,9 +46,10 @@
 - Use this form from the repo root: `uv run --python 3.12 python tools/conformance_ci.py --typing-repo ~/py/typing`
   (optionally prefix `UV_CACHE_DIR=/tmp/uv-cache`).
 - When fixing regressions found by `test_self.py`, add separate test cases instead of just relying on `test_self.py`.
-- When writing test cases, prefer using code samples (`@assert_passes()`) instead of tests that directly
+- When writing test cases, always use code samples (`@assert_passes()`) instead of tests that directly
   invoke pycroscope functions. Code samples should represent user-written code that triggers the pycroscope
   feature under test and should not import internal pycroscope functions (except where needed for e.g. `assert_is_value`).
+  Use direct unit tests (calling internal functions) only if testing a widely used API with a clear contract, such as `TypeObject.get_attribute` or `has_relation`.
 - Prefer `assert_type()` over `assert_is_value()` for type assertions against types where possible; it's OK to keep
   `assert_is_value` for more complicated types that cannot be directly represented in user code.
 
@@ -61,11 +64,16 @@
 
 ## Code Conventions
 
+- Types and type signatures should have a single canonical internal representation,
+  which is normalized when we parse annotations (e.g. in `annotations.py`). We should use
+  the same representation regardless of whether an object was created in importable or
+  unimportable mode.
 - All type inference should go through the main type inference visitor in `name_check_visitor.py`. Other code should
   generally not perform AST walks. (Exceptions include the pattern matching visitor in `patma.py`, stub visitor in
-  `typeshed.py`, and annotation visitor in `annotations.py`.)
+  `typeshed.py`, and annotation visitor in `annotations.py`.) Always prefer using Values
+  derived from type inference over doing direct checks on the AST.
 - The code should avoid special-casing specific functions or standard library classes outside of impl functions in
-  `implementation.py`. Instead of special-casing individual symbols, find more specific solutions.
+  `implementation.py`. Instead of special-casing individual symbols, find more general solutions.
 - `implementation.py` should contain only impl functions used by extended argspecs. Shared non-impl helpers should
   live in the owning module even when they support special-casing logic.
 - Code that branches on different subclasses of `Value` should take care to cover all cases. Where possible, replace
@@ -90,6 +98,7 @@
   Exception: opinionated lint-style checks may still enforce spelling conventions for parameter names, such as
   `method_first_arg` requiring `self`/`cls`.
 - The behavior in import failure mode (where we cannot load the runtime module) should match that in normal mode
-  as much as possible.
+  as much as possible. As a corollary, whenever testing import failure-related issues,
+  write tests with `run_in_both_module_modes=True` if possible; avoid `allow_import_failures=True`.
 - Types and other internal objects should only be represented in one canonical way in pycroscope's internal logic.
   There should not be two equivalent ways to represent the same concept.
