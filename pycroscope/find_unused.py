@@ -35,6 +35,11 @@ def used(obj: T) -> T:
     return obj
 
 
+def is_marked_used(obj: object) -> bool:
+    """Return whether ``obj`` was explicitly marked with :func:`used`."""
+    return safe_in(obj, _used_objects)
+
+
 def test_helper(obj: T) -> T:
     """Decorator indicating that an object is intended as a helper for tests.
 

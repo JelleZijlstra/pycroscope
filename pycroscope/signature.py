@@ -1454,7 +1454,22 @@ class Signature:
             composites[self.bound_receiver_param_name] = self.bound_receiver_composite
 
         if self.callable is not None and ctx.visitor is not None:
-            ctx.visitor.record_call(self.callable, variables)
+            call_args = {
+                key: pycroscope.suggested_type.CallArg(composite.value, position)
+                for key, (position, composite) in bound_args.items()
+            }
+            if (
+                self.bound_receiver_param_name is not None
+                and self.bound_receiver_composite is not None
+                and self.bound_receiver_param_name not in call_args
+            ):
+                call_args[self.bound_receiver_param_name] = (
+                    pycroscope.suggested_type.CallArg(
+                        self.bound_receiver_composite.value,
+                        pycroscope.suggested_type.BOUND_RECEIVER,
+                    )
+                )
+            ctx.visitor.record_call(self.callable, call_args)
 
         return_value = self.return_value
         typevar_values = TypeVarMap()

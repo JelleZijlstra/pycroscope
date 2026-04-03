@@ -13,7 +13,11 @@ from pycroscope import node_visitor
 from pycroscope.analysis_lib import override
 from pycroscope.error_code import ErrorCode
 from pycroscope.find_unused import UnusedObjectFinder
-from pycroscope.shared_options import EnforceNoUnused, EnforceNoUnusedAttributes
+from pycroscope.shared_options import (
+    EnforceNoUnused,
+    EnforceNoUnusedAttributes,
+    EnforceNoUnusedCallPatterns,
+)
 from pycroscope.test_name_check_visitor import _make_module
 from pycroscope.test_node_visitor import skip_if_not_installed
 
@@ -220,6 +224,39 @@ def test_self_check_reports_unused_attributes() -> None:
     failures += _unused_attribute_failures(attribute_checker)
     assert any(
         failure["description"].endswith(".Config'>.cache") for failure in failures
+    )
+
+
+def test_self_check_reports_unused_call_patterns() -> None:
+    code = textwrap.dedent("""
+        def capybara(x: int, y: int = 0) -> int:
+            return x + y
+
+        def use() -> int:
+            return capybara(1)
+    """)
+    filename = "capybara_module.py"
+    tree = ast.parse(code.encode("utf-8"), filename)
+    settings = PycroscopeVisitor._get_default_settings()
+    if settings is not None:
+        settings[ErrorCode.implicit_any] = False
+    kwargs: dict[str, object] = {
+        "settings": settings,
+        "files": [filename],
+        "enforce_no_unused_call_patterns": True,
+    }
+    kwargs = dict(PycroscopeVisitor.prepare_constructor_kwargs(kwargs))
+    kwargs["checker"].should_check_unused_call_patterns = kwargs[
+        "checker"
+    ].options.get_value_for(EnforceNoUnusedCallPatterns)
+    visitor = PycroscopeVisitor(
+        filename, code, tree, annotate=True, module=_make_module(code), **kwargs
+    )
+    failures = visitor.check()
+    failures += PycroscopeVisitor.perform_final_checks(kwargs)
+    assert any(
+        "parameter 'y' is always omitted" in failure["description"]
+        for failure in failures
     )
 
 

@@ -39,7 +39,7 @@ from .safe import (
     safe_isinstance,
     safe_issubclass,
 )
-from .shared_options import VariableNameValues
+from .shared_options import EnforceNoUnusedCallPatterns, VariableNameValues
 from .signature import (
     ANY_SIGNATURE,
     ELLIPSIS_PARAM,
@@ -477,6 +477,9 @@ class Checker:
     ts_finder: TypeshedFinder = field(init=False, repr=False)
     reexport_tracker: ImplicitReexportTracker = field(init=False, repr=False)
     callable_tracker: CallableTracker = field(init=False, repr=False)
+    should_check_unused_call_patterns: bool = field(
+        default=False, init=False, repr=False
+    )
     type_object_cache: dict[type | str, TypeObject] = field(
         default_factory=dict, init=False, repr=False
     )
@@ -512,6 +515,9 @@ class Checker:
         )
         self.reexport_tracker = ImplicitReexportTracker(self.options)
         self.callable_tracker = CallableTracker()
+        self.should_check_unused_call_patterns = self.options.get_value_for(
+            EnforceNoUnusedCallPatterns
+        )
 
         for vnv in self.options.get_value_for(VariableNameValues):
             for variable in vnv.varnames:
@@ -538,7 +544,10 @@ class Checker:
         return self.type_alias_cache
 
     def perform_final_checks(self) -> list[Failure]:
-        return self.callable_tracker.check(self)
+        return self.callable_tracker.check(
+            self,
+            should_check_unused_call_patterns=self.should_check_unused_call_patterns,
+        )
 
     def _canonical_type_object_key(self, typ: type | str) -> type | str:
         synthetic_class = self.get_synthetic_class(typ)

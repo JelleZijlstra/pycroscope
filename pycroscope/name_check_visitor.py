@@ -105,7 +105,7 @@ from .extensions import (
     patch_typing_overload,
     real_overload,
 )
-from .find_unused import UnusedObjectFinder, used
+from .find_unused import UnusedObjectFinder, is_marked_used, used
 from .functions import (
     IMPLICIT_CLASSMETHODS,
     AsyncFunctionKind,
@@ -164,6 +164,7 @@ from .safe import (
 from .shared_options import (
     EnforceNoUnused,
     EnforceNoUnusedAttributes,
+    EnforceNoUnusedCallPatterns,
     ImportPaths,
     Paths,
 )
@@ -8478,24 +8479,55 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         else:
             potential_function = None
 
-        if (
-            potential_function is not None
-            and self.options.is_error_code_enabled_anywhere(
-                ErrorCode.suggested_parameter_type
-            )
-        ):
+        if potential_function is not None and self._should_track_callable_usage():
+            if is_marked_used(potential_function):
+                return potential_function
             sig = self.signature_from_value(KnownValue(potential_function))
             if isinstance(sig, Signature):
                 self.checker.callable_tracker.record_callable(
-                    node, potential_function, sig, scopes=self.scopes, ctx=self
+                    node,
+                    potential_function,
+                    sig,
+                    scopes=self.scopes,
+                    ctx=self,
+                    receiver_param_name=self._get_callable_receiver_param_name(node),
+                    owner_type=(
+                        self.current_class
+                        if isinstance(self.current_class, type)
+                        else None
+                    ),
+                    method_name=node.name,
                 )
         return potential_function
 
     def record_call(self, callable: object, arguments: CallArgs) -> None:
-        if self.options.is_error_code_enabled_anywhere(
-            ErrorCode.suggested_parameter_type
-        ):
+        if self._should_track_callable_usage():
             self.checker.callable_tracker.record_call(callable, arguments)
+
+    def _should_track_callable_usage(self) -> bool:
+        return (
+            self.options.is_error_code_enabled_anywhere(
+                ErrorCode.suggested_parameter_type
+            )
+            or self.checker.should_check_unused_call_patterns
+        )
+
+    def _get_callable_receiver_param_name(self, node: FunctionDefNode) -> str | None:
+        if self.scopes.scope_type() != ScopeType.class_scope:
+            return None
+        if any(
+            self._is_staticmethod_decorator(decorator)
+            for decorator in node.decorator_list
+        ):
+            return None
+        params = [*node.args.posonlyargs, *node.args.args]
+        if not params:
+            return None
+        return params[0].arg
+
+    def _is_staticmethod_decorator(self, node: ast.AST) -> bool:
+        path = get_attribute_path(node)
+        return path is not None and path[-1] == "staticmethod"
 
     def visit_Lambda(self, node: ast.Lambda) -> Value:
         with self.asynq_checker.set_func_name("<lambda>"):
@@ -16066,6 +16098,12 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             help="Find unused class attributes",
         )
         parser.add_argument(
+            "--find-unused-call-patterns",
+            action="store_true",
+            default=False,
+            help="Find unused callable patterns",
+        )
+        parser.add_argument(
             "--config-file",
             type=Path,
             help="Path to a pyproject.toml configuration file",
@@ -16150,6 +16188,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         checker: Checker,
         find_unused: bool = False,
         find_unused_attributes: bool = False,
+        find_unused_call_patterns: bool = False,
         attribute_checker: ClassAttributeChecker | None = None,
         unused_finder: UnusedObjectFinder | None = None,
         **kwargs: Any,
@@ -16160,6 +16199,10 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         should_check_unused_attributes = (
             find_unused_attributes
             or checker.options.get_value_for(EnforceNoUnusedAttributes)
+        )
+        checker.should_check_unused_call_patterns = (
+            find_unused_call_patterns
+            or checker.options.get_value_for(EnforceNoUnusedCallPatterns)
         )
         if attribute_checker is None:
             inner_attribute_checker_obj = attribute_checker = ClassAttributeChecker(

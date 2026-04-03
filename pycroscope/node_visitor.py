@@ -835,6 +835,7 @@ class BaseNodeVisitor(ast.NodeVisitor):
         kwargs.pop("parallel", False)
         kwargs.pop("find_unused", False)
         kwargs.pop("find_unused_attributes", False)
+        kwargs.pop("find_unused_call_patterns", False)
         kwargs.pop("assert_passes", False)
         return cls("<code>", code, tree, is_code_only=True, **kwargs).check()
 

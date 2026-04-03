@@ -41,6 +41,17 @@ class EnforceNoUnusedAttributes(BooleanOption):
     is_global = True
 
 
+class EnforceNoUnusedCallPatterns(BooleanOption):
+    """If True, an error is raised when pycroscope finds unused callable patterns.
+
+    This check is experimental and still has various known bugs.
+
+    """
+
+    name = "enforce_no_unused_call_patterns"
+    is_global = True
+
+
 class VariableNameValues(PyObjectSequenceOption[VariableNameValue]):
     """List of :class:`pycroscope.value.VariableNameValue` instances that create pseudo-types
     associated with certain variable names."""
