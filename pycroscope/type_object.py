@@ -722,7 +722,7 @@ class TypeObject:
         return tuple(fields)
 
     def _compute_synthetic_namedtuple_fields(
-        self, *, include_inherited_fields: bool = True
+        self, *, include_inherited_fields: bool
     ) -> tuple[NamedTupleField, ...]:
         inherited_fields = (
             tuple(self._iter_synthetic_namedtuple_base_fields())
@@ -2548,8 +2548,7 @@ def _specialize_symbol_for_owner(
     owner_tobj: TypeObject,
     symbol: ClassSymbol,
     ctx: CanAssignContext,
-    *,
-    receiver_value: TypedValue | TypeVarValue | None = None,
+    receiver_value: TypedValue | TypeVarValue | None,
 ) -> ClassSymbol:
     substitutions = _get_symbol_owner_substitutions_from_type_objects(
         receiver_tobj, owner_tobj, ctx, receiver_value=receiver_value
@@ -3601,7 +3600,7 @@ def _is_callable_member_value(value: Value, ctx: CanAssignContext) -> bool:
 
 
 def _normalize_protocol_initializer_for_relation(
-    value: Value, ctx: CanAssignContext, *, receiver: Value | None = None
+    value: Value, ctx: CanAssignContext, receiver: Value
 ) -> Value:
     signature = ctx.signature_from_value(value)
     if isinstance(signature, BoundMethodSignature):
@@ -3613,11 +3612,9 @@ def _normalize_protocol_initializer_for_relation(
         if bound is not None:
             return CallableValue(bound)
         return CallableValue(signature.signature)
-    if (
-        receiver is not None
-        and isinstance(signature, (Signature, OverloadedSignature))
-        and _callable_value_missing_receiver(value, ctx)
-    ):
+    if isinstance(
+        signature, (Signature, OverloadedSignature)
+    ) and _callable_value_missing_receiver(value, ctx):
         bound = signature.bind_self(self_value=replace_fallback(receiver), ctx=ctx)
         if bound is not None:
             return CallableValue(bound)
@@ -3747,7 +3744,7 @@ def _bind_protocol_call_expected(
     ctx: CanAssignContext,
     *,
     member: str,
-    protocol_self_value: Value | None = None,
+    protocol_self_value: Value,
 ) -> Value:
     unwrapped = replace_fallback(value)
     if not isinstance(unwrapped, CallableValue):
@@ -3756,21 +3753,15 @@ def _bind_protocol_call_expected(
     if member == "__call__":
         if isinstance(signature, BoundMethodSignature):
             return value
-        receiver_reference = (
-            self_value if protocol_self_value is None else protocol_self_value
-        )
-        allow_any_annotation = protocol_self_value is not None
+        allow_any_annotation = True
     else:
         if isinstance(signature, BoundMethodSignature):
             signature = signature.signature
-        receiver_reference = (
-            self_value if protocol_self_value is None else protocol_self_value
-        )
         allow_any_annotation = False
     if isinstance(signature, Signature):
         has_receiver_parameter = _signature_has_receiver_parameter(
             signature,
-            receiver_reference,
+            protocol_self_value,
             ctx=ctx,
             member="__call__",
             allow_any_annotation=allow_any_annotation,
@@ -3779,7 +3770,7 @@ def _bind_protocol_call_expected(
         has_receiver_parameter = all(
             _signature_has_receiver_parameter(
                 sig,
-                receiver_reference,
+                protocol_self_value,
                 ctx=ctx,
                 member="__call__",
                 allow_any_annotation=allow_any_annotation,
