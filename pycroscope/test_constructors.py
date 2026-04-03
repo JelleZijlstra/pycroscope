@@ -1,10 +1,31 @@
 # static analysis: ignore
 
+from .error_code import ErrorCode
 from .test_name_check_visitor import TestNameCheckVisitorBase
 from .test_node_visitor import assert_passes
 
 
 class TestConstructors(TestNameCheckVisitorBase):
+    def test_hasattr_constructor_does_not_add_object_overload(self):
+        errors = self._run_str(
+            """
+            class C:
+                def __init__(self, x: int) -> None:
+                    self.x = x
+
+            def f(c: C) -> None:
+                if hasattr(c, "name"):
+                    type(c)(name=1)
+            """,
+            expect_failure=False,
+            fail_after_first=False,
+        )
+        assert len(errors) == 1
+        error = errors[0]
+        assert error["code"] == ErrorCode.incompatible_call
+        assert "object.__init__" not in error["message"]
+        assert "C.__init__" in error["message"]
+
     @assert_passes()
     def test_metaclass_call(self):
         from typing import Type

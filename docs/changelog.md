@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Simplify `type()` lookups through narrowed intersections, so `hasattr()`-guarded class-object calls preserve the real constructor signature instead of picking up confusing fallback overloads like `object.__init__`.
 - Fix assignability involving weak list literals in nested invariant containers, so values like `defaultdict(lambda: ([], []))` can satisfy annotated tuple-valued `dict` entries instead of failing on the inner empty-list literals.
 - Improve nested tuple mismatch diagnostics so assignments involving tuple-valued generics now report which tuple element failed instead of the vague message `tuple is not assignable to tuple`.
 - Add an opt-in `--find-unused-call-patterns` check, plus `enforce_no_unused_call_patterns`, to report parameters whose accepted call shapes are only partially exercised, including always-omitted defaults, one-sided boolean flags, and unused union members.
