@@ -4243,41 +4243,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 if type_param_values
                 else self._type_params_from_base_values(base_values)
             )
-            if (
-                not type_param_values
-                and self.module is None
-                and not effective_type_param_values
-                and analyzed_base_values is not base_values
-            ):
-                effective_type_param_values = (
-                    self._order_type_params_by_base_annotation_appearance(
-                        node.bases,
-                        self._type_params_from_base_values(analyzed_base_values),
-                    )
-                )
-            if not effective_type_param_values and self.module is None:
-                # In static-fallback mode we can lose Generic[...] type arguments
-                # from base values; recover from base annotation expressions.
-                recovered_type_param_values = (
-                    self._type_params_from_base_annotations_for_default_rules(
-                        node.bases
-                    )
-                )
-                should_use_recovered_type_params = any(
-                    not isinstance(type_param, TypeVarParam)
-                    or _type_param_uses_infer_variance(type_param)
-                    for type_param in recovered_type_param_values
-                )
-                if not should_use_recovered_type_params:
-                    # Recovering type parameters here is still important for
-                    # classes that expose non-constructor generic methods.
-                    should_use_recovered_type_params = any(
-                        isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef))
-                        and statement.name not in {"__init__", "__new__"}
-                        for statement in node.body
-                    )
-                if should_use_recovered_type_params:
-                    effective_type_param_values = recovered_type_param_values
             annotation_type_param_values = (
                 self._type_params_from_base_annotations_for_default_rules(node.bases)
             )
@@ -4321,31 +4286,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     append_unmatched_declared=True,
                 )
             )
-            if (
-                not type_param_values
-                and self.module is None
-                and analyzed_base_values is not base_values
-            ):
-                method_type_params = self._merge_type_params_using_declared_identities(
-                    self._order_type_params_by_base_annotation_appearance(
-                        node.bases,
-                        self._type_params_from_base_values(analyzed_base_values),
-                    ),
-                    annotation_type_param_values,
-                    append_unmatched_declared=True,
-                )
-            if not method_type_params and self.module is None:
-                method_type_params = annotation_type_param_values
-            if (
-                not method_type_params
-                and effective_type_param_values
-                and any(
-                    isinstance(type_param, ParamSpecParam)
-                    or isinstance(type_param, TypeVarTupleParam)
-                    for type_param in effective_type_param_values
-                )
-            ):
-                method_type_params = effective_type_param_values
             method_type_param_values = method_type_params
             if not type_param_values:
                 method_type_param_values = self._align_type_params_with_runtime_class(
