@@ -420,7 +420,13 @@ def get_attribute(ctx: AttrContext) -> Value:
     elif isinstance(root_value, TypeFormValue):
         attribute_value = _get_attribute_from_typed(object, (), ctx)
     elif isinstance(root_value, PredicateValue):
-        attribute_value = _get_attribute_from_typed(object, (), ctx)
+        if isinstance(root_value.predicate, HasAttr):
+            if root_value.predicate.attr == ctx.attr:
+                attribute_value = root_value.predicate.value
+            else:
+                attribute_value = UNINITIALIZED_VALUE
+        else:
+            attribute_value = _get_attribute_from_typed(object, (), ctx)
     elif isinstance(root_value, SyntheticClassObjectValue):
         if isinstance(root_value.class_type, TypedDictValue):
             attribute_value = _get_attribute_from_subclass(dict, root_value, ctx)

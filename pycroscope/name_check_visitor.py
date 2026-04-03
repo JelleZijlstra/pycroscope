@@ -145,6 +145,7 @@ from .relations import (
     check_hashability,
     has_relation,
     intersect_multi,
+    intersect_values,
     is_equivalent,
     is_subtype,
 )
@@ -10387,6 +10388,10 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             constraint = self._constraint_from_compare_op(
                 rhs_node, lhs.val, op, is_right=False
             )
+        elif isinstance(op, ast.Is):
+            constraint = self._constraint_from_identity_compare(
+                lhs_node, lhs, rhs_node, rhs
+            )
         else:
             constraint = NULL_CONSTRAINT
         if isinstance(op, (ast.Is, ast.IsNot)):
@@ -10469,6 +10474,27 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         if definite_value is not None:
             val = annotate_value(val, [DefiniteValueExtension(definite_value)])
         return annotate_with_constraint(val, constraint)
+
+    def _constraint_from_identity_compare(
+        self, lhs_node: ast.AST, lhs: Value, rhs_node: ast.AST, rhs: Value
+    ) -> AbstractConstraint:
+        lhs_varname = self.composite_from_node(lhs_node).varname
+        rhs_varname = self.composite_from_node(rhs_node).varname
+        if lhs_varname is None or rhs_varname is None:
+            return NULL_CONSTRAINT
+
+        def predicate_func(value: Value, positive: bool) -> Value | None:
+            if not positive:
+                return value
+            other_value, _ = unannotate_value(
+                self.composite_from_node(rhs_node).value, ConstraintExtension
+            )
+            intersected = intersect_values(value, other_value, self)
+            if intersected is NO_RETURN_VALUE:
+                return None
+            return intersected
+
+        return Constraint(lhs_varname, ConstraintType.predicate, True, predicate_func)
 
     def _constraint_from_compare_op(
         self, constrained_node: ast.AST, other_val: Any, op: ast.AST, *, is_right: bool
@@ -15443,7 +15469,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     )
                     for val in callee.vals
                 ]
-
             pairs = [
                 unannotate_value(val, NoReturnConstraintExtension) for val in values
             ]

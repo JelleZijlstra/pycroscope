@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Fix `hasattr()`-based intersection lookup so class-object attributes like `cls.__name__` remain available after narrowing through unrelated `HasAttr[...]` predicates.
 - Fix local attribute tracking for descriptor-backed optional attributes, so guarded writes like `if self.field is None: return; self.field = value` keep `self.field` narrowed within the current method instead of widening later reads back to the optional type.
 - Fix fallback-mode `TypeVarTuple` callable inference so conformance-style checks like `Process(target=..., args=...)` now match fixed-arity callables more consistently.
 - Make transformed instance attributes keep their declared types on writes, so bad assignments like `self.name = maybe_none` are reported and no longer widen later `self.name` reads across a method or class.
