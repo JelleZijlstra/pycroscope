@@ -886,6 +886,34 @@ def _has_relation(
         if isinstance(right, SequenceValue):
             return _has_relation_sequence(left, right, relation, ctx)
         if (
+            relation is Relation.ASSIGNABLE
+            and left.typ is not tuple
+            and isinstance(right, GenericValue)
+            and right.typ is left.typ
+            and len(right.args) == 1
+        ):
+            # In invariant comparisons we also check the reverse direction, which
+            # can ask whether a strong container[T] satisfies a weak container
+            # literal type. We only allow that when the weak container could
+            # still be empty and every unpacked member type accepts T.
+            right_member = right.args[0]
+            bounds_maps = []
+            for is_many, member in left.members:
+                if not is_many:
+                    return CanAssignError(
+                        f"{right} may be empty and cannot satisfy"
+                        f" known-non-empty {left}"
+                    )
+                can_assign = has_relation(member, right_member, relation, ctx)
+                if isinstance(can_assign, CanAssignError):
+                    return CanAssignError(
+                        f"{right} is not {relation.description} {left}", [can_assign]
+                    )
+                bounds_maps.append(can_assign)
+            if not bounds_maps:
+                return {}
+            return unify_bounds_maps(bounds_maps)
+        if (
             left.typ is tuple
             and isinstance(
                 right, (KnownValue, TypedValue, SubclassValue, AnnotatedValue)
@@ -922,6 +950,15 @@ def _has_relation(
         return CanAssignError(f"{right} is not {relation.description} {left}")
 
     if isinstance(left, GenericValue):
+        if (
+            isinstance(right, SequenceValue)
+            and left.typ is tuple
+            and right.typ is tuple
+            and tuple_members_from_value(left, ctx) is not None
+        ):
+            return left.get_type_object(ctx).can_assign(
+                left, right, ctx, relation=relation
+            )
         if (
             relation is Relation.ASSIGNABLE
             and isinstance(right, DictIncompleteValue)
