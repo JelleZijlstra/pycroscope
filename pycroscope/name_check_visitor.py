@@ -4312,18 +4312,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                         node.bases, effective_type_param_values
                     )
                 )
-            if (
-                not effective_type_param_values
-                and self.module is None
-                and isinstance(class_scope_object, type)
-            ):
-                runtime_type_params: list[TypeParam] = []
-                for runtime_type_param in self.checker.get_type_parameters(
-                    class_scope_object
-                ):
-                    runtime_type_params.append(runtime_type_param)
-                if runtime_type_params:
-                    effective_type_param_values = runtime_type_params
             registered_type_param_values = effective_type_param_values
             if not type_param_values:
                 registered_type_param_values = (
