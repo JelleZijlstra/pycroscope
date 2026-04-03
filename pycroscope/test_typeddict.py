@@ -413,7 +413,13 @@ class TestTypedDict(TestNameCheckVisitorBase):
         class GenericTypedDict(TypedDict, Generic[T]):
             value: T
 
-        def capybara(movie: Movie) -> str:
+        def capybara(
+            movie: Movie,
+            generic_typed_dict: GenericTypedDict,  # E: missing_generic_parameters
+            specialized_generic_typed_dict: GenericTypedDict[int],
+        ) -> str:
+            print(generic_typed_dict)
+            print(specialized_generic_typed_dict)
             return movie["director"]["name"]
 
     @skip_before((3, 11))

@@ -138,6 +138,7 @@ from .value import (
     TypeIsExtension,
     TypeParam,
     TypeVarLike,
+    TypeVarMap,
     TypeVarParam,
     TypeVarTupleBindingValue,
     TypeVarTupleLike,
@@ -2153,8 +2154,48 @@ def _type_from_subscripted_value(
                 for subval in root.vals
             ]
         )
-    if isinstance(root, SyntheticClassObjectValue) and isinstance(
-        root.class_type, TypedValue
+    if (
+        isinstance(root, SyntheticClassObjectValue)
+        and isinstance(root.class_type, TypedDictValue)
+        and root.class_key is not None
+    ):
+        can_assign_ctx = _get_can_assign_context(ctx)
+        synthetic_type_params: Sequence[TypeParam] = ()
+        if can_assign_ctx is not None:
+            synthetic_type_params = can_assign_ctx.get_type_parameters(root.class_key)
+        packed_variadic_members = _pack_typevartuple_args_from_unpack_members(
+            synthetic_type_params, members, ctx
+        )
+        if packed_variadic_members is not None:
+            typed_members = packed_variadic_members
+        elif (
+            not members
+            and len(synthetic_type_params) == 1
+            and isinstance(synthetic_type_params[0], TypeVarTupleParam)
+        ):
+            typed_members = [TypeVarTupleBindingValue(())]
+        elif len(synthetic_type_params) == len(members):
+            typed_members = [
+                _type_from_value_type_alias_arg(elt, type_param, ctx)
+                for elt, type_param in zip(members, synthetic_type_params)
+            ]
+        else:
+            if not _validate_generic_type_argument_count(
+                root.class_key, synthetic_type_params, members, ctx
+            ):
+                return AnyValue(AnySource.error)
+            typed_members = [_type_from_value(elt, ctx) for elt in members]
+        typed_members = _normalize_paramspec_generic_args(
+            synthetic_type_params, typed_members, ctx
+        )
+        substitutions = TypeVarMap()
+        for type_param, typed_member in zip(synthetic_type_params, typed_members):
+            substitutions = substitutions.with_value(type_param, typed_member)
+        return root.class_type.substitute_typevars(substitutions)
+
+    if (
+        isinstance(root, SyntheticClassObjectValue)
+        and type(root.class_type) is TypedValue
     ):
         synthetic_typ = root.class_type.typ
         can_assign_ctx = _get_can_assign_context(ctx)
