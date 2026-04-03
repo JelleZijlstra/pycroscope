@@ -6,6 +6,7 @@ import types
 
 from .error_code import DISABLED_IN_TESTS, ErrorCode
 from .name_check_visitor import (
+    EnforceNoUnusedCallPatterns,
     IgnoredUnusedAttributePaths,
     IgnoredUnusedClassAttributes,
     IgnoreUnusedAttributePredicates,
@@ -58,6 +59,25 @@ class TestFindUnused(TestNameCheckVisitorBase):
             for item in attribute_checker.unused_attributes
         }
         assert actual_unused == set(expected_unused)
+
+    def assert_unused_call_patterns(
+        self, code_str, expected_patterns, *, module_name="capybara_call_patterns"
+    ):
+        code_str = textwrap.dedent(code_str)
+        tree = ast.parse(code_str, "<test input>")
+        settings = {code: code not in DISABLED_IN_TESTS for code in ErrorCode}
+        kwargs = self.visitor_cls.prepare_constructor_kwargs(
+            {"settings": settings, "enforce_no_unused_call_patterns": True},
+            extra_options=(EnforceNoUnusedCallPatterns(True),),
+        )
+        module = self._make_named_module(code_str, module_name)
+        visitor = self.visitor_cls(
+            "<test input>", code_str, tree, module=module, **kwargs
+        )
+        result = visitor.check_for_test()
+        result += visitor.perform_final_checks(kwargs)
+        actual = {failure["description"] for failure in result}
+        assert actual == set(expected_patterns)
 
     @staticmethod
     def _make_named_module(code_str: str, module_name: str) -> types.ModuleType:
@@ -244,6 +264,130 @@ class TestFindUnused(TestNameCheckVisitorBase):
                 raw_vals: InitVar[list[int]]
             """,
             set(),
+        )
+
+    def test_unused_call_pattern_optional_parameter_omitted(self):
+        self.assert_unused_call_patterns(
+            """
+            def capybara(x: int, y: int = 0) -> int:
+                return x + y
+
+            def use() -> int:
+                return capybara(1)
+            """,
+            {
+                "Unused call pattern: capybara_call_patterns.capybara parameter "
+                "'y' is always omitted"
+            },
+        )
+
+    def test_unused_call_pattern_bool_parameter(self):
+        self.assert_unused_call_patterns(
+            """
+            def capybara(flag: bool) -> int:
+                return 1 if flag else 0
+
+            def use() -> int:
+                return capybara(True) + capybara(True)
+            """,
+            {
+                "Unused call pattern: capybara_call_patterns.capybara parameter "
+                "'flag' is only called with literal True"
+            },
+        )
+
+    def test_unused_call_pattern_default_counts_for_bool_usage(self):
+        self.assert_unused_call_patterns(
+            """
+            def capybara(flag: bool = False) -> int:
+                return 1 if flag else 0
+
+            def use() -> int:
+                return capybara() + capybara(True)
+            """,
+            set(),
+        )
+
+    def test_unused_call_pattern_union_parameter(self):
+        self.assert_unused_call_patterns(
+            """
+            def capybara(value: int | str) -> int:
+                if isinstance(value, int):
+                    return value
+                return len(value)
+
+            def use(x: int) -> int:
+                return capybara(x)
+            """,
+            {
+                "Unused call pattern: capybara_call_patterns.capybara parameter "
+                "'value' never receives str (observed int)"
+            },
+        )
+
+    def test_unused_call_pattern_union_argument_counts_all_members(self):
+        self.assert_unused_call_patterns(
+            """
+            def capybara(value: int | str) -> int:
+                if isinstance(value, int):
+                    return value
+                return len(value)
+
+            def use(value: int | str) -> int:
+                return capybara(value)
+            """,
+            set(),
+        )
+
+    def test_unused_call_pattern_skips_ambiguous_bool_arguments(self):
+        self.assert_unused_call_patterns(
+            """
+            def capybara(flag: bool) -> int:
+                return 1 if flag else 0
+
+            def use(flag: bool) -> int:
+                return capybara(flag)
+            """,
+            set(),
+        )
+
+    def test_unused_call_pattern_child_method_inherits_base_calls(self):
+        self.assert_unused_call_patterns(
+            """
+            class Base:
+                def f(self, x: int, y: int = 0) -> int:
+                    return x + y
+
+            class Child(Base):
+                def f(self, x: int, y: int = 0) -> int:
+                    return x + y
+
+            def use_base(obj: Base) -> int:
+                return obj.f(1, y=2)
+
+            def use_base_default(obj: Base) -> int:
+                return obj.f(1)
+
+            def use_child(obj: Child) -> int:
+                return obj.f(1)
+            """,
+            set(),
+        )
+
+    def test_unused_call_pattern_skips_used_decorated_function(self):
+        self.assert_unused_call_patterns(
+            """
+            from pycroscope.find_unused import used
+
+            @used
+            def capybara(x: int, y: int = 0) -> int:
+                return x + y
+
+            def use() -> int:
+                return capybara(1)
+            """,
+            set(),
+            module_name="capybara_call_patterns_used",
         )
 
     def test_visit_methods_can_be_ignored_by_predicate(self):
