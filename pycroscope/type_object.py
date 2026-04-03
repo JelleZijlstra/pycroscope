@@ -3383,7 +3383,10 @@ def _descriptor_method_signature_any(
             )
             if merged_attribute is not None:
                 direct_signature = as_concrete_signature(
-                    _merged_attribute_lookup_value(merged_attribute), ctx
+                    ctx.signature_from_value(
+                        _merged_attribute_lookup_value(merged_attribute)
+                    ),
+                    ctx,
                 )
                 if direct_signature is not None:
                     direct_signature = direct_signature.bind_self(
