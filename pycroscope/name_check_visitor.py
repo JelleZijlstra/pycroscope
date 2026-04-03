@@ -408,7 +408,7 @@ def _drop_uninitialized_value(value: Value) -> Value:
         if not vals:
             return UNINITIALIZED_VALUE
         return unite_values(*vals)
-    if isinstance(value, IntersectionValue):
+    elif isinstance(value, IntersectionValue):
         vals = [
             subval
             for subval in (_drop_uninitialized_value(subval) for subval in value.vals)
@@ -1302,7 +1302,7 @@ class ClassAttributeChecker:
                 return (module, name)
         return None
 
-    def unserialize_type(self, serialized: Any) -> type | None:
+    def unserialize_type(self, serialized: Any) -> object:
         if not self.should_serialize:
             return serialized
         module, name = serialized
@@ -1337,7 +1337,7 @@ class ClassAttributeChecker:
             self.attributes_read.items(), key=self._cls_sort
         ):
             typ = self.unserialize_type(serialized)
-            if typ is None:
+            if not safe_isinstance(typ, type):
                 continue
             # we setattr on it with an unresolved value, so we don't know what attributes this may
             # have
@@ -1400,7 +1400,7 @@ class ClassAttributeChecker:
 
         for serialized in sorted(declared_by_class, key=self._cls_sort):
             typ = self.unserialize_type(serialized)
-            if typ is None:
+            if not safe_isinstance(typ, type):
                 continue
             if any(
                 self.serialize_type(base_cls) in self.types_with_dynamic_attrs
@@ -3265,8 +3265,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     def _record_complete_synthetic_function_symbol(
         self, node: FunctionDefNode, info: FunctionInfo, function_value: Value
     ) -> None:
-        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            return
         if self.scopes.scope_type() is not ScopeType.class_scope:
             return
         class_name = self._current_class_name_from_context()
@@ -7467,7 +7465,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         variance_ctx: AbstractContextManager[None] = contextlib.nullcontext()
         if (
             self.active_type_params.current_class_type_param_polarities() is not None
-            and isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
             and node.name in {"__init__", "__new__"}
         ):
             variance_ctx = (
@@ -8505,7 +8502,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             if safe_getattr(concrete_root.val, attr_name, marker) is not marker:
                 return False
         if (
-            isinstance(concrete_root, (TypedValue, GenericValue))
+            isinstance(concrete_root, TypedValue)
             and isinstance(concrete_root.typ, type)
             and safe_issubclass(concrete_root.typ, type)
         ):
@@ -13699,10 +13696,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             synthetic_typ = synthetic_class.class_type.typ
             root_for_partial = synthetic_class
         elif isinstance(value, SyntheticClassObjectValue):
-            class_type = value.class_type
-            if not isinstance(class_type, TypedValue):
-                return None
-            synthetic_typ = class_type.typ
+            synthetic_typ = value.class_type.typ
             root_for_partial = value
         else:
             return None
@@ -15586,7 +15580,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
 
         if (
             isinstance(callee_wrapped, SyntheticClassObjectValue)
-            and isinstance(callee_wrapped.class_type, TypedValue)
             and isinstance(callee_wrapped.class_type.typ, str)
             and self._required_abstract_members_for_base(callee_wrapped.class_type.typ)
         ):
@@ -16725,9 +16718,9 @@ def _runtime_object_for_enum_member(value: Value) -> object:
         if all(initializer is first_value for initializer in member_values):
             return first_value
         return object()
-    if isinstance(value, KnownValue):
+    elif isinstance(value, KnownValue):
         return value.val
-    if isinstance(
+    elif isinstance(
         value,
         (
             AnyValue,
@@ -16741,7 +16734,8 @@ def _runtime_object_for_enum_member(value: Value) -> object:
         ),
     ):
         return object()
-    assert_never(value)
+    else:
+        assert_never(value)
 
 
 def _extract_keywords(keywords: Sequence[ast.keyword]) -> dict[str, ast.expr]:
@@ -16847,7 +16841,7 @@ def _known_string_sequence_from_simple_value(
         if isinstance(raw, (tuple, list, set, frozenset)):
             return tuple(item for item in raw if isinstance(item, str))
         return None
-    if isinstance(value, SequenceValue):
+    elif isinstance(value, SequenceValue):
         members = value.get_member_sequence()
         if members is None:
             return None
@@ -16859,7 +16853,7 @@ def _known_string_sequence_from_simple_value(
             else:
                 return None
         return tuple(output)
-    if isinstance(
+    elif isinstance(
         value,
         (
             AnyValue,
@@ -16873,7 +16867,8 @@ def _known_string_sequence_from_simple_value(
         ),
     ):
         return None
-    assert_never(value)
+    else:
+        assert_never(value)
 
 
 def _known_string_sequence_values(value: Value | None) -> tuple[str, ...] | None:
@@ -16977,11 +16972,11 @@ def _is_absent_dataclass_default_value(value: Value) -> bool:
     value = replace_fallback(value)
     if isinstance(value, MultiValuedValue):
         return all(_is_absent_dataclass_default_value(subval) for subval in value.vals)
-    if isinstance(value, IntersectionValue):
+    elif isinstance(value, IntersectionValue):
         return any(_is_absent_dataclass_default_value(subval) for subval in value.vals)
-    if isinstance(value, KnownValue):
+    elif isinstance(value, KnownValue):
         return value.val is Ellipsis or value.val is dataclasses.MISSING
-    if isinstance(
+    elif isinstance(
         value,
         (
             AnyValue,
@@ -16995,7 +16990,8 @@ def _is_absent_dataclass_default_value(value: Value) -> bool:
         ),
     ):
         return False
-    assert_never(value)
+    else:
+        assert_never(value)
 
 
 def _callable_return_type_from_signature(
@@ -17628,21 +17624,22 @@ def _is_valid_implicit_type_alias_name_value(value: Value) -> bool:
         return all(
             _is_valid_implicit_type_alias_name_value(subval) for subval in value.vals
         )
-    if isinstance(value, IntersectionValue):
+    elif isinstance(value, IntersectionValue):
         return all(
             _is_valid_implicit_type_alias_name_value(subval) for subval in value.vals
         )
-    if isinstance(value, (TypeFormValue, TypeVarValue, SubclassValue)):
+    elif isinstance(value, (TypeFormValue, TypeVarValue, SubclassValue)):
         return True
-    if isinstance(value, AnyValue):
+    elif isinstance(value, AnyValue):
         return False
-    if isinstance(value, KnownValue):
+    elif isinstance(value, KnownValue):
         return _is_definitely_class_object_value(value) or _is_typing_alias_value(
             value.val
         )
-    if isinstance(value, SimpleType):
+    elif isinstance(value, SimpleType):
         return _is_definitely_class_object_value(value)
-    return False
+    else:
+        assert_never(value)
 
 
 def _as_typevar_value(value: Value) -> TypeVarValue | None:
@@ -17694,16 +17691,16 @@ def _is_runtime_literal_index(value: Value) -> bool:
     value = replace_fallback(value)
     if isinstance(value, MultiValuedValue):
         return all(_is_runtime_literal_index(subval) for subval in value.vals)
-    if isinstance(value, IntersectionValue):
+    elif isinstance(value, IntersectionValue):
         return any(_is_runtime_literal_index(subval) for subval in value.vals)
-    if isinstance(value, KnownValue):
+    elif isinstance(value, KnownValue):
         return True
-    if isinstance(value, SequenceValue) and value.typ is tuple:
+    elif isinstance(value, SequenceValue) and value.typ is tuple:
         members = value.get_member_sequence()
         return members is not None and all(
             isinstance(member, KnownValue) for member in members
         )
-    if isinstance(
+    elif isinstance(
         value,
         (
             AnyValue,
@@ -17717,7 +17714,8 @@ def _is_runtime_literal_index(value: Value) -> bool:
         ),
     ):
         return False
-    assert_never(value)
+    else:
+        assert_never(value)
 
 
 def _should_use_static_annotation_subscript(value: Value) -> bool:

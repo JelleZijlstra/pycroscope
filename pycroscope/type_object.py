@@ -2342,18 +2342,18 @@ def _iter_class_keys_from_value(value: Value) -> list[type | str]:
 def _iter_class_keys_from_simple_value(value: SimpleType) -> list[type | str]:
     if isinstance(value, SyntheticClassObjectValue):
         return _typed_class_key(value.class_type)
-    if isinstance(value, SubclassValue):
+    elif isinstance(value, SubclassValue):
         return _iter_class_keys_from_value(value.typ)
-    if isinstance(value, TypedValue):
+    elif isinstance(value, TypedValue):
         return _typed_class_key(value)
-    if isinstance(value, KnownValue):
+    elif isinstance(value, KnownValue):
         origin = get_origin(value.val)
         if isinstance(origin, type):
             return [origin]
         if isinstance(value.val, type):
             return [value.val]
         return []
-    if isinstance(
+    elif isinstance(
         value,
         (
             AnyValue,
@@ -2364,7 +2364,8 @@ def _iter_class_keys_from_simple_value(value: SimpleType) -> list[type | str]:
         ),
     ):
         return []
-    assert_never(value)
+    else:
+        assert_never(value)
 
 
 def _typed_class_key(value: Value) -> list[type | str]:
@@ -4133,9 +4134,10 @@ def _is_definitely_class_object_value(value: Value) -> bool:
     if isinstance(value, TypedValue):
         if isinstance(value.typ, type):
             return safe_issubclass(value.typ, type)
-        if isinstance(value.typ, str):
+        elif isinstance(value.typ, str):
             return value.typ in {"type", "builtins.type"}
-        return False
+        else:
+            assert_never(value.typ)
     return False
 
 

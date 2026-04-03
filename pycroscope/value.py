@@ -2596,9 +2596,7 @@ class SyntheticClassObjectValue(Value):
         yield from self.class_type.walk_values()
 
     def get_type_value(self) -> Value:
-        if isinstance(self.class_type, TypedValue) and isinstance(
-            self.class_type.typ, type
-        ):
+        if isinstance(self.class_type.typ, type):
             return KnownValue(type(self.class_type.typ))
         return TypedValue(type)
 
