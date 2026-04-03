@@ -9139,14 +9139,15 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     return
             if isinstance(val_obj, GenericAlias):
                 return
+            if is_typeddict(val_obj):
+                return
             val = val_obj
-        elif isinstance(value, TypedValue):
+        elif isinstance(value, SyntheticClassObjectValue):
+            if not isinstance(value.class_type, TypedValue):
+                return
             if not isinstance(node, (ast.Name, ast.Attribute)):
                 return
-            display_value = value.typ
-            val = value.typ
-        elif isinstance(value, SyntheticClassObjectValue):
-            if not isinstance(node, (ast.Name, ast.Attribute)):
+            if not self._is_local_synthetic_class_key(value.class_type.typ):
                 return
             display_value = value.class_type.typ
             val = value.class_type.typ
@@ -9166,6 +9167,13 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         return annotation_expr_from_value(
             val, visitor=self, node=node, suppress_errors=self._is_collecting()
         )
+
+    def _is_local_synthetic_class_key(self, typ: type | str) -> bool:
+        if not isinstance(typ, str):
+            return False
+        if self.module is not None and self.module.__name__:
+            return typ.startswith(f"{self.module.__name__}.")
+        return typ.startswith(f"{self.filename}.")
 
     def _check_method_first_arg(
         self, node: FunctionNode, function_info: FunctionInfo
@@ -13517,6 +13525,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     or (
                         isinstance(stripped_root.value, KnownValue)
                         and isinstance(stripped_root.value.val, type)
+                        and not is_typeddict(stripped_root.value.val)
                         and bool(
                             type_params := self.checker.get_type_parameters(
                                 stripped_root.value.val
@@ -13529,6 +13538,10 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     )
                     or (
                         isinstance(stripped_root.value, SyntheticClassObjectValue)
+                        and isinstance(stripped_root.value.class_type, TypedValue)
+                        and self._is_local_synthetic_class_key(
+                            stripped_root.value.class_type.typ
+                        )
                         and bool(
                             type_params := self.checker.get_type_parameters(
                                 stripped_root.value.class_type.typ
@@ -13720,12 +13733,16 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         synthetic_typ: type | str
         root_for_partial: Value
         if isinstance(value, KnownValue) and isinstance(value.val, type):
+            if is_typeddict(value.val):
+                return None
             synthetic_class = self.checker.get_synthetic_class(value.val)
             if synthetic_class is None:
                 return None
             synthetic_typ = synthetic_class.class_type.typ
             root_for_partial = synthetic_class
         elif isinstance(value, SyntheticClassObjectValue):
+            if not isinstance(value.class_type, TypedValue):
+                return None
             synthetic_typ = value.class_type.typ
             root_for_partial = value
         else:
