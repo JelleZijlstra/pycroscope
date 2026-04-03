@@ -1787,14 +1787,26 @@ def _has_relation_sequence(
     relation: Literal[Relation.SUBTYPE, Relation.ASSIGNABLE],
     ctx: CanAssignContext,
 ) -> CanAssign:
+    # TypeObject.can_assign() does the nominal/container-level compatibility check
+    # for all sequences. For tuple/tuple, it also already performs the full
+    # element-by-element comparison via _compare_tuple_sequences(); preserve that
+    # detailed result instead of replacing it with a generic "tuple is not
+    # assignable to tuple" wrapper here.
     can_assign = left.get_type_object(ctx).can_assign(
         left, right, ctx, relation=relation
     )
     if isinstance(can_assign, CanAssignError):
+        if left.typ is tuple and right.typ is tuple:
+            return can_assign
         return CanAssignError(
             f"{stringify_object(right.typ)} is not {relation.description}"
             f" {stringify_object(left.typ)}"
         )
+
+    # Non-tuple sequences still need the concrete SequenceValue relation pass
+    # below, because the TypeObject check does not compare their known members.
+    if left.typ is tuple and right.typ is tuple:
+        return can_assign
 
     return _compare_tuple_sequences(left, right, relation, ctx)
 
