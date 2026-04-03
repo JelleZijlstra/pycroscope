@@ -643,7 +643,7 @@ class Value:
         """
         return None
 
-    def get_type_value(self) -> "Value":
+    def get_type_value(self, ctx: CanAssignContext) -> "Value":
         """Return the type of this object as used for dunder lookups."""
         return self
 
@@ -975,8 +975,8 @@ class PartialValue(Value):
     def get_fallback_value(self) -> Value:
         return self.runtime_value
 
-    def get_type_value(self) -> Value:
-        return self.runtime_value.get_type_value()
+    def get_type_value(self, ctx: CanAssignContext) -> Value:
+        return self.runtime_value.get_type_value(ctx)
 
     def substitute_typevars(self, typevars: TypeVarMap) -> "PartialValue":
         return PartialValue(
@@ -1018,8 +1018,8 @@ class PartialCallValue(Value):
     def get_fallback_value(self) -> Value:
         return self.runtime_value
 
-    def get_type_value(self) -> Value:
-        return self.runtime_value.get_type_value()
+    def get_type_value(self, ctx: CanAssignContext) -> Value:
+        return self.runtime_value.get_type_value(ctx)
 
     def substitute_typevars(self, typevars: TypeVarMap) -> "PartialCallValue":
         return PartialCallValue(
@@ -1057,8 +1057,8 @@ class SuperValue(Value):
     def get_fallback_value(self) -> Value:
         return TypedValue(super)
 
-    def get_type_value(self) -> Value:
-        return self.get_fallback_value().get_type_value()
+    def get_type_value(self, ctx: CanAssignContext) -> Value:
+        return self.get_fallback_value().get_type_value(ctx)
 
     def substitute_typevars(self, typevars: TypeVarMap) -> "SuperValue":
         return SuperValue(
@@ -1564,8 +1564,8 @@ class TypeAliasValue(Value):
     def get_type(self) -> type | None:
         return self.get_value().get_type()
 
-    def get_type_value(self) -> Value:
-        return self.get_value().get_type_value()
+    def get_type_value(self, ctx: CanAssignContext) -> Value:
+        return self.get_value().get_type_value(ctx)
 
     def can_overlap(
         self, other: Value, ctx: CanAssignContext, mode: OverlapMode
@@ -1631,7 +1631,7 @@ class KnownValue(Value):
     ) -> "pycroscope.type_object.TypeObject":
         return ctx.make_type_object(type(self.val))
 
-    def get_type_value(self) -> Value:
+    def get_type_value(self, ctx: CanAssignContext) -> Value:
         return KnownValue(type(self.val))
 
     def can_overlap(
@@ -1813,7 +1813,7 @@ class UnboundMethodValue(Value):
     def get_type(self) -> type:
         return type(self.get_method())
 
-    def get_type_value(self) -> Value:
+    def get_type_value(self, ctx: CanAssignContext) -> Value:
         return KnownValue(type(self.get_method()))
 
     def can_overlap(
@@ -2043,7 +2043,7 @@ class TypedValue(Value):
             return None
         return self.typ
 
-    def get_type_value(self) -> Value:
+    def get_type_value(self, ctx: CanAssignContext) -> Value:
         if isinstance(self.typ, str):
             return AnyValue(AnySource.inference)
         return KnownValue(self.typ)
@@ -2102,8 +2102,8 @@ class NewTypeValue(Value):
             return CanAssignError(f"NewTypes {self} and {other} cannot overlap")
         return super().can_overlap(other, ctx, mode)
 
-    def get_type_value(self) -> Value:
-        return self.value.get_type_value()
+    def get_type_value(self, ctx: CanAssignContext) -> Value:
+        return self.value.get_type_value(ctx)
 
     def get_fallback_value(self) -> Value:
         return self.value
@@ -2596,7 +2596,7 @@ class SyntheticClassObjectValue(Value):
         yield self
         yield from self.class_type.walk_values()
 
-    def get_type_value(self) -> Value:
+    def get_type_value(self, ctx: CanAssignContext) -> Value:
         if isinstance(self.class_type.typ, type):
             return KnownValue(type(self.class_type.typ))
         return TypedValue(type)
@@ -2782,7 +2782,7 @@ class SubclassValue(Value):
         else:
             return None
 
-    def get_type_value(self) -> Value:
+    def get_type_value(self, ctx: CanAssignContext) -> Value:
         typ = self.get_type()
         if typ is not None:
             return KnownValue(typ)
@@ -2837,8 +2837,10 @@ class IntersectionValue(Value):
         for val in self.vals:
             yield from val.walk_values()
 
-    def get_type_value(self) -> Value:
-        return IntersectionValue(tuple(val.get_type_value() for val in self.vals))
+    def get_type_value(self, ctx: CanAssignContext) -> Value:
+        return pycroscope.relations.intersect_multi(
+            [val.get_type_value(ctx) for val in self.vals], ctx
+        )
 
     def __str__(self) -> str:
         return " & ".join(str(val) for val in self.vals)
@@ -2860,8 +2862,8 @@ class OverlappingValue(Value):
     def get_fallback_value(self) -> Value:
         return TypedValue(object)
 
-    def get_type_value(self) -> Value:
-        return self.get_fallback_value().get_type_value()
+    def get_type_value(self, ctx: CanAssignContext) -> Value:
+        return self.get_fallback_value().get_type_value(ctx)
 
     def __str__(self) -> str:
         return f"Overlapping[{self.type}]"
@@ -2902,10 +2904,10 @@ class MultiValuedValue(Value):
             errors.append(error)
         return CanAssignError("Cannot overlap with Union", errors)
 
-    def get_type_value(self) -> Value:
+    def get_type_value(self, ctx: CanAssignContext) -> Value:
         if not self.vals:
             return self
-        return MultiValuedValue([val.get_type_value() for val in self.vals])
+        return unite_values(*[val.get_type_value(ctx) for val in self.vals])
 
     def decompose(self) -> Iterable[Value]:
         return self.vals
@@ -3061,8 +3063,8 @@ class TypeVarValue(Value):
             return unite_values(*self.typevar_param.constraints)
         return AnyValue(AnySource.inference)  # TODO: should be object
 
-    def get_type_value(self) -> Value:
-        return self.get_fallback_value().get_type_value()
+    def get_type_value(self, ctx: CanAssignContext) -> Value:
+        return self.get_fallback_value().get_type_value(ctx)
 
     def __str__(self) -> str:
         return str(self.typevar_param)
@@ -3106,8 +3108,8 @@ class TypeVarTupleValue(Value):
     def get_fallback_value(self) -> Value:
         return AnyValue(AnySource.inference)
 
-    def get_type_value(self) -> Value:
-        return self.get_fallback_value().get_type_value()
+    def get_type_value(self, ctx: CanAssignContext) -> Value:
+        return self.get_fallback_value().get_type_value(ctx)
 
     def __str__(self) -> str:
         return str(self.typevar)
@@ -3724,8 +3726,8 @@ class AnnotatedValue(Value):
     def get_type(self) -> type | None:
         return self.value.get_type()
 
-    def get_type_value(self) -> Value:
-        return self.value.get_type_value()
+    def get_type_value(self, ctx: CanAssignContext) -> Value:
+        return self.value.get_type_value(ctx)
 
     def substitute_typevars(self, typevars: TypeVarMap) -> Value:
         metadata = tuple(val.substitute_typevars(typevars) for val in self.metadata)
@@ -3881,8 +3883,10 @@ class PredicateValue(Value):
     def substitute_typevars(self, typevars: TypeVarMap) -> Value:
         return PredicateValue(self.predicate.substitute_typevars(typevars))
 
-    def get_type_value(self) -> Value:
-        return KnownValue(object)
+    def get_type_value(self, ctx: CanAssignContext) -> Value:
+        # A predicate only preserves that the runtime class is some subclass of
+        # `object`, not an exact class object.
+        return SubclassValue(TypedValue(object))
 
     def walk_values(self) -> Iterable[Value]:
         yield self

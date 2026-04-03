@@ -964,6 +964,22 @@ def test_predicate_intersection() -> None:
     assert_can_assign(pred, inters)
 
 
+def test_predicate_get_type_value_uses_subclass_object() -> None:
+    pred = value.PredicateValue(MinLen(1))
+    assert pred.get_type_value(CTX) == SubclassValue(TypedValue(object))
+
+
+def test_intersection_get_type_value_simplifies() -> None:
+    pred = value.PredicateValue(MinLen(1))
+    inters = IntersectionValue((TypedValue(str), pred))
+    assert inters.get_type_value(CTX) == KnownValue(str)
+
+
+def test_union_get_type_value_uses_unite_values() -> None:
+    union = MultiValuedValue([KnownValue(True), KnownValue(False)])
+    assert union.get_type_value(CTX) == KnownValue(bool)
+
+
 def test_overlapping_value_intersection_simplifies() -> None:
     overlapping_int = OverlappingValue(TypedValue(int))
 
