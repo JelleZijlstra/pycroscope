@@ -1999,8 +1999,6 @@ class Checker:
             None,
             "",
             self.options,
-            skip_mro=False,
-            skip_unwrap=False,
             prefer_typeshed=False,
             checker=self,
         )
@@ -2763,8 +2761,6 @@ class Checker:
             lookup_root_value,
             attribute,
             self.options,
-            skip_mro=False,
-            skip_unwrap=False,
             prefer_typeshed=prefer_typeshed,
             checker=self,
         )
