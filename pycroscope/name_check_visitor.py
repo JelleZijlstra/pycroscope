@@ -14119,6 +14119,13 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             return Composite(self.being_assigned, composite, node)
         elif isinstance(node.ctx, ast.Load):
             root_composite = self._get_locally_narrowed_composite(root_composite, node)
+            if self.in_annotation and isinstance(root_composite.value, KnownValue):
+                try:
+                    value = KnownValue(getattr(root_composite.value.val, node.attr))
+                except AttributeError:
+                    pass
+                else:
+                    return Composite(value, composite, node)
             if self._is_checking():
                 if (
                     isinstance(root_composite.value, KnownValue)
