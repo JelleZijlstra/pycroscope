@@ -2044,9 +2044,7 @@ class TypedValue(Value):
         return self.typ
 
     def get_type_value(self, ctx: CanAssignContext) -> Value:
-        if isinstance(self.typ, str):
-            return AnyValue(AnySource.inference)
-        return KnownValue(self.typ)
+        return SubclassValue(self)
 
     def decompose(self) -> Iterable[Value] | None:
         if self.typ is bool:
