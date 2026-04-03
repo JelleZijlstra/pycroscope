@@ -2925,7 +2925,7 @@ ConcreteSignature = Signature | OverloadedSignature
 
 
 def as_concrete_signature(
-    signature: MaybeSignature, ctx: CanAssignContext | None = None
+    signature: "MaybeSignature", ctx: CanAssignContext | None = None
 ) -> ConcreteSignature | None:
     if isinstance(signature, BoundMethodSignature):
         if ctx is None:
