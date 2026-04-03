@@ -1132,7 +1132,7 @@ def _maybe_use_resolved_typed_instance_attribute(
     symbol = attribute.symbol
     raw_runtime_value = replace_fallback(attribute.raw_value)
     if attribute.is_property:
-        if plain_typed_receiver:
+        if symbol.property_info is None and plain_typed_receiver:
             runtime_property = (
                 raw_runtime_value.val
                 if isinstance(raw_runtime_value, KnownValue)

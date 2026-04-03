@@ -2248,6 +2248,27 @@ class TestClassAttributeChecker(TestNameCheckVisitorBase):
             assert_type(x.value, int)
 
     @assert_passes(run_in_both_module_modes=True)
+    def test_property_result_supports_method_calls_on_typed_instance(self):
+        from typing_extensions import assert_type
+
+        class Cache:
+            def get(self, obj: object) -> int:
+                return 1
+
+        class Box:
+            _cache: Cache | None = None
+
+            @property
+            def cache(self) -> Cache:
+                cache = self._cache
+                assert cache is not None
+                return cache
+
+            def use(self, obj: object) -> int:
+                assert_type(self.cache, Cache)
+                return self.cache.get(obj)
+
+    @assert_passes(run_in_both_module_modes=True)
     def test_classvar_container_methods_keep_receiver_parameter(self):
         from typing import ClassVar
 
