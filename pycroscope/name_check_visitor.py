@@ -4225,9 +4225,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 class_scope_object if isinstance(class_scope_object, type) else None
             )
             is_protocol_class = self._is_protocol_class(base_values, class_scope_object)
-            analyzed_base_values = self._base_values_for_generic_analysis(
-                node, base_values
-            )
             class_type_param_polarities: dict[object, set[int]] = {}
             if not is_protocol_class:
                 for base_variance_info in base_type_param_variance_infos:
@@ -4416,8 +4413,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                             append_unmatched_declared=False,
                         )
                     )
-                elif not declared_type_params:
-                    declared_type_params = annotation_declared_type_params
                 self._check_class_type_param_default_rules(node, declared_type_params)
                 self._check_class_base_type_param_variances(
                     node,
