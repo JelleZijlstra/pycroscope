@@ -4255,17 +4255,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                         self._type_params_from_base_values(analyzed_base_values),
                     )
                 )
-            if not effective_type_param_values and is_protocol_class:
-                # Runtime protocol classes often expose no generic parameters;
-                # recover class type parameters from protocol bases.
-                protocol_type_params = self._type_params_from_base_values_for_methods(
-                    base_values
-                )
-                if protocol_type_params and all(
-                    isinstance(type_param, TypeVarParam)
-                    for type_param in protocol_type_params
-                ):
-                    effective_type_param_values = protocol_type_params
             if not effective_type_param_values and self.module is None:
                 # In static-fallback mode we can lose Generic[...] type arguments
                 # from base values; recover from base annotation expressions.
@@ -4312,18 +4301,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                         node.bases, effective_type_param_values
                     )
                 )
-            if (
-                not effective_type_param_values
-                and self.module is None
-                and isinstance(class_scope_object, type)
-            ):
-                runtime_type_params: list[TypeParam] = []
-                for runtime_type_param in self.checker.get_type_parameters(
-                    class_scope_object
-                ):
-                    runtime_type_params.append(runtime_type_param)
-                if runtime_type_params:
-                    effective_type_param_values = runtime_type_params
             registered_type_param_values = effective_type_param_values
             if not type_param_values:
                 registered_type_param_values = (
@@ -4339,7 +4316,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 type_param_values
                 if type_param_values
                 else self._merge_type_params_using_declared_identities(
-                    self._type_params_from_base_values_for_methods(base_values),
+                    self._type_params_from_base_values(base_values),
                     annotation_type_param_values,
                     append_unmatched_declared=True,
                 )
@@ -4352,9 +4329,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 method_type_params = self._merge_type_params_using_declared_identities(
                     self._order_type_params_by_base_annotation_appearance(
                         node.bases,
-                        self._type_params_from_base_values_for_methods(
-                            analyzed_base_values
-                        ),
+                        self._type_params_from_base_values(analyzed_base_values),
                     ),
                     annotation_type_param_values,
                     append_unmatched_declared=True,
@@ -4961,6 +4936,10 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     def _runtime_base_from_value(
         self, base_value: Value, *, allow_synthetic_class_base: bool
     ) -> type | None:
+        if isinstance(base_value, AnnotatedValue):
+            return self._runtime_base_from_value(
+                base_value.value, allow_synthetic_class_base=allow_synthetic_class_base
+            )
         base = replace_fallback(base_value)
         if allow_synthetic_class_base and isinstance(base, SyntheticClassObjectValue):
             class_type = base.class_type
@@ -4971,9 +4950,8 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             return base.val
         if isinstance(base, TypedValue) and isinstance(base.typ, type):
             return base.typ
-        runtime_annotation = self._runtime_annotation_from_value(base_value)
-        if isinstance(runtime_annotation, type):
-            return runtime_annotation
+        if isinstance(base, GenericValue) and isinstance(base.typ, type):
+            return base.typ
         return None
 
     def _runtime_enum_bases_from_values(
@@ -4993,44 +4971,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         if not has_enum_base:
             return None
         return runtime_bases
-
-    def _runtime_annotation_from_value(self, value: Value) -> object:
-        if isinstance(value, AnnotatedValue):
-            return self._runtime_annotation_from_value(value.value)
-        if isinstance(value, TypeVarValue):
-            return value.typevar_param.typevar
-        if isinstance(value, KnownValue):
-            return value.val
-        if isinstance(value, GenericValue):
-            if isinstance(value.typ, str):
-                return typing.Any
-            runtime_args = tuple(
-                self._runtime_annotation_from_value(arg) for arg in value.args
-            )
-            runtime_typ: Any = value.typ
-            try:
-                if len(runtime_args) == 1:
-                    return runtime_typ[runtime_args[0]]
-                return runtime_typ[runtime_args]
-            except Exception:
-                return typing.Any
-        if isinstance(value, TypedValue):
-            return value.typ if not isinstance(value.typ, str) else typing.Any
-        if isinstance(value, MultiValuedValue):
-            runtime_members = [
-                self._runtime_annotation_from_value(subval) for subval in value.vals
-            ]
-            if not runtime_members:
-                return typing.Any
-            result = runtime_members[0]
-            for member in runtime_members[1:]:
-                try:
-                    runtime_result: Any = result
-                    result = runtime_result | member
-                except Exception:
-                    return typing.Any
-            return result
-        return typing.Any
 
     def _apply_synthetic_enum_semantics(
         self, node: ast.ClassDef, synthetic_type: TypeObject
@@ -5972,12 +5912,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             return
         if not self._is_protocol_class(base_values, class_scope_object):
             return
-        if not type_params and isinstance(class_scope_object, (type, str)):
-            type_params = tuple(
-                type_param
-                for type_param in self.get_type_parameters(class_scope_object)
-                if isinstance(type_param, TypeVarParam)
-            )
         if not type_params:
             return
         checked_type_params = [
@@ -6299,15 +6233,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                         maybe_type_param = _type_param_value_from_value(arg, self)
                         if maybe_type_param is not None:
                             maybe_type_params.append(maybe_type_param)
-                else:
-                    runtime_annotation = self._runtime_annotation_from_value(subval)
-                    origin = typing.get_origin(runtime_annotation)
-                    if origin is not None and is_typing_name(origin, "Protocol"):
-                        for runtime_arg in typing.get_args(runtime_annotation):
-                            if is_typevarlike(runtime_arg):
-                                maybe_type_params.append(
-                                    make_type_param(runtime_arg, visitor=self)
-                                )
                 for maybe_type_param in maybe_type_params:
                     if maybe_type_param.typevar in seen:
                         continue
@@ -6315,32 +6240,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     type_params.append(maybe_type_param)
                 if type_params:
                     return type_params
-        return type_params
-
-    def _type_params_from_base_values_for_methods(
-        self, base_values: Sequence[Value]
-    ) -> Sequence[TypeParam]:
-        type_params_from_bases = list(self._type_params_from_base_values(base_values))
-        if type_params_from_bases and all(
-            not (
-                isinstance(type_param, ParamSpecParam)
-                or isinstance(type_param, TypeVarTupleParam)
-            )
-            for type_param in type_params_from_bases
-        ):
-            return type_params_from_bases
-        type_params = list(type_params_from_bases)
-        seen = {type_param.typevar for type_param in type_params}
-        for base in base_values:
-            for subval in flatten_values(base):
-                runtime_annotation = self._runtime_annotation_from_value(subval)
-                for runtime_arg in typing.get_args(runtime_annotation):
-                    if not is_typevarlike(runtime_arg):
-                        continue
-                    if runtime_arg in seen:
-                        continue
-                    seen.add(runtime_arg)
-                    type_params.append(make_type_param(runtime_arg, visitor=self))
         return type_params
 
     def _base_values_for_generic_analysis(

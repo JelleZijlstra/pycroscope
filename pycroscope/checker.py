@@ -7,7 +7,6 @@ The checker maintains global state that is preserved across different modules.
 import ast
 import collections.abc
 import enum
-import inspect
 import types
 from collections.abc import Callable, Generator, Iterable, Sequence
 from contextlib import contextmanager
@@ -54,6 +53,7 @@ from .signature import (
     Signature,
     SigParameter,
     _promote_constructor_type_arg,
+    as_concrete_signature,
     make_bound_method,
 )
 from .stacked_scopes import Composite
@@ -157,32 +157,6 @@ def _bound_method_self_value_from_typevars(typevars: TypeVarMap) -> Value | None
         if isinstance(value, TypeVarValue) and value.typevar_param.typevar is SelfT:
             return value
     return None
-
-
-def _infer_type_params_from_signature(signature: MaybeSignature) -> list[TypeParam]:
-    seen: set[object] = set()
-    inferred: list[TypeParam] = []
-
-    def _record(value: Value) -> None:
-        for type_param in iter_type_params_in_value(value):
-            if type_param.typevar in seen:
-                continue
-            seen.add(type_param.typevar)
-            inferred.append(type_param)
-
-    def _walk(sig: MaybeSignature) -> None:
-        if isinstance(sig, OverloadedSignature):
-            for sub_sig in sig.signatures:
-                _walk(sub_sig)
-            return
-        if not isinstance(sig, Signature):
-            return
-        for parameter in sig.parameters.values():
-            _record(parameter.annotation)
-        _record(sig.return_value)
-
-    _walk(signature)
-    return inferred
 
 
 def _apply_type_parameter_defaults(
@@ -412,14 +386,7 @@ def _signature_from_synthetic_attribute(
     signature = ctx.signature_from_value(value)
     if signature is None and isinstance(value, KnownValue):
         signature = ctx.get_signature(value.val)
-    can_assign_ctx = ctx.get_can_assign_context()
-    if isinstance(signature, BoundMethodSignature):
-        if can_assign_ctx is None:
-            return None
-        signature = signature.get_signature(ctx=can_assign_ctx)
-    if isinstance(signature, (Signature, OverloadedSignature)):
-        return signature
-    return None
+    return as_concrete_signature(signature, ctx.get_can_assign_context())
 
 
 def _synthetic_descriptor_set_type(descriptor: Value, ctx: AttrContext) -> Value | None:
@@ -959,15 +926,6 @@ class Checker:
             return root.val
         return None
 
-    def _as_concrete_signature(
-        self, signature: MaybeSignature
-    ) -> ConcreteSignature | None:
-        if isinstance(signature, BoundMethodSignature):
-            return signature.get_signature(ctx=self)
-        if isinstance(signature, (Signature, OverloadedSignature)):
-            return signature
-        return None
-
     def _is_uninformative_constructor_signature(
         self, signature: ConcreteSignature
     ) -> bool:
@@ -1134,7 +1092,7 @@ class Checker:
                 ctx=self,
                 self_annotation_value=self_annotation_value,
             )
-        concrete = self._as_concrete_signature(signature)
+        concrete = as_concrete_signature(signature, self)
         if concrete is None:
             return None
         if self_annotation_value is None:
@@ -1469,8 +1427,8 @@ class Checker:
         init_method = safe_getattr(origin, "__init__", None)
         if init_method is None:
             return True
-        init_sig = self._as_concrete_signature(
-            self.arg_spec_cache.get_argspec(init_method)
+        init_sig = as_concrete_signature(
+            self.arg_spec_cache.get_argspec(init_method), self
         )
         if init_sig is None:
             return True
@@ -1504,40 +1462,12 @@ class Checker:
         new_method = safe_getattr(origin, "__new__", None)
         if new_method is None:
             return True
-        if isinstance(new_method, types.FunctionType):
-            runtime_annotations = safe_getattr(new_method, "__annotations__", None)
-            try:
-                runtime_sig = inspect.signature(new_method)
-            except (TypeError, ValueError):
-                runtime_sig = None
-            if (
-                isinstance(runtime_annotations, dict)
-                and runtime_sig is not None
-                and runtime_sig.parameters
-            ):
-                first_parameter_name = next(iter(runtime_sig.parameters.values())).name
-                cls_runtime_annotation = runtime_annotations.get(first_parameter_name)
-                if cls_runtime_annotation is not None:
-                    cls_annotation = type_from_runtime(
-                        cls_runtime_annotation,
-                        visitor=self,
-                        globals=safe_getattr(new_method, "__globals__", None),
-                        suppress_errors=True,
-                    ).substitute_typevars(typevar_map)
-                    cls_annotation_root = replace_fallback(cls_annotation)
-                    if not isinstance(cls_annotation_root, AnyValue):
-                        return _matches_constructor_receiver_annotation(
-                            cls_annotation,
-                            class_type_value,
-                            self,
-                            enforce_nongeneric_match=True,
-                        )
         new_sig: MaybeSignature = self._get_runtime_overloaded_method_signature(
             origin, "__new__"
         )
         if new_sig is None:
             new_sig = self.arg_spec_cache.get_argspec(new_method)
-        concrete_new_sig = self._as_concrete_signature(new_sig)
+        concrete_new_sig = as_concrete_signature(new_sig, self)
         if concrete_new_sig is None:
             return True
         signatures = (
@@ -1557,31 +1487,6 @@ class Checker:
             ):
                 return True
         return not checked
-
-    def _synthetic_init_self_annotation_matches(
-        self,
-        synthetic_class: SyntheticClassObjectValue,
-        *,
-        instance_type: Value,
-        get_return_override: Callable[[MaybeSignature], Value | None],
-        get_call_attribute: Callable[[Value], Value] | None,
-    ) -> bool:
-        init_symbol = self.make_type_object(
-            synthetic_class.class_type.typ
-        ).get_declared_symbol("__init__")
-        has_direct_init = init_symbol is not None and init_symbol.is_method
-        init_sig = self._get_synthetic_constructor_method_signature(
-            synthetic_class,
-            "__init__",
-            use_direct_method=has_direct_init,
-            bound_self_value=instance_type,
-            self_annotation_value=instance_type,
-            get_return_override=get_return_override,
-            get_call_attribute=get_call_attribute,
-        )
-        if init_sig is None:
-            return True
-        return not _is_incompatible_constructor_signature(init_sig)
 
     def _synthetic_new_cls_annotation_matches(
         self,
@@ -1607,7 +1512,7 @@ class Checker:
             get_return_override=get_return_override,
             get_call_attribute=get_call_attribute,
         )
-        concrete_sig = self._as_concrete_signature(method_sig)
+        concrete_sig = as_concrete_signature(method_sig, self)
         if concrete_sig is None:
             return True
         signatures = (
@@ -1699,8 +1604,8 @@ class Checker:
                     get_return_override=get_return_override,
                     get_call_attribute=get_call_attribute,
                 )
-                resolved_concrete = self._as_concrete_signature(resolved_sig)
-                direct_concrete = self._as_concrete_signature(method_sig)
+                resolved_concrete = as_concrete_signature(resolved_sig, self)
+                direct_concrete = as_concrete_signature(method_sig, self)
                 if isinstance(resolved_concrete, OverloadedSignature):
                     method_sig = resolved_sig
                 elif resolved_concrete is not None and (
@@ -1892,8 +1797,8 @@ class Checker:
             isinstance(value.class_type.typ, type)
             and safe_issubclass(value.class_type.typ, enum.Enum)
             and isinstance(
-                enum_argspec := self._as_concrete_signature(
-                    self.arg_spec_cache.get_argspec(value.class_type.typ)
+                enum_argspec := as_concrete_signature(
+                    self.arg_spec_cache.get_argspec(value.class_type.typ), self
                 ),
                 (Signature, OverloadedSignature),
             )
@@ -2008,7 +1913,7 @@ class Checker:
                 get_return_override=get_return_override,
                 get_call_attribute=get_call_attribute,
             )
-            concrete = self._as_concrete_signature(call_sig)
+            concrete = as_concrete_signature(call_sig, self)
             if (
                 concrete is not None
                 and not self._is_uninformative_constructor_signature(concrete)
@@ -2344,7 +2249,7 @@ class Checker:
                         )
                     )
                     concrete_argspec = (
-                        self._as_concrete_signature(argspec)
+                        as_concrete_signature(argspec, self)
                         if argspec is not None
                         else None
                     )
@@ -2668,21 +2573,24 @@ class Checker:
             )
             if origin_argspec is None:
                 origin_argspec = self.arg_spec_cache.get_argspec(root.val)
-            elif self._runtime_has_explicit_new_return_annotation(root.val):
-                runtime_constructor_sig = self._get_runtime_constructor_signature(
-                    root.val
-                )
-                if runtime_constructor_sig is not None:
-                    origin_argspec = runtime_constructor_sig
-                    preserve_exact_return = True
+            preserve_exact_return = self._runtime_has_explicit_new_return_annotation(
+                root.val
+            )
         elif isinstance(root, SyntheticClassObjectValue):
             synthetic_root = root
             class_type = root.class_type.typ
-            origin_argspec = self.signature_from_value(
+            origin_argspec = self._get_synthetic_constructor_signature(
                 root,
                 get_return_override=get_return_override,
                 get_call_attribute=get_call_attribute,
+                apply_default_type_args=False,
             )
+            if origin_argspec is None:
+                origin_argspec = self.signature_from_value(
+                    root,
+                    get_return_override=get_return_override,
+                    get_call_attribute=get_call_attribute,
+                )
             if self._synthetic_has_explicit_new_return_annotation(
                 root,
                 get_return_override=get_return_override,
@@ -2691,29 +2599,11 @@ class Checker:
                 preserve_exact_return = True
         else:
             return None
-        if synthetic_root is not None:
-            synthetic_origin_argspec = self._get_synthetic_constructor_signature(
-                synthetic_root,
-                get_return_override=get_return_override,
-                get_call_attribute=get_call_attribute,
-                apply_default_type_args=False,
-            )
-            if synthetic_origin_argspec is not None and (
-                origin_argspec is None
-                or not isinstance(origin_argspec, (Signature, OverloadedSignature))
-                or self._is_uninformative_constructor_signature(origin_argspec)
-                or not self._is_uninformative_constructor_signature(
-                    synthetic_origin_argspec
-                )
-            ):
-                origin_argspec = synthetic_origin_argspec
         if origin_argspec is None:
             return None
         if class_type is None:
             return origin_argspec
         type_params = self.get_type_parameters(class_type)
-        if not type_params:
-            type_params = list(_infer_type_params_from_signature(origin_argspec))
         explicit_member_values = [
             type_from_value(member, self, value.node, suppress_errors=True)
             for member in value.members
@@ -2793,16 +2683,26 @@ class Checker:
             receiver_instance_type = GenericValue(class_type, receiver_member_values)
         else:
             receiver_instance_type = TypedValue(class_type)
-        if (
-            synthetic_root is not None
-            and not self._synthetic_init_self_annotation_matches(
+        if synthetic_root is not None:
+            init_symbol = self.make_type_object(
+                synthetic_root.class_type.typ
+            ).get_declared_symbol("__init__")
+            has_direct_init = init_symbol is not None and init_symbol.is_method
+            init_sig = self._get_synthetic_constructor_method_signature(
                 synthetic_root,
-                instance_type=receiver_instance_type,
+                "__init__",
+                use_direct_method=has_direct_init,
+                bound_self_value=receiver_instance_type,
+                self_annotation_value=receiver_instance_type,
                 get_return_override=get_return_override,
                 get_call_attribute=get_call_attribute,
             )
-        ):
-            return _make_incompatible_constructor_signature(specialized_instance_type)
+            if init_sig is not None and _is_incompatible_constructor_signature(
+                init_sig
+            ):
+                return _make_incompatible_constructor_signature(
+                    specialized_instance_type
+                )
         if (
             synthetic_root is not None
             and not self._synthetic_new_cls_annotation_matches(

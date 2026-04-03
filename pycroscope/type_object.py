@@ -57,6 +57,7 @@ from .signature import (
     ParameterKind,
     Signature,
     SigParameter,
+    as_concrete_signature,
     mark_ellipsis_style_any_tail_parameters,
 )
 from .value import (
@@ -193,15 +194,6 @@ def class_keys_match(left: type | str, right: type | str) -> bool:
     if isinstance(left, str) and isinstance(right, type):
         return left == runtime_type_generic_alias(right)
     return False
-
-
-def _as_concrete_signature(
-    sig: Signature | BoundMethodSignature | OverloadedSignature | None,
-    ctx: CanAssignContext,
-) -> Signature | OverloadedSignature | None:
-    if isinstance(sig, BoundMethodSignature):
-        return sig.get_signature(ctx=ctx)
-    return sig
 
 
 @dataclass(frozen=True)
@@ -1671,8 +1663,8 @@ class TypeObject:
         other_val: KnownValue | TypedValue | SubclassValue | AnnotatedValue,
         ctx: CanAssignContext,
     ) -> CanAssign:
-        expected_sig = _as_concrete_signature(ctx.signature_from_value(self_val), ctx)
-        actual_sig = _as_concrete_signature(ctx.signature_from_value(other_val), ctx)
+        expected_sig = as_concrete_signature(ctx.signature_from_value(self_val), ctx)
+        actual_sig = as_concrete_signature(ctx.signature_from_value(other_val), ctx)
         if expected_sig is None or actual_sig is None:
             return CanAssignError(
                 f"Cannot assign protocol {other_val} to non-protocol {self}"
@@ -1721,7 +1713,7 @@ class TypeObject:
                     if symbol is not None:
                         expected = symbol.get_effective_type()
                 if expected is UNINITIALIZED_VALUE:
-                    expected_signature = _as_concrete_signature(
+                    expected_signature = as_concrete_signature(
                         ctx.signature_from_value(self_val), ctx
                     )
                     if expected_signature is None:
@@ -3390,8 +3382,11 @@ def _descriptor_method_signature_any(
                 selected=descriptor_tobj._select_declared_attribute(method_name),
             )
             if merged_attribute is not None:
-                direct_signature = _signature_from_descriptor_attribute(
-                    _merged_attribute_lookup_value(merged_attribute), ctx
+                direct_signature = as_concrete_signature(
+                    ctx.signature_from_value(
+                        _merged_attribute_lookup_value(merged_attribute)
+                    ),
+                    ctx,
                 )
                 if direct_signature is not None:
                     direct_signature = direct_signature.bind_self(
@@ -3408,24 +3403,12 @@ def _descriptor_method_signature_any(
         return direct_signature
     if method_value is UNINITIALIZED_VALUE:
         return None
-    signature = _signature_from_descriptor_attribute(method_value, ctx)
+    signature = as_concrete_signature(ctx.signature_from_value(method_value), ctx)
     if signature is None:
         return None
     if restore_typevars:
         signature = signature.substitute_typevars(restore_typevars)
     return signature
-
-
-def _signature_from_descriptor_attribute(
-    value: Value, ctx: CanAssignContext
-) -> Signature | OverloadedSignature | None:
-    """Extract a concrete callable signature from a descriptor method value."""
-    signature = ctx.signature_from_value(value)
-    if isinstance(signature, BoundMethodSignature):
-        signature = signature.get_signature(ctx=ctx)
-    if isinstance(signature, (Signature, OverloadedSignature)):
-        return signature
-    return None
 
 
 def _select_matching_descriptor_signature(
@@ -3929,7 +3912,7 @@ def _get_protocol_receiver_annotation(
     callable_obj = _get_protocol_member_callable(symbol)
     if callable_obj is None:
         return None
-    signature = _as_concrete_signature(ctx.signature_from_value(callable_obj), ctx)
+    signature = as_concrete_signature(ctx.signature_from_value(callable_obj), ctx)
     if signature is None:
         return None
     self_annotation = _get_first_parameter_annotation(signature)
