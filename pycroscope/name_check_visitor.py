@@ -6287,15 +6287,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                         maybe_type_param = _type_param_value_from_value(arg, self)
                         if maybe_type_param is not None:
                             maybe_type_params.append(maybe_type_param)
-                else:
-                    runtime_annotation = self._runtime_annotation_from_value(subval)
-                    origin = typing.get_origin(runtime_annotation)
-                    if origin is not None and is_typing_name(origin, "Protocol"):
-                        for runtime_arg in typing.get_args(runtime_annotation):
-                            if is_typevarlike(runtime_arg):
-                                maybe_type_params.append(
-                                    make_type_param(runtime_arg, visitor=self)
-                                )
                 for maybe_type_param in maybe_type_params:
                     if maybe_type_param.typevar in seen:
                         continue
