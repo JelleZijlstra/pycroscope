@@ -2287,8 +2287,8 @@ def subtract_values(left: Value, right: Value, ctx: CanAssignContext) -> Gradual
         if isinstance(subval, AnyValue):
             vals.append(subval)
             continue
-        # Remove members that are assignable to `right`.
-        if is_assignable(right, subval, ctx):
+        # Remove members that are subtypes of `right`.
+        if is_subtype(right, subval, ctx):
             continue
         vals.append(subval)
     return gradualize(unite_values(*vals))

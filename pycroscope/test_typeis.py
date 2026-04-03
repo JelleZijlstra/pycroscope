@@ -1009,3 +1009,30 @@ class TestTypeIs(TestNameCheckVisitorBase):
                 self, x: str
             ) -> TypeIs[int]:  # E: typeis_must_be_subtype
                 return False
+
+    @assert_passes()
+    def test_type_is_subtract_any(self):
+        from typing import Any
+
+        from typing_extensions import TypeIs, assert_type
+
+        from pycroscope.extensions import Intersection
+
+        def is_any(a: object) -> TypeIs[Any]:
+            return False
+
+        def main(a: object, b: Any, c: int) -> None:
+            if is_any(a):
+                assert_type(a, Any)
+            else:
+                assert_type(a, object)
+
+            if is_any(b):
+                assert_type(b, Any)
+            else:
+                assert_type(b, Any)
+
+            if is_any(c):
+                assert_type(c, Intersection[int, Any])
+            else:
+                assert_type(c, int)
