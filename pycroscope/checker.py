@@ -2427,20 +2427,6 @@ class Checker:
                 value.class_type.typ, allow_synthetic_type=True
             )
             if argspec is None:
-                tobj = self.make_type_object(value.class_type.typ)
-                init_attr = get_synthetic_member_initializer(tobj, "__init__", self)
-                if init_attr is not None:
-                    init_sig = self.signature_from_value(init_attr)
-                    if isinstance(init_sig, BoundMethodSignature):
-                        init_sig = init_sig.get_signature(ctx=self)
-                    if isinstance(init_sig, (Signature, OverloadedSignature)):
-                        bound_init = init_sig.bind_self(
-                            self_annotation_value=value.class_type, ctx=self
-                        )
-                        if bound_init is not None:
-                            return _replace_signature_return(
-                                bound_init, value.class_type
-                            )
                 return Signature.make([ELLIPSIS_PARAM], value.class_type)
             return argspec
         elif isinstance(value, TypedValue):
