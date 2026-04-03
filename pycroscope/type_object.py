@@ -3369,6 +3369,7 @@ def _descriptor_method_signature_any(
     if not isinstance(descriptor, (KnownValue, TypedValue, SyntheticClassObjectValue)):
         return None
     descriptor, restore_typevars = shield_nested_self_typevars(descriptor)
+    assert isinstance(descriptor, (KnownValue, TypedValue, SyntheticClassObjectValue))
     descriptor_tobj = _descriptor_type_object(descriptor, method_name, ctx)
     if descriptor_tobj is None:
         return None
