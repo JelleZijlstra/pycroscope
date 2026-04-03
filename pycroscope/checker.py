@@ -28,11 +28,7 @@ from .annotations import type_from_runtime, type_from_value
 from .arg_spec import ArgSpecCache, GenericBases
 from .attributes import AttrContext, get_attribute
 from .extensions import get_overloads as get_runtime_overloads
-from .input_sig import (
-    InputSigValue,
-    assert_input_sig,
-    coerce_paramspec_specialization_to_input_sig,
-)
+from .input_sig import assert_input_sig, coerce_paramspec_specialization_to_input_sig
 from .node_visitor import Failure
 from .options import Options
 from .reexport import ImplicitReexportTracker
@@ -112,7 +108,6 @@ from .value import (
     _typevar_map_from_varlike_pairs,
     bound_self_type_from_class_key,
     flatten_values,
-    get_single_typevartuple_param,
     is_union,
     iter_type_params_in_value,
     replace_fallback,
@@ -1635,67 +1630,6 @@ class Checker:
                 return True
         return not checked
 
-    def _infer_synthetic_type_params_from_methods(
-        self, value: SyntheticClassObjectValue
-    ) -> tuple[TypeParam, ...]:
-        tobj = self.make_type_object(value.class_type.typ)
-        class_type = tobj.typ
-        for method_name in ("__new__", "__init__"):
-            method_value = get_synthetic_member_initializer(tobj, method_name, self)
-            if not isinstance(method_value, CallableValue):
-                continue
-            signatures = (
-                method_value.signature.signatures
-                if isinstance(method_value.signature, OverloadedSignature)
-                else [method_value.signature]
-            )
-            for signature in signatures:
-                params = list(signature.parameters.values())
-                if not params:
-                    continue
-                args = _extract_generic_args_from_self_annotation(
-                    params[0].annotation, class_type
-                )
-                if args is not None:
-                    extracted_args: list[TypeParam] = []
-                    for arg in args:
-                        if isinstance(arg, TypeVarValue):
-                            extracted_args.append(arg.typevar_param)
-                        elif isinstance(arg, InputSigValue) and isinstance(
-                            arg.input_sig, ParamSpecParam
-                        ):
-                            extracted_args.append(arg.input_sig)
-                        else:
-                            typevartuple_param = get_single_typevartuple_param(arg)
-                            if typevartuple_param is not None:
-                                extracted_args.append(typevartuple_param)
-                    if len(extracted_args) == len(args):
-                        return tuple(extracted_args)
-        return ()
-
-    def _infer_synthetic_type_params(
-        self, value: SyntheticClassObjectValue
-    ) -> tuple[TypeParam, ...]:
-        inferred: list[TypeParam] = []
-        seen: set[object] = set()
-
-        def _record_type_params(candidate: Value) -> None:
-            for type_param in iter_type_params_in_value(candidate):
-                if type_param.typevar is SelfT or type_param.typevar in seen:
-                    continue
-                seen.add(type_param.typevar)
-                inferred.append(type_param)
-
-        for type_param in self._infer_synthetic_type_params_from_methods(value):
-            if type_param.typevar in seen:
-                continue
-            seen.add(type_param.typevar)
-            inferred.append(type_param)
-
-        for base in self.make_type_object(value.class_type.typ).get_direct_bases():
-            _record_type_params(base)
-        return tuple(inferred)
-
     def _make_synthetic_constructor_instance_value(
         self, value: SyntheticClassObjectValue, *, apply_default_type_args: bool = True
     ) -> Value:
@@ -1705,8 +1639,6 @@ class Checker:
         if isinstance(value.class_type, GenericValue):
             return value.class_type
         type_params = self.get_type_parameters(value.class_type.typ)
-        if not type_params:
-            type_params = list(self._infer_synthetic_type_params(value))
         if type_params:
             args = (
                 _apply_type_parameter_defaults(type_params, self)
@@ -2782,8 +2714,6 @@ class Checker:
         type_params = self.get_type_parameters(class_type)
         if not type_params:
             type_params = list(_infer_type_params_from_signature(origin_argspec))
-        if not type_params and synthetic_root is not None:
-            type_params = list(self._infer_synthetic_type_params(synthetic_root))
         explicit_member_values = [
             type_from_value(member, self, value.node, suppress_errors=True)
             for member in value.members

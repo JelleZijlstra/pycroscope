@@ -479,6 +479,7 @@ class TypeObject:
     _direct_bases: tuple[MroValue, ...] | None
     _mro: Sequence[MroEntry] | None
     _declared_type_params: tuple[TypeParam, ...] | None
+    _declared_type_params_explicit: bool
     _is_final: bool | None
     _is_disjoint_base: bool | None
     _directly_disjoint_base: bool | None
@@ -510,6 +511,7 @@ class TypeObject:
         self._direct_bases = None
         self._mro = None
         self._declared_type_params = None
+        self._declared_type_params_explicit = False
         self._is_final = None
         self._is_disjoint_base = None
         self._directly_disjoint_base = None
@@ -680,16 +682,16 @@ class TypeObject:
             return ()
         return type_object_builder._get_runtime_dataclass_fields(self.typ)
 
-    def _get_synthetic_namedtuple_class(self) -> SyntheticClassObjectValue | None:
+    def _has_synthetic_namedtuple_class(self) -> bool:
         if self._resolving_synthetic_namedtuple_class:
-            return None
+            return False
         self._resolving_synthetic_namedtuple_class = True
         try:
             synthetic_class = self._checker.get_synthetic_class(self.typ)
             if synthetic_class is None:
-                return None
+                return False
             if self._is_direct_namedtuple:
-                return synthetic_class
+                return True
             for base_value in self.get_direct_bases():
                 if (
                     isinstance(base_value, TypedValue)
@@ -697,8 +699,8 @@ class TypeObject:
                         base_value.typ
                     ).is_namedtuple_like()
                 ):
-                    return synthetic_class
-            return None
+                    return True
+            return False
         finally:
             self._resolving_synthetic_namedtuple_class = False
 
@@ -728,20 +730,17 @@ class TypeObject:
         return tuple(fields)
 
     def _compute_synthetic_namedtuple_fields(
-        self,
-        synthetic_class: SyntheticClassObjectValue,
-        *,
-        include_inherited_fields: bool = True,
+        self, *, include_inherited_fields: bool = True
     ) -> tuple[NamedTupleField, ...]:
         inherited_fields = (
-            tuple(self._iter_synthetic_namedtuple_base_fields(synthetic_class))
+            tuple(self._iter_synthetic_namedtuple_base_fields())
             if include_inherited_fields
             else ()
         )
         prefer_declared_type = not inherited_fields
         field_names = [field.name for field in inherited_fields]
         for field_name in self._get_synthetic_namedtuple_local_field_names(
-            synthetic_class, has_inherited_fields=bool(inherited_fields)
+            has_inherited_fields=bool(inherited_fields)
         ):
             if field_name not in field_names:
                 field_names.append(field_name)
@@ -752,9 +751,7 @@ class TypeObject:
                 NamedTupleField(
                     field_name,
                     self._get_synthetic_namedtuple_field_value(
-                        synthetic_class,
-                        field_name,
-                        prefer_declared_type=prefer_declared_type,
+                        field_name, prefer_declared_type=prefer_declared_type
                     )
                     or AnyValue(AnySource.inference),
                     None,
@@ -763,9 +760,7 @@ class TypeObject:
             for field_name in field_names
         )
 
-    def _iter_synthetic_namedtuple_base_fields(
-        self, synthetic_class: SyntheticClassObjectValue
-    ) -> Iterator[NamedTupleField]:
+    def _iter_synthetic_namedtuple_base_fields(self) -> Iterator[NamedTupleField]:
         seen: set[str] = set()
         for base_value in self.get_direct_bases():
             if not isinstance(base_value, TypedValue):
@@ -797,7 +792,7 @@ class TypeObject:
                 yield field
 
     def _get_synthetic_namedtuple_local_field_names(
-        self, synthetic_class: SyntheticClassObjectValue, *, has_inherited_fields: bool
+        self, *, has_inherited_fields: bool
     ) -> tuple[str, ...]:
         if has_inherited_fields:
             return ()
@@ -822,11 +817,7 @@ class TypeObject:
         return tuple(ordered)
 
     def _get_synthetic_namedtuple_field_value(
-        self,
-        synthetic_class: SyntheticClassObjectValue,
-        field_name: str,
-        *,
-        prefer_declared_type: bool,
+        self, field_name: str, *, prefer_declared_type: bool
     ) -> Value | None:
         symbol = self.get_synthetic_declared_symbols().get(field_name)
         if symbol is not None:
@@ -841,7 +832,7 @@ class TypeObject:
                 prefer_declared_type and not symbol.is_method
             ):
                 return symbol.initializer
-        for field in self._iter_synthetic_namedtuple_base_fields(synthetic_class):
+        for field in self._iter_synthetic_namedtuple_base_fields():
             if field.name == field_name:
                 return field.typ
         return None
@@ -989,12 +980,11 @@ class TypeObject:
     ) -> tuple[bool, Sequence[NamedTupleField]]:
         if isinstance(self.typ, type) and is_direct_namedtuple_class(self.typ):
             return True, self._namedtuple_fields_from_runtime(self.typ)
-        synthetic_class = self._get_synthetic_namedtuple_class()
-        if synthetic_class is not None:
+        if self._has_synthetic_namedtuple_class():
             return (
                 False,
                 self._compute_synthetic_namedtuple_fields(
-                    synthetic_class, include_inherited_fields=include_inherited_fields
+                    include_inherited_fields=include_inherited_fields
                 ),
             )
         if isinstance(self.typ, type) and is_namedtuple_class(self.typ):
@@ -1030,16 +1020,20 @@ class TypeObject:
 
     def set_direct_bases(self, base_values: Sequence[MroValue]) -> None:
         self._direct_bases = tuple(base_values)
+        if not self._declared_type_params_explicit:
+            self._declared_type_params = None
         self._update_loaded_synthetic_fields()
         self._protocol_positive_cache.clear()
 
     def set_declared_type_params(self, type_params: Sequence[TypeParam]) -> None:
         self._declared_type_params = tuple(type_params)
+        self._declared_type_params_explicit = True
         self._update_loaded_synthetic_fields()
         self._protocol_positive_cache.clear()
 
     def clear_declared_type_params(self) -> None:
         self._declared_type_params = None
+        self._declared_type_params_explicit = False
         self._update_loaded_synthetic_fields()
         self._protocol_positive_cache.clear()
 
@@ -1288,7 +1282,7 @@ class TypeObject:
         return tuple(records)
 
     def is_namedtuple_like(self) -> bool:
-        return self._get_synthetic_namedtuple_class() is not None or (
+        return self._has_synthetic_namedtuple_class() or (
             isinstance(self.typ, type) and is_namedtuple_class(self.typ)
         )
 
@@ -3316,6 +3310,23 @@ def _runtime_type_declares_method(typ: type, method_name: str) -> bool:
     return any(method_name in cls.__dict__ for cls in typ.__mro__)
 
 
+def _descriptor_type_object(
+    descriptor: KnownValue | TypedValue | SyntheticClassObjectValue,
+    method_name: str,
+    ctx: CanAssignContext,
+) -> "TypeObject | None":
+    if isinstance(descriptor, (KnownValue, TypedValue)):
+        runtime_owner = _runtime_descriptor_owner(descriptor)
+        if runtime_owner is not None and not _runtime_type_declares_method(
+            runtime_owner, method_name
+        ):
+            return None
+    descriptor_tobj = descriptor.get_type_object(ctx)
+    if descriptor_tobj.get_declared_symbol_from_mro(method_name, ctx) is None:
+        return None
+    return descriptor_tobj
+
+
 def _descriptor_has_method(
     descriptor: Value, method_name: str, ctx: CanAssignContext
 ) -> bool:
@@ -3323,50 +3334,11 @@ def _descriptor_has_method(
     descriptor = replace_fallback(descriptor)
     if isinstance(descriptor, AnnotatedValue):
         return _descriptor_has_method(descriptor.value, method_name, ctx)
-    if isinstance(descriptor, KnownValue):
-        runtime_owner = _runtime_descriptor_owner(descriptor)
-        if runtime_owner is not None and not _runtime_type_declares_method(
-            runtime_owner, method_name
-        ):
-            return False
-        if (
-            descriptor.get_type_object(ctx).get_declared_symbol_from_mro(
-                method_name, ctx
-            )
-            is None
-        ):
-            return False
-        return (
-            _descriptor_method_signature_any(descriptor, method_name, ctx) is not None
-        )
-    if isinstance(descriptor, TypedValue):
-        runtime_owner = _runtime_descriptor_owner(descriptor)
-        if runtime_owner is not None and not _runtime_type_declares_method(
-            runtime_owner, method_name
-        ):
-            return False
-        if (
-            descriptor.get_type_object(ctx).get_declared_symbol_from_mro(
-                method_name, ctx
-            )
-            is None
-        ):
-            return False
-        return (
-            _descriptor_method_signature_any(descriptor, method_name, ctx) is not None
-        )
-    if isinstance(descriptor, SyntheticClassObjectValue):
-        if (
-            ctx.make_type_object(
-                descriptor.class_type.typ
-            ).get_declared_symbol_from_mro(method_name, ctx)
-            is None
-        ):
-            return False
-        return (
-            _descriptor_method_signature_any(descriptor, method_name, ctx) is not None
-        )
-    return False
+    if not isinstance(descriptor, (KnownValue, TypedValue, SyntheticClassObjectValue)):
+        return False
+    if _descriptor_type_object(descriptor, method_name, ctx) is None:
+        return False
+    return _descriptor_method_signature_any(descriptor, method_name, ctx) is not None
 
 
 def _descriptor_method_match(
@@ -3397,12 +3369,13 @@ def _descriptor_method_signature_any(
     if not isinstance(descriptor, (KnownValue, TypedValue, SyntheticClassObjectValue)):
         return None
     descriptor, restore_typevars = shield_nested_self_typevars(descriptor)
+    assert isinstance(descriptor, (KnownValue, TypedValue, SyntheticClassObjectValue))
+    descriptor_tobj = _descriptor_type_object(descriptor, method_name, ctx)
+    if descriptor_tobj is None:
+        return None
     method_value = UNINITIALIZED_VALUE
     direct_signature: Signature | OverloadedSignature | None = None
     if isinstance(descriptor, SyntheticClassObjectValue):
-        descriptor_tobj = ctx.make_type_object(descriptor.class_type.typ)
-        if descriptor_tobj.get_declared_symbol_from_mro(method_name, ctx) is None:
-            return None
         attribute = descriptor_tobj.get_attribute(
             method_name, AttributePolicy(receiver_value=descriptor)
         )
@@ -3410,14 +3383,6 @@ def _descriptor_method_signature_any(
             method_value = attribute.value
     else:
         assert isinstance(descriptor, (KnownValue, TypedValue))
-        runtime_owner = _runtime_descriptor_owner(descriptor)
-        if runtime_owner is not None and not _runtime_type_declares_method(
-            runtime_owner, method_name
-        ):
-            return None
-        descriptor_tobj = descriptor.get_type_object(ctx)
-        if descriptor_tobj.get_declared_symbol_from_mro(method_name, ctx) is None:
-            return None
         if isinstance(descriptor, TypedValue):
             merged_attribute = descriptor_tobj._specialize_selected_attribute_pair(
                 ctx,

@@ -4331,53 +4331,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                         runtime_class_for_type_params, registered_type_param_values
                     )
                 )
-            has_explicit_constructor = any(
-                isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef))
-                and statement.name in {"__init__", "__new__"}
-                for statement in node.body
-            )
-            if (
-                not registered_type_param_values
-                and not type_param_values
-                and self.module is None
-            ):
-                recovered_registration_type_params = (
-                    self._type_params_from_base_annotations_for_default_rules(
-                        node.bases
-                    )
-                )
-                should_recover_registration = (
-                    dataclass_semantics is None and not has_explicit_constructor
-                ) or any(
-                    _type_param_uses_infer_variance(type_param)
-                    for type_param in recovered_registration_type_params
-                )
-                if recovered_registration_type_params and should_recover_registration:
-                    registered_type_param_values = (
-                        self._align_type_params_with_runtime_class(
-                            runtime_class_for_type_params,
-                            self._order_type_params_by_base_annotation_appearance(
-                                node.bases, recovered_registration_type_params
-                            ),
-                        )
-                    )
-            if (
-                registered_type_param_values
-                and not type_param_values
-                and self.module is None
-                and (
-                    (dataclass_semantics is None and not has_explicit_constructor)
-                    or any(
-                        _type_param_uses_infer_variance(type_param)
-                        for type_param in registered_type_param_values
-                    )
-                )
-            ):
-                registered_type_param_values = (
-                    self._order_type_params_by_base_annotation_appearance(
-                        node.bases, registered_type_param_values
-                    )
-                )
             if registered_type_param_values:
                 tobj.set_declared_type_params(tuple(registered_type_param_values))
             else:
