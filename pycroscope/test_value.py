@@ -5,6 +5,7 @@ import io
 import pickle
 import types
 import typing
+from collections import defaultdict
 from typing import NewType
 from unittest import mock
 
@@ -392,6 +393,74 @@ def test_sequence_value() -> None:
     assert (
         str(value.SequenceValue(list, [(False, TypedValue(int))]))
         == "<list containing [int]>"
+    )
+
+
+def test_nested_weak_tuple_value_arg_allows_empty_lists_in_defaultdict() -> None:
+    class Name:
+        pass
+
+    class ClassificationEntry:
+        pass
+
+    left = GenericValue(
+        dict,
+        [
+            TypedValue(Name),
+            SequenceValue(
+                tuple,
+                [
+                    (False, GenericValue(list, [TypedValue(ClassificationEntry)])),
+                    (False, GenericValue(list, [TypedValue(ClassificationEntry)])),
+                ],
+            ),
+        ],
+    )
+    right = GenericValue(
+        defaultdict,
+        [
+            AnyValue(AnySource.generic_argument),
+            SequenceValue(tuple, [(False, KnownValue([])), (False, KnownValue([]))]),
+        ],
+    )
+
+    assert_can_assign(left, right)
+
+
+def test_strong_list_is_assignable_to_empty_weak_list() -> None:
+    assert_can_assign(SequenceValue(list, []), GenericValue(list, [TypedValue(int)]))
+
+
+def test_strong_list_is_assignable_to_weak_list_with_only_unpacked_members() -> None:
+    assert_can_assign(
+        SequenceValue(list, [(True, TypedValue(object))]),
+        GenericValue(list, [TypedValue(int)]),
+    )
+
+
+def test_strong_set_is_assignable_to_weak_set_with_only_unpacked_members() -> None:
+    assert_can_assign(
+        SequenceValue(set, [(True, TypedValue(object))]),
+        GenericValue(set, [TypedValue(int)]),
+    )
+
+
+def test_strong_container_is_not_assignable_to_known_non_empty_weak_literal() -> None:
+    result = SequenceValue(list, [(False, KnownValue(1))]).can_assign(
+        GenericValue(list, [TypedValue(int)]), CTX
+    )
+
+    assert isinstance(result, CanAssignError)
+    assert result.message == (
+        "list[int] may be empty and cannot satisfy"
+        " known-non-empty <list containing [Literal[1]]>"
+    )
+
+
+def test_weak_list_is_still_assignable_to_strong_list() -> None:
+    assert_can_assign(
+        GenericValue(list, [TypedValue(int)]),
+        SequenceValue(list, [(False, KnownValue(1))]),
     )
 
 
