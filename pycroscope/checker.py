@@ -160,32 +160,6 @@ def _bound_method_self_value_from_typevars(typevars: TypeVarMap) -> Value | None
     return None
 
 
-def _infer_type_params_from_signature(signature: MaybeSignature) -> list[TypeParam]:
-    seen: set[object] = set()
-    inferred: list[TypeParam] = []
-
-    def _record(value: Value) -> None:
-        for type_param in iter_type_params_in_value(value):
-            if type_param.typevar in seen:
-                continue
-            seen.add(type_param.typevar)
-            inferred.append(type_param)
-
-    def _walk(sig: MaybeSignature) -> None:
-        if isinstance(sig, OverloadedSignature):
-            for sub_sig in sig.signatures:
-                _walk(sub_sig)
-            return
-        if not isinstance(sig, Signature):
-            return
-        for parameter in sig.parameters.values():
-            _record(parameter.annotation)
-        _record(sig.return_value)
-
-    _walk(signature)
-    return inferred
-
-
 def _apply_type_parameter_defaults(
     type_params: Sequence[TypeParam], checker: "Checker"
 ) -> list[Value]:
@@ -1543,31 +1517,6 @@ class Checker:
                 return True
         return not checked
 
-    def _synthetic_init_self_annotation_matches(
-        self,
-        synthetic_class: SyntheticClassObjectValue,
-        *,
-        instance_type: Value,
-        get_return_override: Callable[[MaybeSignature], Value | None],
-        get_call_attribute: Callable[[Value], Value] | None,
-    ) -> bool:
-        init_symbol = self.make_type_object(
-            synthetic_class.class_type.typ
-        ).get_declared_symbol("__init__")
-        has_direct_init = init_symbol is not None and init_symbol.is_method
-        init_sig = self._get_synthetic_constructor_method_signature(
-            synthetic_class,
-            "__init__",
-            use_direct_method=has_direct_init,
-            bound_self_value=instance_type,
-            self_annotation_value=instance_type,
-            get_return_override=get_return_override,
-            get_call_attribute=get_call_attribute,
-        )
-        if init_sig is None:
-            return True
-        return not _is_incompatible_constructor_signature(init_sig)
-
     def _synthetic_new_cls_annotation_matches(
         self,
         synthetic_class: SyntheticClassObjectValue,
@@ -2697,8 +2646,6 @@ class Checker:
         if class_type is None:
             return origin_argspec
         type_params = self.get_type_parameters(class_type)
-        if not type_params:
-            type_params = list(_infer_type_params_from_signature(origin_argspec))
         explicit_member_values = [
             type_from_value(member, self, value.node, suppress_errors=True)
             for member in value.members
@@ -2778,16 +2725,26 @@ class Checker:
             receiver_instance_type = GenericValue(class_type, receiver_member_values)
         else:
             receiver_instance_type = TypedValue(class_type)
-        if (
-            synthetic_root is not None
-            and not self._synthetic_init_self_annotation_matches(
+        if synthetic_root is not None:
+            init_symbol = self.make_type_object(
+                synthetic_root.class_type.typ
+            ).get_declared_symbol("__init__")
+            has_direct_init = init_symbol is not None and init_symbol.is_method
+            init_sig = self._get_synthetic_constructor_method_signature(
                 synthetic_root,
-                instance_type=receiver_instance_type,
+                "__init__",
+                use_direct_method=has_direct_init,
+                bound_self_value=receiver_instance_type,
+                self_annotation_value=receiver_instance_type,
                 get_return_override=get_return_override,
                 get_call_attribute=get_call_attribute,
             )
-        ):
-            return _make_incompatible_constructor_signature(specialized_instance_type)
+            if init_sig is not None and _is_incompatible_constructor_signature(
+                init_sig
+            ):
+                return _make_incompatible_constructor_signature(
+                    specialized_instance_type
+                )
         if (
             synthetic_root is not None
             and not self._synthetic_new_cls_annotation_matches(
