@@ -5912,12 +5912,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             return
         if not self._is_protocol_class(base_values, class_scope_object):
             return
-        if not type_params and isinstance(class_scope_object, (type, str)):
-            type_params = tuple(
-                type_param
-                for type_param in self.get_type_parameters(class_scope_object)
-                if isinstance(type_param, TypeVarParam)
-            )
         if not type_params:
             return
         checked_type_params = [
