@@ -1,4 +1,5 @@
 # static analysis: ignore
+
 from .test_name_check_visitor import TestNameCheckVisitorBase
 from .test_node_visitor import assert_passes
 
@@ -1009,3 +1010,68 @@ class TestTypeIs(TestNameCheckVisitorBase):
                 self, x: str
             ) -> TypeIs[int]:  # E: typeis_must_be_subtype
                 return False
+
+    @assert_passes()
+    def test_type_is_subtract_any(self):
+        from typing import Any
+
+        from typing_extensions import TypeIs, assert_type
+
+        from pycroscope.extensions import Intersection
+
+        def is_any(a: object) -> TypeIs[Any]:
+            return False
+
+        def main(a: object, b: Any, c: int) -> None:
+            if is_any(a):
+                assert_type(a, Any)
+            else:
+                assert_type(a, object)
+
+            if is_any(b):
+                assert_type(b, Any)
+            else:
+                assert_type(b, Any)
+
+            if is_any(c):
+                assert_type(c, Intersection[int, Any])
+            else:
+                assert_type(c, int)
+
+    @assert_passes()
+    def test_type_is_awaitable_any(self):
+        from collections.abc import Awaitable
+        from typing import Any, Union
+
+        from typing_extensions import TypeIs, assert_type
+
+        from pycroscope.extensions import Intersection
+
+        def is_awaitable_any(val: object) -> TypeIs[Awaitable[Any]]:
+            return isinstance(val, Awaitable)
+
+        def is_awaitable_object(val: object) -> TypeIs[Awaitable[object]]:
+            return isinstance(val, Awaitable)
+
+        async def capybara(val: int | Awaitable[int]):
+            if is_awaitable_any(val):
+                assert_type(
+                    val,
+                    Union[
+                        Intersection[int, Awaitable[Any]],
+                        Intersection[Awaitable[Any], Awaitable[int]],
+                    ],
+                )
+                # This is OK, because await Awaitable[Any] is assignable to int
+                x: int = await val
+                return x
+            else:
+                assert_type(val, int | Awaitable[int])
+
+        async def object_capybara(val: int | Awaitable[int]):
+            if is_awaitable_object(val):
+                assert_type(
+                    val, Union[Intersection[int, Awaitable[object]], Awaitable[int]]
+                )
+            else:
+                assert_type(val, int)
