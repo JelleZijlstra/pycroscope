@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Fix `hasattr()`-driven narrowing bookkeeping so synthetic attributes no longer show up as fake unused members, and looped identity checks like `value.param_spec is ps_args.param_spec` no longer poison nearby temporary-variable reads.
 - Fix `hasattr()`-based intersection lookup so class-object attributes like `cls.__name__` remain available after narrowing through unrelated `HasAttr[...]` predicates.
 - Fix local attribute tracking for descriptor-backed optional attributes, so guarded writes like `if self.field is None: return; self.field = value` keep `self.field` narrowed within the current method instead of widening later reads back to the optional type.
 - Fix fallback-mode `TypeVarTuple` callable inference so conformance-style checks like `Process(target=..., args=...)` now match fixed-arity callables more consistently.

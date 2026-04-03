@@ -2814,6 +2814,73 @@ class TestTaxonomyDistilledRegressions(TestNameCheckVisitorBase):
         """
         self.assert_passes(code)
 
+    def test_identity_compare_does_not_poison_loop_temp_definitions(self):
+        code = """
+        from enum import Enum
+        from itertools import zip_longest
+
+        class ParameterKind(Enum):
+            VAR_KEYWORD = 1
+            VAR_POSITIONAL = 2
+            OTHER = 3
+
+        class PSpec: ...
+
+        class ParamSpecArgsValue:
+            def __init__(self, param_spec: PSpec) -> None:
+                self.param_spec = param_spec
+
+        class ParamSpecKwargsValue:
+            def __init__(self, param_spec: PSpec) -> None:
+                self.param_spec = param_spec
+
+        class Arg:
+            def __init__(self, annotation: object | None) -> None:
+                self.annotation = annotation
+                self.arg = "x"
+
+        def f(
+            args: list[tuple[ParameterKind, Arg]],
+            defaults: list[object | None],
+            paramspecs_in_scope: set[PSpec],
+        ) -> None:
+            seen_paramspec_args: tuple[Arg, ParamSpecArgsValue] | None = None
+            paramspec_args_has_intervening_param = False
+            value: object
+            for param, default in zip_longest(args, defaults):
+                assert param is not None
+                kind, arg = param
+                if arg.annotation is not None:
+                    value = arg.annotation
+                else:
+                    value = default
+                if seen_paramspec_args is not None:
+                    _, ps_args = seen_paramspec_args
+                    matches_trailing_kwargs = (
+                        kind is ParameterKind.VAR_KEYWORD
+                        and isinstance(value, ParamSpecKwargsValue)
+                        and value.param_spec is ps_args.param_spec
+                    )
+                    if not matches_trailing_kwargs:
+                        paramspec_args_has_intervening_param = True
+                if isinstance(value, ParamSpecArgsValue):
+                    if kind is ParameterKind.VAR_POSITIONAL:
+                        if value.param_spec in paramspecs_in_scope:
+                            seen_paramspec_args = (arg, value)
+                            paramspec_args_has_intervening_param = False
+                elif isinstance(value, ParamSpecKwargsValue):
+                    if kind is ParameterKind.VAR_KEYWORD:
+                        if seen_paramspec_args is not None:
+                            _, ps_args = seen_paramspec_args
+                            if ps_args.param_spec is not value.param_spec:
+                                seen_paramspec_args = None
+                            elif paramspec_args_has_intervening_param:
+                                seen_paramspec_args = None
+                            else:
+                                seen_paramspec_args = None
+        """
+        self.assert_passes(code, run_in_both_module_modes=True)
+
     def test_isinstance_and_issubclass_preserve_model_type(self):
         code = """
         from typing import TypeVar

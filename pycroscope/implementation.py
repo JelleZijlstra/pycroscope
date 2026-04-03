@@ -649,7 +649,7 @@ def _record_attr_set(val: Value, name: str, ctx: CallContext) -> None:
             _record_attr_set(subval, name, ctx)
         return
     ctx.visitor._record_type_attr_set_for_value(
-        val, name, ctx.node, AnyValue(AnySource.inference)
+        val, name, ctx.node, AnyValue(AnySource.inference), is_synthetic=True
     )
 
 

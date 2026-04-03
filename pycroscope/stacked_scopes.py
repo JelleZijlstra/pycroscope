@@ -808,6 +808,46 @@ class Scope:
         else:
             return UNINITIALIZED_VALUE, None, EMPTY_ORIGIN
 
+    def peek(
+        self,
+        varname: Varname,
+        node: object,
+        state: VisitorState,
+        *,
+        from_parent_scope: bool = False,
+        fallback_value: Value | None = None,
+        can_assign_ctx: CanAssignContext,
+    ) -> tuple[Value, Optional["Scope"], VarnameOrigin]:
+        local_value, origin = self.peek_local(
+            varname,
+            node,
+            state,
+            from_parent_scope=from_parent_scope,
+            fallback_value=fallback_value,
+            can_assign_ctx=can_assign_ctx,
+        )
+        if local_value is not UNINITIALIZED_VALUE:
+            return (
+                self.resolve_reference(local_value, state, can_assign_ctx),
+                self,
+                origin,
+            )
+        elif self.parent_scope is not None:
+            parent_node = (
+                (varname, self.scope_node) if self.scope_node is not None else None
+            )
+            val, scope, _ = self.parent_scope.peek(
+                varname,
+                parent_node,
+                state,
+                from_parent_scope=True,
+                fallback_value=fallback_value,
+                can_assign_ctx=can_assign_ctx,
+            )
+            return val, scope, EMPTY_ORIGIN
+        else:
+            return UNINITIALIZED_VALUE, None, EMPTY_ORIGIN
+
     def get_local(
         self,
         varname: Varname,
@@ -822,6 +862,25 @@ class Scope:
             return self.variables[varname], EMPTY_ORIGIN
         else:
             return UNINITIALIZED_VALUE, EMPTY_ORIGIN
+
+    def peek_local(
+        self,
+        varname: Varname,
+        node: Node,
+        state: VisitorState,
+        *,
+        from_parent_scope: bool = False,
+        fallback_value: Value | None = None,
+        can_assign_ctx: CanAssignContext,
+    ) -> tuple[Value, VarnameOrigin]:
+        return self.get_local(
+            varname,
+            node,
+            state,
+            from_parent_scope=from_parent_scope,
+            fallback_value=fallback_value,
+            can_assign_ctx=can_assign_ctx,
+        )
 
     def get_origin(
         self, varname: Varname, node: Node, state: VisitorState
@@ -1345,6 +1404,24 @@ class FunctionScope(Scope):
                 return self.referencing_value_vars[varname], EMPTY_ORIGIN
         return self._get_value_from_nodes(definers, ctx), self._resolve_origin(definers)
 
+    def peek_local(
+        self,
+        varname: Varname,
+        node: Node,
+        state: VisitorState,
+        *,
+        from_parent_scope: bool = False,
+        fallback_value: Value | None = None,
+        can_assign_ctx: CanAssignContext,
+    ) -> tuple[Value, VarnameOrigin]:
+        self._add_composite(varname)
+        ctx = _LookupContext(varname, fallback_value, node, state, can_assign_ctx)
+        if varname in self.name_to_current_definition_nodes:
+            definers = self.name_to_current_definition_nodes[varname]
+        else:
+            return self.referencing_value_vars[varname], EMPTY_ORIGIN
+        return self._get_value_from_nodes(definers, ctx), self._resolve_origin(definers)
+
     def get_origin(
         self, varname: Varname, node: Node, state: VisitorState
     ) -> VarnameOrigin:
@@ -1693,6 +1770,23 @@ class StackedScopes:
 
         """
         return self.scopes[-1].get(
+            varname,
+            node,
+            state,
+            fallback_value=fallback_value,
+            can_assign_ctx=can_assign_ctx,
+        )
+
+    def peek_with_scope(
+        self,
+        varname: Varname,
+        node: Node,
+        state: VisitorState,
+        *,
+        fallback_value: Value | None = None,
+        can_assign_ctx: CanAssignContext,
+    ) -> tuple[Value, Scope | None, VarnameOrigin]:
+        return self.scopes[-1].peek(
             varname,
             node,
             state,

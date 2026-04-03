@@ -357,6 +357,18 @@ class TestFindUnused(TestNameCheckVisitorBase):
             {("ServerCall", "server_call", False)},
         )
 
+    def test_hasattr_inferred_attributes_are_not_reported_unused(self):
+        self.assert_unused_attributes(
+            """
+            def use(obj: object) -> None:
+                if hasattr(obj, "task_cls"):
+                    print(obj.task_cls)
+                if hasattr(obj, "decorator") and hasattr(obj.decorator, "task_cls"):
+                    print(obj.decorator.task_cls)
+            """,
+            set(),
+        )
+
     def test_test_helper_modules_can_be_ignored_by_predicate(self):
         helper = type("Helper", (), {})
         helper.__module__ = "pycroscope.tests"
