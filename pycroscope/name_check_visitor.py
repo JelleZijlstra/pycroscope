@@ -4274,25 +4274,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 tobj.set_declared_type_params(tuple(registered_type_param_values))
             else:
                 tobj.clear_declared_type_params()
-            method_type_params = (
-                type_param_values
-                if type_param_values
-                else self._merge_type_params_using_declared_identities(
-                    self._type_params_from_base_values(base_values),
-                    annotation_type_param_values,
-                    append_unmatched_declared=True,
-                )
-            )
-            method_type_param_values = method_type_params
-            if not type_param_values:
-                method_type_param_values = self._align_type_params_with_runtime_class(
-                    runtime_class_for_type_params, method_type_param_values
-                )
-            class_scope_type_params = (
-                tuple(registered_type_param_values)
-                if registered_type_param_values
-                else tuple(method_type_param_values)
-            )
+            class_scope_type_params = tuple(registered_type_param_values)
             should_register_generic_bases = synthetic_typeddict is None and (
                 isinstance(generic_class_key, str) or bool(registered_type_param_values)
             )
