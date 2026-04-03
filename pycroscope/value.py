@@ -644,8 +644,16 @@ class Value:
         return None
 
     def get_type_value(self, ctx: "CanAssignContext") -> "Value":
-        """Return the type of this object as used for dunder lookups."""
-        return self
+        """Return the value produced by ``type(x)`` for values compatible with this one.
+
+        This powers class-based fallback logic such as dunder lookup. For exact
+        values this should usually be an exact class object, while for imprecise
+        values like ``TypedValue(T)`` it should generally preserve the possibility
+        of subclasses.
+        """
+        raise NotImplementedError(
+            f"{type(self).__name__} must implement get_type_value"
+        )
 
     def simplify(self) -> "Value":
         """Simplify this Value to reduce excessive detail."""
@@ -931,6 +939,9 @@ class AnyValue(Value):
     def substitute_typevars(self, typevars: TypeVarMap) -> "AnyValue":
         return self
 
+    def get_type_value(self, ctx: CanAssignContext) -> Value:
+        return self
+
 
 UNRESOLVED_VALUE = AnyValue(AnySource.default)
 """The default instance of :class:`AnyValue`.
@@ -1058,7 +1069,7 @@ class SuperValue(Value):
         return TypedValue(super)
 
     def get_type_value(self, ctx: CanAssignContext) -> Value:
-        return self.get_fallback_value().get_type_value(ctx)
+        return KnownValue(super)
 
     def substitute_typevars(self, typevars: TypeVarMap) -> "SuperValue":
         return SuperValue(
@@ -1748,6 +1759,9 @@ class SyntheticModuleValue(Value):
 
     module_path: Sequence[str]
 
+    def get_type_value(self, ctx: CanAssignContext) -> Value:
+        return KnownValue(ModuleType)
+
 
 @dataclass(frozen=True)
 class UnboundMethodValue(Value):
@@ -2044,9 +2058,7 @@ class TypedValue(Value):
         return self.typ
 
     def get_type_value(self, ctx: CanAssignContext) -> Value:
-        if isinstance(self.typ, str):
-            return AnyValue(AnySource.inference)
-        return KnownValue(self.typ)
+        return SubclassValue(self)
 
     def decompose(self) -> Iterable[Value] | None:
         if self.typ is bool:
@@ -2783,32 +2795,31 @@ class SubclassValue(Value):
             return None
 
     def get_type_value(self, ctx: CanAssignContext) -> Value:
-        typ = self.get_type()
-        if typ is not None:
-            return KnownValue(typ)
-        else:
-            return AnyValue(AnySource.inference)
+        if isinstance(self.typ, TypedValue):
+            if isinstance(self.typ.typ, type):
+                return SubclassValue(TypedValue(type(self.typ.typ)))
+            return SubclassValue(TypedValue(type))
+        return SubclassValue.make(self.typ.get_upper_bound_value()).get_type_value(ctx)
 
     def __str__(self) -> str:
         return f"type[{self.typ}]"
 
     @classmethod
     def make(cls, origin: Value) -> Value:
+        """Construct the internal equivalent of ``type[origin]``.
+
+        This should only be called with values that are valid as the argument to
+        ``type[...]``: a type expression, ``Any``, a ``TypeVar``, or a union of
+        those. Passing class objects or arbitrary values is a caller bug.
+        """
         if isinstance(origin, MultiValuedValue):
             return unite_values(*[cls.make(val) for val in origin.vals])
-        elif isinstance(origin, AnyValue):
+        if isinstance(origin, AnyValue):
             # Type[Any] is equivalent to plain type
             return TypedValue(type)
-        elif isinstance(origin, KnownValue):
-            if origin.val is None:
-                return cls(TypedValue(type(None)))
-            elif isinstance(origin.val, type):
-                return cls(TypedValue(origin.val))
-            return AnyValue(AnySource.error)
-        elif isinstance(origin, (TypeVarValue, TypedValue)):
+        if isinstance(origin, (TypeVarValue, TypedValue)):
             return cls(origin)
-        else:
-            return AnyValue(AnySource.inference)
+        raise TypeError(f"Cannot construct type[...] from {origin!r}")
 
 
 @dataclass(frozen=True, order=False)
@@ -3134,6 +3145,9 @@ class TypeVarTupleBindingValue(Value):
             other, ctx, mode
         )
 
+    def get_type_value(self, ctx: CanAssignContext) -> Value:
+        return typevartuple_binding_to_tuple_value(self.binding).get_type_value(ctx)
+
     def walk_values(self) -> Iterable[Value]:
         yield self
         for _, value in self.binding:
@@ -3290,6 +3304,9 @@ class ParamSpecArgsValue(Value):
     def get_fallback_value(self) -> Value:
         return GenericValue(tuple, [TypedValue(object)])
 
+    def get_type_value(self, ctx: CanAssignContext) -> Value:
+        return self.get_fallback_value().get_type_value(ctx)
+
 
 @dataclass(frozen=True)
 class ParamSpecKwargsValue(Value):
@@ -3300,6 +3317,9 @@ class ParamSpecKwargsValue(Value):
 
     def get_fallback_value(self) -> Value:
         return GenericValue(dict, [TypedValue(str), TypedValue(object)])
+
+    def get_type_value(self, ctx: CanAssignContext) -> Value:
+        return self.get_fallback_value().get_type_value(ctx)
 
 
 class Extension:
@@ -3486,6 +3506,9 @@ class TypeFormValue(Value):
     def get_fallback_value(self) -> Value:
         # TypeForm is a subtype of object.
         return TypedValue(object)
+
+    def get_type_value(self, ctx: CanAssignContext) -> Value:
+        return self.get_fallback_value().get_type_value(ctx)
 
     def __str__(self) -> str:
         return f"TypeForm[{self.inner_type}]"

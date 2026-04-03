@@ -1974,6 +1974,17 @@ def _type_from_value(value: Value, ctx: Context) -> Value:
         return AnyValue(AnySource.error)
 
 
+def _make_type_annotation_value(argument: Value, ctx: Context) -> Value:
+    """Construct the internal equivalent of ``type[argument]`` in annotations."""
+    if argument == KnownValue(None):
+        argument = TypedValue(type(None))
+    try:
+        return SubclassValue.make(argument)
+    except TypeError:
+        ctx.show_error(f"Invalid argument to type[]: {argument}")
+        return AnyValue(AnySource.error)
+
+
 def _type_from_bitor_value(
     root: Value, members: Sequence[Value], ctx: Context
 ) -> Value:
@@ -2409,7 +2420,7 @@ def _type_from_subscripted_value(
         if not _require_exact_argument_count(members, 1, "Type", ctx):
             return AnyValue(AnySource.error)
         argument = _type_from_value(members[0], ctx)
-        return SubclassValue.make(argument)
+        return _make_type_annotation_value(argument, ctx)
     elif is_typing_name(root, "Annotated"):
         if not _require_min_argument_count(members, 2, "Annotated", ctx):
             return AnyValue(AnySource.error)
@@ -3067,7 +3078,7 @@ def _value_of_origin_args(
             return TypedValue(type)
         if not _require_exact_argument_count(args, 1, "Type", ctx):
             return AnyValue(AnySource.error)
-        return SubclassValue.make(_type_from_runtime(args[0], ctx))
+        return _make_type_annotation_value(_type_from_runtime(args[0], ctx), ctx)
     elif _is_tuple(origin):
         if not args:
             return SequenceValue(tuple, [])

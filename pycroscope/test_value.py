@@ -9,6 +9,7 @@ from collections import defaultdict
 from typing import NewType
 from unittest import mock
 
+import pytest
 from typing_extensions import Protocol, TypeVarTuple, runtime_checkable
 
 from . import tests, value
@@ -20,6 +21,7 @@ from .signature import ELLIPSIS_PARAM, Signature
 from .stacked_scopes import Composite
 from .test_node_visitor import skip_if_not_installed
 from .value import (
+    GRADUAL_TYPE,
     NO_RETURN_VALUE,
     AnnotatedValue,
     AnySource,
@@ -339,7 +341,8 @@ def test_subclass_value() -> None:
 
 
 def test_subclass_value_make_invalid_literal() -> None:
-    assert SubclassValue.make(KnownValue(1)) == AnyValue(AnySource.error)
+    with pytest.raises(TypeError, match=r"Cannot construct type\[\.\.\.\]"):
+        SubclassValue.make(KnownValue(1))
 
 
 def test_generic_value() -> None:
@@ -972,12 +975,44 @@ def test_predicate_get_type_value_uses_subclass_object() -> None:
 def test_intersection_get_type_value_simplifies() -> None:
     pred = value.PredicateValue(MinLen(1))
     inters = IntersectionValue((TypedValue(str), pred))
-    assert inters.get_type_value(CTX) == KnownValue(str)
+    assert inters.get_type_value(CTX) == SubclassValue(TypedValue(str))
 
 
 def test_union_get_type_value_uses_unite_values() -> None:
     union = MultiValuedValue([KnownValue(True), KnownValue(False)])
     assert union.get_type_value(CTX) == KnownValue(bool)
+
+
+def test_typed_value_get_type_value_uses_subclass_object() -> None:
+    assert TypedValue(str).get_type_value(CTX) == SubclassValue(TypedValue(str))
+
+
+def test_subclass_value_get_type_value_uses_subclass_metaclass() -> None:
+    class Meta(type):
+        pass
+
+    class Base(metaclass=Meta):
+        pass
+
+    assert SubclassValue(TypedValue(Base)).get_type_value(CTX) == SubclassValue(
+        TypedValue(Meta)
+    )
+
+
+def test_super_value_get_type_value_is_exact() -> None:
+    class Base:
+        pass
+
+    class Child(Base):
+        pass
+
+    super_value = SuperValue(KnownValue(Child), TypedValue(Child))
+    assert super_value.get_type_value(CTX) == KnownValue(super)
+
+
+def test_gradual_types_define_get_type_value() -> None:
+    for cls in GRADUAL_TYPE:
+        assert cls.get_type_value is not Value.get_type_value, cls
 
 
 def test_overlapping_value_intersection_simplifies() -> None:
