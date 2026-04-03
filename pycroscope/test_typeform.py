@@ -87,7 +87,8 @@ class TestTypeForm(TestNameCheckVisitorBase):
 
             x3 = TypeForm("type(1)")  # E: invalid_annotation
             x4 = type(1)
-            x5 = TypeForm(type(1))  # E: invalid_annotation
+            x5 = TypeForm(type(1))
+            assert_type(x5, TypeForm[int])
             x3
             x4
             x5

@@ -801,7 +801,9 @@ def _has_relation(
             elif isinstance(left.typ, TypeVarValue):
                 return CanAssignError(f"{right} is not {relation.description} {left}")
             elif isinstance(left.typ, TypedValue):
-                if right_tobj.is_metatype_of(left.typ.get_type_object(ctx)):
+                if relation is Relation.ASSIGNABLE and right_tobj.is_metatype_of(
+                    left.typ.get_type_object(ctx)
+                ):
                     return {}
                 return CanAssignError(f"{right} is not {relation.description} {left}")
             else:
@@ -2387,6 +2389,7 @@ def _flatten_intersection(*values: Value, ctx: CanAssignContext) -> Value:
                 simple.extend(vals)
             case _:
                 simple.append(value)
+    simple = list(dict.fromkeys(simple))
     if not unions:
         return IntersectionValue(tuple(simple))
     else:

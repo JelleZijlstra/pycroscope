@@ -31,6 +31,7 @@ aliases_type_statement
 aliases_implicit
 aliases_typealiastype
 annotations_typeexpr
+typeforms_typeform
 literals_parameterizations
 qualifiers_annotated
 
