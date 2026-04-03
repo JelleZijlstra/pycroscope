@@ -1895,14 +1895,6 @@ class Checker:
             return new_sig
         if init_sig is not None:
             return init_sig
-        if dataclass_info is not None and dataclass_init_enabled:
-            dataclass_sig = dataclass_helpers.get_synthetic_constructor_signature(
-                type_object,
-                instance_type,
-                get_field_parameters=self.get_synthetic_dataclass_field_parameters,
-            )
-            if dataclass_sig is not None:
-                return dataclass_sig
         if get_call_attribute is not None:
             call_method = get_call_attribute(value)
         else:
