@@ -43,11 +43,11 @@ from .safe import (
     safe_issubclass,
 )
 from .signature import (
-    BoundMethodSignature,
     MaybeSignature,
     OverloadedSignature,
     ParameterKind,
     Signature,
+    as_concrete_signature,
 )
 from .stacked_scopes import Composite
 from .type_object import (
@@ -1272,11 +1272,7 @@ def _signature_from_synthetic_attribute(
     signature = ctx.signature_from_value(value)
     if signature is None and isinstance(value, KnownValue):
         signature = ctx.get_signature(value.val)
-    if isinstance(signature, BoundMethodSignature):
-        signature = signature.get_signature(ctx=ctx.get_can_assign_context())
-    if isinstance(signature, (Signature, OverloadedSignature)):
-        return signature
-    return None
+    return as_concrete_signature(signature, ctx.get_can_assign_context())
 
 
 def _select_matching_synthetic_signature(
