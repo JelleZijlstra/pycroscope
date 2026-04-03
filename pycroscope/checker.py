@@ -7,7 +7,6 @@ The checker maintains global state that is preserved across different modules.
 import ast
 import collections.abc
 import enum
-import inspect
 import types
 from collections.abc import Callable, Generator, Iterable, Sequence
 from contextlib import contextmanager
@@ -1463,34 +1462,6 @@ class Checker:
         new_method = safe_getattr(origin, "__new__", None)
         if new_method is None:
             return True
-        if isinstance(new_method, types.FunctionType):
-            runtime_annotations = safe_getattr(new_method, "__annotations__", None)
-            try:
-                runtime_sig = inspect.signature(new_method)
-            except (TypeError, ValueError):
-                runtime_sig = None
-            if (
-                isinstance(runtime_annotations, dict)
-                and runtime_sig is not None
-                and runtime_sig.parameters
-            ):
-                first_parameter_name = next(iter(runtime_sig.parameters.values())).name
-                cls_runtime_annotation = runtime_annotations.get(first_parameter_name)
-                if cls_runtime_annotation is not None:
-                    cls_annotation = type_from_runtime(
-                        cls_runtime_annotation,
-                        visitor=self,
-                        globals=safe_getattr(new_method, "__globals__", None),
-                        suppress_errors=True,
-                    ).substitute_typevars(typevar_map)
-                    cls_annotation_root = replace_fallback(cls_annotation)
-                    if not isinstance(cls_annotation_root, AnyValue):
-                        return _matches_constructor_receiver_annotation(
-                            cls_annotation,
-                            class_type_value,
-                            self,
-                            enforce_nongeneric_match=True,
-                        )
         new_sig: MaybeSignature = self._get_runtime_overloaded_method_signature(
             origin, "__new__"
         )
