@@ -2689,6 +2689,244 @@ class TestClassAttributeChecker(TestNameCheckVisitorBase):
             extra_options=[ClassAttributeTransformer([transform])],
         )
 
+
+class TestTaxonomyDistilledRegressions(TestNameCheckVisitorBase):
+    def test_hasattr_on_callable_preserves_callability(self):
+        code = """
+        from typing import Any, Callable
+
+        def f(obj: Callable[..., Any]) -> None:
+            if hasattr(obj, "__doc__") and obj.__doc__ is not None:
+                print(obj.__doc__)
+            obj()
+        """
+        self.assert_passes(code, run_in_both_module_modes=True)
+
+    def test_hasattr_on_callable_preserves_signature(self):
+        code = """
+        from typing import Callable
+        from typing_extensions import assert_type
+
+        def f(obj: Callable[[int], str]) -> None:
+            if hasattr(obj, "__doc__") and obj.__doc__ is not None:
+                result = obj(1)
+                assert_type(result, str)
+        """
+        self.assert_passes(code, run_in_both_module_modes=True)
+
+    def test_hasattr_on_callable_still_checks_arguments(self):
+        code = """
+        from typing import Callable
+
+        def f(obj: Callable[[int], str]) -> None:
+            if hasattr(obj, "__doc__") and obj.__doc__ is not None:
+                obj("x")  # E: incompatible_argument
+        """
+        self.assert_passes(code, run_in_both_module_modes=True)
+
+    def test_hasattr_on_class_object_preserves_constructor_signature(self):
+        code = """
+        class C:
+            attr = 1
+
+            def __init__(self, x: int) -> None:
+                pass
+
+        def f(cls: type[C]) -> None:
+            if hasattr(cls, "attr"):
+                cls(1)
+        """
+        self.assert_passes(code, run_in_both_module_modes=True)
+
+    def test_hasattr_on_callable_protocol_preserves_signature(self):
+        code = """
+        from typing import Protocol
+        from typing_extensions import assert_type
+
+        class P(Protocol):
+            def __call__(self, x: int) -> str: ...
+
+        def f(obj: P) -> None:
+            if hasattr(obj, "extra"):
+                assert_type(obj(1), str)
+        """
+        self.assert_passes(code, run_in_both_module_modes=True)
+
+    def test_hasattr_on_self_preserves_self_typevar(self):
+        code = """
+        from typing import Generic, TypeVar
+
+        SelfT = TypeVar("SelfT", bound="Base")
+
+        class Getter(Generic[SelfT]):
+            def add_name(self, value: SelfT) -> None: ...
+
+        class Base:
+            @classmethod
+            def getter(cls: type[SelfT], field: str | None) -> Getter[SelfT]:
+                return Getter()
+
+            def add_to_history(self: SelfT, field: str | None = None) -> None:
+                getters = [self.getter(field)]
+                if field is None and hasattr(self, "label_field"):
+                    getters.append(self.getter(self.label_field))
+                for getter in getters:
+                    getter.add_name(self)
+
+        class Child(Base):
+            label_field = "x"
+        """
+        self.assert_passes(code)
+
+    def test_hasattr_on_class_object_preserves_name(self):
+        code = """
+        from typing import ClassVar, Literal
+        from typing_extensions import assert_type
+
+        class Base:
+            label_field: ClassVar[str]
+
+        class Child(Base):
+            label_field = "x"
+
+        class Other(Base):
+            pass
+
+        def f() -> None:
+            for cls in Base.__subclasses__():
+                if hasattr(cls, "label_field"):
+                    assert_type(cls.__name__, Literal["Child", "Other"])
+        """
+        self.assert_passes(code)
+
+    def test_issubclass_narrowing_preserves_type_parameter(self):
+        code = """
+        import enum
+        from typing import TypeVar
+
+        EnumT = TypeVar("EnumT", bound=enum.Enum)
+
+        def get_enum_member(enum_cls: type[EnumT]) -> EnumT | None: ...
+
+        def f(typ: type[object]) -> None:
+            if issubclass(typ, enum.Enum):
+                get_enum_member(typ)
+        """
+        self.assert_passes(code)
+
+    def test_identity_compare_does_not_poison_loop_temp_definitions(self):
+        code = """
+        from enum import Enum
+        from itertools import zip_longest
+
+        class ParameterKind(Enum):
+            VAR_KEYWORD = 1
+            VAR_POSITIONAL = 2
+            OTHER = 3
+
+        class PSpec: ...
+
+        class ParamSpecArgsValue:
+            def __init__(self, param_spec: PSpec) -> None:
+                self.param_spec = param_spec
+
+        class ParamSpecKwargsValue:
+            def __init__(self, param_spec: PSpec) -> None:
+                self.param_spec = param_spec
+
+        class Arg:
+            def __init__(self, annotation: object | None) -> None:
+                self.annotation = annotation
+                self.arg = "x"
+
+        def f(
+            args: list[tuple[ParameterKind, Arg]],
+            defaults: list[object | None],
+            paramspecs_in_scope: set[PSpec],
+        ) -> None:
+            seen_paramspec_args: tuple[Arg, ParamSpecArgsValue] | None = None
+            paramspec_args_has_intervening_param = False
+            value: object
+            for param, default in zip_longest(args, defaults):
+                assert param is not None
+                kind, arg = param
+                if arg.annotation is not None:
+                    value = arg.annotation
+                else:
+                    value = default
+                if seen_paramspec_args is not None:
+                    _, ps_args = seen_paramspec_args
+                    matches_trailing_kwargs = (
+                        kind is ParameterKind.VAR_KEYWORD
+                        and isinstance(value, ParamSpecKwargsValue)
+                        and value.param_spec is ps_args.param_spec
+                    )
+                    if not matches_trailing_kwargs:
+                        paramspec_args_has_intervening_param = True
+                if isinstance(value, ParamSpecArgsValue):
+                    if kind is ParameterKind.VAR_POSITIONAL:
+                        if value.param_spec in paramspecs_in_scope:
+                            seen_paramspec_args = (arg, value)
+                            paramspec_args_has_intervening_param = False
+                elif isinstance(value, ParamSpecKwargsValue):
+                    if kind is ParameterKind.VAR_KEYWORD:
+                        if seen_paramspec_args is not None:
+                            _, ps_args = seen_paramspec_args
+                            if ps_args.param_spec is not value.param_spec:
+                                seen_paramspec_args = None
+                            elif paramspec_args_has_intervening_param:
+                                seen_paramspec_args = None
+                            else:
+                                seen_paramspec_args = None
+        """
+        self.assert_passes(code, run_in_both_module_modes=True)
+
+    def test_isinstance_and_issubclass_preserve_model_type(self):
+        code = """
+        from typing import TypeVar
+
+        ModelT = TypeVar("ModelT", bound="BaseModel")
+
+        class BaseModel:
+            pass
+
+        class Child(BaseModel):
+            pass
+
+        def get_completer(model_cls: type[ModelT], field: str | None) -> None: ...
+
+        def f(attrs: dict[str, object]) -> None:
+            for typ in attrs.values():
+                if isinstance(typ, type) and issubclass(typ, BaseModel):
+                    get_completer(typ, None)
+        """
+        self.assert_passes(code)
+
+    def test_yield_after_isinstance_on_type_or_instance(self):
+        code = """
+        from collections.abc import Iterable, Sequence
+        from typing import TypeVar
+
+        ADTT = TypeVar("ADTT", bound="ADT")
+
+        class ADT:
+            pass
+
+        class Child(ADT):
+            pass
+
+        def get_tags(tags: Sequence[ADT] | None, tag_cls: type[ADTT] | ADTT) -> Iterable[ADTT]:
+            if tags is None:
+                return
+            for tag in tags:
+                if isinstance(tag_cls, type):
+                    if isinstance(tag, tag_cls):
+                        yield tag
+                elif tag is tag_cls:
+                    yield tag
+        """
+        self.assert_passes(code)
+
     def test_optional_transformed_descriptor_keeps_non_none_narrowing_after_write(self):
         code = """
         from typing import Generic, TypeVar, overload

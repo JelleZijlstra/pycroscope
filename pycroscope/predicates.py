@@ -295,7 +295,7 @@ class HasAttr(Predicate):
         intersected_value = intersect_values(self.value, attr_value, ctx)
         if intersected_value is NO_RETURN_VALUE:
             return NO_RETURN_VALUE
-        elif is_subtype(self.value, attr_value, ctx):
+        elif is_subtype(attr_value, self.value, ctx):
             # e.g. if we have HasAttr("x", object) intersecting with something with x: int,
             # we can drop the HasAttr
             return other

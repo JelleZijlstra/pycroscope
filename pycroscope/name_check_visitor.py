@@ -145,6 +145,7 @@ from .relations import (
     check_hashability,
     has_relation,
     intersect_multi,
+    intersect_values,
     is_equivalent,
     is_subtype,
 )
@@ -1173,6 +1174,10 @@ class ClassAttributeChecker:
         self.attributes_read = collections.defaultdict(list)
         # Dictionary from type to set of attributes that are set on that class
         self.attributes_set = collections.defaultdict(set)
+        # Synthetic attribute writes (for example from hasattr()) suppress
+        # undefined-attribute errors but should not count as declarations for
+        # unused-attribute reporting.
+        self.inferred_attributes_set = collections.defaultdict(set)
         # Used for attribute value inference
         self.attribute_values = collections.defaultdict(dict)
         # Classes that we have examined the AST for
@@ -1210,13 +1215,21 @@ class ClassAttributeChecker:
             self.attributes_read[serialized].append((attr_name, node, visitor.filename))
 
     def record_attribute_set(
-        self, typ: type | str, attr_name: str, node: ast.AST | None, value: Value
+        self,
+        typ: type | str,
+        attr_name: str,
+        node: ast.AST | None,
+        value: Value,
+        *,
+        is_synthetic: bool = False,
     ) -> None:
         """Records that attribute attr_name was set on type typ."""
         serialized = self.serialize_type(typ)
         if serialized is None:
             return
         self.attributes_set[serialized].add(attr_name)
+        if is_synthetic:
+            self.inferred_attributes_set[serialized].add(attr_name)
         self.merge_attribute_value(serialized, attr_name, value)
 
     def record_class_body_attribute(self, typ: type, attr_name: str) -> None:
@@ -1474,6 +1487,7 @@ class ClassAttributeChecker:
         if serialized is None:
             return set()
         declared = set(self.attributes_set[serialized])
+        declared -= set(self.inferred_attributes_set[serialized])
         declared |= set(self.class_body_attributes[serialized])
         return declared
 
@@ -10252,17 +10266,36 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             # return a Union and extract_constraints() will combine them.
             return out
 
+    def _composite_from_possible_constraint(self, node: ast.AST) -> Composite:
+        if isinstance(node, (ast.Name, ast.Attribute, ast.Subscript)):
+            composite = self.composite_from_node(node)
+            if composite.varname is None:
+                return composite
+            constraint = Constraint(
+                composite.varname, ConstraintType.is_truthy, True, None
+            )
+            existing = extract_constraints(composite.value)
+            new_value, _ = unannotate_value(composite.value, ConstraintExtension)
+            return Composite(
+                annotate_with_constraint(
+                    new_value, EquivalentConstraint.make([constraint, existing])
+                ),
+                composite.varname,
+                composite.node,
+            )
+        return Composite(self.visit(node), None, node)
+
     def visit_Compare(self, node: ast.Compare) -> Value:
         nodes = [node.left, *node.comparators]
-        vals = [self._visit_possible_constraint(node) for node in nodes]
+        composites = [self._composite_from_possible_constraint(node) for node in nodes]
         results = []
         constraints = []
-        for i, (rhs_node, rhs) in enumerate(zip(nodes, vals)):
+        for i, (rhs_node, rhs) in enumerate(zip(nodes, composites)):
             if i == 0:
                 continue
             op = node.ops[i - 1]
             lhs_node = nodes[i - 1]
-            lhs = vals[i - 1]
+            lhs = composites[i - 1]
             result = self._visit_single_compare(lhs_node, lhs, op, rhs_node, rhs, node)
             constraints.append(extract_constraints(result))
             result, _ = unannotate_value(result, ConstraintExtension)
@@ -10337,12 +10370,14 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     def _visit_single_compare(
         self,
         lhs_node: ast.expr,
-        lhs: Value,
+        lhs_composite: Composite,
         op: ast.cmpop,
         rhs_node: ast.expr,
-        rhs: Value,
+        rhs_composite: Composite,
         parent_node: ast.AST,
     ) -> Value:
+        lhs = lhs_composite.value
+        rhs = rhs_composite.value
         self._check_dataclass_order_comparison(op, lhs, rhs, parent_node)
 
         lhs_for_unsafe = lhs
@@ -10386,6 +10421,10 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         elif isinstance(lhs, KnownValue):
             constraint = self._constraint_from_compare_op(
                 rhs_node, lhs.val, op, is_right=False
+            )
+        elif isinstance(op, ast.Is):
+            constraint = self._constraint_from_identity_compare(
+                lhs_composite.varname, rhs_composite.varname, rhs_node
             )
         else:
             constraint = NULL_CONSTRAINT
@@ -10469,6 +10508,35 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         if definite_value is not None:
             val = annotate_value(val, [DefiniteValueExtension(definite_value)])
         return annotate_with_constraint(val, constraint)
+
+    def _constraint_from_identity_compare(
+        self,
+        lhs_varname: VarnameWithOrigin | None,
+        rhs_varname: VarnameWithOrigin | None,
+        rhs_node: ast.AST,
+    ) -> AbstractConstraint:
+        if lhs_varname is None or rhs_varname is None:
+            return NULL_CONSTRAINT
+
+        def predicate_func(value: Value, positive: bool) -> Value | None:
+            if not positive:
+                return value
+            value = _drop_uninitialized_value(value)
+            if value is UNINITIALIZED_VALUE:
+                return None
+            other_value, _, _ = self.scopes.peek_with_scope(
+                rhs_varname.get_varname(), rhs_node, self.state, can_assign_ctx=self
+            )
+            other_value, _ = unannotate_value(other_value, ConstraintExtension)
+            other_value = _drop_uninitialized_value(other_value)
+            if other_value is UNINITIALIZED_VALUE:
+                return value
+            intersected = intersect_values(value, other_value, self)
+            if intersected is NO_RETURN_VALUE:
+                return None
+            return intersected
+
+        return Constraint(lhs_varname, ConstraintType.predicate, True, predicate_func)
 
     def _constraint_from_compare_op(
         self, constrained_node: ast.AST, other_val: Any, op: ast.AST, *, is_right: bool
@@ -11167,21 +11235,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         self.scopes.current_scope().add_constraint(constraint, node, self.state)
 
     def _visit_possible_constraint(self, node: ast.AST) -> Value:
-        if isinstance(node, (ast.Name, ast.Attribute, ast.Subscript)):
-            composite = self.composite_from_node(node)
-            if composite.varname is not None:
-                constraint = Constraint(
-                    composite.varname, ConstraintType.is_truthy, True, None
-                )
-                existing = extract_constraints(composite.value)
-                new_value, _ = unannotate_value(composite.value, ConstraintExtension)
-                return annotate_with_constraint(
-                    new_value, EquivalentConstraint.make([constraint, existing])
-                )
-            else:
-                return composite.value
-        else:
-            return self.visit(node)
+        return self._composite_from_possible_constraint(node).value
 
     def visit_Break(self, node: ast.Break) -> None:
         self._set_name_in_scope(LEAVES_LOOP, node, AnyValue(AnySource.marker))
@@ -15443,7 +15497,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     )
                     for val in callee.vals
                 ]
-
             pairs = [
                 unannotate_value(val, NoReturnConstraintExtension) for val in values
             ]
@@ -16010,10 +16063,18 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             self.attribute_checker.record_type_has_dynamic_attrs(typ)
 
     def _record_type_attr_set(
-        self, typ: type | str, attr_name: str, node: ast.AST | None, value: Value
+        self,
+        typ: type | str,
+        attr_name: str,
+        node: ast.AST | None,
+        value: Value,
+        *,
+        is_synthetic: bool = False,
     ) -> None:
         if self.attribute_checker is not None:
-            self.attribute_checker.record_attribute_set(typ, attr_name, node, value)
+            self.attribute_checker.record_attribute_set(
+                typ, attr_name, node, value, is_synthetic=is_synthetic
+            )
 
     def _attribute_write_types_for_value(self, value: Value) -> set[type]:
         if isinstance(value, AnnotatedValue):
@@ -16054,11 +16115,15 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         attr_name: str,
         node: ast.AST | None,
         value: Value | None,
+        *,
+        is_synthetic: bool = False,
     ) -> None:
         if value is None:
             return
         for typ in self._attribute_write_types_for_value(root_value):
-            self._record_type_attr_set(typ, attr_name, node, value)
+            self._record_type_attr_set(
+                typ, attr_name, node, value, is_synthetic=is_synthetic
+            )
 
     def _record_type_has_dynamic_attrs_for_value(self, root_value: Value) -> None:
         for typ in self._attribute_write_types_for_value(root_value):
@@ -16366,6 +16431,8 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 attribute_checker.attributes_read[serialized] += attrs
             for serialized, attrs in checker.attributes_set.items():
                 attribute_checker.attributes_set[serialized] |= attrs
+            for serialized, attrs in checker.inferred_attributes_set.items():
+                attribute_checker.inferred_attributes_set[serialized] |= attrs
             for serialized, attrs in checker.attribute_values.items():
                 for attr_name, value in attrs.items():
                     attribute_checker.merge_attribute_value(

@@ -340,6 +340,33 @@ def _combine_signatures(signatures: Sequence[Signature]) -> ConcreteSignature | 
     return OverloadedSignature(list(signatures))
 
 
+def _signature_from_intersection_members(
+    signatures: Sequence[MaybeSignature | None],
+) -> MaybeSignature:
+    """Return a callable signature for an intersection value.
+
+    Non-callable members of an intersection should not block calls through the
+    callable members. For example, ``Callable[..., int] & Predicate[...]`` is
+    still callable and should preserve the callable branch's signature.
+    """
+    available_sigs = [sig for sig in signatures if sig is not None]
+    if not available_sigs:
+        return None
+    if len(available_sigs) == 1:
+        return _strip_signature_deprecation(available_sigs[0])
+    concrete_sigs = list(
+        chain.from_iterable(_iter_signature_variants(sig) for sig in available_sigs)
+    )
+    if not concrete_sigs:
+        return None
+    if any(sig is ANY_SIGNATURE for sig in concrete_sigs):
+        return ANY_SIGNATURE
+    combined = _combine_signatures(concrete_sigs)
+    if combined is None:
+        return None
+    return _strip_signature_deprecation(combined)
+
+
 def _make_incompatible_constructor_signature(instance_type: Value) -> Signature:
     return Signature.make(
         [
@@ -2676,30 +2703,16 @@ class Checker:
             else:
                 return None
         elif isinstance(value, IntersectionValue):
-            # TODO: This is only a stopgap. Callable intersections should not reuse
-            # overload semantics, and the logic likely belongs in the call-checking
-            # path rather than signature_from_value().
-            sigs = [
-                self.signature_from_value(
-                    subval,
-                    get_return_override=get_return_override,
-                    get_call_attribute=get_call_attribute,
-                )
-                for subval in value.vals
-            ]
-            if any(sig is None for sig in sigs):
-                return None
-            concrete_sigs = list(
-                chain.from_iterable(_iter_signature_variants(sig) for sig in sigs)
+            return _signature_from_intersection_members(
+                [
+                    self.signature_from_value(
+                        subval,
+                        get_return_override=get_return_override,
+                        get_call_attribute=get_call_attribute,
+                    )
+                    for subval in value.vals
+                ]
             )
-            if not concrete_sigs:
-                return None
-            if any(sig is ANY_SIGNATURE for sig in concrete_sigs):
-                return ANY_SIGNATURE
-            combined = _combine_signatures(concrete_sigs)
-            if combined is None:
-                return None
-            return _strip_signature_deprecation(combined)
         else:
             return None
 
