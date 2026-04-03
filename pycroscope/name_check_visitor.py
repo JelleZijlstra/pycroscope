@@ -4341,34 +4341,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                             is_protocol=False,
                         )
                     )
-                elif any(
-                    _type_param_uses_infer_variance(type_param)
-                    for type_param in registered_type_param_values
-                ):
-                    inferred_type_params = (
-                        self._infer_type_param_variances_from_polarities(
-                            registered_type_param_values,
-                            class_type_param_polarities,
-                            is_protocol=False,
-                        )
-                    )
-                    inferred_by_identity = {
-                        type_param.typevar: type_param.variance
-                        for type_param in inferred_type_params
-                    }
-                    inferred_registration_type_params = [
-                        (
-                            replace(
-                                type_param,
-                                variance=inferred_by_identity.get(
-                                    type_param.typevar, type_param.variance
-                                ),
-                            )
-                            if _type_param_uses_infer_variance(type_param)
-                            else type_param
-                        )
-                        for type_param in registered_type_param_values
-                    ]
 
                 if inferred_registration_type_params is not None:
                     self.checker.register_synthetic_type_bases(
