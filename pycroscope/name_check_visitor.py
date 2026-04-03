@@ -4255,17 +4255,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                         self._type_params_from_base_values(analyzed_base_values),
                     )
                 )
-            if not effective_type_param_values and is_protocol_class:
-                # Runtime protocol classes often expose no generic parameters;
-                # recover class type parameters from protocol bases.
-                protocol_type_params = self._type_params_from_base_values_for_methods(
-                    base_values
-                )
-                if protocol_type_params and all(
-                    isinstance(type_param, TypeVarParam)
-                    for type_param in protocol_type_params
-                ):
-                    effective_type_param_values = protocol_type_params
             if not effective_type_param_values and self.module is None:
                 # In static-fallback mode we can lose Generic[...] type arguments
                 # from base values; recover from base annotation expressions.
@@ -4327,7 +4316,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 type_param_values
                 if type_param_values
                 else self._merge_type_params_using_declared_identities(
-                    self._type_params_from_base_values_for_methods(base_values),
+                    self._type_params_from_base_values(base_values),
                     annotation_type_param_values,
                     append_unmatched_declared=True,
                 )
@@ -4340,9 +4329,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 method_type_params = self._merge_type_params_using_declared_identities(
                     self._order_type_params_by_base_annotation_appearance(
                         node.bases,
-                        self._type_params_from_base_values_for_methods(
-                            analyzed_base_values
-                        ),
+                        self._type_params_from_base_values(analyzed_base_values),
                     ),
                     annotation_type_param_values,
                     append_unmatched_declared=True,
@@ -6260,11 +6247,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 if type_params:
                     return type_params
         return type_params
-
-    def _type_params_from_base_values_for_methods(
-        self, base_values: Sequence[Value]
-    ) -> Sequence[TypeParam]:
-        return list(self._type_params_from_base_values(base_values))
 
     def _base_values_for_generic_analysis(
         self, node: ast.ClassDef, base_values: Sequence[Value]
