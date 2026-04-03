@@ -6308,28 +6308,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     def _type_params_from_base_values_for_methods(
         self, base_values: Sequence[Value]
     ) -> Sequence[TypeParam]:
-        type_params_from_bases = list(self._type_params_from_base_values(base_values))
-        if type_params_from_bases and all(
-            not (
-                isinstance(type_param, ParamSpecParam)
-                or isinstance(type_param, TypeVarTupleParam)
-            )
-            for type_param in type_params_from_bases
-        ):
-            return type_params_from_bases
-        type_params = list(type_params_from_bases)
-        seen = {type_param.typevar for type_param in type_params}
-        for base in base_values:
-            for subval in flatten_values(base):
-                runtime_annotation = self._runtime_annotation_from_value(subval)
-                for runtime_arg in typing.get_args(runtime_annotation):
-                    if not is_typevarlike(runtime_arg):
-                        continue
-                    if runtime_arg in seen:
-                        continue
-                    seen.add(runtime_arg)
-                    type_params.append(make_type_param(runtime_arg, visitor=self))
-        return type_params
+        return list(self._type_params_from_base_values(base_values))
 
     def _base_values_for_generic_analysis(
         self, node: ast.ClassDef, base_values: Sequence[Value]
