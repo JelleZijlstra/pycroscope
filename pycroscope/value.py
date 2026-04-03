@@ -643,7 +643,7 @@ class Value:
         """
         return None
 
-    def get_type_value(self, ctx: CanAssignContext) -> "Value":
+    def get_type_value(self, ctx: "CanAssignContext") -> "Value":
         """Return the type of this object as used for dunder lookups."""
         return self
 
