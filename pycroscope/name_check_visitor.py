@@ -4949,6 +4949,10 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     def _runtime_base_from_value(
         self, base_value: Value, *, allow_synthetic_class_base: bool
     ) -> type | None:
+        if isinstance(base_value, AnnotatedValue):
+            return self._runtime_base_from_value(
+                base_value.value, allow_synthetic_class_base=allow_synthetic_class_base
+            )
         base = replace_fallback(base_value)
         if allow_synthetic_class_base and isinstance(base, SyntheticClassObjectValue):
             class_type = base.class_type
@@ -4959,9 +4963,8 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             return base.val
         if isinstance(base, TypedValue) and isinstance(base.typ, type):
             return base.typ
-        runtime_annotation = self._runtime_annotation_from_value(base_value)
-        if isinstance(runtime_annotation, type):
-            return runtime_annotation
+        if isinstance(base, GenericValue) and isinstance(base.typ, type):
+            return base.typ
         return None
 
     def _runtime_enum_bases_from_values(
@@ -4981,44 +4984,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         if not has_enum_base:
             return None
         return runtime_bases
-
-    def _runtime_annotation_from_value(self, value: Value) -> object:
-        if isinstance(value, AnnotatedValue):
-            return self._runtime_annotation_from_value(value.value)
-        if isinstance(value, TypeVarValue):
-            return value.typevar_param.typevar
-        if isinstance(value, KnownValue):
-            return value.val
-        if isinstance(value, GenericValue):
-            if isinstance(value.typ, str):
-                return typing.Any
-            runtime_args = tuple(
-                self._runtime_annotation_from_value(arg) for arg in value.args
-            )
-            runtime_typ: Any = value.typ
-            try:
-                if len(runtime_args) == 1:
-                    return runtime_typ[runtime_args[0]]
-                return runtime_typ[runtime_args]
-            except Exception:
-                return typing.Any
-        if isinstance(value, TypedValue):
-            return value.typ if not isinstance(value.typ, str) else typing.Any
-        if isinstance(value, MultiValuedValue):
-            runtime_members = [
-                self._runtime_annotation_from_value(subval) for subval in value.vals
-            ]
-            if not runtime_members:
-                return typing.Any
-            result = runtime_members[0]
-            for member in runtime_members[1:]:
-                try:
-                    runtime_result: Any = result
-                    result = runtime_result | member
-                except Exception:
-                    return typing.Any
-            return result
-        return typing.Any
 
     def _apply_synthetic_enum_semantics(
         self, node: ast.ClassDef, synthetic_type: TypeObject
