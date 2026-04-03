@@ -211,12 +211,10 @@ class Composite(NamedTuple):
         )
 
     def __eq__(self, other: "Composite") -> bool:
+        if not isinstance(other, Composite):
+            return NotImplemented
         # Skip the AST node because it's hard to get right in tests.
-        return (
-            isinstance(other, Composite)
-            and self.value == other.value
-            and self.varname == other.varname
-        )
+        return self.value == other.value and self.varname == other.varname
 
 
 @dataclass(frozen=True)

@@ -17,6 +17,8 @@ from functools import cache
 from itertools import chain
 from typing import TypeVar, cast
 
+from typing_extensions import assert_never
+
 import pycroscope
 from pycroscope.type_evaluation import KWARGS
 
@@ -1116,11 +1118,13 @@ class Checker:
             return None
         if isinstance(typ, str):
             return typ.rsplit(".", maxsplit=1)[-1]
-        if isinstance(typ, type):
+        elif isinstance(typ, type):
             name = safe_getattr(typ, "__name__", None)
             if isinstance(name, str):
                 return name
-        return None
+            return None
+        else:
+            assert_never(typ)
 
     def _bind_constructor_like_signature(
         self,
@@ -1596,11 +1600,8 @@ class Checker:
         new_symbol = tobj.get_declared_symbol("__new__")
         has_direct_new = new_symbol is not None and new_symbol.is_method
         if has_direct_new:
-            method = (
-                get_synthetic_member_initializer(tobj, "__new__", self)
-                or UNINITIALIZED_VALUE
-            )
-            if not isinstance(method, Value):
+            method = get_synthetic_member_initializer(tobj, "__new__", self)
+            if method is None:
                 return True
         else:
             method = self.get_attribute_from_value(synthetic_class, "__new__")
@@ -1703,17 +1704,16 @@ class Checker:
             return value.class_type
         if isinstance(value.class_type, GenericValue):
             return value.class_type
-        if isinstance(value.class_type, TypedValue):
-            type_params = self.get_type_parameters(value.class_type.typ)
-            if not type_params:
-                type_params = list(self._infer_synthetic_type_params(value))
-            if type_params:
-                args = (
-                    _apply_type_parameter_defaults(type_params, self)
-                    if apply_default_type_args
-                    else [type_param_to_value(type_param) for type_param in type_params]
-                )
-                return GenericValue(value.class_type.typ, args)
+        type_params = self.get_type_parameters(value.class_type.typ)
+        if not type_params:
+            type_params = list(self._infer_synthetic_type_params(value))
+        if type_params:
+            args = (
+                _apply_type_parameter_defaults(type_params, self)
+                if apply_default_type_args
+                else [type_param_to_value(type_param) for type_param in type_params]
+            )
+            return GenericValue(value.class_type.typ, args)
         return value.class_type
 
     def _get_synthetic_constructor_method_signature(
@@ -1776,10 +1776,8 @@ class Checker:
                     or self._is_uninformative_constructor_signature(direct_concrete)
                 ):
                     method_sig = resolved_sig
-        if (
-            method_name == "__init__"
-            and isinstance(value.class_type, TypedValue)
-            and isinstance(method_sig, (Signature, OverloadedSignature))
+        if method_name == "__init__" and isinstance(
+            method_sig, (Signature, OverloadedSignature)
         ):
             source_sigs = (
                 method_sig.signatures
@@ -1959,8 +1957,7 @@ class Checker:
         apply_default_type_args: bool = True,
     ) -> ConcreteSignature | None:
         if (
-            isinstance(value.class_type, TypedValue)
-            and isinstance(value.class_type.typ, type)
+            isinstance(value.class_type.typ, type)
             and safe_issubclass(value.class_type.typ, enum.Enum)
             and isinstance(
                 enum_argspec := self._as_concrete_signature(
@@ -2728,7 +2725,6 @@ class Checker:
         if not value.members:
             return None
         root = replace_fallback(value.root)
-        class_type: type | str | None = None
         preserve_exact_return = False
         if isinstance(root, KnownValue) and isinstance(root.val, type):
             class_type = root.val
@@ -2749,8 +2745,7 @@ class Checker:
                     preserve_exact_return = True
         elif isinstance(root, SyntheticClassObjectValue):
             synthetic_root = root
-            if isinstance(root.class_type, TypedValue):
-                class_type = root.class_type.typ
+            class_type = root.class_type.typ
             origin_argspec = self.signature_from_value(
                 root,
                 get_return_override=get_return_override,
