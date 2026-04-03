@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Fix bare generic-class annotations so user-defined generics like `Capybara` now report `missing_generic_parameters`, and partially specialized forms like `Capybara[int]` report `invalid_specialization`.
 - Fix `hasattr()`-driven narrowing bookkeeping so synthetic attributes no longer show up as fake unused members, and looped identity checks like `value.param_spec is ps_args.param_spec` no longer poison nearby temporary-variable reads.
 - Fix `hasattr()`-based intersection lookup so class-object attributes like `cls.__name__` remain available after narrowing through unrelated `HasAttr[...]` predicates.
 - Fix class-object narrowing for unconstrained generic values, so combined checks like `isinstance(x, type) and issubclass(x, Base)` now preserve the refined `type[Base]` information inside the resulting intersection instead of getting stuck at `Any & type`.

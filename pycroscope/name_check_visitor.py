@@ -4550,7 +4550,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     synthetic_typeddict, node
                 )
                 if class_obj is None:
-                    value = SyntheticClassObjectValue(node.name, typeddict_value)
+                    value = SyntheticClassObjectValue(
+                        node.name, typeddict_value, class_key=class_key
+                    )
             elif synthetic_class is not None:
                 if class_scope_values is None:
                     # In importable mode we may have populated the synthetic class
@@ -9075,27 +9077,45 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         return False
 
     def check_for_missing_generic_params(self, node: ast.AST, value: Value) -> None:
-        if not isinstance(value, KnownValue):
+        display_value: object
+        val: type | str | None
+        if isinstance(value, KnownValue):
+            display_value = value.val
+            val_obj = value.val
+            if not safe_isinstance(val_obj, type):
+                args = get_args(val_obj)
+                if args:
+                    return
+                val_obj = get_origin(val_obj)
+                if not safe_isinstance(val_obj, type):
+                    return
+                if val_obj is tuple and value.val is not tuple:
+                    # tuple[()]
+                    return
+            if isinstance(val_obj, GenericAlias):
+                return
+            val = val_obj
+        elif isinstance(value, SyntheticClassObjectValue):
+            if not isinstance(node, (ast.Name, ast.Attribute)):
+                return
+            if type(value.class_type) is TypedValue:
+                if not self._is_local_synthetic_class_key(value.class_type.typ):
+                    return
+                display_value = value.class_type.typ
+                val = value.class_type.typ
+            elif value.class_key is not None:
+                display_value = value.class_key
+                val = value.class_key
+            else:
+                return
+        else:
             return
-        val = value.val
-        if not safe_isinstance(val, type):
-            args = get_args(val)
-            if args:
-                return
-            val = get_origin(val)
-            if not safe_isinstance(val, type):
-                return
-            if val is tuple and value.val is not tuple:
-                # tuple[()]
-                return
-        if isinstance(val, GenericAlias):
-            return
-        generic_params = self.arg_spec_cache.get_type_parameters(val)
+        generic_params = self.checker.get_type_parameters(val)
         if not generic_params:
             return
         self.show_error(
             node,
-            f"Missing type parameters for generic type {stringify_object(value.val)}",
+            f"Missing type parameters for generic type {stringify_object(display_value)}",
             error_code=ErrorCode.missing_generic_parameters,
         )
 
@@ -9104,6 +9124,13 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         return annotation_expr_from_value(
             val, visitor=self, node=node, suppress_errors=self._is_collecting()
         )
+
+    def _is_local_synthetic_class_key(self, typ: type | str) -> bool:
+        if not isinstance(typ, str):
+            return False
+        if self.module is not None and self.module.__name__:
+            return typ.startswith(f"{self.module.__name__}.")
+        return typ.startswith(f"{self.filename}.")
 
     def _check_method_first_arg(
         self, node: FunctionNode, function_info: FunctionInfo
@@ -13452,7 +13479,52 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                         and is_typing_name(stripped_root.value.val, "Literal")
                         and not _is_runtime_literal_index(index)
                     )
+                    or (
+                        isinstance(stripped_root.value, KnownValue)
+                        and isinstance(stripped_root.value.val, type)
+                        and not is_typeddict(stripped_root.value.val)
+                        and bool(
+                            type_params := self.checker.get_type_parameters(
+                                stripped_root.value.val
+                            )
+                        )
+                        and not (
+                            len(type_params) == 1
+                            and isinstance(type_params[0], ParamSpecParam)
+                        )
+                    )
+                    or (
+                        isinstance(stripped_root.value, SyntheticClassObjectValue)
+                        and type(stripped_root.value.class_type) is TypedValue
+                        and self._is_local_synthetic_class_key(
+                            stripped_root.value.class_type.typ
+                        )
+                        and bool(
+                            type_params := self.checker.get_type_parameters(
+                                stripped_root.value.class_type.typ
+                            )
+                        )
+                        and not (
+                            len(type_params) == 1
+                            and isinstance(type_params[0], ParamSpecParam)
+                        )
+                    )
+                    or (
+                        isinstance(stripped_root.value, SyntheticClassObjectValue)
+                        and isinstance(stripped_root.value.class_type, TypedDictValue)
+                        and stripped_root.value.class_key is not None
+                        and bool(
+                            type_params := self.checker.get_type_parameters(
+                                stripped_root.value.class_key
+                            )
+                        )
+                        and not (
+                            len(type_params) == 1
+                            and isinstance(type_params[0], ParamSpecParam)
+                        )
+                    )
                     or _contains_unpack_annotation_value(index)
+                    or not _is_runtime_literal_index(index)
                     or (
                         isinstance(index, KnownValue)
                         and index.val == ()
@@ -13633,12 +13705,16 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         synthetic_typ: type | str
         root_for_partial: Value
         if isinstance(value, KnownValue) and isinstance(value.val, type):
+            if is_typeddict(value.val):
+                return None
             synthetic_class = self.checker.get_synthetic_class(value.val)
             if synthetic_class is None:
                 return None
             synthetic_typ = synthetic_class.class_type.typ
             root_for_partial = synthetic_class
         elif isinstance(value, SyntheticClassObjectValue):
+            if type(value.class_type) is not TypedValue:
+                return None
             synthetic_typ = value.class_type.typ
             root_for_partial = value
         else:
@@ -14014,6 +14090,13 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             return Composite(self.being_assigned, composite, node)
         elif isinstance(node.ctx, ast.Load):
             root_composite = self._get_locally_narrowed_composite(root_composite, node)
+            if self.in_annotation and isinstance(root_composite.value, KnownValue):
+                try:
+                    value = KnownValue(getattr(root_composite.value.val, node.attr))
+                except AttributeError:
+                    pass
+                else:
+                    return Composite(value, composite, node)
             if self._is_checking():
                 if (
                     isinstance(root_composite.value, KnownValue)
@@ -17669,6 +17752,7 @@ def _should_use_static_annotation_subscript(value: Value) -> bool:
         root is typing.Callable
         or root is collections.abc.Callable
         or is_typing_name(root, "Callable")
+        or is_typing_name(root, "Annotated")
         or root is AsynqCallable
     )
 

@@ -2586,10 +2586,11 @@ class SyntheticClassObjectValue(Value):
 
     name: str
     class_type: TypedValue | TypedDictValue
+    class_key: type | str | None = None
 
     def substitute_typevars(self, typevars: TypeVarMap) -> "SyntheticClassObjectValue":
         substituted = self.class_type.substitute_typevars(typevars)
-        return SyntheticClassObjectValue(self.name, substituted)
+        return SyntheticClassObjectValue(self.name, substituted, self.class_key)
 
     def walk_values(self) -> Iterable["Value"]:
         yield self
