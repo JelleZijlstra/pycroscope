@@ -2212,7 +2212,7 @@ def _subclasses_impl(ctx: CallContext) -> Value:
 
 
 def _type_impl(ctx: CallContext) -> Value:
-    return ctx.vars["object"].get_type_value()
+    return ctx.vars["object"].get_type_value(ctx.visitor)
 
 
 def _assert_is_impl(ctx: CallContext) -> ImplReturn:

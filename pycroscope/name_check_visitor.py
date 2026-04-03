@@ -13675,7 +13675,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         elif isinstance(callee_val, KnownValueWithTypeVars):
             fallback_lookup_val = callee_val
         else:
-            fallback_lookup_val = callee_val.get_type_value()
+            fallback_lookup_val = callee_val.get_type_value(self)
         if isinstance(synthetic_lookup_val, TypedValue) and isinstance(
             synthetic_lookup_val.typ, str
         ):
