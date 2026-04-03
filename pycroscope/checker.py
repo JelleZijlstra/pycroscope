@@ -2602,21 +2602,24 @@ class Checker:
             )
             if origin_argspec is None:
                 origin_argspec = self.arg_spec_cache.get_argspec(root.val)
-            elif self._runtime_has_explicit_new_return_annotation(root.val):
-                runtime_constructor_sig = self._get_runtime_constructor_signature(
-                    root.val
-                )
-                if runtime_constructor_sig is not None:
-                    origin_argspec = runtime_constructor_sig
-                    preserve_exact_return = True
+            preserve_exact_return = self._runtime_has_explicit_new_return_annotation(
+                root.val
+            )
         elif isinstance(root, SyntheticClassObjectValue):
             synthetic_root = root
             class_type = root.class_type.typ
-            origin_argspec = self.signature_from_value(
+            origin_argspec = self._get_synthetic_constructor_signature(
                 root,
                 get_return_override=get_return_override,
                 get_call_attribute=get_call_attribute,
+                apply_default_type_args=False,
             )
+            if origin_argspec is None:
+                origin_argspec = self.signature_from_value(
+                    root,
+                    get_return_override=get_return_override,
+                    get_call_attribute=get_call_attribute,
+                )
             if self._synthetic_has_explicit_new_return_annotation(
                 root,
                 get_return_override=get_return_override,
@@ -2625,22 +2628,6 @@ class Checker:
                 preserve_exact_return = True
         else:
             return None
-        if synthetic_root is not None:
-            synthetic_origin_argspec = self._get_synthetic_constructor_signature(
-                synthetic_root,
-                get_return_override=get_return_override,
-                get_call_attribute=get_call_attribute,
-                apply_default_type_args=False,
-            )
-            if synthetic_origin_argspec is not None and (
-                origin_argspec is None
-                or not isinstance(origin_argspec, (Signature, OverloadedSignature))
-                or self._is_uninformative_constructor_signature(origin_argspec)
-                or not self._is_uninformative_constructor_signature(
-                    synthetic_origin_argspec
-                )
-            ):
-                origin_argspec = synthetic_origin_argspec
         if origin_argspec is None:
             return None
         if class_type is None:
