@@ -10259,7 +10259,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         if definite_value is not None:
             out = annotate_value(out, [DefiniteValueExtension(definite_value)])
         if is_and:
-            constraint = AndConstraint.make(reversed(out_constraints))
+            constraint = AndConstraint.make(out_constraints)
             return annotate_with_constraint(out, constraint)
         else:
             # For OR conditions, no need to add a constraint here; we'll

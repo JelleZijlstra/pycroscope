@@ -2211,6 +2211,10 @@ def _subclasses_impl(ctx: CallContext) -> Value:
     return GenericValue(list, [TypedValue(type)])
 
 
+def _type_impl(ctx: CallContext) -> Value:
+    return ctx.vars["object"].get_type_value()
+
+
 def _assert_is_impl(ctx: CallContext) -> ImplReturn:
     return _qcore_assert_impl(ctx, True)
 
@@ -2924,6 +2928,31 @@ def get_default_argspecs() -> dict[object, Signature]:
             callable=get_mro,
         ),
         # builtins
+        OverloadedSignature(
+            [
+                Signature.make(
+                    [SigParameter("object", _POS_ONLY)],
+                    callable=type,
+                    impl=_type_impl,
+                    return_annotation=TypedValue(type),
+                ),
+                Signature.make(
+                    [
+                        SigParameter("name", _POS_ONLY, annotation=TypedValue(str)),
+                        SigParameter(
+                            "bases",
+                            _POS_ONLY,
+                            annotation=GenericValue(tuple, [TypedValue(type)]),
+                        ),
+                        SigParameter(
+                            "namespace", _POS_ONLY, annotation=TypedValue(dict)
+                        ),
+                    ],
+                    callable=type,
+                    return_annotation=TypedValue(type),
+                ),
+            ]
+        ),
         Signature.make(
             [SigParameter("self", _POS_ONLY)],
             callable=type.__subclasses__,
@@ -3597,7 +3626,15 @@ def get_default_argspecs() -> dict[object, Signature]:
                 impl=_dataclass_transform_impl,
             )
             signatures.append(sig)
-    return {sig.callable: sig for sig in signatures}
+    result: dict[object, Signature | OverloadedSignature] = {}
+    for sig in signatures:
+        if isinstance(sig, OverloadedSignature):
+            callable_obj = sig.signatures[0].callable
+            assert all(inner.callable == callable_obj for inner in sig.signatures)
+            result[callable_obj] = sig
+        else:
+            result[sig.callable] = sig
+    return result
 
 
 def _re_impl_with_pattern(ctx: CallContext) -> Value:

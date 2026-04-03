@@ -1752,6 +1752,32 @@ class TestIssubclass(TestNameCheckVisitorBase):
                 assert_is_value(x, SubclassValue(TypedValue(int)))
 
     @assert_passes()
+    def test_combined_isinstance_and_issubclass_narrow_generic_any(self) -> None:
+        from typing import TypeVar
+
+        T = TypeVar("T")
+
+        class Base:
+            pass
+
+        def get_value() -> T:
+            raise NotImplementedError
+
+        def takes_base_model(cls: type[Base]) -> None:
+            pass
+
+        def capybara() -> None:
+            typ = get_value()
+            assert_is_value(typ, AnyValue(AnySource.generic_argument))
+            if isinstance(typ, type) and issubclass(typ, Base):
+                assert_is_value(
+                    typ,
+                    AnyValue(AnySource.generic_argument)
+                    & SubclassValue(TypedValue(Base)),
+                )
+                takes_base_model(typ)
+
+    @assert_passes()
     def test_rejects_invalid_classinfo(self) -> None:
         from typing import Mapping
 

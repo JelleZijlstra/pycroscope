@@ -2754,10 +2754,16 @@ class SubclassValue(Value):
         self, other: Value, ctx: CanAssignContext, mode: OverlapMode
     ) -> CanAssignError | None:
         if isinstance(other, (KnownValue, TypedValue)):
-            can_assign = self.can_assign(other, ctx)
-            if not isinstance(can_assign, CanAssignError):
+            left_errors = self.can_assign(other, ctx)
+            if not isinstance(left_errors, CanAssignError):
                 return None
-            return can_assign
+            right_errors = other.can_assign(self, ctx)
+            if not isinstance(right_errors, CanAssignError):
+                return None
+            return CanAssignError(
+                f"Types {self} and {other} cannot overlap",
+                children=[left_errors, right_errors],
+            )
         elif isinstance(other, SubclassValue):
             left_errors = self.can_assign(other, ctx)
             if not isinstance(left_errors, CanAssignError):

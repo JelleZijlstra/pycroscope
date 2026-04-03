@@ -584,7 +584,7 @@ class TestConstructors(TestNameCheckVisitorBase):
                 GenericValue(frozenset, [AnyValue(AnySource.generic_argument)]),
             )
 
-            assert_type(type("x"), type)
+            assert_is_value(type("x"), KnownValue(str))
             assert_type(type("x", (), {}), type)
 
 

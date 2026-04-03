@@ -14,7 +14,7 @@ from . import tests, value
 from .checker import Checker
 from .name_check_visitor import NameCheckVisitor
 from .predicates import MinLen
-from .relations import _extract_type_form, intersect_values
+from .relations import _extract_type_form, intersect_values, is_subtype
 from .signature import ELLIPSIS_PARAM, Signature
 from .stacked_scopes import Composite
 from .test_node_visitor import skip_if_not_installed
@@ -759,6 +759,21 @@ def test_synthetic_class_object_value_unresolved_nominal_class() -> None:
     assert_can_assign(SubclassValue(TypedValue("mod.X")), unresolved_cls)
     assert_cannot_assign(SubclassValue(TypedValue("mod.Y")), unresolved_cls)
     assert_cannot_assign(unresolved_cls, other_cls)
+
+
+def test_specialized_class_object_is_not_a_supertype_of_plain_type() -> None:
+    class Base:
+        pass
+
+    specialized = SubclassValue(TypedValue(Base))
+    plain_type = TypedValue(type)
+    exact_base = value.SyntheticClassObjectValue("Base", TypedValue(Base))
+
+    assert_can_assign(specialized, plain_type)
+    assert_can_assign(specialized, exact_base)
+    assert_can_assign(plain_type, exact_base)
+    assert not is_subtype(specialized, plain_type, CTX)
+    assert intersect_values(specialized, plain_type, CTX) == specialized
 
 
 def test_exact_tuple_subclass_members_from_runtime_bases() -> None:
