@@ -593,9 +593,7 @@ class TestTypeAliasType(TestNameCheckVisitorBase):
             fail_after_first=False,
         )
         assert len(errors) == 1
-        assert (
-            "Type argument int is not compatible with ~S: str" in errors[0]["message"]
-        )
+        assert "Type argument int is not compatible with ~S" in errors[0]["message"]
 
     @skip_before((3, 12))
     def test_312_runtime_typealiastype_variadic_specialization(self):

@@ -47,7 +47,7 @@ from types import FunctionType, ModuleType
 from typing import Any, Optional, TypeGuard, TypeVar, Union
 
 import typing_extensions
-from typing_extensions import NoDefault, Protocol, assert_never
+from typing_extensions import NoDefault, Protocol, Sentinel, assert_never
 
 import pycroscope
 from pycroscope.error_code import Error, ErrorCode
@@ -1105,27 +1105,59 @@ class VoidValue(Value):
 VOID = VoidValue()
 
 
-def _type_param_to_string(
-    typevar: TypeVarLike, bound: Value | None, constraints: Sequence[Value]
-) -> str:
-    if bound is not None:
-        return f"{typevar}: {bound}"
-    if constraints:
-        constraint_list = ", ".join(map(str, constraints))
-        return f"{typevar}: ({constraint_list})"
-    return str(typevar)
-
-
 _NO_DEFAULT = object()
+
+
+@dataclass(frozen=True)
+class ClassOwner:
+    module: str
+    qualname: str
+    identity: ast.AST | type[object]
+
+    def __str__(self) -> str:
+        return f"{self.module}.{self.qualname}"
+
+
+@dataclass(frozen=True)
+class FunctionOwner:
+    module: str
+    qualname: str
+    identity: ast.AST | object
+
+    def __str__(self) -> str:
+        return f"{self.module}.{self.qualname}"
+
+
+@dataclass(frozen=True)
+class AliasOwner:
+    module: str
+    qualname: str
+    identity: ast.AST | object
+
+    def __str__(self) -> str:
+        return f"{self.module}.{self.qualname}"
+
+
+TypeParamOwner = ClassOwner | FunctionOwner | AliasOwner
+
+
+def _type_param_to_string(prefix: str, name: str, owner: TypeParamOwner | None) -> str:
+    result = f"{prefix}{name}"
+    if owner is not None:
+        result = f"{result}@{owner}"
+    return result
 
 
 @dataclass(frozen=True)
 class TypeVarParam:
     typevar: TypeVarType
+    owner: TypeParamOwner | None = None  # TODO: make required
     bound: Value | None = None
     default: Value | None = None
     constraints: Sequence[Value] = ()
     variance: Variance = Variance.INVARIANT
+    is_self: bool = False
+    """Whether this TypeVar represents typing.Self."""
 
     def __post_init__(self) -> None:
         if self.bound is None:
@@ -1176,12 +1208,13 @@ class TypeVarParam:
         return None
 
     def __str__(self) -> str:
-        return _type_param_to_string(self.typevar, self.bound, self.constraints)
+        return _type_param_to_string("", str(self.typevar), self.owner)
 
 
 @dataclass(frozen=True)
 class ParamSpecParam:
     param_spec: ParamSpecLike
+    owner: TypeParamOwner | None = None  # TODO: make required
     default: Value | None = None
     variance: Variance = Variance.INVARIANT
 
@@ -1202,12 +1235,13 @@ class ParamSpecParam:
             yield from self.default.walk_values()
 
     def __str__(self) -> str:
-        return str(self.param_spec)
+        return _type_param_to_string("**", self.param_spec.__name__, self.owner)
 
 
 @dataclass(frozen=True)
 class TypeVarTupleParam:
     typevar_tuple: TypeVarTupleLike
+    owner: TypeParamOwner | None = None  # TODO: make required
     default: Value | None = None
     variance: Variance = Variance.INVARIANT
 
@@ -1216,7 +1250,7 @@ class TypeVarTupleParam:
         return self.typevar_tuple
 
     def __str__(self) -> str:
-        return str(self.typevar)
+        return _type_param_to_string("*", self.typevar_tuple.__name__, self.owner)
 
 
 TypeParam = TypeVarParam | ParamSpecParam | TypeVarTupleParam
@@ -3173,7 +3207,7 @@ class TypeVarTupleBindingValue(Value):
         return ", ".join(parts) if parts else "tuple[()]"
 
 
-SelfTVV = TypeVarValue(TypeVarParam(SelfT))
+SelfTVV = TypeVarValue(TypeVarParam(typevar=SelfT))
 _NestedSelfT = TypeVar("_NestedSelfT")
 
 
@@ -4163,9 +4197,18 @@ def unite_values(*values: Value) -> Value:
 
 T = TypeVar("T")
 T_co = TypeVar("T_co", covariant=True)
-IterableValue = GenericValue(collections.abc.Iterable, [TypeVarValue(TypeVarParam(T))])
+
+T_iter = TypeVarParam(
+    typevar=T, owner=AliasOwner(__name__, "IterableValue", Sentinel("IterableValue"))
+)
+IterableValue = GenericValue(collections.abc.Iterable, [TypeVarValue(T_iter)])
+
+T_aiter = TypeVarParam(
+    typevar=T,
+    owner=AliasOwner(__name__, "AsyncIterableValue", Sentinel("AsyncIterableValue")),
+)
 AsyncIterableValue = GenericValue(
-    collections.abc.AsyncIterable, [TypeVarValue(TypeVarParam(T))]
+    collections.abc.AsyncIterable, [TypeVarValue(T_aiter)]
 )
 
 
@@ -4174,7 +4217,12 @@ class GetItemProto(Protocol[T_co]):
         raise NotImplementedError
 
 
-GetItemProtoValue = GenericValue(GetItemProto, [TypeVarValue(TypeVarParam(T_co))])
+T_getitem = TypeVarParam(
+    typevar=T_co,
+    owner=AliasOwner(__name__, "GetItemProtoValue", Sentinel("GetItemProtoValue")),
+    variance=Variance.COVARIANT,
+)
+GetItemProtoValue = GenericValue(GetItemProto, [TypeVarValue(T_getitem)])
 TypingGenericAlias = type(list[int])
 
 
