@@ -137,8 +137,6 @@ class AttrContext:
     lookup_root_value: Value | None
     attr: str
     options: Options = field(repr=False)
-    skip_mro: bool
-    skip_unwrap: bool
     prefer_typeshed: bool
 
     @property
@@ -196,12 +194,7 @@ class AttrContext:
         self, root_composite: Composite, attr: str
     ) -> "AttrContext":
         return replace(
-            self,
-            root_composite=root_composite,
-            attr=attr,
-            skip_mro=False,
-            skip_unwrap=False,
-            prefer_typeshed=False,
+            self, root_composite=root_composite, attr=attr, prefer_typeshed=False
         )
 
     def get_type_object_attribute_policy(
@@ -846,7 +839,7 @@ class ClassAttributeTransformer(PyObjectSequenceOption[_CAT]):
 
 
 def _unwrap_value_from_subclass(result: Value, ctx: AttrContext) -> Value:
-    if not isinstance(result, KnownValue) or ctx.skip_unwrap:
+    if not isinstance(result, KnownValue):
         return result
     cls_val = result.val
     if (
@@ -1804,7 +1797,7 @@ def _substitute_typevars(
 
 
 def _unwrap_value_from_typed(result: Value, typ: type, ctx: AttrContext) -> Value:
-    if not isinstance(result, KnownValue) or ctx.skip_unwrap:
+    if not isinstance(result, KnownValue):
         return result
     typevars = result.typevars if isinstance(result, KnownValueWithTypeVars) else None
     cls_val = result.val
@@ -2055,9 +2048,6 @@ def _get_classvar_attribute_type_from_runtime_annotations(
         return None
 
     for base_cls in mro:
-        if ctx.skip_mro and base_cls is not typ:
-            continue
-
         try:
             if sys.version_info >= (3, 14):
                 annotations = get_annotations(base_cls, format=Format.FORWARDREF)
@@ -2119,11 +2109,8 @@ def _get_attribute_from_mro(
             pass
         else:
             for base_cls in mro:
-                if ctx.skip_mro and base_cls is not typ:
-                    continue
-
                 typeshed_type = ctx.get_attribute_from_typeshed(
-                    base_cls, on_class=on_class or ctx.skip_unwrap
+                    base_cls, on_class=on_class
                 )
                 if typeshed_type is not UNINITIALIZED_VALUE:
                     if ctx.prefer_typeshed:
@@ -2182,21 +2169,20 @@ def _get_attribute_from_mro(
     if attrs_type is not None:
         return attrs_type, typ, False
 
-    if not ctx.skip_mro:
-        # Even if we didn't find it any __dict__, maybe getattr() finds it directly.
-        try:
-            return KnownValue(getattr(typ, ctx.attr)), typ, True
-        except AttributeError:
-            pass
-        except Exception:
-            if (
-                ctx.attr == "__slots__"
-                and safe_isinstance(typ, type)
-                and ctx.get_synthetic_class(typ) is not None
-            ):
-                return UNINITIALIZED_VALUE, object, False
-            # It exists, but has a broken __getattr__ or something
-            return AnyValue(AnySource.inference), typ, True
+    # Even if we didn't find it any __dict__, maybe getattr() finds it directly.
+    try:
+        return KnownValue(getattr(typ, ctx.attr)), typ, True
+    except AttributeError:
+        pass
+    except Exception:
+        if (
+            ctx.attr == "__slots__"
+            and safe_isinstance(typ, type)
+            and ctx.get_synthetic_class(typ) is not None
+        ):
+            return UNINITIALIZED_VALUE, object, False
+        # It exists, but has a broken __getattr__ or something
+        return AnyValue(AnySource.inference), typ, True
 
     return UNINITIALIZED_VALUE, object, False
 

@@ -366,7 +366,7 @@ def _runtime_deprecation_message(raw_value: object) -> str | None:
     return _accessor_deprecation_message(raw_value)
 
 
-def _accessor_deprecation_message(accessor: object | None) -> str | None:
+def _accessor_deprecation_message(accessor: object) -> str | None:
     deprecated = safe_getattr(accessor, "__deprecated__", None)
     return deprecated if isinstance(deprecated, str) else None
 
