@@ -2985,32 +2985,7 @@ class BoundMethodSignature:
     return_override: Value | None = None
 
     def check_call(self, args: Iterable[Argument], ctx: CheckCallContext) -> Value:
-        self_composite = self.self_composite
-        has_impl = (
-            self.signature.impl is not None
-            if isinstance(self.signature, Signature)
-            else any(sig.impl is not None for sig in self.signature.signatures)
-        )
-        if not has_impl:
-            normalized_value = self_composite.value
-            if isinstance(normalized_value, SequenceValue) and normalized_value.typ in (
-                list,
-                set,
-            ):
-                normalized_value = normalized_value.simplify()
-            elif isinstance(normalized_value, DictIncompleteValue):
-                normalized_value = normalized_value.simplify()
-            elif isinstance(normalized_value, KnownValue):
-                replaced = replace_known_sequence_value(normalized_value)
-                if isinstance(replaced, SequenceValue) and replaced.typ in (list, set):
-                    normalized_value = replaced.simplify()
-                elif isinstance(replaced, DictIncompleteValue):
-                    normalized_value = replaced.simplify()
-            if normalized_value != self_composite.value:
-                self_composite = Composite(
-                    normalized_value, self_composite.varname, self_composite.node
-                )
-        ret = self.signature.check_call([(self_composite, None), *args], ctx)
+        ret = self.signature.check_call([(self.self_composite, None), *args], ctx)
         if self.return_override is not None and not self.signature.has_return_value():
             if isinstance(ret, AnnotatedValue):
                 return annotate_value(self.return_override, ret.metadata)
