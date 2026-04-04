@@ -3974,13 +3974,13 @@ def _protocol_classmethod_receiver_value(
         receiver_type = _receiver_type_value(receiver_value, ctx)
         if receiver_type is not None:
             return SubclassValue.make(receiver_type)
-        return SubclassValue.make(receiver_value.get_type_value(ctx))
+        return receiver_value.get_type_value(ctx)
     receiver_key = _class_key_from_value(receiver_value)
     if receiver_key is not None:
         class_object = _class_object_value_for_key(receiver_key, ctx)
         if class_object is not None:
             return class_object
-    return SubclassValue.make(receiver_value.get_type_value(ctx))
+    return receiver_value.get_type_value(ctx)
 
 
 def _merge_protocol_receiver_typevars(

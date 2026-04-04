@@ -24,7 +24,7 @@ class TestConstructors(TestNameCheckVisitorBase):
         error = errors[0]
         assert error["code"] == ErrorCode.incompatible_call
         assert "object.__init__" not in error["message"]
-        assert "C.__init__" in error["message"]
+        assert "Missing required argument 'x'" in error["message"]
 
     @assert_passes()
     def test_metaclass_call(self):

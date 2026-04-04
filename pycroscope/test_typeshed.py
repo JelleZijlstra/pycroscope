@@ -587,6 +587,9 @@ class TestConstructors(TestNameCheckVisitorBase):
             assert_is_value(type("x"), KnownValue(str))
             assert_type(type("x", (), {}), type)
 
+        def typed(x: str):
+            assert_is_value(type(x), SubclassValue(TypedValue(str)))
+
 
 class Parent(Generic[T]):
     pass
