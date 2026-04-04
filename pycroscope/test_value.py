@@ -9,7 +9,6 @@ from collections import defaultdict
 from typing import NewType
 from unittest import mock
 
-import pytest
 from typing_extensions import Protocol, TypeVarTuple, runtime_checkable
 
 from . import tests, value
@@ -341,8 +340,20 @@ def test_subclass_value() -> None:
 
 
 def test_subclass_value_make_invalid_literal() -> None:
-    with pytest.raises(TypeError, match=r"Cannot construct type\[\.\.\.\]"):
-        SubclassValue.make(KnownValue(1))
+    assert SubclassValue.make(KnownValue(1)) == AnyValue(AnySource.error)
+
+
+def test_subclass_value_make_none_literal() -> None:
+    assert SubclassValue.make(KnownValue(None)) == SubclassValue(TypedValue(type(None)))
+
+
+def test_stringify_object_without_module_name() -> None:
+    def generated() -> None:
+        pass
+
+    generated.__module__ = None
+    generated.__qualname__ = "Generated.__init__"
+    assert value.stringify_object(generated) == "Generated.__init__"
 
 
 def test_generic_value() -> None:

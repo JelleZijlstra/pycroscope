@@ -2810,16 +2810,24 @@ class SubclassValue(Value):
 
         This should only be called with values that are valid as the argument to
         ``type[...]``: a type expression, ``Any``, a ``TypeVar``, or a union of
-        those. Passing class objects or arbitrary values is a caller bug.
+        those. If inference substitutes a runtime class object or literal value
+        here, preserve the class case and degrade other invalid inputs instead of
+        crashing.
         """
         if isinstance(origin, MultiValuedValue):
             return unite_values(*[cls.make(val) for val in origin.vals])
         if isinstance(origin, AnyValue):
             # Type[Any] is equivalent to plain type
             return TypedValue(type)
+        if isinstance(origin, KnownValue):
+            if origin.val is None:
+                return cls(TypedValue(type(None)))
+            if isinstance(origin.val, type):
+                return cls(TypedValue(origin.val))
+            return AnyValue(AnySource.error)
         if isinstance(origin, (TypeVarValue, TypedValue)):
             return cls(origin)
-        raise TypeError(f"Cannot construct type[...] from {origin!r}")
+        return AnyValue(AnySource.inference)
 
 
 @dataclass(frozen=True, order=False)
@@ -4646,12 +4654,16 @@ def stringify_object(obj: Any) -> str:
         objclass = getattr(obj, "__objclass__", None)
         if objclass is not None:
             return f"{stringify_object(objclass)}.{obj.__name__}"
-        if obj.__module__ == BUILTIN_MODULE:
-            return obj.__name__
-        elif hasattr(obj, "__qualname__"):
-            return f"{obj.__module__}.{obj.__qualname__}"
-        else:
-            return f"{obj.__module__}.{obj.__name__}"
+        module_name = getattr(obj, "__module__", None)
+        qualname = getattr(obj, "__qualname__", None)
+        name = getattr(obj, "__name__", None)
+        if module_name == BUILTIN_MODULE and name is not None:
+            return name
+        if qualname is not None:
+            return f"{module_name}.{qualname}" if module_name else qualname
+        if name is not None:
+            return f"{module_name}.{name}" if module_name else name
+        return repr(obj)
     except Exception:
         return repr(obj)
 

@@ -1860,6 +1860,37 @@ class TestSubclassValue(TestNameCheckVisitorBase):
             cls.clirm_backrefs.append(1)
 
     @assert_passes(run_in_both_module_modes=True)
+    def test_type_or_instance_parameter_does_not_crash_on_singleton_substitution(self):
+        from collections.abc import Iterable, Sequence
+        from typing import TypeVar
+
+        ADTT = TypeVar("ADTT", bound="ADT")
+
+        class ADT:
+            pass
+
+        class Child(ADT):
+            pass
+
+        class Tags:
+            child = Child()
+
+        def get_tags(
+            tags: Sequence[ADT] | None, tag_cls: type[ADTT] | ADTT, expected: ADTT
+        ) -> Iterable[ADTT]:
+            if tags is None:
+                return
+            for tag in tags:
+                if isinstance(tag_cls, type):
+                    if isinstance(tag, tag_cls):
+                        yield tag
+                elif tag is tag_cls:
+                    yield tag
+
+        def capybara(tags: Sequence[ADT]) -> None:
+            list(get_tags(tags, Tags.child, Tags.child))
+
+    @assert_passes(run_in_both_module_modes=True)
     def test_metaclass_initialized_class_attribute_on_type_object(self):
         from typing import ClassVar
 
