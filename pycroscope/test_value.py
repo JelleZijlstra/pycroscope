@@ -6,7 +6,7 @@ import pickle
 import types
 import typing
 from collections import defaultdict
-from typing import NewType
+from typing import Any, NewType, cast
 from unittest import mock
 
 from typing_extensions import Protocol, TypeVarTuple, runtime_checkable
@@ -351,8 +351,8 @@ def test_stringify_object_without_module_name() -> None:
     def generated() -> None:
         pass
 
-    generated.__module__ = None
-    generated.__qualname__ = "Generated.__init__"
+    cast(Any, generated).__module__ = None
+    cast(Any, generated).__qualname__ = "Generated.__init__"
     assert value.stringify_object(generated) == "Generated.__init__"
 
 
