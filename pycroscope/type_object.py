@@ -84,6 +84,7 @@ from .value import (
     PredicateValue,
     PropertyInfo,
     Qualifier,
+    SelfParam,
     SelfT,
     SelfTVV,
     SequenceValue,
@@ -104,7 +105,6 @@ from .value import (
     _has_nested_self_typevar,
     _iter_typevar_map_items,
     _typevar_map_from_varlike_pairs,
-    _with_typevar_map_value,
     default_value_for_type_param,
     freshen_typevars_for_inference,
     get_single_typevartuple_param,
@@ -376,8 +376,7 @@ class MroEntry:
             result = f"~{result}"
         if self.tv_map:
             args_str = ", ".join(
-                f"{tv.__name__}={value}"
-                for tv, value in _iter_typevar_map_items(self.tv_map)
+                f"{tv}={value}" for tv, value in _iter_typevar_map_items(self.tv_map)
             )
             result += f"[{args_str}]"
         return result
@@ -2530,8 +2529,8 @@ def _typevar_map_from_generic_args(
     if matched is None:
         return substitutions
     for typevar, value in matched:
-        substitutions = _with_typevar_map_value(
-            substitutions, typevar, value.substitute_typevars(substitutions)
+        substitutions = substitutions.with_value(
+            typevar, value.substitute_typevars(substitutions)
         )
     return substitutions
 
@@ -3875,7 +3874,7 @@ def _substitute_receiver_self_typevar(value: Value, receiver_value: Value) -> Va
     """
     shielded, restore_typevars = shield_nested_self_typevars(value)
     substituted = shielded.substitute_typevars(
-        TypeVarMap(typevars={SelfT: receiver_value})
+        TypeVarMap(typevars={SelfParam: receiver_value})
     )
     if restore_typevars:
         substituted = substituted.substitute_typevars(restore_typevars)

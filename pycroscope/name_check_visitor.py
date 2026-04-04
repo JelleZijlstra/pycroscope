@@ -57,6 +57,7 @@ from typing_extensions import Protocol, assert_never, is_typeddict
 from . import attributes, format_strings, importer, node_visitor, type_evaluation
 from . import dataclass as dataclass_helpers
 from .analysis_lib import (
+    Sentinel,
     get_attribute_path,
     get_subclasses_recursively,
     is_cython_class,
@@ -118,9 +119,9 @@ from .functions import (
     FunctionNode,
     FunctionResult,
     GeneratorValue,
-    ReturnT,
-    SendT,
-    YieldT,
+    ReturnParam,
+    SendParam,
+    YieldParam,
     compute_parameters,
     compute_value_of_function,
 )
@@ -241,6 +242,7 @@ from .value import (
     SYS_VERSION_INFO_EXTENSION,
     UNINITIALIZED_VALUE,
     VOID,
+    AliasOwner,
     AlwaysPresentExtension,
     AnnotatedValue,
     AnySource,
@@ -278,6 +280,7 @@ from .value import (
     PredicateValue,
     PropertyInfo,
     ReferencingValue,
+    SelfParam,
     SelfT,
     SequenceValue,
     SimpleType,
@@ -304,10 +307,8 @@ from .value import (
     UnboundMethodValue,
     Value,
     Variance,
-    _get_typevar_map_value,
     _is_property_initializer,
     _iter_typevar_map_items,
-    _with_typevar_map_value,
     annotate_value,
     bound_self_type_from_class_key,
     concrete_values_from_iterable,
@@ -435,9 +436,11 @@ def _runtime_union_operand_from_value(value: Value) -> object | None:
 T = TypeVar("T")
 T_co = TypeVar("T_co", covariant=True)
 U_co = TypeVar("U_co", covariant=True)
-AwaitableValue = GenericValue(
-    collections.abc.Awaitable, [TypeVarValue(TypeVarParam(T))]
+
+AwaitableParam = TypeVarParam(
+    T, owner=AliasOwner(__name__, "AwaitableValue", Sentinel("AwaitableValue"))
 )
+AwaitableValue = GenericValue(collections.abc.Awaitable, [TypeVarValue(AwaitableParam)])
 KnownNone = KnownValue(None)
 ExceptionValue = TypedValue(BaseException) | SubclassValue(TypedValue(BaseException))
 ExceptionOrNone = ExceptionValue | KnownNone
@@ -6258,11 +6261,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 ).items():
                     existing_map = seen_mappings.setdefault(gb_typ, TypeVarMap())
                     for type_param, value in _iter_typevar_map_items(tv_map):
-                        existing = _get_typevar_map_value(existing_map, type_param)
+                        existing = existing_map.get_value(type_param)
                         if existing is None:
-                            existing_map = _with_typevar_map_value(
-                                existing_map, type_param, value
-                            )
+                            existing_map = existing_map.with_value(type_param, value)
                         elif (
                             existing != value
                             and not isinstance(existing, AnyValue)
@@ -7095,7 +7096,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 and params[0].node.annotation is None
             ):
                 self_instance_value = bound_self_type_from_class_key(enclosing_class)
-                substitutions = TypeVarMap(typevars={SelfT: self_instance_value})
+                substitutions = TypeVarMap(typevars={SelfParam: self_instance_value})
                 uses_self_annotation = (
                     _value_contains_self(return_annotation)
                     or any(
@@ -10718,7 +10719,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             return result
         else:
             return tv_map.get_typevar(
-                TypeVarParam(T), AnyValue(AnySource.generic_argument)
+                AwaitableParam, AnyValue(AnySource.generic_argument)
             )
 
     def visit_YieldFrom(self, node: ast.YieldFrom) -> Value:
@@ -10730,8 +10731,8 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             if not isinstance(can_assign, CanAssignError):
                 tv_map = TypeVarMap(
                     typevars={
-                        ReturnT: can_assign.get_typevar(
-                            TypeVarParam(T), AnyValue(AnySource.generic_argument)
+                        ReturnParam: can_assign.get_typevar(
+                            AwaitableParam, AnyValue(AnySource.generic_argument)
                         )
                     }
                 )
@@ -10744,14 +10745,16 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                         error_code=ErrorCode.bad_yield_from,
                         detail=can_assign.display(),
                     )
-                    tv_map = TypeVarMap(typevars={ReturnT: AnyValue(AnySource.error)})
+                    tv_map = TypeVarMap(
+                        typevars={ReturnParam: AnyValue(AnySource.error)}
+                    )
                 else:
-                    tv_map = TypeVarMap(typevars={YieldT: iterable_type})
+                    tv_map = TypeVarMap(typevars={YieldParam: iterable_type})
 
         if self.current_function_info is not None:
             expected_yield = self.current_function_info.get_generator_yield_type(self)
             yield_type = tv_map.get_typevar(
-                TypeVarParam(YieldT), AnyValue(AnySource.generic_argument)
+                YieldParam, AnyValue(AnySource.generic_argument)
             )
             can_assign = has_relation(
                 expected_yield, yield_type, Relation.ASSIGNABLE, self
@@ -10766,7 +10769,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
 
             expected_send = self.current_function_info.get_generator_send_type(self)
             send_type = tv_map.get_typevar(
-                TypeVarParam(SendT), AnyValue(AnySource.generic_argument)
+                SendParam, AnyValue(AnySource.generic_argument)
             )
             can_assign = has_relation(
                 send_type, expected_send, Relation.ASSIGNABLE, self
@@ -10780,9 +10783,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     detail=can_assign.display(),
                 )
 
-        return tv_map.get_typevar(
-            TypeVarParam(ReturnT), AnyValue(AnySource.generic_argument)
-        )
+        return tv_map.get_typevar(ReturnParam, AnyValue(AnySource.generic_argument))
 
     def visit_Yield(self, node: ast.Yield) -> Value:
         if self._is_checking():
@@ -14015,7 +14016,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 self_value := self._self_value_for_attribute_assignment_root(root)
             ) is not None:
                 value = value.substitute_typevars(
-                    TypeVarMap(typevars={SelfT: self_value})
+                    TypeVarMap(typevars={SelfParam: self_value})
                 )
         return value
 

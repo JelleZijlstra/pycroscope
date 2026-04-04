@@ -118,18 +118,18 @@ def _paramspec_value_to_input_sig(value: object) -> "pycroscope.input_sig.InputS
 class TypeVarMap:
     """Immutable typed storage for type parameter substitutions."""
 
-    _typevars: dict[TypeVarType, "Value"]
-    _paramspecs: dict[ParamSpecLike, "pycroscope.input_sig.InputSig"]
-    _typevartuples: dict[TypeVarTupleLike, SequenceMembers]
+    _typevars: dict["TypeVarParam", "Value"]
+    _paramspecs: dict["ParamSpecParam", "pycroscope.input_sig.InputSig"]
+    _typevartuples: dict["TypeVarTupleParam", "SequenceMembers"]
 
     def __init__(
         self,
         *,
-        typevars: Mapping[TypeVarType, "Value"] | None = None,
+        typevars: Mapping["TypeVarParam", "Value"] | None = None,
         paramspecs: (
-            Mapping[ParamSpecLike, "pycroscope.input_sig.InputSig"] | None
+            Mapping["ParamSpecParam", "pycroscope.input_sig.InputSig"] | None
         ) = None,
-        typevartuples: Mapping[TypeVarTupleLike, SequenceMembers] | None = None,
+        typevartuples: Mapping["TypeVarTupleParam", "SequenceMembers"] | None = None,
     ) -> None:
         typevars_dict = dict({} if typevars is None else typevars)
         if not all(isinstance(value, Value) for value in typevars_dict.values()):
@@ -160,10 +160,10 @@ class TypeVarMap:
     def get_typevar(
         self, type_param: "TypeVarParam", default: T | None = None
     ) -> "Value | T | None":
-        return self._typevars.get(type_param.typevar, default)
+        return self._typevars.get(type_param, default)
 
     def has_typevar(self, type_param: "TypeVarParam") -> bool:
-        return type_param.typevar in self._typevars
+        return type_param in self._typevars
 
     @typing_extensions.overload
     def get_paramspec(
@@ -178,10 +178,10 @@ class TypeVarMap:
     def get_paramspec(
         self, type_param: "ParamSpecParam", default: T | None = None
     ) -> "pycroscope.input_sig.InputSig | T | None":
-        return self._paramspecs.get(type_param.param_spec, default)
+        return self._paramspecs.get(type_param, default)
 
     def has_paramspec(self, type_param: "ParamSpecParam") -> bool:
-        return type_param.param_spec in self._paramspecs
+        return type_param in self._paramspecs
 
     @typing_extensions.overload
     def get_typevartuple(
@@ -196,10 +196,10 @@ class TypeVarMap:
     def get_typevartuple(
         self, type_param: "TypeVarTupleParam", default: T | None = None
     ) -> "SequenceMembers | T | None":
-        return self._typevartuples.get(type_param.typevar, default)
+        return self._typevartuples.get(type_param, default)
 
     def has_typevartuple(self, type_param: "TypeVarTupleParam") -> bool:
-        return type_param.typevar in self._typevartuples
+        return type_param in self._typevartuples
 
     @typing_extensions.overload
     def get_value(self, type_param: "TypeParam") -> "Value | None": ...
@@ -211,31 +211,31 @@ class TypeVarMap:
         self, type_param: "TypeParam", default: T | None = None
     ) -> "Value | T | None":
         if isinstance(type_param, TypeVarParam):
-            return self._typevars.get(type_param.typevar, default)
+            return self._typevars.get(type_param, default)
         if isinstance(type_param, ParamSpecParam):
-            paramspec = self._paramspecs.get(type_param.param_spec, default)
+            paramspec = self._paramspecs.get(type_param, default)
             if paramspec is default:
                 return default
             assert _is_paramspec_substitution(paramspec), paramspec
             return self._paramspec_to_value(paramspec)
-        typevartuple = self._typevartuples.get(type_param.typevar, default)
+        typevartuple = self._typevartuples.get(type_param, default)
         if typevartuple is default:
             return default
         assert _is_sequence_members(typevartuple), typevartuple
         return typevartuple_binding_to_value(typevartuple)
 
     def with_typevar(self, type_param: "TypeVarParam", value: "Value") -> "TypeVarMap":
-        return self.merge(TypeVarMap(typevars={type_param.typevar: value}))
+        return self.merge(TypeVarMap(typevars={type_param: value}))
 
     def with_paramspec(
         self, type_param: "ParamSpecParam", value: "pycroscope.input_sig.InputSig"
     ) -> "TypeVarMap":
-        return self.merge(TypeVarMap(paramspecs={type_param.param_spec: value}))
+        return self.merge(TypeVarMap(paramspecs={type_param: value}))
 
     def with_typevartuple(
         self, type_param: "TypeVarTupleParam", value: SequenceMembers
     ) -> "TypeVarMap":
-        return self.merge(TypeVarMap(typevartuples={type_param.typevar: value}))
+        return self.merge(TypeVarMap(typevartuples={type_param: value}))
 
     def with_value(self, type_param: "TypeParam", value: object) -> "TypeVarMap":
         if isinstance(type_param, TypeVarParam):
@@ -262,17 +262,17 @@ class TypeVarMap:
             typevars=typevars, paramspecs=paramspecs, typevartuples=typevartuples
         )
 
-    def iter_typevars(self) -> Iterator[tuple[TypeVarType, "Value"]]:
+    def iter_typevars(self) -> Iterator[tuple["TypeVarParam", "Value"]]:
         return iter(self._typevars.items())
 
     def iter_paramspecs(
         self,
-    ) -> Iterator[tuple[ParamSpecLike, "pycroscope.input_sig.InputSig"]]:
+    ) -> Iterator[tuple["ParamSpecParam", "pycroscope.input_sig.InputSig"]]:
         return iter(self._paramspecs.items())
 
     def iter_typevartuples(
         self,
-    ) -> "Iterator[tuple[TypeVarTupleLike, SequenceMembers]]":
+    ) -> "Iterator[tuple[TypeVarTupleParam, SequenceMembers]]":
         return iter(self._typevartuples.items())
 
     def __str__(self) -> str:
@@ -280,24 +280,20 @@ class TypeVarMap:
         if self._typevars:
             parts.append(
                 "typevars={"
-                + ", ".join(
-                    f"{tv.__name__}={value}" for tv, value in self._typevars.items()
-                )
+                + ", ".join(f"{tv}={value}" for tv, value in self._typevars.items())
                 + "}"
             )
         if self._paramspecs:
             parts.append(
                 "paramspecs={"
-                + ", ".join(
-                    f"{tv.__name__}={value}" for tv, value in self._paramspecs.items()
-                )
+                + ", ".join(f"{tv}={value}" for tv, value in self._paramspecs.items())
                 + "}"
             )
         if self._typevartuples:
             parts.append(
                 "typevartuples={"
                 + ", ".join(
-                    f"{tv.__name__}={typevartuple_binding_to_value(value)}"
+                    f"{tv}={typevartuple_binding_to_value(value)}"
                     for tv, value in self._typevartuples.items()
                 )
                 + "}"
@@ -412,28 +408,29 @@ def substitute_typevartuple_binding(
 
 
 def _typevar_map_from_varlike_pairs(
-    pairs: Iterable[tuple[TypeVarLike, object]],
+    pairs: Iterable[tuple["TypeParam", object]],
 ) -> TypeVarMap:
-    typevars: dict[TypeVarType, Value] = {}
-    paramspecs: dict[ParamSpecLike, pycroscope.input_sig.InputSig] = {}
-    typevartuples: dict[TypeVarTupleLike, SequenceMembers] = {}
-    for typevar, value in pairs:
-        if is_instance_of_typing_name(typevar, "TypeVar"):
-            assert isinstance(value, Value), value
-            typevars[typevar] = value
-        elif is_instance_of_typing_name(typevar, "ParamSpec"):
-            paramspecs[typevar] = _paramspec_value_to_input_sig(value)
-        elif is_instance_of_typing_name(typevar, "TypeVarTuple"):
-            if isinstance(value, Value):
-                typevartuples[typevar] = typevartuple_value_to_members(value)
-            elif _is_sequence_members(value):
-                typevartuples[typevar] = value
-            else:
-                raise TypeError(
-                    f"Expected SequenceMembers for {typevar!r}, got {value!r}"
-                )
-        else:
-            raise TypeError(f"Unrecognized type parameter {typevar!r}")
+    typevars: dict[TypeVarParam, Value] = {}
+    paramspecs: dict[ParamSpecParam, pycroscope.input_sig.InputSig] = {}
+    typevartuples: dict[TypeVarTupleParam, SequenceMembers] = {}
+    for param, value in pairs:
+        match param:
+            case TypeVarParam():
+                assert isinstance(value, Value), value
+                typevars[param] = value
+            case ParamSpecParam():
+                paramspecs[param] = _paramspec_value_to_input_sig(value)
+            case TypeVarTupleParam():
+                if isinstance(value, Value):
+                    typevartuples[param] = typevartuple_value_to_members(value)
+                elif _is_sequence_members(value):
+                    typevartuples[param] = value
+                else:
+                    raise TypeError(
+                        f"Expected SequenceMembers for {param!r}, got {value!r}"
+                    )
+            case _:
+                assert_never(param)
     return TypeVarMap(
         typevars=typevars, paramspecs=paramspecs, typevartuples=typevartuples
     )
@@ -441,7 +438,7 @@ def _typevar_map_from_varlike_pairs(
 
 def _iter_typevar_map_items(
     typevars: TypeVarMap,
-) -> Iterator[tuple[TypeVarLike, "Value"]]:
+) -> Iterator[tuple["TypeParam", "Value"]]:
     # TODO: This kind-erased compatibility layer lets callers reconstruct the old
     # TypeVarLike -> Value map shape and bypass the typed TypeVarMap API. That makes
     # it easier to accidentally treat TypeVar, ParamSpec, and TypeVarTuple uniformly
@@ -516,7 +513,10 @@ def _with_typevar_map_value(
     raise TypeError(f"Unrecognized type parameter {typevar!r}")
 
 
-BoundsMap = Mapping[TypeVarLike, Sequence[ExternalType["pycroscope.value.Bound"]]]
+BoundsMap = Mapping[
+    ExternalType["pycroscope.value.TypeParam"],
+    Sequence[ExternalType["pycroscope.value.Bound"]],
+]
 GenericBases = Mapping[type | str, TypeVarMap]
 
 
@@ -1160,6 +1160,7 @@ class TypeVarParam:
     """Whether this TypeVar represents typing.Self."""
 
     def __post_init__(self) -> None:
+        # TODO: replace with assertions
         if self.bound is None:
             runtime_bound = safe_getattr(self.typevar, "__bound__", None)
             if runtime_bound is not None:
@@ -1336,13 +1337,11 @@ def get_type_params_by_typevar(value: Value) -> dict[TypeVarLike, TypeParam]:
 
 
 def make_inference_typevar_map(values: Iterable[Value]) -> TypeVarMap:
-    inference_typevars: dict[TypeVarType, Value] = {}
+    inference_typevars: dict[TypeVarParam, Value] = {}
     for value in values:
         for type_param in iter_type_params_in_value(value):
             if isinstance(type_param, TypeVarParam):
-                inference_typevars.setdefault(
-                    type_param.typevar, InferenceVarValue(type_param)
-                )
+                inference_typevars.setdefault(type_param, InferenceVarValue(type_param))
     return TypeVarMap(typevars=inference_typevars)
 
 
@@ -1422,11 +1421,11 @@ def match_typevar_arguments(
     type_arguments: Sequence[Value],
     *,
     type_arguments_are_packed: bool = False,
-) -> Sequence[tuple[TypeVarLike, Value]] | None:
+) -> Sequence[tuple["TypeParam", Value]] | None:
     if type_arguments_are_packed:
         if len(type_params) != len(type_arguments):
             return None
-        return [(param.typevar, arg) for param, arg in zip(type_params, type_arguments)]
+        return list(zip(type_params, type_arguments))
 
     variadic_indexes = [
         i
@@ -1437,10 +1436,10 @@ def match_typevar_arguments(
         return None
 
     substitutions = TypeVarMap()
-    matched: list[tuple[TypeVarLike, Value]] = []
+    matched: list[tuple[TypeParam, Value]] = []
 
     def _record(type_param: TypeParam, argument: Value) -> None:
-        matched.append((type_param.typevar, argument))
+        matched.append((type_param, argument))
         nonlocal substitutions
         if isinstance(type_param, TypeVarParam):
             substitutions = substitutions.with_typevar(type_param, argument)
@@ -1524,7 +1523,7 @@ def _match_type_alias_type_arguments(
     type_arguments: Sequence[Value],
     *,
     type_arguments_are_packed: bool = False,
-) -> Sequence[tuple[TypeVarLike, Value]] | None:
+) -> Sequence[tuple["TypeParam", Value]] | None:
     return match_typevar_arguments(
         type_params, type_arguments, type_arguments_are_packed=type_arguments_are_packed
     )
@@ -3035,6 +3034,11 @@ class ReferencingValue(Value):
 
 # Special TypeVar used to implement PEP 673 Self.
 SelfT = TypeVar("SelfT")
+SelfParam = TypeVarParam(SelfT, is_self=True)
+
+# TODO: this should not exist
+_NestedSelfT = TypeVar("_NestedSelfT")
+_NestedSelfParam = TypeVarParam(_NestedSelfT)
 
 
 @dataclass(frozen=True)
@@ -3123,6 +3127,9 @@ class TypeVarValue(Value):
         return str(self.typevar_param)
 
 
+SelfTVV = TypeVarValue(SelfParam)
+
+
 @dataclass(frozen=True)
 class InferenceVarValue(TypeVarValue):
     """A fresh inference variable created from a declared TypeVar."""
@@ -3130,7 +3137,7 @@ class InferenceVarValue(TypeVarValue):
     def make_bounds_map(
         self, bounds: Sequence[Bound], other: Value, ctx: CanAssignContext
     ) -> CanAssign:
-        bounds_map = {self.typevar_param.typevar: bounds}
+        bounds_map = {self.typevar_param: bounds}
         if self.typevar_param.bound is None and not self.typevar_param.constraints:
             return bounds_map
         _, errors = pycroscope.typevar.resolve_bounds_map(bounds_map, ctx)
@@ -3207,10 +3214,6 @@ class TypeVarTupleBindingValue(Value):
         return ", ".join(parts) if parts else "tuple[()]"
 
 
-SelfTVV = TypeVarValue(TypeVarParam(typevar=SelfT))
-_NestedSelfT = TypeVar("_NestedSelfT")
-
-
 def is_self_typevar(
     typevar: TypeVarType, *, include_nested_placeholders: bool = False
 ) -> bool:
@@ -3260,8 +3263,8 @@ def shield_nested_self_typevars(value: Value) -> tuple[Value, TypeVarMap]:
         )
     )
     return value.substitute_typevars(
-        TypeVarMap(typevars={SelfT: placeholder})
-    ), TypeVarMap(typevars={_NestedSelfT: first_self_typevar})
+        TypeVarMap(typevars={SelfParam: placeholder})
+    ), TypeVarMap(typevars={_NestedSelfParam: first_self_typevar})
 
 
 def receiver_to_self_type(
@@ -3326,11 +3329,12 @@ def set_self(value: Value, self_value: Value) -> Value:
     if _has_nested_self_typevar(self_type):
         return value
     self_type, restore_typevars = shield_nested_self_typevars(self_type)
+    param = TypeVarParam(SelfT, is_self=True)
     if isinstance(value, KnownValueWithTypeVars):
-        merged_typevars = value.typevars.with_typevar(TypeVarParam(SelfT), self_type)
+        merged_typevars = value.typevars.with_typevar(param, self_type)
         result: Value = KnownValueWithTypeVars(value.val, merged_typevars)
     else:
-        result = value.substitute_typevars(TypeVarMap(typevars={SelfT: self_type}))
+        result = value.substitute_typevars(TypeVarMap(typevars={param: self_type}))
     if restore_typevars:
         result = result.substitute_typevars(restore_typevars)
     return result
@@ -4064,6 +4068,9 @@ def unify_bounds_maps(bounds_maps: Sequence[BoundsMap]) -> BoundsMap:
     result = {}
     for bounds_map in bounds_maps:
         for tv, bounds in bounds_map.items():
+            assert isinstance(
+                tv, (TypeVarParam, TypeVarTupleParam, ParamSpecParam)
+            ), bounds_map
             result.setdefault(tv, []).extend(bounds)
     return result
 

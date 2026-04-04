@@ -19,7 +19,7 @@ from typing_extensions import Protocol
 
 from pycroscope.input_sig import InputSigValue
 
-from .analysis_lib import is_positional_only_arg_name
+from .analysis_lib import Sentinel, is_positional_only_arg_name
 from .error_code import ErrorCode
 from .extensions import deprecated as deprecated_decorator
 from .maybe_asynq import asynq
@@ -35,6 +35,7 @@ from .signature import (
 )
 from .stacked_scopes import Composite
 from .value import (
+    AliasOwner,
     AnnotationExpr,
     AnySource,
     AnyValue,
@@ -82,17 +83,31 @@ IMPLICIT_CLASSMETHODS = ("__init_subclass__", "__new__")
 YieldT = TypeVar("YieldT")
 SendT = TypeVar("SendT")
 ReturnT = TypeVar("ReturnT")
+YieldParam = TypeVarParam(
+    YieldT, owner=AliasOwner(__name__, "GeneratorValue", Sentinel("GeneratorValue"))
+)
+SendParam = TypeVarParam(
+    SendT, owner=AliasOwner(__name__, "GeneratorValue", Sentinel("GeneratorValue"))
+)
+ReturnParam = TypeVarParam(
+    ReturnT, owner=AliasOwner(__name__, "GeneratorValue", Sentinel("GeneratorValue"))
+)
 GeneratorValue = GenericValue(
     collections.abc.Generator,
-    [
-        TypeVarValue(TypeVarParam(YieldT)),
-        TypeVarValue(TypeVarParam(SendT)),
-        TypeVarValue(TypeVarParam(ReturnT)),
-    ],
+    [TypeVarValue(YieldParam), TypeVarValue(SendParam), TypeVarValue(ReturnParam)],
+)
+
+YieldParamA = TypeVarParam(
+    YieldT,
+    owner=AliasOwner(__name__, "AsyncGeneratorValue", Sentinel("AsyncGeneratorValue")),
+)
+SendParamA = TypeVarParam(
+    SendT,
+    owner=AliasOwner(__name__, "AsyncGeneratorValue", Sentinel("AsyncGeneratorValue")),
 )
 AsyncGeneratorValue = GenericValue(
     collections.abc.AsyncGenerator,
-    [TypeVarValue(TypeVarParam(YieldT)), TypeVarValue(TypeVarParam(SendT))],
+    [TypeVarValue(YieldParamA), TypeVarValue(SendParamA)],
 )
 
 
@@ -162,7 +177,7 @@ class FunctionInfo:
             tv_map = get_tv_map(AsyncGeneratorValue, self.return_annotation, ctx)
             if not isinstance(tv_map, CanAssignError):
                 return tv_map.get_typevar(
-                    TypeVarParam(SendT), AnyValue(AnySource.generic_argument)
+                    SendParam, AnyValue(AnySource.generic_argument)
                 )
             # If the return annotation is a non-Generator Iterable, assume the send
             # type is None.
@@ -174,7 +189,7 @@ class FunctionInfo:
             tv_map = get_tv_map(GeneratorValue, self.return_annotation, ctx)
             if not isinstance(tv_map, CanAssignError):
                 return tv_map.get_typevar(
-                    TypeVarParam(SendT), AnyValue(AnySource.generic_argument)
+                    SendParam, AnyValue(AnySource.generic_argument)
                 )
             # If the return annotation is a non-Generator Iterable, assume the send
             # type is None.
@@ -188,9 +203,7 @@ class FunctionInfo:
             return AnyValue(AnySource.unannotated)
         tv_map = get_tv_map(GeneratorValue, self.return_annotation, ctx)
         if not isinstance(tv_map, CanAssignError):
-            return tv_map.get_typevar(
-                TypeVarParam(ReturnT), AnyValue(AnySource.generic_argument)
-            )
+            return tv_map.get_typevar(ReturnParam, AnyValue(AnySource.generic_argument))
         # If the return annotation is a non-Generator Iterable, assume the return
         # type is None.
         iterable_val = is_iterable(self.return_annotation, ctx)

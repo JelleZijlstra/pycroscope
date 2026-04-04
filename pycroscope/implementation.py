@@ -87,7 +87,7 @@ from .value import (
     PartialValueOperation,
     PredicateValue,
     Qualifier,
-    SelfT,
+    SelfParam,
     SequenceValue,
     SubclassValue,
     SuperValue,
@@ -297,6 +297,7 @@ def _narrowed_value_from_classinfo_value(
 def _narrow_value_for_dynamic_classinfo(
     value: Value, narrowed_value: Value, ctx: CallContext
 ) -> Value:
+    # TODO: why all the replace_fallback in here?
     if isinstance(narrowed_value, AnnotatedValue):
         return _narrow_value_for_dynamic_classinfo(value, narrowed_value.value, ctx)
     if isinstance(narrowed_value, MultiValuedValue):
@@ -312,7 +313,7 @@ def _narrow_value_for_dynamic_classinfo(
             return NO_RETURN_VALUE
         if narrowed == fallback:
             return narrowed_value
-        return IntersectionValue((narrowed_value, narrowed))
+        return intersect_values(value, narrowed_value, ctx.visitor)
     narrowed_value = replace_fallback(narrowed_value)
     return intersect_values(value, narrowed_value, ctx.visitor)
 
@@ -2151,7 +2152,9 @@ def _cast_impl(ctx: CallContext) -> Value:
     )
     if current_class_bound is not None:
         bound_self = bound_self_type_from_class_key(current_class_bound)
-        result = result.substitute_typevars(TypeVarMap(typevars={SelfT: bound_self}))
+        result = result.substitute_typevars(
+            TypeVarMap(typevars={SelfParam: bound_self})
+        )
     return result
 
 

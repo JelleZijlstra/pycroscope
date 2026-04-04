@@ -2141,12 +2141,10 @@ class Checker:
                     else:
                         specialized_instance_type = TypedValue(origin)
                     typevar_map = _typevar_map_from_varlike_pairs(
-                        (param.typevar, arg)
-                        for param, arg in zip(type_params, arg_values)
+                        zip(type_params, arg_values)
                     )
                     exact_typevar_map = _typevar_map_from_varlike_pairs(
-                        (param.typevar, arg)
-                        for param, arg in zip(type_params, exact_arg_values)
+                        zip(type_params, exact_arg_values)
                     )
                     if not self._runtime_init_self_annotation_matches(
                         origin,
