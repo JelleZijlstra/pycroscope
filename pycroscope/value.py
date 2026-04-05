@@ -3184,7 +3184,7 @@ def is_self_typevar_value(
     )
 
 
-def bound_self_type_from_class_key(typ: type | str) -> TypeVarValue:
+def get_self_param(typ: type | str) -> TypeVarParam:
     bound = TypedValue(typ)
     if isinstance(typ, type):
         owner = ClassOwner(typ.__module__, typ.__qualname__, typ)
@@ -3196,7 +3196,11 @@ def bound_self_type_from_class_key(typ: type | str) -> TypeVarValue:
             module = ""
             qualname = typ
         owner = ClassOwner(module, qualname, typ)
-    return TypeVarValue(TypeVarParam(SelfT, bound=bound, is_self=True, owner=owner))
+    return TypeVarParam(SelfT, bound=bound, is_self=True, owner=owner)
+
+
+def bound_self_type_from_class_key(typ: type | str) -> TypeVarValue:
+    return TypeVarValue(get_self_param(typ))
 
 
 def shield_nested_self_typevars(value: Value) -> tuple[Value, TypeVarMap]:

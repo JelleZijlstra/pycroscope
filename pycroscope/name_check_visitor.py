@@ -7088,7 +7088,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 self_instance_value = bound_self_type_from_class_key(
                     enclosing_class.typ
                 )
-                substitutions = TypeVarMap(typevars={SelfParam: self_instance_value})
+                substitutions = TypeVarMap()
                 uses_self_annotation = (
                     _value_contains_self(return_annotation)
                     or any(

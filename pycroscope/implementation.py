@@ -87,7 +87,6 @@ from .value import (
     PartialValueOperation,
     PredicateValue,
     Qualifier,
-    SelfParam,
     SequenceValue,
     SubclassValue,
     SuperValue,
@@ -97,12 +96,10 @@ from .value import (
     TypedDictValue,
     TypedValue,
     TypeFormValue,
-    TypeVarMap,
     TypeVarParam,
     TypeVarValue,
     Value,
     assert_is_value,
-    bound_self_type_from_class_key,
     concrete_values_from_iterable,
     dump_value,
     flatten_values,
@@ -2143,14 +2140,7 @@ def _str_format_impl(ctx: CallContext) -> Value:
 
 def _cast_impl(ctx: CallContext) -> Value:
     typ = ctx.vars["typ"]
-    result = type_from_value(typ, visitor=ctx.visitor, node=ctx.node)
-    current_class_bound = ctx.visitor.current_class_key
-    if current_class_bound is not None:
-        bound_self = bound_self_type_from_class_key(current_class_bound)
-        result = result.substitute_typevars(
-            TypeVarMap(typevars={SelfParam: bound_self})
-        )
-    return result
+    return type_from_value(typ, visitor=ctx.visitor, node=ctx.node)
 
 
 def _type_from_typeform_arg(
