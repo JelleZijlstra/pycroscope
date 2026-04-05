@@ -63,18 +63,11 @@ def test_get_type_parameters_ignores_non_iterable_runtime_type_params() -> None:
 def test_match_typevar_arguments_preserves_suffix_after_default_before_typevartuple() -> (
     None
 ):
-    default_t = TypeVar("DefaultT", default=int)
-    ts = TypeVarTuple("Ts")
-    u = TypeVar("U")
+    default_t = TypeVarParam(TypeVar("DefaultT", default=int), default=TypedValue(int))
+    ts = TypeVarTupleParam(TypeVarTuple("Ts"))
+    u = TypeVarParam(TypeVar("U"))
 
-    assert match_typevar_arguments(
-        [
-            TypeVarParam(default_t, default=TypedValue(int)),
-            TypeVarTupleParam(ts),
-            TypeVarParam(u),
-        ],
-        [TypedValue(str)],
-    ) == [
+    assert match_typevar_arguments([default_t, ts, u], [TypedValue(str)]) == [
         (default_t, TypedValue(int)),
         (ts, TypeVarTupleBindingValue(())),
         (u, TypedValue(str)),

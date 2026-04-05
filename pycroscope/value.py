@@ -367,7 +367,9 @@ def typevartuple_value_to_members(value: "Value") -> SequenceMembers:
         and len(normalized.args) == 1
     ):
         return ((True, normalized.args[0]),)
-    raise TypeError("TypeVarTuple substitutions must be tuple-like values")
+    raise TypeError(
+        f"TypeVarTuple substitutions must be tuple-like values, not {value}"
+    )
 
 
 def typevartuple_binding_to_value(binding: SequenceMembers) -> "Value":
@@ -926,6 +928,13 @@ class AnyValue(Value):
     """The source of this value, such as a user-defined annotation
     or a previous error."""
 
+    # def __post_init__(self):
+    #     if self.source is AnySource.generic_argument:
+    #         import sys
+    #         print("MAKE SELF", file=sys.stderr)
+    #         import traceback
+    #         traceback.print_stack()
+
     def __str__(self) -> str:
         if self.source is AnySource.default:
             return "Any"
@@ -1210,6 +1219,15 @@ class TypeVarParam:
 
     def __str__(self) -> str:
         return _type_param_to_string("", str(self.typevar), self.owner)
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, TypeVarParam):
+            return NotImplemented
+        # TODO: incorporate owner
+        return self.typevar == other.typevar
+
+    def __hash__(self) -> int:
+        return hash(self.typevar)
 
 
 @dataclass(frozen=True)
@@ -3053,6 +3071,11 @@ class LowerBound(Bound):
     type_param: TypeParam
     value: Value
 
+    def __post_init__(self):
+        assert isinstance(
+            self.type_param, (TypeVarTupleParam, TypeVarParam, ParamSpecParam)
+        )
+
     def __str__(self) -> str:
         return f"{self.type_param} >= {self.value}"
 
@@ -3063,6 +3086,11 @@ class UpperBound(Bound):
 
     type_param: TypeParam
     value: Value
+
+    def __post_init__(self):
+        assert isinstance(
+            self.type_param, (TypeVarTupleParam, TypeVarParam, ParamSpecParam)
+        )
 
     def __str__(self) -> str:
         return f"{self.type_param} <= {self.value}"
@@ -3272,8 +3300,8 @@ def receiver_to_self_type(
 ) -> Value:
     if isinstance(
         self_value, KnownValueWithTypeVars
-    ) and self_value.typevars.has_typevar(TypeVarParam(SelfT)):
-        self_substitution = self_value.typevars.get_typevar(TypeVarParam(SelfT))
+    ) and self_value.typevars.has_typevar(SelfParam):
+        self_substitution = self_value.typevars.get_typevar(SelfParam)
         assert self_substitution is not None
         return receiver_to_self_type(self_substitution, ctx)
     if (
@@ -3329,12 +3357,11 @@ def set_self(value: Value, self_value: Value) -> Value:
     if _has_nested_self_typevar(self_type):
         return value
     self_type, restore_typevars = shield_nested_self_typevars(self_type)
-    param = TypeVarParam(SelfT, is_self=True)
     if isinstance(value, KnownValueWithTypeVars):
-        merged_typevars = value.typevars.with_typevar(param, self_type)
+        merged_typevars = value.typevars.with_typevar(SelfParam, self_type)
         result: Value = KnownValueWithTypeVars(value.val, merged_typevars)
     else:
-        result = value.substitute_typevars(TypeVarMap(typevars={param: self_type}))
+        result = value.substitute_typevars(TypeVarMap(typevars={SelfParam: self_type}))
     if restore_typevars:
         result = result.substitute_typevars(restore_typevars)
     return result
@@ -4076,7 +4103,7 @@ def unify_bounds_maps(bounds_maps: Sequence[BoundsMap]) -> BoundsMap:
 
 
 def intersect_bounds_maps(bounds_maps: Sequence[BoundsMap]) -> BoundsMap:
-    intermediate: dict[TypeVarLike, set[tuple[Bound, ...]]] = {}
+    intermediate: dict[TypeParam, set[tuple[Bound, ...]]] = {}
     for bounds_map in bounds_maps:
         for tv, bounds in bounds_map.items():
             intermediate.setdefault(tv, set()).add(tuple(bounds))
@@ -4328,7 +4355,7 @@ def concrete_values_from_iterable(
         getitem_tv_map = get_tv_map(GetItemProtoValue, value, ctx)
         if not isinstance(getitem_tv_map, CanAssignError):
             val = getitem_tv_map.get_typevar(
-                TypeVarParam(T_co), AnyValue(AnySource.generic_argument)
+                T_getitem, AnyValue(AnySource.generic_argument)
             )
         # Hack to support iteration over StrEnum. A better solution would have to
         # handle descriptors better in attribute assignment and Protocol compatibility.
@@ -4514,7 +4541,7 @@ def is_iterable(value: Value, ctx: CanAssignContext) -> CanAssignError | Value:
     tv_map = get_tv_map(IterableValue, value, ctx)
     if isinstance(tv_map, CanAssignError):
         return tv_map
-    return tv_map.get_typevar(TypeVarParam(T), AnyValue(AnySource.generic_argument))
+    return tv_map.get_typevar(T_iter, AnyValue(AnySource.generic_argument))
 
 
 def get_namedtuple_field_annotation(namedtuple_type: type, field_name: str) -> object:
@@ -4564,7 +4591,7 @@ def is_async_iterable(value: Value, ctx: CanAssignContext) -> CanAssignError | V
     tv_map = get_tv_map(AsyncIterableValue, value, ctx)
     if isinstance(tv_map, CanAssignError):
         return tv_map
-    return tv_map.get_typevar(TypeVarParam(T), AnyValue(AnySource.generic_argument))
+    return tv_map.get_typevar(T_aiter, AnyValue(AnySource.generic_argument))
 
 
 def _create_unpacked_list(

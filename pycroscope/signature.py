@@ -104,7 +104,6 @@ from .value import (
     TypeGuardExtension,
     TypeIsExtension,
     TypeParam,
-    TypeVarLike,
     TypeVarMap,
     TypeVarParam,
     TypeVarTupleBindingValue,
@@ -161,8 +160,8 @@ def _is_staticmethod_callable(func: FunctionType) -> bool:
     return isinstance(member, staticmethod)
 
 
-def _should_widen_constructor_typevar(typevar: TypeVarLike) -> bool:
-    return is_instance_of_typing_name(typevar, "TypeVar") and typevar is not SelfT
+def _should_widen_constructor_typevar(param: TypeParam) -> bool:
+    return isinstance(param, TypeVarParam) and param.typevar is not SelfT
 
 
 def _is_identity_typevar_solution(param: TypeParam, value: Value) -> bool:
@@ -1495,6 +1494,7 @@ class Signature:
                 ctx.can_assign_ctx,
                 all_typevars=inference_signature.inferable_typevars,
             )
+            print("TV VALUES", typevar_values)
             for param_name, (_position, composite) in bound_args.items():
                 param = self.parameters[param_name]
                 param_tv_map = relations.get_tv_map(
@@ -1538,7 +1538,7 @@ class Signature:
                 ):
                     if isinstance(
                         self_value, KnownValueWithTypeVars
-                    ) and self_value.typevars.has_typevar(TypeVarParam(SelfT)):
+                    ) and self_value.typevars.has_typevar(SelfParam):
                         self_binding = self_value.typevars.get_typevar(SelfParam)
                         assert self_binding is not None
                         typevar_values = typevar_values.with_typevar(
@@ -3545,7 +3545,11 @@ def _match_typevartuple_members(
         ],
     )
     bounds_maps.append(
-        {marker_member.typevar_tuple_param: [LowerBound(marker_member, captured)]}
+        {
+            marker_member.typevar_tuple_param: [
+                LowerBound(marker_member.typevar_tuple_param, captured)
+            ]
+        }
     )
     return unify_bounds_maps(bounds_maps)
 

@@ -55,6 +55,7 @@ from .value import (
 )
 
 T = TypeVar("T")
+TParam = TypeVarParam(T)
 NT = NewType("NT", int)
 
 
@@ -613,25 +614,25 @@ class TestGetGenericBases:
 
     def test_runtime(self):
         assert {
-            Parent: TypeVarMap(typevars={T: AnyValue(AnySource.generic_argument)})
+            Parent: TypeVarMap(typevars={TParam: AnyValue(AnySource.generic_argument)})
         } == self.get_generic_bases(Parent)
         assert {
-            Parent: TypeVarMap(typevars={T: TypeVarValue(TypeVarParam(T))})
-        } == self.get_generic_bases(Parent, [TypeVarValue(TypeVarParam(T))])
+            Parent: TypeVarMap(typevars={TParam: TypeVarValue(TParam)})
+        } == self.get_generic_bases(Parent, [TypeVarValue(TParam)])
         assert {
             Child: TypeVarMap(),
-            Parent: TypeVarMap(typevars={T: TypedValue(int)}),
+            Parent: TypeVarMap(typevars={TParam: TypedValue(int)}),
         } == self.get_generic_bases(Child)
         assert {
             GenericChild: TypeVarMap(
-                typevars={T: AnyValue(AnySource.generic_argument)}
+                typevars={TParam: AnyValue(AnySource.generic_argument)}
             ),
-            Parent: TypeVarMap(typevars={T: AnyValue(AnySource.generic_argument)}),
+            Parent: TypeVarMap(typevars={TParam: AnyValue(AnySource.generic_argument)}),
         } == self.get_generic_bases(GenericChild)
         one = KnownValue(1)
         assert {
-            GenericChild: TypeVarMap(typevars={T: one}),
-            Parent: TypeVarMap(typevars={T: one}),
+            GenericChild: TypeVarMap(typevars={TParam: one}),
+            Parent: TypeVarMap(typevars={TParam: one}),
         } == self.get_generic_bases(GenericChild, [one])
 
     def _assert_runtime_any_base(self, any_base: object) -> None:
@@ -952,31 +953,27 @@ class TestCheckerGenericBases:
         checker = Checker()
         base = "test.Base"
         child = "test.Child"
-        checker.register_synthetic_type_bases(
-            base, [], declared_type_params=[TypeVarParam(T)]
-        )
+        checker.register_synthetic_type_bases(base, [], declared_type_params=[TParam])
         checker.register_synthetic_type_bases(
             child,
             [SyntheticClassObjectValue("Base", GenericValue(base, [TypedValue(int)]))],
         )
         assert checker.get_generic_bases(child) == {
             child: TypeVarMap(),
-            base: TypeVarMap(typevars={T: TypedValue(int)}),
+            base: TypeVarMap(typevars={TParam: TypedValue(int)}),
         }
 
     def test_register_synthetic_type_bases_handles_subclass_generic_base(self):
         checker = Checker()
         base = "test.Base"
         child = "test.Child"
-        checker.register_synthetic_type_bases(
-            base, [], declared_type_params=[TypeVarParam(T)]
-        )
+        checker.register_synthetic_type_bases(base, [], declared_type_params=[TParam])
         checker.register_synthetic_type_bases(
             child, [SubclassValue(GenericValue(base, [TypedValue(int)]))]
         )
         assert checker.get_generic_bases(child) == {
             child: TypeVarMap(),
-            base: TypeVarMap(typevars={T: TypedValue(int)}),
+            base: TypeVarMap(typevars={TParam: TypedValue(int)}),
         }
 
 

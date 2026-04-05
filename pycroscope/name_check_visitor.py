@@ -13985,9 +13985,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         if isinstance(root, (TypedValue, GenericValue)):
             return root
         if isinstance(root, KnownValueWithTypeVars) and root.typevars.has_typevar(
-            TypeVarParam(SelfT)
+            SelfParam
         ):
-            self_value = root.typevars.get_typevar(TypeVarParam(SelfT))
+            self_value = root.typevars.get_typevar(SelfParam)
             assert self_value is not None
             return self_value
         if isinstance(root, KnownValue) and not isinstance(root.val, type):
@@ -15912,9 +15912,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         if isinstance(value, AnnotatedValue):
             return self._attribute_write_types_for_value(value.value)
         if isinstance(value, KnownValueWithTypeVars) and value.typevars.has_typevar(
-            TypeVarParam(SelfT)
+            SelfParam
         ):
-            self_value = value.typevars.get_typevar(TypeVarParam(SelfT))
+            self_value = value.typevars.get_typevar(SelfParam)
             assert self_value is not None
             return self._attribute_write_types_for_value(self_value)
         if isinstance(value, TypeVarValue):
@@ -17143,7 +17143,7 @@ def _function_signature_contains_self(info: FunctionInfo) -> bool:
 
 def _value_carries_self_binding(value: Value) -> bool:
     if isinstance(value, KnownValueWithTypeVars) and value.typevars.has_typevar(
-        TypeVarParam(SelfT)
+        SelfParam
     ):
         return True
     return any(

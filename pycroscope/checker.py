@@ -85,6 +85,7 @@ from .value import (
     PartialValue,
     PartialValueOperation,
     PredicateValue,
+    SelfParam,
     SelfT,
     SequenceValue,
     SimpleType,
@@ -150,7 +151,7 @@ def _replace_signature_return(
 
 
 def _bound_method_self_value_from_typevars(typevars: TypeVarMap) -> Value | None:
-    direct_self = typevars.get_typevar(TypeVarParam(SelfT))
+    direct_self = typevars.get_typevar(SelfParam)
     if direct_self is not None:
         return direct_self
     for _, value in _iter_typevar_map_items(typevars):
@@ -2839,8 +2840,8 @@ class CheckerAttrContext(AttrContext):
             return bound_self_type_from_class_key(root_value.typ)
         if isinstance(
             root_value, KnownValueWithTypeVars
-        ) and root_value.typevars.has_typevar(TypeVarParam(SelfT)):
-            self_value = root_value.typevars.get_typevar(TypeVarParam(SelfT))
+        ) and root_value.typevars.has_typevar(SelfParam):
+            self_value = root_value.typevars.get_typevar(SelfParam)
             assert self_value is not None
             return self_value
         if isinstance(root_value, KnownValue) and not isinstance(root_value.val, type):

@@ -96,7 +96,6 @@ from .value import (
     TypeFormValue,
     TypeParam,
     TypeVarMap,
-    TypeVarParam,
     TypeVarTupleBindingValue,
     TypeVarTupleParam,
     TypeVarValue,
@@ -2711,7 +2710,7 @@ def _specialize_self_returning_classmethod(
         inferred = get_tv_map(raw_attr.args[0], SubclassValue(receiver_for_self), ctx)
         if not isinstance(inferred, CanAssignError):
             substitutions = inferred
-    substitutions = substitutions.with_typevar(TypeVarParam(SelfT), receiver_for_self)
+    substitutions = substitutions.with_typevar(SelfParam, receiver_for_self)
     signature = normalized_attr.signature.substitute_typevars(substitutions)
     return CallableValue(
         _rewrite_self_returning_classmethod_signature(signature, receiver_for_self)
@@ -2980,6 +2979,11 @@ def _resolve_descriptor_access(
                 return None
             fget = merged_attribute.property_info.fget.initializer
             assert fget is not None
+            # TODO this should be unnecessary if we set Self correctly when
+            # retrieving the signature
+            fget = fget.substitute_typevars(
+                TypeVarMap(typevars={SelfParam: receiver_arg})
+            )
             if policy.visitor is None:
                 # Note this path means errors don't get shown!
                 value = ctx.get_call_result(fget, (receiver_arg,))
@@ -4016,8 +4020,7 @@ def _merge_protocol_receiver_typevar_maps(
     existing: TypeVarMap, new: TypeVarMap
 ) -> TypeVarMap:
     merged = existing
-    for typevar, value in new.iter_typevars():
-        type_param = TypeVarParam(typevar)
+    for type_param, value in new.iter_typevars():
         existing_value = merged.get_typevar(type_param)
         if existing_value is None:
             merged = merged.with_typevar(type_param, value)
@@ -4025,15 +4028,13 @@ def _merge_protocol_receiver_typevar_maps(
             merged = merged.with_typevar(
                 type_param, unite_values(existing_value, value)
             )
-    for paramspec, input_sig in new.iter_paramspecs():
-        type_param = ParamSpecParam(paramspec)
+    for type_param, input_sig in new.iter_paramspecs():
         existing_sig = merged.get_paramspec(type_param)
         if existing_sig is None or (
             isinstance(existing_sig, AnySig) and not isinstance(input_sig, AnySig)
         ):
             merged = merged.with_paramspec(type_param, input_sig)
-    for typevartuple, binding in new.iter_typevartuples():
-        type_param = TypeVarTupleParam(typevartuple)
+    for type_param, binding in new.iter_typevartuples():
         existing_binding = merged.get_typevartuple(type_param)
         if existing_binding is None or (
             _is_placeholder_typevartuple_binding(existing_binding)

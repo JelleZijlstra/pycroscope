@@ -177,7 +177,7 @@ class FunctionInfo:
             tv_map = get_tv_map(AsyncGeneratorValue, self.return_annotation, ctx)
             if not isinstance(tv_map, CanAssignError):
                 return tv_map.get_typevar(
-                    SendParam, AnyValue(AnySource.generic_argument)
+                    SendParamA, AnyValue(AnySource.generic_argument)
                 )
             # If the return annotation is a non-Generator Iterable, assume the send
             # type is None.

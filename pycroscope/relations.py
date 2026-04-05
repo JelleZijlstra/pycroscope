@@ -68,7 +68,6 @@ from pycroscope.value import (
     TypedValue,
     TypeFormValue,
     TypeParam,
-    TypeVarLike,
     TypeVarMap,
     TypeVarParam,
     TypeVarTupleBindingValue,
@@ -87,6 +86,7 @@ from pycroscope.value import (
     get_type_params_by_typevar,
     gradualize,
     intersect_bounds_maps,
+    iter_type_params_in_value,
     pack_typevartuple_binding,
     replace_fallback,
     replace_known_sequence_value,
@@ -1211,9 +1211,10 @@ def _translate_generic_typevar_bounds(
     translated_tv_map = translate_generic_typevar_map(left, tv_map, ctx)
     if not translated_tv_map:
         return {}
-    type_params_by_typevar: dict[TypeVarLike, TypeParam] = {}
+    type_params_by_typevar: dict[TypeParam, TypeParam] = {}
     for arg in left.args:
-        type_params_by_typevar.update(get_type_params_by_typevar(arg))
+        for param in iter_type_params_in_value(arg):
+            type_params_by_typevar[param] = param
     return {
         typevar: [
             LowerBound(type_params_by_typevar[typevar], value),
