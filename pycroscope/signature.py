@@ -1494,7 +1494,7 @@ class Signature:
                 ctx.can_assign_ctx,
                 all_typevars=inference_signature.inferable_typevars,
             )
-            print("TV VALUES", typevar_values)
+            print("TV VALUES", typevar_values, return_value)
             for param_name, (_position, composite) in bound_args.items():
                 param = self.parameters[param_name]
                 param_tv_map = relations.get_tv_map(
@@ -1503,17 +1503,17 @@ class Signature:
                     Relation.ASSIGNABLE,
                     ctx.can_assign_ctx,
                 )
+                print("PARAM TV MAP", param_name, param_tv_map)
                 if isinstance(param_tv_map, CanAssignError):
                     continue
                 for typevar, value in _iter_typevar_map_items(param_tv_map):
-                    if isinstance(param_tv_map.get_value(typevar), AnyValue) or (
-                        isinstance(typevar, TypeVarTupleParam)
-                        and _is_placeholder_typevartuple_solution(
-                            typevar_values.get_value(typevar)
-                        )
+                    if isinstance(
+                        typevar, TypeVarTupleParam
+                    ) and _is_placeholder_typevartuple_solution(
+                        typevar_values.get_value(typevar)
                     ):
                         typevar_values = typevar_values.with_value(typevar, value)
-            if SelfT in self.inferable_typevars and self.parameters:
+            if SelfParam in self.inferable_typevars and self.parameters:
                 self_value = None
                 used_bound_receiver = False
                 if (
@@ -1570,6 +1570,7 @@ class Signature:
                 )
             )
             if should_widen_constructor_typevars:
+                print("WIDEN")
                 typevar_values = _typevar_map_from_varlike_pairs(
                     (
                         typevar,
@@ -1595,6 +1596,7 @@ class Signature:
                 return self.get_default_return()
 
         if self._return_key in self.typevars_of_params:
+            print("NEW TVVA ALUES", typevar_values)
             return_value = return_value.substitute_typevars(typevar_values)
 
         if (
@@ -1739,6 +1741,7 @@ class Signature:
             else:
                 return_value = partial_return
         ret = self._apply_annotated_constraints(return_value, composites, ctx)
+        print("FINAL RETURN", ret, self.callable)
         return CallReturn(
             ret,
             is_error=had_error,
