@@ -7117,54 +7117,21 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     and node.name in IMPLICIT_CLASSMETHODS
                 )
                 if uses_self_annotation:
-                    if (
-                        return_annotation is not None
-                        and FunctionDecorator.classmethod not in decorator_kinds
-                        and not is_implicit_classmethod
-                    ):
-                        return_annotation = return_annotation.substitute_typevars(
-                            substitutions
-                        )
-                    if (
-                        FunctionDecorator.classmethod in decorator_kinds
-                        or is_implicit_classmethod
-                    ):
-                        inferred_self = SubclassValue(self_instance_value)
-                    else:
-                        inferred_self = self_instance_value
-                    params = [
-                        replace(
-                            params[0],
-                            param=replace(params[0].param, annotation=inferred_self),
-                        ),
-                        *[
-                            replace(
-                                param_info,
-                                param=replace(
-                                    param_info.param,
-                                    annotation=param_info.param.annotation.substitute_typevars(
-                                        substitutions
-                                    ),
-                                ),
-                            )
-                            for param_info in params[1:]
-                        ],
-                    ]
+                    inferred_self = self_instance_value
                 else:
-                    if (
-                        FunctionDecorator.classmethod in decorator_kinds
-                        or is_implicit_classmethod
-                    ):
-                        fallback_self = SubclassValue(enclosing_class)
-                    else:
-                        fallback_self = enclosing_class
-                    params = [
-                        replace(
-                            params[0],
-                            param=replace(params[0].param, annotation=fallback_self),
-                        ),
-                        *params[1:],
-                    ]
+                    inferred_self = enclosing_class
+                if (
+                    FunctionDecorator.classmethod in decorator_kinds
+                    or is_implicit_classmethod
+                ):
+                    inferred_self = SubclassValue(inferred_self)
+                params = [
+                    replace(
+                        params[0],
+                        param=replace(params[0].param, annotation=inferred_self),
+                    ),
+                    *params[1:],
+                ]
             yield FunctionInfo(
                 async_kind=async_kind,
                 decorator_kinds=frozenset(decorator_kinds),
