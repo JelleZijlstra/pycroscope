@@ -92,7 +92,6 @@ from .value import (
     PartialValueOperation,
     PredicateValue,
     SelfParam,
-    SelfT,
     SequenceValue,
     SimpleType,
     SubclassValue,
@@ -161,7 +160,7 @@ def _is_staticmethod_callable(func: FunctionType) -> bool:
 
 
 def _should_widen_constructor_typevar(param: TypeParam) -> bool:
-    return isinstance(param, TypeVarParam) and param.typevar is not SelfT
+    return isinstance(param, TypeVarParam) and not param.is_self
 
 
 def _is_identity_typevar_solution(param: TypeParam, value: Value) -> bool:
@@ -2316,10 +2315,7 @@ def _self_type_from_annotation(annotation: Value) -> Value | None:
     annotation = replace_fallback(annotation)
     if isinstance(annotation, SubclassValue):
         return annotation.typ
-    if (
-        isinstance(annotation, TypeVarValue)
-        and annotation.typevar_param.typevar is SelfT
-    ):
+    if isinstance(annotation, TypeVarValue) and annotation.typevar_param.is_self:
         return annotation.get_upper_bound_value()
     if isinstance(annotation, TypedValue):
         return annotation

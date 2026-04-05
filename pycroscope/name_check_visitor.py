@@ -7085,7 +7085,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 and isinstance(params[0].node, ast.arg)
                 and params[0].node.annotation is None
             ):
-                self_instance_value = bound_self_type_from_class_key(enclosing_class)
+                self_instance_value = bound_self_type_from_class_key(
+                    enclosing_class.typ
+                )
                 substitutions = TypeVarMap(typevars={SelfParam: self_instance_value})
                 uses_self_annotation = (
                     _value_contains_self(return_annotation)
@@ -7487,7 +7489,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         if (
             enclosing_class := self._get_enclosing_class_value_for_method()
         ) is not None:
-            return bound_self_type_from_class_key(enclosing_class)
+            return bound_self_type_from_class_key(enclosing_class.typ)
         if self.current_class_key is None:
             return None
         return bound_self_type_from_class_key(self.current_class_key)

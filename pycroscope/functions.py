@@ -551,7 +551,7 @@ def compute_parameters(
                         )
         elif is_self:
             assert enclosing_class is not None
-            self_tv_value = bound_self_type_from_class_key(enclosing_class)
+            self_tv_value = bound_self_type_from_class_key(enclosing_class.typ)
             if is_classmethod or node.name in IMPLICIT_CLASSMETHODS:
                 value = SubclassValue(self_tv_value)
             else:

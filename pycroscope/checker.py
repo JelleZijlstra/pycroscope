@@ -2831,9 +2831,11 @@ class CheckerAttrContext(AttrContext):
         if isinstance(root_value, TypeVarValue) and root_value.typevar_param.is_self:
             return root_value
         if isinstance(root_value, (TypedValue, GenericValue)):
-            return bound_self_type_from_class_key(root_value)
-        if isinstance(root_value, SubclassValue):
             return bound_self_type_from_class_key(root_value.typ)
+        if isinstance(root_value, SubclassValue) and isinstance(
+            root_value.typ, TypedValue
+        ):
+            return bound_self_type_from_class_key(root_value.typ.typ)
         if isinstance(
             root_value, KnownValueWithTypeVars
         ) and root_value.typevars.has_typevar(SelfParam):
