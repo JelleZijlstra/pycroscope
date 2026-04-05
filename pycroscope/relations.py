@@ -54,21 +54,19 @@ from pycroscope.value import (
     PartialCallValue,
     PartialValue,
     PredicateValue,
-    SelfT,
     SequenceValue,
     SimpleType,
     SubclassValue,
     SuperValue,
     SyntheticClassObjectValue,
     SyntheticModuleValue,
-    T,
+    T_iter,
     TypeAliasValue,
     TypedDictEntry,
     TypedDictValue,
     TypedValue,
     TypeFormValue,
     TypeParam,
-    TypeVarLike,
     TypeVarMap,
     TypeVarParam,
     TypeVarTupleBindingValue,
@@ -80,15 +78,14 @@ from pycroscope.value import (
     Value,
     VariableNameValue,
     Variance,
-    _get_typevar_map_value,
     _iter_typevar_map_items,
-    _with_typevar_map_value,
     default_value_for_type_param,
     flatten_values,
     freshen_typevars_for_inference,
     get_type_params_by_typevar,
     gradualize,
     intersect_bounds_maps,
+    iter_type_params_in_value,
     pack_typevartuple_binding,
     replace_fallback,
     replace_known_sequence_value,
@@ -284,6 +281,11 @@ def has_relation(
     if key is not None:
         assert cache is not None
         _store_cached_relation_result(cache, key, result)
+    if not isinstance(result, CanAssignError):
+        for tv in result:
+            assert isinstance(
+                tv, (TypeVarParam, TypeVarTupleParam, ParamSpecParam)
+            ), result
     return result
 
 
@@ -408,7 +410,7 @@ def _has_relation(
             return unify_bounds_maps(bounds_maps)
         return CanAssignError(f"{right} is not {relation.description} {left}")
     if isinstance(right, TypeVarValue):
-        if right.typevar_param.typevar is SelfT and isinstance(left, MultiValuedValue):
+        if right.typevar_param.is_self and isinstance(left, MultiValuedValue):
             bounds_maps = []
             errors = []
             for val in left.vals:
@@ -440,7 +442,7 @@ def _has_relation(
             LowerBound(left.typevar_tuple_param, right_as_tuple),
             *left.get_inherent_bounds(),
         ]
-        return {left.typevar: bounds}
+        return {left.typevar_tuple_param: bounds}
     if isinstance(right, TypeVarTupleValue) and not isinstance(left, MultiValuedValue):
         if isinstance(left, TypeVarTupleBindingValue):
             left_as_tuple = typevartuple_binding_to_tuple_value(left.binding)
@@ -454,7 +456,7 @@ def _has_relation(
             UpperBound(right.typevar_tuple_param, left_as_tuple),
             *right.get_inherent_bounds(),
         ]
-        return {right.typevar: bounds}
+        return {right.typevar_tuple_param: bounds}
 
     # TypeAliasValue
     if isinstance(left, TypeAliasValue):
@@ -774,7 +776,7 @@ def _has_relation(
                 return CanAssignError(f"{right} is not a type")
             if isinstance(left.typ, InferenceVarValue):
                 return {
-                    left.typ.typevar_param.typevar: [
+                    left.typ.typevar_param: [
                         LowerBound(left.typ.typevar_param, TypedValue(right.val))
                     ]
                 }
@@ -794,9 +796,7 @@ def _has_relation(
                 return CanAssignError(f"{right} is not a type")
             if isinstance(left.typ, InferenceVarValue):
                 return {
-                    left.typ.typevar_param.typevar: [
-                        LowerBound(left.typ.typevar_param, right)
-                    ]
+                    left.typ.typevar_param: [LowerBound(left.typ.typevar_param, right)]
                 }
             elif isinstance(left.typ, TypeVarValue):
                 return CanAssignError(f"{right} is not {relation.description} {left}")
@@ -821,9 +821,7 @@ def _has_relation(
                 return left_tobj.can_assign(left, right, ctx, relation=relation)
             elif isinstance(right.typ, InferenceVarValue):
                 return {
-                    right.typ.typevar_param.typevar: [
-                        UpperBound(right.typ.typevar_param, left)
-                    ]
+                    right.typ.typevar_param: [UpperBound(right.typ.typevar_param, left)]
                 }
             elif isinstance(right.typ, TypeVarValue):
                 rigid_subclass = SubclassValue.make(right.typ.get_upper_bound_value())
@@ -1169,7 +1167,7 @@ def translate_generic_typevar_map(
     ):
         if not get_type_params_by_typevar(arg):
             continue
-        inferred_value = _get_typevar_map_value(inferred, type_param.typevar)
+        inferred_value = inferred.get_value(type_param)
         if inferred_value is None:
             continue
         arg_map = get_tv_map(arg, inferred_value, Relation.ASSIGNABLE, ctx)
@@ -1212,9 +1210,10 @@ def _translate_generic_typevar_bounds(
     translated_tv_map = translate_generic_typevar_map(left, tv_map, ctx)
     if not translated_tv_map:
         return {}
-    type_params_by_typevar: dict[TypeVarLike, TypeParam] = {}
+    type_params_by_typevar: dict[TypeParam, TypeParam] = {}
     for arg in left.args:
-        type_params_by_typevar.update(get_type_params_by_typevar(arg))
+        for param in iter_type_params_in_value(arg):
+            type_params_by_typevar[param] = param
     return {
         typevar: [
             LowerBound(type_params_by_typevar[typevar], value),
@@ -1239,7 +1238,7 @@ def _get_exact_typevar_bindings(left: Value, right: Value) -> TypeVarMap:
         and isinstance(right, TypeVarValue)
         and right.typevar_param.typevar is left.typevar_param.typevar
     ):
-        return TypeVarMap(typevars={left.typevar_param.typevar: right})
+        return TypeVarMap(typevars={left.typevar_param: right})
 
     if (
         isinstance(left, SubclassValue)
@@ -1247,9 +1246,10 @@ def _get_exact_typevar_bindings(left: Value, right: Value) -> TypeVarMap:
         and not isinstance(left.typ, InferenceVarValue)
         and isinstance(right, SubclassValue)
         and isinstance(right.typ, TypeVarValue)
+        # TODO: improve
         and right.typ.typevar_param.typevar is left.typ.typevar_param.typevar
     ):
-        return TypeVarMap(typevars={left.typ.typevar_param.typevar: right.typ})
+        return TypeVarMap(typevars={left.typ.typevar_param: right.typ})
 
     if (
         isinstance(left, InputSigValue)
@@ -1258,7 +1258,7 @@ def _get_exact_typevar_bindings(left: Value, right: Value) -> TypeVarMap:
         and isinstance(right.input_sig, ParamSpecParam)
         and right.input_sig.param_spec is left.input_sig.param_spec
     ):
-        return TypeVarMap(paramspecs={left.input_sig.param_spec: right.input_sig})
+        return TypeVarMap(paramspecs={left.input_sig: right.input_sig})
 
     return TypeVarMap()
 
@@ -1377,8 +1377,7 @@ def _extract_type_form(value: Value, ctx: CanAssignContext) -> Value | CanAssign
             return CanAssignError(f"{value} is not a TypeForm")
         extracted = gradualize(type_form)
         if isinstance(extracted, (TypeVarValue, TypeVarTupleValue)) and (
-            isinstance(extracted, TypeVarTupleValue)
-            or extracted.typevar_param.typevar is SelfT
+            isinstance(extracted, TypeVarTupleValue) or extracted.typevar_param.is_self
         ):
             return CanAssignError(f"{value} is not a TypeForm")
         if isinstance(extracted, (ParamSpecArgsValue, ParamSpecKwargsValue)):
@@ -1395,7 +1394,7 @@ def _extract_type_form(value: Value, ctx: CanAssignContext) -> Value | CanAssign
     elif isinstance(value, (AnyValue, TypeAliasValue)):
         return value
     elif isinstance(value, TypeVarValue):
-        if value.typevar_param.typevar is SelfT:
+        if value.typevar_param.is_self:
             return CanAssignError(f"{value} is not a TypeForm")
         return value
     elif isinstance(
@@ -1949,7 +1948,12 @@ def _capture_typevartuple_bounds_from_side(
         else LowerBound(marker_member.typevar_tuple_param, captured)
     )
     bounds_maps.append(
-        {marker_member.typevar: [bound, *marker_member.get_inherent_bounds()]}
+        {
+            marker_member.typevar_tuple_param: [
+                bound,
+                *marker_member.get_inherent_bounds(),
+            ]
+        }
     )
     return unify_bounds_maps(bounds_maps)
 
@@ -2234,11 +2238,13 @@ def get_tv_map(
     if errors:
         return CanAssignError(children=list(errors))
     tv_map = resolved_tv_map
+
+    # TODO: what is this doing
     exact_bindings = _get_exact_typevar_bindings(original_left, right)
     for typevar, value in _iter_typevar_map_items(exact_bindings):
-        existing = _get_typevar_map_value(tv_map, typevar)
+        existing = tv_map.get_value(typevar)
         if existing is None or isinstance(existing, AnyValue):
-            tv_map = _with_typevar_map_value(tv_map, typevar, value)
+            tv_map = tv_map.with_value(typevar, value)
     return tv_map
 
 
@@ -2249,7 +2255,7 @@ def is_iterable(
     tv_map = get_tv_map(IterableValue, value, relation, ctx)
     if isinstance(tv_map, CanAssignError):
         return tv_map
-    return tv_map.get_typevar(TypeVarParam(T), AnyValue(AnySource.generic_argument))
+    return tv_map.get_typevar(T_iter, AnyValue(AnySource.generic_argument))
 
 
 class HashableProto(Protocol):

@@ -6,10 +6,12 @@ TypeVar solver.
 
 from collections.abc import Iterable, Sequence
 
+from typing_extensions import assert_never
+
 import pycroscope
 
 from .analysis_lib import Sentinel
-from .safe import all_of_type, is_instance_of_typing_name
+from .safe import all_of_type
 from .value import (
     AnySource,
     AnyValue,
@@ -21,16 +23,14 @@ from .value import (
     KnownValue,
     LowerBound,
     OrBound,
-    ParamSpecLike,
+    ParamSpecParam,
     SequenceMembers,
     SequenceValue,
     TypedValue,
     TypeParam,
-    TypeVarLike,
     TypeVarMap,
-    TypeVarTupleLike,
+    TypeVarParam,
     TypeVarTupleParam,
-    TypeVarType,
     UpperBound,
     Value,
     replace_known_sequence_value,
@@ -77,24 +77,25 @@ def resolve_bounds_map(
     bounds_map: BoundsMap,
     ctx: CanAssignContext,
     *,
-    all_typevars: Iterable[TypeVarLike] = (),
+    all_typevars: Iterable[TypeParam] = (),
 ) -> tuple[TypeVarMap, Sequence[CanAssignError]]:
-    typevars: dict[TypeVarType, Value] = {}
-    paramspecs: dict[ParamSpecLike, pycroscope.input_sig.InputSig] = {}
-    typevartuples: dict[TypeVarTupleLike, SequenceMembers] = {}
+    typevars: dict[TypeVarParam, Value] = {}
+    paramspecs: dict[ParamSpecParam, pycroscope.input_sig.InputSig] = {}
+    typevartuples: dict[TypeVarTupleParam, SequenceMembers] = {}
     for tv in all_typevars:
-        if is_instance_of_typing_name(tv, "TypeVar"):
-            typevars[tv] = AnyValue(AnySource.generic_argument)
-        elif is_instance_of_typing_name(tv, "ParamSpec"):
-            paramspecs[tv] = pycroscope.input_sig.AnySig()
-        elif is_instance_of_typing_name(tv, "TypeVarTuple"):
-            typevartuples[tv] = ((True, AnyValue(AnySource.generic_argument)),)
-        else:
-            raise TypeError(f"Unrecognized type parameter {tv!r}")
+        match tv:
+            case TypeVarParam():
+                typevars[tv] = AnyValue(AnySource.generic_argument)
+            case ParamSpecParam():
+                paramspecs[tv] = pycroscope.input_sig.AnySig()
+            case TypeVarTupleParam():
+                typevartuples[tv] = ((True, AnyValue(AnySource.generic_argument)),)
+            case _:
+                assert_never(tv)
     errors = []
     for tv, bounds in bounds_map.items():
         bounds = tuple(dict.fromkeys(bounds))
-        if is_instance_of_typing_name(tv, "ParamSpec"):
+        if isinstance(tv, ParamSpecParam):
             # For ParamSpec, we use a simpler approach
             solution = pycroscope.input_sig.solve_paramspec(bounds, ctx)
         else:
@@ -102,19 +103,20 @@ def resolve_bounds_map(
         if isinstance(solution, CanAssignError):
             errors.append(solution)
             solution = AnyValue(AnySource.error)
-        if is_instance_of_typing_name(tv, "TypeVar"):
-            typevars[tv] = solution
-        elif is_instance_of_typing_name(tv, "ParamSpec"):
-            from .input_sig import InputSigValue, assert_input_sig
+        match tv:
+            case TypeVarParam():
+                typevars[tv] = solution
+            case ParamSpecParam():
+                from .input_sig import InputSigValue, assert_input_sig
 
-            if isinstance(solution, InputSigValue):
-                paramspecs[tv] = solution.input_sig
-            else:
-                paramspecs[tv] = assert_input_sig(solution)
-        elif is_instance_of_typing_name(tv, "TypeVarTuple"):
-            typevartuples[tv] = typevartuple_value_to_members(solution)
-        else:
-            raise TypeError(f"Unrecognized type parameter {tv!r}")
+                if isinstance(solution, InputSigValue):
+                    paramspecs[tv] = solution.input_sig
+                else:
+                    paramspecs[tv] = assert_input_sig(solution)
+            case TypeVarTupleParam():
+                typevartuples[tv] = typevartuple_value_to_members(solution)
+            case _:
+                assert_never(tv)
     return (
         TypeVarMap(
             typevars=typevars, paramspecs=paramspecs, typevartuples=typevartuples

@@ -57,6 +57,7 @@ from typing_extensions import Protocol, assert_never, is_typeddict
 from . import attributes, format_strings, importer, node_visitor, type_evaluation
 from . import dataclass as dataclass_helpers
 from .analysis_lib import (
+    Sentinel,
     get_attribute_path,
     get_subclasses_recursively,
     is_cython_class,
@@ -118,9 +119,9 @@ from .functions import (
     FunctionNode,
     FunctionResult,
     GeneratorValue,
-    ReturnT,
-    SendT,
-    YieldT,
+    ReturnParam,
+    SendParam,
+    YieldParam,
     compute_parameters,
     compute_value_of_function,
 )
@@ -241,6 +242,7 @@ from .value import (
     SYS_VERSION_INFO_EXTENSION,
     UNINITIALIZED_VALUE,
     VOID,
+    AliasOwner,
     AlwaysPresentExtension,
     AnnotatedValue,
     AnySource,
@@ -278,7 +280,7 @@ from .value import (
     PredicateValue,
     PropertyInfo,
     ReferencingValue,
-    SelfT,
+    SelfParam,
     SequenceValue,
     SimpleType,
     SkipDeprecatedExtension,
@@ -304,10 +306,8 @@ from .value import (
     UnboundMethodValue,
     Value,
     Variance,
-    _get_typevar_map_value,
     _is_property_initializer,
     _iter_typevar_map_items,
-    _with_typevar_map_value,
     annotate_value,
     bound_self_type_from_class_key,
     concrete_values_from_iterable,
@@ -435,9 +435,11 @@ def _runtime_union_operand_from_value(value: Value) -> object | None:
 T = TypeVar("T")
 T_co = TypeVar("T_co", covariant=True)
 U_co = TypeVar("U_co", covariant=True)
-AwaitableValue = GenericValue(
-    collections.abc.Awaitable, [TypeVarValue(TypeVarParam(T))]
+
+AwaitableParam = TypeVarParam(
+    T, owner=AliasOwner(__name__, "AwaitableValue", Sentinel("AwaitableValue"))
 )
+AwaitableValue = GenericValue(collections.abc.Awaitable, [TypeVarValue(AwaitableParam)])
 KnownNone = KnownValue(None)
 ExceptionValue = TypedValue(BaseException) | SubclassValue(TypedValue(BaseException))
 ExceptionOrNone = ExceptionValue | KnownNone
@@ -2092,7 +2094,7 @@ class ActiveTypeParams:
             )
             break
 
-        if not isinstance(type_param, TypeVarParam) or identity is SelfT:
+        if not isinstance(type_param, TypeVarParam) or type_param.is_self:
             return
         if any(identity in disallowed for disallowed in self._disallowed_identities):
             self.visitor._show_error_if_checking(
@@ -3426,8 +3428,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         if match is not None and self._is_instance_only_symbol(match[1].symbol):
             symbol = match[1].symbol
             if symbol.annotation is not None and any(
-                isinstance(subval, TypeVarValue)
-                and subval.typevar_param.typevar is SelfT
+                isinstance(subval, TypeVarValue) and subval.typevar_param.is_self
                 for subval in symbol.annotation.walk_values()
             ):
                 return set_self(
@@ -3441,7 +3442,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     def _contains_classvar_type_parameter(self, value: Value) -> bool:
         for subval in value.walk_values():
             if isinstance(subval, TypeVarValue):
-                if subval.typevar_param.typevar is SelfT:
+                if subval.typevar_param.is_self:
                     continue
                 return True
             if isinstance(subval, InputSigValue) and isinstance(
@@ -3478,16 +3479,8 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             if isinstance(subval, TypeAliasValue):
                 continue
             type_param = _type_param_value_from_value(subval, self)
-            if type_param is None:
-                continue
-            identity = type_param.typevar
-            if (
-                identity is None
-                or identity is SelfT
-                or not is_instance_of_typing_name(identity, "TypeVar")
-            ):
-                continue
-            identities.add(identity)
+            if isinstance(type_param, TypeVarParam) and not type_param.is_self:
+                identities.add(type_param.typevar)
         return identities
 
     def _node_contains_type_param_reference(self, node: ast.AST) -> bool:
@@ -6067,7 +6060,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         for base in base_values:
             for subval in flatten_values(base):
                 for type_param in self._walk_values_for_type_param_collection(subval):
-                    if type_param.typevar is SelfT:
+                    if isinstance(type_param, TypeVarParam) and type_param.is_self:
                         continue
                     if type_param.typevar in seen:
                         continue
@@ -6258,11 +6251,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 ).items():
                     existing_map = seen_mappings.setdefault(gb_typ, TypeVarMap())
                     for type_param, value in _iter_typevar_map_items(tv_map):
-                        existing = _get_typevar_map_value(existing_map, type_param)
+                        existing = existing_map.get_value(type_param)
                         if existing is None:
-                            existing_map = _with_typevar_map_value(
-                                existing_map, type_param, value
-                            )
+                            existing_map = existing_map.with_value(type_param, value)
                         elif (
                             existing != value
                             and not isinstance(existing, AnyValue)
@@ -7095,7 +7086,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 and params[0].node.annotation is None
             ):
                 self_instance_value = bound_self_type_from_class_key(enclosing_class)
-                substitutions = TypeVarMap(typevars={SelfT: self_instance_value})
+                substitutions = TypeVarMap(typevars={SelfParam: self_instance_value})
                 uses_self_annotation = (
                     _value_contains_self(return_annotation)
                     or any(
@@ -10718,7 +10709,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             return result
         else:
             return tv_map.get_typevar(
-                TypeVarParam(T), AnyValue(AnySource.generic_argument)
+                AwaitableParam, AnyValue(AnySource.generic_argument)
             )
 
     def visit_YieldFrom(self, node: ast.YieldFrom) -> Value:
@@ -10730,8 +10721,8 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             if not isinstance(can_assign, CanAssignError):
                 tv_map = TypeVarMap(
                     typevars={
-                        ReturnT: can_assign.get_typevar(
-                            TypeVarParam(T), AnyValue(AnySource.generic_argument)
+                        ReturnParam: can_assign.get_typevar(
+                            AwaitableParam, AnyValue(AnySource.generic_argument)
                         )
                     }
                 )
@@ -10744,14 +10735,16 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                         error_code=ErrorCode.bad_yield_from,
                         detail=can_assign.display(),
                     )
-                    tv_map = TypeVarMap(typevars={ReturnT: AnyValue(AnySource.error)})
+                    tv_map = TypeVarMap(
+                        typevars={ReturnParam: AnyValue(AnySource.error)}
+                    )
                 else:
-                    tv_map = TypeVarMap(typevars={YieldT: iterable_type})
+                    tv_map = TypeVarMap(typevars={YieldParam: iterable_type})
 
         if self.current_function_info is not None:
             expected_yield = self.current_function_info.get_generator_yield_type(self)
             yield_type = tv_map.get_typevar(
-                TypeVarParam(YieldT), AnyValue(AnySource.generic_argument)
+                YieldParam, AnyValue(AnySource.generic_argument)
             )
             can_assign = has_relation(
                 expected_yield, yield_type, Relation.ASSIGNABLE, self
@@ -10766,7 +10759,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
 
             expected_send = self.current_function_info.get_generator_send_type(self)
             send_type = tv_map.get_typevar(
-                TypeVarParam(SendT), AnyValue(AnySource.generic_argument)
+                SendParam, AnyValue(AnySource.generic_argument)
             )
             can_assign = has_relation(
                 send_type, expected_send, Relation.ASSIGNABLE, self
@@ -10780,9 +10773,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     detail=can_assign.display(),
                 )
 
-        return tv_map.get_typevar(
-            TypeVarParam(ReturnT), AnyValue(AnySource.generic_argument)
-        )
+        return tv_map.get_typevar(ReturnParam, AnyValue(AnySource.generic_argument))
 
     def visit_Yield(self, node: ast.Yield) -> Value:
         if self._is_checking():
@@ -10919,8 +10910,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             )
             expected_return_values = tuple(self.expected_return_value.walk_values())
             contains_self_typevar = any(
-                isinstance(subval, TypeVarValue)
-                and subval.typevar_param.typevar is SelfT
+                isinstance(subval, TypeVarValue) and subval.typevar_param.is_self
                 for subval in expected_return_values
             )
             should_retry_with_tv_map = isinstance(can_assign, CanAssignError) and (
@@ -13984,9 +13974,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         if isinstance(root, (TypedValue, GenericValue)):
             return root
         if isinstance(root, KnownValueWithTypeVars) and root.typevars.has_typevar(
-            TypeVarParam(SelfT)
+            SelfParam
         ):
-            self_value = root.typevars.get_typevar(TypeVarParam(SelfT))
+            self_value = root.typevars.get_typevar(SelfParam)
             assert self_value is not None
             return self_value
         if isinstance(root, KnownValue) and not isinstance(root.val, type):
@@ -14008,14 +13998,14 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         ):
             value = TypedValue(object)
         if not on_class and any(
-            isinstance(subval, TypeVarValue) and subval.typevar_param.typevar is SelfT
+            isinstance(subval, TypeVarValue) and subval.typevar_param.is_self
             for subval in value.walk_values()
         ):
             if (
                 self_value := self._self_value_for_attribute_assignment_root(root)
             ) is not None:
                 value = value.substitute_typevars(
-                    TypeVarMap(typevars={SelfT: self_value})
+                    TypeVarMap(typevars={SelfParam: self_value})
                 )
         return value
 
@@ -14076,10 +14066,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 tobj, on_class = self.checker.make_type_object(typ), True
             case SubclassValue(TypeVarValue() as tv):
                 simple_root = root
-                if (
-                    tv.typevar_param.typevar is SelfT
-                    and self.current_class_key is not None
-                ):
+                if tv.typevar_param.is_self and self.current_class_key is not None:
                     tobj = self.checker.make_type_object(self.current_class_key)
                 else:
                     tobj = self.checker.make_type_object(object)
@@ -14141,7 +14128,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         elif (
             self.current_class_key is not None
             and isinstance(value, TypeVarValue)
-            and value.typevar_param.typevar is SelfT
+            and value.typevar_param.is_self
         ):
             value = TypedValue(self.current_class_key)
         value = replace_fallback(value)
@@ -15911,15 +15898,13 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         if isinstance(value, AnnotatedValue):
             return self._attribute_write_types_for_value(value.value)
         if isinstance(value, KnownValueWithTypeVars) and value.typevars.has_typevar(
-            TypeVarParam(SelfT)
+            SelfParam
         ):
-            self_value = value.typevars.get_typevar(TypeVarParam(SelfT))
+            self_value = value.typevars.get_typevar(SelfParam)
             assert self_value is not None
             return self._attribute_write_types_for_value(self_value)
         if isinstance(value, TypeVarValue):
-            if value.typevar_param.typevar is SelfT and isinstance(
-                self.current_class, type
-            ):
+            if value.typevar_param.is_self and isinstance(self.current_class, type):
                 return {self.current_class}
             bound = value.typevar_param.bound
             if bound is None:
@@ -17142,7 +17127,7 @@ def _function_signature_contains_self(info: FunctionInfo) -> bool:
 
 def _value_carries_self_binding(value: Value) -> bool:
     if isinstance(value, KnownValueWithTypeVars) and value.typevars.has_typevar(
-        TypeVarParam(SelfT)
+        SelfParam
     ):
         return True
     return any(

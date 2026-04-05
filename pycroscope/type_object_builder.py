@@ -297,7 +297,7 @@ def _runtime_member_value(raw_value: object, owner: type) -> Value:
         return value
 
     typevars = TypeVarMap()
-    params_by_typevar = {type_param.typevar: type_param for type_param in type_params}
+    params_by_typevar = {type_param: type_param for type_param in type_params}
     for runtime_typevar, arg_value in matched:
         typevars = typevars.with_value(params_by_typevar[runtime_typevar], arg_value)
     return KnownValueWithTypeVars(raw_value, typevars)

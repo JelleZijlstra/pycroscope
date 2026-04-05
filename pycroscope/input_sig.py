@@ -135,7 +135,7 @@ def input_sigs_have_relation(
             return CanAssignError("Cannot be assigned to")
         return {}
     elif isinstance(left, ParamSpecParam):
-        return {left.param_spec: [LowerBound(left, InputSigValue(right))]}
+        return {left: [LowerBound(left, InputSigValue(right))]}
     elif isinstance(left, ActualArguments):
         if left == right:
             return {}
@@ -146,7 +146,7 @@ def input_sigs_have_relation(
                 return CanAssignError("Cannot be assigned")
             return {}
         elif isinstance(right, ParamSpecParam):
-            return {right.param_spec: [UpperBound(right, InputSigValue(left))]}
+            return {right: [UpperBound(right, InputSigValue(left))]}
         elif isinstance(right, ActualArguments):
             return pycroscope.signature.check_call_preprocessed(left.sig, right, ctx)
         elif isinstance(right, FullSignature):

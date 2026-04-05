@@ -3,7 +3,14 @@ from .checker import Checker
 from .test_name_check_visitor import TestNameCheckVisitorBase
 from .test_node_visitor import assert_passes, skip_before
 from .tests import make_simple_sequence
-from .value import AnySource, AnyValue, GenericValue, TypedValue, assert_is_value
+from .value import (
+    AnySource,
+    AnyValue,
+    GenericValue,
+    KnownValue,
+    TypedValue,
+    assert_is_value,
+)
 
 
 def test_runtime_constructor_instance_value_substitutes_earlier_defaults() -> None:
@@ -71,6 +78,7 @@ class TestTypeVar(TestNameCheckVisitorBase):
 
         def capybara(unannotated) -> None:
             assert_is_value(id(unannotated), AnyValue(AnySource.unannotated))
+            assert_is_value(id(1), KnownValue(1))
 
     @assert_passes()
     def test_union_math(self):

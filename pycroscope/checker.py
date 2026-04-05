@@ -85,7 +85,7 @@ from .value import (
     PartialValue,
     PartialValueOperation,
     PredicateValue,
-    SelfT,
+    SelfParam,
     SequenceValue,
     SimpleType,
     SubclassValue,
@@ -150,11 +150,11 @@ def _replace_signature_return(
 
 
 def _bound_method_self_value_from_typevars(typevars: TypeVarMap) -> Value | None:
-    direct_self = typevars.get_typevar(TypeVarParam(SelfT))
+    direct_self = typevars.get_typevar(SelfParam)
     if direct_self is not None:
         return direct_self
     for _, value in _iter_typevar_map_items(typevars):
-        if isinstance(value, TypeVarValue) and value.typevar_param.typevar is SelfT:
+        if isinstance(value, TypeVarValue) and value.typevar_param.is_self:
             return value
     return None
 
@@ -630,7 +630,7 @@ class Checker:
             case SubclassValue(TypedValue(typ)):
                 return self.make_type_object(typ), True
             case SubclassValue(TypeVarValue() as tv):
-                if tv.typevar_param.typevar is SelfT and current_class is not None:
+                if tv.typevar_param.is_self and current_class is not None:
                     return self.make_type_object(current_class), True
                 # TODO: could be more precise
                 return self.make_type_object(object), True
@@ -1456,7 +1456,7 @@ class Checker:
             self_annotation_root = replace_fallback(self_annotation)
             if (
                 isinstance(self_annotation_root, TypeVarValue)
-                and self_annotation_root.typevar_param.typevar is SelfT
+                and self_annotation_root.typevar_param.is_self
             ):
                 return True
             if _matches_constructor_receiver_annotation(
@@ -2141,12 +2141,10 @@ class Checker:
                     else:
                         specialized_instance_type = TypedValue(origin)
                     typevar_map = _typevar_map_from_varlike_pairs(
-                        (param.typevar, arg)
-                        for param, arg in zip(type_params, arg_values)
+                        zip(type_params, arg_values)
                     )
                     exact_typevar_map = _typevar_map_from_varlike_pairs(
-                        (param.typevar, arg)
-                        for param, arg in zip(type_params, exact_arg_values)
+                        zip(type_params, exact_arg_values)
                     )
                     if not self._runtime_init_self_annotation_matches(
                         origin,
@@ -2830,10 +2828,7 @@ class CheckerAttrContext(AttrContext):
         root_value = replace_fallback(self.root_value)
         if isinstance(root_value, AnnotatedValue):
             root_value = root_value.value
-        if (
-            isinstance(root_value, TypeVarValue)
-            and root_value.typevar_param.typevar is SelfT
-        ):
+        if isinstance(root_value, TypeVarValue) and root_value.typevar_param.is_self:
             return root_value
         if isinstance(root_value, (TypedValue, GenericValue)):
             return bound_self_type_from_class_key(root_value)
@@ -2841,8 +2836,8 @@ class CheckerAttrContext(AttrContext):
             return bound_self_type_from_class_key(root_value.typ)
         if isinstance(
             root_value, KnownValueWithTypeVars
-        ) and root_value.typevars.has_typevar(TypeVarParam(SelfT)):
-            self_value = root_value.typevars.get_typevar(TypeVarParam(SelfT))
+        ) and root_value.typevars.has_typevar(SelfParam):
+            self_value = root_value.typevars.get_typevar(SelfParam)
             assert self_value is not None
             return self_value
         if isinstance(root_value, KnownValue) and not isinstance(root_value.val, type):
