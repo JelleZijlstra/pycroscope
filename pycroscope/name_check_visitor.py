@@ -3480,7 +3480,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 continue
             type_param = _type_param_value_from_value(subval, self)
             if isinstance(type_param, TypeVarParam) and not type_param.is_self:
-                identities.add(identity)
+                identities.add(type_param.typevar)
         return identities
 
     def _node_contains_type_param_reference(self, node: ast.AST) -> bool:
