@@ -453,68 +453,6 @@ def _iter_typevar_map_items(
         yield typevartuple, typevartuple_binding_to_value(binding)
 
 
-@typing_extensions.overload
-def _get_typevar_map_value(
-    typevars: TypeVarMap, typevar: TypeVarLike
-) -> "Value | None": ...
-
-
-@typing_extensions.overload
-def _get_typevar_map_value(
-    typevars: TypeVarMap, typevar: TypeVarLike, default: T
-) -> "Value | T": ...
-
-
-def _get_typevar_map_value(
-    typevars: TypeVarMap, typevar: TypeVarLike, default: T | None = None
-) -> "Value | T | None":
-    if is_instance_of_typing_name(typevar, "TypeVar"):
-        return typevars._typevars.get(typevar, default)
-    if is_instance_of_typing_name(typevar, "ParamSpec"):
-        paramspec = typevars._paramspecs.get(typevar, default)
-        if paramspec is default:
-            return default
-        assert _is_paramspec_substitution(paramspec), paramspec
-        return TypeVarMap._paramspec_to_value(paramspec)
-    if is_instance_of_typing_name(typevar, "TypeVarTuple"):
-        binding = typevars._typevartuples.get(typevar, default)
-        if binding is default:
-            return default
-        assert _is_sequence_members(binding), binding
-        return typevartuple_binding_to_value(binding)
-    raise TypeError(f"Unrecognized type parameter {typevar!r}")
-
-
-def _has_typevar_map_value(typevars: TypeVarMap, typevar: TypeVarLike) -> bool:
-    if is_instance_of_typing_name(typevar, "TypeVar"):
-        return typevars.has_typevar(TypeVarParam(typevar))
-    if is_instance_of_typing_name(typevar, "ParamSpec"):
-        return typevars.has_paramspec(ParamSpecParam(typevar))
-    if is_instance_of_typing_name(typevar, "TypeVarTuple"):
-        return typevars.has_typevartuple(TypeVarTupleParam(typevar))
-    raise TypeError(f"Unrecognized type parameter {typevar!r}")
-
-
-def _with_typevar_map_value(
-    typevars: TypeVarMap, typevar: TypeVarLike, value: object
-) -> TypeVarMap:
-    if is_instance_of_typing_name(typevar, "TypeVar"):
-        assert isinstance(value, Value), value
-        return typevars.with_typevar(TypeVarParam(typevar), value)
-    if is_instance_of_typing_name(typevar, "ParamSpec"):
-        return typevars.with_paramspec(
-            ParamSpecParam(typevar), _paramspec_value_to_input_sig(value)
-        )
-    if is_instance_of_typing_name(typevar, "TypeVarTuple"):
-        if isinstance(value, Value):
-            return typevars.with_typevartuple(
-                TypeVarTupleParam(typevar), typevartuple_value_to_members(value)
-            )
-        assert _is_sequence_members(value), value
-        return typevars.with_typevartuple(TypeVarTupleParam(typevar), value)
-    raise TypeError(f"Unrecognized type parameter {typevar!r}")
-
-
 BoundsMap = Mapping[
     ExternalType["pycroscope.value.TypeParam"],
     Sequence[ExternalType["pycroscope.value.Bound"]],
@@ -928,13 +866,6 @@ class AnyValue(Value):
     """The source of this value, such as a user-defined annotation
     or a previous error."""
 
-    # def __post_init__(self):
-    #     if self.source is AnySource.generic_argument:
-    #         import sys
-    #         print("MAKE SELF", file=sys.stderr)
-    #         import traceback
-    #         traceback.print_stack()
-
     def __str__(self) -> str:
         if self.source is AnySource.default:
             return "Any"
@@ -1126,6 +1057,9 @@ class ClassOwner:
     def __str__(self) -> str:
         return f"{self.module}.{self.qualname}"
 
+    def __hash__(self) -> int:
+        return hash(self.identity)
+
 
 @dataclass(frozen=True)
 class FunctionOwner:
@@ -1136,6 +1070,9 @@ class FunctionOwner:
     def __str__(self) -> str:
         return f"{self.module}.{self.qualname}"
 
+    def __hash__(self) -> int:
+        return hash(self.identity)
+
 
 @dataclass(frozen=True)
 class AliasOwner:
@@ -1145,6 +1082,9 @@ class AliasOwner:
 
     def __str__(self) -> str:
         return f"{self.module}.{self.qualname}"
+
+    def __hash__(self) -> int:
+        return hash(self.identity)
 
 
 TypeParamOwner = ClassOwner | FunctionOwner | AliasOwner
@@ -1169,6 +1109,8 @@ class TypeVarParam:
     """Whether this TypeVar represents typing.Self."""
 
     def __post_init__(self) -> None:
+        if self.typevar is SelfT:
+            assert self.is_self
         # TODO: replace with assertions
         if self.bound is None:
             runtime_bound = safe_getattr(self.typevar, "__bound__", None)
@@ -3071,11 +3013,6 @@ class LowerBound(Bound):
     type_param: TypeParam
     value: Value
 
-    def __post_init__(self):
-        assert isinstance(
-            self.type_param, (TypeVarTupleParam, TypeVarParam, ParamSpecParam)
-        )
-
     def __str__(self) -> str:
         return f"{self.type_param} >= {self.value}"
 
@@ -3086,11 +3023,6 @@ class UpperBound(Bound):
 
     type_param: TypeParam
     value: Value
-
-    def __post_init__(self):
-        assert isinstance(
-            self.type_param, (TypeVarTupleParam, TypeVarParam, ParamSpecParam)
-        )
 
     def __str__(self) -> str:
         return f"{self.type_param} <= {self.value}"
@@ -3265,7 +3197,7 @@ def bound_self_type_from_class_key(
         if isinstance(current_class_key, Value)
         else TypedValue(current_class_key)
     )
-    return TypeVarValue(TypeVarParam(SelfT, bound=bound))
+    return TypeVarValue(TypeVarParam(SelfT, bound=bound, is_self=True))
 
 
 def shield_nested_self_typevars(value: Value) -> tuple[Value, TypeVarMap]:
