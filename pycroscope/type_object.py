@@ -84,7 +84,6 @@ from .value import (
     PredicateValue,
     PropertyInfo,
     Qualifier,
-    SelfParam,
     SelfTVV,
     SequenceValue,
     SimpleType,
@@ -105,6 +104,7 @@ from .value import (
     _typevar_map_from_varlike_pairs,
     default_value_for_type_param,
     freshen_typevars_for_inference,
+    get_self_param,
     get_single_typevartuple_param,
     get_tv_map,
     match_typevar_arguments,
@@ -1728,7 +1728,9 @@ class TypeObject:
                     member=member,
                     protocol_self_value=self_val,
                 )
-                expected = _substitute_receiver_self_typevar(expected, other_val)
+                expected = _substitute_receiver_self_typevar(
+                    expected, other_val, other_type_obj.typ
+                )
                 if other_type_obj is not None and other_type_obj.is_protocol():
                     actual = _get_protocol_call_member_initializer(
                         other_type_obj.typ, other_val, ctx
@@ -1755,7 +1757,9 @@ class TypeObject:
                     # In static fallback mode, synthetic protocol members may not have
                     # a retrievable attribute type. Keep enforcing member presence.
                     expected = AnyValue(AnySource.inference)
-                expected = _substitute_receiver_self_typevar(expected, other_val)
+                expected = _substitute_receiver_self_typevar(
+                    expected, other_val, other_type_obj.typ
+                )
                 actual = AnyValue(AnySource.inference)
             else:
                 expected = ctx.get_attribute_from_value(
@@ -1775,7 +1779,9 @@ class TypeObject:
                         member=member,
                         protocol_self_value=self_val,
                     )
-                expected = _substitute_receiver_self_typevar(expected, other_val)
+                expected = _substitute_receiver_self_typevar(
+                    expected, other_val, other_type_obj.typ
+                )
                 actual = ctx.get_attribute_from_value(other_val, member)
                 if (
                     class_object_check
@@ -2668,10 +2674,11 @@ def _specialize_self_returning_classmethod(
     *,
     receiver_value: Value | None,
     ctx: CanAssignContext,
+    owner: type | str,
 ) -> Value:
     if receiver_value is None or not isinstance(normalized_attr, CallableValue):
         return normalized_attr
-    receiver_for_self: TypedValue | TypeVarValue | GenericValue
+    receiver_for_self: TypedValue | TypeVarValue
     match receiver_value:
         case KnownValueWithTypeVars() if isinstance(receiver_value.val, type):
             type_params = ctx.get_type_parameters(receiver_value.val)
@@ -2709,7 +2716,7 @@ def _specialize_self_returning_classmethod(
         inferred = get_tv_map(raw_attr.args[0], SubclassValue(receiver_for_self), ctx)
         if not isinstance(inferred, CanAssignError):
             substitutions = inferred
-    substitutions = substitutions.with_typevar(SelfParam, receiver_for_self)
+    substitutions = substitutions.with_typevar(get_self_param(owner), receiver_for_self)
     signature = normalized_attr.signature.substitute_typevars(substitutions)
     return CallableValue(
         _rewrite_self_returning_classmethod_signature(signature, receiver_for_self)
@@ -2981,7 +2988,7 @@ def _resolve_descriptor_access(
             # TODO this should be unnecessary if we set Self correctly when
             # retrieving the signature
             fget = fget.substitute_typevars(
-                TypeVarMap(typevars={SelfParam: receiver_arg})
+                TypeVarMap(typevars={get_self_param(receiver_tobj.typ): receiver_arg})
             )
             if policy.visitor is None:
                 # Note this path means errors don't get shown!
@@ -3014,7 +3021,11 @@ def _resolve_descriptor_access(
     )
     if merged_attribute.is_classmethod:
         typed_descriptor_value = _specialize_self_returning_classmethod(
-            lookup_value, typed_descriptor_value, receiver_value=receiver_value, ctx=ctx
+            lookup_value,
+            typed_descriptor_value,
+            receiver_value=receiver_value,
+            ctx=ctx,
+            owner=merged_attribute.owner.typ,
         )
         typed_receiver_value = _receiver_type_value(receiver_value, ctx)
         if typed_receiver_value is not None and not _is_prebound_synthetic_classmethod(
@@ -3869,7 +3880,9 @@ def _protocol_member_is_method(
     return match is not None and match[1].is_method
 
 
-def _substitute_receiver_self_typevar(value: Value, receiver_value: Value) -> Value:
+def _substitute_receiver_self_typevar(
+    value: Value, receiver_value: Value, receiver_type_key: type | str
+) -> Value:
     """Substitute only receiver-bound ``Self`` occurrences.
 
     Nested ``Self`` values may belong to surrounding type arguments such as
@@ -3877,7 +3890,7 @@ def _substitute_receiver_self_typevar(value: Value, receiver_value: Value) -> Va
     """
     shielded, restore_typevars = shield_nested_self_typevars(value)
     substituted = shielded.substitute_typevars(
-        TypeVarMap(typevars={SelfParam: receiver_value})
+        TypeVarMap(typevars={get_self_param(receiver_type_key): receiver_value})
     )
     if restore_typevars:
         substituted = substituted.substitute_typevars(restore_typevars)
