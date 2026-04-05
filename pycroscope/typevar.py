@@ -101,7 +101,6 @@ def resolve_bounds_map(
             solution = pycroscope.input_sig.solve_paramspec(bounds, ctx)
         else:
             solution = solve(bounds, ctx)
-            print("SOLVE BOUNDS", tv, bounds, "GOT", solution)
         if isinstance(solution, CanAssignError):
             errors.append(solution)
             solution = AnyValue(AnySource.error)
