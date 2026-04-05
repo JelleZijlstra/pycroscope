@@ -7085,8 +7085,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 and isinstance(params[0].node, ast.arg)
                 and params[0].node.annotation is None
             ):
-                self_instance_value = bound_self_type_from_class_key(enclosing_class)
-                substitutions = TypeVarMap(typevars={SelfParam: self_instance_value})
+                self_instance_value = bound_self_type_from_class_key(
+                    enclosing_class.typ
+                )
                 uses_self_annotation = (
                     _value_contains_self(return_annotation)
                     or any(
@@ -7115,54 +7116,21 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     and node.name in IMPLICIT_CLASSMETHODS
                 )
                 if uses_self_annotation:
-                    if (
-                        return_annotation is not None
-                        and FunctionDecorator.classmethod not in decorator_kinds
-                        and not is_implicit_classmethod
-                    ):
-                        return_annotation = return_annotation.substitute_typevars(
-                            substitutions
-                        )
-                    if (
-                        FunctionDecorator.classmethod in decorator_kinds
-                        or is_implicit_classmethod
-                    ):
-                        inferred_self = SubclassValue(self_instance_value)
-                    else:
-                        inferred_self = self_instance_value
-                    params = [
-                        replace(
-                            params[0],
-                            param=replace(params[0].param, annotation=inferred_self),
-                        ),
-                        *[
-                            replace(
-                                param_info,
-                                param=replace(
-                                    param_info.param,
-                                    annotation=param_info.param.annotation.substitute_typevars(
-                                        substitutions
-                                    ),
-                                ),
-                            )
-                            for param_info in params[1:]
-                        ],
-                    ]
+                    inferred_self = self_instance_value
                 else:
-                    if (
-                        FunctionDecorator.classmethod in decorator_kinds
-                        or is_implicit_classmethod
-                    ):
-                        fallback_self = SubclassValue(enclosing_class)
-                    else:
-                        fallback_self = enclosing_class
-                    params = [
-                        replace(
-                            params[0],
-                            param=replace(params[0].param, annotation=fallback_self),
-                        ),
-                        *params[1:],
-                    ]
+                    inferred_self = enclosing_class
+                if (
+                    FunctionDecorator.classmethod in decorator_kinds
+                    or is_implicit_classmethod
+                ):
+                    inferred_self = SubclassValue(inferred_self)
+                params = [
+                    replace(
+                        params[0],
+                        param=replace(params[0].param, annotation=inferred_self),
+                    ),
+                    *params[1:],
+                ]
             yield FunctionInfo(
                 async_kind=async_kind,
                 decorator_kinds=frozenset(decorator_kinds),
@@ -7487,7 +7455,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         if (
             enclosing_class := self._get_enclosing_class_value_for_method()
         ) is not None:
-            return bound_self_type_from_class_key(enclosing_class)
+            return bound_self_type_from_class_key(enclosing_class.typ)
         if self.current_class_key is None:
             return None
         return bound_self_type_from_class_key(self.current_class_key)
@@ -13968,24 +13936,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             self.show_error(node, "Unknown context", ErrorCode.unexpected_node)
             return Composite(AnyValue(AnySource.error), composite, node)
 
-    def _self_value_for_attribute_assignment_root(
-        self, root: SimpleType
-    ) -> Value | None:
-        if isinstance(root, (TypedValue, GenericValue)):
-            return root
-        if isinstance(root, KnownValueWithTypeVars) and root.typevars.has_typevar(
-            SelfParam
-        ):
-            self_value = root.typevars.get_typevar(SelfParam)
-            assert self_value is not None
-            return self_value
-        if isinstance(root, KnownValue) and not isinstance(root.val, type):
-            return TypedValue(type(root.val))
-        return None
-
-    def _normalize_expected_attribute_type_for_assignment(
-        self, value: Value, root: SimpleType, *, on_class: bool
-    ) -> Value:
+    def _normalize_expected_attribute_type_for_assignment(self, value: Value) -> Value:
         # TODO: this should be unnecessary if we get better at
         # treating these as descriptors.
         if isinstance(value, KnownValue) and safe_isinstance(
@@ -13997,16 +13948,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             ),
         ):
             value = TypedValue(object)
-        if not on_class and any(
-            isinstance(subval, TypeVarValue) and subval.typevar_param.is_self
-            for subval in value.walk_values()
-        ):
-            if (
-                self_value := self._self_value_for_attribute_assignment_root(root)
-            ) is not None:
-                value = value.substitute_typevars(
-                    TypeVarMap(typevars={SelfParam: self_value})
-                )
         return value
 
     def _get_transformed_attribute_types(
@@ -14041,31 +13982,20 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         root = replace_fallback(root)
         match root:
             case AnyValue() | TypeFormValue() | UnboundMethodValue() | PredicateValue():
-                simple_root: SimpleType = root
                 tobj, on_class = self.checker.make_type_object(object), False
             case SyntheticModuleValue():
-                simple_root = root
                 tobj, on_class = self.checker.make_type_object(types.ModuleType), False
             case KnownValue(val) if safe_isinstance(val, type):
-                simple_root = root
                 tobj, on_class = self.checker.make_type_object(val), True
             case KnownValue(val=val):
-                simple_root = root
                 tobj, on_class = self.checker.make_type_object(type(val)), False
             case SyntheticClassObjectValue(class_type=TypedValue(typ)):
-                simple_root = root
                 tobj, on_class = self.checker.make_type_object(typ), True
             case TypedValue(typ=typ):
-                simple_root = root
-                tobj, on_class = self.checker.make_type_object(typ), False
-            case GenericValue(typ=typ):
-                simple_root = root
                 tobj, on_class = self.checker.make_type_object(typ), False
             case SubclassValue(TypedValue(typ)):
-                simple_root = root
                 tobj, on_class = self.checker.make_type_object(typ), True
             case SubclassValue(TypeVarValue() as tv):
-                simple_root = root
                 if tv.typevar_param.is_self and self.current_class_key is not None:
                     tobj = self.checker.make_type_object(self.current_class_key)
                 else:
@@ -14102,7 +14032,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 return attr.value
         else:
             expected_type = self._normalize_expected_attribute_type_for_assignment(
-                attr.value, simple_root, on_class=on_class
+                attr.value
             )
         if (
             attr.symbol.dataclass_field is not None
@@ -14358,7 +14288,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     return
             else:
                 expected_type = self._normalize_expected_attribute_type_for_assignment(
-                    attr.value, root, on_class=on_class
+                    attr.value
                 )
             if (
                 not on_class
@@ -15897,12 +15827,6 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     def _attribute_write_types_for_value(self, value: Value) -> set[type]:
         if isinstance(value, AnnotatedValue):
             return self._attribute_write_types_for_value(value.value)
-        if isinstance(value, KnownValueWithTypeVars) and value.typevars.has_typevar(
-            SelfParam
-        ):
-            self_value = value.typevars.get_typevar(SelfParam)
-            assert self_value is not None
-            return self._attribute_write_types_for_value(self_value)
         if isinstance(value, TypeVarValue):
             if value.typevar_param.is_self and isinstance(self.current_class, type):
                 return {self.current_class}

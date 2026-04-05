@@ -1046,7 +1046,8 @@ _NO_DEFAULT = object()
 class ClassOwner:
     module: str
     qualname: str
-    identity: ast.AST | type[object]
+    # TODO: remove str case, track the AST node for synthetic classes
+    identity: ast.AST | type[object] | str
 
     def __str__(self) -> str:
         return f"{self.module}.{self.qualname}"
@@ -3168,7 +3169,7 @@ class TypeVarTupleBindingValue(Value):
         return ", ".join(parts) if parts else "tuple[()]"
 
 
-def is_self_typevar(
+def _is_self_typevar(
     typevar: TypeVarType, *, include_nested_placeholders: bool = False
 ) -> bool:
     return typevar is SelfT or (include_nested_placeholders and typevar is _NestedSelfT)
@@ -3177,21 +3178,29 @@ def is_self_typevar(
 def is_self_typevar_value(
     value: Value, *, include_nested_placeholders: bool = False
 ) -> bool:
-    return isinstance(value, TypeVarValue) and is_self_typevar(
+    return isinstance(value, TypeVarValue) and _is_self_typevar(
         value.typevar_param.typevar,
         include_nested_placeholders=include_nested_placeholders,
     )
 
 
-def bound_self_type_from_class_key(
-    current_class_key: Value | type | str,
-) -> TypeVarValue:
-    bound = (
-        current_class_key
-        if isinstance(current_class_key, Value)
-        else TypedValue(current_class_key)
-    )
-    return TypeVarValue(TypeVarParam(SelfT, bound=bound, is_self=True))
+def get_self_param(typ: type | str) -> TypeVarParam:
+    bound = TypedValue(typ)
+    if isinstance(typ, type):
+        owner = ClassOwner(typ.__module__, typ.__qualname__, typ)
+    else:
+        # TODO: make synthetic types track the module/qualname
+        if "." in typ:
+            module, qualname = typ.rsplit(".", maxsplit=1)
+        else:
+            module = ""
+            qualname = typ
+        owner = ClassOwner(module, qualname, typ)
+    return TypeVarParam(SelfT, bound=bound, is_self=True, owner=owner)
+
+
+def bound_self_type_from_class_key(typ: type | str) -> TypeVarValue:
+    return TypeVarValue(get_self_param(typ))
 
 
 def shield_nested_self_typevars(value: Value) -> tuple[Value, TypeVarMap]:

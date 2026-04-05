@@ -77,7 +77,6 @@ from .value import (
     InferenceVarValue,
     IntersectionValue,
     KnownValue,
-    KnownValueWithTypeVars,
     KVPair,
     LowerBound,
     MultiValuedValue,
@@ -92,7 +91,6 @@ from .value import (
     PartialValueOperation,
     PredicateValue,
     SelfParam,
-    SelfT,
     SequenceValue,
     SimpleType,
     SubclassValue,
@@ -161,7 +159,7 @@ def _is_staticmethod_callable(func: FunctionType) -> bool:
 
 
 def _should_widen_constructor_typevar(param: TypeParam) -> bool:
-    return isinstance(param, TypeVarParam) and param.typevar is not SelfT
+    return isinstance(param, TypeVarParam) and not param.is_self
 
 
 def _is_identity_typevar_solution(param: TypeParam, value: Value) -> bool:
@@ -1511,51 +1509,6 @@ class Signature:
                         typevar_values.get_value(typevar)
                     ):
                         typevar_values = typevar_values.with_value(typevar, value)
-            if SelfParam in self.inferable_typevars and self.parameters:
-                self_value = None
-                used_bound_receiver = False
-                if (
-                    self.bound_receiver_param_name is not None
-                    and self.bound_receiver_param_name in composites
-                ):
-                    self_value = composites[self.bound_receiver_param_name].value
-                    used_bound_receiver = True
-                else:
-                    first_param_name = next(iter(self.parameters))
-                    if first_param_name in bound_args:
-                        self_value = bound_args[first_param_name][1].value
-                if self_value is not None and isinstance(
-                    typevar_values.get_typevar(SelfParam), AnyValue
-                ):
-                    if used_bound_receiver and isinstance(
-                        self_value, (TypedValue, GenericValue)
-                    ):
-                        self_value = None
-                if self_value is not None and isinstance(
-                    typevar_values.get_typevar(SelfParam), AnyValue
-                ):
-                    if isinstance(
-                        self_value, KnownValueWithTypeVars
-                    ) and self_value.typevars.has_typevar(SelfParam):
-                        self_binding = self_value.typevars.get_typevar(SelfParam)
-                        assert self_binding is not None
-                        typevar_values = typevar_values.with_typevar(
-                            SelfParam, self_binding
-                        )
-                    elif isinstance(self_value, SubclassValue):
-                        typevar_values = typevar_values.with_typevar(
-                            SelfParam, self_value.typ
-                        )
-                    elif isinstance(self_value, KnownValue) and isinstance(
-                        self_value.val, type
-                    ):
-                        typevar_values = typevar_values.with_typevar(
-                            SelfParam, TypedValue(self_value.val)
-                        )
-                    else:
-                        typevar_values = typevar_values.with_typevar(
-                            SelfParam, self_value
-                        )
             should_widen_constructor_typevars = ctx.visitor is not None and (
                 _should_widen_constructor_typevar_solutions(self.callable, return_value)
                 or (
@@ -2316,10 +2269,7 @@ def _self_type_from_annotation(annotation: Value) -> Value | None:
     annotation = replace_fallback(annotation)
     if isinstance(annotation, SubclassValue):
         return annotation.typ
-    if (
-        isinstance(annotation, TypeVarValue)
-        and annotation.typevar_param.typevar is SelfT
-    ):
+    if isinstance(annotation, TypeVarValue) and annotation.typevar_param.is_self:
         return annotation.get_upper_bound_value()
     if isinstance(annotation, TypedValue):
         return annotation

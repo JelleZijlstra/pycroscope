@@ -85,7 +85,6 @@ from .value import (
     PartialValue,
     PartialValueOperation,
     PredicateValue,
-    SelfParam,
     SequenceValue,
     SimpleType,
     SubclassValue,
@@ -108,6 +107,7 @@ from .value import (
     _typevar_map_from_varlike_pairs,
     bound_self_type_from_class_key,
     flatten_values,
+    get_self_param,
     is_union,
     iter_type_params_in_value,
     replace_fallback,
@@ -149,13 +149,12 @@ def _replace_signature_return(
     return signature
 
 
-def _bound_method_self_value_from_typevars(typevars: TypeVarMap) -> Value | None:
-    direct_self = typevars.get_typevar(SelfParam)
+def _bound_method_self_value_from_typevars(
+    typevars: TypeVarMap, typ: type | str
+) -> Value | None:
+    direct_self = typevars.get_typevar(get_self_param(typ))
     if direct_self is not None:
         return direct_self
-    for _, value in _iter_typevar_map_items(typevars):
-        if isinstance(value, TypeVarValue) and value.typevar_param.is_self:
-            return value
     return None
 
 
@@ -2090,7 +2089,9 @@ class Checker:
                 and isinstance(value.val, types.MethodType)
                 and safe_isinstance(value.val.__self__, type)
             ):
-                receiver_self = _bound_method_self_value_from_typevars(value.typevars)
+                receiver_self = _bound_method_self_value_from_typevars(
+                    value.typevars, type(value.val.__self__)
+                )
                 if receiver_self is not None:
                     unbound_sig = self.arg_spec_cache.get_argspec(value.val.__func__)
                     if unbound_sig is not None:
@@ -2831,15 +2832,11 @@ class CheckerAttrContext(AttrContext):
         if isinstance(root_value, TypeVarValue) and root_value.typevar_param.is_self:
             return root_value
         if isinstance(root_value, (TypedValue, GenericValue)):
-            return bound_self_type_from_class_key(root_value)
-        if isinstance(root_value, SubclassValue):
             return bound_self_type_from_class_key(root_value.typ)
-        if isinstance(
-            root_value, KnownValueWithTypeVars
-        ) and root_value.typevars.has_typevar(SelfParam):
-            self_value = root_value.typevars.get_typevar(SelfParam)
-            assert self_value is not None
-            return self_value
+        if isinstance(root_value, SubclassValue) and isinstance(
+            root_value.typ, TypedValue
+        ):
+            return bound_self_type_from_class_key(root_value.typ.typ)
         if isinstance(root_value, KnownValue) and not isinstance(root_value.val, type):
             return bound_self_type_from_class_key(type(root_value.val))
         return None

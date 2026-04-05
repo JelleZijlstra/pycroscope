@@ -19,7 +19,7 @@ from .value import (
     CustomCheckExtension,
     GenericValue,
     KnownValue,
-    SelfT,
+    SelfParam,
     TypeVarMap,
     assert_is_value,
 )
@@ -27,7 +27,7 @@ from .value import (
 _global_dict: Dict[Union[int, str], bytes] = {}
 EXPECTED_ASCII_TYPEVARS = TypeVarMap(
     typevars={
-        SelfT: AnnotatedValue(
+        SelfParam: AnnotatedValue(
             KnownValue("ascii"), [CustomCheckExtension(LiteralOnly())]
         )
     }
