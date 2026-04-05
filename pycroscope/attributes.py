@@ -83,7 +83,6 @@ from .value import (
     PartialValueOperation,
     PredicateValue,
     Qualifier,
-    SelfT,
     SequenceValue,
     SimpleType,
     SubclassValue,
@@ -1530,7 +1529,7 @@ def _get_attribute_from_synthetic_base(
 
 def _contains_self_typevar(value: Value) -> bool:
     return any(
-        isinstance(subval, TypeVarValue) and subval.typevar_param.typevar is SelfT
+        isinstance(subval, TypeVarValue) and subval.typevar_param.is_self
         for subval in value.walk_values()
     )
 

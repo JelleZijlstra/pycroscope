@@ -86,7 +86,6 @@ from .value import (
     PartialValueOperation,
     PredicateValue,
     SelfParam,
-    SelfT,
     SequenceValue,
     SimpleType,
     SubclassValue,
@@ -155,7 +154,7 @@ def _bound_method_self_value_from_typevars(typevars: TypeVarMap) -> Value | None
     if direct_self is not None:
         return direct_self
     for _, value in _iter_typevar_map_items(typevars):
-        if isinstance(value, TypeVarValue) and value.typevar_param.typevar is SelfT:
+        if isinstance(value, TypeVarValue) and value.typevar_param.is_self:
             return value
     return None
 
@@ -631,7 +630,7 @@ class Checker:
             case SubclassValue(TypedValue(typ)):
                 return self.make_type_object(typ), True
             case SubclassValue(TypeVarValue() as tv):
-                if tv.typevar_param.typevar is SelfT and current_class is not None:
+                if tv.typevar_param.is_self and current_class is not None:
                     return self.make_type_object(current_class), True
                 # TODO: could be more precise
                 return self.make_type_object(object), True
@@ -1457,7 +1456,7 @@ class Checker:
             self_annotation_root = replace_fallback(self_annotation)
             if (
                 isinstance(self_annotation_root, TypeVarValue)
-                and self_annotation_root.typevar_param.typevar is SelfT
+                and self_annotation_root.typevar_param.is_self
             ):
                 return True
             if _matches_constructor_receiver_annotation(
@@ -2829,10 +2828,7 @@ class CheckerAttrContext(AttrContext):
         root_value = replace_fallback(self.root_value)
         if isinstance(root_value, AnnotatedValue):
             root_value = root_value.value
-        if (
-            isinstance(root_value, TypeVarValue)
-            and root_value.typevar_param.typevar is SelfT
-        ):
+        if isinstance(root_value, TypeVarValue) and root_value.typevar_param.is_self:
             return root_value
         if isinstance(root_value, (TypedValue, GenericValue)):
             return bound_self_type_from_class_key(root_value)

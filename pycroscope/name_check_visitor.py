@@ -281,7 +281,6 @@ from .value import (
     PropertyInfo,
     ReferencingValue,
     SelfParam,
-    SelfT,
     SequenceValue,
     SimpleType,
     SkipDeprecatedExtension,
@@ -2095,7 +2094,7 @@ class ActiveTypeParams:
             )
             break
 
-        if not isinstance(type_param, TypeVarParam) or identity is SelfT:
+        if not isinstance(type_param, TypeVarParam) or type_param.is_self:
             return
         if any(identity in disallowed for disallowed in self._disallowed_identities):
             self.visitor._show_error_if_checking(
@@ -3429,8 +3428,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         if match is not None and self._is_instance_only_symbol(match[1].symbol):
             symbol = match[1].symbol
             if symbol.annotation is not None and any(
-                isinstance(subval, TypeVarValue)
-                and subval.typevar_param.typevar is SelfT
+                isinstance(subval, TypeVarValue) and subval.typevar_param.is_self
                 for subval in symbol.annotation.walk_values()
             ):
                 return set_self(
@@ -3444,7 +3442,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
     def _contains_classvar_type_parameter(self, value: Value) -> bool:
         for subval in value.walk_values():
             if isinstance(subval, TypeVarValue):
-                if subval.typevar_param.typevar is SelfT:
+                if subval.typevar_param.is_self:
                     continue
                 return True
             if isinstance(subval, InputSigValue) and isinstance(
@@ -3481,16 +3479,8 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             if isinstance(subval, TypeAliasValue):
                 continue
             type_param = _type_param_value_from_value(subval, self)
-            if type_param is None:
-                continue
-            identity = type_param.typevar
-            if (
-                identity is None
-                or identity is SelfT
-                or not is_instance_of_typing_name(identity, "TypeVar")
-            ):
-                continue
-            identities.add(identity)
+            if isinstance(type_param, TypeVarParam) and not type_param.is_self:
+                identities.add(identity)
         return identities
 
     def _node_contains_type_param_reference(self, node: ast.AST) -> bool:
@@ -6070,7 +6060,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         for base in base_values:
             for subval in flatten_values(base):
                 for type_param in self._walk_values_for_type_param_collection(subval):
-                    if type_param.typevar is SelfT:
+                    if isinstance(type_param, TypeVarParam) and type_param.is_self:
                         continue
                     if type_param.typevar in seen:
                         continue
@@ -10920,8 +10910,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             )
             expected_return_values = tuple(self.expected_return_value.walk_values())
             contains_self_typevar = any(
-                isinstance(subval, TypeVarValue)
-                and subval.typevar_param.typevar is SelfT
+                isinstance(subval, TypeVarValue) and subval.typevar_param.is_self
                 for subval in expected_return_values
             )
             should_retry_with_tv_map = isinstance(can_assign, CanAssignError) and (
@@ -14009,7 +13998,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         ):
             value = TypedValue(object)
         if not on_class and any(
-            isinstance(subval, TypeVarValue) and subval.typevar_param.typevar is SelfT
+            isinstance(subval, TypeVarValue) and subval.typevar_param.is_self
             for subval in value.walk_values()
         ):
             if (
@@ -14077,10 +14066,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 tobj, on_class = self.checker.make_type_object(typ), True
             case SubclassValue(TypeVarValue() as tv):
                 simple_root = root
-                if (
-                    tv.typevar_param.typevar is SelfT
-                    and self.current_class_key is not None
-                ):
+                if tv.typevar_param.is_self and self.current_class_key is not None:
                     tobj = self.checker.make_type_object(self.current_class_key)
                 else:
                     tobj = self.checker.make_type_object(object)
@@ -14142,7 +14128,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         elif (
             self.current_class_key is not None
             and isinstance(value, TypeVarValue)
-            and value.typevar_param.typevar is SelfT
+            and value.typevar_param.is_self
         ):
             value = TypedValue(self.current_class_key)
         value = replace_fallback(value)
@@ -15918,9 +15904,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             assert self_value is not None
             return self._attribute_write_types_for_value(self_value)
         if isinstance(value, TypeVarValue):
-            if value.typevar_param.typevar is SelfT and isinstance(
-                self.current_class, type
-            ):
+            if value.typevar_param.is_self and isinstance(self.current_class, type):
                 return {self.current_class}
             bound = value.typevar_param.bound
             if bound is None:

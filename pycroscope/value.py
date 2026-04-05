@@ -3206,8 +3206,7 @@ def shield_nested_self_typevars(value: Value) -> tuple[Value, TypeVarMap]:
         (
             subval
             for subval in value.walk_values()
-            if isinstance(subval, TypeVarValue)
-            and subval.typevar_param.typevar is SelfT
+            if isinstance(subval, TypeVarValue) and subval.typevar_param.is_self
         ),
         None,
     )
@@ -3277,9 +3276,9 @@ def receiver_to_self_type(
 
 def _has_nested_self_typevar(value: Value) -> bool:
     return not (
-        isinstance(value, TypeVarValue) and value.typevar_param.typevar is SelfT
+        isinstance(value, TypeVarValue) and value.typevar_param.is_self
     ) and any(
-        isinstance(subval, TypeVarValue) and subval.typevar_param.typevar is SelfT
+        isinstance(subval, TypeVarValue) and subval.typevar_param.is_self
         for subval in value.walk_values()
     )
 

@@ -54,7 +54,6 @@ from pycroscope.value import (
     PartialCallValue,
     PartialValue,
     PredicateValue,
-    SelfT,
     SequenceValue,
     SimpleType,
     SubclassValue,
@@ -411,7 +410,7 @@ def _has_relation(
             return unify_bounds_maps(bounds_maps)
         return CanAssignError(f"{right} is not {relation.description} {left}")
     if isinstance(right, TypeVarValue):
-        if right.typevar_param.typevar is SelfT and isinstance(left, MultiValuedValue):
+        if right.typevar_param.is_self and isinstance(left, MultiValuedValue):
             bounds_maps = []
             errors = []
             for val in left.vals:
@@ -1378,8 +1377,7 @@ def _extract_type_form(value: Value, ctx: CanAssignContext) -> Value | CanAssign
             return CanAssignError(f"{value} is not a TypeForm")
         extracted = gradualize(type_form)
         if isinstance(extracted, (TypeVarValue, TypeVarTupleValue)) and (
-            isinstance(extracted, TypeVarTupleValue)
-            or extracted.typevar_param.typevar is SelfT
+            isinstance(extracted, TypeVarTupleValue) or extracted.typevar_param.is_self
         ):
             return CanAssignError(f"{value} is not a TypeForm")
         if isinstance(extracted, (ParamSpecArgsValue, ParamSpecKwargsValue)):
@@ -1396,7 +1394,7 @@ def _extract_type_form(value: Value, ctx: CanAssignContext) -> Value | CanAssign
     elif isinstance(value, (AnyValue, TypeAliasValue)):
         return value
     elif isinstance(value, TypeVarValue):
-        if value.typevar_param.typevar is SelfT:
+        if value.typevar_param.is_self:
             return CanAssignError(f"{value} is not a TypeForm")
         return value
     elif isinstance(

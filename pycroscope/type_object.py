@@ -85,7 +85,6 @@ from .value import (
     PropertyInfo,
     Qualifier,
     SelfParam,
-    SelfT,
     SelfTVV,
     SequenceValue,
     SimpleType,
@@ -2658,7 +2657,7 @@ def _shield_nested_self_in_signature(
 
 def _value_contains_self_typevar(value: Value) -> bool:
     return any(
-        isinstance(subval, TypeVarValue) and subval.typevar_param.typevar is SelfT
+        isinstance(subval, TypeVarValue) and subval.typevar_param.is_self
         for subval in value.walk_values()
     )
 
@@ -2735,7 +2734,7 @@ def _rewrite_self_returning_classmethod_signature(
         if (
             isinstance(root, SubclassValue)
             and isinstance(root.typ, TypeVarValue)
-            and root.typ.typevar_param.typevar is SelfT
+            and root.typ.typevar_param.is_self
         ):
             return SubclassValue.make(receiver_for_self)
         if (
@@ -3695,7 +3694,7 @@ def _signature_has_receiver_parameter(
     if isinstance(annotation, AnyValue):
         return False
     if any(
-        isinstance(subval, TypeVarValue) and subval.typevar_param.typevar is SelfT
+        isinstance(subval, TypeVarValue) and subval.typevar_param.is_self
         for subval in annotation.walk_values()
     ):
         return True

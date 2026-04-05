@@ -5,7 +5,8 @@ TypeVar solver.
 """
 
 from collections.abc import Iterable, Sequence
-from typing import assert_never
+
+from typing_extensions import assert_never
 
 import pycroscope
 
