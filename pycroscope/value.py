@@ -180,9 +180,6 @@ class TypeVarMap:
     ) -> "pycroscope.input_sig.InputSig | T | None":
         return self._paramspecs.get(type_param, default)
 
-    def has_paramspec(self, type_param: "ParamSpecParam") -> bool:
-        return type_param in self._paramspecs
-
     @typing_extensions.overload
     def get_typevartuple(
         self, type_param: "TypeVarTupleParam"
@@ -197,9 +194,6 @@ class TypeVarMap:
         self, type_param: "TypeVarTupleParam", default: T | None = None
     ) -> "SequenceMembers | T | None":
         return self._typevartuples.get(type_param, default)
-
-    def has_typevartuple(self, type_param: "TypeVarTupleParam") -> bool:
-        return type_param in self._typevartuples
 
     @typing_extensions.overload
     def get_value(self, type_param: "TypeParam") -> "Value | None": ...
