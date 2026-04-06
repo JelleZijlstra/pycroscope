@@ -665,10 +665,17 @@ class TestPEP673(TestNameCheckVisitorBase):
         import typing_extensions as typing_ext
         from typing_extensions import Self
 
-        def foo(bar: Self) -> Self: ...  # E: invalid_self_usage
+        # TODO: remove duplicate complaints
+        def foo(  # E: invalid_self_usage
+            bar: Self,  # E: invalid_self_usage
+            long_argument_name_so_everything_is_on_its_own_line: list[int],
+        ) -> Self: ...  # E: invalid_self_usage
 
-        # E: invalid_self_usage
-        def qualified_foo(bar: typing_ext.Self) -> typing_ext.Self: ...
+        # TODO: remove duplicate complaints
+        def qualified_foo(  # E: invalid_self_usage
+            bar: typing_ext.Self,  # E: invalid_self_usage
+            long_argument_name_so_everything_is_on_its_own_line: list[int],
+        ) -> typing_ext.Self: ...  # E: invalid_self_usage
 
         _bar: Self  # E: invalid_self_usage
         TupleSelf: TypeAlias = tuple[Self]  # E: invalid_self_usage

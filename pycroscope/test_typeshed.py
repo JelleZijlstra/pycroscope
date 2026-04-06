@@ -111,8 +111,7 @@ class TestTypeshedClient(TestNameCheckVisitorBase):
         assert tsf.get_direct_symbol("Params", "__new__") is None
         assert tsf.get_bases_for_fq_name("Params") is None
         assert (
-            tsf.get_attribute_for_fq_name("Params", "__new__", on_class=True)
-            is UNINITIALIZED_VALUE
+            tsf.get_attribute("Params", "__new__", on_class=True) is UNINITIALIZED_VALUE
         )
 
     def test_newtype(self):
@@ -1077,6 +1076,11 @@ class TestIntegration(TestNameCheckVisitorBase):
             assert_is_value(
                 itertools.count(1), GenericValue(itertools.count, [TypedValue(int)])
             )
+
+    @assert_passes()
+    def test_frozenset(self):
+        def capybara(x: int):
+            assert_type(frozenset([x]), frozenset[int])
 
 
 class TestNestedClass(TestNameCheckVisitorBase):

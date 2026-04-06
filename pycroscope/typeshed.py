@@ -33,8 +33,7 @@ from .annotations import (
 from .error_code import Error, ErrorCode
 from .extensions import deprecated as deprecated_decorator
 from .extensions import evaluated, overload, real_overload
-from .functions import translate_vararg_type
-from .input_sig import InputSigValue
+from .functions import IMPLICIT_CLASSMETHODS, translate_vararg_type
 from .options import (
     InvalidConfigOption,
     OptionalPathOption,
@@ -75,12 +74,11 @@ from .value import (
     TypedValue,
     TypeParam,
     TypeVarParam,
-    TypeVarTupleParam,
-    TypeVarTupleValue,
     TypeVarValue,
     UninitializedValue,
     Value,
     annotate_value,
+    bound_self_type_from_class_key,
     iter_type_params_in_value,
     make_coro_type,
     replace_fallback,
@@ -139,10 +137,18 @@ def _get_resolver_for_stub_paths(
     return typeshed_client.Resolver(ctx)
 
 
+# TODO: combine with pycroscope.value.ClassOwner?
+@dataclass
+class _ClassOwner:
+    fq_name: str
+    class_key: type | str
+
+
 @dataclass
 class _AnnotationContext(Context):
     finder: "TypeshedFinder"
     module: str
+    owner: _ClassOwner | None
 
     def show_error(
         self,
@@ -164,6 +170,11 @@ class _AnnotationContext(Context):
         elif isinstance(root_value, SyntheticModuleValue):
             return self.finder.resolve_name(".".join(root_value.module_path), node.attr)
         return super().get_attribute(root_value, node)
+
+    def get_bound_self_type(self) -> Value | None:
+        if self.owner is None:
+            return None
+        return bound_self_type_from_class_key(self.owner.class_key)
 
 
 class StubPath(PathSequenceOption):
@@ -258,12 +269,12 @@ class TypeshedFinder:
         self, obj: MethodDescriptorType, allow_call: bool
     ) -> ConcreteSignature | None:
         objclass = obj.__objclass__
-        fq_name = self._get_fq_name(objclass)
-        if fq_name is None:
+        owner = self._make_owner(objclass)
+        if owner is None:
             return None
-        info = self._get_info_for_name(fq_name)
+        info = self._get_info_for_name(owner.fq_name)
         sig = self._get_method_signature_from_info(
-            info, obj, fq_name, objclass.__module__, objclass, allow_call=allow_call
+            info, obj, owner.fq_name, objclass.__module__, owner, allow_call=allow_call
         )
         return sig
 
@@ -383,7 +394,7 @@ class TypeshedFinder:
             info.ast, ast.ClassDef
         ):
             for deco in info.ast.decorator_list:
-                deco_value = self._parse_expr(deco, mod)
+                deco_value = self._parse_expr(deco, mod, owner=None)
                 if isinstance(deco_value, KnownValue) and is_typing_name(
                     deco_value.val, "final"
                 ):
@@ -413,9 +424,6 @@ class TypeshedFinder:
                 # stubs have it the other way around. We can't deal with that for now.
                 if typ is EnumMeta:
                     return [TypedValue(type)]
-                fq_name = self._get_fq_name(typ)
-                if fq_name is None:
-                    return None
             else:
                 fq_name = val.typ
                 if fq_name == "collections.abc.Set":
@@ -435,15 +443,18 @@ class TypeshedFinder:
                             MutableMapping, [TypedValue(str), TypedValue(object)]
                         )
                     ]
-            return self.get_bases_for_fq_name(fq_name)
+            owner = self._make_owner(val.typ)
+            if owner is None:
+                return None
+            return self._get_bases_for_owner(owner)
         return None
 
-    def is_protocol(self, typ: type) -> bool:
+    def is_protocol(self, typ: type | str) -> bool:
         """Return whether this type is marked as a Protocol in the stubs."""
-        fq_name = self._get_fq_name(typ)
-        if fq_name is None:
+        owner = self._make_owner(typ)
+        if owner is None:
             return False
-        bases = self.get_bases_for_value(TypedValue(fq_name))
+        bases = self.get_bases_for_value(TypedValue(owner.fq_name))
         if bases is None:
             return False
         return any(
@@ -467,44 +478,52 @@ class TypeshedFinder:
                 bases += new_bases
         return bases
 
-    def get_bases_for_fq_name(self, fq_name: str) -> list[Value] | None:
-        if fq_name in (
+    def get_bases_for_fq_name(self, typ: type | str) -> list[Value] | None:
+        owner = self._make_owner(typ)
+        if owner is None:
+            return None
+        return self._get_bases_for_owner(owner)
+
+    def _get_bases_for_owner(self, owner: _ClassOwner) -> list[Value] | None:
+        if owner.fq_name in (
             "typing.Generic",
             "typing.Protocol",
             "typing_extensions.Protocol",
         ):
             return []
-        if "." not in fq_name:
+        if "." not in owner.fq_name:
             return None
-        info = self._get_info_for_name(fq_name)
-        mod, _ = fq_name.rsplit(".", maxsplit=1)
-        return self._get_bases_from_info(info, mod, fq_name)
+        info = self._get_info_for_name(owner.fq_name)
+        mod, _ = owner.fq_name.rsplit(".", maxsplit=1)
+        return self._get_bases_from_info(info, mod, owner)
 
-    def get_attribute(self, typ: type, attr: str, *, on_class: bool) -> Value:
+    def get_attribute(self, typ: type | str, attr: str, *, on_class: bool) -> Value:
         """Return the stub for this attribute.
 
         Does not look at parent classes. Returns UNINITIALIZED_VALUE if no
         stub can be found.
 
         """
-        fq_name = self._get_fq_name(typ)
-        if fq_name is None:
+        owner = self._make_owner(typ)
+        if owner is None:
             return UNINITIALIZED_VALUE
-        return self.get_attribute_for_fq_name(fq_name, attr, on_class=on_class)
+        return self._get_attribute_for_fq_name(owner, attr, on_class=on_class)
 
-    def get_attribute_for_fq_name(
-        self, fq_name: str, attr: str, *, on_class: bool
+    def _get_attribute_for_fq_name(
+        self, owner: _ClassOwner, attr: str, *, on_class: bool
     ) -> Value:
-        key = (fq_name, attr, on_class)
+        key = (owner.fq_name, attr, on_class)
         try:
             return self._attribute_cache[key]
         except KeyError:
-            if "." not in fq_name:
+            if "." not in owner.fq_name:
                 self._attribute_cache[key] = UNINITIALIZED_VALUE
                 return UNINITIALIZED_VALUE
-            info = self._get_info_for_name(fq_name)
-            mod, _ = fq_name.rsplit(".", maxsplit=1)
-            val = self._get_attribute_from_info(info, mod, attr, on_class=on_class)
+            info = self._get_info_for_name(owner.fq_name)
+            mod, _ = owner.fq_name.rsplit(".", maxsplit=1)
+            val = self._get_attribute_from_info(
+                info, mod, attr, on_class=on_class, owner=owner
+            )
             if isinstance(val, AnnotationExpr):
                 val, _ = val.unqualify()
             self._attribute_cache[key] = val
@@ -512,43 +531,33 @@ class TypeshedFinder:
 
     def get_direct_symbol(self, typ: type | str, attr: str) -> ClassSymbol | None:
         """Return the symbol declared directly on this class in stubs."""
-        if isinstance(typ, str):
-            fq_name = typ
-        else:
-            fq_name = self._get_fq_name(typ)
-            if fq_name is None:
-                return None
-        key = (fq_name, attr)
+        owner = self._make_owner(typ)
+        if owner is None:
+            return None
+        key = (owner.fq_name, attr)
         try:
             return self._direct_symbol_cache[key]
         except KeyError:
-            if "." not in fq_name:
+            if "." not in owner.fq_name:
                 self._direct_symbol_cache[key] = None
                 return None
-            info = self._get_info_for_name(fq_name)
-            mod, _ = fq_name.rsplit(".", maxsplit=1)
-            symbol = self._get_direct_symbol_from_info(info, mod, attr)
+            info = self._get_info_for_name(owner.fq_name)
+            mod, _ = owner.fq_name.rsplit(".", maxsplit=1)
+            symbol = self._get_direct_symbol_from_info(info, mod, attr, owner)
             self._direct_symbol_cache[key] = symbol
             return symbol
 
     def get_attribute_recursively(
-        self, fq_name: str, attr: str, *, on_class: bool
+        self, typ: type | str, attr: str, *, on_class: bool
     ) -> tuple[Value, type | str | None]:
         """Get an attribute from a fully qualified class.
 
         Returns a tuple (value, provider).
 
         """
-        for base in self.get_bases_recursively(fq_name):
+        for base in self.get_bases_recursively(typ):
             if isinstance(base, TypedValue):
-                if isinstance(base.typ, str):
-                    possible_value = self.get_attribute_for_fq_name(
-                        base.typ, attr, on_class=on_class
-                    )
-                else:
-                    possible_value = self.get_attribute(
-                        base.typ, attr, on_class=on_class
-                    )
+                possible_value = self.get_attribute(base.typ, attr, on_class=on_class)
                 if possible_value is not UNINITIALIZED_VALUE:
                     return possible_value, base.typ
         return UNINITIALIZED_VALUE, None
@@ -559,7 +568,10 @@ class TypeshedFinder:
         Also looks at base classes.
 
         """
-        if self._has_own_attribute(typ, attr):
+        owner = self._make_owner(typ)
+        if owner is None:
+            return False
+        if self._has_own_attribute(owner, attr):
             return True
         bases = self.get_bases_for_value(TypedValue(typ))
         if bases is not None:
@@ -574,15 +586,12 @@ class TypeshedFinder:
         return False
 
     def get_all_attributes(self, typ: type | str) -> set[str]:
-        if isinstance(typ, str):
-            fq_name = typ
-        else:
-            fq_name = self._get_fq_name(typ)
-            if fq_name is None:
-                return set()
-        info = self._get_info_for_name(fq_name)
-        mod, _ = fq_name.rsplit(".", maxsplit=1)
-        return self._get_all_attributes_from_info(info, mod)
+        owner = self._make_owner(typ)
+        if owner is None:
+            return set()
+        info = self._get_info_for_name(owner.fq_name)
+        mod, _ = owner.fq_name.rsplit(".", maxsplit=1)
+        return self._get_all_attributes_from_info(info, mod, owner)
 
     def has_stubs(self, typ: type | str) -> bool:
         if isinstance(typ, str):
@@ -618,12 +627,17 @@ class TypeshedFinder:
         attr: str,
         *,
         on_class: bool,
+        owner: _ClassOwner | None,
     ) -> Value | AnnotationExpr:
         if info is None:
             return UNINITIALIZED_VALUE
         elif isinstance(info, typeshed_client.ImportedInfo):
             return self._get_attribute_from_info(
-                info.info, ".".join(info.source_module), attr, on_class=on_class
+                info.info,
+                ".".join(info.source_module),
+                attr,
+                on_class=on_class,
+                owner=owner,
             )
         elif isinstance(info, typeshed_client.NameInfo):
             if isinstance(info.ast, ast.ClassDef):
@@ -635,11 +649,12 @@ class TypeshedFinder:
                             mod,
                             on_class=on_class,
                             parent_name=info.ast.name,
+                            owner=owner,
                         )
                     assert False, repr(child_info)
                 return UNINITIALIZED_VALUE
             elif isinstance(info.ast, ast.Assign):
-                val = self._parse_type(info.ast.value, mod)
+                val = self._parse_type(info.ast.value, mod, owner)
                 if isinstance(val, KnownValue) and isinstance(val.val, type):
                     return self.get_attribute(val.val, attr, on_class=on_class)
                 else:
@@ -655,24 +670,30 @@ class TypeshedFinder:
         *,
         on_class: bool,
         parent_name: str,
+        owner: _ClassOwner | None,
     ) -> Value | AnnotationExpr:
         if isinstance(node, ast.AnnAssign):
-            return self._parse_annotation(node.annotation, mod)
+            return self._parse_annotation(node.annotation, mod, owner)
         elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             is_property = False
             for decorator_node in node.decorator_list:
-                decorator_value = self._parse_expr(decorator_node, mod)
+                decorator_value = self._parse_expr(decorator_node, mod, owner)
                 if decorator_value in PROPERTY_LIKE:
                     is_property = True
             if is_property:
                 if node.returns:
-                    return self._parse_type(node.returns, mod)
+                    return self._parse_type(node.returns, mod, owner)
                 else:
                     return AnyValue(AnySource.unannotated)
             else:
                 # TODO: apply decorators to the return value
                 sig = self._get_signature_from_func_def(
-                    node, None, mod, autobind=not on_class, bind_classmethod=on_class
+                    node,
+                    None,
+                    mod,
+                    autobind=not on_class,
+                    bind_classmethod=on_class,
+                    owner=owner,
                 )
                 if sig is None:
                     return AnyValue(AnySource.inference)
@@ -688,7 +709,11 @@ class TypeshedFinder:
             sigs = []
             for subnode in node.definitions:
                 val = self._get_value_from_child_info(
-                    subnode, mod, on_class=on_class, parent_name=parent_name
+                    subnode,
+                    mod,
+                    on_class=on_class,
+                    parent_name=parent_name,
+                    owner=owner,
                 )
                 if isinstance(val, AnnotationExpr):
                     val, _ = val.unqualify()
@@ -715,13 +740,17 @@ class TypeshedFinder:
         return None
 
     def _get_direct_symbol_from_info(
-        self, info: typeshed_client.resolver.ResolvedName, mod: str, attr: str
+        self,
+        info: typeshed_client.resolver.ResolvedName,
+        mod: str,
+        attr: str,
+        owner: _ClassOwner | None,
     ) -> ClassSymbol | None:
         if info is None:
             return None
         if isinstance(info, typeshed_client.ImportedInfo):
             return self._get_direct_symbol_from_info(
-                info.info, ".".join(info.source_module), attr
+                info.info, ".".join(info.source_module), attr, owner
             )
         if not (
             isinstance(info, typeshed_client.NameInfo)
@@ -730,36 +759,41 @@ class TypeshedFinder:
             and attr in info.child_nodes
         ):
             return None
-        return self._symbol_from_child_info(info.child_nodes[attr], mod)
+        return self._symbol_from_child_info(info.child_nodes[attr], mod, owner)
 
     def _symbol_from_child_info(
-        self, info: typeshed_client.resolver.ResolvedName, mod: str
+        self,
+        info: typeshed_client.resolver.ResolvedName,
+        mod: str,
+        owner: _ClassOwner | None,
     ) -> ClassSymbol | None:
         if info is None:
             return None
         if isinstance(info, typeshed_client.ImportedInfo):
-            return self._symbol_from_child_info(info.info, ".".join(info.source_module))
+            return self._symbol_from_child_info(
+                info.info, ".".join(info.source_module), owner
+            )
         if not isinstance(info, typeshed_client.NameInfo):
             return None
         node = info.ast
         if isinstance(node, ast.AnnAssign):
-            return self._symbol_from_annassign(node, mod)
+            return self._symbol_from_annassign(node, mod, owner)
         if isinstance(node, ast.Assign):
-            return self._symbol_from_assign(node, mod)
+            return self._symbol_from_assign(node, mod, owner)
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            return self._symbol_from_function_node(node, mod)
+            return self._symbol_from_function_node(node, mod, owner)
         if isinstance(node, typeshed_client.OverloadedName):
-            return self._symbol_from_overloaded_node(node, mod)
+            return self._symbol_from_overloaded_node(node, mod, owner)
         if isinstance(node, ast.ClassDef):
             return ClassSymbol(initializer=AnyValue(AnySource.inference))
         return None
 
     def _symbol_from_annassign(
-        self, node: ast.AnnAssign, mod: str
+        self, node: ast.AnnAssign, mod: str, owner: _ClassOwner | None
     ) -> ClassSymbol | None:
-        expr = self._parse_annotation(node.annotation, mod)
+        expr = self._parse_annotation(node.annotation, mod, owner)
         annotation, qualifiers = expr.maybe_unqualify(_CLASS_SYMBOL_ALLOWED_QUALIFIERS)
-        initializer = self._initializer_from_stub_assignment(node.value, mod)
+        initializer = self._initializer_from_stub_assignment(node.value, mod, owner)
         return ClassSymbol(
             annotation=(
                 annotation
@@ -774,21 +808,26 @@ class TypeshedFinder:
             initializer=initializer,
         )
 
-    def _symbol_from_assign(self, node: ast.Assign, mod: str) -> ClassSymbol | None:
+    def _symbol_from_assign(
+        self, node: ast.Assign, mod: str, owner: _ClassOwner | None
+    ) -> ClassSymbol | None:
         return ClassSymbol(
             initializer=(
-                self._initializer_from_stub_assignment(node.value, mod)
+                self._initializer_from_stub_assignment(node.value, mod, owner)
                 or AnyValue(AnySource.inference)
             )
         )
 
     def _symbol_from_function_node(
-        self, node: ast.FunctionDef | ast.AsyncFunctionDef, mod: str
+        self,
+        node: ast.FunctionDef | ast.AsyncFunctionDef,
+        mod: str,
+        owner: _ClassOwner | None,
     ) -> ClassSymbol | None:
         is_property, qualifiers, deprecated = self._analyze_stub_method_decorators(
-            node, mod
+            node, mod, owner
         )
-        sig = self._get_signature_from_func_def(node, None, mod)
+        sig = self._get_signature_from_func_def(node, None, mod, owner)
         initializer: Value
         if sig is None:
             initializer = AnyValue(AnySource.inference)
@@ -814,7 +853,7 @@ class TypeshedFinder:
         return symbol
 
     def _symbol_from_overloaded_node(
-        self, node: typeshed_client.OverloadedName, mod: str
+        self, node: typeshed_client.OverloadedName, mod: str, owner: _ClassOwner | None
     ) -> ClassSymbol | None:
         method_nodes = [
             defn
@@ -824,10 +863,10 @@ class TypeshedFinder:
         if not method_nodes:
             return None
         is_property, qualifiers, deprecated = self._analyze_stub_method_decorators(
-            method_nodes[0], mod
+            method_nodes[0], mod, owner
         )
         value = self._get_value_from_child_info(
-            node, mod, on_class=False, parent_name="<overload>"
+            node, mod, on_class=False, parent_name="<overload>", owner=owner
         )
         if isinstance(value, AnnotationExpr):
             value, _ = value.unqualify()
@@ -849,13 +888,16 @@ class TypeshedFinder:
         return symbol
 
     def _analyze_stub_method_decorators(
-        self, node: ast.FunctionDef | ast.AsyncFunctionDef, mod: str
+        self,
+        node: ast.FunctionDef | ast.AsyncFunctionDef,
+        mod: str,
+        owner: _ClassOwner | None,
     ) -> tuple[bool, frozenset[FunctionDecorator], str | None]:
         is_property = False
         qualifiers: set[FunctionDecorator] = set()
         deprecated = None
         for decorator_node in node.decorator_list:
-            decorator_value = self._parse_expr(decorator_node, mod)
+            decorator_value = self._parse_expr(decorator_node, mod, owner)
             if decorator_value in PROPERTY_LIKE:
                 is_property = True
             elif decorator_value == KnownValue(classmethod):
@@ -880,44 +922,41 @@ class TypeshedFinder:
         return (is_property, frozenset(qualifiers), deprecated)
 
     def _initializer_from_stub_assignment(
-        self, node: ast.AST | None, mod: str
+        self, node: ast.AST | None, mod: str, owner: _ClassOwner | None
     ) -> Value | None:
         if node is None:
             return None
-        value = self._parse_expr(node, mod)
+        value = self._parse_expr(node, mod, owner)
         if value == KnownValue(...):
             return None
         return value
 
-    def _has_own_attribute(self, typ: type | str, attr: str) -> bool:
+    def _has_own_attribute(self, owner: _ClassOwner, attr: str) -> bool:
         # Special case since otherwise we think every object has every attribute
-        if typ is object and attr == "__getattribute__":
+        if owner.class_key is object and attr == "__getattribute__":
             return False
-        if isinstance(typ, str):
-            fq_name = typ
-        else:
-            fq_name = self._get_fq_name(typ)
-            if fq_name is None:
-                return False
-        info = self._get_info_for_name(fq_name)
-        mod, _ = fq_name.rsplit(".", maxsplit=1)
-        return self._has_attribute_from_info(info, mod, attr)
+        info = self._get_info_for_name(owner.fq_name)
+        mod, _ = owner.fq_name.rsplit(".", maxsplit=1)
+        return self._has_attribute_from_info(info, mod, attr, owner)
 
     def _get_all_attributes_from_info(
-        self, info: typeshed_client.resolver.ResolvedName, mod: str
+        self,
+        info: typeshed_client.resolver.ResolvedName,
+        mod: str,
+        owner: _ClassOwner | None,
     ) -> set[str]:
         if info is None:
             return set()
         elif isinstance(info, typeshed_client.ImportedInfo):
             return self._get_all_attributes_from_info(
-                info.info, ".".join(info.source_module)
+                info.info, ".".join(info.source_module), owner
             )
         elif isinstance(info, typeshed_client.NameInfo):
             if isinstance(info.ast, ast.ClassDef):
                 if info.child_nodes is not None:
                     return set(info.child_nodes)
             elif isinstance(info.ast, ast.Assign):
-                val = self._parse_expr(info.ast.value, mod)
+                val = self._parse_expr(info.ast.value, mod, owner)
                 if isinstance(val, KnownValue) and isinstance(val.val, type):
                     return self.get_all_attributes(val.val)
                 else:
@@ -927,13 +966,17 @@ class TypeshedFinder:
         return set()
 
     def _has_attribute_from_info(
-        self, info: typeshed_client.resolver.ResolvedName, mod: str, attr: str
+        self,
+        info: typeshed_client.resolver.ResolvedName,
+        mod: str,
+        attr: str,
+        owner: _ClassOwner,
     ) -> bool:
         if info is None:
             return False
         elif isinstance(info, typeshed_client.ImportedInfo):
             return self._has_attribute_from_info(
-                info.info, ".".join(info.source_module), attr
+                info.info, ".".join(info.source_module), attr, owner
             )
         elif isinstance(info, typeshed_client.NameInfo):
             if isinstance(info.ast, ast.ClassDef):
@@ -941,7 +984,7 @@ class TypeshedFinder:
                     return True
                 return False
             elif isinstance(info.ast, ast.Assign):
-                val = self._parse_expr(info.ast.value, mod)
+                val = self._parse_expr(info.ast.value, mod, owner)
                 if isinstance(val, KnownValue) and isinstance(val.val, type):
                     return self.has_attribute(val.val, attr)
                 else:
@@ -951,24 +994,24 @@ class TypeshedFinder:
         return False
 
     def _get_bases_from_info(
-        self, info: typeshed_client.resolver.ResolvedName, mod: str, fq_name: str
+        self, info: typeshed_client.resolver.ResolvedName, mod: str, owner: _ClassOwner
     ) -> list[Value] | None:
         if info is None:
             return None
         elif isinstance(info, typeshed_client.ImportedInfo):
             return self._get_bases_from_info(
-                info.info, ".".join(info.source_module), fq_name
+                info.info, ".".join(info.source_module), owner
             )
         elif isinstance(info, typeshed_client.NameInfo):
             if isinstance(info.ast, ast.ClassDef):
                 bases = info.ast.bases
-                return [self._parse_type(base, mod) for base in bases]
+                return [self._parse_type(base, mod, owner) for base in bases]
             elif isinstance(info.ast, ast.AnnAssign):
                 if info.ast.value is not None:
-                    val = self._parse_expr(info.ast.value, mod)
+                    val = self._parse_expr(info.ast.value, mod, owner)
                     if isinstance(val, KnownValue) and isinstance(val.val, type):
                         new_fq_name = self._get_fq_name(val.val)
-                        if fq_name == new_fq_name:
+                        if owner.fq_name == new_fq_name:
                             # prevent infinite recursion
                             return [AnyValue(AnySource.inference)]
                         return self.get_bases(val.val)
@@ -976,10 +1019,10 @@ class TypeshedFinder:
                 # `Annotated: _SpecialForm`), which do not have meaningful bases.
                 return [AnyValue(AnySource.inference)]
             elif isinstance(info.ast, ast.Assign):
-                val = self._parse_expr(info.ast.value, mod)
+                val = self._parse_expr(info.ast.value, mod, owner)
                 if isinstance(val, KnownValue) and isinstance(val.val, type):
                     new_fq_name = self._get_fq_name(val.val)
-                    if fq_name == new_fq_name:
+                    if owner.fq_name == new_fq_name:
                         # prevent infinite recursion
                         return [AnyValue(AnySource.inference)]
                     return self.get_bases(val.val)
@@ -1006,7 +1049,7 @@ class TypeshedFinder:
         obj: object,
         fq_name: str,
         mod: str,
-        objclass: type,
+        owner: _ClassOwner,
         *,
         allow_call: bool = False,
     ) -> ConcreteSignature | None:
@@ -1018,7 +1061,7 @@ class TypeshedFinder:
                 obj,
                 fq_name,
                 ".".join(info.source_module),
-                objclass,
+                owner,
                 allow_call=allow_call,
             )
         elif isinstance(info, typeshed_client.NameInfo):
@@ -1031,13 +1074,22 @@ class TypeshedFinder:
             ):
                 child_info = info.child_nodes[obj_name]
                 return self._get_signature_from_info(
-                    child_info, obj, fq_name, mod, objclass, allow_call=allow_call
+                    child_info, obj, fq_name, mod, owner, allow_call=allow_call
                 )
             else:
                 return None
         else:
             self.log("Ignoring unrecognized info", (fq_name, info))
             return None
+
+    def _make_owner(self, typ: type | str) -> _ClassOwner | None:
+        if isinstance(typ, str):
+            return _ClassOwner(typ, typ)
+        else:
+            fq_name = self._get_fq_name(typ)
+            if fq_name is None:
+                return None
+            return _ClassOwner(fq_name, typ)
 
     def _get_fq_name(self, obj: Any) -> str | None:
         if obj is GeneratorType:
@@ -1085,7 +1137,7 @@ class TypeshedFinder:
         obj: object,
         fq_name: str,
         mod: str,
-        objclass: type | None = None,
+        owner: _ClassOwner | None = None,
         *,
         allow_call: bool = False,
         type_params: Sequence[TypeParam] = (),
@@ -1093,7 +1145,7 @@ class TypeshedFinder:
         if isinstance(info, typeshed_client.NameInfo):
             if isinstance(info.ast, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 return self._get_signature_from_func_def(
-                    info.ast, obj, mod, objclass, allow_call=allow_call
+                    info.ast, obj, mod, owner, allow_call=allow_call
                 )
             elif isinstance(info.ast, typeshed_client.OverloadedName):
                 sigs = []
@@ -1104,7 +1156,7 @@ class TypeshedFinder:
                         )
                         return None
                     sig = self._get_signature_from_func_def(
-                        defn, obj, mod, objclass, allow_call=allow_call
+                        defn, obj, mod, owner, allow_call=allow_call
                     )
                     if sig is None:
                         self.log("Could not get sig for overload member", (defn,))
@@ -1174,7 +1226,7 @@ class TypeshedFinder:
                 obj,
                 fq_name,
                 ".".join(info.source_module),
-                objclass,
+                owner,
                 allow_call=allow_call,
             )
         elif info is None:
@@ -1193,7 +1245,7 @@ class TypeshedFinder:
         node: ast.FunctionDef | ast.AsyncFunctionDef,
         obj: object,
         mod: str,
-        objclass: type | None = None,
+        owner: _ClassOwner | None,
         *,
         autobind: bool = False,
         bind_classmethod: bool = False,
@@ -1202,7 +1254,7 @@ class TypeshedFinder:
         is_classmethod = is_staticmethod = is_evaluated = False
         deprecated = None
         for decorator_ast in node.decorator_list:
-            decorator = self._parse_expr(decorator_ast, mod)
+            decorator = self._parse_expr(decorator_ast, mod, owner)
             if (
                 decorator == KnownValue(abstractmethod)
                 or decorator == KnownValue(overload)
@@ -1231,10 +1283,7 @@ class TypeshedFinder:
         if node.returns is None:
             return_value = AnyValue(AnySource.unannotated)
         else:
-            return_value = self._parse_type(node.returns, mod)
-        # ignore self type for class and static methods
-        if is_classmethod or is_staticmethod:
-            objclass = None
+            return_value = self._parse_type(node.returns, mod, owner)
         args = node.args
         arguments: list[SigParameter] = []
         num_pos_only_args = len(args.posonlyargs)
@@ -1253,13 +1302,26 @@ class TypeshedFinder:
             pos_only_defaults,
             mod,
             ParameterKind.POSITIONAL_ONLY,
-            objclass,
+            owner,
+            allow_self=owner is not None
+            and not is_classmethod
+            and not is_staticmethod
+            and node.name not in IMPLICIT_CLASSMETHODS,
         )
 
         num_without_defaults = len(args.args) - len(defaults)
         defaults = [None] * num_without_defaults + defaults
         arguments += self._parse_param_list(
-            args.args, defaults, mod, ParameterKind.POSITIONAL_OR_KEYWORD, objclass
+            args.args,
+            defaults,
+            mod,
+            ParameterKind.POSITIONAL_OR_KEYWORD,
+            owner,
+            allow_self=owner is not None
+            and not args.posonlyargs
+            and not is_classmethod
+            and not is_staticmethod
+            and node.name not in IMPLICIT_CLASSMETHODS,
         )
         if autobind:
             if is_classmethod or not is_staticmethod:
@@ -1270,14 +1332,23 @@ class TypeshedFinder:
 
         if args.vararg is not None:
             arguments.append(
-                self._parse_param(args.vararg, None, mod, ParameterKind.VAR_POSITIONAL)
+                self._parse_param(
+                    args.vararg, None, mod, ParameterKind.VAR_POSITIONAL, owner=owner
+                )
             )
         arguments += self._parse_param_list(
-            args.kwonlyargs, args.kw_defaults, mod, ParameterKind.KEYWORD_ONLY
+            args.kwonlyargs,
+            args.kw_defaults,
+            mod,
+            ParameterKind.KEYWORD_ONLY,
+            owner=owner,
+            allow_self=False,
         )
         if args.kwarg is not None:
             arguments.append(
-                self._parse_param(args.kwarg, None, mod, ParameterKind.VAR_KEYWORD)
+                self._parse_param(
+                    args.kwarg, None, mod, ParameterKind.VAR_KEYWORD, owner=owner
+                )
             )
         # some typeshed types have a positional-only after a normal argument,
         # and Signature doesn't like that
@@ -1294,7 +1365,7 @@ class TypeshedFinder:
                 seen_non_positional = True
             cleaned_arguments.append(arg)
         if is_evaluated:
-            ctx = _AnnotationContext(self, mod)
+            ctx = _AnnotationContext(self, mod, owner)
             evaluator = SyntheticEvaluator(node, return_value, ctx)
         else:
             evaluator = None
@@ -1317,11 +1388,18 @@ class TypeshedFinder:
         defaults: Iterable[ast.AST | None],
         module: str,
         kind: ParameterKind,
-        objclass: type | None = None,
+        owner: _ClassOwner | None,
+        *,
+        allow_self: bool,
     ) -> Iterable[SigParameter]:
         for i, (arg, default) in enumerate(zip(args, defaults)):
             yield self._parse_param(
-                arg, default, module, kind, objclass=objclass if i == 0 else None
+                arg,
+                default,
+                module,
+                kind,
+                owner=owner,
+                is_self=(allow_self and i == 0 and owner is not None),
             )
 
     def _parse_param(
@@ -1331,37 +1409,27 @@ class TypeshedFinder:
         module: str,
         kind: ParameterKind,
         *,
-        objclass: type | None = None,
+        owner: _ClassOwner | None = None,
+        is_self: bool = False,
     ) -> SigParameter:
         typ: Value | AnnotationExpr = AnyValue(AnySource.unannotated)
         if arg.annotation is not None:
-            typ = self._parse_annotation(arg.annotation, module)
-        elif objclass is not None:
-            bases = self.get_bases(objclass)
+            typ = self._parse_annotation(arg.annotation, module, owner)
+        elif owner is not None and is_self:
+            bases = self.get_bases(owner.class_key)
             if bases is None:
-                typ = TypedValue(objclass)
+                typ = TypedValue(owner.class_key)
             else:
                 typevars = uniq_chain(
                     tuple(iter_type_params_in_value(base)) for base in bases
                 )
                 if typevars:
                     typ = GenericValue(
-                        objclass,
-                        [
-                            (
-                                TypeVarValue(type_param)
-                                if isinstance(type_param, TypeVarParam)
-                                else (
-                                    TypeVarTupleValue(type_param)
-                                    if isinstance(type_param, TypeVarTupleParam)
-                                    else InputSigValue(type_param)
-                                )
-                            )
-                            for type_param in typevars
-                        ],
+                        owner.class_key,
+                        [type_param_to_value(type_param) for type_param in typevars],
                     )
                 else:
-                    typ = TypedValue(objclass)
+                    typ = TypedValue(owner.class_key)
 
         name = arg.arg
         if kind is ParameterKind.POSITIONAL_OR_KEYWORD and is_positional_only_arg_name(
@@ -1370,30 +1438,34 @@ class TypeshedFinder:
             kind = ParameterKind.POSITIONAL_ONLY
             name = name[2:]
         typ = translate_vararg_type(kind, typ, self.ctx)
-        # Mark self as positional-only. objclass should be given only if we believe
-        # it's the "self" parameter.
-        if objclass is not None:
+        if is_self:
             kind = ParameterKind.POSITIONAL_ONLY
         if default is None:
             return SigParameter(name, kind, annotation=typ)
         else:
-            default_value = self._parse_expr(default, module)
+            default_value = self._parse_expr(default, module, owner)
             if default_value == KnownValue(...):
                 default_value = AnyValue(AnySource.unannotated)
             return SigParameter(name, kind, annotation=typ, default=default_value)
 
-    def _parse_expr(self, node: ast.AST, module: str) -> Value:
-        ctx = _AnnotationContext(finder=self, module=module)
+    def _parse_expr(
+        self, node: ast.AST, module: str, owner: _ClassOwner | None
+    ) -> Value:
+        ctx = _AnnotationContext(finder=self, module=module, owner=owner)
         return value_from_ast(node, ctx=ctx)
 
-    def _parse_annotation(self, node: ast.AST, module: str) -> AnnotationExpr:
-        val = self._parse_expr(node, module)
-        ctx = _AnnotationContext(finder=self, module=module)
+    def _parse_annotation(
+        self, node: ast.AST, module: str, owner: _ClassOwner | None
+    ) -> AnnotationExpr:
+        val = self._parse_expr(node, module, owner)
+        ctx = _AnnotationContext(finder=self, module=module, owner=owner)
         expr = annotation_expr_from_value(val, ctx=ctx)
         return expr
 
-    def _parse_type(self, node: ast.AST, module: str) -> Value:
-        expr = self._parse_annotation(node, module)
+    def _parse_type(
+        self, node: ast.AST, module: str, owner: _ClassOwner | None
+    ) -> Value:
+        expr = self._parse_annotation(node, module, owner)
         val, _ = expr.unqualify()
         if self.verbose and isinstance(val, AnyValue):
             self.log("Got Any", (ast.dump(node), module))
@@ -1413,13 +1485,16 @@ class TypeshedFinder:
             info.ast.value, ast.Call
         ):
             return AnyValue(AnySource.inference)
-        ctx = _AnnotationContext(finder=self, module=module)
+        # Should always be at global scope
+        ctx = _AnnotationContext(finder=self, module=module, owner=None)
         return value_from_ast(info.ast.value, ctx=ctx)
 
-    def _extract_metadata(self, module: str, node: ast.ClassDef) -> Sequence[Extension]:
+    def _extract_metadata(
+        self, module: str, node: ast.ClassDef, owner: _ClassOwner
+    ) -> Sequence[Extension]:
         metadata = []
         for decorator in node.decorator_list:
-            decorator_val = self._parse_expr(decorator, module)
+            decorator_val = self._parse_expr(decorator, module, owner)
             extension = self._extract_extension_from_decorator(decorator_val)
             if extension is not None:
                 metadata.append(extension)
@@ -1439,10 +1514,11 @@ class TypeshedFinder:
 
     def make_synthetic_type(self, module: str, info: typeshed_client.NameInfo) -> Value:
         fq_name = f"{module}.{info.name}"
-        bases = self._get_bases_from_info(info, module, fq_name)
+        owner = _ClassOwner(fq_name, fq_name)
+        bases = self._get_bases_from_info(info, module, owner)
         typ = TypedValue(fq_name)
         if isinstance(info.ast, ast.ClassDef):
-            metadata = self._extract_metadata(module, info.ast)
+            metadata = self._extract_metadata(module, info.ast, owner)
         else:
             metadata = []
         if bases is not None:
@@ -1451,26 +1527,32 @@ class TypeshedFinder:
                 or isinstance(base, TypedDictValue)
                 for base in bases
             ):
-                typ = self._make_typeddict(module, info, bases)
+                typ = self._make_typeddict(module, info, bases, owner)
         val = SyntheticClassObjectValue(info.name, typ)
         if metadata:
             return annotate_value(val, metadata)
         return val
 
     def _make_typeddict(
-        self, module: str, info: typeshed_client.NameInfo, bases: Sequence[Value]
+        self,
+        module: str,
+        info: typeshed_client.NameInfo,
+        bases: Sequence[Value],
+        owner: _ClassOwner | None,
     ) -> TypedDictValue:
         total = True
         if isinstance(info.ast, ast.ClassDef):
             for keyword in info.ast.keywords:
                 # TODO support PEP 728 here
                 if keyword.arg == "total":
-                    val = self._parse_expr(keyword.value, module)
+                    val = self._parse_expr(keyword.value, module, owner)
                     if isinstance(val, KnownValue) and isinstance(val.val, bool):
                         total = val.val
-        attrs = self._get_all_attributes_from_info(info, module)
+        attrs = self._get_all_attributes_from_info(info, module, owner)
         fields = [
-            self._get_attribute_from_info(info, module, attr, on_class=True)
+            self._get_attribute_from_info(
+                info, module, attr, on_class=True, owner=owner
+            )
             for attr in attrs
         ]
         items = {}
@@ -1540,7 +1622,7 @@ class TypeshedFinder:
                 if isinstance(info.ast.value, ast.Call):
                     value = self._parse_call_assignment(info, module)
                 else:
-                    value = self._parse_expr(info.ast.value, module)
+                    value = self._parse_expr(info.ast.value, module, owner=None)
                 self._assignment_cache[key] = value
                 return value
             try:
@@ -1551,12 +1633,14 @@ class TypeshedFinder:
                 if isinstance(info.ast, ast.ClassDef):
                     return self.make_synthetic_type(module, info)
                 elif isinstance(info.ast, ast.AnnAssign):
-                    expr = self._parse_annotation(info.ast.annotation, module)
+                    expr = self._parse_annotation(
+                        info.ast.annotation, module, owner=None
+                    )
                     val, qualifiers = expr.maybe_unqualify({Qualifier.TypeAlias})
                     if val is not None and Qualifier.TypeAlias not in qualifiers:
                         return val
                     if info.ast.value:
-                        return self._parse_expr(info.ast.value, module)
+                        return self._parse_expr(info.ast.value, module, owner=None)
                 elif isinstance(
                     info.ast,
                     (

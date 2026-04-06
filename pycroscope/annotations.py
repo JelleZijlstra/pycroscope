@@ -776,7 +776,15 @@ def _type_from_runtime(val: Any, ctx: Context) -> Value:
     elif is_typing_name(val, "NoReturn") or is_typing_name(val, "Never"):
         return NO_RETURN_VALUE
     elif is_typing_name(val, "Self"):
-        return ctx.get_bound_self_type() or SelfTVV
+        bound_self = ctx.get_bound_self_type()
+        if bound_self is not None:
+            return bound_self
+        ctx.show_error(
+            "Self cannot be used outside a class", ErrorCode.invalid_self_usage
+        )
+        # TODO: fail
+        # return AnyValue(AnySource.error)
+        return SelfTVV
     elif is_typing_name(val, "LiteralString"):
         return TypedValue(str, literal_only=True)
     elif hasattr(val, "__supertype__"):
@@ -846,6 +854,7 @@ def _type_from_runtime(val: Any, ctx: Context) -> Value:
     elif is_typing_name(val, "NamedTuple"):
         return TypedValue(tuple)
     else:
+        print("Don't know how to interpret annotation value", val, file=sys.stderr)
         ctx.show_error(f"Invalid type annotation {val}")
         return AnyValue(AnySource.error)
 
