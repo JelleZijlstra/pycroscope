@@ -854,7 +854,6 @@ def _type_from_runtime(val: Any, ctx: Context) -> Value:
     elif is_typing_name(val, "NamedTuple"):
         return TypedValue(tuple)
     else:
-        print("Don't know how to interpret annotation value", val, file=sys.stderr)
         ctx.show_error(f"Invalid type annotation {val}")
         return AnyValue(AnySource.error)
 

@@ -2096,6 +2096,8 @@ class Signature:
             rendered += " (with impl)"
         if self.evaluator:
             rendered += " (with evaluator)"
+        if self.self_param is not None:
+            rendered += f" (Self={self.self_param})"
         return rendered
 
     def _render_parameters(self) -> Iterable[str]:
