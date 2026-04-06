@@ -3232,12 +3232,6 @@ def shield_nested_self_typevars(value: Value) -> tuple[Value, TypeVarMap]:
 def receiver_to_self_type(
     self_value: Value, ctx: CanAssignContext | None = None
 ) -> Value:
-    if isinstance(
-        self_value, KnownValueWithTypeVars
-    ) and self_value.typevars.has_typevar(SelfParam):
-        self_substitution = self_value.typevars.get_typevar(SelfParam)
-        assert self_substitution is not None
-        return receiver_to_self_type(self_substitution, ctx)
     if (
         ctx is not None
         and isinstance(self_value, KnownValueWithTypeVars)
@@ -3255,18 +3249,8 @@ def receiver_to_self_type(
                     for type_param in type_params
                 ],
             )
-    if isinstance(self_value, SequenceValue):
-        if self_value.typ in (list, set):
-            return self_value.simplify()
-        return self_value
-    if isinstance(self_value, DictIncompleteValue):
-        return self_value.simplify()
     if isinstance(self_value, KnownValue):
         replaced = replace_known_sequence_value(self_value)
-        if isinstance(replaced, SequenceValue) and replaced.typ in (list, set):
-            return replaced.simplify()
-        if isinstance(replaced, DictIncompleteValue):
-            return replaced.simplify()
         if not isinstance(replaced, KnownValue):
             return replaced
         return TypedValue(
