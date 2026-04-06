@@ -588,6 +588,9 @@ class Signature:
     use_default_inferable_typevars: bool = field(
         default=True, repr=False, compare=False, hash=False
     )
+    self_param: TypeVarParam | None = field(
+        default=None, repr=False, compare=False, hash=False
+    )
 
     def __post_init__(self) -> None:
         for param_name, param in self.parameters.items():
@@ -2037,6 +2040,7 @@ class Signature:
         allow_partial_call: bool = False,
         evaluator: Evaluator | None = None,
         deprecated: str | None = None,
+        self_param: TypeVarParam | None = None,
     ) -> "Signature":
         """Create a :class:`Signature` object.
 
@@ -2081,6 +2085,7 @@ class Signature:
             allow_partial_call=allow_partial_call,
             evaluator=evaluator,
             deprecated=deprecated,
+            self_param=self_param,
         )
 
     def __str__(self) -> str:

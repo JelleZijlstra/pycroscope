@@ -97,7 +97,9 @@ from .value import (
     TypeVarTupleValue,
     TypeVarValue,
     Value,
+    bound_self_type_from_class_key,
     get_namedtuple_field_annotation,
+    get_self_param,
     is_async_iterable,
     is_iterable,
     iter_type_params_in_value,
@@ -225,6 +227,7 @@ def is_dot_asynq_function(obj: Any) -> bool:
 class AnnotationsContext(Context):
     arg_spec_cache: "ArgSpecCache"
     globals: Mapping[str, object] | None = None
+    bound_self_type: Value | None = None
 
     def __post_init__(self) -> None:
         super().__init__()
@@ -233,6 +236,52 @@ class AnnotationsContext(Context):
         if self.globals is not None:
             return self.get_name_from_globals(node.id, self.globals)
         return self.handle_undefined_name(node.id)
+
+    def get_bound_self_type(self) -> Value | None:
+        return self.bound_self_type
+
+
+def _get_callable_owner(callable_obj: object | None) -> type | None:
+    if isinstance(callable_obj, MethodType):
+        self_obj = callable_obj.__self__
+        if isinstance(self_obj, type):
+            return self_obj
+        return type(self_obj)
+    if not isinstance(callable_obj, FunctionType):
+        return None
+    module = inspect.getmodule(callable_obj)
+    if module is None:
+        return None
+    qualname_parts = callable_obj.__qualname__.split(".")
+    if len(qualname_parts) < 2:
+        return None
+    owner: object = module
+    for part in qualname_parts[:-1]:
+        if part == "<locals>":
+            return None
+        try:
+            owner = getattr(owner, part)
+        except AttributeError:
+            return None
+    try:
+        member = inspect.getattr_static(owner, qualname_parts[-1])
+    except AttributeError:
+        return None
+    if isinstance(member, staticmethod):
+        return None
+    return owner if isinstance(owner, type) else None
+
+
+def _make_annotations_context(
+    cache: "ArgSpecCache",
+    globals: Mapping[str, object] | None = None,
+    callable_obj: object | None = None,
+) -> AnnotationsContext:
+    owner = _get_callable_owner(callable_obj)
+    bound_self_type = (
+        bound_self_type_from_class_key(owner) if owner is not None else None
+    )
+    return AnnotationsContext(cache, globals, bound_self_type)
 
 
 class IgnoredCallees(PyObjectSequenceOption[object]):
@@ -467,6 +516,7 @@ class ArgSpecCache:
 
         """
         func_globals = getattr(function_object, "__globals__", None)
+        owner_for_self = _get_callable_owner(function_object)
         # Signature preserves the return annotation for wrapped functions,
         # because @functools.wraps copies the __annotations__ of the wrapped function. We
         # don't want that, because the wrapper may have changed the return type.
@@ -490,7 +540,8 @@ class ArgSpecCache:
                 has_return_annotation = False
             else:
                 returns = type_from_runtime(
-                    sig.return_annotation, ctx=AnnotationsContext(self, func_globals)
+                    sig.return_annotation,
+                    ctx=_make_annotations_context(self, func_globals, function_object),
                 )
                 has_return_annotation = True
             if is_async:
@@ -532,6 +583,9 @@ class ArgSpecCache:
             is_asynq=is_asynq,
             allow_call=allow_call
             or FunctionsSafeToCall.contains(callable_object, self.options),
+            self_param=(
+                get_self_param(owner_for_self) if owner_for_self is not None else None
+            ),
         )
 
     def _infer_contextmanager_wrapper_return(
@@ -555,7 +609,8 @@ class ArgSpecCache:
         if sig.return_annotation is inspect.Signature.empty:
             return None
         wrapped_return = type_from_runtime(
-            sig.return_annotation, ctx=AnnotationsContext(self, func_globals)
+            sig.return_annotation,
+            ctx=_make_annotations_context(self, func_globals, function_object),
         )
         if inspect.isasyncgenfunction(wrapped):
             maybe_iterable = is_async_iterable(wrapped_return, self.ctx)
@@ -642,7 +697,7 @@ class ArgSpecCache:
     ) -> Value:
         if parameter.annotation is not inspect.Parameter.empty:
             kind = ParameterKind(parameter.kind)
-            ctx = AnnotationsContext(self, func_globals)
+            ctx = _make_annotations_context(self, func_globals, function_object)
             expr = annotation_expr_from_runtime(parameter.annotation, ctx=ctx)
             return translate_vararg_type(kind, expr, self.ctx)
         # If this is the self argument of a method, try to infer the self type.

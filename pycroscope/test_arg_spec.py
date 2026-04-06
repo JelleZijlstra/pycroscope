@@ -1,7 +1,7 @@
 # static analysis: ignore
 import functools
 from dataclasses import dataclass
-from typing import List, NewType
+from typing import List, NewType, Self
 
 import pytest
 from typing_extensions import ParamSpec, TypeVar, TypeVarTuple
@@ -18,6 +18,7 @@ from .test_node_visitor import assert_passes
 from .value import (
     AnySource,
     AnyValue,
+    ClassOwner,
     GenericValue,
     KnownValue,
     NewTypeValue,
@@ -170,6 +171,9 @@ class ClassWithCall(object):
     def normal_staticmethod(arg):
         pass
 
+    def returns_self(self) -> Self:
+        return self
+
 
 def function(capybara, hutia=3, *tucotucos, **proechimys):
     pass
@@ -193,6 +197,16 @@ class AllTheAttrs:
 
     def __getattr__(self, attr: str) -> "AllTheAttrs":
         return AllTheAttrs([*self.x, attr])
+
+
+def test_get_argspec_self() -> None:
+    asc = Checker().arg_spec_cache
+    sig = asc.get_argspec(ClassWithCall.returns_self)
+
+    assert isinstance(sig, Signature)
+    assert isinstance(sig.return_value, TypeVarValue)
+    my_self = sig.return_value.typevar_param
+    assert my_self.owner == ClassOwner(__name__, "ClassWithCall", ClassWithCall)
 
 
 def test_get_argspec():
