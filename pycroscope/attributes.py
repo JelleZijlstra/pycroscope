@@ -432,45 +432,7 @@ def get_attribute(ctx: AttrContext) -> Value:
         and ctx.root_value.predicate.attr == ctx.attr
     ):
         return ctx.root_value.predicate.value
-    return _maybe_restore_type_self_annotation(ctx, attribute_value)
-
-
-def _maybe_restore_type_self_annotation(ctx: AttrContext, value: Value) -> Value:
-    return value
-    root_value = ctx.root_value
-    if isinstance(root_value, AnnotatedValue):
-        root_value = root_value.value
-    self_type: TypeVarValue | None = None
-    if isinstance(root_value, SubclassValue) and isinstance(
-        root_value.typ, TypeVarValue
-    ):
-        self_type = root_value.typ
-    else:
-        root_key = _class_key_from_value(root_value)
-        if root_key is not None:
-            self_type = bound_self_type_from_class_key(root_key)
-    if self_type is None:
-        return value
-    bound = self_type.typevar_param.bound
-    if bound is None:
-        return value
-    class_key = _class_key_from_value(bound)
-    if class_key is None:
-        return value
-    symbol = (
-        ctx.get_can_assign_context()
-        .make_type_object(class_key)
-        .get_declared_symbol_from_mro(ctx.attr, ctx.get_can_assign_context())
-    )
-    if (
-        symbol is None
-        or symbol.is_method
-        or symbol.property_info is not None
-        or symbol.annotation is None
-        or not _contains_self_typevar(symbol.annotation)
-    ):
-        return value
-    return set_self(symbol.annotation, self_type)
+    return attribute_value
 
 
 def _maybe_specialize_class_partial_root(root_value: Value, ctx: AttrContext) -> Value:
@@ -681,7 +643,6 @@ def _get_attribute_from_subclass(
 ) -> Value:
     ctx.record_attr_read(typ)
 
-    bound_self_type = bound_self_type_from_class_key(typ)
     if isinstance(self_value, SubclassValue) and isinstance(
         self_value.typ, TypeVarValue
     ):
@@ -2155,7 +2116,7 @@ def _static_hasattr(value: object, attr: str) -> bool:
 
 def get_attrs_attribute(typ: object, ctx: AttrContext) -> Value | None:
     try:
-        if hasattr(typ, "__attrs_attrs__"):
+        if safe_isinstance(typ, type) and hasattr(typ, "__attrs_attrs__"):
             for attr_attr in typ.__attrs_attrs__:
                 if attr_attr.name == ctx.attr:
                     if attr_attr.type is not None:

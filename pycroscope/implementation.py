@@ -2075,10 +2075,14 @@ def _get_attribute_impl(ctx: CallContext) -> Value:
     tobj = ctx.visitor.checker.make_type_object(class_key)
     on_class = _enforce_literal_bool(ctx, "on_class", False)
     is_special_lookup = _enforce_literal_bool(ctx, "is_special_lookup", False)
+    receiver = ctx.vars.get("receiver", AnyValue(AnySource.inference))
     attr = tobj.get_attribute(
         attr_name.val,
         AttributePolicy(
-            visitor=ctx.visitor, on_class=on_class, is_special_lookup=is_special_lookup
+            visitor=ctx.visitor,
+            on_class=on_class,
+            is_special_lookup=is_special_lookup,
+            receiver=receiver,
         ),
     )
     if attr is None:
@@ -2962,6 +2966,11 @@ def get_default_argspecs() -> dict[object, ConcreteSignature]:
                     ParameterKind.KEYWORD_ONLY,
                     annotation=TypedValue(bool),
                     default=KnownValue(False),
+                ),
+                SigParameter(
+                    "receiver",
+                    ParameterKind.KEYWORD_ONLY,
+                    default=AnyValue(AnySource.inference),
                 ),
             ],
             return_annotation=TypedValue(object),

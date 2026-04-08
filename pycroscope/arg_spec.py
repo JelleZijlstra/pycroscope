@@ -1563,7 +1563,9 @@ class ArgSpecCache:
                 type_param.param_spec, "__default__", _NO_DEFAULT
             )
             if runtime_default is not _NO_DEFAULT and runtime_default is not NoDefault:
-                return type_from_runtime(runtime_default, ctx=AnnotationsContext())
+                return type_from_runtime(
+                    runtime_default, ctx=AnnotationsContext(self_key=None)
+                )
         return AnyValue(AnySource.generic_argument)
 
     def _get_generic_bases_cached(self, typ: type | str) -> GenericBases:
