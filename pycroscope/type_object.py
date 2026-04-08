@@ -2669,6 +2669,8 @@ def _specialize_selected_attribute(
             symbol = symbol.substitute_typevars(
                 _typevar_map_from_generic_args(params, receiver_instance.args)
             )
+        elif isinstance(receiver_instance, KnownValueWithTypeVars):
+            symbol = symbol.substitute_typevars(receiver_instance.typevars)
 
     # 1. The value of Self
     symbol = symbol.substitute_typevars(
