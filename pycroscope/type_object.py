@@ -2645,23 +2645,19 @@ def _specialize_selected_attribute(
     *,
     policy: AttributePolicy,
 ) -> SpecializedAttribute:
+    symbol = selected.symbol
     # There are three groups of substitutions:
 
-    # 1. The value of Self
-    substitutions = TypeVarMap(
-        typevars={get_self_param(selected.owner.typ): policy.get_self_value(ctx)}
-    )
-
-    # 2. Substitutions from the value in the MRO (if we inherit from a specialized type)
+    # 1. Substitutions from the value in the MRO (if we inherit from a specialized type)
     mro_value = selected.mro_entry.get_mro_value()
     if isinstance(mro_value, GenericValue):
-        substitutions = substitutions.merge(
+        symbol = symbol.substitute_typevars(
             _typevar_map_from_generic_args(
                 selected.owner.get_declared_type_params(), mro_value.args
             )
         )
 
-    # 3. Substitutions from the receiver type
+    # 2. Substitutions from the receiver type
     params = receiver_tobj.get_declared_type_params()
     if params:
         receiver_instance = policy.get_receiver_instance(ctx)
@@ -2670,16 +2666,22 @@ def _specialize_selected_attribute(
         # so the typevars are all matched up by proper assignability logic; this might
         # help with more exotic kinds of Values.
         if isinstance(receiver_instance, GenericValue):
-            substitutions = substitutions.merge(
+            symbol = symbol.substitute_typevars(
                 _typevar_map_from_generic_args(params, receiver_instance.args)
             )
 
-    specialized_symbol = selected.symbol.substitute_typevars(substitutions)
+    # 1. The value of Self
+    symbol = symbol.substitute_typevars(
+        TypeVarMap(
+            typevars={get_self_param(selected.owner.typ): policy.get_self_value(ctx)}
+        )
+    )
+
     return SpecializedAttribute(
         selected=selected,
-        annotation=specialized_symbol.annotation,
-        initializer=specialized_symbol.initializer,
-        property_info=specialized_symbol.property_info,
+        annotation=symbol.annotation,
+        initializer=symbol.initializer,
+        property_info=symbol.property_info,
     )
 
 
