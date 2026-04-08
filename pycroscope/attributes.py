@@ -134,6 +134,7 @@ class AttrContext:
     # Optional approximation of root_composite.value used only for attribute lookup.
     # This lets us fall back to a bound/constraint view for dispatch while still
     # retaining the original root value for self-binding and metadata checks.
+    # TODO: I don't understand why we need this
     lookup_root_value: Value | None
     attr: str
     options: Options = field(repr=False)
@@ -195,9 +196,9 @@ class AttrContext:
         )
 
     def get_type_object_attribute_policy(
-        self, *, on_class: bool, receiver_value: Value | None
+        self, *, on_class: bool, receiver: Value
     ) -> AttributePolicy:
-        return AttributePolicy(on_class=on_class, receiver_value=receiver_value)
+        return AttributePolicy(on_class=on_class, receiver=receiver)
 
 
 def _get_type_object_attribute(
@@ -206,12 +207,12 @@ def _get_type_object_attribute(
     ctx: AttrContext,
     *,
     on_class: bool,
-    receiver_value: Value | None,
+    receiver_value: Value,
 ) -> TypeObjectAttribute | None:
     return type_object.get_attribute(
         attr_name,
         ctx.get_type_object_attribute_policy(
-            on_class=on_class, receiver_value=receiver_value
+            on_class=on_class, receiver=receiver_value
         ),
     )
 
@@ -261,8 +262,7 @@ def get_attribute(ctx: AttrContext) -> Value:
         if class_key is not None:
             tobj = ctx.get_can_assign_context().make_type_object(class_key)
             attr = tobj.get_attribute(
-                ctx.attr,
-                AttributePolicy(on_class=True, receiver_value=ctx.root_value.typ),
+                ctx.attr, AttributePolicy(on_class=True, receiver=ctx.root_value.typ)
             )
             if attr is not None:
                 return attr.value
@@ -591,6 +591,10 @@ def _get_attribute_from_super_value(super_value: SuperValue, ctx: AttrContext) -
     if super_value.selfobj is None:
         return AnyValue(AnySource.inference)
     receiver_value, is_class_access = _super_receiver_type_value(super_value.selfobj)
+    policy = AttributePolicy(
+        receiver=receiver_value or AnyValue(AnySource.inference),
+        on_class=is_class_access,
+    )
     thisclass_key = _super_thisclass_key(super_value.thisclass)
     can_assign_ctx = ctx.get_can_assign_context()
     if receiver_value is None or thisclass_key is None:
@@ -612,11 +616,7 @@ def _get_attribute_from_super_value(super_value: SuperValue, ctx: AttrContext) -
         symbol = owner_tobj.get_declared_symbol(ctx.attr)
         if symbol is not None:
             symbol = _specialize_symbol_for_owner(
-                receiver_tobj,
-                owner_tobj,
-                symbol,
-                can_assign_ctx,
-                receiver_value=receiver_value,
+                receiver_tobj, owner_tobj, symbol, can_assign_ctx, policy
             )
             result = _get_attribute_value_from_symbol(
                 symbol,
@@ -1772,7 +1772,7 @@ def _unwrap_value_from_typed(result: Value, typ: type, ctx: AttrContext) -> Valu
         attr = tobj.get_attribute(
             ctx.attr,
             ctx.get_type_object_attribute_policy(
-                on_class=False, receiver_value=ctx.lookup_root_value
+                on_class=False, receiver=ctx.lookup_root_value or ctx.root_value
             ),
         )
         if attr is not None:

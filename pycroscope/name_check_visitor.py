@@ -742,13 +742,10 @@ class _AttrContext(CheckerAttrContext):
         return self.root_composite.value
 
     def get_type_object_attribute_policy(
-        self, *, on_class: bool, receiver_value: Value | None
+        self, *, on_class: bool, receiver: Value
     ) -> AttributePolicy:
         return AttributePolicy(
-            on_class=on_class,
-            receiver_value=receiver_value,
-            visitor=self.visitor,
-            node=self.node,
+            on_class=on_class, receiver=receiver, visitor=self.visitor, node=self.node
         )
 
     def should_ignore_none_attributes(self) -> bool:
@@ -3398,8 +3395,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         )
         for candidate in self._property_attr_candidates(attr_name, class_name):
             attribute = type_object.get_attribute(
-                candidate,
-                AttributePolicy(receiver_value=TypedValue(class_key), visitor=self),
+                candidate, AttributePolicy(receiver=TypedValue(class_key), visitor=self)
             )
             if attribute is not None:
                 return candidate, attribute
@@ -3528,8 +3524,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 return True
             base_tobj = self.checker.make_type_object(base_value.typ)
             attr = base_tobj.get_attribute(
-                varname,
-                AttributePolicy(receiver_value=base_value, visitor=self, node=node),
+                varname, AttributePolicy(receiver=base_value, visitor=self, node=node)
             )
             if attr is not None:
                 return True
@@ -3561,8 +3556,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 continue
             base_tobj = self.checker.make_type_object(base_value.typ)
             base_attr = base_tobj.get_attribute(
-                varname,
-                AttributePolicy(receiver_value=base_value, visitor=self, node=node),
+                varname, AttributePolicy(receiver=base_value, visitor=self, node=node)
             )
             if base_attr is None:
                 continue
@@ -13512,7 +13506,11 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             meta_getitem = tobj.get_attribute(
                 "__getitem__",
                 AttributePolicy(
-                    on_class=True, is_special_lookup=True, visitor=self, node=node
+                    receiver=value,
+                    on_class=True,
+                    is_special_lookup=True,
+                    visitor=self,
+                    node=node,
                 ),
             )
             if meta_getitem is not None:
@@ -14002,12 +14000,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 return None
         attr = tobj.get_attribute(
             node.attr,
-            AttributePolicy(
-                on_class=on_class,
-                receiver_value=root if isinstance(root, TypedValue) else None,
-                visitor=self,
-                node=node,
-            ),
+            AttributePolicy(on_class=on_class, receiver=root, visitor=self, node=node),
         )
         if attr is None:
             return None
@@ -14160,12 +14153,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                     return
         attr = tobj.get_attribute(
             node.attr,
-            AttributePolicy(
-                on_class=on_class,
-                receiver_value=root if isinstance(root, TypedValue) else None,
-                visitor=self,
-                node=node,
-            ),
+            AttributePolicy(on_class=on_class, receiver=root, visitor=self, node=node),
         )
         if attr is None:
             if (
@@ -15894,9 +15882,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             node.attr,
             AttributePolicy(
                 on_class=self._is_class_object_attribute_root(root_value) is not False,
-                receiver_value=(
-                    root_value if isinstance(root_value, TypedValue) else None
-                ),
+                receiver=(root_value),
                 visitor=self,
                 node=node,
             ),

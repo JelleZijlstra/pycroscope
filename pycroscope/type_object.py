@@ -231,16 +231,62 @@ TypeObjectAttribute = ResolvedAttribute
 @dataclass(frozen=True, kw_only=True)
 class AttributePolicy:
     on_class: bool = False
+    """True if the attribute is being accessed on the class rather than an instance."""
     is_special_lookup: bool = False
-    receiver_value: Value | None = None
+    """True if the attribute lookup should use dunder lookup semantics."""
+    receiver: Value
+    """When implementing obj.attr, receiver is the type of obj. This should
+    always be an instance type if on_class is False, else a class type."""
+    self_value: Value | None = None
+    """Value used to interpret typing.Self. Usually the same as receiver, but the
+    difference matters for protocols."""
     visitor: "pycroscope.name_check_visitor.NameCheckVisitor | None" = None
     node: ast.AST | None = None
+
+    def get_receiver_instance(self, ctx: CanAssignContext) -> Value:
+        if self.on_class:
+            return class_type_to_instance_type(self.receiver, ctx)
+        return self.receiver
+
+    def get_receiver_class(self, ctx: CanAssignContext) -> Value:
+        if self.on_class:
+            return self.receiver
+        return self.receiver.get_type_value(ctx)
+
+    def get_self_value(self, ctx: CanAssignContext) -> Value:
+        """Value to be used for specializing typing.Self."""
+        if self.self_value is not None:
+            return self.self_value
+        return self.get_receiver_instance(ctx)
+
+
+def class_type_to_instance_type(value: Value, ctx: CanAssignContext) -> Value:
+    match value:
+        case SyntheticClassObjectValue():
+            return value.class_type
+        case SubclassValue():
+            return value.typ
+        case KnownValueWithTypeVars(val=val) if safe_isinstance(val, type):
+            tobj = ctx.make_type_object(val)
+            params = tobj.get_declared_type_params()
+            if not params:
+                return TypedValue(val)
+            args = [
+                value.typevars.get_value(param) or default_value_for_type_param(param)
+                for param in params
+            ]
+            return GenericValue(val, args)
+        case KnownValue(val=val) if safe_isinstance(val, type):
+            return TypedValue(val)
+        case _:
+            return AnyValue(AnySource.inference)
 
 
 @dataclass(frozen=True)
 class SelectedAttribute:
     mro_index: int
     owner: "TypeObject"
+    mro_entry: "MroEntry"
     symbol: ClassSymbol
     is_metaclass_owner: bool
 
@@ -1346,12 +1392,9 @@ class TypeObject:
         3. Apply descriptor semantics to the merged result.
         """
         ctx = self._checker
-        on_class = policy.on_class
-        receiver_value = policy.receiver_value
-        typed_receiver_value = _receiver_type_value(receiver_value, ctx)
         # TODO: Revisit whether __class__ and __dict__ should remain bespoke
         # get_attribute() special cases instead of falling out of general lookup.
-        if not on_class and name == "__class__":
+        if not policy.on_class and name == "__class__":
             return TypeObjectAttribute(
                 value=AnyValue(AnySource.inference),
                 declared_value=AnyValue(AnySource.inference),
@@ -1364,7 +1407,7 @@ class TypeObject:
                 property_has_setter=False,
                 is_metaclass_owner=False,
             )
-        if not on_class and name == "__dict__":
+        if not policy.on_class and name == "__dict__":
             return TypeObjectAttribute(
                 value=TypedValue(dict),
                 declared_value=TypedValue(dict),
@@ -1381,17 +1424,17 @@ class TypeObject:
         # for class access, the metaclass MRO.
         declared_selected = self._select_declared_attribute(name)
         metaclass_selected = (
-            self._select_metaclass_attribute(name) if on_class else None
+            self._select_metaclass_attribute(name) if policy.on_class else None
         )
 
         # Phase 2: specialize the selected candidates for the receiver and the
         # owner they were found on, then choose the lookup winner according to
         # Python's class-vs-metaclass precedence rules.
         merged_declared = self._specialize_selected_attribute_pair(
-            ctx, receiver_value=typed_receiver_value, selected=declared_selected
+            ctx, policy=policy, selected=declared_selected
         )
         merged_metaclass = self._specialize_selected_attribute_pair(
-            ctx, receiver_value=typed_receiver_value, selected=metaclass_selected
+            ctx, policy=policy, selected=metaclass_selected
         )
         merged_attribute = self._choose_merged_attribute(
             merged_declared, merged_metaclass, ctx, policy=policy
@@ -1412,7 +1455,7 @@ class TypeObject:
                     is_metaclass_owner=False,
                 )
             return None
-        if merged_attribute.is_initvar and not on_class:
+        if merged_attribute.is_initvar and not policy.on_class:
             return None
         # Phase 3: apply descriptor semantics to the merged attribute that
         # survived lookup precedence.
@@ -1478,7 +1521,7 @@ class TypeObject:
         self,
         ctx: CanAssignContext,
         *,
-        receiver_value: TypedValue | TypeVarValue | None,
+        policy: AttributePolicy,
         selected: tuple[SelectedAttribute | None, SelectedAttribute | None] | None,
     ) -> MergedAttribute | None:
         """Convert selected runtime/typeshed symbols into one merged view."""
@@ -1486,20 +1529,13 @@ class TypeObject:
             return None
         runtime_selected, typeshed_selected = selected
 
-        # TODO: make it required in callers
-        if receiver_value is None:
-            receiver_value = TypedValue(self.typ)
         runtime_attribute = (
-            _specialize_selected_attribute(
-                self, runtime_selected, ctx, receiver_value=receiver_value
-            )
+            _specialize_selected_attribute(self, runtime_selected, ctx, policy=policy)
             if runtime_selected is not None
             else None
         )
         typeshed_attribute = (
-            _specialize_selected_attribute(
-                self, typeshed_selected, ctx, receiver_value=receiver_value
-            )
+            _specialize_selected_attribute(self, typeshed_selected, ctx, policy=policy)
             if typeshed_selected is not None
             else None
         )
@@ -1548,6 +1584,7 @@ class TypeObject:
             return SelectedAttribute(
                 mro_index=i,
                 owner=entry.tobj,
+                mro_entry=entry,
                 symbol=symbol,
                 is_metaclass_owner=is_metaclass_owner,
             )
@@ -1737,10 +1774,11 @@ class TypeObject:
                     expected, other_val, other_type_obj.typ
                 )
                 if other_type_obj is not None and other_type_obj.is_protocol():
-                    actual = _get_protocol_call_member_initializer(
-                        other_type_obj.typ, other_val, ctx
-                    )
-                    if actual is UNINITIALIZED_VALUE:
+                    sig = ctx.signature_from_value(other_val)
+                    sig = as_concrete_signature(sig, ctx)
+                    if sig is not None:
+                        actual = CallableValue(sig)
+                    else:
                         actual = other_val
                 else:
                     actual = other_val
@@ -1768,7 +1806,7 @@ class TypeObject:
                 actual = AnyValue(AnySource.inference)
             else:
                 expected_attr = self.get_attribute(
-                    member, AttributePolicy(receiver_value=other_val)
+                    member, AttributePolicy(receiver=self_val, self_value=other_val)
                 )
                 if expected_attr is None:
                     # In static fallback mode, synthetic protocol members may not have
@@ -1960,7 +1998,7 @@ class TypeObject:
         if self.typ is type(None):
             return False
         member = self.get_attribute(
-            "__eq__", AttributePolicy(receiver_value=self_val, on_class=True)
+            "__eq__", AttributePolicy(receiver=self_val, on_class=True)
         )
         if member is None:
             return False
@@ -2234,6 +2272,7 @@ def _attribute_blocks_writes(
     )
 
 
+# TODO: why does this exist? seems to duplicate get_attribute
 def _resolve_member_access(
     tobj: TypeObject,
     *,
@@ -2243,7 +2282,9 @@ def _resolve_member_access(
     class_object_access: bool,
     receiver_value: Value,
 ) -> TypeObjectAttribute:
-    access = tobj.get_attribute(member, AttributePolicy(on_class=class_object_access))
+    access = tobj.get_attribute(
+        member, AttributePolicy(receiver=receiver_value, on_class=class_object_access)
+    )
     if access is None:
         return TypeObjectAttribute(
             value=resolved_value,
@@ -2269,10 +2310,13 @@ def _resolve_member_access(
         ):
             property_getter = access.value
         else:
+            policy = AttributePolicy(
+                receiver=receiver_value, on_class=class_object_access
+            )
             property_getter = _substitute_symbol_value(
                 resolved_value,
                 _get_symbol_owner_substitutions_from_type_objects(
-                    tobj, owner, receiver_value=receiver_value
+                    tobj, owner, ctx=ctx, policy=policy
                 ),
             )
     else:
@@ -2570,10 +2614,10 @@ def _specialize_symbol_for_owner(
     owner_tobj: TypeObject,
     symbol: ClassSymbol,
     ctx: CanAssignContext,
-    receiver_value: TypedValue | TypeVarValue,
+    policy: AttributePolicy,
 ) -> ClassSymbol:
     substitutions = _get_symbol_owner_substitutions_from_type_objects(
-        receiver_tobj, owner_tobj, receiver_value=receiver_value
+        receiver_tobj, owner_tobj, ctx=ctx, policy=policy
     )
     return symbol.substitute_typevars(substitutions)
 
@@ -2583,15 +2627,38 @@ def _specialize_selected_attribute(
     selected: SelectedAttribute,
     ctx: CanAssignContext,
     *,
-    receiver_value: TypedValue | TypeVarValue,
+    policy: AttributePolicy,
 ) -> SpecializedAttribute:
-    specialized_symbol = _specialize_symbol_for_owner(
-        receiver_tobj,
-        selected.owner,
-        selected.symbol,
-        ctx,
-        receiver_value=receiver_value,
+    # There are three groups of substitutions:
+
+    # 1. The value of Self
+    substitutions = TypeVarMap(
+        typevars={get_self_param(selected.owner.typ): policy.get_self_value(ctx)}
     )
+
+    # 2. Substitutions from the value in the MRO (if we inherit from a specialized type)
+    mro_value = selected.mro_entry.get_mro_value()
+    if isinstance(mro_value, GenericValue):
+        substitutions = substitutions.merge(
+            _typevar_map_from_generic_args(
+                selected.owner.get_declared_type_params(), mro_value.args
+            )
+        )
+
+    # 3. Substitutions from the receiver type
+    params = receiver_tobj.get_declared_type_params()
+    if params:
+        receiver_instance = policy.get_receiver_instance(ctx)
+        # TODO: we could do better here with something like
+        # is_assignable(GenericValue(T, [U, V]), receiver)
+        # so the typevars are all matched up by proper assignability logic; this might
+        # help with more exotic kinds of Values.
+        if isinstance(receiver_instance, GenericValue):
+            substitutions = substitutions.merge(
+                _typevar_map_from_generic_args(params, receiver_instance.args)
+            )
+
+    specialized_symbol = selected.symbol.substitute_typevars(substitutions)
     return SpecializedAttribute(
         selected=selected,
         annotation=specialized_symbol.annotation,
@@ -2691,54 +2758,27 @@ def _specialize_self_returning_classmethod(
     raw_attr: Value,
     normalized_attr: Value,
     *,
-    receiver_value: Value | None,
+    policy: AttributePolicy,
     ctx: CanAssignContext,
     owner: type | str,
 ) -> Value:
-    if receiver_value is None or not isinstance(normalized_attr, CallableValue):
+    if not isinstance(normalized_attr, CallableValue):
         return normalized_attr
-    receiver_for_self: TypedValue | TypeVarValue
-    match receiver_value:
-        case KnownValueWithTypeVars() if isinstance(receiver_value.val, type):
-            type_params = ctx.get_type_parameters(receiver_value.val)
-            if type_params:
-                receiver_for_self = GenericValue(
-                    receiver_value.val,
-                    [
-                        receiver_value.typevars.get_value(
-                            type_param, default_value_for_type_param(type_param)
-                        )
-                        for type_param in type_params
-                    ],
-                )
-            else:
-                receiver_for_self = TypedValue(receiver_value.val)
-        case SubclassValue(
-            typ=TypeVarValue() | GenericValue() | TypedValue() as subclass_type
-        ):
-            receiver_for_self = subclass_type
-        case TypeVarValue():
-            receiver_for_self = receiver_value
-        case GenericValue():
-            receiver_for_self = receiver_value
-        case TypedValue():
-            receiver_for_self = receiver_value
-        case _:
-            return normalized_attr
     substitutions = TypeVarMap()
     raw_attr = replace_fallback(raw_attr)
+    self_value = policy.get_self_value(ctx)
     if (
         isinstance(raw_attr, GenericValue)
         and raw_attr.typ is classmethod
         and raw_attr.args
     ):
-        inferred = get_tv_map(raw_attr.args[0], SubclassValue(receiver_for_self), ctx)
+        inferred = get_tv_map(raw_attr.args[0], SubclassValue.make(self_value), ctx)
         if not isinstance(inferred, CanAssignError):
             substitutions = inferred
-    substitutions = substitutions.with_typevar(get_self_param(owner), receiver_for_self)
+    substitutions = substitutions.with_typevar(get_self_param(owner), self_value)
     signature = normalized_attr.signature.substitute_typevars(substitutions)
     return CallableValue(
-        _rewrite_self_returning_classmethod_signature(signature, receiver_for_self)
+        _rewrite_self_returning_classmethod_signature(signature, self_value)
     )
 
 
@@ -2961,7 +3001,7 @@ def _resolve_merged_attribute_access(
             value=_get_nondescriptor_value(
                 merged_attribute,
                 on_class=policy.on_class,
-                receiver_value=policy.receiver_value,
+                receiver_value=policy.receiver,
                 ctx=ctx,
             ),
             is_property=False,
@@ -2978,22 +3018,21 @@ def _resolve_descriptor_access(
     policy: AttributePolicy,
 ) -> ResolvedAttribute | None:
     """Apply descriptor behavior, including any receiver binding, to a member."""
-    on_class = policy.on_class
-    receiver_value = policy.receiver_value
+    receiver_value = policy.receiver
     effective_value = _merged_attribute_effective_value(merged_attribute)
     lookup_value = _merged_attribute_lookup_value(merged_attribute)
     descriptor_like_instance_access = (
-        not on_class or merged_attribute.is_metaclass_owner
+        not policy.on_class or merged_attribute.is_metaclass_owner
     )
     if merged_attribute.property_info is not None:
         property_has_setter = merged_attribute.property_info.fset is not None
         if descriptor_like_instance_access:
             if receiver_value is None:
                 receiver_value = TypedValue(receiver_tobj.typ)
-            receiver_arg = receiver_value
+            receiver_arg = policy.get_self_value(ctx)
             typed_receiver_value = _receiver_type_value(receiver_value, ctx)
             if (
-                on_class
+                policy.on_class
                 and merged_attribute.is_metaclass_owner
                 and typed_receiver_value is not None
             ):
@@ -3042,7 +3081,7 @@ def _resolve_descriptor_access(
         typed_descriptor_value = _specialize_self_returning_classmethod(
             lookup_value,
             typed_descriptor_value,
-            receiver_value=receiver_value,
+            policy=policy,
             ctx=ctx,
             owner=merged_attribute.owner.typ,
         )
@@ -3058,7 +3097,7 @@ def _resolve_descriptor_access(
                 ),
                 ctx=ctx,
             )
-            if not on_class:
+            if not policy.on_class:
                 typed_descriptor_value = set_self(
                     typed_descriptor_value, typed_receiver_value
                 )
@@ -3136,7 +3175,7 @@ def _resolve_descriptor_access(
         descriptor_value,
         receiver_tobj,
         ctx,
-        on_class=on_class,
+        on_class=policy.on_class,
         receiver_value=receiver_value,
         is_metaclass_owner=merged_attribute.is_metaclass_owner,
     )
@@ -3262,7 +3301,9 @@ def _get_attribute_value_from_symbol(
         merged_attribute.owner,
         merged_attribute,
         ctx,
-        policy=AttributePolicy(on_class=on_class, receiver_value=receiver_value),
+        policy=AttributePolicy(
+            on_class=on_class, receiver=receiver_value or AnyValue(AnySource.inference)
+        ),
     ).value
     return value
 
@@ -3398,10 +3439,9 @@ def _descriptor_method_signature_any(
         return None
     method_value = UNINITIALIZED_VALUE
     direct_signature: Signature | OverloadedSignature | None = None
+    policy = AttributePolicy(receiver=descriptor)
     if isinstance(descriptor, SyntheticClassObjectValue):
-        attribute = descriptor_tobj.get_attribute(
-            method_name, AttributePolicy(receiver_value=descriptor)
-        )
+        attribute = descriptor_tobj.get_attribute(method_name, policy)
         if attribute is not None:
             method_value = attribute.value
     else:
@@ -3409,7 +3449,7 @@ def _descriptor_method_signature_any(
         if isinstance(descriptor, TypedValue):
             merged_attribute = descriptor_tobj._specialize_selected_attribute_pair(
                 ctx,
-                receiver_value=descriptor,
+                policy=policy,
                 selected=descriptor_tobj._select_declared_attribute(method_name),
             )
             if merged_attribute is not None:
@@ -3423,9 +3463,7 @@ def _descriptor_method_signature_any(
                     direct_signature = direct_signature.bind_self(
                         self_value=descriptor, ctx=ctx
                     )
-        attribute = descriptor_tobj.get_attribute(
-            method_name, AttributePolicy(receiver_value=descriptor)
-        )
+        attribute = descriptor_tobj.get_attribute(method_name, policy)
         if attribute is not None:
             method_value = attribute.value
     if direct_signature is not None:
@@ -3513,16 +3551,14 @@ def _mro_generic_args(value: MroValue) -> Sequence[Value]:
 def _get_symbol_owner_substitutions_from_type_objects(
     receiver_tobj: TypeObject,
     owner_tobj: TypeObject,
-    *,
-    receiver_value: TypedValue | TypeVarValue,
+    ctx: CanAssignContext,
+    policy: AttributePolicy,
 ) -> TypeVarMap:
     receiver_substitutions = TypeVarMap(
-        typevars={get_self_param(owner_tobj.typ): receiver_value}
+        typevars={get_self_param(owner_tobj.typ): policy.get_self_value(ctx)}
+    ).merge(
+        _typevar_map_from_type_value(policy.get_receiver_instance(ctx), receiver_tobj)
     )
-    if receiver_value is not None:
-        receiver_substitutions = receiver_substitutions.merge(
-            _typevar_map_from_type_value(receiver_value, receiver_tobj)
-        )
     if owner_tobj is receiver_tobj:
         return receiver_substitutions
     owner_value = next(

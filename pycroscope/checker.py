@@ -2440,7 +2440,7 @@ class Checker:
                 return ANY_SIGNATURE
             if isinstance(typ, str):
                 call_access = self.make_type_object(typ).get_attribute(
-                    "__call__", AttributePolicy(receiver_value=value)
+                    "__call__", AttributePolicy(receiver=value)
                 )
                 if call_access is not None and call_access.symbol.is_method:
                     if call_access.owner.typ != typ:
