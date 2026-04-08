@@ -2087,6 +2087,22 @@ def _merge_symbol_type_information(
     return runtime_value
 
 
+def _merge_property_funcs(
+    runtime_symbol: ClassSymbol | None, typeshed_symbol: ClassSymbol | None
+) -> ClassSymbol | None:
+    match (runtime_symbol, typeshed_symbol):
+        case (None, None):
+            return None
+        case (None, typeshed_symbol):
+            return typeshed_symbol
+        case (runtime_symbol, None):
+            return runtime_symbol
+        case (runtime_symbol, typeshed_symbol):
+            if _is_informative_symbol(runtime_symbol):
+                return runtime_symbol
+            return typeshed_symbol
+
+
 def _merge_runtime_and_typeshed_property_info(
     runtime_info: PropertyInfo | None,
     typeshed_attribute: SpecializedAttribute | ClassSymbol | None,
@@ -2097,13 +2113,13 @@ def _merge_runtime_and_typeshed_property_info(
         return typeshed_attribute.property_info
     if typeshed_attribute.property_info is not None:
         return PropertyInfo(
-            fget=_merge_runtime_and_typeshed_symbol(
+            fget=_merge_property_funcs(
                 runtime_info.fget, typeshed_attribute.property_info.fget
             ),
-            fset=_merge_runtime_and_typeshed_symbol(
+            fset=_merge_property_funcs(
                 runtime_info.fset, typeshed_attribute.property_info.fset
             ),
-            fdel=_merge_runtime_and_typeshed_symbol(
+            fdel=_merge_property_funcs(
                 runtime_info.fdel, typeshed_attribute.property_info.fdel
             ),
         )
@@ -2831,10 +2847,14 @@ def _is_informative_runtime_attribute(attribute: SpecializedAttribute) -> bool:
     if isinstance(attribute.selected.owner.typ, str):
         # for synthetic classes, assume all symbols were explicitly created and are useful
         return True
-    if attribute.selected.symbol.annotation is not None:
+    return _is_informative_symbol(attribute.selected.symbol)
+
+
+def _is_informative_symbol(symbol: ClassSymbol) -> bool:
+    if symbol.annotation is not None:
         return True  # it was annotated
-    if isinstance(attribute.selected.symbol.initializer, KnownValue):
-        val = attribute.selected.symbol.initializer.val
+    if isinstance(symbol.initializer, KnownValue):
+        val = symbol.initializer.val
         if isinstance(val, (staticmethod, classmethod)):
             val = val.__func__
         if isinstance(val, FunctionType) and safe_getattr(val, "__annotations__", None):
