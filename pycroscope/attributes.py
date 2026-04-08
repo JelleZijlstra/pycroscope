@@ -1033,14 +1033,8 @@ def _should_use_resolved_class_attribute(attribute: TypeObjectAttribute) -> bool
     return (
         attribute.is_metaclass_owner
         or attribute.is_property
+        or symbol.is_classmethod
         or (symbol.annotation is not None and not symbol.is_classmethod)
-        or (
-            symbol.is_classmethod
-            and (
-                symbol.returns_self_on_class_access
-                or _contains_self_typevar(attribute.value)
-            )
-        )
     )
 
 
@@ -1051,9 +1045,15 @@ def _maybe_use_resolved_typed_instance_attribute(
     receiver_value: Value,
     self_value: Value,
     plain_typed_receiver: bool,
+    typ: type,
+    ctx: AttrContext,
 ) -> Value | None:
     symbol = attribute.symbol
     raw_runtime_value = replace_fallback(attribute.raw_value)
+    if symbol.is_method and not symbol.is_classmethod:
+        legacy_method_value = _unwrap_value_from_typed(attribute.raw_value, typ, ctx)
+        if isinstance(legacy_method_value, UnboundMethodValue):
+            return legacy_method_value
     if attribute.is_property:
         if plain_typed_receiver:
             runtime_property = (
@@ -1534,6 +1534,8 @@ def _get_attribute_from_typed(
                 receiver_value=receiver_value,
                 self_value=ctx.get_self_value(),
                 plain_typed_receiver=plain_typed_receiver,
+                typ=typ,
+                ctx=ctx,
             )
             if resolved_instance is not None:
                 return resolved_instance
