@@ -12,6 +12,7 @@ from typing import NewType, TypeVar, cast
 import typing_extensions
 
 import pycroscope
+from pycroscope.type_object import AttributePolicy
 
 from . import runtime
 from .annotations import annotation_expr_from_value, is_typevarlike, type_from_value
@@ -62,7 +63,6 @@ from .stacked_scopes import (
     VarnameWithOrigin,
     annotate_with_constraint,
 )
-from .type_object import _class_key_from_value
 from .value import (
     NO_RETURN_VALUE,
     UNINITIALIZED_VALUE,
@@ -103,6 +103,7 @@ from .value import (
     concrete_values_from_iterable,
     dump_value,
     flatten_values,
+    get_attribute,
     get_mro,
     get_tv_map,
     kv_pairs_from_mapping,
@@ -1906,6 +1907,7 @@ def _list_extend_or_iadd_impl(
 
 
 def _list_extend_impl(ctx: CallContext) -> ImplReturn:
+    print("CTX", ctx.vars)
     return _list_extend_or_iadd_impl(ctx, "iterable", "list.extend")
 
 
@@ -2037,13 +2039,22 @@ def _dump_value_impl(ctx: CallContext) -> Value:
     return value
 
 
-def _get_mro_impl(ctx: CallContext) -> Value:
+def _get_class_key(ctx: CallContext) -> type | str | None:
     typ = replace_fallback(ctx.vars["typ"])
-    checker = ctx.visitor.checker
-    class_key = _class_key_from_value(typ)
-    include_virtual = _enforce_literal_bool(ctx, "include_virtual", False)
+    if isinstance(typ, KnownValue) and isinstance(typ.val, (type, str)):
+        return typ.val
+    elif isinstance(typ, SyntheticClassObjectValue):
+        return typ.class_type.typ
+    else:
+        return None
+
+
+def _get_mro_impl(ctx: CallContext) -> Value:
+    class_key = _get_class_key(ctx)
     if class_key is None:
         return ctx.inferred_return_value
+    checker = ctx.visitor.checker
+    include_virtual = _enforce_literal_bool(ctx, "include_virtual", False)
     return SequenceValue(
         tuple,
         [
@@ -2052,6 +2063,27 @@ def _get_mro_impl(ctx: CallContext) -> Value:
             if include_virtual or not entry.is_virtual
         ],
     )
+
+
+def _get_attribute_impl(ctx: CallContext) -> Value:
+    class_key = _get_class_key(ctx)
+    if class_key is None:
+        return ctx.inferred_return_value
+    attr_name = ctx.vars["attr"]
+    if not isinstance(attr_name, KnownValue) or not isinstance(attr_name.val, str):
+        return ctx.inferred_return_value
+    tobj = ctx.visitor.checker.make_type_object(class_key)
+    on_class = _enforce_literal_bool(ctx, "on_class", False)
+    is_special_lookup = _enforce_literal_bool(ctx, "is_special_lookup", False)
+    attr = tobj.get_attribute(
+        attr_name.val,
+        AttributePolicy(
+            visitor=ctx.visitor, on_class=on_class, is_special_lookup=is_special_lookup
+        ),
+    )
+    if attr is None:
+        return AnyValue(AnySource.error)
+    return attr.value
 
 
 def _str_format_impl(ctx: CallContext) -> Value:
@@ -2914,6 +2946,27 @@ def get_default_argspecs() -> dict[object, ConcreteSignature]:
             return_annotation=GenericValue(tuple, [TypedValue(type)]),
             impl=_get_mro_impl,
             callable=get_mro,
+        ),
+        Signature.make(
+            [
+                SigParameter("typ", _POS_ONLY),
+                SigParameter("attr", _POS_ONLY, annotation=TypedValue(str)),
+                SigParameter(
+                    "on_class",
+                    ParameterKind.KEYWORD_ONLY,
+                    annotation=TypedValue(bool),
+                    default=KnownValue(False),
+                ),
+                SigParameter(
+                    "is_special_lookup",
+                    ParameterKind.KEYWORD_ONLY,
+                    annotation=TypedValue(bool),
+                    default=KnownValue(False),
+                ),
+            ],
+            return_annotation=TypedValue(object),
+            impl=_get_attribute_impl,
+            callable=get_attribute,
         ),
         # builtins
         OverloadedSignature(

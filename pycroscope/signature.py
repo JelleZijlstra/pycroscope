@@ -570,12 +570,8 @@ class Signature:
     """Type evaluator for this function."""
     deprecated: str | None = None
     """Deprecation message for this callable."""
-    bound_receiver_param_name: str | None = field(
-        default=None, repr=False, compare=False, hash=False
-    )
-    bound_receiver_composite: Composite | None = field(
-        default=None, repr=False, compare=False, hash=False
-    )
+    bound_receiver_param_name: str | None = field(default=None, repr=False)
+    bound_receiver_composite: Composite | None = field(default=None, repr=False)
     typevars_of_params: dict[str, list[TypeParam]] = field(
         init=False, default_factory=dict, repr=False, compare=False, hash=False
     )
@@ -893,6 +889,7 @@ class Signature:
                 return_value, ParameterTypeGuardExtension
             )
             for guard in ptg:
+                print("COMPS", guard.varname, composites)
                 if guard.varname in composites:
                     composite = composites[guard.varname]
                     if composite.varname is not None:

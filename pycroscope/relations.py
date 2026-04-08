@@ -1361,6 +1361,7 @@ def _extract_type_form(value: Value, ctx: CanAssignContext) -> Value | CanAssign
                 suppress_errors=True,
                 allow_undefined_names=True,
             )
+            # TODO: this seems weird
             if (
                 type_form == AnyValue(AnySource.error)
                 and initial_failure_count is not None

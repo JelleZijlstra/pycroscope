@@ -754,8 +754,8 @@ class _AttrContext(CheckerAttrContext):
     def should_ignore_none_attributes(self) -> bool:
         return self.ignore_none
 
-    def get_bound_self_type(self) -> Value | None:
-        return self.visitor.get_bound_self_type()
+    def get_self_key(self) -> type | str | None:
+        return self.visitor.get_self_key()
 
     def clone_for_attribute_lookup(
         self, root_composite: Composite, attr: str
@@ -3432,9 +3432,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 for subval in symbol.annotation.walk_values()
             ):
                 return set_self(
-                    symbol.annotation,
-                    self.get_bound_self_type()
-                    or bound_self_type_from_class_key(class_key),
+                    symbol.annotation, bound_self_type_from_class_key(class_key)
                 )
             return match[1].value
         return UNINITIALIZED_VALUE
@@ -4070,10 +4068,13 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 self._check_duplicate_type_params_in_generic_bases(node, base_values)
                 self._check_inconsistent_generic_base_specialization(node, base_values)
                 self._check_protocol_base_validity(node, base_values)
+                # TODO: clean up this extra AST walk
                 for base_node, base_value in zip(node.bases, base_values):
                     parsed_base_value = value_from_ast(
                         base_node,
-                        ctx=_SelfBaseDetectionContext(base_node, visitor=self),
+                        ctx=_SelfBaseDetectionContext(
+                            base_node, visitor=self, self_key=class_key
+                        ),
                         error_on_unrecognized=False,
                     )
                     if _base_expression_contains_self(parsed_base_value):
@@ -6237,7 +6238,9 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             for subval in flatten_values(replace_fallback(base_value)):
                 converted: Value = subval
                 if isinstance(converted, KnownValue):
-                    converted = self.arg_spec_cache._type_from_base(converted.val)
+                    converted = self.arg_spec_cache._type_from_base(
+                        converted.val, object
+                    )
                 elif isinstance(converted, SyntheticClassObjectValue):
                     converted = converted.class_type
                 if not isinstance(converted, TypedValue):
@@ -7451,14 +7454,8 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
             )
         return class_value
 
-    def get_bound_self_type(self) -> Value | None:
-        if (
-            enclosing_class := self._get_enclosing_class_value_for_method()
-        ) is not None:
-            return bound_self_type_from_class_key(enclosing_class.typ)
-        if self.current_class_key is None:
-            return None
-        return bound_self_type_from_class_key(self.current_class_key)
+    def get_self_key(self) -> type | str | None:
+        return self.current_class_key
 
     def _get_pending_overload_signature(
         self, node: FunctionDefNode

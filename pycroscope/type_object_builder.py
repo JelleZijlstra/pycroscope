@@ -13,7 +13,7 @@ if sys.version_info >= (3, 14):
     from annotationlib import Format, get_annotations
 
 from .annotations import (
-    _RuntimeAnnotationsContext,
+    RuntimeAnnotationsContext,
     annotation_expr_from_runtime,
     make_type_param,
     type_from_runtime,
@@ -98,11 +98,11 @@ def _iter_base_type_values(
         if isinstance(root, SyntheticClassObjectValue):
             root = root.class_type
         elif isinstance(root, KnownValue):
-            root = arg_spec_cache._type_from_base(root.val)
+            root = arg_spec_cache._type_from_base(root.val, object)
         root = replace_fallback(root)
         members = tuple(
             (
-                arg_spec_cache._type_from_base(member.val)
+                arg_spec_cache._type_from_base(member.val, object)
                 if arg_spec_cache is not None and isinstance(member, KnownValue)
                 else member
             )
@@ -136,7 +136,8 @@ def _iter_base_type_values_from_simple(
         if base_id in seen_known_bases:
             return
         yield from _iter_base_type_values(
-            arg_spec_cache._type_from_base(value.val),
+            # TODO: owner is wrong, but this probably doesn't matter
+            arg_spec_cache._type_from_base(value.val, object),
             arg_spec_cache,
             seen_known_bases | {base_id},
         )
@@ -288,7 +289,7 @@ def _runtime_member_value(raw_value: object, owner: type) -> Value:
     if not isinstance(runtime_params, tuple) or not runtime_params:
         return value
 
-    ctx = _RuntimeAnnotationsContext(owner)
+    ctx = RuntimeAnnotationsContext(owner=owner, self_key=owner)
     with ctx.suppress_errors():
         type_params = tuple(make_type_param(param, ctx) for param in runtime_params)
         type_arguments = tuple(type_from_runtime(arg, ctx=ctx) for arg in args)
@@ -377,7 +378,7 @@ _CLASS_SYMBOL_ALLOWED_QUALIFIERS = frozenset(
 
 
 def _symbol_from_runtime_annotation(annotation: object, owner: type) -> ClassSymbol:
-    ctx = _RuntimeAnnotationsContext(owner)
+    ctx = RuntimeAnnotationsContext(owner=owner, self_key=owner)
     with ctx.suppress_errors():
         expr = annotation_expr_from_runtime(annotation, ctx=ctx)
         typ, qualifiers = expr.maybe_unqualify(_CLASS_SYMBOL_ALLOWED_QUALIFIERS)
@@ -390,7 +391,7 @@ def _symbol_from_runtime_annotation(annotation: object, owner: type) -> ClassSym
 
 
 def _value_from_runtime_annotation(annotation: object, owner: type) -> Value:
-    ctx = _RuntimeAnnotationsContext(owner)
+    ctx = RuntimeAnnotationsContext(owner=owner, self_key=owner)
     with ctx.suppress_errors():
         expr = annotation_expr_from_runtime(annotation, ctx=ctx)
         typ, _ = expr.maybe_unqualify(set())

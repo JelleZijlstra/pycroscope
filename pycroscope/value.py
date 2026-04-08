@@ -819,6 +819,23 @@ def get_mro(typ: object, *, include_virtual: bool = False) -> tuple[type, ...]:
     return ()
 
 
+def get_attribute(
+    obj: object,
+    attr: str,
+    /,
+    *,
+    on_class: bool = False,
+    is_special_lookup: bool = False,
+) -> object:
+    """Get an attribute of an object.
+
+    During static analysis, pycroscope replaces this with a value-level attribute
+    getter that preserves generic specialization for synthetic and runtime classes.
+
+    """
+    return None
+
+
 class AnySource(enum.Enum):
     """Sources of Any values."""
 

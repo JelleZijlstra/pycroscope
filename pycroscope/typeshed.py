@@ -78,7 +78,6 @@ from .value import (
     UninitializedValue,
     Value,
     annotate_value,
-    bound_self_type_from_class_key,
     iter_type_params_in_value,
     make_coro_type,
     replace_fallback,
@@ -170,11 +169,6 @@ class _AnnotationContext(Context):
         elif isinstance(root_value, SyntheticModuleValue):
             return self.finder.resolve_name(".".join(root_value.module_path), node.attr)
         return super().get_attribute(root_value, node)
-
-    def get_bound_self_type(self) -> Value | None:
-        if self.owner is None:
-            return None
-        return bound_self_type_from_class_key(self.owner.class_key)
 
 
 class StubPath(PathSequenceOption):
@@ -1240,6 +1234,12 @@ class TypeshedFinder:
             self._info_cache[fq_name] = self.resolver.get_fully_qualified_name(fq_name)
         return self._info_cache[fq_name]
 
+    def _make_annotation_context(
+        self, mod: str, owner: _ClassOwner | None
+    ) -> _AnnotationContext:
+        self_key = owner.class_key if owner is not None else None
+        return _AnnotationContext(self, mod, owner, self_key=self_key)
+
     def _get_signature_from_func_def(
         self,
         node: ast.FunctionDef | ast.AsyncFunctionDef,
@@ -1365,7 +1365,7 @@ class TypeshedFinder:
                 seen_non_positional = True
             cleaned_arguments.append(arg)
         if is_evaluated:
-            ctx = _AnnotationContext(self, mod, owner)
+            ctx = self._make_annotation_context(mod, owner)
             evaluator = SyntheticEvaluator(node, return_value, ctx)
         else:
             evaluator = None
@@ -1451,14 +1451,14 @@ class TypeshedFinder:
     def _parse_expr(
         self, node: ast.AST, module: str, owner: _ClassOwner | None
     ) -> Value:
-        ctx = _AnnotationContext(finder=self, module=module, owner=owner)
+        ctx = self._make_annotation_context(module, owner)
         return value_from_ast(node, ctx=ctx)
 
     def _parse_annotation(
         self, node: ast.AST, module: str, owner: _ClassOwner | None
     ) -> AnnotationExpr:
         val = self._parse_expr(node, module, owner)
-        ctx = _AnnotationContext(finder=self, module=module, owner=owner)
+        ctx = self._make_annotation_context(module, owner)
         expr = annotation_expr_from_value(val, ctx=ctx)
         return expr
 
@@ -1486,7 +1486,7 @@ class TypeshedFinder:
         ):
             return AnyValue(AnySource.inference)
         # Should always be at global scope
-        ctx = _AnnotationContext(finder=self, module=module, owner=None)
+        ctx = self._make_annotation_context(module, None)
         return value_from_ast(info.ast.value, ctx=ctx)
 
     def _extract_metadata(

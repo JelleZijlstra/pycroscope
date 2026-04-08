@@ -26,7 +26,7 @@ else:
 from . import dataclass as dataclass_helpers
 from .annotated_types import EnumName
 from .annotations import (
-    _RuntimeAnnotationsContext,
+    RuntimeAnnotationsContext,
     annotation_expr_from_annotations,
     type_from_runtime,
     type_from_value,
@@ -99,6 +99,7 @@ from .value import (
     _iter_typevar_map_items,
     _typevar_map_from_varlike_pairs,
     annotate_value,
+    bound_self_type_from_class_key,
     receiver_to_self_type,
     replace_fallback,
     set_self,
@@ -186,9 +187,6 @@ class AttrContext:
     def get_synthetic_class(self, typ: type | str) -> SyntheticClassObjectValue | None:
         raise NotImplementedError
 
-    def get_bound_self_type(self) -> Value | None:
-        raise NotImplementedError
-
     def clone_for_attribute_lookup(
         self, root_composite: Composite, attr: str
     ) -> "AttrContext":
@@ -261,19 +259,13 @@ def get_attribute(ctx: AttrContext) -> Value:
     ):
         class_key = _class_key_from_value(ctx.root_value.typ.typevar_param.bound)
         if class_key is not None:
-            symbol = (
-                ctx.get_can_assign_context()
-                .make_type_object(class_key)
-                .get_declared_symbol_from_mro(ctx.attr, ctx.get_can_assign_context())
+            tobj = ctx.get_can_assign_context().make_type_object(class_key)
+            attr = tobj.get_attribute(
+                ctx.attr,
+                AttributePolicy(on_class=True, receiver_value=ctx.root_value.typ),
             )
-            if (
-                symbol is not None
-                and not symbol.is_method
-                and symbol.property_info is None
-                and symbol.annotation is not None
-                and _contains_self_typevar(symbol.annotation)
-            ):
-                return set_self(symbol.annotation, ctx.root_value.typ)
+            if attr is not None:
+                return attr.value
 
     original_lookup_root_value = lookup_root_value
     lookup_root_value = _maybe_specialize_class_partial_root(lookup_root_value, ctx)
@@ -341,6 +333,7 @@ def get_attribute(ctx: AttrContext) -> Value:
         if synthetic_name is not None:
             can_assign_ctx = ctx.get_can_assign_context()
             type_object = can_assign_ctx.make_type_object(synthetic_name)
+            bound_self_type = bound_self_type_from_class_key(synthetic_name)
             attribute = _get_type_object_attribute(
                 type_object, ctx.attr, ctx, on_class=True, receiver_value=root_value.typ
             )
@@ -348,8 +341,7 @@ def get_attribute(ctx: AttrContext) -> Value:
                 attribute
             ):
                 self_value: Value = root_value.typ
-                bound_self_type = _get_bound_self_type_from_ctx(ctx)
-                if bound_self_type is not None and (
+                if (
                     attribute.symbol.returns_self_on_class_access
                     or _contains_self_typevar(attribute.value)
                 ):
@@ -371,7 +363,6 @@ def get_attribute(ctx: AttrContext) -> Value:
                         attribute_value = AnyValue(AnySource.from_another)
                 else:
                     self_value = root_value.typ
-                    bound_self_type = _get_bound_self_type_from_ctx(ctx)
                     symbol = (
                         ctx.get_can_assign_context()
                         .make_type_object(synthetic_name)
@@ -380,20 +371,16 @@ def get_attribute(ctx: AttrContext) -> Value:
                         )
                     )
                     if (
-                        bound_self_type is not None
-                        and symbol is not None
+                        symbol is not None
                         and not symbol.is_method
                         and symbol.annotation is not None
                         and _contains_self_typevar(symbol.annotation)
                     ):
                         attribute_value = symbol.annotation
                         self_value = bound_self_type
-                    elif bound_self_type is not None and (
-                        _is_synthetic_self_classmethod_attribute(
-                            synthetic_class, ctx.attr, ctx
-                        )
-                        or _contains_self_typevar(attribute_value)
-                    ):
+                    elif _is_synthetic_self_classmethod_attribute(
+                        synthetic_class, ctx.attr, ctx
+                    ) or _contains_self_typevar(attribute_value):
                         self_value = bound_self_type
                     attribute_value = set_self(attribute_value, self_value)
             else:
@@ -449,8 +436,7 @@ def get_attribute(ctx: AttrContext) -> Value:
 
 
 def _maybe_restore_type_self_annotation(ctx: AttrContext, value: Value) -> Value:
-    if _contains_self_typevar(value):
-        return value
+    return value
     root_value = ctx.root_value
     if isinstance(root_value, AnnotatedValue):
         root_value = root_value.value
@@ -460,16 +446,9 @@ def _maybe_restore_type_self_annotation(ctx: AttrContext, value: Value) -> Value
     ):
         self_type = root_value.typ
     else:
-        bound_self_type = _get_bound_self_type_from_ctx(ctx)
-        if isinstance(bound_self_type, TypeVarValue):
-            bound_self_key = _class_key_from_value(bound_self_type)
-            root_key = _class_key_from_value(root_value)
-            if (
-                bound_self_key is not None
-                and root_key is not None
-                and class_keys_match(bound_self_key, root_key)
-            ):
-                self_type = bound_self_type
+        root_key = _class_key_from_value(root_value)
+        if root_key is not None:
+            self_type = bound_self_type_from_class_key(root_key)
     if self_type is None:
         return value
     bound = self_type.typevar_param.bound
@@ -702,16 +681,7 @@ def _get_attribute_from_subclass(
 ) -> Value:
     ctx.record_attr_read(typ)
 
-    bound_self_type = _get_bound_self_type_from_ctx(ctx)
-    bound_self_key = (
-        _class_key_from_value(bound_self_type) if bound_self_type is not None else None
-    )
-    if (
-        bound_self_type is not None
-        and bound_self_key is not None
-        and class_keys_match(typ, bound_self_key)
-    ):
-        self_value = bound_self_type
+    bound_self_type = bound_self_type_from_class_key(typ)
     if isinstance(self_value, SubclassValue) and isinstance(
         self_value.typ, TypeVarValue
     ):
@@ -1170,7 +1140,7 @@ def _maybe_use_resolved_typed_instance_attribute(
             return _rebind_resolved_lookup_value(
                 resolved_value, lookup_receiver=receiver_value, self_value=self_value
             )
-    return None
+    return resolved_value
 
 
 def _get_synthetic_declared_symbol(
@@ -1536,10 +1506,6 @@ def _contains_self_typevar(value: Value) -> bool:
 
 def _contains_typevar(value: Value) -> bool:
     return any(isinstance(subval, TypeVarValue) for subval in value.walk_values())
-
-
-def _get_bound_self_type_from_ctx(ctx: AttrContext) -> Value | None:
-    return ctx.get_bound_self_type()
 
 
 def _is_synthetic_instance_method_attribute(
@@ -1936,37 +1902,22 @@ def _get_attribute_from_known(obj: object, ctx: AttrContext) -> Value:
             return attribute.value
 
     if safe_isinstance(obj, type):
-        if (
-            (bound_self_type := _get_bound_self_type_from_ctx(ctx)) is not None
-            and (bound_self_key := _class_key_from_value(bound_self_type)) is not None
-            and class_keys_match(obj, bound_self_key)
-        ):
-            can_assign_ctx = ctx.get_can_assign_context()
-            type_object = can_assign_ctx.make_type_object(obj)
-            symbol = type_object.get_declared_symbol_from_mro(ctx.attr, can_assign_ctx)
-            if (
-                symbol is not None
-                and not symbol.is_method
-                and symbol.annotation is not None
-                and _contains_self_typevar(symbol.annotation)
-            ):
-                result = set_self(symbol.annotation, bound_self_type)
-                ctx.record_usage(obj, result)
-                return result
-            attribute = _get_type_object_attribute(
-                type_object,
-                ctx.attr,
-                ctx,
-                on_class=True,
-                receiver_value=bound_self_type,
+        can_assign_ctx = ctx.get_can_assign_context()
+        type_object = can_assign_ctx.make_type_object(obj)
+        attribute = _get_type_object_attribute(
+            type_object, ctx.attr, ctx, on_class=True, receiver_value=TypedValue(obj)
+        )
+        if attribute is not None and (
+            attribute.symbol.returns_self_on_class_access
+            or _contains_self_typevar(attribute.value)
+            or (
+                attribute.symbol.annotation is not None
+                and _contains_self_typevar(attribute.symbol.annotation)
             )
-            if attribute is not None and (
-                attribute.symbol.returns_self_on_class_access
-                or _contains_self_typevar(attribute.value)
-            ):
-                result = attribute.value
-                ctx.record_usage(obj, result)
-                return result
+        ):
+            result = attribute.value
+            ctx.record_usage(obj, result)
+            return result
 
     synthetic_attr = UNINITIALIZED_VALUE
     if safe_isinstance(obj, type) and safe_issubclass(obj, Enum):
@@ -2021,10 +1972,14 @@ def _get_attribute_from_unbound(
 
 
 def _get_triple_from_annotations(
-    annotations: dict[str, object], typ: object, ctx: AttrContext
+    annotations: dict[str, object], owner: object, ctx: AttrContext
 ) -> tuple[Value, object, bool] | None:
     attr_expr = annotation_expr_from_annotations(
-        annotations, ctx.attr, ctx=_RuntimeAnnotationsContext(typ)
+        annotations,
+        ctx.attr,
+        ctx=RuntimeAnnotationsContext(
+            owner=owner, self_key=owner if isinstance(owner, type) else None
+        ),
     )
     if attr_expr is not None:
         attr_type, qualifiers = attr_expr.maybe_unqualify(
@@ -2033,7 +1988,7 @@ def _get_triple_from_annotations(
         if Qualifier.InitVar in qualifiers:
             return None
         if attr_type is not None:
-            return (attr_type, typ, False)
+            return (attr_type, owner, False)
     return None
 
 
@@ -2056,7 +2011,9 @@ def _get_classvar_attribute_type_from_runtime_annotations(
             continue
 
         attr_expr = annotation_expr_from_annotations(
-            annotations, ctx.attr, ctx=_RuntimeAnnotationsContext(base_cls)
+            annotations,
+            ctx.attr,
+            ctx=RuntimeAnnotationsContext(owner=base_cls, self_key=base_cls),
         )
         if attr_expr is None:
             continue
@@ -2203,7 +2160,8 @@ def get_attrs_attribute(typ: object, ctx: AttrContext) -> Value | None:
                 if attr_attr.name == ctx.attr:
                     if attr_attr.type is not None:
                         return type_from_runtime(
-                            attr_attr.type, ctx=_RuntimeAnnotationsContext(typ)
+                            attr_attr.type,
+                            ctx=RuntimeAnnotationsContext(owner=typ, self_key=typ),
                         )
                     else:
                         return AnyValue(AnySource.unannotated)

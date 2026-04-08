@@ -333,6 +333,7 @@ def direct_bases_from_values(
     return tuple(_replace_invalid_bases(direct_bases or [TypedValue(object)]))
 
 
+# TODO: this should not exist, work with the TypeObject directly instead
 def _iter_base_type_objects(
     base_value: Value, checker: "pycroscope.checker.Checker"
 ) -> Iterator["TypeObject"]:
@@ -1477,13 +1478,17 @@ class TypeObject:
         self,
         ctx: CanAssignContext,
         *,
-        receiver_value: TypedValue | TypeVarValue | GenericValue | None,
+        receiver_value: TypedValue | TypeVarValue | None,
         selected: tuple[SelectedAttribute | None, SelectedAttribute | None] | None,
     ) -> MergedAttribute | None:
         """Convert selected runtime/typeshed symbols into one merged view."""
         if selected is None:
             return None
         runtime_selected, typeshed_selected = selected
+
+        # TODO: make it required in callers
+        if receiver_value is None:
+            receiver_value = TypedValue(self.typ)
         runtime_attribute = (
             _specialize_selected_attribute(
                 self, runtime_selected, ctx, receiver_value=receiver_value
@@ -1762,13 +1767,16 @@ class TypeObject:
                 )
                 actual = AnyValue(AnySource.inference)
             else:
-                expected = ctx.get_attribute_from_value(
-                    self_val, member, prefer_typeshed=True
+                expected_attr = self.get_attribute(
+                    member, AttributePolicy(receiver_value=other_val)
                 )
-                if expected is UNINITIALIZED_VALUE:
+                if expected_attr is None:
                     # In static fallback mode, synthetic protocol members may not have
                     # a retrievable attribute type. Keep enforcing member presence.
+                    # TODO: really?
                     expected = AnyValue(AnySource.inference)
+                else:
+                    expected = expected_attr.value
                 if protocol_self_typevar_map:
                     expected = expected.substitute_typevars(protocol_self_typevar_map)
                 if _protocol_member_is_method(self, member, ctx):
@@ -1818,6 +1826,7 @@ class TypeObject:
                         actual, ctx, receiver=other_val
                     )
                 if not use_descriptor_rules:
+                    expected = freshen_typevars_for_inference(expected)
                     can_assign = has_relation(
                         expected, actual, Relation.ASSIGNABLE, ctx
                     )
@@ -1833,6 +1842,7 @@ class TypeObject:
                         resolved_value=expected,
                         ctx=ctx,
                         class_object_access=False,
+                        receiver_value=other_val,
                     )
                     actual_access = _resolve_member_access(
                         actual_member_tobj,
@@ -1840,6 +1850,7 @@ class TypeObject:
                         resolved_value=actual,
                         ctx=ctx,
                         class_object_access=class_object_check,
+                        receiver_value=other_val,
                     )
                     if class_object_check and expected_access.symbol.is_classvar:
                         can_assign = CanAssignError(
@@ -1948,8 +1959,12 @@ class TypeObject:
     def overrides_eq(self, self_val: Value, ctx: CanAssignContext) -> bool:
         if self.typ is type(None):
             return False
-        member = ctx.get_attribute_from_value(self_val, "__eq__")
-        sig = ctx.signature_from_value(member)
+        member = self.get_attribute(
+            "__eq__", AttributePolicy(receiver_value=self_val, on_class=True)
+        )
+        if member is None:
+            return False
+        sig = ctx.signature_from_value(member.value)
         if isinstance(sig, BoundMethodSignature):
             sig = sig.signature
         if isinstance(sig, OverloadedSignature):
@@ -2031,11 +2046,7 @@ def _merge_symbol_type_information(
 ) -> Value | None:
     if runtime_value is None:
         return typeshed_value
-    if typeshed_value is None:
-        return runtime_value
-    if isinstance(typeshed_value, AnyValue) and not isinstance(runtime_value, AnyValue):
-        return runtime_value
-    return typeshed_value
+    return runtime_value
 
 
 def _merge_runtime_and_typeshed_property_info(
@@ -2230,6 +2241,7 @@ def _resolve_member_access(
     resolved_value: Value,
     ctx: CanAssignContext,
     class_object_access: bool,
+    receiver_value: Value,
 ) -> TypeObjectAttribute:
     access = tobj.get_attribute(member, AttributePolicy(on_class=class_object_access))
     if access is None:
@@ -2259,7 +2271,9 @@ def _resolve_member_access(
         else:
             property_getter = _substitute_symbol_value(
                 resolved_value,
-                _get_symbol_owner_substitutions_from_type_objects(tobj, owner, ctx),
+                _get_symbol_owner_substitutions_from_type_objects(
+                    tobj, owner, receiver_value=receiver_value
+                ),
             )
     else:
         property_getter, property_has_setter = None, False
@@ -2540,10 +2554,15 @@ def _typevar_map_from_generic_args(
 
 
 def _typevar_map_from_type_value(
-    receiver_value: TypedValue | TypeVarValue, type_params: Sequence[TypeParam]
+    receiver_value: TypedValue | TypeVarValue, tobj: TypeObject
 ) -> TypeVarMap:
-    _, generic_args = _class_key_and_generic_args_from_type_value(receiver_value)
-    return _typevar_map_from_generic_args(type_params, generic_args)
+    class_key, generic_args = _class_key_and_generic_args_from_type_value(
+        receiver_value
+    )
+    if class_key == tobj.typ:
+        type_params = tobj.get_declared_type_params()
+        return _typevar_map_from_generic_args(type_params, generic_args)
+    return TypeVarMap()
 
 
 def _specialize_symbol_for_owner(
@@ -2551,10 +2570,10 @@ def _specialize_symbol_for_owner(
     owner_tobj: TypeObject,
     symbol: ClassSymbol,
     ctx: CanAssignContext,
-    receiver_value: TypedValue | TypeVarValue | None,
+    receiver_value: TypedValue | TypeVarValue,
 ) -> ClassSymbol:
     substitutions = _get_symbol_owner_substitutions_from_type_objects(
-        receiver_tobj, owner_tobj, ctx, receiver_value=receiver_value
+        receiver_tobj, owner_tobj, receiver_value=receiver_value
     )
     return symbol.substitute_typevars(substitutions)
 
@@ -2564,7 +2583,7 @@ def _specialize_selected_attribute(
     selected: SelectedAttribute,
     ctx: CanAssignContext,
     *,
-    receiver_value: TypedValue | TypeVarValue | None = None,
+    receiver_value: TypedValue | TypeVarValue,
 ) -> SpecializedAttribute:
     specialized_symbol = _specialize_symbol_for_owner(
         receiver_tobj,
@@ -3494,14 +3513,15 @@ def _mro_generic_args(value: MroValue) -> Sequence[Value]:
 def _get_symbol_owner_substitutions_from_type_objects(
     receiver_tobj: TypeObject,
     owner_tobj: TypeObject,
-    ctx: CanAssignContext,
     *,
-    receiver_value: TypedValue | TypeVarValue | None = None,
+    receiver_value: TypedValue | TypeVarValue,
 ) -> TypeVarMap:
-    receiver_substitutions = TypeVarMap()
+    receiver_substitutions = TypeVarMap(
+        typevars={get_self_param(owner_tobj.typ): receiver_value}
+    )
     if receiver_value is not None:
-        receiver_substitutions = _typevar_map_from_type_value(
-            receiver_value, receiver_tobj.get_declared_type_params()
+        receiver_substitutions = receiver_substitutions.merge(
+            _typevar_map_from_type_value(receiver_value, receiver_tobj)
         )
     if owner_tobj is receiver_tobj:
         return receiver_substitutions
@@ -3514,16 +3534,13 @@ def _get_symbol_owner_substitutions_from_type_objects(
         None,
     )
     if owner_value is None:
-        return TypeVarMap()
-    if receiver_substitutions:
-        owner_value = owner_value.substitute_typevars(receiver_substitutions)
+        return receiver_substitutions
+    owner_value = owner_value.substitute_typevars(receiver_substitutions)
     owner_substitutions = _typevar_map_from_generic_args(
         owner_tobj.get_declared_type_params(), _mro_generic_args(owner_value)
     )
     if not owner_substitutions:
-        return TypeVarMap()
-    if not receiver_substitutions:
-        return owner_substitutions
+        return receiver_substitutions
     return receiver_substitutions.merge(owner_substitutions)
 
 
@@ -4151,7 +4168,9 @@ def _compute_type_params_from_runtime(
         try:
             assert checker._arg_spec_cache is not None
             type_params.append(
-                make_type_param(type_param, ctx=checker._arg_spec_cache.default_context)
+                make_type_param(
+                    type_param, ctx=pycroscope.arg_spec.AnnotationsContext(self_key=typ)
+                )
             )
         except TypeError:
             continue

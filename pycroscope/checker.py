@@ -23,7 +23,7 @@ from pycroscope.type_evaluation import KWARGS
 
 from . import dataclass as dataclass_helpers
 from .analysis_lib import object_from_string
-from .annotations import type_from_runtime, type_from_value
+from .annotations import Context, type_from_runtime, type_from_value
 from .arg_spec import ArgSpecCache, GenericBases
 from .attributes import AttrContext, get_attribute
 from .extensions import get_overloads as get_runtime_overloads
@@ -105,7 +105,6 @@ from .value import (
     VariableNameValue,
     _iter_typevar_map_items,
     _typevar_map_from_varlike_pairs,
-    bound_self_type_from_class_key,
     flatten_values,
     get_self_param,
     is_union,
@@ -2588,8 +2587,11 @@ class Checker:
         if class_type is None:
             return origin_argspec
         type_params = self.get_type_parameters(class_type)
+        annotation_ctx = Context(can_assign_ctx=self, self_key=class_type)
         explicit_member_values = [
-            type_from_value(member, self, value.node, suppress_errors=True)
+            type_from_value(
+                member, node=value.node, ctx=annotation_ctx, suppress_errors=True
+            )
             for member in value.members
         ]
         member_values = self.arg_spec_cache._specialize_generic_type_params(
@@ -2824,22 +2826,6 @@ class CheckerAttrContext(AttrContext):
 
     def get_synthetic_class(self, typ: type | str) -> SyntheticClassObjectValue | None:
         return self.checker.get_synthetic_class(typ)
-
-    def get_bound_self_type(self) -> Value | None:
-        root_value = replace_fallback(self.root_value)
-        if isinstance(root_value, AnnotatedValue):
-            root_value = root_value.value
-        if isinstance(root_value, TypeVarValue) and root_value.typevar_param.is_self:
-            return root_value
-        if isinstance(root_value, (TypedValue, GenericValue)):
-            return bound_self_type_from_class_key(root_value.typ)
-        if isinstance(root_value, SubclassValue) and isinstance(
-            root_value.typ, TypedValue
-        ):
-            return bound_self_type_from_class_key(root_value.typ.typ)
-        if isinstance(root_value, KnownValue) and not isinstance(root_value.val, type):
-            return bound_self_type_from_class_key(type(root_value.val))
-        return None
 
 
 def get_synthetic_member_initializer(tobj: TypeObject, name: str) -> Value | None:
