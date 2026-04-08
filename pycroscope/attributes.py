@@ -1124,7 +1124,16 @@ def _maybe_use_resolved_typed_instance_attribute(
     symbol = attribute.symbol
     raw_runtime_value = replace_fallback(attribute.raw_value)
     if attribute.is_property:
-        if plain_typed_receiver:
+        if isinstance(replace_fallback(resolved_value), AnyValue):
+            return None
+        fget = symbol.property_info.fget if symbol.property_info is not None else None
+        if fget is not None and isinstance(
+            fget.initializer, (KnownValue, KnownValueWithTypeVars)
+        ):
+            return _rebind_resolved_lookup_value(
+                resolved_value, lookup_receiver=receiver_value, self_value=self_value
+            )
+        if symbol.property_info is None and plain_typed_receiver:
             runtime_property = (
                 raw_runtime_value.val
                 if isinstance(raw_runtime_value, KnownValue)
@@ -1133,9 +1142,14 @@ def _maybe_use_resolved_typed_instance_attribute(
             )
             if runtime_property is None:
                 return None
-        return _rebind_resolved_lookup_value(
-            resolved_value, lookup_receiver=receiver_value, self_value=self_value
-        )
+            return _rebind_resolved_lookup_value(
+                resolved_value, lookup_receiver=receiver_value, self_value=self_value
+            )
+        if symbol.property_info is None:
+            return _rebind_resolved_lookup_value(
+                resolved_value, lookup_receiver=receiver_value, self_value=self_value
+            )
+        return None
     if symbol.is_classmethod:
         return resolved_value
     if (
