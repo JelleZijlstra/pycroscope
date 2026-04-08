@@ -2532,7 +2532,7 @@ def _get_cached_property_return_type(
 
 
 def _class_key_and_generic_args_from_type_value(
-    receiver_value: TypedValue | TypeVarValue | GenericValue,
+    receiver_value: TypedValue | TypeVarValue,
 ) -> tuple[type | str, Sequence[Value]]:
     if isinstance(receiver_value, TypeVarValue):
         assert receiver_value.typevar_param.bound is not None
@@ -2547,7 +2547,7 @@ def _class_key_and_generic_args_from_type_value(
 
 def _receiver_type_value(
     receiver_value: Value | None, ctx: CanAssignContext
-) -> TypedValue | TypeVarValue | GenericValue | None:
+) -> TypedValue | TypeVarValue | None:
     if receiver_value is None:
         return None
     if isinstance(receiver_value, (TypeVarValue, GenericValue)):
@@ -3576,9 +3576,12 @@ def _get_symbol_owner_substitutions_from_type_objects(
 ) -> TypeVarMap:
     receiver_substitutions = TypeVarMap(
         typevars={get_self_param(owner_tobj.typ): policy.get_self_value(ctx)}
-    ).merge(
-        _typevar_map_from_type_value(policy.get_receiver_instance(ctx), receiver_tobj)
     )
+    receiver_value = policy.get_receiver_instance(ctx)
+    if isinstance(receiver_value, (TypedValue, TypeVarValue)):
+        receiver_substitutions = receiver_substitutions.merge(
+            _typevar_map_from_type_value(receiver_value, receiver_tobj)
+        )
     if owner_tobj is receiver_tobj:
         return receiver_substitutions
     owner_value = next(

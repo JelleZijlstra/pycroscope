@@ -4856,13 +4856,21 @@ class ClassSymbol:
         return AnyValue(AnySource.inference)
 
 
+_PROPERTY_LIKE = (
+    property,
+    types.GetSetDescriptorType,
+    types.MemberDescriptorType,
+    enum.property,
+)
+
+
 def _is_property_initializer(value: Value) -> bool:
     value = replace_fallback(value)
     return (
         isinstance(value, KnownValue)
-        and isinstance(value.val, (property, types.GetSetDescriptorType))
+        and isinstance(value.val, _PROPERTY_LIKE)
         or isinstance(value, TypedValue)
-        and (value.typ is property or value.typ is types.GetSetDescriptorType)
+        and any(value.typ is typ for typ in _PROPERTY_LIKE)
     )
 
 
