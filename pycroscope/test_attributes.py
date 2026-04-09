@@ -1238,6 +1238,41 @@ class TestClassAttributeTransformer(TestNameCheckVisitorBase):
             assert_type(cls.foo, str)
 
 
+class TestSelfCheckRegressions(TestNameCheckVisitorBase):
+    @assert_passes()
+    def test_builtin_descriptor_aliases_use_typeshed_attribute_types(self):
+        import types
+
+        from typing_extensions import assert_type
+
+        def traceback_case() -> None:
+            try:
+                raise RuntimeError("boom")
+            except RuntimeError as error:
+                tb = error.__traceback__
+                assert tb is not None
+                assert_type(tb, types.TracebackType)
+                assert_type(tb.tb_frame, types.FrameType)
+                assert_type(tb.tb_frame.f_code, types.CodeType)
+                assert_type(tb.tb_frame.f_code.co_filename, str)
+
+        def method_descriptor_case(obj: types.MethodDescriptorType) -> None:
+            assert_type(obj.__objclass__, type)
+            assert_type(obj.__objclass__.__module__, str)
+
+    @assert_passes()
+    def test_text_mode_open_yields_str_lines(self):
+        from typing_extensions import assert_type
+
+        def capybara() -> None:
+            with open("test_file.txt") as f:
+                lines = f.readlines()
+                assert_type(lines, list[str])
+            with open("test_file.txt") as f:
+                stripped = [line.strip() for line in f]
+                assert_type(stripped, list[str])
+
+
 class TestAttributeWrites(TestNameCheckVisitorBase):
     @assert_passes()
     def test_unannotated_in_body(self):

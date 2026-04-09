@@ -204,11 +204,25 @@ _TYPING_ALIASES = {
     "typing.Tuple": "builtins.tuple",
 }
 
+
+def _get_types_aliases() -> dict[str, str]:
+    aliases = {}
+    for name, typ in types.__dict__.items():
+        if (
+            isinstance(typ, type)
+            and name.endswith("Type")
+            and typ.__module__ == "builtins"
+        ):
+            aliases[f"builtins.{typ.__name__}"] = f"types.{name}"
+    return aliases
+
+
 _RUNTIME_TO_TYPESHED_ALIASES = {
     "enum.EnumType": "enum.EnumMeta",
     "builtins.dict_items": "_collections_abc.dict_items",
     "builtins.dict_keys": "_collections_abc.dict_keys",
     "builtins.dict_values": "_collections_abc.dict_values",
+    **_get_types_aliases(),
 }
 
 

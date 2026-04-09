@@ -3560,6 +3560,10 @@ def _descriptor_signature_accepts_args(
     Use direct parameter/argument assignability here so overload selection does
     not trigger the broader call inference machinery.
     """
+    ellipsis = signature.get_param_of_kind(ParameterKind.ELLIPSIS)
+    if ellipsis is not None:
+        return True
+
     from .relations import Relation, has_relation
 
     positional_params = [
