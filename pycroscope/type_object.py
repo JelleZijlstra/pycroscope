@@ -2545,6 +2545,7 @@ def _class_key_and_generic_args_from_type_value(
     return receiver_value.typ, generic_args
 
 
+# TODO: this whole function is dubious, replace with the existing methods on AttributePolicy
 def _receiver_type_value(
     receiver_value: Value | None, ctx: CanAssignContext
 ) -> TypedValue | TypeVarValue | None:
@@ -2554,6 +2555,8 @@ def _receiver_type_value(
         return receiver_value
     if isinstance(receiver_value, SubclassValue):
         return receiver_value.typ
+    if isinstance(receiver_value, SyntheticClassObjectValue):
+        return receiver_value.class_type
     resolved = replace_fallback(receiver_value)
     if isinstance(resolved, KnownValueWithTypeVars) and not isinstance(
         resolved.val, type
