@@ -1107,7 +1107,7 @@ class BaseNodeVisitor(ast.NodeVisitor):
                     continue
                 dirname = os.path.dirname(module.__file__)
                 cmd = ["find", dirname, "-name", "test*.py"]
-                yield from subprocess.check_output(cmd).split()
+                yield from subprocess.check_output(cmd, text=True).split()
 
     @classmethod
     def _should_ignore_module(cls, module_name: str) -> bool:
