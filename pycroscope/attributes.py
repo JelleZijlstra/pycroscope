@@ -1052,6 +1052,7 @@ def _maybe_use_resolved_typed_instance_attribute(
     raw_runtime_value = replace_fallback(attribute.raw_value)
     if symbol.is_method and not symbol.is_classmethod:
         legacy_method_value = _unwrap_value_from_typed(attribute.raw_value, typ, ctx)
+        print("GOT LMV", legacy_method_value)
         if isinstance(legacy_method_value, UnboundMethodValue):
             return legacy_method_value
     if attribute.is_property:

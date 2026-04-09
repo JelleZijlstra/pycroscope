@@ -2977,7 +2977,8 @@ class BoundMethodSignature:
             self.signature.substitute_typevars(
                 typevars, infer_substituted_typevars=infer_substituted_typevars
             ),
-            self.self_composite.substitute_typevars(typevars),
+            # Not very principled, but this prevents us from replacing Self multiple times
+            self.self_composite,
             (
                 self.return_override.substitute_typevars(typevars)
                 if self.return_override is not None

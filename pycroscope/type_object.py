@@ -2648,7 +2648,14 @@ def _specialize_selected_attribute(
     symbol = selected.symbol
     # There are three groups of substitutions:
 
-    # 1. Substitutions from the value in the MRO (if we inherit from a specialized type)
+    # 1. The value of Self
+    symbol = symbol.substitute_typevars(
+        TypeVarMap(
+            typevars={get_self_param(selected.owner.typ): policy.get_self_value(ctx)}
+        )
+    )
+
+    # 2. Substitutions from the value in the MRO (if we inherit from a specialized type)
     mro_value = selected.mro_entry.get_mro_value()
     if isinstance(mro_value, GenericValue):
         symbol = symbol.substitute_typevars(
@@ -2657,7 +2664,7 @@ def _specialize_selected_attribute(
             )
         )
 
-    # 2. Substitutions from the receiver type
+    # 3. Substitutions from the receiver type
     params = receiver_tobj.get_declared_type_params()
     if params:
         receiver_instance = policy.get_receiver_instance(ctx)
@@ -2665,19 +2672,13 @@ def _specialize_selected_attribute(
         # is_assignable(GenericValue(T, [U, V]), receiver)
         # so the typevars are all matched up by proper assignability logic; this might
         # help with more exotic kinds of Values.
+        receiver_instance = replace_known_sequence_value(receiver_instance)
         if isinstance(receiver_instance, GenericValue):
             symbol = symbol.substitute_typevars(
                 _typevar_map_from_generic_args(params, receiver_instance.args)
             )
         elif isinstance(receiver_instance, KnownValueWithTypeVars):
             symbol = symbol.substitute_typevars(receiver_instance.typevars)
-
-    # 1. The value of Self
-    symbol = symbol.substitute_typevars(
-        TypeVarMap(
-            typevars={get_self_param(selected.owner.typ): policy.get_self_value(ctx)}
-        )
-    )
 
     return SpecializedAttribute(
         selected=selected,
