@@ -16044,8 +16044,13 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         if config_file is None:
             config_filename = cls.config_filename
             if config_filename is not None:
-                module_path = Path(sys.modules[cls.__module__].__file__).parent
-                config_file = module_path / config_filename
+                module = sys.modules[cls.__module__]
+                if (
+                    safe_isinstance(module, types.ModuleType)
+                    and module.__file__ is not None
+                ):
+                    module_path = Path(module.__file__).parent
+                    config_file = module_path / config_filename
         options = Options.from_option_list(instances, config_file_path=config_file)
         if kwargs.pop("display_options", False):
             options.display()  # pragma: no cover

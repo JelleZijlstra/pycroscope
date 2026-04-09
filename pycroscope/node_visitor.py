@@ -32,7 +32,7 @@ from typing_extensions import NotRequired, Protocol, TypedDict
 
 from . import analysis_lib, error_code
 from .analysis_lib import decompile, override
-from .safe import safe_getattr, safe_isinstance, safe_str
+from .safe import safe_isinstance, safe_str
 
 try:
     import codemod
@@ -1084,12 +1084,14 @@ class BaseNodeVisitor(ast.NodeVisitor):
         # Iterate over a copy of sys.modules in case we import something
         # while this generator is running.
         for module_name, module in list(sys.modules.items()):
-            if module is None:
+            if (
+                module is None
+                or not safe_isinstance(module, ModuleType)
+                or module.__file__ is None
+            ):
                 continue
             # ignore compiled modules
-            if not safe_isinstance(
-                safe_getattr(module, "__file__", None), str
-            ) or module.__file__.endswith(".so"):
+            if module.__file__.endswith(".so"):
                 continue
             if cls._should_ignore_module(module_name):
                 continue
@@ -1101,6 +1103,8 @@ class BaseNodeVisitor(ast.NodeVisitor):
 
         if include_tests:
             for module in modules:
+                if module.__file__ is None:
+                    continue
                 dirname = os.path.dirname(module.__file__)
                 cmd = ["find", dirname, "-name", "test*.py"]
                 yield from subprocess.check_output(cmd).split()
