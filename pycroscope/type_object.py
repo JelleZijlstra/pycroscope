@@ -2597,7 +2597,7 @@ def _receiver_type_value(
     return None
 
 
-def _typevar_map_from_generic_args(
+def typevar_map_from_generic_args(
     type_params: Sequence[TypeParam], generic_args: Sequence[Value]
 ) -> TypeVarMap:
     if not type_params:
@@ -2621,7 +2621,7 @@ def _typevar_map_from_type_value(
     )
     if class_key == tobj.typ:
         type_params = tobj.get_declared_type_params()
-        return _typevar_map_from_generic_args(type_params, generic_args)
+        return typevar_map_from_generic_args(type_params, generic_args)
     return TypeVarMap()
 
 
@@ -2659,7 +2659,7 @@ def _specialize_selected_attribute(
     mro_value = selected.mro_entry.get_mro_value()
     if isinstance(mro_value, GenericValue):
         symbol = symbol.substitute_typevars(
-            _typevar_map_from_generic_args(
+            typevar_map_from_generic_args(
                 selected.owner.get_declared_type_params(), mro_value.args
             )
         )
@@ -2675,7 +2675,7 @@ def _specialize_selected_attribute(
         receiver_instance = replace_known_sequence_value(receiver_instance)
         if isinstance(receiver_instance, GenericValue):
             symbol = symbol.substitute_typevars(
-                _typevar_map_from_generic_args(params, receiver_instance.args)
+                typevar_map_from_generic_args(params, receiver_instance.args)
             )
         elif isinstance(receiver_instance, KnownValueWithTypeVars):
             symbol = symbol.substitute_typevars(receiver_instance.typevars)
@@ -3600,7 +3600,7 @@ def _get_symbol_owner_substitutions_from_type_objects(
     if owner_value is None:
         return receiver_substitutions
     owner_value = owner_value.substitute_typevars(receiver_substitutions)
-    owner_substitutions = _typevar_map_from_generic_args(
+    owner_substitutions = typevar_map_from_generic_args(
         owner_tobj.get_declared_type_params(), _mro_generic_args(owner_value)
     )
     if not owner_substitutions:

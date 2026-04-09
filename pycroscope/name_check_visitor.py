@@ -234,6 +234,7 @@ from .type_object import (
     direct_bases_from_values,
     get_mro,
     lookup_declared_symbol_with_owner,
+    typevar_map_from_generic_args,
 )
 from .typeshed import TypeshedFinder
 from .value import (
@@ -8141,7 +8142,10 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
         if isinstance(root, SyntheticClassObjectValue):
             return replace(root, class_type=GenericValue(root.class_type.typ, members))
         if isinstance(root, KnownValue) and isinstance(root.val, type):
-            return GenericValue(root.val, members)
+            tobj = self.checker.make_type_object(root.val)
+            params = tobj.get_declared_type_params()
+            tv_map = typevar_map_from_generic_args(params, members)
+            return KnownValueWithTypeVars(root.val, tv_map)
         if isinstance(root, TypedValue):
             return GenericValue(root.typ, members)
         return None

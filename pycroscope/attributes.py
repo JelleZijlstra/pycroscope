@@ -868,7 +868,7 @@ def _get_attribute_from_synthetic_class(
         ctx.attr,
         ctx,
         on_class=True,
-        receiver_value=self_value.class_type,
+        receiver_value=self_value,
     )
     if attribute is not None and _should_use_resolved_class_attribute(attribute):
         return attribute.value
@@ -1052,7 +1052,6 @@ def _maybe_use_resolved_typed_instance_attribute(
     raw_runtime_value = replace_fallback(attribute.raw_value)
     if symbol.is_method and not symbol.is_classmethod:
         legacy_method_value = _unwrap_value_from_typed(attribute.raw_value, typ, ctx)
-        print("GOT LMV", legacy_method_value)
         if isinstance(legacy_method_value, UnboundMethodValue):
             return legacy_method_value
     if attribute.is_property:
@@ -1869,7 +1868,7 @@ def _get_attribute_from_known(obj: object, ctx: AttrContext) -> Value:
         can_assign_ctx = ctx.get_can_assign_context()
         type_object = can_assign_ctx.make_type_object(obj)
         attribute = _get_type_object_attribute(
-            type_object, ctx.attr, ctx, on_class=True, receiver_value=TypedValue(obj)
+            type_object, ctx.attr, ctx, on_class=True, receiver_value=KnownValue(obj)
         )
         if attribute is not None and (
             attribute.symbol.returns_self_on_class_access
