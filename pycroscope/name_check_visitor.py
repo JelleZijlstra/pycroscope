@@ -13521,9 +13521,7 @@ class NameCheckVisitor(node_visitor.ReplacingNodeVisitor):
                 synthetic_class = self.checker.get_synthetic_class(synthetic_typ)
                 if synthetic_class is not None:
                     return self.check_call(
-                        node,
-                        meta_getitem.value,
-                        [Composite(synthetic_class), Composite(index, None, node)],
+                        node, meta_getitem.value, [Composite(index, None, node)]
                     )
             self._show_error_if_checking(
                 node,
