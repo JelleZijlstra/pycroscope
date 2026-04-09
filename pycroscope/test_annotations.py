@@ -733,6 +733,7 @@ class TestAnnotations(TestNameCheckVisitorBase):
         def caller(c: Capybara):
             assert_type(c.x, str)
             assert_type(c.y, int)
+
             assert_is_value(c.Alias, KnownValue(int))
 
 

@@ -2087,6 +2087,7 @@ def _get_attribute_impl(ctx: CallContext) -> Value:
     )
     if attr is None:
         return AnyValue(AnySource.error)
+    print("FULL ATTR", attr_name, attr)
     return attr.value
 
 

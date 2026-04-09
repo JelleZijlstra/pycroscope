@@ -382,20 +382,15 @@ def _symbol_from_runtime_annotation(annotation: object, owner: type) -> ClassSym
     with ctx.suppress_errors():
         expr = annotation_expr_from_runtime(annotation, ctx=ctx)
         typ, qualifiers = expr.maybe_unqualify(_CLASS_SYMBOL_ALLOWED_QUALIFIERS)
-    return ClassSymbol(
-        annotation=(
-            typ if typ is not None else AnyValue(AnySource.incomplete_annotation)
-        ),
-        qualifiers=frozenset(qualifiers),
-    )
+    return ClassSymbol(annotation=typ, qualifiers=frozenset(qualifiers))
 
 
-def _value_from_runtime_annotation(annotation: object, owner: type) -> Value:
+def _value_from_runtime_annotation(annotation: object, owner: type) -> Value | None:
     ctx = RuntimeAnnotationsContext(owner=owner, self_key=owner)
     with ctx.suppress_errors():
         expr = annotation_expr_from_runtime(annotation, ctx=ctx)
         typ, _ = expr.maybe_unqualify(set())
-    return typ if typ is not None else AnyValue(AnySource.incomplete_annotation)
+    return typ
 
 
 def _runtime_namedtuple_field_names(typ: type) -> tuple[str, ...]:
