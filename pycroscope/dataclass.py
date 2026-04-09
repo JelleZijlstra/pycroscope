@@ -1,5 +1,6 @@
 """Dataclass-specific helpers."""
 
+import types
 from collections.abc import Callable
 
 import pycroscope
@@ -226,6 +227,16 @@ def maybe_resolve_synthetic_descriptor_attribute(
     normalized_candidate = replace_fallback(descriptor_candidate)
     if isinstance(normalized_candidate, AnnotatedValue):
         normalized_candidate = replace_fallback(normalized_candidate.value)
+    # TODO: this whole function is weird, we shouldn't need this if we have proper
+    # descriptor resolution in type_object.py.
+    if (
+        descriptor_value is not None
+        and isinstance(normalized_candidate, KnownValue)
+        and isinstance(
+            normalized_candidate.val, (types.FunctionType, types.BuiltinFunctionType)
+        )
+    ):
+        return value
     if not isinstance(normalized_candidate, (KnownValue, SyntheticClassObjectValue)):
         if not isinstance(normalized_candidate, TypedValue):
             return value
