@@ -1269,8 +1269,37 @@ class TestSelfCheckRegressions(TestNameCheckVisitorBase):
                 lines = f.readlines()
                 assert_type(lines, list[str])
             with open("test_file.txt") as f:
-                stripped = [line.strip() for line in f]
-                assert_type(stripped, list[str])
+                for line in f:
+                    assert_type(line, str)
+                    stripped = line.strip()
+                    assert_type(stripped, str)
+
+    @assert_passes()
+    def test_defaultdict_get_default_binds_method_on_known_instance(self):
+        from collections import defaultdict
+
+        from typing_extensions import assert_type
+
+        def capybara() -> None:
+            d = defaultdict(set)
+            assert_type(d.get("a", ()), set | tuple[()])
+
+    @assert_passes()
+    def test_types_dunder_dict_items_does_not_crash(self):
+        import types
+
+        def capybara() -> None:
+            for _name, _typ in types.__dict__.items():
+                return
+
+    @assert_passes()
+    def test_importfrom_level_prefers_typeshed_annotation(self):
+        import ast
+
+        from typing_extensions import assert_type
+
+        def capybara(x: ast.ImportFrom) -> None:
+            assert_type(x.level, int)
 
 
 class TestAttributeWrites(TestNameCheckVisitorBase):
