@@ -190,7 +190,7 @@ def apply_synthetic_attributes(
                     SigParameter("self", ParameterKind.POSITIONAL_OR_KEYWORD),
                     SigParameter("other", ParameterKind.POSITIONAL_OR_KEYWORD),
                 ],
-                KnownValue(bool),
+                TypedValue(bool),
             )
         )
         type_object.add_declared_symbol(
