@@ -2441,6 +2441,23 @@ def _checker_ctx(ctx: object) -> object:
     return safe_getattr(ctx, "checker", ctx)
 
 
+def _transform_known_class_attribute(
+    initializer: Value | None, ctx: CanAssignContext
+) -> Value | None:
+    if initializer is None:
+        return None
+    initializer = replace_fallback(initializer)
+    if not isinstance(initializer, KnownValue):
+        return None
+    options = safe_getattr(_checker_ctx(ctx), "options", None)
+    if options is None:
+        return None
+    # Avoid an import cycle: attributes.py imports type_object.py.
+    from .attributes import ClassAttributeTransformer
+
+    return ClassAttributeTransformer.transform_attribute(initializer.val, options)
+
+
 def normalize_synthetic_descriptor_attribute(
     value: Value,
     *,
@@ -3049,6 +3066,16 @@ def _resolve_descriptor_access(
     receiver_value = policy.receiver
     effective_value = _merged_attribute_effective_value(merged_attribute)
     lookup_value = _merged_attribute_lookup_value(merged_attribute)
+    transformed_value = _transform_known_class_attribute(
+        merged_attribute.initializer, ctx
+    )
+    if transformed_value is not None:
+        return _make_resolved_attribute(
+            merged_attribute,
+            value=transformed_value,
+            is_property=False,
+            property_has_setter=False,
+        )
     descriptor_like_instance_access = (
         not policy.on_class or merged_attribute.is_metaclass_owner
     )

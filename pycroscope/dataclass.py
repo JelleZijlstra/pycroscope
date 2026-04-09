@@ -197,6 +197,8 @@ def apply_synthetic_attributes(
             "__eq__", ClassSymbol(is_method=True, initializer=eq_value)
         )
 
+    # TODO: should also synthesize order comparison methods if order=True
+
 
 def maybe_resolve_synthetic_descriptor_attribute(
     synthetic_class: SyntheticClassObjectValue,
