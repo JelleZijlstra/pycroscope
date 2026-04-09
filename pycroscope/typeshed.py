@@ -208,6 +208,8 @@ _TYPING_ALIASES = {
 def _get_types_aliases() -> dict[str, str]:
     aliases = {}
     for name, typ in types.__dict__.items():
+        if name in ("LambdaType", "BuiltinMethodType"):
+            continue  # ignore aliases
         if (
             isinstance(typ, type)
             and name.endswith("Type")
@@ -993,6 +995,8 @@ class TypeshedFinder:
                 return False
             elif isinstance(info.ast, ast.Assign):
                 val = self._parse_expr(info.ast.value, mod, owner)
+                # TODO: this is prone to cycles (one appears if we don't exclude LambdaType
+                # from _RUNTIME_TO_TYPESHED_ALIASES above).
                 if isinstance(val, KnownValue) and isinstance(val.val, type):
                     return self.has_attribute(val.val, attr)
                 else:
