@@ -2080,11 +2080,11 @@ def _prefer_existing_symbol_type(existing: Value, new: Value) -> bool:
 
 
 def _merge_symbol_type_information(
-    runtime_value: Value | None, typeshed_value: Value | None
+    preferred: Value | None, fallback: Value | None
 ) -> Value | None:
-    if runtime_value is None:
-        return typeshed_value
-    return runtime_value
+    if preferred is None:
+        return fallback
+    return preferred
 
 
 def _merge_property_funcs(
@@ -2170,7 +2170,9 @@ def _merge_runtime_and_typeshed_symbol(
     )
     return ClassSymbol(
         annotation=_merge_symbol_type_information(
-            runtime_symbol.annotation, typeshed_symbol.annotation
+            # Prefer the typeshed annotation
+            typeshed_symbol.annotation,
+            runtime_symbol.annotation,
         ),
         qualifiers=runtime_symbol.qualifiers | typeshed_symbol.qualifiers,
         function_decorators=runtime_symbol.function_decorators
@@ -2961,10 +2963,12 @@ def _make_merged_attribute(
         )
     )
     annotation = _merge_symbol_type_information(
-        runtime_attribute.annotation if runtime_attribute is not None else None,
+        # Prefer the typeshed annotation
         typeshed_attribute.annotation if typeshed_attribute is not None else None,
+        runtime_attribute.annotation if runtime_attribute is not None else None,
     )
     initializer = _merge_symbol_type_information(
+        # Prefer the runtime initializer
         runtime_attribute.initializer if runtime_attribute is not None else None,
         typeshed_attribute.initializer if typeshed_attribute is not None else None,
     )
